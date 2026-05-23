@@ -1,0 +1,68 @@
+.app-shell {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  border-bottom: 1px solid var(--border);
+  padding: 16px 20px;
+  text-align: left;
+}
+
+.app-header h1 {
+  font-size: 24px;
+  margin: 0 0 12px;
+}
+
+.app-nav {
+  display: flex;
+  gap: 12px;
+}
+
+.app-nav a {
+  text-decoration: none;
+  color: var(--text-h);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.app-nav a.active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.app-main {
+  flex: 1;
+  text-align: left;
+  padding: 24px 20px;
+}
+
+.cn-toast {
+  position: relative;
+  overflow: hidden;
+}
+
+.cn-toast::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: color-mix(in oklab, currentColor 82%, black 18%);
+  opacity: 0.95;
+  transform-origin: left center;
+  animation: toast-progress 4.5s linear forwards;
+}
+
+@keyframes toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}

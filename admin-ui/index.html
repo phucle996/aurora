@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en" data-theme-ready="false">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f8fafc" />
+    <style>
+      :root {
+        color-scheme: only light;
+        background: #f8fafc;
+      }
+
+      html.dark {
+        color-scheme: only dark;
+        background: #0b1220;
+      }
+
+      html,
+      body,
+      #root {
+        min-height: 100%;
+        margin: 0;
+        background: inherit;
+      }
+
+      html[data-theme-ready='false'] #root {
+        visibility: hidden;
+      }
+
+      html[data-theme-ready='true'] #root {
+        visibility: visible;
+      }
+
+      body {
+        color: #0f172a;
+      }
+
+      html.dark body {
+        color: #e2e8f0;
+      }
+    </style>
+    <script>
+      ;(() => {
+        const storageKey = 'adminui-theme'
+
+        function resolveTheme() {
+          try {
+            const stored = window.localStorage.getItem(storageKey)
+            if (stored === 'light' || stored === 'dark') {
+              return stored
+            }
+          } catch {
+            // ignore localStorage read errors on first paint
+          }
+
+          return 'light'
+        }
+
+        const theme = resolveTheme()
+        const root = document.documentElement
+        root.classList.remove('light', 'dark')
+        root.classList.add(theme)
+        root.style.colorScheme = theme === 'dark' ? 'only dark' : 'only light'
+        root.setAttribute('data-theme-ready', 'true')
+        document.querySelector('meta[name="theme-color"]')?.setAttribute(
+          'content',
+          theme === 'dark' ? '#0b1220' : '#f8fafc',
+        )
+      })()
+    </script>
+    <title>adminui</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

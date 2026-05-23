@@ -1,0 +1,90 @@
+-- Core migration layer 000001
+-- Schema-aware ENUM creation. Mỗi enum được tạo trong current_schema() để có
+-- thể test với nhiều schema song song mà không đụng namespace public.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'core_secret_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE core_secret_status AS ENUM ('pending', 'active', 'retired', 'revoked');
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending');
+    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
+    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'retired');
+    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'revoked');
+END
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'zone_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE zone_status AS ENUM ('active', 'draining', 'maintenance', 'disabled');
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
+    EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'draining');
+    EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'maintenance');
+    EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'disabled');
+END
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'zone_service_type' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE zone_service_type AS ENUM ('mail', 'hypervisor', 'k8s', 'ai');
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'mail');
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'hypervisor');
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'k8s');
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'ai');
+END
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'dataplane_node_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE dataplane_node_status AS ENUM ('registered', 'ready', 'degraded', 'draining', 'stale', 'failed', 'maintenance');
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'registered');
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'ready');
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'degraded');
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'draining');
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'stale');
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'failed');
+    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'maintenance');
+END
+$$;

@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.26-bookworm
+ARG LOCAL_USER=phucle
+ARG LOCAL_UID=1000
+ARG LOCAL_GID=1000
+
+WORKDIR /app
+
+RUN groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
+    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --create-home --shell /bin/bash ${LOCAL_USER}
+
+RUN go install github.com/air-verse/air@latest
+
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+
+RUN chown -R ${LOCAL_USER}:${LOCAL_USER} /app /go
+
+USER ${LOCAL_USER}:${LOCAL_USER}
+
+EXPOSE 8080 9090 9443
+
+CMD ["air", "-c", ".air.toml"]

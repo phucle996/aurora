@@ -1,0 +1,52 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Root local runtime markers
+/recognized
+/trusted
+/suspicious
+/revoked
+
+# Node / frontend
+**/node_modules/
+**/dist/
+**/.next/
+**/.turbo/
+**/.cache/
+**/coverage/
+
+# Go build artifacts
+**/bin/
+**/tmp/
+**/*.out
+**/*.test
+
+# Test/runtime artifacts
+**/.air.toml.local
+**/test-results/
+**/playwright-report/
+**/.pytest_cache/
+
+# Docker local volumes/overrides
+**/.docker/
+**/docker-compose.override.yml
+
+# Build artifacts
+controlplane/tmp/

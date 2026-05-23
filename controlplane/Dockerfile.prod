@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.26-bookworm AS builder
+WORKDIR /src
+
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/controlplane ./cmd/server
+
+FROM debian:bookworm-slim AS runtime
+ARG LOCAL_USER=phucle
+ARG LOCAL_UID=1000
+ARG LOCAL_GID=1000
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
+    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --home-dir /var/lib/controlplane --shell /bin/bash ${LOCAL_USER} \
+    && mkdir -p /var/lib/controlplane /var/log/controlplane /etc/controlplane \
+    && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/controlplane /var/log/controlplane /etc/controlplane
+
+COPY --from=builder /out/controlplane /usr/local/bin/controlplane
+
+WORKDIR /var/lib/controlplane
+USER ${LOCAL_USER}:${LOCAL_USER}
+
+EXPOSE 8080 9090 9443
+
+ENTRYPOINT ["/usr/local/bin/controlplane"]

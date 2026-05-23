@@ -1,0 +1,190 @@
+package iamRepoImpl
+
+import (
+	"context"
+	"fmt"
+
+	"controlplane/internal/config"
+	iamEntity "controlplane/internal/iam/domain/entity"
+	iamRepoInterface "controlplane/internal/iam/domain/repo"
+	iamModel "controlplane/internal/iam/model"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type AuthRepository struct {
+	db     *pgxpool.Pool
+	schema string
+}
+
+func NewAuthRepository(
+	cfg *config.Config,
+	db *pgxpool.Pool,
+) iamRepoInterface.AuthRepository {
+	return &AuthRepository{
+		db:     db,
+		schema: cfg.SchemaSQL.IAM,
+	}
+}
+
+func (r *AuthRepository) CheckUserExist(ctx context.Context, username string, email string) (bool, error) {
+	query := fmt.Sprintf(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM %s.users
+			WHERE username = $1
+			   OR email = $2
+		)
+	`, r.schema)
+
+	var exists bool
+
+	if err := r.db.QueryRow(ctx, query, username, email).Scan(&exists); err != nil {
+		return false, fmt.Errorf("iam repo: check user exist: %w", err)
+	}
+
+	return exists, nil
+}
+
+func (r *AuthRepository) GetLoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+	query := fmt.Sprintf(`
+		SELECT 
+			u.id,
+			u.username,
+			u.email,
+			COALESCE(p.fullname,''), 
+			u.password_hash, 
+			u.status
+		FROM %s.users u
+		LEFT JOIN %s.user_profiles p 
+			ON p.user_id = u.id
+		WHERE u.username = $1
+		LIMIT 1
+	`, r.schema, r.schema)
+
+	var loginUser iamEntity.LoginUser
+	if err := r.db.QueryRow(ctx, query, username).Scan(
+		&loginUser.ID,
+		&loginUser.Username,
+		&loginUser.Email,
+		&loginUser.Fullname,
+		&loginUser.PasswordHash,
+		&loginUser.Status,
+	); err != nil {
+		return nil, fmt.Errorf("iam repo: get login user by username: %w", err)
+	}
+	return &loginUser, nil
+}
+
+func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("iam repo: begin register tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	userModel := iamModel.UserEntityToModel(user)
+
+	userQuery := fmt.Sprintf(`
+		INSERT INTO %s.users (
+			id,
+			username,
+			email,
+			phone,
+			password_hash,
+			status,
+			created_at,
+			updated_at
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8
+		)
+	`, r.schema)
+
+	if _, err := tx.Exec(
+		ctx,
+		userQuery,
+		userModel.ID,
+		userModel.Username,
+		userModel.Email,
+		userModel.Phone,
+		userModel.PasswordHash,
+		userModel.Status,
+		userModel.CreatedAt,
+		userModel.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("iam repo: insert user: %w", err)
+	}
+
+	profileModel := iamModel.UserProfileEntityToModel(profile)
+
+	profileQuery := fmt.Sprintf(`
+		INSERT INTO %s.user_profiles (
+			user_id,
+			fullname,
+			avatar_url,
+			bio,
+			locale,
+			timezone,
+			created_at,
+			updated_at
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8
+		)
+	`, r.schema)
+
+	if _, err := tx.Exec(
+		ctx,
+		profileQuery,
+		profileModel.UserID,
+		profileModel.Fullname,
+		profileModel.AvatarURL,
+		profileModel.Bio,
+		profileModel.Locale,
+		profileModel.Timezone,
+		profileModel.CreatedAt,
+		profileModel.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("iam repo: insert user profile: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("iam repo: commit register tx: %w", err)
+	}
+
+	return nil
+}
+
+func (r *AuthRepository) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
+	tokenModel := iamModel.RefreshTokenEntityToModel(token)
+	query := fmt.Sprintf(`
+		INSERT INTO %s.refresh_tokens (
+			id,
+			user_id,
+			device_id,
+			token_hash,
+			token_family_id,
+			tenant_id,
+			issued_at,
+			expires_at
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	`, r.schema)
+
+	if _, err := r.db.Exec(ctx, query,
+		tokenModel.ID,
+		tokenModel.UserID,
+		tokenModel.DeviceID,
+		tokenModel.TokenHash,
+		tokenModel.TokenFamilyID,
+		tokenModel.TenantID,
+		tokenModel.IssuedAt,
+		tokenModel.ExpiresAt,
+	); err != nil {
+		return fmt.Errorf("iam repo: create refresh token session: %w", err)
+	}
+
+	return nil
+}
