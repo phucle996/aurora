@@ -24,6 +24,16 @@ type stepUpCacheItem struct {
 	expiresAt time.Time
 }
 
+type AdminStepUp2FASecretLoader interface {
+	Load(ctx context.Context) (cipherText string, updatedAt time.Time, err error)
+}
+
+type AdminStepUp2FASecretLoaderFunc func(ctx context.Context) (cipherText string, updatedAt time.Time, err error)
+
+func (f AdminStepUp2FASecretLoaderFunc) Load(ctx context.Context) (cipherText string, updatedAt time.Time, err error) {
+	return f(ctx)
+}
+
 var (
 	stepUpCache = struct {
 		mu       sync.RWMutex
@@ -40,15 +50,13 @@ var (
 // Source of truth:
 // - app/module.go truyền vào function load admin 2FA settings.
 // - Middleware không import IAM repository/module, chỉ gọi contract function.
-func InitAdminCriticalStepUp2FA(
-	loadSecret func(ctx context.Context) (cipherText string, updatedAt time.Time, err error),
-) error {
-	if loadSecret == nil {
+func InitAdminCriticalStepUp2FA(loader AdminStepUp2FASecretLoader) error {
+	if loader == nil {
 		return errors.New("admin critical step-up: load 2fa secret is required")
 	}
 
 	stepUpState.mu.Lock()
-	stepUpState.loadSecret = loadSecret
+	stepUpState.loadSecret = loader.Load
 	stepUpState.mu.Unlock()
 	return nil
 }

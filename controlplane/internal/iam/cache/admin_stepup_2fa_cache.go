@@ -1,4 +1,4 @@
-package app
+package iamCache
 
 import (
 	"context"
@@ -19,13 +19,14 @@ type adminStepUp2FASettingsCacheItem struct {
 	UpdatedAtUnixNano int64  `json:"updated_at_unix_nano"`
 }
 
-// loadAdminStepUp2FASettings tối ưu source lookup cho critical step-up.
-//
-// Contract:
-// - DB/IAM repository vẫn là source of truth dài hạn.
-// - Redis chỉ cache ciphertext + updated_at ngắn hạn, không cache plaintext TOTP.
-// - Redis lỗi hoặc cache hỏng thì fallback DB để cache phụ không làm chết flow.
-func loadAdminStepUp2FASettings(
+type AdminStepUp2FASecretLoaderFunc func(ctx context.Context) (cipherText string, updatedAt time.Time, err error)
+
+func (f AdminStepUp2FASecretLoaderFunc) Load(ctx context.Context) (cipherText string, updatedAt time.Time, err error) {
+	return f(ctx)
+}
+
+// LoadAdminStepUp2FASettings optimizes settings lookup for critical step-up.
+func LoadAdminStepUp2FASettings(
 	ctx context.Context,
 	rds *goredis.Client,
 	loadFromSource func(ctx context.Context) (secretCiphertext string, updatedAt time.Time, err error),

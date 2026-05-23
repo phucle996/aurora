@@ -19,6 +19,7 @@ var (
 	ErrOneTimeTokenInvalidOrExpired     = errors.New("iam: one-time token invalid or expired")
 	ErrOneTimeTokenConsumeFailed        = errors.New("iam: one-time token consume failed")
 	ErrOneTimeTokenInvalidPurposeOrUser = errors.New("iam: one-time token invalid purpose or user")
+	ErrOneTimeTokenCacheUnavailable     = errors.New("iam cache: one-time token cache unavailable")
 
 	ErrAdminBootstrapNotAllowed         = errors.New("iam: admin bootstrap not allowed")
 	ErrAdminBootstrapPreconditionFailed = errors.New("iam: admin bootstrap precondition failed")

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	"controlplane/internal/iam/cache"
 	iamErrorx "controlplane/internal/iam/errorx"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/pkg/apperr"
@@ -150,7 +149,7 @@ func TestOneTimeTokenServiceCacheError(t *testing.T) {
 
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{
 		setFn: func(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
-			return iamCache.ErrOneTimeTokenCacheUnavailable
+			return iamErrorx.ErrOneTimeTokenCacheUnavailable
 		},
 	})
 

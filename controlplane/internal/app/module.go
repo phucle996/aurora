@@ -14,7 +14,7 @@ import (
 	"controlplane/internal/iam"
 	iamCache "controlplane/internal/iam/cache"
 	iamRepoImpl "controlplane/internal/iam/repository"
-	"controlplane/internal/ratelimit"
+	"controlplane/internal/security/ratelimit"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -146,15 +146,16 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	); err != nil {
 		return fmt.Errorf("app: init admin critical signature middleware: %w", err)
 	}
-	if err := middleware.InitAdminCriticalStepUp2FA(func(ctx context.Context) (string, time.Time, error) {
-		return loadAdminStepUp2FASettings(ctx, rds, func(ctx context.Context) (string, time.Time, error) {
+	stepUpLoader := iamCache.AdminStepUp2FASecretLoaderFunc(func(ctx context.Context) (string, time.Time, error) {
+		return iamCache.LoadAdminStepUp2FASettings(ctx, rds, func(ctx context.Context) (string, time.Time, error) {
 			settings, err := adminRepo.GetAdmin2FASettings(ctx)
 			if err != nil || settings == nil {
 				return "", time.Time{}, err
 			}
 			return settings.SecretCiphertext, settings.UpdatedAt, nil
 		})
-	}); err != nil {
+	})
+	if err := middleware.InitAdminCriticalStepUp2FA(stepUpLoader); err != nil {
 		return fmt.Errorf("app: init admin critical step-up middleware: %w", err)
 	}
 	return nil

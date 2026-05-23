@@ -10,8 +10,8 @@ import (
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
-	"controlplane/internal/ratelimit"
 	"controlplane/internal/security"
+	"controlplane/internal/security/ratelimit"
 	"errors"
 	"time"
 

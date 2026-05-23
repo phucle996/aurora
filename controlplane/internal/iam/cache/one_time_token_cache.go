@@ -2,16 +2,12 @@ package iamCache
 
 import (
 	"context"
-	"errors"
+	iamErrorx "controlplane/internal/iam/errorx"
 	"fmt"
 	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-)
-
-var (
-	ErrOneTimeTokenCacheUnavailable = errors.New("iam cache: one-time token cache unavailable")
 )
 
 type OneTimeTokenCache interface {
@@ -22,11 +18,11 @@ type OneTimeTokenCache interface {
 type noopOneTimeTokenCache struct{}
 
 func (noopOneTimeTokenCache) SetHashedToken(context.Context, string, string, string, time.Duration) error {
-	return ErrOneTimeTokenCacheUnavailable
+	return iamErrorx.ErrOneTimeTokenCacheUnavailable
 }
 
 func (noopOneTimeTokenCache) ConsumeHashedToken(context.Context, string, string, string) (bool, error) {
-	return false, ErrOneTimeTokenCacheUnavailable
+	return false, iamErrorx.ErrOneTimeTokenCacheUnavailable
 }
 
 type redisOneTimeTokenCache struct {

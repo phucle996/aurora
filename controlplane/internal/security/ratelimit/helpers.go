@@ -1,16 +1,10 @@
 package ratelimit
 
 import (
+	"controlplane/pkg/constant"
 	"math"
 	"strconv"
 	"time"
-)
-
-const (
-	HeaderRateLimitLimit     = "X-RateLimit-Limit"
-	HeaderRateLimitRemaining = "X-RateLimit-Remaining"
-	HeaderRateLimitReset     = "X-RateLimit-Reset"
-	HeaderRetryAfter         = "Retry-After"
 )
 
 // TokensFloor converts remaining tokens to a non-negative integer.
@@ -33,14 +27,14 @@ func RetryAfterSeconds(d time.Duration) int {
 // Reset is expressed as seconds until the bucket is full again.
 func RateLimitHeaders(res Result) map[string]string {
 	headers := map[string]string{
-		HeaderRateLimitLimit:     strconv.FormatInt(res.Limit, 10),
-		HeaderRateLimitRemaining: strconv.FormatInt(TokensFloor(res.Remaining), 10),
-		HeaderRateLimitReset:     strconv.Itoa(RetryAfterSeconds(res.ResetAfter)),
+		constant.HeaderRateLimitLimit:     strconv.FormatInt(res.Limit, 10),
+		constant.HeaderRateLimitRemaining: strconv.FormatInt(TokensFloor(res.Remaining), 10),
+		constant.HeaderRateLimitReset:     strconv.Itoa(RetryAfterSeconds(res.ResetAfter)),
 	}
 	if !res.Allowed {
 		retry := RetryAfterSeconds(res.RetryAfter)
 		if retry > 0 {
-			headers[HeaderRetryAfter] = strconv.Itoa(retry)
+			headers[constant.HeaderRetryAfter] = strconv.Itoa(retry)
 		}
 	}
 	return headers

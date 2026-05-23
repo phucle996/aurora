@@ -1,9 +1,11 @@
-package app
+package cache_test
 
 import (
 	"context"
 	"testing"
 	"time"
+
+	iamCache "controlplane/internal/iam/cache"
 
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
@@ -21,7 +23,7 @@ func TestLoadAdminStepUp2FASettingsCachesSourceInRedis(t *testing.T) {
 		return "cipher-from-db", updatedAt, nil
 	}
 
-	firstCiphertext, firstUpdatedAt, err := loadAdminStepUp2FASettings(context.Background(), rds, loadFromSource)
+	firstCiphertext, firstUpdatedAt, err := iamCache.LoadAdminStepUp2FASettings(context.Background(), rds, loadFromSource)
 	if err != nil {
 		t.Fatalf("first load: %v", err)
 	}
@@ -29,7 +31,7 @@ func TestLoadAdminStepUp2FASettingsCachesSourceInRedis(t *testing.T) {
 		t.Fatalf("first load = (%q, %s), want (%q, %s)", firstCiphertext, firstUpdatedAt, "cipher-from-db", updatedAt)
 	}
 
-	secondCiphertext, secondUpdatedAt, err := loadAdminStepUp2FASettings(context.Background(), rds, loadFromSource)
+	secondCiphertext, secondUpdatedAt, err := iamCache.LoadAdminStepUp2FASettings(context.Background(), rds, loadFromSource)
 	if err != nil {
 		t.Fatalf("second load: %v", err)
 	}
@@ -46,7 +48,7 @@ func TestLoadAdminStepUp2FASettingsFallsBackWhenRedisUnavailable(t *testing.T) {
 	t.Cleanup(func() { _ = rds.Close() })
 
 	updatedAt := time.Now().UTC()
-	ciphertext, gotUpdatedAt, err := loadAdminStepUp2FASettings(context.Background(), rds, func(context.Context) (string, time.Time, error) {
+	ciphertext, gotUpdatedAt, err := iamCache.LoadAdminStepUp2FASettings(context.Background(), rds, func(context.Context) (string, time.Time, error) {
 		return "cipher-from-db", updatedAt, nil
 	})
 	if err != nil {

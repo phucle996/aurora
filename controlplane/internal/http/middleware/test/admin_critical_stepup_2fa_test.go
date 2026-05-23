@@ -20,9 +20,9 @@ func TestAdminCriticalStepUp2FA(t *testing.T) {
 	restoreRuntimeMasterKey(t)
 
 	totpSecret := newEncryptedTOTPSecret(t)
-	if err := middleware.InitAdminCriticalStepUp2FA(func(context.Context) (string, time.Time, error) {
+	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
 		return totpSecret.ciphertext, totpSecret.updatedAt, nil
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -61,9 +61,9 @@ func TestAdminCriticalStepUp2FAMissingSecretUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	restoreRuntimeMasterKey(t)
 
-	if err := middleware.InitAdminCriticalStepUp2FA(func(context.Context) (string, time.Time, error) {
+	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
 		return "", time.Time{}, nil
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -90,10 +90,10 @@ func TestAdminCriticalStepUp2FARejectsInvalidCodeBeforeLoadingSecret(t *testing.
 	restoreRuntimeMasterKey(t)
 
 	loadCalls := 0
-	if err := middleware.InitAdminCriticalStepUp2FA(func(context.Context) (string, time.Time, error) {
+	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
 		loadCalls++
 		return "should-not-load", time.Now().UTC(), nil
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -126,9 +126,9 @@ func TestLoadStepUpTOTPSecretDoesNotUseStaleCacheWhenCiphertextChanges(t *testin
 	updatedAt := time.Now().UTC()
 
 	currentCiphertext := first.ciphertext
-	if err := middleware.InitAdminCriticalStepUp2FA(func(context.Context) (string, time.Time, error) {
+	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
 		return currentCiphertext, updatedAt, nil
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
