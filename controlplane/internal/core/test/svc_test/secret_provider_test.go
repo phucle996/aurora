@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
-	coreSvcImpl "controlplane/internal/core/service"
 )
 
 type fakeReadService struct {
@@ -26,7 +26,7 @@ func (f *fakeReadService) GetRuntimeSecretFamily(ctx context.Context, familyCode
 
 func TestCacheAsideSecretProviderHitsServiceOnceThenUsesCache(t *testing.T) {
 	readSvc := &fakeReadService{result: &coreEntity.RuntimeSecretFamily{Family: coreEntity.SecretFamily{ID: "family-1", Code: "access_token"}, Primary: coreEntity.RuntimeSecret{VersionID: "ver-1", FamilyCode: "access_token", Secret: "secret-1", IsPrimary: true}, Candidates: []coreEntity.RuntimeSecret{{VersionID: "ver-1", FamilyCode: "access_token", Secret: "secret-1", IsPrimary: true}}, LoadedAt: time.Now().UTC()}}
-	provider := coreSvcImpl.NewCacheAsideSecretProviderWithTTL(readSvc, time.Minute)
+	provider := coreCache.NewCacheAsideSecretProviderWithTTL(readSvc, time.Minute)
 	if _, err := provider.GetPrimary(context.Background(), "access_token"); err != nil {
 		t.Fatalf("first GetPrimary() error = %v", err)
 	}
@@ -40,7 +40,7 @@ func TestCacheAsideSecretProviderHitsServiceOnceThenUsesCache(t *testing.T) {
 
 func TestCacheAsideSecretProviderInvalidatesThenReloads(t *testing.T) {
 	readSvc := &fakeReadService{result: &coreEntity.RuntimeSecretFamily{Family: coreEntity.SecretFamily{ID: "family-1", Code: "refresh_token"}, Primary: coreEntity.RuntimeSecret{VersionID: "ver-1", FamilyCode: "refresh_token", Secret: "secret-1", IsPrimary: true}, Candidates: []coreEntity.RuntimeSecret{{VersionID: "ver-1", FamilyCode: "refresh_token", Secret: "secret-1", IsPrimary: true}}, LoadedAt: time.Now().UTC()}}
-	provider := coreSvcImpl.NewCacheAsideSecretProviderWithTTL(readSvc, time.Minute)
+	provider := coreCache.NewCacheAsideSecretProviderWithTTL(readSvc, time.Minute)
 	if _, err := provider.GetPrimary(context.Background(), "refresh_token"); err != nil {
 		t.Fatalf("first GetPrimary() error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestCacheAsideSecretProviderInvalidatesThenReloads(t *testing.T) {
 
 func TestCacheAsideSecretProviderTTLExpiryReloads(t *testing.T) {
 	readSvc := &fakeReadService{result: &coreEntity.RuntimeSecretFamily{Family: coreEntity.SecretFamily{ID: "family-1", Code: "access_token"}, Primary: coreEntity.RuntimeSecret{VersionID: "ver-1", FamilyCode: "access_token", Secret: "secret-1", IsPrimary: true}, Candidates: []coreEntity.RuntimeSecret{{VersionID: "ver-1", FamilyCode: "access_token", Secret: "secret-1", IsPrimary: true}}, LoadedAt: time.Now().UTC()}}
-	provider := coreSvcImpl.NewCacheAsideSecretProviderWithTTL(readSvc, time.Millisecond)
+	provider := coreCache.NewCacheAsideSecretProviderWithTTL(readSvc, time.Millisecond)
 	if _, err := provider.GetPrimary(context.Background(), "access_token"); err != nil {
 		t.Fatalf("first GetPrimary() error = %v", err)
 	}

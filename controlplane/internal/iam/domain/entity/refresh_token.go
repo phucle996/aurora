@@ -41,7 +41,6 @@ type RefreshTokenResult struct {
 	RefreshToken     string
 	RuntimeDeviceID  string
 	DeviceSecret     string
-	TrackingID       string
 	TrackedDeviceID  string
 	AccessExpiresAt  time.Time
 	RefreshExpiresAt time.Time

@@ -22,41 +22,36 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/api/v1/auth/refresh",
 		module.RefreshTokenHandler.Refresh,
 	)
+	userAccessGuard := middleware.Access()
+
 	router.GET("/api/v1/auth/session",
-		middleware.Access(module.secretProvider, module.rds),
+		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_auth_session_postauth", 40, 40, time.Minute),
-		middleware.RequireUserDeviceRuntime(module.userDeviceRuntime, 10*time.Second, middleware.UserDeviceCookieScope{Domain: module.cfg.App.PublicDomain, Path: "/"}),
 		module.AuthHandler.Session,
 	)
 	router.POST("/api/v1/auth/logout",
-		middleware.Access(module.secretProvider, module.rds),
+		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_auth_logout_postauth", 20, 20, time.Minute),
-		middleware.RequireUserDeviceRuntime(module.userDeviceRuntime, 10*time.Second, middleware.UserDeviceCookieScope{Domain: module.cfg.App.PublicDomain, Path: "/"}),
 		module.LogoutHandler.Logout,
 	)
-	userDeviceGuard := middleware.RequireUserDeviceRuntime(module.userDeviceRuntime, 10*time.Second, middleware.UserDeviceCookieScope{Domain: module.cfg.App.PublicDomain, Path: "/"})
 	router.GET("/api/v1/me/devices",
-		middleware.Access(module.secretProvider, module.rds),
+		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_me_devices_list_postauth", 60, 60, time.Minute),
-		userDeviceGuard,
 		module.DeviceHandler.ListMyDevices,
 	)
 	router.POST("/api/v1/me/devices/:device_id/revoke",
-		middleware.Access(module.secretProvider, module.rds),
+		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_me_devices_revoke_postauth", 20, 20, time.Minute),
-		userDeviceGuard,
 		module.DeviceHandler.RevokeMyDevice,
 	)
 	router.POST("/api/v1/me/devices/logout-others",
-		middleware.Access(module.secretProvider, module.rds),
+		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_me_devices_logout_others_postauth", 15, 15, time.Minute),
-		userDeviceGuard,
 		module.DeviceHandler.LogoutOtherDevices,
 	)
 	router.POST("/api/v1/me/devices/logout-all",
-		middleware.Access(module.secretProvider, module.rds),
+		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_me_devices_logout_all_postauth", 10, 10, time.Minute),
-		userDeviceGuard,
 		module.DeviceHandler.LogoutAllDevices,
 	)
 

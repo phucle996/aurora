@@ -92,7 +92,7 @@ func TestEnsureInitialSecretVersionCreatesWhenFamilyHasNoUsableVersion(t *testin
 	repo := &fakeBootstrapRepo{family: &coreEntity.SecretFamily{ID: "family-1", Code: "access_token", Name: "Access Token"}}
 	security.SetRuntimeMasterKey([]byte("12345678901234567890123456789012"))
 	defer security.SetRuntimeMasterKey(nil)
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	result, err := serviceValue.EnsureInitialSecretVersion(context.Background(), coreEntity.BootstrapSecretFamily{Code: "access_token", Name: "Access Token"})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestEnsureInitialSecretVersionCreatesWhenFamilyHasNoUsableVersion(t *testin
 
 func TestEnsureInitialSecretVersionNoopsWhenUsableVersionExists(t *testing.T) {
 	repo := &fakeBootstrapRepo{family: &coreEntity.SecretFamily{ID: "family-1", Code: "access_token", Name: "Access Token"}, versions: []coreEntity.SecretVersion{{ID: "ver-1", FamilyID: "family-1", Version: 1, Status: coreEntity.SecretStatusActive, IsPrimary: true}}}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 	result, err := serviceValue.EnsureInitialSecretVersion(context.Background(), coreEntity.BootstrapSecretFamily{Code: "access_token", Name: "Access Token"})
 	if err != nil {
 		t.Fatalf("EnsureInitialSecretVersion() error = %v", err)
@@ -132,7 +132,7 @@ func TestEnsureInitialSecretVersionNoopsWhenUsableVersionExists(t *testing.T) {
 
 func TestEnsureInitialSecretVersionRejectsMoreThanTwoVersions(t *testing.T) {
 	repo := &fakeBootstrapRepo{family: &coreEntity.SecretFamily{ID: "family-1", Code: "access_token", Name: "Access Token"}, versions: []coreEntity.SecretVersion{{ID: "ver-1"}, {ID: "ver-2"}, {ID: "ver-3"}}}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 	_, err := serviceValue.EnsureInitialSecretVersion(context.Background(), coreEntity.BootstrapSecretFamily{Code: "access_token", Name: "Access Token"})
 	if !errors.Is(err, coreerrorx.ErrInvalidVersionSet) {
 		t.Fatalf("EnsureInitialSecretVersion() error = %v, want %v", err, coreerrorx.ErrInvalidVersionSet)

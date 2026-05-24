@@ -46,16 +46,16 @@ func (h *LogoutHandler) Logout(c *gin.Context) {
 	defer cancel()
 
 	userID := strings.TrimSpace(middleware.GetUserID(c))
-	trackingID := strings.TrimSpace(middleware.GetTrackingID(c))
+	runtimeDeviceID := strings.TrimSpace(middleware.GetRuntimeDeviceID(c))
 
-	// Cho phép logout dù thiếu tracking_id (best-effort) miễn là user_id còn hợp lệ.
+	// Cho phép logout dù thiếu runtime_device_id (best-effort) miễn là user_id còn hợp lệ.
 	if userID == "" {
 		clearAuthCookies(c, h.cfg)
 		apires.RespondUnauthorized(c, "unauthorized")
 		return
 	}
 
-	if err := h.authSvc.Logout(ctx, userID, trackingID); err != nil {
+	if err := h.authSvc.Logout(ctx, userID, runtimeDeviceID); err != nil {
 		logger.HandlerError(c, op, err)
 		// Vẫn clear cookies để session phía client không kẹt.
 		clearAuthCookies(c, h.cfg)

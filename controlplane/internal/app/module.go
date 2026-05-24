@@ -9,11 +9,14 @@ import (
 
 	"controlplane/internal/config"
 	"controlplane/internal/core"
+	coreSvcImpl "controlplane/internal/core/service"
 	healthhandler "controlplane/internal/http/handler"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/iam"
 	iamCache "controlplane/internal/iam/cache"
+	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamRepoImpl "controlplane/internal/iam/repository"
+	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,84 +30,114 @@ type Modules struct {
 	Core *core.Module
 	// IAM là module authn/authz của controlplane.
 	IAM *iam.Module
+	probeCancel context.CancelFunc
 }
 
-// NewGlobalModules khởi tạo toàn bộ global modules và health dependencies.
+// NewGlobalModules là điểm dựng module graph ở app-layer và là nơi fail-fast
+// chính cho bootstrap cross-module.
 //
-// Trách nhiệm:
-// - tạo Health handler,
-// - khởi động time-drift probe read-only (global observability concern),
-// - khởi tạo Core module,
-// - khởi tạo IAM module (phụ thuộc SecurityProvider của Core),
-// - mark health ready khi module graph đã dựng xong.
+// CONTRACT:
+// - Dựng theo thứ tự: Core -> security adapter -> IAM -> middleware wiring.
+// - Chỉ `health.MarkReady()` khi toàn bộ graph dựng thành công.
+// - Bất kỳ lỗi ở dependency bắt buộc/cross-module phải return error ngay để
+//   caller (NewApplication/main) quyết định dừng app.
 //
-// Lưu ý:
-//   - TimeSync probe ở đây chỉ cập nhật tín hiệu drift cho health/metrics,
-//     không can thiệp chỉnh clock hệ điều hành.
+// BOUNDARY:
+// - Hàm này chỉ làm wiring + lifecycle bootstrap giữa các module.
+// - Không chứa business policy của từng module (IAM/Core/domain).
+// - Không tự degrade âm thầm các dependency bắt buộc.
+//
+// NOTES:
+// - Time drift probe ở đây là read-only observability concern.
+// - Security adapter được dựng tại app-layer để giảm magic trong core module.
+// - Đây là nơi tập trung nhất quán fail-fast cho lỗi liên quan nhiều module.
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 ) (*Modules, error) {
+	// 1) Global health surface.
 	health := healthhandler.NewHealthHandler(db, rds)
 
-	// Global time drift probe (read-only):
-	// - probe loop đọc drift state,
-	// - ticker loop đẩy snapshot vào health surface.
+	// 2) Time drift probe read-only: chỉ ghi tín hiệu health/metrics, không chỉnh clock OS.
 	probe := NewTimeSyncProbe()
-	go probe.Start(context.Background())
+	probeCtx, probeCancel := context.WithCancel(context.Background())
+	go probe.Start(probeCtx)
 
 	go func() {
 		tk := time.NewTicker(30 * time.Second)
 		defer tk.Stop()
 		for {
-			s := probe.Snapshot()
-			health.SetTimeDrift(s.Seconds, string(s.State))
-			<-tk.C
+			select {
+			case <-probeCtx.Done():
+				return
+			case <-tk.C:
+				s := probe.Snapshot()
+				health.SetTimeDrift(s.Seconds, string(s.State))
+			}
 		}
 	}()
 
+	// 3) Core module bootstrap: source runtime provider cho secrets/security.
 	coreModule, err := core.NewModule(cfg, db, rds)
 	if err != nil {
 		return nil, fmt.Errorf("app: init core module: %w", err)
 	}
+	if coreModule == nil || coreModule.RuntimeSecretProvider == nil {
+		return nil, errors.New("app: init core module: runtime secret provider is required")
+	}
+	// 4) Adapter runtime provider -> security provider để cấp cho IAM/middlewares.
+	securityProvider := coreSvcImpl.NewSecuritySecretProvider(coreModule.RuntimeSecretProvider)
 
-	iamModule, err := iam.NewModule(cfg, db, rds, rateLimiter, coreModule.SecurityProvider)
+	// 5) IAM module bootstrap phụ thuộc security provider từ core runtime.
+	iamModule, err := iam.NewModule(cfg, db, rds, rateLimiter, securityProvider)
 	if err != nil {
 		return nil, fmt.Errorf("app: init iam module: %w", err)
 	}
 
-	if err := initMiddlewares(cfg, db, coreModule, rds); err != nil {
+	// 6) Global middleware bootstrap (cross-module wiring).
+	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rds); err != nil {
 		return nil, err
 	}
 
+	// 7) Chỉ mark ready khi toàn bộ module graph đã dựng xong.
 	health.MarkReady()
 
 	return &Modules{
 		Health: health,
 		Core:   coreModule,
 		IAM:    iamModule,
+		probeCancel: probeCancel,
 	}, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, rds *goredis.Client) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}
 	if db == nil {
 		return errors.New("app: init middleware: database is required")
 	}
-	if coreModule == nil || coreModule.SecurityProvider == nil {
-		return errors.New("app: init middleware: core security provider is required")
+	if coreModule == nil || coreModule.RuntimeSecretProvider == nil {
+		return errors.New("app: init middleware: core runtime secret provider is required")
+	}
+	if securityProvider == nil {
+		return errors.New("app: init middleware: security provider is required")
 	}
 	if rds == nil {
 		return errors.New("app: init middleware: redis client is required")
 	}
 	middleware.InitAdminCIDR(cfg.Security.AdminAllowedCIDRs)
+	middleware.InitAccess(
+		securityProvider,
+		rds,
+		iamCache.NewUserDeviceRuntimeCache(rds),
+		10*time.Second,
+	)
 	adminDeviceRuntime := iamCache.NewAdminDeviceRuntimeCache(rds)
 	adminRotateTrigger := iamCache.NewAdminKeyRotationTriggerCache(rds)
 	if err := middleware.InitAdminAPIKeyAuth(
-		coreModule.SecurityProvider,
+		securityProvider,
 		adminDeviceRuntime.VerifyDeviceSecret,
 		adminRotateTrigger.SetRotationRequired,
 	); err != nil {
@@ -112,34 +145,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	}
 	adminRepo := iamRepoImpl.NewAdminAPIKeyRepository(cfg, db)
 	if err := middleware.InitAdminCriticalSignature(
-		func(ctx context.Context, deviceID string) (string, error) {
-			// deviceID ở đây là runtime device id trong admin cookie/JWT.
-			// Public key source-of-truth cho session nằm trong Redis runtime để
-			// critical action không phải query DB trên từng request.
-			runtimeRecord, err := adminDeviceRuntime.GetDeviceRuntime(ctx, deviceID)
-			if err != nil {
-				return "", err
-			}
-			if runtimeRecord == nil {
-				return "", nil
-			}
-			if pubKey := strings.TrimSpace(runtimeRecord.DevicePublicKey); pubKey != "" {
-				return pubKey, nil
-			}
-
-			// Backward compatibility cho runtime record cũ chưa có device_public_key:
-			// dùng tracked admin_devices.id để fallback DB trong phần còn lại của
-			// session hiện tại.
-			trackedDeviceID := strings.TrimSpace(runtimeRecord.TrackedDeviceID)
-			if trackedDeviceID == "" {
-				return "", nil
-			}
-			device, err := adminRepo.GetAdminDeviceByID(ctx, trackedDeviceID)
-			if err != nil || device == nil {
-				return "", err
-			}
-			return device.PublicKey, nil
-		},
+		buildAdminPublicKeyResolver(adminDeviceRuntime, adminRepo),
 		rds,
 		time.Minute,
 		2*time.Minute,
@@ -171,6 +177,10 @@ func (m *Modules) Stop() {
 	if m == nil {
 		return
 	}
+	if m.probeCancel != nil {
+		m.probeCancel()
+		m.probeCancel = nil
+	}
 	if m.Health != nil {
 		m.Health.MarkNotReady()
 	}
@@ -179,5 +189,29 @@ func (m *Modules) Stop() {
 	}
 	if m.Core != nil {
 		m.Core.Stop()
+	}
+}
+
+func buildAdminPublicKeyResolver(adminDeviceRuntime iamCache.AdminDeviceRuntimeCache, adminRepo iamRepoInterface.AdminAPIKeyRepository) func(ctx context.Context, deviceID string) (string, error) {
+	return func(ctx context.Context, deviceID string) (string, error) {
+		runtimeRecord, err := adminDeviceRuntime.GetDeviceRuntime(ctx, deviceID)
+		if err != nil {
+			return "", err
+		}
+		if runtimeRecord == nil {
+			return "", nil
+		}
+		if pubKey := strings.TrimSpace(runtimeRecord.DevicePublicKey); pubKey != "" {
+			return pubKey, nil
+		}
+		trackedDeviceID := strings.TrimSpace(runtimeRecord.TrackedDeviceID)
+		if trackedDeviceID == "" {
+			return "", nil
+		}
+		device, err := adminRepo.GetAdminDeviceByID(ctx, trackedDeviceID)
+		if err != nil || device == nil {
+			return "", err
+		}
+		return device.PublicKey, nil
 	}
 }

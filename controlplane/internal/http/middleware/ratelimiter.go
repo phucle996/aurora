@@ -18,7 +18,7 @@ import (
 
 const (
 	rateLimitScopeIP            = "ip"
-	rateLimitScopeIPDevice      = "ip_device"
+	rateLimitScopeIPTracking    = "ip_tracking"
 	rateLimitScopeIPUser        = "ip_user"
 	rateLimitResultAllow        = "allow"
 	rateLimitResultBlocked      = "blocked"
@@ -260,23 +260,23 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, name string, capacity, refill 
 	return func(c *gin.Context) {
 		routePattern := routePatternOf(c)
 		if shouldBypassRateLimit(routePattern) {
-			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIPDevice, rateLimitResultBypass).Inc()
+			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIPTracking, rateLimitResultBypass).Inc()
 			c.Next()
 			return
 		}
 
 		if limiter == nil || name == "" || capacity <= 0 || refill <= 0 || period <= 0 {
-			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIPDevice, rateLimitResultAllow).Inc()
+			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIPTracking, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
 
 		clientIP := clientIdentity(c)
-		deviceID := strings.TrimSpace(GetRuntimeDeviceID(c))
+		runtimeDeviceID := strings.TrimSpace(GetRuntimeDeviceID(c))
 		userID := strings.TrimSpace(GetUserID(c))
 
-		ruleScope := rateLimitScopeIPDevice
-		key := ratelimit.KeyIPDevice(name, clientIP, deviceID)
+		ruleScope := rateLimitScopeIPTracking
+		key := ratelimit.Key(name, rateLimitScopeIPTracking, strings.TrimSpace(clientIP)+":"+runtimeDeviceID)
 		if key == "" {
 			ruleScope = rateLimitScopeIPUser
 			key = ratelimit.KeyIPUser(name, clientIP, userID)

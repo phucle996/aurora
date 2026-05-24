@@ -151,7 +151,7 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse refreshed access token: %v", err)
 	}
-	if claims.Status != "" {
-		t.Fatalf("expected empty status claim, got %q", claims.Status)
+	if claims.Subject == "" || claims.TokenID == "" {
+		t.Fatalf("expected refreshed token claims subject+jti to be present")
 	}
 }

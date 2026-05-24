@@ -3,7 +3,6 @@ package iamSvcImpl
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"controlplane/internal/config"
@@ -107,31 +106,16 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
 		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshTokenIssue, secretErr)
 	}
-	trackingID := ""
-	if s.deviceRuntime != nil {
-		if existing, _ := s.deviceRuntime.ScanByUser(ctx, user.ID.String(), 1); len(existing) > 0 {
-			for _, candidate := range existing {
-				if strings.TrimSpace(candidate.TrackedDeviceRef) == trackedDeviceID.String() {
-					trackingID = candidate.TrackingID
-					break
-				}
-			}
-		}
-	}
-	if trackingID == "" {
-		trackingID = uuid.NewString()
-	}
 	accessExpiresAt := now.Add(s.cfg.Security.AccessSecretTTL)
 	accessToken, accessErr := security.Sign(ctx, s.secrets, security.SecretFamilyAccess, security.Claims{
-		Subject:    user.ID.String(),
-		Role:       "",
-		Level:      0,
-		DeviceID:   runtimeDeviceID,
-		TrackingID: trackingID,
-		TokenID:    accessJTI.String(),
-		TokenUse:   "access",
-		IssuedAt:   now.Unix(),
-		ExpiresAt:  accessExpiresAt.Unix(),
+		Subject:   user.ID.String(),
+		Role:      "",
+		Level:     0,
+		DeviceID:  runtimeDeviceID,
+		TokenID:   accessJTI.String(),
+		TokenUse:  "access",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: accessExpiresAt.Unix(),
 	})
 	if accessErr != nil {
 		refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
@@ -178,27 +162,19 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 			runtimeTTL = 15 * time.Minute
 		}
 		newSecretHash := security.HashTokenSHA256(rawNextRefreshToken[:0] + rawDeviceSecret)
-		ok, rotateRtErr := s.deviceRuntime.RotateFragmentForJTI(ctx, trackingID, "", runtimeDeviceID, newSecretHash, accessJTI.String(), runtimeTTL, nil, nil)
-		if rotateRtErr != nil {
-			refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
-			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, rotateRtErr)
+		runtime := iamCache.UserDeviceRuntime{
+			DeviceID:         runtimeDeviceID,
+			DeviceSecretHash: newSecretHash,
+			CurrentJTI:       accessJTI.String(),
+			TrackedDeviceID:  trackedDeviceID.String(),
+			UserID:           user.ID.String(),
+			Status:           "online",
+			Version:          1,
+			LastSeenAt:       now.Unix(),
 		}
-		if !ok {
-			runtime := iamCache.UserDeviceRuntime{
-				TrackingID:       trackingID,
-				DeviceID:         runtimeDeviceID,
-				DeviceSecretHash: newSecretHash,
-				CurrentJTI:       accessJTI.String(),
-				TrackedDeviceRef: trackedDeviceID.String(),
-				UserID:           user.ID.String(),
-				Status:           "online",
-				Version:          1,
-				LastSeenAt:       now.Unix(),
-			}
-			if setErr := s.deviceRuntime.SetDeviceRuntime(ctx, runtime, runtimeTTL); setErr != nil {
-				refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
-				return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, setErr)
-			}
+		if setErr := s.deviceRuntime.SetDeviceRuntime(ctx, runtime, runtimeTTL); setErr != nil {
+			refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
+			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, setErr)
 		}
 	}
 
@@ -207,7 +183,6 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		RefreshToken:     rawNextRefreshToken,
 		RuntimeDeviceID:  runtimeDeviceID,
 		DeviceSecret:     rawDeviceSecret,
-		TrackingID:       trackingID,
 		TrackedDeviceID:  trackedDeviceID.String(),
 		AccessExpiresAt:  accessExpiresAt,
 		RefreshExpiresAt: nextRefreshExpiresAt,

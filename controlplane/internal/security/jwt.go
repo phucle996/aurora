@@ -48,21 +48,19 @@ type Claims struct {
 	Subject  string `json:"sub"`
 	Role     string `json:"role,omitempty"`
 	Level    int    `json:"lvl"` // security level: 0=highest, higher=lower
-	Status   string `json:"status,omitempty"`
 	TenantID string `json:"tenant_id,omitempty"`
 	// DeviceID is the runtime device fragment ID carried by cookie device_id.
 	// It is not the persistent iam.devices.id value.
-	DeviceID   string `json:"device_id,omitempty"`
-	TrackingID string `json:"tracking_id,omitempty"`
-	TokenID         string `json:"jti,omitempty"`
-	Issuer          string `json:"iss,omitempty"`
-	Audience        string `json:"aud,omitempty"`
-	ClientID        string `json:"client_id,omitempty"`
-	Scope           string `json:"scope,omitempty"`
-	TokenUse        string `json:"token_use,omitempty"`
-	IssuedAt        int64  `json:"iat"`
-	NotBefore       int64  `json:"nbf,omitempty"`
-	ExpiresAt       int64  `json:"exp"`
+	DeviceID  string `json:"device_id,omitempty"`
+	TokenID   string `json:"jti,omitempty"`
+	Issuer    string `json:"iss,omitempty"`
+	Audience  string `json:"aud,omitempty"`
+	ClientID  string `json:"client_id,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	TokenUse  string `json:"token_use,omitempty"`
+	IssuedAt  int64  `json:"iat"`
+	NotBefore int64  `json:"nbf,omitempty"`
+	ExpiresAt int64  `json:"exp"`
 }
 
 type jwtHeader struct {
@@ -210,7 +208,6 @@ func ExtractBearerToken(header string) (string, bool) {
 func normalizeClaims(claims Claims) Claims {
 	claims.Subject = strings.TrimSpace(claims.Subject)
 	claims.Role = strings.TrimSpace(claims.Role)
-	claims.Status = strings.TrimSpace(claims.Status)
 	claims.DeviceID = strings.TrimSpace(claims.DeviceID)
 	claims.TokenID = strings.TrimSpace(claims.TokenID)
 	claims.Issuer = strings.TrimSpace(claims.Issuer)

@@ -13,6 +13,7 @@ var (
 	ErrVerificationRequired      = errors.New("iam: verification required")
 	ErrAuthenticationUnavailable = errors.New("iam: authentication unavailable")
 	ErrInvalidSession            = errors.New("iam: invalid session")
+	ErrUserDeviceRuntimeInvalid  = errors.New("iam cache: invalid user device runtime")
 
 	// One-time token flow errors.
 	ErrOneTimeTokenIssueFailed          = errors.New("iam: one-time token issue failed")

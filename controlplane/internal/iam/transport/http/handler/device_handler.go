@@ -2,10 +2,10 @@ package iamHandler
 
 import (
 	"context"
-	"strings"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"controlplane/internal/http/middleware"
@@ -50,10 +50,10 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 	presentationItems := make([]gin.H, 0, len(result.Devices))
 	for _, item := range result.Devices {
 		presentationItems = append(presentationItems, gin.H{
-			"device": item.Device,
-			"is_online": item.IsOnline,
-			"last_seen_at": item.LastSeenAt,
-			"last_seen_ip": item.LastIP,
+			"device":               item.Device,
+			"is_online":            item.IsOnline,
+			"last_seen_at":         item.LastSeenAt,
+			"last_seen_ip":         item.LastIP,
 			"last_seen_user_agent": item.LastUA,
 		})
 	}

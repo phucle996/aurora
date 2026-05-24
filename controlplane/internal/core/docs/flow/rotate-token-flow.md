@@ -23,7 +23,9 @@ Current policy is based on token TTL.
 
 Rule:
 - if `ttl < 24h` -> `rotation interval = 24h`
-- if `ttl >= 24h` -> `rotation interval = ttl * 2`
+- policy constants:
+  - `min_rotation_interval = 24h`
+  - `rotation_interval = ttl * 2` (khi `ttl >= 24h`) để giữ overlap tối đa 2 version
 
 This interval is the rotation cadence policy.
 
@@ -209,4 +211,3 @@ Current implementation does not yet include:
 - external KMS-backed material generation
 - distributed event bus for invalidation
 - operator-facing API for manual rotation
-

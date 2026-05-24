@@ -7,11 +7,23 @@ import (
 	"controlplane/internal/security"
 )
 
+// SecuritySecretProvider là adapter từ RuntimeSecretProvider (core domain)
+// sang security.SecretProvider (dùng bởi IAM/middleware).
+//
+// CONTRACT:
+// - Chỉ map shape dữ liệu secret, không chứa policy fallback/failover.
+// - Validation input/fallback/fail-fast đặt ở callsite bootstrap/module layer.
+// - Provider này không là SoT; SoT vẫn là runtime secret provider + DB phía core.
 type SecuritySecretProvider struct {
 	provider coreSvcInterface.RuntimeSecretProvider
 }
 
-func NewSecuritySecretProvider(provider coreSvcInterface.RuntimeSecretProvider) *SecuritySecretProvider {
+// NewSecuritySecretProvider trả về interface security.SecretProvider để caller
+// phụ thuộc theo contract, không buộc concrete type.
+//
+// CONTRACT: hàm này luôn trả non-nil khi được gọi đúng wiring path
+// (runtime provider đã được validate tại callsite bootstrap).
+func NewSecuritySecretProvider(provider coreSvcInterface.RuntimeSecretProvider) security.SecretProvider {
 	return &SecuritySecretProvider{provider: provider}
 }
 
@@ -54,5 +66,3 @@ func (p *SecuritySecretProvider) Warm(ctx context.Context, family string) error 
 func (p *SecuritySecretProvider) Invalidate(family string) {
 	p.provider.Invalidate(family)
 }
-
-var _ security.SecretProvider = (*SecuritySecretProvider)(nil)

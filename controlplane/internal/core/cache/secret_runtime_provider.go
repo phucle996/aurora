@@ -1,4 +1,4 @@
-package coreSvcImpl
+package coreCache
 
 import (
 	"context"
@@ -22,6 +22,8 @@ type cacheEntry struct {
 	loadedAt time.Time
 }
 
+// CacheAsideSecretProvider là runtime secret provider dạng cache-aside.
+// Thuộc tầng cache/infra, không chứa business policy.
 type CacheAsideSecretProvider struct {
 	readService runtimeSecretFamilyReader
 	cacheTTL    time.Duration
@@ -31,11 +33,14 @@ type CacheAsideSecretProvider struct {
 	locks       map[string]*sync.Mutex
 }
 
-func NewCacheAsideSecretProvider(readService runtimeSecretFamilyReader) *CacheAsideSecretProvider {
+func NewCacheAsideSecretProvider(readService runtimeSecretFamilyReader) coreSvcInterface.RuntimeSecretProvider {
 	return NewCacheAsideSecretProviderWithTTL(readService, 30*time.Second)
 }
 
-func NewCacheAsideSecretProviderWithTTL(readService runtimeSecretFamilyReader, cacheTTL time.Duration) *CacheAsideSecretProvider {
+func NewCacheAsideSecretProviderWithTTL(readService runtimeSecretFamilyReader, cacheTTL time.Duration) coreSvcInterface.RuntimeSecretProvider {
+	if readService == nil {
+		panic("core secret provider: runtime secret family reader is required")
+	}
 	if cacheTTL <= 0 {
 		cacheTTL = 30 * time.Second
 	}
@@ -149,6 +154,3 @@ func (p *CacheAsideSecretProvider) familyLock(familyCode string) *sync.Mutex {
 	p.locks[familyCode] = created
 	return created
 }
-
-var _ coreSvcInterface.RuntimeSecretProvider = (*CacheAsideSecretProvider)(nil)
-var _ = time.Time{}

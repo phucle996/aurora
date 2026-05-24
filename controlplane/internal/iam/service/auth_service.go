@@ -43,11 +43,11 @@ type AuthService struct {
 	deviceRepo       iamRepoInterface.DeviceRepository
 	deviceRuntime    iamCache.UserDeviceRuntimeCache
 	capLock          iamCache.UserDeviceCapLock
-	presence        iamCache.RegisterPresenceCache
-	secrets         security.SecretProvider
-	ott             iamSvcInterface.OneTimeTokenService
-	streamPublisher infraredis.StreamPublisher
-	cfg             *config.Config
+	presence         iamCache.RegisterPresenceCache
+	secrets          security.SecretProvider
+	ott              iamSvcInterface.OneTimeTokenService
+	streamPublisher  infraredis.StreamPublisher
+	cfg              *config.Config
 }
 
 func NewAuthService(cfg *config.Config,
@@ -67,11 +67,11 @@ func NewAuthService(cfg *config.Config,
 		deviceRepo:       deviceRepo,
 		deviceRuntime:    deviceRuntime,
 		capLock:          capLock,
-		presence:        presence,
-		secrets:         secrets,
-		ott:             ott,
-		streamPublisher: streamPublisher,
-		cfg:             cfg,
+		presence:         presence,
+		secrets:          secrets,
+		ott:              ott,
+		streamPublisher:  streamPublisher,
+		cfg:              cfg,
 	}
 }
 
@@ -84,12 +84,15 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		iamMetrics.ObserveRegisterDB("total", time.Since(startedAt), err)
 	}()
 
+	// Callsite validate trước khi chạm cache/DB để fail-fast và giảm load dependency.
 	if user.Username == "" || user.Email == "" || profile.Fullname == "" || password == "" {
 		result = iamMetrics.RegisterOutcomeInvalidArgument
 		cachePath = iamMetrics.RegisterCachePathNotChecked
 		return apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthRegisterInvalidArgument, nil)
 	}
 
+	// Presence cache chỉ là acceleration path. Cache lỗi thì fallback ở callsite:
+	// vẫn đi DB flow bình thường, không fail cứng register.
 	cacheStartedAt := time.Now()
 	usernameHit, emailHit, cacheErr := s.presence.Check(ctx, user.Username, user.Email)
 	iamMetrics.ObserveRegisterRedis("presence_check", time.Since(cacheStartedAt), cacheErr)
@@ -98,6 +101,7 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	}
 
 	if cacheErr == nil && (usernameHit || emailHit) {
+		// Cache hit nghi ngờ duplicate -> xác nhận lại ở DB (SoT).
 		cachePath = iamMetrics.RegisterCachePathHitDBCheck
 		dbCheckStartedAt := time.Now()
 		exists, checkErr := s.repo.CheckUserExist(ctx, user.Username, user.Email)
@@ -115,6 +119,7 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		cachePath = iamMetrics.RegisterCachePathMiss
 	}
 
+	// Input đã validate ở callsite; từ đây là dependency operations.
 	passwordHash, hashErr := security.HashPassword(password)
 	if hashErr != nil {
 		result = iamMetrics.RegisterOutcomeHashPasswordErr
@@ -150,6 +155,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	insertErr := s.repo.CreateRegisteredUser(ctx, user, profile)
 	iamMetrics.ObserveRegisterDB("insert", time.Since(insertStartedAt), insertErr)
 	if insertErr != nil {
+		// DB unique violation được map về domain duplicate; sau đó mark presence
+		// best-effort để các request sau short-circuit sớm.
 		var pgErr *pgconn.PgError
 		if errors.As(insertErr, &pgErr) && pgErr.Code == "23505" {
 			constraint := strings.ToLower(pgErr.ConstraintName)
@@ -187,23 +194,27 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		iamMetrics.ObserveRegisterDB("login_total", time.Since(startedAt), err)
 	}()
 
+	// Validate credentials/input ở callsite trước khi đụng repo/cache.
 	username := strings.TrimSpace(req.Username)
 	password := strings.TrimSpace(req.Password)
 	if username == "" || password == "" {
 		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
 		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
 	}
+	// Device public key là contract bắt buộc của login flow.
 	devicePublicKey := strings.TrimSpace(req.DevicePublicKey)
 	if devicePublicKey == "" {
 		loginOutcome = iamMetrics.LoginOutcomeInvalidArgument
 		return nil, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthLoginInvalidArgument, nil)
 	}
+	// Callsite normalize/decode key để repo chỉ nhận canonical form.
 	canonicalDevicePublicKey, devicePublicKeyErr := normalizeUserDevicePublicKey(devicePublicKey)
 	if devicePublicKeyErr != nil {
 		loginOutcome = iamMetrics.LoginOutcomeInvalidDevicePubKey
 		return nil, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthLoginInvalidDevicePublicKey, devicePublicKeyErr)
 	}
 
+	// Repo load user là SoT; no fallback source khác cho identity.
 	user, loadErr := s.repo.GetLoginUserByUsername(ctx, username)
 	if loadErr != nil {
 		if errors.Is(loadErr, pgx.ErrNoRows) {
@@ -228,6 +239,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
 	}
 
+	// Pending-active: trigger verification side effect theo policy ở callsite.
+	// Nếu OTT/publisher config thiếu -> degrade thành VerificationRequired.
 	if user.Status == iamEntity.UserStatusPendingActive {
 		if s.ott == nil || s.streamPublisher == nil || s.cfg == nil || s.cfg.Security.OneTimeTokenTTL <= 0 {
 			loginOutcome = iamMetrics.LoginOutcomeVerificationReq
@@ -256,6 +269,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 				"idempotency_key": idempotencyKey,
 			},
 		}
+		// Publish fail -> fail login theo security policy, không fallback silent.
 		publishStartedAt := time.Now()
 		traceCtx, span := otel.Tracer("aurora-controlplane.iam").Start(ctx, "iam.login.publish_verify_mail_job")
 		streamID, published, publishErr := s.streamPublisher.Publish(traceCtx, streamMsg, s.cfg.Security.OneTimeTokenTTL)
@@ -287,6 +301,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
 	}
 
+	// Service dependency guard ở callsite để trả reason chính xác sớm.
 	if s.secrets == nil {
 		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
 		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginAuthUnavailable, nil)
@@ -308,10 +323,12 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 	}
 
+	// Runtime cache chỉ phục vụ flush heuristic. Cache read lỗi thì fallback DB path.
 	deviceName := deviceHint.ResolveDeviceName(req.HostnameHint, req.HostnameAlias)
 	clientDeviceID, clientDeviceProvenance := deviceHint.ResolveClientDeviceID(req.ClientDeviceID)
 	flushLabel := "db"
 	if s.deviceRuntime != nil {
+		// Cache lookup lỗi/empty -> giữ flushLabel=db, không fail login.
 		if runtimeCandidates, scanErr := s.deviceRuntime.ScanByUser(ctx, user.ID.String(), 1); scanErr == nil {
 			for _, candidate := range runtimeCandidates {
 				if strings.TrimSpace(candidate.UserID) != user.ID.String() {
@@ -327,6 +344,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			}
 		}
 	}
+	// UpsertLoginDevice là DB SoT để lấy tracked device persistent.
 	trackedDevice, deviceErr := s.deviceRepo.UpsertLoginDevice(ctx, buildLoginDevice(user.ID, canonicalDevicePublicKey, req.IP, req.UserAgent, now, deviceName, clientDeviceID))
 	iamMetrics.ObserveLoginLastSeenFlush(flushLabel)
 	if deviceErr != nil {
@@ -343,29 +361,29 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, trackedErr)
 	}
 
+	// Runtime fragment generation: lỗi ở đây là auth dependency error (fail-close).
 	runtimeDeviceID := uuid.NewString()
 	rawDeviceSecret, secretErr := security.GenerateToken(32)
 	if secretErr != nil {
 		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
 		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, secretErr)
 	}
-	trackingID := uuid.NewString()
 	accessJTI, idErr := uuid.NewV7()
 	if idErr != nil {
 		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
 		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, idErr)
 	}
 	accessExp := now.Add(accessTTL)
+	// Access token chứa runtime_device_id + jti để middleware verify với runtime cache.
 	accessToken, accessErr := security.Sign(ctx, s.secrets, security.SecretFamilyAccess, security.Claims{
-		Subject:         user.ID.String(),
-		Role:            "",
-		Level:           0,
-		DeviceID:        runtimeDeviceID,
-		TrackingID:      trackingID,
-		TokenID:         accessJTI.String(),
-		TokenUse:        "access",
-		IssuedAt:        now.Unix(),
-		ExpiresAt:       accessExp.Unix(),
+		Subject:   user.ID.String(),
+		Role:      "",
+		Level:     0,
+		DeviceID:  runtimeDeviceID,
+		TokenID:   accessJTI.String(),
+		TokenUse:  "access",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: accessExp.Unix(),
 	})
 	if accessErr != nil {
 		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
@@ -389,6 +407,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 	refreshExp := now.Add(refreshTTL)
 
+	// Persist refresh session trước khi ghi runtime để tránh token mồ côi.
 	rt := &iamEntity.RefreshToken{
 		ID:            refreshID,
 		UserID:        user.ID,
@@ -405,13 +424,14 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 
 	if s.deviceRuntime != nil {
+		// Runtime write lỗi: rollback theo callsite policy bằng revoke refresh token.
+		// Không fallback chạy tiếp vì sẽ tạo access token không verify được runtime.
 		runtimeTTL := accessTTL
 		runtime := iamCache.UserDeviceRuntime{
-			TrackingID:       trackingID,
 			DeviceID:         runtimeDeviceID,
 			DeviceSecretHash: security.HashTokenSHA256(rawDeviceSecret),
 			CurrentJTI:       accessJTI.String(),
-			TrackedDeviceRef: trackedDeviceID.String(),
+			TrackedDeviceID:  trackedDeviceID.String(),
 			UserID:           user.ID.String(),
 			Status:           "online",
 			Version:          1,
@@ -433,6 +453,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 	}
 
+	// Best-effort cap reconcile sau login. Không làm fail request thành công.
 	s.evictExcessDevicesIfNeeded(ctx, user.ID, req.IP, req.UserAgent)
 
 	return &iamEntity.LoginResult{
@@ -440,7 +461,6 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		RefreshToken:             rawRefresh,
 		RuntimeDeviceID:          runtimeDeviceID,
 		DeviceSecret:             rawDeviceSecret,
-		TrackingID:               trackingID,
 		TrackedDeviceID:          trackedDeviceID.String(),
 		ClientDeviceID:           clientDeviceID,
 		ClientDeviceIDProvenance: string(clientDeviceProvenance),
@@ -500,25 +520,29 @@ func cleanOptionalString(value *string) *string {
 	return &cleaned
 }
 
-func (s *AuthService) Logout(ctx context.Context, userID string, trackingID string) error {
+func (s *AuthService) Logout(ctx context.Context, userID string, runtimeDeviceID string) error {
+	// Validate input ở callsite trước khi thao tác runtime/revoke.
 	uid, err := uuid.Parse(strings.TrimSpace(userID))
 	if err != nil {
 		return apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthLoginInvalidCredentials, err)
 	}
-	trackingID = strings.TrimSpace(trackingID)
+	runtimeDeviceID = strings.TrimSpace(runtimeDeviceID)
 	var trackedDeviceRef string
-	if s.deviceRuntime != nil && trackingID != "" {
-		record, getErr := s.deviceRuntime.GetDeviceRuntime(ctx, trackingID)
+	if s.deviceRuntime != nil && runtimeDeviceID != "" {
+		// Runtime read/delete là best-effort: lỗi cache không làm fail logout toàn bộ.
+		record, getErr := s.deviceRuntime.GetDeviceRuntimeByUserDevice(ctx, userID, runtimeDeviceID)
 		if getErr == nil && record != nil {
-			trackedDeviceRef = strings.TrimSpace(record.TrackedDeviceRef)
+			trackedDeviceRef = strings.TrimSpace(record.TrackedDeviceID)
 		}
-		_ = s.deviceRuntime.DeleteDeviceRuntime(ctx, trackingID)
+		_ = s.deviceRuntime.DeleteDeviceRuntimeByUserDevice(ctx, userID, runtimeDeviceID)
 	}
 	if trackedDeviceRef != "" {
+		// Có tracked device -> revoke scope theo device để chính xác hơn.
 		if deviceUUID, parseErr := uuid.Parse(trackedDeviceRef); parseErr == nil {
 			_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, uid, deviceUUID)
 		}
 	} else {
+		// Fallback callsite: thiếu tracked ref thì revoke toàn user sessions.
 		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByUserID(ctx, uid, nil)
 	}
 	return nil
@@ -527,18 +551,26 @@ func (s *AuthService) Logout(ctx context.Context, userID string, trackingID stri
 const userDeviceCap = 50
 
 func (s *AuthService) evictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {
+	// Best-effort maintenance path: mọi lỗi ở đây không được làm fail login.
 	if s == nil || s.deviceRepo == nil {
 		return
 	}
 	if s.capLock != nil {
-		ok, lockErr := s.capLock.TryAcquire(ctx, userID.String(), 2*time.Second)
-		if lockErr != nil || !ok {
-			if !ok {
-				iamMetrics.ObserveDeviceCapLockSkip()
-			}
+		// Fallback policy tại callsite:
+		// - lock backend lỗi: chạy tiếp không lock (degrade)
+		// - lock contention: skip vì worker khác đang xử lý.
+		lockToken, ok, lockErr := s.capLock.TryAcquire(ctx, userID.String(), 2*time.Second)
+		if lockErr != nil {
+			// Fallback policy ở callsite: lock backend lỗi thì degrade về best-effort
+			// (chạy evict không lock) thay vì fail cứng login flow.
+			iamMetrics.ObserveDeviceCapLockSkip()
+		} else if !ok {
+			// Lock contention: worker khác đang xử lý cap flow cho user này.
+			iamMetrics.ObserveDeviceCapLockSkip()
 			return
+		} else {
+			defer func() { _ = s.capLock.Release(ctx, userID.String(), lockToken) }()
 		}
-		defer func() { _ = s.capLock.Release(ctx, userID.String()) }()
 	}
 	evicted, err := s.deviceRepo.EvictExcessDevices(ctx, userID, userDeviceCap)
 	if err != nil || len(evicted) == 0 {
@@ -552,6 +584,7 @@ func (s *AuthService) evictExcessDevicesIfNeeded(ctx context.Context, userID uui
 		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
 	}
 	if s.deviceRuntime != nil {
+		// Runtime cleanup là side-effect best-effort sau DB evict thành công.
 		runtimes, scanErr := s.deviceRuntime.ScanByUser(ctx, userID.String(), 200)
 		if scanErr == nil {
 			evictedRefs := make(map[string]struct{}, len(evicted))
@@ -559,16 +592,16 @@ func (s *AuthService) evictExcessDevicesIfNeeded(ctx context.Context, userID uui
 				evictedRefs[strings.TrimSpace(item.DeviceID.String())] = struct{}{}
 			}
 			for _, rt := range runtimes {
-				if _, found := evictedRefs[strings.TrimSpace(rt.TrackedDeviceRef)]; found {
-					_ = s.deviceRuntime.DeleteDeviceRuntime(ctx, rt.TrackingID)
+				if _, found := evictedRefs[strings.TrimSpace(rt.TrackedDeviceID)]; found {
+					_ = s.deviceRuntime.DeleteDeviceRuntimeByUserDevice(ctx, rt.UserID, rt.DeviceID)
 				}
 			}
 		}
 	}
 	iamMetrics.ObserveDeviceCapEvict("login_flow", len(evicted))
 	extras := map[string]string{
-		"reason":         "cap_exceeded",
-		"evicted_count":  strconv.Itoa(len(evicted)),
+		"reason":        "cap_exceeded",
+		"evicted_count": strconv.Itoa(len(evicted)),
 	}
 	s.publishDeviceAuditAsync(ctx, userID, "device.evicted_capacity", "warning", ip, userAgent, extras)
 }
@@ -641,10 +674,10 @@ func (s *AuthService) publishDeviceAuditAsync(ctx context.Context, userID uuid.U
 	}
 	now := time.Now().UTC()
 	payload := map[string]string{
-		"event":           event,
-		"severity":        severity,
-		"user_id":         userID.String(),
-		"published_at":    now.Format(time.RFC3339Nano),
+		"event":        event,
+		"severity":     severity,
+		"user_id":      userID.String(),
+		"published_at": now.Format(time.RFC3339Nano),
 	}
 	if ip != nil {
 		payload["ip"] = strings.TrimSpace(*ip)

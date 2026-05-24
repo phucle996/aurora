@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"controlplane/internal/http/middleware"
 	"controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamErrorx "controlplane/internal/iam/errorx"
 	handler "controlplane/internal/iam/transport/http/handler"
+	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
 )
@@ -45,9 +45,9 @@ var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 
 func withUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Set(middleware.CtxKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
-		c.Set(middleware.CtxKeyRuntimeDeviceID, "runtime-device-1")
-		c.Set(middleware.CtxKeyTrackedDeviceID, "177682fc-3e96-4a5a-84eb-b5e9c71af721")
+		c.Set(constant.ContextKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
+		c.Set(constant.ContextKeyRuntimeDeviceID, "runtime-device-1")
+		c.Set(constant.ContextKeyTrackedDeviceID, "177682fc-3e96-4a5a-84eb-b5e9c71af721")
 		c.Next()
 	}
 }
@@ -123,8 +123,8 @@ func TestDeviceHandlerLogoutOthersRequiresTrackedDeviceID(t *testing.T) {
 	h := handler.NewDeviceHandler(&deviceServiceStub{logoutOthersN: 3})
 	router.POST("/devices/logout-others",
 		func(c *gin.Context) {
-			c.Set(middleware.CtxKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
-			c.Set(middleware.CtxKeyRuntimeDeviceID, "runtime-device-1")
+			c.Set(constant.ContextKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
+			c.Set(constant.ContextKeyRuntimeDeviceID, "runtime-device-1")
 			c.Next()
 		},
 		h.LogoutOtherDevices,

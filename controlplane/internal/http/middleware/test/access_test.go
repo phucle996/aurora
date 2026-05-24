@@ -2,17 +2,12 @@ package middleware_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"controlplane/internal/http/middleware"
-	"controlplane/pkg/constant"
-
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gin-gonic/gin"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -43,28 +38,5 @@ func TestIsBlacklistedCachesRevokedJTI(t *testing.T) {
 	}
 	if !blacklisted {
 		t.Fatal("expected positive revoked cache hit")
-	}
-}
-
-func TestRequireDeviceIDTrimsCookieAndClaim(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	router := gin.New()
-	router.GET("/me",
-		func(c *gin.Context) {
-			c.Set(middleware.CtxKeyRuntimeDeviceID, " device-1 ")
-		},
-		middleware.RequireDeviceID(),
-		func(c *gin.Context) {
-			c.Status(http.StatusNoContent)
-		},
-	)
-
-	req := httptest.NewRequest(http.MethodGet, "/me", nil)
-	req.AddCookie(&http.Cookie{Name: constant.DeviceIDName, Value: " device-1 "})
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 }

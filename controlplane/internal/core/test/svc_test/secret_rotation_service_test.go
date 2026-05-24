@@ -128,7 +128,7 @@ func TestRotateSecretFamilyWithOneKeyCreatesSecondKey(t *testing.T) {
 			{ID: "ver-1", FamilyID: "family-1", Version: 1, Status: coreEntity.SecretStatusActive, IsPrimary: true, CreatedAt: time.Now().UTC()},
 		},
 	}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	newVersion, err := serviceValue.RotateSecretFamily(context.Background(), coreEntity.RotateSecretFamilyInput{
 		FamilyCode: "access_token",
@@ -163,7 +163,7 @@ func TestRotateSecretFamilyWithTwoKeysDropsOldestThenRotates(t *testing.T) {
 			{ID: "ver-1", FamilyID: "family-1", Version: 1, Status: coreEntity.SecretStatusActive, IsPrimary: false, CreatedAt: time.Now().UTC().Add(-time.Hour)},
 		},
 	}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	newVersion, err := serviceValue.RotateSecretFamily(context.Background(), coreEntity.RotateSecretFamilyInput{
 		FamilyCode: "access_token",
@@ -193,7 +193,7 @@ func TestRotateSecretFamilyRejectsThreeKeys(t *testing.T) {
 			{ID: "ver-1", FamilyID: "family-1", Version: 1, Status: coreEntity.SecretStatusRetired, IsPrimary: false, CreatedAt: time.Now().UTC().Add(-2 * time.Hour)},
 		},
 	}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	_, err := serviceValue.RotateSecretFamily(context.Background(), coreEntity.RotateSecretFamilyInput{
 		FamilyCode: "access_token",
@@ -207,7 +207,7 @@ func TestRotateSecretFamilyRejectsThreeKeys(t *testing.T) {
 
 func TestRotateSecretFamilyRejectsFamilyNotFound(t *testing.T) {
 	repo := &fakeSecretRepo{}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	_, err := serviceValue.RotateSecretFamily(context.Background(), coreEntity.RotateSecretFamilyInput{
 		FamilyCode: "missing",
@@ -226,7 +226,7 @@ func TestRotateSecretFamilyRejectsInvalidTTL(t *testing.T) {
 			{ID: "ver-1", FamilyID: "family-1", Version: 1, Status: coreEntity.SecretStatusActive, IsPrimary: true, CreatedAt: time.Now().UTC()},
 		},
 	}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	_, err := serviceValue.RotateSecretFamily(context.Background(), coreEntity.RotateSecretFamilyInput{
 		FamilyCode: "access_token",
@@ -240,7 +240,7 @@ func TestRotateSecretFamilyRejectsInvalidTTL(t *testing.T) {
 
 func TestPlanRotationRejectsZeroVersions(t *testing.T) {
 	repo := &fakeSecretRepo{family: &coreEntity.SecretFamily{ID: "family-1", Code: "refresh_token"}}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 	_, err := serviceValue.PlanRotation(context.Background(), "refresh_token", 2*time.Hour)
 	if err == nil {
 		t.Fatal("PlanRotation() error = nil, want error")
@@ -249,7 +249,7 @@ func TestPlanRotationRejectsZeroVersions(t *testing.T) {
 
 func TestRotateSecretFamilyReturnsLockError(t *testing.T) {
 	repo := &fakeSecretRepo{rotationLockErr: errors.New("lock failed")}
-	serviceValue := coreSvcImpl.NewSecretRotationService(repo)
+	serviceValue := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	_, err := serviceValue.RotateSecretFamily(context.Background(), coreEntity.RotateSecretFamilyInput{
 		FamilyCode: "access_token",

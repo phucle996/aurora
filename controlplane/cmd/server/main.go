@@ -34,8 +34,7 @@ func main() {
 
 	go func() {
 		if err := application.Start(); err != nil {
-			logger.SysError("main", "Application failed to start: "+err.Error())
-			stop <- syscall.SIGTERM
+			logger.SysFatal("main", "Application failed to start: "+err.Error())
 		}
 	}()
 

@@ -88,7 +88,9 @@ func (m *refreshTokenRepoMock) LoadRefreshContextByHash(ctx context.Context, tok
 	return ctxOut, nil
 }
 
-func (m *refreshTokenRepoMock) RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) { return 0, nil }
+func (m *refreshTokenRepoMock) RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) {
+	return 0, nil
+}
 
 func (m *refreshTokenRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error) {
 	if m.revokeFn != nil {

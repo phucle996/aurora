@@ -60,6 +60,9 @@ type App struct {
 // Nếu bất kỳ bước nào lỗi, hàm gọi app.Stop() để cleanup thống nhất
 // (single cleanup path) rồi trả lỗi ra ngoài.
 func NewApplication(cfg *config.Config) (*App, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("bootstrap: config is required")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{ctx: ctx, cancel: cancel, cfg: cfg}
 
@@ -139,6 +142,8 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Module bootstrap.
 	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter)
 	if err != nil {
+		// Fail-fast: module graph ảnh hưởng cross-module (core security provider,
+		// IAM wiring, middleware auth). Không degrade ở app runtime bootstrap.
 		app.Stop()
 		return nil, err
 	}

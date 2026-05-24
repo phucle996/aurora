@@ -58,7 +58,6 @@ type LoginResult struct {
 	RefreshToken             string
 	RuntimeDeviceID          string
 	DeviceSecret             string
-	TrackingID               string
 	TrackedDeviceID          string
 	ClientDeviceID           string
 	ClientDeviceIDProvenance string

@@ -32,7 +32,9 @@ func (s *authServiceStub) RegisterAccount(ctx context.Context, user iamEntity.Us
 	return s.err
 }
 
-func (s *authServiceStub) Logout(ctx context.Context, userID string, trackingID string) error { return nil }
+func (s *authServiceStub) Logout(ctx context.Context, userID string, runtimeDeviceID string) error {
+	return nil
+}
 
 func (s *authServiceStub) Login(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.LoginResult, error) {
 	return s.loginResult, s.loginErr
@@ -167,16 +169,15 @@ func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{loginResult: &iamEntity.LoginResult{
-		AccessToken:      "access-token",
-		RefreshToken:     "refresh-token",
+		AccessToken:              "access-token",
+		RefreshToken:             "refresh-token",
 		RuntimeDeviceID:          "runtime-device-1",
 		DeviceSecret:             "secret-1",
-		TrackingID:               "tracking-1",
 		TrackedDeviceID:          "177682fc-3e96-4a5a-84eb-b5e9c71af721",
 		ClientDeviceID:           "cdid-bootstrap-1",
 		ClientDeviceIDProvenance: "server-bootstrap",
-		AccessExpiresAt:  time.Now().UTC().Add(15 * time.Minute),
-		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
+		AccessExpiresAt:          time.Now().UTC().Add(15 * time.Minute),
+		RefreshExpiresAt:         time.Now().UTC().Add(24 * time.Hour),
 	}})
 	router.POST("/login", h.Login)
 

@@ -50,7 +50,7 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 		runtimes, runtimeErr := s.deviceRuntime.ScanByUser(ctx, uid.String(), 200)
 		if runtimeErr == nil {
 			for _, rt := range runtimes {
-				key := strings.TrimSpace(rt.TrackedDeviceRef)
+				key := strings.TrimSpace(rt.TrackedDeviceID)
 				if key == "" {
 					continue
 				}
@@ -67,8 +67,12 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 				ts := time.Unix(rt.LastSeenAt, 0).UTC()
 				p.LastSeenAt = &ts
 			}
-			if v := strings.TrimSpace(rt.LastSeenIP); v != "" { p.LastIP = &v }
-			if v := strings.TrimSpace(rt.LastSeenUserAgent); v != "" { p.LastUA = &v }
+			if v := strings.TrimSpace(rt.LastSeenIP); v != "" {
+				p.LastIP = &v
+			}
+			if v := strings.TrimSpace(rt.LastSeenUserAgent); v != "" {
+				p.LastUA = &v
+			}
 		}
 		out = append(out, p)
 	}

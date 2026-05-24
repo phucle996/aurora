@@ -12,6 +12,7 @@ import (
 	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
+	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreerrorx "controlplane/internal/core/errorx"
 	coreMetric "controlplane/internal/core/metrics"
 	"controlplane/internal/security"
@@ -20,24 +21,61 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	rotationReasonBootstrapInitialSecret = "bootstrap_initial_secret"
+	invalidateReasonBootstrap            = "bootstrap"
+	invalidateReasonRotate               = "rotate"
+	minRotationInterval                  = 24 * time.Hour
+	rotationIntervalMultiplier           = 2
+	bootstrapSecretBytes                 = 32
+	bootstrapInitialVersion              = 1
+)
+
 type SecretRotationService struct {
 	repo     coreRepoInterface.SecretRepository
 	notifier coreCache.SecretInvalidationNotifier
 	now      func() time.Time
 }
 
-// NewSecretRotationService creates secret rotation service without cache invalidation notifier.
-func NewSecretRotationService(repo coreRepoInterface.SecretRepository) *SecretRotationService {
-	return &SecretRotationService{
-		repo: repo,
-		now:  time.Now}
+type noopInvalidationNotifier struct{}
+
+func (noopInvalidationNotifier) InvalidateFamily(ctx context.Context, familyCode string, reason string) error {
+	return nil
 }
 
-// NewSecretRotationServiceWithNotifier creates secret rotation service with notifier
-// so runtime caches can be invalidated after bootstrap/rotation success.
-func NewSecretRotationServiceWithNotifier(
+// CONTRACT (module-level):
+// - DB/repository là SoT cho secret families + versions.
+// - Mọi mutate flow phải đi qua lock tương ứng (bootstrap/rotation lock).
+// - Invariant version-set: tối đa 2 bản active/pending trong overlap window.
+// - Invalidation notifier chỉ là best-effort side effect sau mutate thành công.
+//
+// BOUNDARY:
+// - Service này quản business rule của lifecycle secret (plan/bootstrap/rotate).
+// - Service không quyết định shutdown policy hay fallback policy toàn app.
+// - Mapping lỗi sang transport/status code là trách nhiệm caller layer trên.
+//
+// NOTES:
+// - `now` được inject để test deterministic.
+// - Metrics/logging phục vụ observability, không thay đổi outcome nghiệp vụ.
+
+// NewSecretRotationService trả interface rotation service để caller phụ thuộc
+// theo contract domain thay vì concrete implementation.
+//
+// CONTRACT:
+// - Service này không fallback dependency ngầm.
+// - Validation input/fail-fast được quyết định tại callsite bootstrap/use-case.
+// - Constructor luôn trả non-nil theo wiring path hợp lệ.
+func NewSecretRotationService(
 	repo coreRepoInterface.SecretRepository,
-	notifier coreCache.SecretInvalidationNotifier) *SecretRotationService {
+	notifier coreCache.SecretInvalidationNotifier,
+) coreSvcInterface.SecretRotationService {
+	// Policy by callsite:
+	// - Bootstrap path có thể truyền notifier=nil (single-node init, không bắt buộc fan-out invalidate).
+	// - Rotate worker/scheduler path phải truyền notifier!=nil để publish invalidation
+	//   cho các node khác sau khi rotate thành công.
+	if notifier == nil {
+		notifier = noopInvalidationNotifier{}
+	}
 	return &SecretRotationService{
 		repo:     repo,
 		notifier: notifier,
@@ -45,8 +83,17 @@ func NewSecretRotationServiceWithNotifier(
 	}
 }
 
-// PlanRotation computes a rotation plan for a family based on current version state and TTL.
-// This method is read-only and does not mutate any secret version state.
+// PlanRotation:
+// CONTRACT:
+// - TTL phải > 0.
+// - Family phải tồn tại và version-set hợp lệ.
+// - Read-only: không mutate DB/cache state.
+//
+// BOUNDARY:
+// - Chỉ trả kế hoạch rotate để caller quyết định trigger rotate thật hay không.
+//
+// NOTES:
+// - `RotateAt` = primaryReferenceTime + ComputeRotationInterval(ttl).
 func (s *SecretRotationService) PlanRotation(ctx context.Context, familyCode string, ttl time.Duration) (*coreEntity.RotationPlan, error) {
 	startedAt := time.Now().UTC()
 	if ttl <= 0 {
@@ -70,9 +117,19 @@ func (s *SecretRotationService) PlanRotation(ctx context.Context, familyCode str
 	}, nil
 }
 
-// EnsureInitialSecretVersion guarantees a family has at least one usable secret version.
-// If a usable version already exists, it returns noop (Created=false).
-// If none exists, it creates v1 as active + primary and promotes it.
+// EnsureInitialSecretVersion:
+// CONTRACT:
+// - Idempotent bootstrap theo family.
+// - Nếu đã có usable version -> noop (Created=false).
+// - Nếu chưa có usable version -> tạo v1 active + primary.
+// - Luôn chạy dưới bootstrap lock của family.
+//
+// BOUNDARY:
+// - Chỉ xử lý bootstrap lifecycle cho 1 family, không mở rộng policy app-level.
+//
+// NOTES:
+// - `PlainSecret` chỉ trả khi created=true.
+// - Cache invalidation sau mutate là best-effort.
 func (s *SecretRotationService) EnsureInitialSecretVersion(ctx context.Context, family coreEntity.BootstrapSecretFamily) (*coreEntity.EnsureInitialSecretResult, error) {
 	startedAt := time.Now().UTC()
 	logger.SysInfoFields("core.secret.bootstrap", "ensuring initial secret version", logger.Fields{"family": strings.TrimSpace(family.Code)})
@@ -97,8 +154,12 @@ func (s *SecretRotationService) EnsureInitialSecretVersion(ctx context.Context, 
 	if dbFamily == nil {
 		// Family registry row is created once and reused on future bootstrap calls.
 		now := s.now().UTC()
+		familyID, idErr := uuid.NewV7()
+		if idErr != nil {
+			familyID = uuid.New()
+		}
 		createdFamily, err := s.repo.EnsureFamily(ctx, coreEntity.SecretFamily{
-			ID:          newUUIDv7String(),
+			ID:          familyID.String(),
 			Code:        strings.TrimSpace(family.Code),
 			Name:        strings.TrimSpace(family.Name),
 			Description: strings.TrimSpace(family.Description),
@@ -148,17 +209,21 @@ func (s *SecretRotationService) EnsureInitialSecretVersion(ctx context.Context, 
 		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
 		return nil, err
 	}
+	versionID, versionIDErr := uuid.NewV7()
+	if versionIDErr != nil {
+		versionID = uuid.New()
+	}
 	version := coreEntity.SecretVersion{
-		ID:                newUUIDv7String(),
+		ID:                versionID.String(),
 		FamilyID:          dbFamily.ID,
-		Version:           1,
+		Version:           bootstrapInitialVersion,
 		SecretCiphertext:  cipherText,
 		SecretFingerprint: fingerprint,
 		Status:            coreEntity.SecretStatusActive,
 		IsPrimary:         true,
 		NotBefore:         now,
-		ActivatedAt:       timePointer(now),
-		RotationReason:    "bootstrap_initial_secret",
+		ActivatedAt:       &now,
+		RotationReason:    rotationReasonBootstrapInitialSecret,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -172,18 +237,30 @@ func (s *SecretRotationService) EnsureInitialSecretVersion(ctx context.Context, 
 		logger.SysWarnFields("core.secret.bootstrap", "failed to promote initial secret version", err, logger.Fields{"family": family.Code, "version_id": version.ID})
 		return nil, err
 	}
-	if s.notifier != nil {
-		// Best-effort cache invalidation after state-changing operation.
-		_ = s.notifier.InvalidateFamily(ctx, dbFamily.Code, "bootstrap")
+	// Bootstrap mutate thành công -> invalidate best-effort.
+	// Nếu notifier là noop (bootstrap local) thì call này no-op theo policy constructor.
+	if notifyErr := s.notifier.InvalidateFamily(ctx, dbFamily.Code, invalidateReasonBootstrap); notifyErr != nil {
+		logger.SysWarnFields("core.secret.bootstrap", "failed to invalidate runtime cache after bootstrap", notifyErr, logger.Fields{"family": dbFamily.Code, "reason": invalidateReasonBootstrap})
 	}
 	coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "created", startedAt)
 	logger.SysInfoFields("core.secret.bootstrap", "created initial secret version", logger.Fields{"family": family.Code, "version_id": version.ID})
 	return &coreEntity.EnsureInitialSecretResult{Family: *dbFamily, Version: version, Created: true, PlainSecret: plain}, nil
 }
 
-// RotateSecretFamily rotates one family to a newly issued version.
-// Business invariant: keep only up to two active/pending versions in overlap window.
-// New version becomes primary; previous/oldest versions are retired based on input policy.
+// RotateSecretFamily:
+// CONTRACT:
+// - TTL phải hợp lệ, NewVersion payload phải đầy đủ.
+// - Rotate chạy dưới family rotation lock.
+// - Duy trì invariant tối đa 2 active/pending versions.
+// - New version trở thành primary; previous/oldest retire theo input policy.
+//
+// BOUNDARY:
+// - Không retry lock conflict ở layer này.
+// - Không fallback âm thầm khi dependency mutate lỗi.
+//
+// NOTES:
+// - Nếu đang có 2 version, drop oldest trước khi append version mới.
+// - Invalidation notifier gọi best-effort sau rotate thành công.
 func (s *SecretRotationService) RotateSecretFamily(ctx context.Context, input coreEntity.RotateSecretFamilyInput) (*coreEntity.SecretVersion, error) {
 	startedAt := time.Now().UTC()
 	logger.SysInfoFields("core.secret.rotate", "rotating secret family", logger.Fields{"family": strings.TrimSpace(input.FamilyCode)})
@@ -225,7 +302,7 @@ func (s *SecretRotationService) RotateSecretFamily(ctx context.Context, input co
 	nextVersion.Status = coreEntity.SecretStatusActive
 	nextVersion.IsPrimary = true
 	nextVersion.NotBefore = now
-	nextVersion.ActivatedAt = timePointer(now)
+	nextVersion.ActivatedAt = &now
 	nextVersion.CreatedAt = now
 	nextVersion.UpdatedAt = now
 	if strings.TrimSpace(nextVersion.ID) == "" || strings.TrimSpace(nextVersion.SecretCiphertext) == "" || strings.TrimSpace(nextVersion.SecretFingerprint) == "" {
@@ -238,7 +315,14 @@ func (s *SecretRotationService) RotateSecretFamily(ctx context.Context, input co
 	if len(currentActiveVersions) == 2 {
 		// When already in overlap window (2 versions), drop oldest before appending next.
 		oldestVersionID = currentActiveVersions[len(currentActiveVersions)-1].ID
-		versions = filterVersionByID(versions, oldestVersionID)
+		filtered := make([]coreEntity.SecretVersion, 0, len(versions))
+		for _, item := range versions {
+			if item.ID == oldestVersionID {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		versions = filtered
 		currentActiveVersions = activeVersions(versions)
 	}
 
@@ -255,9 +339,10 @@ func (s *SecretRotationService) RotateSecretFamily(ctx context.Context, input co
 		logger.SysWarnFields("core.secret.rotate", "failed to rotate secret family", err, logger.Fields{"family": family.Code, "next_version_id": nextVersion.ID})
 		return nil, err
 	}
-	if s.notifier != nil {
-		// Best-effort cache invalidation after successful rotation.
-		_ = s.notifier.InvalidateFamily(ctx, family.Code, "rotate")
+	// Rotate mutate thành công -> invalidate best-effort.
+	// Rotate worker phải cấp notifier bus thật để fan-out invalidate đa node.
+	if notifyErr := s.notifier.InvalidateFamily(ctx, family.Code, invalidateReasonRotate); notifyErr != nil {
+		logger.SysWarnFields("core.secret.rotate", "failed to invalidate runtime cache after rotate", notifyErr, logger.Fields{"family": family.Code, "reason": invalidateReasonRotate})
 	}
 	coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "ok", startedAt)
 	logger.SysInfoFields("core.secret.rotate", "rotated secret family", logger.Fields{
@@ -315,34 +400,21 @@ func primaryReferenceTime(versions []coreEntity.SecretVersion) time.Time {
 	return versions[0].CreatedAt.UTC()
 }
 
-// filterVersionByID returns a copy without the given version ID.
-func filterVersionByID(versions []coreEntity.SecretVersion, versionID string) []coreEntity.SecretVersion {
-	filtered := make([]coreEntity.SecretVersion, 0, len(versions))
-	for _, item := range versions {
-		if item.ID == versionID {
-			continue
-		}
-		filtered = append(filtered, item)
+// ComputeRotationInterval derives rotation interval from TTL policy.
+// Policy rationale:
+// - giữ floor 24h để tránh tần suất rotate quá dày khi TTL nhỏ bất thường.
+// - khi TTL đủ lớn, interval = TTL * 2 để duy trì overlap window tối đa 2 version.
+func ComputeRotationInterval(ttl time.Duration) time.Duration {
+	if ttl < minRotationInterval {
+		return minRotationInterval
 	}
-	return filtered
-}
-
-// timePointer returns pointer for immutable timestamp assignment in entity fields.
-func timePointer(value time.Time) *time.Time { return &value }
-
-// newUUIDv7String generates UUIDv7 and falls back to UUIDv4 if UUIDv7 fails.
-func newUUIDv7String() string {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return uuid.NewString()
-	}
-	return id.String()
+	return ttl * rotationIntervalMultiplier
 }
 
 // generateBootstrapSecretMaterial creates random secret material for bootstrap,
 // encrypts it for persistence, and computes a deterministic fingerprint.
 func generateBootstrapSecretMaterial() (plain string, cipherText string, fingerprint string, err error) {
-	raw := make([]byte, 32)
+	raw := make([]byte, bootstrapSecretBytes)
 	if _, err = cryptorand.Read(raw); err != nil {
 		return "", "", "", err
 	}

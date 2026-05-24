@@ -8,4 +8,14 @@ const (
 	ContextKeyAdminDeviceID     = "admin.device_id"
 	ContextKeyAdminDeviceSecret = "admin.device_secret"
 	ContextKeyAdminTokenJTI     = "admin.token_jti"
+
+	ContextKeyJWTClaims       = "jwt_claims"
+	ContextKeyUserID          = "user_id"
+	ContextKeyRole            = "role"
+	ContextKeyJTI             = "jti"
+	ContextKeyLevel           = "level"
+	ContextKeyTenant          = "tenant"
+	ContextKeyRuntimeDeviceID = "runtime_device_id"
+	ContextKeyTrackedDeviceID = "tracked_device_id"
+	ContextKeyTrackingID      = "tracking_id"
 )

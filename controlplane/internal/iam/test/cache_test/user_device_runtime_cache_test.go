@@ -27,11 +27,10 @@ func TestUserDeviceRuntimeSetGet(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		TrackingID:       "track-1",
 		DeviceID:         "dev-1",
 		DeviceSecretHash: security.HashTokenSHA256("secret-1"),
 		CurrentJTI:       "jti-1",
-		TrackedDeviceRef: "tracked-1",
+		TrackedDeviceID:  "tracked-1",
 		UserID:           "user-1",
 		Status:           "online",
 	}
@@ -39,7 +38,7 @@ func TestUserDeviceRuntimeSetGet(t *testing.T) {
 		t.Fatalf("set runtime: %v", err)
 	}
 
-	stored, err := cache.GetDeviceRuntime(ctx, runtime.TrackingID)
+	stored, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID)
 	if err != nil || stored == nil {
 		t.Fatalf("get runtime: %v %v", stored, err)
 	}
@@ -54,11 +53,10 @@ func TestUserDeviceRuntimeVerifyMismatch(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		TrackingID:       "track-2",
 		DeviceID:         "dev-2",
 		DeviceSecretHash: security.HashTokenSHA256("secret-2"),
 		CurrentJTI:       "jti-2",
-		TrackedDeviceRef: "tracked-2",
+		TrackedDeviceID:  "tracked-2",
 		UserID:           "user-2",
 	}
 	if err := cache.SetDeviceRuntime(ctx, runtime, time.Minute); err != nil {
@@ -79,10 +77,11 @@ func TestUserDeviceRuntimeVerifyMismatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ok, err := cache.VerifyFragmentAndJTI(ctx, runtime.TrackingID, tc.deviceID, tc.secret, tc.jti, 0)
+			record, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID)
 			if err != nil {
-				t.Fatalf("verify err: %v", err)
+				t.Fatalf("get runtime err: %v", err)
 			}
+			ok := iamCache.MatchRuntime(record, tc.deviceID, tc.secret, tc.jti, 0)
 			if ok != tc.expectMatch {
 				t.Fatalf("verify ok=%v want=%v", ok, tc.expectMatch)
 			}
@@ -96,30 +95,33 @@ func TestUserDeviceRuntimeRotateAndGrace(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		TrackingID:       "track-3",
 		DeviceID:         "dev-old",
 		DeviceSecretHash: security.HashTokenSHA256("secret-old"),
 		CurrentJTI:       "jti-old",
-		TrackedDeviceRef: "tracked-3",
+		TrackedDeviceID:  "tracked-3",
 		UserID:           "user-3",
 	}
 	if err := cache.SetDeviceRuntime(ctx, runtime, time.Minute); err != nil {
 		t.Fatalf("set runtime: %v", err)
 	}
 
-	ok, err := cache.RotateFragmentForJTI(ctx, runtime.TrackingID, "jti-old", "dev-new", security.HashTokenSHA256("secret-new"), "jti-new", time.Minute, nil, nil)
+	ok, err := cache.RotateFragmentForUserDevice(ctx, runtime.UserID, runtime.DeviceID, "jti-old", "dev-new", security.HashTokenSHA256("secret-new"), "jti-new", time.Minute, nil, nil)
 	if err != nil || !ok {
 		t.Fatalf("rotate failed: ok=%v err=%v", ok, err)
 	}
 
 	// new jti must verify; old jti must verify ONLY within grace window
-	if ok, _ := cache.VerifyFragmentAndJTI(ctx, runtime.TrackingID, "dev-new", "secret-new", "jti-new", 0); !ok {
+	record, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, "dev-new")
+	if err != nil || record == nil {
+		t.Fatalf("get runtime after rotate: %v", err)
+	}
+	if ok := iamCache.MatchRuntime(record, "dev-new", "secret-new", "jti-new", 0); !ok {
 		t.Fatal("new jti should verify")
 	}
-	if ok, _ := cache.VerifyFragmentAndJTI(ctx, runtime.TrackingID, "dev-new", "secret-new", "jti-old", 0); ok {
+	if ok := iamCache.MatchRuntime(record, "dev-new", "secret-new", "jti-old", 0); ok {
 		t.Fatal("old jti must not verify without grace")
 	}
-	if ok, _ := cache.VerifyFragmentAndJTI(ctx, runtime.TrackingID, "dev-new", "secret-new", "jti-old", 5*time.Second); !ok {
+	if ok := iamCache.MatchRuntime(record, "dev-new", "secret-new", "jti-old", 5*time.Second); !ok {
 		t.Fatal("old jti must verify within grace window")
 	}
 }
@@ -130,20 +132,19 @@ func TestUserDeviceRuntimeDelete(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		TrackingID:       "track-4",
 		DeviceID:         "dev-4",
 		DeviceSecretHash: security.HashTokenSHA256("secret-4"),
 		CurrentJTI:       "jti-4",
-		TrackedDeviceRef: "tracked-4",
+		TrackedDeviceID:  "tracked-4",
 		UserID:           "user-4",
 	}
 	if err := cache.SetDeviceRuntime(ctx, runtime, time.Minute); err != nil {
 		t.Fatalf("set runtime: %v", err)
 	}
-	if err := cache.DeleteDeviceRuntime(ctx, runtime.TrackingID); err != nil {
+	if err := cache.DeleteDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID); err != nil {
 		t.Fatalf("delete runtime: %v", err)
 	}
-	stored, _ := cache.GetDeviceRuntime(ctx, runtime.TrackingID)
+	stored, _ := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID)
 	if stored != nil {
 		t.Fatalf("expected nil after delete, got %#v", stored)
 	}

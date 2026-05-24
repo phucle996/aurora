@@ -48,7 +48,7 @@ func TestConcurrentRotatePreservesInvariant(t *testing.T) {
 	testutil.PrepareCoreSchema(t, cfg, db)
 	repo := coreRepoImpl.NewSecretRepository(cfg, db)
 	family := seedFamily(t, repo, "access_token", 1, "secret-one")
-	rotator := coreSvcImpl.NewSecretRotationService(repo)
+	rotator := coreSvcImpl.NewSecretRotationService(repo, nil)
 
 	makeInput := func(id string, version int, secret string) coreEntity.RotateSecretFamilyInput {
 		cipher, err := security.EncryptSecret(secret)
@@ -108,7 +108,7 @@ func TestPubSubInvalidateReloadsRemoteCache(t *testing.T) {
 	family := seedFamily(t, repo, "refresh_token", 1, "secret-old")
 
 	readA := coreSvcImpl.NewSecretReadService(repo)
-	providerA := coreSvcImpl.NewCacheAsideSecretProviderWithTTL(readA, time.Hour)
+	providerA := coreCache.NewCacheAsideSecretProviderWithTTL(readA, time.Hour)
 	busA := coreCache.NewRedisSecretInvalidationBus(rdb, providerA, "node-a")
 	listenCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -123,7 +123,7 @@ func TestPubSubInvalidateReloadsRemoteCache(t *testing.T) {
 	}
 
 	busB := coreCache.NewRedisSecretInvalidationBus(rdb, providerA, "node-b")
-	rotatorB := coreSvcImpl.NewSecretRotationServiceWithNotifier(repo, busB)
+	rotatorB := coreSvcImpl.NewSecretRotationService(repo, busB)
 	cipherNew, err := security.EncryptSecret("secret-new")
 	if err != nil {
 		t.Fatalf("encrypt new secret: %v", err)
