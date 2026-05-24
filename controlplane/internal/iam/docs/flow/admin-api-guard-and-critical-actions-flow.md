@@ -36,7 +36,7 @@ Critical routes cần thêm 2 lớp guard:
 
 Ví dụ route critical hiện hành:
 - `POST /admin/auth/rotate-key`
-  - `RateLimit("iam_admin_auth_rotate_key", 5 req/min)`
+  - `RateLimitPreAuth("iam_admin_auth_rotate_key", 5 req/min)`
   - `AdminCIDR(SECURITY_ADMIN_ALLOWED_CIDRS)`
   - `AdminAPIKeyAuth`
   - `AdminCriticalActionSignatureGuard(nonceTTL=1m, skew=2m)`

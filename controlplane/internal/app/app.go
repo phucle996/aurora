@@ -112,6 +112,9 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	app.prom = promObs
 
+	ratelimiter := ratelimit.NewBucket(rds)
+	ratelimiter.SetFailOpen(false)
+
 	// HTTP engine bootstrap.
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -123,18 +126,17 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Global middlewares được áp dụng trước khi register routes.
 	engine.Use(
 		gin.Recovery(),
+		middleware.RequestID(),
 		middleware.OTelTraceContext(otelObs),
 		middleware.PrometheusHTTPMetrics(promObs),
 		middleware.CORS(cfg.App.AllowedOrigins),
 		middleware.CookieOriginGuard(cfg.App.AllowedOrigins),
+		middleware.RateLimitPreAuth(ratelimiter, "global_preauth", 1200, 1200, time.Minute),
 		middleware.AccessLog(),
-		middleware.RequestID(),
 	)
 	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 
 	// Module bootstrap.
-	ratelimiter := ratelimit.NewBucket(rds)
-	ratelimiter.SetFailOpen(false)
 	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter)
 	if err != nil {
 		app.Stop()

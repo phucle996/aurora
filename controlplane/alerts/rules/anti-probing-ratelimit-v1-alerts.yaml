@@ -1,0 +1,110 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: controlplane-anti-probing-ratelimit-v1
+  labels:
+    app.kubernetes.io/name: controlplane
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: anti-probing
+spec:
+  groups:
+    - name: controlplane.anti-probing.ratelimit.v1
+      interval: 30s
+      rules:
+        # Case: deny-cache hit ratio thấp kéo dài => cache không offload được Redis như kỳ vọng.
+        # Severity: warning (quan trọng mức trung bình, chưa phải outage ngay).
+        # Urgency: xử lý trong giờ làm việc; nếu đồng thời Redis latency tăng thì nâng mức ưu tiên.
+        - alert: ControlplaneRateLimitLocalCacheHitRatioLow
+          expr: |
+            (
+              sum(rate(security_ratelimit_local_cache_total{action="hit"}[10m]))
+              /
+              clamp_min(sum(rate(security_ratelimit_local_cache_total{action="lookup"}[10m])), 1)
+            ) < 0.15
+          for: 15m
+          labels:
+            severity: warning
+            team: controlplane-security
+            component: anti-probing
+          annotations:
+            summary: "RateLimit local deny-cache hit ratio is low"
+            description: "Local deny-cache offload is weak for 15m; Redis hot-path pressure may increase."
+            impact: "Redis hot-path có thể chịu tải cao hơn dự kiến, p95/p99 auth path có nguy cơ tăng."
+            first_action: "Kiểm tra Redis latency/QPS và ratio hit/lookup theo rule_scope; nếu Redis căng thì tăng tạm cap cache hoặc nới TTL blocked ngắn hạn theo policy."
+            runbook_url: "https://runbooks.example.internal/controlplane/anti-probing/local-cache-hit-ratio-low"
+
+        # Case: cache chạm trần và drop key mới liên tục => bắt đầu mất hiệu quả chặn local.
+        # Severity: critical (quan trọng cao, ảnh hưởng trực tiếp khả năng bảo vệ under load).
+        # Urgency: cần xử lý gấp (on-call), vì có thể kéo theo Redis hot-path pressure/cascade.
+        - alert: ControlplaneRateLimitLocalCacheSaturationDropsHigh
+          expr: |
+            sum(rate(security_ratelimit_local_cache_total{action="set_drop_at_capacity"}[10m])) > 5
+          for: 10m
+          labels:
+            severity: critical
+            team: controlplane-security
+            component: anti-probing
+          annotations:
+            summary: "RateLimit local deny-cache is dropping entries at capacity"
+            description: "Deny-cache hits max capacity and drops new blocked subjects; review cache cap/TTL policy."
+            impact: "Mất hiệu quả block fast-path local, request bị chặn quay lại Redis nhiều hơn, tăng rủi ro cascade under abuse."
+            first_action: "On-call: kiểm tra set_drop_at_capacity theo rule_scope, đánh giá tăng cap cache hoặc giảm TTL blocked tạm thời; đồng thời theo dõi Redis saturation."
+            runbook_url: "https://runbooks.example.internal/controlplane/anti-probing/local-cache-saturation"
+
+        # Case: eviction expired tăng đột biến => churn subject/TTL rất cao, traffic pattern bất thường.
+        # Severity: warning (quan trọng trung bình-cao, là tín hiệu cần điều tra abuse pattern).
+        # Urgency: xử lý sớm; chưa gấp bằng saturation drop nhưng không nên để kéo dài.
+        - alert: ControlplaneRateLimitLocalCacheEvictionSpike
+          expr: |
+            sum(rate(security_ratelimit_local_cache_total{action="evict_expired"}[10m])) > 200
+          for: 15m
+          labels:
+            severity: warning
+            team: controlplane-security
+            component: anti-probing
+          annotations:
+            summary: "RateLimit local deny-cache eviction spike detected"
+            description: "Expired-key churn is high; review retry-after patterns and abuse traffic characteristics."
+            impact: "Churn key cao làm giảm hiệu quả locality, có thể là dấu hiệu traffic abuse phân tán hoặc TTL policy chưa phù hợp."
+            first_action: "So sánh eviction spike với blocked decision rate và source pattern (ip/device/user); review retry-after distribution theo route_scope."
+            runbook_url: "https://runbooks.example.internal/controlplane/anti-probing/local-cache-eviction-spike"
+
+        # Case: dependency backend (Redis/limiter backend) lỗi liên tục trên rate-limit path.
+        # Severity: critical (ảnh hưởng trực tiếp admission behavior và availability/security posture).
+        # Urgency: xử lý gấp theo on-call vì có nguy cơ cascade ở auth/control-plane path.
+        - alert: ControlplaneRateLimitBackendUnavailableSurge
+          expr: |
+            sum(rate(security_ratelimit_error_total{error_type="backend_unavailable"}[5m])) > 3
+          for: 10m
+          labels:
+            severity: critical
+            team: controlplane-security
+            component: anti-probing
+          annotations:
+            summary: "RateLimit backend_unavailable errors are surging"
+            description: "Rate-limit backend errors persist for 10m; Redis/limiter dependency may be degraded."
+            impact: "Admission/security enforcement có thể degrade hoặc trả lỗi tăng, ảnh hưởng trực tiếp auth/control-plane traffic."
+            first_action: "Kiểm tra Redis health (latency, saturation, network), đối chiếu security_ratelimit_error_total theo route_pattern và quyết định fail-open/fail-closed theo incident policy."
+            runbook_url: "https://runbooks.example.internal/controlplane/anti-probing/backend-unavailable-surge"
+
+        # Case: tỷ lệ lỗi backend cao so với tổng blocked decisions.
+        # Severity: warning (tín hiệu sớm backend instability trước khi thành critical outage).
+        # Urgency: xử lý sớm, escalate nếu kéo dài hoặc đồng thời có backend_unavailable surge.
+        - alert: ControlplaneRateLimitBackendErrorToBlockedRatioHigh
+          expr: |
+            (
+              sum(rate(security_ratelimit_error_total{error_type="backend_unavailable"}[10m]))
+              /
+              clamp_min(sum(rate(security_ratelimit_check_total{result="blocked"}[10m])), 1)
+            ) > 0.2
+          for: 15m
+          labels:
+            severity: warning
+            team: controlplane-security
+            component: anti-probing
+          annotations:
+            summary: "RateLimit backend error to blocked ratio is high"
+            description: "Backend errors are disproportionately high versus blocked decisions in 15m window."
+            impact: "Cho thấy path deny đang phụ thuộc backend không ổn định; khả năng degradations lan rộng khi load tăng."
+            first_action: "So sánh ratio theo khung thời gian 30m/1h, kiểm tra cache hit ratio và error bursts theo route_scope để khoanh vùng dependency issue."
+            runbook_url: "https://runbooks.example.internal/controlplane/anti-probing/backend-error-ratio-high"
