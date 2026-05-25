@@ -1,11 +1,11 @@
-package policySvcImpl
+package policyruntime
 
 import (
 	"context"
 	"encoding/json"
 	"strings"
 
-	policyEntity "controlplane/internal/policyengine/domain/entity"
+	policyEntity "controlplane/internal/policyengine/runtime/types"
 
 	goredis "github.com/redis/go-redis/v9"
 )

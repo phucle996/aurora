@@ -84,7 +84,7 @@
 > Không có HTTP API contract cho module này theo quyết định phạm vi.
 
 ### 7.1 Internal Service Contract
-- Symbol/path: `policyengine/domain/service.EngineService`
+- Symbol/path: `policyengine/runtime.EngineService`
 - Owner layer: service
 
 **`Current(ctx)`**

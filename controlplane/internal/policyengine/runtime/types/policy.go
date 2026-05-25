@@ -1,4 +1,4 @@
-package policyEntity
+package policytypes
 
 import "time"
 

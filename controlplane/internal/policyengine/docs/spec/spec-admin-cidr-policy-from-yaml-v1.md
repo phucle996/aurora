@@ -39,7 +39,7 @@
   - `app/module`: wiring dependency giữa middleware và policyengine service.
 
 ### 5.1 Typed YAML Config Model (bắt buộc)
-- Tạo file model tại `internal/policyengine/config-yaml/policies.go` để định nghĩa struct parse YAML.
+- Tạo file model tại `internal/policyengine/runtime/configyaml/policies.go` để định nghĩa struct parse YAML.
 - Mục tiêu:
   - Tránh parse trực tiếp bằng `map[string]interface{}` trong middleware.
   - Khóa contract field-level rõ như config hiện tại.
@@ -65,7 +65,7 @@
 
 ### 6.1 YAML shape và parse contract (bắt buộc)
 - Runtime source file: `policies.yaml`.
-- Typed parse model: `internal/policyengine/config-yaml/policies.go`.
+- Typed parse model: `internal/policyengine/runtime/configyaml/policies.go`.
 - YAML tối thiểu:
   - `version: v1`
   - `policies.admin_cidr.enabled: bool`
@@ -116,7 +116,7 @@ policies:
 
 ### 7.1 Internal Contract: Policy Keys
 - Symbol/path: `policies.admin_cidr`
-- Typed source struct (trong `internal/policyengine/config-yaml`):
+- Typed source struct (trong `internal/policyengine/runtime/configyaml`):
   - `AdminCIDRPolicy.Enabled bool    `yaml:"enabled"``
   - `AdminCIDRPolicy.Mode string     `yaml:"mode"``
   - `AdminCIDRPolicy.Allowlist []string `yaml:"allowlist"``

@@ -1,4 +1,4 @@
-package policyengine
+package configyaml
 
 // File này định nghĩa typed schema để parse `policies.yaml` runtime.
 //

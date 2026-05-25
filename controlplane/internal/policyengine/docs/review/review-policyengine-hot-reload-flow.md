@@ -4,14 +4,14 @@
 - Entrypoint flow reviewed: `policyengine.NewModule` -> `EngineService.Start` -> `runReloadLoop` / `runPropagationConsumeLoop` -> `Reload` -> `loadPolicySnapshotFromSource`.
 - Terminal boundaries:
   - Source read: YAML file adapter (`internal/policyengine/adapter/yaml_file_source_adapter.go`).
-  - Cross-instance bus: Redis Pub/Sub notifier (`internal/policyengine/service/redis_notifier.go`).
+  - Cross-instance bus: Redis Pub/Sub notifier (`internal/policyengine/runtime/redis_notifier.go`).
 - Files/functions reviewed:
   - `internal/policyengine/module.go`: `NewModule`, `Stop`
-  - `internal/policyengine/service/engine_service.go`: `NewEngineService`, `Start`, `Current`, `Reload`, `runReloadLoop`, `runPropagationConsumeLoop`, `loadPolicySnapshotFromSource`
-  - `internal/policyengine/service/redis_notifier.go`: `NewRedisPubSubNotifier`, `PublishPolicyChanged`, `SubscribePolicyChanged`
+  - `internal/policyengine/runtime/engine_service.go`: `NewEngineService`, `Start`, `Current`, `Reload`, `runReloadLoop`, `runPropagationConsumeLoop`, `loadPolicySnapshotFromSource`
+  - `internal/policyengine/runtime/redis_notifier.go`: `NewRedisPubSubNotifier`, `PublishPolicyChanged`, `SubscribePolicyChanged`
   - `internal/policyengine/adapter/yaml_file_source_adapter.go`: `ReadMeta`, `ReadCurrent`
-  - `internal/policyengine/domain/service/engine_service.go`: interfaces/contracts
-  - `internal/policyengine/domain/entity/policy.go`: runtime entities
+  - `internal/policyengine/runtime/engine_service.go`: interfaces/contracts
+  - `internal/policyengine/runtime/types/policy.go`: runtime entities
   - `internal/policyengine/docs/spec/spec-policy-engine-hot-reload-v1.md`
 
 ## 2. End-to-End Call Graph
@@ -35,7 +35,7 @@
 - Confidence: High
 
 2) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:53`
+- Location: `internal/policyengine/runtime/engine_service.go:53`
 - Function: `NewEngineService`
 - Reason: Constructor không tự spawn goroutine; lifecycle thuộc module.
 - Impact: Tránh hidden side-effect khi DI/provisioning.
@@ -44,7 +44,7 @@
 
 ## 4. Ownership & Source of Truth Findings
 1) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:183`
+- Location: `internal/policyengine/runtime/engine_service.go:183`
 - Function: `loadPolicySnapshotFromSource`
 - Reason: SoT là YAML file; service không đụng DB.
 - Impact: Đúng decision “DB chỉ business data”.
@@ -52,7 +52,7 @@
 - Confidence: High
 
 2) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:123`
+- Location: `internal/policyengine/runtime/engine_service.go:123`
 - Function: `Reload`
 - Reason: `lastChecksum`/`lastMetaKey` là authority nội bộ cho dedupe/swap.
 - Impact: Tránh swap lặp, giữ hot path ổn định.
@@ -61,7 +61,7 @@
 
 ## 5. Duplicate Logic / Duplicate Data Findings
 1) **Confirmed**
-- Location: `internal/policyengine/adapter/yaml_file_source_adapter.go:24` and `internal/policyengine/service/engine_service.go:87`
+- Location: `internal/policyengine/adapter/yaml_file_source_adapter.go:24` and `internal/policyengine/runtime/engine_service.go:87`
 - Function: `ReadMeta`, `Reload`
 - Reason: Metadata key được tạo nhiều nơi (adapter tạo fields, service tự compose `metaKey`).
 - Impact: Rủi ro drift format key nếu thay đổi 1 bên.
@@ -78,7 +78,7 @@
 - Confidence: High
 
 2) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:28`
+- Location: `internal/policyengine/runtime/engine_service.go:28`
 - Function: constants
 - Reason: Cooldown 5s hardcoded; không nêu rõ ảnh hưởng convergence SLA trong code.
 - Impact: Thay đổi burst behavior cần patch code, khó tune vận hành.
@@ -87,7 +87,7 @@
 
 ## 7. Bottleneck & Performance Findings
 1) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:87`
+- Location: `internal/policyengine/runtime/engine_service.go:87`
 - Function: `Reload`
 - Reason: Đã có metadata-first gate trước read/parse, giảm IO/CPU khi file không đổi.
 - Impact: Giảm cost đáng kể ở steady-state.
@@ -95,7 +95,7 @@
 - Confidence: High
 
 2) **Hypothesis**
-- Location: `internal/policyengine/service/engine_service.go:162`
+- Location: `internal/policyengine/runtime/engine_service.go:162`
 - Function: `runPropagationConsumeLoop`
 - Reason: Event consumer channel buffer=1; nếu burst event + parse chậm có thể drop timeliness (không drop data vì reload re-check source).
 - Impact: Convergence latency tăng trong burst.
@@ -107,7 +107,7 @@
   - Within instance: atomic swap semantics (RWMutex guarded state update).
   - Cross-instance: eventual consistency via Redis event trigger + local source reload.
 - Finding:
-  - Location: `internal/policyengine/service/engine_service.go:162`
+  - Location: `internal/policyengine/runtime/engine_service.go:162`
   - Function: `runPropagationConsumeLoop`
   - Reason: consumer relies on event for fast path, poll for fallback.
   - Impact: Guarantees eventual, not strong consistency.
@@ -116,7 +116,7 @@
 
 ## 9. Cache / Consistency / Staleness Findings
 1) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:110`
+- Location: `internal/policyengine/runtime/engine_service.go:110`
 - Function: `Reload`
 - Reason: `last-known-good` behavior achieved by no mutation on parse/validate error.
 - Impact: stale window controlled, no poison-snapshot overwrite.
@@ -124,7 +124,7 @@
 - Confidence: High
 
 2) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:128`
+- Location: `internal/policyengine/runtime/engine_service.go:128`
 - Function: `Reload`
 - Reason: cooldown 5s có thể kéo dài stale window có chủ đích.
 - Impact: đổi mới policy có thể delay apply tối đa gần 5s/instance.
@@ -145,12 +145,12 @@
 - Reason:
   - Spec nói có propagation event path đầy đủ và observability contract tối thiểu; code hiện tại đã có consume path nhưng thiếu publish path trong `Reload` (removed previously).
 - Evidence:
-  - `internal/policyengine/service/engine_service.go:140` (no `PublishPolicyChanged` call after swap).
+  - `internal/policyengine/runtime/engine_service.go:140` (no `PublishPolicyChanged` call after swap).
 - Confidence: High
 
 ## 12. Degradation & Failure Cascade Findings
 1) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:166`
+- Location: `internal/policyengine/runtime/engine_service.go:166`
 - Function: `runPropagationConsumeLoop`
 - Reason: subscribe fail -> log warn -> return; no retry loop inside consumer.
 - Impact: event acceleration mất cho đến restart module/service context.
@@ -158,7 +158,7 @@
 - Confidence: High
 
 2) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:148`
+- Location: `internal/policyengine/runtime/engine_service.go:148`
 - Function: `runReloadLoop`
 - Reason: poll loop continues independently; prevents full cascade.
 - Impact: resilience tốt nhưng convergence chậm hơn khi bus lỗi.
@@ -186,7 +186,7 @@
 - Confidence: High
 
 2) **Confirmed**
-- Location: `internal/policyengine/service/engine_service.go:94`
+- Location: `internal/policyengine/runtime/engine_service.go:94`
 - Function: `Reload`
 - Reason: `ReadMeta` error silently falls through to full read path (not logged at metadata stage).
 - Impact: debug harder for intermittent stat errors.
@@ -196,24 +196,24 @@
 ## 15. Risk Ranking (P0/P1/P2)
 - **P0**
   - Missing publish on successful reload causes cross-instance fast sync contract to be incomplete.
-  - Location: `internal/policyengine/service/engine_service.go:140`
+  - Location: `internal/policyengine/runtime/engine_service.go:140`
 - **P1**
   - Propagation consumer exits on subscribe failure without retry.
-  - Location: `internal/policyengine/service/engine_service.go:166`
+  - Location: `internal/policyengine/runtime/engine_service.go:166`
 - **P1**
   - Hardcoded path operational drift risk.
   - Location: `internal/policyengine/module.go:33`
 - **P2**
   - Meta-key composition duplicated, maintenance drift risk.
-  - Location: `internal/policyengine/service/engine_service.go:92,208`
+  - Location: `internal/policyengine/runtime/engine_service.go:92,208`
 
 ## 16. Optimization Recommendations
 1) Priority: P0 | Effort: S | Risk Reduction: High | Expected Gain: restore near-instant cross-instance convergence
-- Impacted file/function: `internal/policyengine/service/engine_service.go:Reload`
+- Impacted file/function: `internal/policyengine/runtime/engine_service.go:Reload`
 - Recommendation: re-add `notifier.PublishPolicyChanged(...)` after successful swap; keep best-effort (warn only, no rollback).
 
 2) Priority: P1 | Effort: M | Risk Reduction: Medium | Expected Gain: propagation resilience under Redis flaps
-- Impacted file/function: `internal/policyengine/service/engine_service.go:runPropagationConsumeLoop`
+- Impacted file/function: `internal/policyengine/runtime/engine_service.go:runPropagationConsumeLoop`
 - Recommendation: wrap subscribe in retry loop with backoff (2s->4s->8s max 30s) instead of return-once.
 
 3) Priority: P1 | Effort: S | Risk Reduction: Medium | Expected Gain: deploy portability
@@ -221,7 +221,7 @@
 - Recommendation: inject source path from module config/bootstrap constant; avoid hardcoded literal in constructor call.
 
 4) Priority: P2 | Effort: S | Risk Reduction: Low | Expected Gain: maintainability
-- Impacted file/function: `internal/policyengine/service/engine_service.go`
+- Impacted file/function: `internal/policyengine/runtime/engine_service.go`
 - Recommendation: centralize `metaKey` builder helper để tránh drift string format.
 
 ## 17. Verification Plan

@@ -65,8 +65,8 @@ Thiết kế chốt:
 - Không đổi business modules; chỉ wire adapter tại `internal/app/module.go`.
 
 ## 7. Phạm vi thay đổi chính (theo Option B)
-- `internal/policyengine/domain/service`: thêm/chuẩn hóa contract `PolicySourceAdapter`.
-- `internal/policyengine/service`: refactor engine core + tách adapters theo môi trường.
+- `internal/policyengine/runtime`: thêm/chuẩn hóa contract `PolicySourceAdapter`.
+- `internal/policyengine/runtime`: refactor engine core + tách adapters theo môi trường.
 - `internal/policyengine/module.go`: nhận adapter dependency và dựng module fail-fast.
 - `internal/app/module.go`: chọn adapter theo runtime config và inject vào policyengine.
 
@@ -81,9 +81,9 @@ Thiết kế chốt:
 
 ### Code Survey
 - `internal/policyengine/module.go`: có module bootstrap service.
-- `internal/policyengine/domain/entity/policy.go`: có `PolicySet` runtime shape.
-- `internal/policyengine/domain/service/engine_service.go`: có contract `Current`/`Reload`.
-- `internal/policyengine/service/engine_service.go`: đã có baseline reload YAML + checksum + atomic swap.
+- `internal/policyengine/runtime/types/policy.go`: có `PolicySet` runtime shape.
+- `internal/policyengine/runtime/engine_service.go`: có contract `Current`/`Reload`.
+- `internal/policyengine/runtime/engine_service.go`: đã có baseline reload YAML + checksum + atomic swap.
 
 ### Bằng chứng code
 - Nền tảng module đã có và không phụ thuộc DB cho policy runtime.

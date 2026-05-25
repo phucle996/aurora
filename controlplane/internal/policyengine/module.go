@@ -6,14 +6,13 @@ import (
 
 	"controlplane/internal/config"
 	policyAdapter "controlplane/internal/policyengine/adapter"
-	policySvcInterface "controlplane/internal/policyengine/domain/service"
-	policySvcImpl "controlplane/internal/policyengine/service"
+	policyruntime "controlplane/internal/policyengine/runtime"
 
 	goredis "github.com/redis/go-redis/v9"
 )
 
 type Module struct {
-	EngineService policySvcInterface.EngineService
+	EngineService *policyruntime.EngineService
 	workerCancel  context.CancelFunc
 }
 
@@ -35,7 +34,7 @@ func NewModule(cfg *config.Config, rds *goredis.Client) (*Module, error) {
 		return nil, errors.New("policyengine: source adapter is required")
 	}
 	// Notifier/subscriber dùng chung Redis Pub/Sub implementation để giảm indirection.
-	notifier := policySvcImpl.NewRedisPubSubNotifier(rds, "policyengine.policy.changed.v1")
+	notifier := policyruntime.NewRedisPubSubNotifier(rds, "policyengine.policy.changed.v1")
 	if notifier == nil {
 		return nil, errors.New("policyengine: propagation notifier is required")
 	}
@@ -43,13 +42,17 @@ func NewModule(cfg *config.Config, rds *goredis.Client) (*Module, error) {
 	if subscriber == nil {
 		return nil, errors.New("policyengine: event subscriber is required")
 	}
-	service := policySvcImpl.NewEngineService(cfg, source, notifier, subscriber)
+	service := policyruntime.NewEngineService(cfg, source, notifier, subscriber)
 	if service == nil {
 		return nil, errors.New("policyengine: engine service is required")
 	}
 	// Worker lifecycle phải gắn context cancel để Stop() dừng sạch background loops.
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	service.Start(workerCtx)
+	if _, err := service.Reload(workerCtx); err != nil {
+		workerCancel()
+		return nil, err
+	}
 	return &Module{
 		EngineService: service,
 		workerCancel:  workerCancel,

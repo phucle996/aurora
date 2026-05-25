@@ -33,10 +33,10 @@ Mục tiêu chính:
 - `internal/app/module.go`
   - CURRENT_CODE: init middleware lấy CIDR từ config tĩnh.
   - GAP: không dùng policyengine snapshot cho admin_cidr.
-- `internal/policyengine/config-yaml/policies.go`
+- `internal/policyengine/runtime/configyaml/policies.go`
   - CURRENT_CODE: đã có typed struct `PoliciesFile` và `AdminCIDRPolicy`.
   - GAP: chưa có flow compile typed admin_cidr runtime var cấp cho middleware.
-- `internal/policyengine/service/engine_service.go`
+- `internal/policyengine/runtime/engine_service.go`
   - CURRENT_CODE: parse YAML contract v1 và giữ snapshot runtime.
   - GAP: snapshot payload vẫn generic map; chưa expose typed accessor cho admin_cidr.
 - Docs mismatch risk:
@@ -55,18 +55,18 @@ Mục tiêu chính:
 
 ## 5. File-Scoped Action Plan (gộp file + function)
 
-- `internal/policyengine/domain/service/engine_service.go` (layer: service contract)
+- `internal/policyengine/runtime/engine_service.go` (layer: service contract)
   - `type EngineService`
     - Current state: `Start`, `Current`, `Reload`.
     - Planned action: **keep** API generic, không thêm method nghiệp vụ theo middleware cụ thể.
     - Expected behavior: policyengine không biết domain admin_cidr ở tầng service contract.
 
-- `internal/policyengine/domain/entity/policy.go` (layer: domain entity)
+- `internal/policyengine/runtime/types/policy.go` (layer: domain entity)
   - `type PolicySet`
     - Planned action: **update** để chứa runtime typed variables generic (đã parse/compile), không tạo getter theo module consumer.
     - Expected behavior: caller đọc biến typed từ snapshot, không parse CIDR per-request.
 
-- `internal/policyengine/service/engine_service.go` (layer: service impl)
+- `internal/policyengine/runtime/engine_service.go` (layer: service impl)
   - `func parsePoliciesYAML(...)` (new)
     - Planned action: **add** hàm chuyên parse YAML -> typed struct `PoliciesFile`.
     - Expected behavior: lock contract parse theo model typed, không dùng map generic.

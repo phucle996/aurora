@@ -25,10 +25,10 @@ Mục tiêu của plan này là đưa code về đúng scope: **runtime hot-relo
 - Không thay đổi middleware business logic trong plan này.
 
 ## 3. Pre-Change Log
-- `internal/policyengine/service/engine_service.go`
+- `internal/policyengine/runtime/engine_service.go`
   - CURRENT_CODE: poll-only mỗi 3s; load YAML; checksum compare; swap snapshot; log Info/Warn.
   - GAP: chưa có watch-first/poll-fallback mode; chưa có adapter abstraction; chưa có Redis propagation.
-- `internal/policyengine/domain/service/engine_service.go`
+- `internal/policyengine/runtime/engine_service.go`
   - CURRENT_CODE: chỉ có `EngineService{Current, Reload}`.
   - GAP: thiếu contract cho source adapter và propagation notifier.
 - `internal/policyengine/module.go`
@@ -55,7 +55,7 @@ Mục tiêu của plan này là đưa code về đúng scope: **runtime hot-relo
   - `NewEngineService` giữ entrypoint công khai, mở rộng signature theo dependency injection (nếu cần) bằng constructor mới để tránh break lớn ngay lập tức.
 
 ## 5. File-Scoped Action Plan (gộp file + function)
-- `internal/policyengine/domain/service/engine_service.go` (layer: service contract)
+- `internal/policyengine/runtime/engine_service.go` (layer: service contract)
   - `type EngineService`
     - Current state: `Current`, `Reload`.
     - Planned action: **update** giữ nguyên 2 method; thêm comment contract fail-fast/fallback.
@@ -67,7 +67,7 @@ Mục tiêu của plan này là đưa code về đúng scope: **runtime hot-relo
     - Planned action: **add** contract publish/subscribe event metadata.
     - Caller/callee impact: `service/engine_service.go` consume notifier.
 
-- `internal/policyengine/service/engine_service.go` (layer: service impl)
+- `internal/policyengine/runtime/engine_service.go` (layer: service impl)
   - `func NewEngineService(...)`
     - Current state: nhận `cfg`, tự tạo poll loop background.
     - Planned action: **update** để nhận injected adapter + notifier + options (poll interval, size cap).
@@ -91,7 +91,7 @@ Mục tiêu của plan này là đưa code về đúng scope: **runtime hot-relo
   - `func resolvePolicyFilePath()`
     - Planned action: **remove or move** vào file adapter nếu path ownership chuyển sang adapter.
 
-- `internal/policyengine/service/*adapter*.go` (new files, layer: service infra-adapter)
+- `internal/policyengine/runtime/*adapter*.go` (new files, layer: service infra-adapter)
   - `type FileSourceAdapter` (new)
     - Planned action: **add** adapter cho file source; watch-first/poll-fallback.
     - Expected behavior: emit onChange coalesced, tránh burst.

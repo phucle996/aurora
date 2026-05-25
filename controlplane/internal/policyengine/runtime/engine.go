@@ -1,4 +1,4 @@
-package policySvcImpl
+package policyruntime
 
 import (
 	"context"
@@ -10,9 +10,8 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	policyConfigYAML "controlplane/internal/policyengine/config-yaml"
-	policyEntity "controlplane/internal/policyengine/domain/entity"
-	policySvcInterface "controlplane/internal/policyengine/domain/service"
+	policyConfigYAML "controlplane/internal/policyengine/runtime/configyaml"
+	policyEntity "controlplane/internal/policyengine/runtime/types"
 	policyErrorx "controlplane/internal/policyengine/errorx"
 	"controlplane/pkg/logger"
 
@@ -39,9 +38,9 @@ type EngineService struct {
 	mu  sync.RWMutex
 	cur *policyEntity.PolicySet
 
-	sourceAdapter policySvcInterface.PolicySourceAdapter
-	notifier      policySvcInterface.PolicyPropagationNotifier
-	subscriber    policySvcInterface.PolicyEventSubscriber
+	sourceAdapter PolicySourceAdapter
+	notifier      PolicyPropagationNotifier
+	subscriber    PolicyEventSubscriber
 	lastChecksum  string
 	lastMetaKey   string
 	lastReloadAt  time.Time
@@ -56,10 +55,10 @@ type EngineService struct {
 // - Các dependency fail-fast được validate ở module boundary trước khi khởi tạo.
 func NewEngineService(
 	cfg *config.Config,
-	source policySvcInterface.PolicySourceAdapter,
-	notifier policySvcInterface.PolicyPropagationNotifier,
-	subscriber policySvcInterface.PolicyEventSubscriber,
-) policySvcInterface.EngineService {
+	source PolicySourceAdapter,
+	notifier PolicyPropagationNotifier,
+	subscriber PolicyEventSubscriber,
+) *EngineService {
 	return &EngineService{
 		cfg:           cfg,
 		sourceAdapter: source,
@@ -172,9 +171,7 @@ func (s *EngineService) Reload(ctx context.Context) (*policyEntity.PolicySet, er
 func (s *EngineService) runReloadLoop(ctx context.Context) {
 	ticker := time.NewTicker(defaultPolicyPollPeriod)
 	defer ticker.Stop()
-	if _, err := s.Reload(ctx); err != nil {
-		logger.SysWarnFields(opPolicyReloadFailed, "initial policy reload failed, waiting next poll", err, logger.Fields{})
-	}
+	_, _ = s.Reload(ctx)
 	for {
 		select {
 		case <-ctx.Done():

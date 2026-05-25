@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	policyEntity "controlplane/internal/policyengine/domain/entity"
+	policyEntity "controlplane/internal/policyengine/runtime/types"
 )
 
 // YAMLFileSourceAdapter reads YAML policy file from fixed runtime path.
