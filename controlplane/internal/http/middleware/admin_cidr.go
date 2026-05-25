@@ -21,7 +21,7 @@ type adminCIDRAllowlist struct {
 	// fail-closed cho case config có giá trị nhưng toàn bộ đều invalid.
 	enabled  bool
 	networks []*net.IPNet
-	ips      []net.IP
+	exactSet map[string]struct{}
 }
 
 // InitAdminCIDR khởi tạo allowlist IP/CIDR cho admin routes.
@@ -52,27 +52,37 @@ func InitAdminCIDR(allowedCIDRs []string) {
 // init trong package middleware và quyết định pass/block request.
 func AdminCIDR() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		allowlist := getAdminCIDRAllowlist()
-		if !isIPAllowed(c.ClientIP(), allowlist) {
-			apires.RespondForbidden(c, "access denied: IP address not in whitelist")
-			c.Abort()
-			return
+		adminCIDRState.mu.RLock()
+		allowlist := adminCIDRState.allowlist
+		adminCIDRState.mu.RUnlock()
+
+		if allowlist.enabled {
+			ip := net.ParseIP(strings.TrimSpace(c.ClientIP()))
+			allowed := false
+			if ip != nil {
+				if allowlist.exactSet != nil {
+					if _, ok := allowlist.exactSet[ip.String()]; ok {
+						allowed = true
+					}
+				}
+				if !allowed {
+					for _, block := range allowlist.networks {
+						if block.Contains(ip) {
+							allowed = true
+							break
+						}
+					}
+				}
+			}
+			if !allowed {
+				apires.RespondForbidden(c, "access denied: IP address not in whitelist")
+				c.Abort()
+				return
+			}
 		}
+
 		c.Next()
 	}
-}
-
-// getAdminCIDRAllowlist copy struct header dưới read lock.
-//
-// Compiled rules là immutable sau InitAdminCIDR. Nếu sau này có config reload và
-// InitAdminCIDR được gọi lại, state chỉ được replace bằng allowlist mới, không
-// mutate allowlist cũ. Vì vậy request đang chạy có thể dùng snapshot này an toàn
-// mà không cần allocate copy slice trên từng request.
-func getAdminCIDRAllowlist() adminCIDRAllowlist {
-	adminCIDRState.mu.RLock()
-	allowlist := adminCIDRState.allowlist
-	adminCIDRState.mu.RUnlock()
-	return allowlist
 }
 
 // compileAdminCIDRAllowlist chuẩn hóa config thành rule có thể match trực tiếp.
@@ -81,6 +91,7 @@ func getAdminCIDRAllowlist() adminCIDRAllowlist {
 // rỗng. Nhờ vậy config sai sẽ fail-closed thay vì vô tình mở admin routes.
 func compileAdminCIDRAllowlist(values []string) adminCIDRAllowlist {
 	allowlist := adminCIDRAllowlist{}
+	allowlist.exactSet = make(map[string]struct{})
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -92,34 +103,11 @@ func compileAdminCIDRAllowlist(values []string) adminCIDRAllowlist {
 			continue
 		}
 		if ip := net.ParseIP(value); ip != nil {
-			allowlist.ips = append(allowlist.ips, ip)
+			allowlist.exactSet[ip.String()] = struct{}{}
 		}
+	}
+	if len(allowlist.exactSet) == 0 {
+		allowlist.exactSet = nil
 	}
 	return allowlist
-}
-
-// isIPAllowed kiểm tra IP client theo allowlist.
-//
-// Empty allowlist nghĩa là không bật IP restriction. Config mặc định có thể
-// dùng 0.0.0.0/0 hoặc ::/0, nhưng empty list vẫn được xem là allow-all để tránh
-// fail-close ngoài ý muốn khi môi trường chưa cấu hình CIDR.
-func isIPAllowed(ipText string, allowlist adminCIDRAllowlist) bool {
-	if !allowlist.enabled {
-		return true
-	}
-	ip := net.ParseIP(strings.TrimSpace(ipText))
-	if ip == nil {
-		return false
-	}
-	for _, block := range allowlist.networks {
-		if block.Contains(ip) {
-			return true
-		}
-	}
-	for _, exact := range allowlist.ips {
-		if exact.Equal(ip) {
-			return true
-		}
-	}
-	return false
 }

@@ -16,6 +16,7 @@ import (
 	iamCache "controlplane/internal/iam/cache"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamRepoImpl "controlplane/internal/iam/repository"
+	"controlplane/internal/policyengine"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 
@@ -30,17 +31,19 @@ type Modules struct {
 	Core *core.Module
 	// IAM là module authn/authz của controlplane.
 	IAM *iam.Module
-	probeCancel context.CancelFunc
+	// PolicyEngine là runtime hot-reload module cho policies.
+	PolicyEngine *policyengine.Module
+	probeCancel  context.CancelFunc
 }
 
 // NewGlobalModules là điểm dựng module graph ở app-layer và là nơi fail-fast
 // chính cho bootstrap cross-module.
 //
 // CONTRACT:
-// - Dựng theo thứ tự: Core -> security adapter -> IAM -> middleware wiring.
-// - Chỉ `health.MarkReady()` khi toàn bộ graph dựng thành công.
-// - Bất kỳ lỗi ở dependency bắt buộc/cross-module phải return error ngay để
-//   caller (NewApplication/main) quyết định dừng app.
+//   - Dựng theo thứ tự: Core -> security adapter -> IAM -> middleware wiring.
+//   - Chỉ `health.MarkReady()` khi toàn bộ graph dựng thành công.
+//   - Bất kỳ lỗi ở dependency bắt buộc/cross-module phải return error ngay để
+//     caller (NewApplication/main) quyết định dừng app.
 //
 // BOUNDARY:
 // - Hàm này chỉ làm wiring + lifecycle bootstrap giữa các module.
@@ -95,23 +98,33 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, fmt.Errorf("app: init iam module: %w", err)
 	}
 
-	// 6) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rds); err != nil {
+	// 6) Policy engine bootstrap (runtime-only, fail-fast nếu dependency/wiring lỗi).
+	policyEngineModule, err := policyengine.NewModule(cfg, rds)
+	if err != nil {
+		return nil, fmt.Errorf("app: init policy engine module: %w", err)
+	}
+	if policyEngineModule == nil {
+		return nil, errors.New("app: init policy engine module: engine service is required")
+	}
+
+	// 7) Global middleware bootstrap (cross-module wiring).
+	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rds, policyEngineModule); err != nil {
 		return nil, err
 	}
 
-	// 7) Chỉ mark ready khi toàn bộ module graph đã dựng xong.
+	// 8) Chỉ mark ready khi toàn bộ module graph đã dựng xong.
 	health.MarkReady()
 
 	return &Modules{
-		Health: health,
-		Core:   coreModule,
-		IAM:    iamModule,
-		probeCancel: probeCancel,
+		Health:       health,
+		Core:         coreModule,
+		IAM:          iamModule,
+		PolicyEngine: policyEngineModule,
+		probeCancel:  probeCancel,
 	}, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client, policyModule *policyengine.Module) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}
@@ -127,7 +140,12 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	if rds == nil {
 		return errors.New("app: init middleware: redis client is required")
 	}
-	middleware.InitAdminCIDR(cfg.Security.AdminAllowedCIDRs)
+
+	policySnapshot, err := policyModule.EngineService.Current(context.Background())
+	if err != nil || policySnapshot == nil {
+		return errors.New("app: init middleware: active runtime policy is required")
+	}
+	middleware.InitAdminCIDR(policySnapshot.Runtime.AdminCIDR.Allowlist)
 	middleware.InitAccess(
 		securityProvider,
 		rds,
@@ -189,6 +207,9 @@ func (m *Modules) Stop() {
 	}
 	if m.Core != nil {
 		m.Core.Stop()
+	}
+	if m.PolicyEngine != nil {
+		m.PolicyEngine.Stop()
 	}
 }
 

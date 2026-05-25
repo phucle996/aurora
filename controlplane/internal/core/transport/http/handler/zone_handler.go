@@ -14,6 +14,7 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type ZoneHandler struct {
@@ -78,6 +79,12 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 	defer cancel()
 
 	zoneID := strings.TrimSpace(c.Param("zone_id"))
+	parsedZoneID, parseErr := uuid.Parse(zoneID)
+	if parseErr != nil {
+		logger.HandlerWarn(c, op, parseErr, "update zone invalid zone_id")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 	var request requestdto.UpdateZoneStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind update zone status request failed")
@@ -85,7 +92,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		return
 	}
 	status := coreEntity.ZoneStatus(strings.ToLower(strings.TrimSpace(request.Status)))
-	zone, err := h.zoneSvc.UpdateZoneStatus(ctx, zoneID, status)
+	zone, err := h.zoneSvc.UpdateZoneStatus(ctx, parsedZoneID.String(), status)
 	if err != nil {
 		switch {
 		case errors.Is(err, coreErrorx.ErrZoneInvalidInput):
@@ -112,7 +119,13 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 	defer cancel()
 
 	zoneID := strings.TrimSpace(c.Param("zone_id"))
-	if err := h.zoneSvc.DeleteZone(ctx, zoneID); err != nil {
+	parsedZoneID, parseErr := uuid.Parse(zoneID)
+	if parseErr != nil {
+		logger.HandlerWarn(c, op, parseErr, "delete zone invalid zone_id")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+	if err := h.zoneSvc.DeleteZone(ctx, parsedZoneID.String()); err != nil {
 		switch {
 		case errors.Is(err, coreErrorx.ErrZoneInvalidInput):
 			logger.HandlerWarn(c, op, err, "delete zone invalid input")
@@ -137,7 +150,13 @@ func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	zoneID := strings.TrimSpace(c.Param("zone_id"))
-	items, err := h.zoneSvc.ListZoneServices(ctx, zoneID)
+	parsedZoneID, parseErr := uuid.Parse(zoneID)
+	if parseErr != nil {
+		logger.HandlerWarn(c, op, parseErr, "list zone services invalid zone_id")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+	items, err := h.zoneSvc.ListZoneServices(ctx, parsedZoneID.String())
 	if err != nil {
 		switch {
 		case errors.Is(err, coreErrorx.ErrZoneServiceInvalidInput):
@@ -158,6 +177,12 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	zoneID := strings.TrimSpace(c.Param("zone_id"))
+	parsedZoneID, parseErr := uuid.Parse(zoneID)
+	if parseErr != nil {
+		logger.HandlerWarn(c, op, parseErr, "upsert zone service invalid zone_id")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 	var request requestdto.UpsertZoneServiceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		apires.RespondBadRequest(c, "invalid request")
@@ -170,7 +195,7 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	item, err := h.zoneSvc.UpsertZoneService(ctx, zoneID, serviceType, request.Enabled)
+	item, err := h.zoneSvc.UpsertZoneService(ctx, parsedZoneID.String(), serviceType, request.Enabled)
 	if err != nil {
 		switch {
 		case errors.Is(err, coreErrorx.ErrZoneServiceInvalidInput), errors.Is(err, coreErrorx.ErrZoneServiceInvalidType):

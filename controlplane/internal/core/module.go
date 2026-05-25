@@ -55,8 +55,17 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Modu
 	rotationService := coreSvcImpl.NewSecretRotationService(repo, bus)
 	// 5) Zone dependencies injection.
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
+	if zoneRepo == nil {
+		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
+	}
 	zoneService := coreSvcImpl.NewZoneService(zoneRepo)
+	if zoneService == nil {
+		return nil, fmt.Errorf("core module: zone service unavailable: zone service is nil")
+	}
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
+	if zoneHandler == nil {
+		return nil, fmt.Errorf("core module: zone service unavailable: zone handler is nil")
+	}
 	return &Module{
 		cfg:                   cfg,
 		SecretRepository:      repo,

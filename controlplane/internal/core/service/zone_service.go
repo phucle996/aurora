@@ -20,8 +20,8 @@ type ZoneService struct {
 // CONTRACT (service-level):
 // - ZoneService áp business rules cho zone lifecycle + zone services.
 // - Không fallback ngầm khi repo/dependency lỗi; trả lỗi thẳng cho caller.
-// - Validation chính ưu tiên ở handler; service chỉ giữ guard tối thiểu để
-//   bảo vệ contract khi có caller nội bộ bypass transport layer.
+// - Validation chính ưu tiên ở caller boundary (thường là transport/API layer);
+//   service chỉ giữ guard tối thiểu để bảo vệ contract cho mọi internal caller.
 //
 // BOUNDARY:
 // - Service này không làm transport mapping (HTTP status/message).
@@ -40,23 +40,30 @@ func NewZoneService(repo coreRepoInterface.ZoneRepository) coreSvcInterface.Zone
 	return &ZoneService{repo: repo}
 }
 
+func (s *ZoneService) ensureReady() error {
+	if s == nil || s.repo == nil {
+		return coreErrorx.ErrZoneInvalidInput
+	}
+	return nil
+}
+
 // ListZones:
 // - read-only, không mutate state.
 // - không fallback source dữ liệu khi repo lỗi.
 func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
-	if s == nil || s.repo == nil {
-		return nil, coreErrorx.ErrZoneInvalidInput
+	if err := s.ensureReady(); err != nil {
+		return nil, err
 	}
 	return s.repo.ListZones(ctx)
 }
 
 // CreateZone:
-// - Handler chịu trách nhiệm validate request-level trước khi vào service.
+// - Caller boundary chịu trách nhiệm validate request/input-level trước khi vào service.
 // - Service chỉ giữ defensive checks tối thiểu cho internal callers.
 // - Fallback/fail-fast policy tổng thể (retry/degrade/shutdown) do caller quyết định.
 func (s *ZoneService) CreateZone(ctx context.Context, code, name string, status *coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
-	if s == nil || s.repo == nil {
-		return nil, coreErrorx.ErrZoneInvalidInput
+	if err := s.ensureReady(); err != nil {
+		return nil, err
 	}
 	code = strings.ToLower(strings.TrimSpace(code))
 	name = strings.TrimSpace(name)
@@ -95,8 +102,8 @@ func (s *ZoneService) CreateZone(ctx context.Context, code, name string, status 
 // - enforce transition rule qua canTransit.
 // - không bypass state machine.
 func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID string, toStatus coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
-	if s == nil || s.repo == nil {
-		return nil, coreErrorx.ErrZoneInvalidInput
+	if err := s.ensureReady(); err != nil {
+		return nil, err
 	}
 	parsedID, err := uuid.Parse(strings.TrimSpace(zoneID))
 	if err != nil || !isValidZoneStatus(toStatus) {
@@ -123,8 +130,8 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID string, toSta
 // - chỉ cho xóa khi zone disabled và không còn dataplane node / enabled services.
 // - đây là guard dữ liệu để tránh orphan references.
 func (s *ZoneService) DeleteZone(ctx context.Context, zoneID string) error {
-	if s == nil || s.repo == nil {
-		return coreErrorx.ErrZoneInvalidInput
+	if err := s.ensureReady(); err != nil {
+		return err
 	}
 	parsedID, err := uuid.Parse(strings.TrimSpace(zoneID))
 	if err != nil {
@@ -187,7 +194,7 @@ func canTransit(from, to coreEntity.ZoneStatus) bool {
 }
 
 func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID string) ([]coreEntity.ZoneService, error) {
-	if s == nil || s.repo == nil {
+	if err := s.ensureReady(); err != nil {
 		return nil, coreErrorx.ErrZoneServiceInvalidInput
 	}
 	parsedID, err := uuid.Parse(strings.TrimSpace(zoneID))
@@ -208,7 +215,7 @@ func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID string) ([]co
 // - chỉ cho phép khi zone maintenance.
 // - serviceType phải thuộc enum cho phép.
 func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID string, serviceType string, enabled bool) (*coreEntity.ZoneService, error) {
-	if s == nil || s.repo == nil {
+	if err := s.ensureReady(); err != nil {
 		return nil, coreErrorx.ErrZoneServiceInvalidInput
 	}
 	parsedID, err := uuid.Parse(strings.TrimSpace(zoneID))
