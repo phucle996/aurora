@@ -52,6 +52,13 @@ pub struct JobPayload {
 
     /// Mã định danh vết xử lý xuyên suốt hệ thống (Distributed Trace Context).
     pub trace_id: String,
+
+    /// Giới hạn thời gian rảnh rỗi và khóa Lease của Job (tính bằng giây).
+    pub idle: u32,
+
+    /// Mã tin nhắn Redis Stream thực tế (Redis Message ID).
+    #[serde(default)]
+    pub redis_msg_id: Option<String>,
 }
 
 impl JobPayload {

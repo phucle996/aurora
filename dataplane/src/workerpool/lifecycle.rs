@@ -1,5 +1,7 @@
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// ============================================================================
 /// 📂 MODULE: workerpool/lifecycle.rs - Trình Quản Lý Vòng Đời Worker Vật Lý
@@ -7,32 +9,22 @@ use tokio_util::sync::CancellationToken;
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Quản trị việc cấp phát (provisioning) các worker thô chạy dưới dạng tokio green tasks.
-///   - Theo dõi sức khỏe hoạt động của các worker, thực hiện restart/hồi sinh khi phát hiện crash/panic.
+///   - Theo dõi sức khỏe hoạt động của các worker, thực hiện graceful shutdown và dynamic scale.
 ///   - Điều phối tắt an toàn toàn bộ worker pool (Graceful Termination) khi nhận tín hiệu kết thúc.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
 ///   - Vòng đời và trạng thái hoạt động thực của các luồng tokio (`JoinHandle`).
 ///   - Trạng thái cấu hình số lượng worker hiện hành được cung cấp bởi `policyengine`.
 ///
-/// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
-///   - Hoàn toàn độc lập và tách biệt khỏi domain nghiệp vụ (workload-agnostic).
-///   - Không quan tâm hay can thiệp vào cấu trúc dữ liệu Payload, Tenant hay các loại Job nghiệp vụ.
-///
-/// 🔄 CALLSITE FLOW:
-///   - Được gọi bởi `job-receiver/consumer.rs` khi khởi chạy cụm đọc Stream.
-///   - Nhận tín hiệu điều khiển trực tiếp từ `main.rs` khi OS phát tín hiệu đóng ứng dụng.
-///
-/// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
-///   - Sử dụng `CancellationToken` phân cấp (parent-child relationship) của `tokio-util`.
-///   - Khi nhận tín hiệu tắt, worker sẽ KHÔNG bị ngắt thô bạo (hard kill) mà sẽ hoàn thành nốt job đang kéo từ stream,
-///     sau đó thực hiện báo cáo kết quả và tự kết thúc an toàn.
-///
 pub struct WorkerLifecycleManager {
     /// Token gốc dùng để phát tín hiệu dừng đồng loạt cho toàn bộ các worker đang chạy ngầm.
     cancel_token: CancellationToken,
 
-    /// Kênh truyền nhận tín hiệu điều khiển trạng thái sống của các worker (ví dụ: yêu cầu hồi sinh).
+    /// Kênh truyền nhận tín hiệu điều khiển trạng thái sống của các worker.
     signal_sender: mpsc::Sender<WorkerSignal>,
+
+    /// Registry quản lý CancellationToken của từng Worker đang hoạt động song song.
+    active_workers: Mutex<HashMap<usize, CancellationToken>>,
 }
 
 /// Các loại tín hiệu điều phối vòng đời của worker
@@ -50,44 +42,65 @@ impl WorkerLifecycleManager {
         let manager = Self {
             cancel_token: CancellationToken::new(),
             signal_sender: tx,
+            active_workers: Mutex::new(HashMap::new()),
         };
         (manager, rx)
     }
 
-    /// Cấp phát và khởi chạy một worker chạy dưới dạng Tokio Task độc lập.
-    ///
-    /// # Luồng xử lý kỹ thuật (Technical Flow):
-    ///   1. Tạo một child token kế thừa từ token gốc để phục vụ graceful shutdown.
-    ///   2. Khởi chạy tác vụ bất đồng bộ `tokio::spawn` chạy ngầm.
-    ///   3. Lắng nghe đồng thời sự kiện hủy bỏ hoặc hết thời hạn chờ (timeout).
-    ///   4. Nếu có lỗi nghiêm trọng xảy ra, worker chủ động đẩy tín hiệu hồi sinh `RestartWorker` về kênh chính.
-    pub async fn spawn_worker(&self, worker_id: usize) {
-        let token = self.cancel_token.child_token();
-        let tx = self.signal_sender.clone();
+    /// Cấp phát và khởi chạy một Worker (Luồng Ingestion Loop) song song thực sự.
+    pub async fn spawn_worker(
+        &self,
+        worker_id: usize,
+        config: Arc<crate::config::Config>,
+        policy_engine: Arc<crate::policyengine::engine::PolicyEngine>,
+        redis_job: Arc<crate::infra::redis::RedisClientManager>,
+        redis_internal_zone: Arc<crate::infra::redis::RedisClientManager>,
+    ) {
+        let child_token = self.cancel_token.child_token();
 
+        // Đăng ký token vào danh sách đang hoạt động
+        {
+            let mut active = self.active_workers.lock().unwrap();
+            active.insert(worker_id, child_token.clone());
+        }
+
+        let worker_token = child_token.clone();
         tokio::spawn(async move {
             println!(
-                "Worker Pool: Worker {} provisioned and actively listening for stream jobs...",
+                "Worker Pool: Worker {} provisioned and starting active job ingestion loop...",
                 worker_id
             );
 
-            tokio::select! {
-                _ = token.cancelled() => {
-                    println!("Worker Pool: Worker {} received graceful cancellation token. Draining queue and terminating...", worker_id);
-                }
-                _ = tokio::time::sleep(tokio::time::Duration::from_secs(3600)) => {
-                    // Trình trạng mô phỏng lỗi kết nối mạng kéo dài khiến worker bị đứng.
-                    // Đẩy tin nhắn báo động về lifecycle manager để kích hoạt restart policy.
-                    let _ = tx.send(WorkerSignal::RestartWorker(worker_id)).await;
-                }
-            }
+            crate::job_receiver::consumer::JobConsumer::start_ingestion(
+                config,
+                policy_engine,
+                redis_job,
+                redis_internal_zone,
+                worker_id,
+                worker_token,
+            )
+            .await;
+
+            println!("Worker Pool: Worker {} has gracefully terminated.", worker_id);
         });
     }
 
+    /// Thu hồi và dừng an toàn (Scale Down) một Worker cụ thể.
+    pub fn terminate_worker(&self, worker_id: usize) {
+        let mut active = self.active_workers.lock().unwrap();
+        if let Some(token) = active.remove(&worker_id) {
+            println!("Worker Pool: Signaling Worker {} to gracefully shutdown...", worker_id);
+            token.cancel();
+        }
+    }
+
+    /// Lấy danh sách ID của các Worker hiện đang hoạt động.
+    pub fn active_worker_ids(&self) -> Vec<usize> {
+        let active = self.active_workers.lock().unwrap();
+        active.keys().cloned().collect()
+    }
+
     /// Cấp phát và khởi chạy một Worker chuyên biệt chuyên trách theo dõi chính sách (Dedicated Watcher Worker).
-    ///
-    /// Luồng chạy ngầm này được giám sát chặt chẽ bởi Lifecycle Manager. Nếu tệp watch gặp sự cố I/O
-    /// làm panic luồng, Lifecycle Manager sẽ nhận cảnh báo qua kênh mpsc và tự động hồi sinh.
     pub async fn spawn_dedicated_policy_watcher<F, Fut>(&self, watcher_id: usize, make_watcher_future: F)
     where
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
@@ -119,7 +132,6 @@ impl WorkerLifecycleManager {
     }
 
     /// Phát tín hiệu dừng đồng loạt cho toàn bộ các worker trong pool.
-    /// Kích hoạt cơ chế dừng an toàn (graceful close worker).
     pub fn shutdown(&self) {
         self.cancel_token.cancel();
         println!("Worker Pool: Global cancellation token triggered. Broadcasing to all workers...");

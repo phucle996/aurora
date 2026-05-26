@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::bootstrap::BootstrapResult;
@@ -58,17 +59,83 @@ impl AppContainer {
         // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
         crate::observability::resource::ResourceMonitor::start_monitor();
 
-        // 0b. Khởi chạy vòng lặp Ingestion của JobConsumer bất đồng bộ
-        let policy_engine_ingest = self.policy_engine.clone();
-        let worker_pool_ingest = self.worker_pool.clone();
-        let redis_job_ingest = self.redis_job.clone();
+        // 0b. Khởi tạo 1 Worker ban đầu hoạt động nhận tin
+        self.worker_pool.spawn_worker(
+            1,
+            self.config.clone(),
+            self.policy_engine.clone(),
+            self.redis_job.clone(),
+            self.redis_internal_zone.clone()
+        ).await;
+
+        // 0d. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
+        let config_scale = self.config.clone();
+        let policy_engine_scale = self.policy_engine.clone();
+        let worker_pool_scale = self.worker_pool.clone();
+        let redis_job_scale = self.redis_job.clone();
+        let redis_internal_zone_scale = self.redis_internal_zone.clone();
+
         tokio::spawn(async move {
-            crate::job_receiver::consumer::JobConsumer::start_ingestion(
-                policy_engine_ingest,
-                worker_pool_ingest,
-                redis_job_ingest,
-            )
-            .await;
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+
+                // 1. Trích xuất max_workers cấu hình động từ Policy Engine
+                let max_workers = policy_engine_scale
+                    .current()
+                    .policies
+                    .get("max_workers")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100) as usize;
+
+                let auto_scaler = crate::workerpool::auto_scale::AutoScaleEngine::new(max_workers);
+
+                // 2. Thu thập chỉ số hàng đợi thực tế từ Redis
+                let stream_key = format!("jobs:{}", config_scale.zone_id);
+                let lag = crate::infra::redis::query::query_stream_lag(redis_job_scale.client(), &stream_key).await.unwrap_or(0);
+                let latency = crate::infra::redis::query::query_stream_latency_ms(redis_job_scale.client(), &stream_key).await.unwrap_or(0.0);
+                let active_conns = 0; // Thống kê kết nối giả lập
+
+                // 3. Đánh giá tải thực tế
+                let active_ids = worker_pool_scale.active_worker_ids();
+                let current_count = active_ids.len();
+
+                let target_count = auto_scaler.evaluate_scale(current_count, lag, latency, active_conns);
+
+                Logger::sys_info(
+                    "worker.scaler",
+                    &format!(
+                        "Autoscaler Check: Current = {}, Target = {}, Lag = {}, Latency = {:.2}ms",
+                        current_count, target_count, lag, latency
+                    )
+                );
+
+                if target_count > current_count {
+                    // Scale Up: Spawn thêm worker
+                    for i in 1..=target_count {
+                        if !active_ids.contains(&i) {
+                            worker_pool_scale.spawn_worker(
+                                i,
+                                config_scale.clone(),
+                                policy_engine_scale.clone(),
+                                redis_job_scale.clone(),
+                                redis_internal_zone_scale.clone()
+                            ).await;
+                        }
+                    }
+                } else if target_count < current_count {
+                    // Scale Down: Terminate bớt worker (ID lớn nhất)
+                    let mut sorted_ids = active_ids.clone();
+                    sorted_ids.sort_by(|a, b| b.cmp(a));
+
+                    let diff = current_count - target_count;
+                    for i in 0..diff {
+                        if let Some(&worker_id) = sorted_ids.get(i) {
+                            worker_pool_scale.terminate_worker(worker_id);
+                        }
+                    }
+                }
+            }
         });
 
         // 0c. Khởi động gRPC Server nội bộ của Dataplane dạng Stateless

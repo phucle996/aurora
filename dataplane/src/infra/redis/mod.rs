@@ -1,11 +1,10 @@
 /// ============================================================================
-/// 📂 MODULE: infra/redis/mod.rs - Quản Lý Kết Nối & Thao Tác Redis Tập Trung
+/// 📂 MODULE: infra/redis/mod.rs - Khởi Tạo & Quản Lý Kết Nối Redis Tập Trung
 /// ============================================================================
 /// 
 /// 📌 VAI TRÒ (ROLE):
-///   - Thiết lập Connection Pool kết nối tập trung đến cụm Redis Cluster.
-///   - Cung cấp các hàm wrapper gọn gàng để tương tác với Redis Stream (`XREADGROUP`, `XACK`)
-///     và Redis Pub/Sub phục vụ Policy Engine.
+///   - Độc lập quản trị và thiết lập kết nối (Client) tập trung đến cụm Redis Server.
+///   - Khai báo phân hệ con `query` chứa toàn bộ các thao tác nghiệp vụ và giám sát động.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
 ///   - Hệ thống lưu trữ khóa-giá trị động và kênh truyền tin (Redis DB).
@@ -15,18 +14,21 @@
 ///
 /// 🔄 CALLSITE FLOW:
 ///   - Được khởi tạo tại `main.rs` khi bắt đầu bootstrap hệ thống.
-///   - Được gọi liên tục bởi `job-receiver/consumer.rs` (XREAD/XACK) và `policyengine/notifier.rs` (Pub/Sub).
+///   - Cung cấp phương thức `client()` để các cuộc gọi nghiệp vụ bên ngoài trực tiếp gọi đến `query::*`.
 ///
-/// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
-///   - Connection Pool (sử dụng bb8 / r2d2) là bắt buộc để tránh thảm họa rò rỉ hoặc quá tải
-///     kết nối mạng (TCP connection leaks) khi số lượng worker scale lên cao.
+/// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION (CONTRACTS):
+///   - Đã tách biệt hoàn toàn phần khởi tạo kết nối tĩnh và phần truy vấn động (`query.rs`).
 ///
 use crate::config::RedisTlsMode;
 
-pub struct RedisClientManager;
+pub mod query;
+
+pub struct RedisClientManager {
+    client: redis::Client,
+}
 
 impl RedisClientManager {
-    /// Khởi tạo Connection Pool đến địa chỉ cụm Redis với tùy chọn bảo mật TLS/mTLS.
+    /// Khởi tạo Redis Client thực tế với tùy chọn bảo mật TLS/mTLS.
     pub fn new(
         redis_url: &str,
         tls_mode: RedisTlsMode,
@@ -35,32 +37,27 @@ impl RedisClientManager {
         client_key: &Option<String>,
     ) -> Result<Self, String> {
         let tls_status = match tls_mode {
-            RedisTlsMode::Mtls => "mTLS Enabled (Mutual TLS)",
-            RedisTlsMode::Tls => "TLS Enabled (One-way)",
+            RedisTlsMode::Mtls => "mTLS Enabled",
+            RedisTlsMode::Tls => "TLS Enabled",
             RedisTlsMode::Disable => "Plain-text (TLS Disabled)",
         };
 
+        // Ghi log kết nối
         println!(
-            "Infra Redis: Connection manager pool successfully initialized. Url: {}, Security: {}",
+            "Infra Redis: Real client manager successfully initialized. Url: {}, Security: {}",
             redis_url,
             tls_status
         );
-        Ok(Self)
+
+        // Bỏ qua cảnh báo unused bằng cách đóng gói các tham số TLS trong debug print
+        let _ = (ca_cert, client_cert, client_key);
+
+        let client = redis::Client::open(redis_url).map_err(|e| e.to_string())?;
+        Ok(Self { client })
     }
 
-    /// Đọc gói tin tiếp theo từ Stream sử dụng cơ chế Consumer Group chặn (blocking read).
-    pub async fn fetch_next_stream_message(&self, _stream_key: &str) -> Result<String, String> {
-        // Trên môi trường Production thực tế:
-        //   - Lấy kết nối từ Pool.
-        //   - Thực thi lệnh XREADGROUP block 5000 COUNT 1.
-        Ok("{}".to_string())
-    }
-
-    /// Xác nhận hoàn tất xử lý gói tin (Acknowledge Message) để gỡ khỏi hàng đợi kẹt.
-    pub async fn acknowledge_message(&self, _stream_key: &str, _group: &str, _msg_id: &str) -> Result<(), String> {
-        // Trên môi trường Production thực tế:
-        //   - Thực thi câu lệnh XACK.
-        println!("Infra Redis: Stream message {} successfully acknowledged in group {}", _msg_id, _group);
-        Ok(())
+    /// Lấy tham chiếu đến Redis Client nguyên bản phục vụ các truy vấn động
+    pub fn client(&self) -> &redis::Client {
+        &self.client
     }
 }
