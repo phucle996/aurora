@@ -1,7 +1,7 @@
 /// ============================================================================
 /// 📂 MODULE: infra/grpc/mod.rs - Quản Lý Kết Nối & Xác Thực gRPC Security
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Thiết lập cấu hình bảo mật truyền dẫn (Transport Security) cho cổng gRPC.
 ///   - Cung cấp hai tùy chọn: Kết nối mTLS (bắt buộc cho Prod) và Standard TLS.
@@ -47,7 +47,10 @@ impl GrpcSecurityConfig {
 
     /// Xây dựng TLS Connector sử dụng xác thực một chiều (Standard TLS).
     pub fn build_tls_connector(ca_cert_path: &str) -> Result<(), String> {
-        println!("Infra gRPC: Building standard one-way TLS credentials configuration: CA={}", ca_cert_path);
+        println!(
+            "Infra gRPC: Building standard one-way TLS credentials configuration: CA={}",
+            ca_cert_path
+        );
         Ok(())
     }
 }

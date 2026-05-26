@@ -15,6 +15,7 @@ var (
 	loginTotalCounter         *prometheus.CounterVec
 	refreshTokenTotalCounter  *prometheus.CounterVec
 	refreshReplayTotalCounter *prometheus.CounterVec
+	sessionTotalCounter       *prometheus.CounterVec
 )
 
 func registerAuthMetrics(registry *prometheus.Registry, namespace string) error {
@@ -53,7 +54,14 @@ func registerAuthMetrics(registry *prometheus.Registry, namespace string) error 
 		Help:      "Detected refresh replay attempts by flow.",
 	}, []string{"flow"})
 
-	for _, collector := range []prometheus.Collector{authAttemptsCounter, registerTotalCounter, loginTotalCounter, refreshTokenTotalCounter, refreshReplayTotalCounter} {
+	sessionTotalCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "iam",
+		Name:      "auth_session_total",
+		Help:      "User auth session bootstrap outcomes by result.",
+	}, []string{"result"})
+
+	for _, collector := range []prometheus.Collector{authAttemptsCounter, registerTotalCounter, loginTotalCounter, refreshTokenTotalCounter, refreshReplayTotalCounter, sessionTotalCounter} {
 		if err := registry.Register(collector); err != nil {
 			return err
 		}
@@ -125,6 +133,14 @@ func ObserveRefreshReplay(flow string) {
 	}
 	flow = normalizeResult(flow)
 	refreshReplayTotalCounter.WithLabelValues(flow).Inc()
+}
+
+func ObserveAuthSessionOutcome(result string) {
+	if sessionTotalCounter == nil {
+		return
+	}
+	result = normalizeResult(result)
+	sessionTotalCounter.WithLabelValues(result).Inc()
 }
 
 func observeAuthAttempt(flow string, success bool) {

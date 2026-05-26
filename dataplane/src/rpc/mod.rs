@@ -1,3 +1,3 @@
+pub mod client;
 pub mod heal;
-pub mod receiver;
-pub mod sender;
+pub mod server;

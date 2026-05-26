@@ -21,25 +21,23 @@
 ///   - Connection Pool (sử dụng bb8 / r2d2) là bắt buộc để tránh thảm họa rò rỉ hoặc quá tải
 ///     kết nối mạng (TCP connection leaks) khi số lượng worker scale lên cao.
 ///
+use crate::config::RedisTlsMode;
+
 pub struct RedisClientManager;
 
 impl RedisClientManager {
     /// Khởi tạo Connection Pool đến địa chỉ cụm Redis với tùy chọn bảo mật TLS/mTLS.
     pub fn new(
         redis_url: &str,
-        tls_enabled: bool,
+        tls_mode: RedisTlsMode,
         ca_cert: &Option<String>,
         client_cert: &Option<String>,
         client_key: &Option<String>,
     ) -> Result<Self, String> {
-        let tls_status = if tls_enabled {
-            if client_cert.is_some() && client_key.is_some() {
-                "mTLS Enabled (Mutual TLS)"
-            } else {
-                "TLS Enabled (One-way)"
-            }
-        } else {
-            "Plain-text (TLS Disabled)"
+        let tls_status = match tls_mode {
+            RedisTlsMode::Mtls => "mTLS Enabled (Mutual TLS)",
+            RedisTlsMode::Tls => "TLS Enabled (One-way)",
+            RedisTlsMode::Disable => "Plain-text (TLS Disabled)",
         };
 
         println!(

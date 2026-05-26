@@ -50,6 +50,10 @@ const (
 )
 
 const (
+	SessionOutcomeUnauthorized = "unauthorized"
+)
+
+const (
 	AdminLoginOutcomeInvalidArgument          = "invalid_argument"
 	AdminLoginOutcomeInvalidDevicePublicKey   = "invalid_device_public_key"
 	AdminLoginOutcomeLoadActiveKeyError       = "load_active_key_error"

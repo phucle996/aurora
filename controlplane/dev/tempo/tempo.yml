@@ -1,5 +1,6 @@
 server:
   http_listen_port: 3200
+  log_level: error
 
 distributor:
   receivers:
@@ -22,8 +23,11 @@ metrics_generator:
     external_labels:
       source: tempo
       environment: dev
+    collection_interval: 15s
   storage:
     path: /var/tempo/generator/wal
+  traces_storage:
+    path: /var/tempo/generator/traces-wal
   processor:
     service_graphs: {}
     span_metrics: {}

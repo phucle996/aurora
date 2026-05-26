@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// ============================================================================
 /// 📂 MODULE: job-receiver/result.rs - Bộ Báo Cáo Kết Quả Xử Lý Nghiệp Vụ
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đóng gói kết quả đầu ra sau khi Executor thực thi xong một Job nghiệp vụ.
 ///   - Cung cấp hai cơ chế báo cáo linh hoạt: Qua Redis Stream kết quả hoặc gửi gRPC trực tiếp lên Controlplane.
@@ -63,10 +63,7 @@ impl JobResultReporter {
     /// # Luồng xử lý kỹ thuật:
     ///   - Khởi tạo gRPC client kết nối lên Controlplane và gọi `ReportJobCompletion` RPC.
     pub async fn report_via_grpc(_result: &JobExecutionResult) -> Result<(), String> {
-        // Trên môi trường Production:
-        //   - Sử dụng gRPC mTLS client đã được khởi tạo trong `infra/grpc/`.
-        //   - Triển khai Exponential Backoff retry để chống mất mát dữ liệu báo cáo kết quả.
-        println!("Job Result Reporter: Successfully invoked Controlplane ReportJobCompletion gRPC endpoint");
-        Ok(())
+        // Thực hiện cuộc gọi thông qua Client gửi gRPC đã được cấu hình mTLS bảo mật
+        crate::rpc::client::client::ExternalRpcSenderClient::send_to_controlplane(_result).await
     }
 }

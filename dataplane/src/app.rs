@@ -15,7 +15,7 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 /// ============================================================================
 /// 📂 MODULE: app.rs - Bộ Quản Lý Đồ Thị Đối Tượng Ứng Dụng (AppContainer)
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đóng vai trò là Container quản lý đồ thị đối tượng ứng dụng (Dependency Graph).
 ///   - Quản lý vòng đời khởi động/tắt (start/stop) các dịch vụ ngầm có tính hệ thống.
@@ -32,7 +32,7 @@ pub struct AppContainer {
     pub config: Arc<Config>,
     pub sqlite_db: SqliteDb,
     pub redis_job: Arc<RedisClientManager>,
-    pub redis_policy: Arc<RedisClientManager>,
+    pub redis_internal_zone: Arc<RedisClientManager>,
     pub policy_engine: Arc<PolicyEngine>,
     pub worker_pool: Arc<WorkerLifecycleManager>,
 }
@@ -45,7 +45,7 @@ impl AppContainer {
                 config: boot.config,
                 sqlite_db: boot.sqlite_db,
                 redis_job: boot.redis_job,
-                redis_policy: boot.redis_policy,
+                redis_internal_zone: boot.redis_internal_zone,
                 policy_engine: boot.policy_engine,
                 worker_pool: boot.worker_pool,
             },
@@ -67,7 +67,25 @@ impl AppContainer {
                 policy_engine_ingest,
                 worker_pool_ingest,
                 redis_job_ingest,
-            ).await;
+            )
+            .await;
+        });
+
+        // 0c. Khởi động gRPC Server nội bộ của Dataplane dạng Stateless
+        let grpc_port = self.config.dataplane_grpc_port;
+        let grpc_tls_mode = self.config.dataplane_grpc_tls_mode;
+        let grpc_ca = self.config.dataplane_grpc_ca_cert.clone();
+        let grpc_cert = self.config.dataplane_grpc_client_cert.clone();
+        let grpc_key = self.config.dataplane_grpc_client_key.clone();
+        tokio::spawn(async move {
+            let _ = crate::rpc::server::server::DataplaneGrpcServer::start_server(
+                grpc_port,
+                grpc_tls_mode,
+                grpc_ca,
+                grpc_cert,
+                grpc_key,
+            )
+            .await;
         });
 
         // 1. Khởi chạy luồng giám sát sự cố/hoạt động của Worker Pool
@@ -82,7 +100,7 @@ impl AppContainer {
                         Logger::sys_warn(
                             "workerpool.lifecycle",
                             &format!("Worker {} crashed/panic, restarting...", id),
-                            "Panic/Crash Detected"
+                            "Panic/Crash Detected",
                         );
                     }
                 }
@@ -93,29 +111,34 @@ impl AppContainer {
         let policy_engine_clone = self.policy_engine.clone();
         let policy_path = PathBuf::from("config/policy.yaml");
         let adapter = YamlFileAdapter::new(policy_path);
-        
-        self.worker_pool.spawn_dedicated_policy_watcher(0, move |token| async move {
-            adapter.start_watch(token, move || {
-                let path = PathBuf::from("config/policy.yaml");
-                if let Ok(raw_yaml) = std::fs::read_to_string(&path) {
-                    let checksum = PolicySet::calculate_checksum(&raw_yaml);
-                    if let Ok(mut new_policy) = serde_yaml::from_str::<PolicySet>(&raw_yaml) {
-                        new_policy.checksum_sha = checksum;
-                        if let Err(err) = policy_engine_clone.swap(new_policy) {
-                            Logger::sys_warn(
-                                "policyengine.reload",
-                                "Failed to swap policy snapshot, keeping Last-Known-Good",
-                                &err
-                            );
+
+        self.worker_pool
+            .spawn_dedicated_policy_watcher(0, move |token| async move {
+                adapter
+                    .start_watch(token, move || {
+                        let path = PathBuf::from("config/policy.yaml");
+                        if let Ok(raw_yaml) = std::fs::read_to_string(&path) {
+                            let checksum = PolicySet::calculate_checksum(&raw_yaml);
+                            if let Ok(mut new_policy) = serde_yaml::from_str::<PolicySet>(&raw_yaml)
+                            {
+                                new_policy.checksum_sha = checksum;
+                                if let Err(err) = policy_engine_clone.swap(new_policy) {
+                                    Logger::sys_warn(
+                                        "policyengine.reload",
+                                        "Failed to swap policy snapshot, keeping Last-Known-Good",
+                                        &err,
+                                    );
+                                }
+                            }
                         }
-                    }
-                }
-            }).await
-        }).await;
-        
+                    })
+                    .await
+            })
+            .await;
+
         Logger::sys_info(
             "system.bootstrap",
-            "Application module graph successfully initialized and running."
+            "Application module graph successfully initialized and running.",
         );
     }
 
@@ -123,7 +146,7 @@ impl AppContainer {
     pub fn stop(&self) {
         Logger::sys_info(
             "system.shutdown",
-            "Stopping application container gracefully..."
+            "Stopping application container gracefully...",
         );
         self.worker_pool.shutdown();
     }

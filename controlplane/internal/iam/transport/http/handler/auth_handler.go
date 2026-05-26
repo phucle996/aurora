@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	"controlplane/internal/iam/domain/entity"
-	domainservice "controlplane/internal/iam/domain/service"
+	"controlplane/internal/http/middleware"
 	deviceHint "controlplane/internal/iam/devicehint"
+	iamEntity "controlplane/internal/iam/domain/entity"
+	domainservice "controlplane/internal/iam/domain/service"
 	iamErrorx "controlplane/internal/iam/errorx"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
@@ -286,7 +287,16 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // @Produce json
 // @Success 200 {object} map[string]interface{} "authenticated"
 // @Failure 401 {object} map[string]interface{} "unauthorized"
+// @Failure 503 {object} map[string]interface{} "authentication temporarily unavailable"
 // @Router /api/v1/auth/session [get]
 func (h *AuthHandler) Session(c *gin.Context) {
-	apires.RespondSuccess(c, map[string]any{"authenticated": true}, "ok")
+	const op = "iam.auth.session"
+
+	if strings.TrimSpace(middleware.GetUserID(c)) == "" || strings.TrimSpace(middleware.GetRuntimeDeviceID(c)) == "" {
+		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidCredentials, "session invalid auth context")
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
+	apires.RespondSuccess(c, gin.H{"authenticated": true}, "ok")
 }

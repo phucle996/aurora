@@ -50,3 +50,4 @@ logs/
 
 # Build artifacts
 controlplane/tmp/
+dataplane/target/

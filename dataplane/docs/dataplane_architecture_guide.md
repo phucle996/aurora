@@ -58,7 +58,7 @@ dataplane/
 
 ### 1. Tập tin Cấu hình & Khởi chạy (`src/config/` & `src/main.rs`)
 
-* **`.env`**: Đặt tại gốc của thư mục `dataplane/`, chứa các cấu hình quan trọng như `ZONE_ID`, `REDIS_JOB_URL`, `REDIS_POLICY_URL` và host của Controlplane.
+* **`.env`**: Đặt tại gốc của thư mục `dataplane/`, chứa các cấu hình quan trọng như `ZONE_ID`, `REDIS_JOB_URL`, `REDIS_INTERNAL_ZONE_URL` và host của Controlplane.
 * **`config/mod.rs`**: Nạp biến môi trường và cung cấp cấu trúc `Config` bất biến (`immutable struct`) xuyên suốt vòng đời ứng dụng (hoạt động hoàn toàn stateless).
 * **`main.rs`**: Điểm khởi đầu của Dataplane. Thực hiện đọc config, khởi tạo luồng Logger, nạp cấu hình cơ bản, khởi chạy các background loop (như RPC Heartbeat, Hot-reload engine, Stream Consumer) và lắng nghe tín hiệu ngắt OS (`Ctrl+C` hoặc `SIGTERM`) để thực hiện **graceful shutdown** cho tất cả các luồng công việc đang xử lý dở dang.
 

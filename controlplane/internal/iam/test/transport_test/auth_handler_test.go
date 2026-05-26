@@ -7,15 +7,17 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"controlplane/internal/config"
+	middleware "controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamErrorx "controlplane/internal/iam/errorx"
 	handler "controlplane/internal/iam/transport/http/handler"
-	cookie "controlplane/pkg/constant"
+	constant "controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
 )
@@ -199,24 +201,98 @@ func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
 	foundClientDeviceID := false
 	for _, ck := range cookies {
 		switch ck.Name {
-		case cookie.AccessTokenName:
+		case constant.AccessTokenName:
 			foundAccess = true
-		case cookie.RefreshTokenName:
+		case constant.RefreshTokenName:
 			foundRefresh = true
-		case cookie.DeviceIDName:
+		case constant.DeviceIDName:
 			if ck.Value == "runtime-device-1" {
 				foundDevice = true
 			}
-		case cookie.ClientDeviceIDName:
+		case constant.ClientDeviceIDName:
 			if ck.Value == "cdid-bootstrap-1" {
 				foundClientDeviceID = true
 			}
 		}
 	}
 	if !foundAccess || !foundRefresh || !foundDevice || !foundClientDeviceID {
-		t.Fatalf("expected %s, %s, %s and %s cookies, got %#v", cookie.AccessTokenName, cookie.RefreshTokenName, cookie.DeviceIDName, cookie.ClientDeviceIDName, cookies)
+		t.Fatalf("expected %s, %s, %s and %s cookies, got %#v", constant.AccessTokenName, constant.RefreshTokenName, constant.DeviceIDName, constant.ClientDeviceIDName, cookies)
 	}
 	if w.Result().Header.Get("X-Client-Device-Id") != "cdid-bootstrap-1" {
 		t.Fatalf("expected X-Client-Device-Id header to mirror cookie, got %q", w.Result().Header.Get("X-Client-Device-Id"))
+	}
+}
+
+func TestAuthHandlerSessionUnauthorizedWithoutAuthContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := newAuthHandler(&authServiceStub{})
+	router.GET("/session", h.Session)
+
+	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestAuthHandlerSessionSuccessWithAuthContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := newAuthHandler(&authServiceStub{})
+	router.GET("/session", func(c *gin.Context) {
+		c.Set(constant.ContextKeyUserID, "user-1")
+		c.Set(constant.ContextKeyRuntimeDeviceID, "device-1")
+		h.Session(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Body.String(); !strings.Contains(got, `"authenticated":true`) {
+		t.Fatalf("expected authenticated true payload, got %s", got)
+	}
+}
+
+func TestAuthHandlerSessionServiceUnavailableWhenAccessMiddlewareMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := newAuthHandler(&authServiceStub{})
+	router.GET("/session", middleware.Access(), h.Session)
+
+	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestAuthHandlerSessionReadOnlyNoSetCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	h := newAuthHandler(&authServiceStub{})
+	router.GET("/session", func(c *gin.Context) {
+		c.Set(constant.ContextKeyUserID, "user-1")
+		c.Set(constant.ContextKeyRuntimeDeviceID, "device-1")
+		h.Session(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Result().Cookies(); len(got) != 0 {
+		t.Fatalf("session endpoint must be read-only and not set cookies, got %#v", got)
 	}
 }

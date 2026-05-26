@@ -16,7 +16,7 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 /// ============================================================================
 /// 📂 MODULE: bootstrap.rs - Khởi Tạo Hạ Tầng Hệ Thống Dataplane (Bootstrapping)
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Nạp các tệp cấu hình môi trường (.env), logger hệ thống.
 ///   - Mở các kết nối hạ tầng cốt lõi (SQLite, Redis Job, Redis Policy) dạng fail-fast.
@@ -33,7 +33,7 @@ pub struct BootstrapResult {
     pub config: Arc<Config>,
     pub sqlite_db: SqliteDb,
     pub redis_job: Arc<RedisClientManager>,
-    pub redis_policy: Arc<RedisClientManager>,
+    pub redis_internal_zone: Arc<RedisClientManager>,
     pub policy_engine: Arc<PolicyEngine>,
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub worker_signal_rx: mpsc::Receiver<WorkerSignal>,
@@ -51,7 +51,10 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     let cfg = Config::load();
     Logger::sys_info(
         "system.bootstrap",
-        &format!("Starting stateless Aurora Dataplane in Zone={}...", cfg.zone_id)
+        &format!(
+            "Starting stateless Aurora Dataplane in Zone={}...",
+            cfg.zone_id
+        ),
     );
 
     // 4. Initialize local SQLite Database for Idempotency
@@ -61,7 +64,7 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
             Logger::sys_error(
                 "system.bootstrap",
                 "CRITICAL: Failed to initialize local SQLite database connection pool",
-                &err
+                &err,
             );
             std::process::abort();
         }
@@ -70,7 +73,7 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // 5. Initialize Job Queue Redis connection pool
     let redis_job = match RedisClientManager::new(
         &cfg.redis_job_url,
-        cfg.redis_job_tls_enabled,
+        cfg.redis_job_tls_mode,
         &cfg.redis_job_ca_cert,
         &cfg.redis_job_client_cert,
         &cfg.redis_job_client_key,
@@ -80,26 +83,26 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
             Logger::sys_error(
                 "system.bootstrap",
                 "CRITICAL: Failed to initialize Job Queue Redis client connection pool",
-                &err
+                &err,
             );
             std::process::abort();
         }
     };
 
-    // 6. Initialize Policy Engine Pub/Sub Redis connection pool
-    let redis_policy = match RedisClientManager::new(
-        &cfg.redis_policy_url,
-        cfg.redis_policy_tls_enabled,
-        &cfg.redis_policy_ca_cert,
-        &cfg.redis_policy_client_cert,
-        &cfg.redis_policy_client_key,
+    // 6. Initialize Internal Zone Redis connection pool
+    let redis_internal_zone = match RedisClientManager::new(
+        &cfg.redis_internal_zone_url,
+        cfg.redis_internal_zone_tls_mode,
+        &cfg.redis_internal_zone_ca_cert,
+        &cfg.redis_internal_zone_client_cert,
+        &cfg.redis_internal_zone_client_key,
     ) {
         Ok(r) => r,
         Err(err) => {
             Logger::sys_error(
                 "system.bootstrap",
-                "CRITICAL: Failed to initialize Policy Sync Redis client connection pool",
-                &err
+                "CRITICAL: Failed to initialize Internal Zone Redis client connection pool",
+                &err,
             );
             std::process::abort();
         }
@@ -112,8 +115,11 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         Err(err) => {
             Logger::sys_error(
                 "system.bootstrap",
-                &format!("CRITICAL: Failed to read initial policy file at {:?}", policy_path),
-                &err.to_string()
+                &format!(
+                    "CRITICAL: Failed to read initial policy file at {:?}",
+                    policy_path
+                ),
+                &err.to_string(),
             );
             std::process::abort();
         }
@@ -125,7 +131,7 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
             Logger::sys_error(
                 "system.bootstrap",
                 "CRITICAL: Failed to parse initial YAML policy file",
-                &err.to_string()
+                &err.to_string(),
             );
             std::process::abort();
         }
@@ -141,9 +147,8 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         "system.bootstrap",
         &format!(
             "Policy Engine initialized successfully. Active policy version: {}, checksum: {}",
-            active_policy.version,
-            active_policy.checksum_sha
-        )
+            active_policy.version, active_policy.checksum_sha
+        ),
     );
 
     // 9. Initialize Worker Pool Lifecycle Manager
@@ -154,7 +159,7 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         config: Arc::new(cfg),
         sqlite_db: db,
         redis_job: Arc::new(redis_job),
-        redis_policy: Arc::new(redis_policy),
+        redis_internal_zone: Arc::new(redis_internal_zone),
         policy_engine,
         worker_pool,
         worker_signal_rx,
