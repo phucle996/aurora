@@ -3,6 +3,7 @@
 ## Mục tiêu
 
 Tài liệu này mô tả ý tưởng kết nối `dataplane` với `controlplane` qua gRPC ở mức phương thức tổng quan:
+
 - không phải spec
 - không phải implementation plan
 - không phải flow chi tiết endpoint
@@ -52,6 +53,7 @@ Heartbeat sẽ đi qua Redis stream để giảm áp lực RPC khi số node dat
    - controlplane confirm + xóa job để giải phóng `job_id` unique
 
 Ý nghĩa:
+
 - giảm số lượng RPC định kỳ khi nhiều dataplane
 - vẫn giữ RPC cho điểm cần đồng bộ trạng thái job cuối cùng
 - lifecycle job rõ ràng theo `job_id` duy nhất
@@ -67,6 +69,7 @@ Nền tảng kết nối nên dùng mTLS:
 - identity node lấy từ SAN/CN cert hoặc metadata signed
 
 Nguyên tắc:
+
 - không trust chỉ theo IP
 - rotate cert theo lifecycle rõ
 - revoke identity khi node bị compromise
@@ -124,6 +127,7 @@ Mọi case trên cần replay-safe + idempotent handling.
 ## 9) Kết luận ý tưởng
 
 Hướng hợp lý cho phase đầu:
+
 - controlplane chỉ push job để dataplane execute
 - heartbeat dataplane đi qua Redis stream mỗi 5s
 - sau khi execute non-mail job xong, dataplane gọi RPC confirm để controlplane xóa job và giải phóng `job_id`

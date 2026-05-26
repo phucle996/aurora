@@ -1,0 +1,7 @@
+version: "v1"
+updated_at: "2026-05-26T17:30:00Z"
+source: "config/policy.yaml"
+checksum_sha: "a68731ff55b7964d4b245e14bcf0879c536553df9059f0f9c2d1b80db18c21a9"
+policies:
+  max_workers: 100
+  rate_limit_rps: 500

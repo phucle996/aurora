@@ -1,0 +1,70 @@
+pub mod hypervisor;
+pub mod mail;
+
+use crate::job_receiver::message::JobPayload;
+use async_trait::async_trait;
+
+/// ============================================================================
+/// 📂 MODULE: executor/mod.rs - Giao Diện & Bộ Khung Thực Thi Nghiệp Vụ
+/// ============================================================================
+/// 
+/// 📌 VAI TRÒ (ROLE):
+///   - Định nghĩa Trait chuẩn `Executor` cho toàn bộ các nghiệp vụ chạy trên Dataplane.
+///   - Khai báo các cấu trúc lỗi (`ExecutorError`) và kết quả (`ExecutionResult`) chuẩn hóa.
+///
+/// 🎯 SOURCE OF TRUTH (SoT):
+///   - Định nghĩa hợp đồng nghiệp vụ (Interface Contract) duy nhất của toàn bộ hệ thống thực thi.
+///
+/// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
+///   - Trait `Executor` chỉ tiếp nhận `JobPayload` chứa các thông số hạ tầng cấp thấp (non-tenant).
+///   - Tuyệt đối phân tách luồng xử lý và dữ liệu của các workload khác nhau (Hypervisor độc lập với Mail).
+///
+/// 🔄 CALLSITE FLOW:
+///   - Được kế thừa bởi toàn bộ các module nghiệp vụ cụ thể nằm trong `/hypervisor/` hoặc `/mail/`.
+///   - Được gọi bởi `job-receiver/consumer.rs` sau khi giải mã và định tuyến job thành công.
+///
+/// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
+///   - Mọi Executor khi triển khai bắt buộc phải tuân thủ nghiêm ngặt hai quy tắc:
+///     1. **Idempotency (Tính duy nhất)**: Phải kiểm tra trùng lặp bản ghi trước khi thay đổi trạng thái hạ tầng.
+///     2. **Deadline Enforcement (Thời hạn chờ)**: Phải tự hủy và Rollback nếu thời gian thực thi vượt quá timeout cho phép.
+///
+#[derive(Debug)]
+pub enum ExecutorError {
+    /// Lỗi xảy ra khi phát hiện Job này đã từng được thực thi thành công trước đó (Trùng lặp khóa).
+    IdempotencyViolation(String),
+    
+    /// Lỗi xảy ra khi tác vụ xử lý vượt quá thời gian timeout quy định bởi chính sách hệ thống.
+    /// Giúp giải phóng luồng xử lý bị treo trên production.
+    DeadlineExceeded(String),
+    
+    /// Các lỗi phát sinh trong quá trình tương tác API hoặc lỗi vật lý của máy chủ ảo hóa.
+    ExecutionFailed(String),
+}
+
+/// Cấu trúc kết quả trả về sau khi thực thi nghiệp vụ hoàn tất.
+pub struct ExecutionResult {
+    /// Đánh dấu tác vụ hoàn thành tốt hay thất bại.
+    pub success: bool,
+    
+    /// Mã trạng thái trả về để báo cáo lên Controlplane. Ví dụ: "SUCCESS" | "FAILED".
+    pub return_code: String,
+    
+    /// Chuỗi thông báo kỹ thuật mô tả kết quả xử lý.
+    pub message: String,
+}
+
+#[async_trait]
+pub trait Executor {
+    /// Hàm thực thi nghiệp vụ cốt lõi. Mọi module nghiệp vụ mới bắt buộc phải cài đặt phương thức này.
+    ///
+    /// # Ràng buộc (Contract Invariants):
+    ///   - Trả về `Result<ExecutionResult, ExecutorError>` rõ ràng.
+    ///   - Không được phép để xảy ra tình trạng crash thô (panic) làm sập hệ thống Dataplane.
+    async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError>;
+}
+// 
+// 💡 Ý TƯỞNG MỞ RỘNG (SCALABILITY PRO-TIP):
+//   Khi hệ thống có thêm các workload mới như Database, DNS, Storage,... bạn chỉ việc tạo thêm
+//   thư mục con tương tự như /hypervisor/ hoặc /mail/, định nghĩa struct nghiệp vụ và implement
+//   trait `Executor` này. Cực kỳ gọn gàng, an toàn và dễ bảo trì.
+//
