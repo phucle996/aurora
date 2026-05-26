@@ -1,0 +1,209 @@
+static_resources:
+  listeners:
+    - name: ingress_http
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_http
+                route_config:
+                  name: redirect_all_to_https
+                  virtual_hosts:
+                    - name: all_http
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          redirect:
+                            https_redirect: true
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    - name: ingress_https
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8443
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain:
+                      filename: /etc/envoy/tls/tls.crt
+                    private_key:
+                      filename: /etc/envoy/tls/tls.key
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress_https
+                generate_request_id: true
+                use_remote_address: true
+                xff_num_trusted_hops: 1
+                common_http_protocol_options:
+                  idle_timeout: 60s
+                stream_idle_timeout: 30s
+                request_timeout: 15s
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          ts: "%START_TIME%"
+                          method: "%REQ(:METHOD)%"
+                          host: "%REQ(:AUTHORITY)%"
+                          path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                          protocol: "%PROTOCOL%"
+                          status: "%RESPONSE_CODE%"
+                          flags: "%RESPONSE_FLAGS%"
+                          duration_ms: "%DURATION%"
+                          upstream_service_time_ms: "%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%"
+                          upstream_host: "%UPSTREAM_HOST%"
+                          downstream_remote: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                route_config:
+                  name: ingress_https_routes
+                  response_headers_to_add:
+                    - header:
+                        key: strict-transport-security
+                        value: max-age=31536000; includeSubDomains
+                    - header:
+                        key: x-content-type-options
+                        value: nosniff
+                    - header:
+                        key: x-frame-options
+                        value: DENY
+                    - header:
+                        key: referrer-policy
+                        value: strict-origin-when-cross-origin
+                  virtual_hosts:
+                    - name: controlplane_vhost
+                      domains:
+                        - "controlplane.aurora.local"
+                        - "controlplane.aurora.local:443"
+                      routes:
+                        - match:
+                            path: "/api/v1/health/readiness"
+                          route:
+                            cluster: controlplane_cluster
+                            timeout: 2s
+                            retry_policy:
+                              retry_on: "5xx,connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 1s
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: controlplane_cluster
+                            timeout: 10s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 3s
+                    - name: adminui_vhost
+                      domains:
+                        - "adminui.aurora.local"
+                        - "adminui.aurora.local:443"
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: admin_ui_cluster
+                            timeout: 15s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 5s
+                    - name: localhost_fallback
+                      domains:
+                        - "localhost"
+                        - "localhost:443"
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: controlplane_cluster
+                            timeout: 10s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 3s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: controlplane_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            # app max_inflight per instance = 2444
+            # envoy cluster gate ~= 1.2x * 2444 * 3 instances = 8798
+            max_requests: 8798
+            max_pending_requests: 8798
+            max_connections: 8798
+      health_checks:
+        - timeout: 1s
+          interval: 2s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check:
+            path: /api/v1/health/readiness
+      outlier_detection:
+        consecutive_5xx: 3
+        consecutive_gateway_failure: 2
+        interval: 5s
+        base_ejection_time: 30s
+        max_ejection_percent: 100
+        successful_active_health_check_uneject_host: true
+      load_assignment:
+        cluster_name: controlplane_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: controlplane1
+                      port_value: 8080
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: controlplane2
+                      port_value: 8080
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: controlplane3
+                      port_value: 8080
+
+    - name: admin_ui_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: admin_ui_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: admin-ui
+                      port_value: 5173
+
+admin:
+  access_log_path: /tmp/admin_access.log
+  address:
+    socket_address:
+      address: 127.0.0.1
+      port_value: 9901

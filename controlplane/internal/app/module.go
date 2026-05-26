@@ -65,6 +65,12 @@ func NewGlobalModules(cfg *config.Config,
 	// 2) Time drift probe read-only: chỉ ghi tín hiệu health/metrics, không chỉnh clock OS.
 	probe := NewTimeSyncProbe()
 	probeCtx, probeCancel := context.WithCancel(context.Background())
+	keepProbeRunning := false
+	defer func() {
+		if !keepProbeRunning {
+			probeCancel()
+		}
+	}()
 	go probe.Start(probeCtx)
 
 	go func() {
@@ -114,6 +120,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	// 8) Chỉ mark ready khi toàn bộ module graph đã dựng xong.
 	health.MarkReady()
+	keepProbeRunning = true
 
 	return &Modules{
 		Health:       health,
@@ -146,6 +153,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		return errors.New("app: init middleware: active runtime policy is required")
 	}
 	middleware.InitAdminCIDR(policySnapshot.Runtime.AdminCIDR.Allowlist)
+	middleware.InitRateLimitPolicy(policySnapshot.Runtime.RateLimit)
 	middleware.InitAccess(
 		securityProvider,
 		rds,

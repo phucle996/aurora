@@ -39,9 +39,6 @@ func NewModule(cfg *config.Config, rds *goredis.Client) (*Module, error) {
 		return nil, errors.New("policyengine: propagation notifier is required")
 	}
 	subscriber := notifier
-	if subscriber == nil {
-		return nil, errors.New("policyengine: event subscriber is required")
-	}
 	service := policyruntime.NewEngineService(cfg, source, notifier, subscriber)
 	if service == nil {
 		return nil, errors.New("policyengine: engine service is required")

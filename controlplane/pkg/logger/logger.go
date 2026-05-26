@@ -172,6 +172,10 @@ func SysInfoFields(op, message string, fields Fields) {
 	L().WithFields(mergeSystemFields(op, fields, nil)).Info(message)
 }
 
+func SysDebugFields(op, message string, fields Fields) {
+	L().WithFields(mergeSystemFields(op, fields, nil)).Debug(message)
+}
+
 func SysWarnFields(op, message string, err error, fields Fields) {
 	L().WithFields(mergeSystemFields(op, fields, err)).Warn(message)
 }

@@ -14,7 +14,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '127.0.0.1',
-    allowedHosts: ['admin.auroracloud.local'],
+    allowedHosts: ['admin.auroracloud.local', 'adminui.aurora.local'],
   },
   optimizeDeps: {
     include: ["recharts", "react-is"],

@@ -7,3 +7,32 @@ policies:
       - 127.0.0.1/32
       - 10.0.0.0/8
       - 192.168.0.0/16
+  rate_limit:
+    preauth:
+      global_instant:
+        max_inflight: 2444
+        queue_limit: 0
+        retry_after_seconds: 1
+      ip:
+        capacity: 1200
+        refill: 1200
+        period_seconds: 60
+    postauth:
+      ip_device:
+        capacity: 40
+        refill: 40
+        period_seconds: 60
+    observability:
+      sampling_percent:
+        throttle: 10
+        temporary_isolation: 50
+        block: 100
+        error: 100
+    behavior:
+      retry_after_fallback_seconds: 2
+      fail_open: false
+      bypass_route_patterns:
+        - /metrics
+        - /api/v1/health/liveness
+        - /api/v1/health/readiness
+        - /api/v1/health/startup

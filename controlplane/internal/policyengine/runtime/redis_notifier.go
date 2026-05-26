@@ -3,7 +3,6 @@ package policyruntime
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	policyEntity "controlplane/internal/policyengine/runtime/types"
 
@@ -18,9 +17,6 @@ type redisPubSubNotifier struct {
 // NewRedisPubSubNotifier provisions notifier/subscriber cho kênh propagation nội bộ.
 // CONTRACT: channel này chỉ chở metadata event, không chở full policy payload.
 func NewRedisPubSubNotifier(client *goredis.Client, topic string) *redisPubSubNotifier {
-	if strings.TrimSpace(topic) == "" {
-		topic = "policyengine.policy.changed.v1"
-	}
 	return &redisPubSubNotifier{client: client, topic: topic}
 }
 

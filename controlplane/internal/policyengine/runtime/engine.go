@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	policyConfigYAML "controlplane/internal/policyengine/runtime/configyaml"
-	policyEntity "controlplane/internal/policyengine/runtime/types"
+	policyConfigYAML "controlplane/internal/policyengine/configyaml"
 	policyErrorx "controlplane/internal/policyengine/errorx"
+	policytypes "controlplane/internal/policyengine/runtime/types"
 	"controlplane/pkg/logger"
 
 	"gopkg.in/yaml.v3"
@@ -36,7 +36,7 @@ type yamlPolicyFile struct {
 type EngineService struct {
 	cfg *config.Config
 	mu  sync.RWMutex
-	cur *policyEntity.PolicySet
+	cur *policytypes.PolicySet
 
 	sourceAdapter PolicySourceAdapter
 	notifier      PolicyPropagationNotifier
@@ -83,7 +83,7 @@ func (s *EngineService) Start(ctx context.Context) {
 
 // Current trả snapshot active dạng copy để caller không mutate state nội bộ.
 // Nếu chưa có snapshot active thì fail-fast để tránh runtime dùng policy mơ hồ.
-func (s *EngineService) Current(ctx context.Context) (*policyEntity.PolicySet, error) {
+func (s *EngineService) Current(ctx context.Context) (*policytypes.PolicySet, error) {
 	_ = ctx
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -103,7 +103,7 @@ func (s *EngineService) Current(ctx context.Context) (*policyEntity.PolicySet, e
 // - B3: dedupe bằng checksum/meta key để tránh swap lặp.
 // - B4: cooldown 5s để chống reload storm khi trigger dồn dập.
 // - B5: atomic swap + cập nhật marker và ghi log success.
-func (s *EngineService) Reload(ctx context.Context) (*policyEntity.PolicySet, error) {
+func (s *EngineService) Reload(ctx context.Context) (*policytypes.PolicySet, error) {
 	if s.sourceAdapter != nil {
 		// Case: source chưa đổi theo metadata.
 		// Action: trả ngay snapshot hiện tại, không read file/parse YAML để tránh nghẽn I/O.
@@ -155,7 +155,7 @@ func (s *EngineService) Reload(ctx context.Context) (*policyEntity.PolicySet, er
 	s.lastReloadAt = now
 	s.mu.Unlock()
 	logger.SysInfoFields(opPolicyReloadSuccess, "policy snapshot swapped", logger.Fields{"version": next.Version, "checksum": next.ChecksumSHA, "source_mode": "poll", "trigger": "poll"})
-	if err := s.notifier.PublishPolicyChanged(ctx, policyEntity.PolicyChangedEvent{
+	if err := s.notifier.PublishPolicyChanged(ctx, policytypes.PolicyChangedEvent{
 		Version:          next.Version,
 		Checksum:         next.ChecksumSHA,
 		SourceType:       "yaml_file",
@@ -191,7 +191,7 @@ func (s *EngineService) runPropagationConsumeLoop(ctx context.Context) {
 	backoff := 2 * time.Second
 	const maxBackoff = 30 * time.Second
 
-	subscribe := func() (<-chan policyEntity.PolicyChangedEvent, bool) {
+	subscribe := func() (<-chan policytypes.PolicyChangedEvent, bool) {
 		events, err := s.subscriber.SubscribePolicyChanged(ctx)
 		if err != nil {
 			logger.SysWarnFields(opPolicySourceDegraded, "policy propagation subscribe failed, retrying", err, logger.Fields{"source_mode": "poll", "retry_in_sec": int(backoff.Seconds())})
@@ -252,7 +252,7 @@ func (s *EngineService) runPropagationConsumeLoop(ctx context.Context) {
 
 // loadPolicySnapshotFromSource đọc full source và validate contract YAML trước khi swap.
 // Function này là guard cuối để chặn config lỗi làm hỏng runtime active policy.
-func (s *EngineService) loadPolicySnapshotFromSource(ctx context.Context) (*policyEntity.PolicySet, string, error) {
+func (s *EngineService) loadPolicySnapshotFromSource(ctx context.Context) (*policytypes.PolicySet, string, error) {
 	if s.sourceAdapter == nil {
 		return nil, "", policyErrorx.ErrPolicyInvalid
 	}
@@ -273,20 +273,20 @@ func (s *EngineService) loadPolicySnapshotFromSource(ctx context.Context) (*poli
 	version := strings.TrimSpace(parsed.Version)
 	checksum := sha256.Sum256(rawBytes)
 	now := time.Now().UTC()
-	next := &policyEntity.PolicySet{Version: version, UpdatedAt: now, Source: meta.Path, ChecksumSHA: hex.EncodeToString(checksum[:]), Policies: map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR}, Runtime: runtimePolicies}
+	next := &policytypes.PolicySet{Version: version, UpdatedAt: now, Source: meta.Path, ChecksumSHA: hex.EncodeToString(checksum[:]), Policies: map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR}, Runtime: runtimePolicies}
 	metaKey := strings.TrimSpace(meta.Path) + ":" + strings.TrimSpace(meta.Version) + ":" + fmt.Sprintf("%d", meta.Size)
 	return next, metaKey, nil
 }
 
 // parseAndCompilePolicies guarantees typed YAML parse and runtime variable compilation.
 // It enforces YAML contract before snapshot swap so callers never receive ambiguous variables.
-func parseAndCompilePolicies(rawBytes []byte) (policyConfigYAML.PoliciesFile, policyEntity.RuntimePolicies, error) {
+func parseAndCompilePolicies(rawBytes []byte) (policyConfigYAML.PoliciesFile, policytypes.RuntimePolicies, error) {
 	parsed := policyConfigYAML.PoliciesFile{}
 	if err := yaml.Unmarshal(rawBytes, &parsed); err != nil {
-		return policyConfigYAML.PoliciesFile{}, policyEntity.RuntimePolicies{}, err
+		return policyConfigYAML.PoliciesFile{}, policytypes.RuntimePolicies{}, err
 	}
 	if strings.TrimSpace(parsed.Version) == "" || strings.TrimSpace(parsed.Version) != defaultPolicyVersion {
-		return policyConfigYAML.PoliciesFile{}, policyEntity.RuntimePolicies{}, policyErrorx.ErrPolicyInvalid
+		return policyConfigYAML.PoliciesFile{}, policytypes.RuntimePolicies{}, policyErrorx.ErrPolicyInvalid
 	}
 	allowlist := make([]string, 0, len(parsed.Policies.AdminCIDR.Allowlist))
 	for _, item := range parsed.Policies.AdminCIDR.Allowlist {
@@ -297,12 +297,78 @@ func parseAndCompilePolicies(rawBytes []byte) (policyConfigYAML.PoliciesFile, po
 		allowlist = append(allowlist, trimmed)
 	}
 	if len(allowlist) == 0 {
-		return policyConfigYAML.PoliciesFile{}, policyEntity.RuntimePolicies{}, policyErrorx.ErrPolicyInvalid
+		return policyConfigYAML.PoliciesFile{}, policytypes.RuntimePolicies{}, policyErrorx.ErrPolicyInvalid
 	}
 	mode := strings.TrimSpace(parsed.Policies.AdminCIDR.Mode)
 	if mode == "" {
-		mode = "enforce"
+		return policyConfigYAML.PoliciesFile{}, policytypes.RuntimePolicies{}, policyErrorx.ErrPolicyInvalid
 	}
-	runtimeVariables := policyEntity.RuntimePolicies{AdminCIDR: policyEntity.CompiledAdminCIDRPolicy{Enabled: parsed.Policies.AdminCIDR.Enabled, Mode: mode, Allowlist: allowlist}}
+	runtimeVariables := policytypes.RuntimePolicies{AdminCIDR: policytypes.CompiledAdminCIDRPolicy{Enabled: parsed.Policies.AdminCIDR.Enabled, Mode: mode, Allowlist: allowlist}}
+	rateLimitPolicy, err := compileRateLimitPolicy(parsed)
+	if err != nil {
+		return policyConfigYAML.PoliciesFile{}, policytypes.RuntimePolicies{}, err
+	}
+	runtimeVariables.RateLimit = rateLimitPolicy
 	return parsed, runtimeVariables, nil
+}
+
+func compileRateLimitPolicy(parsed policyConfigYAML.PoliciesFile) (policytypes.CompiledRateLimitPolicyGroup, error) {
+	out := policytypes.CompiledRateLimitPolicyGroup{}
+	out.PreAuth.IP = compileBucketPolicy(parsed.Policies.RateLimit.PreAuth.IP)
+	out.PostAuth.IPDevice = compileBucketPolicy(parsed.Policies.RateLimit.PostAuth.IPDevice)
+	if out.PreAuth.IP.Capacity <= 0 || out.PreAuth.IP.Refill <= 0 || out.PreAuth.IP.PeriodSeconds <= 0 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+	if out.PostAuth.IPDevice.Capacity <= 0 || out.PostAuth.IPDevice.Refill <= 0 || out.PostAuth.IPDevice.PeriodSeconds <= 0 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+
+	out.PreAuth.GlobalInstant.MaxInflight = parsed.Policies.RateLimit.PreAuth.GlobalInstant.MaxInflight
+	out.PreAuth.GlobalInstant.QueueLimit = parsed.Policies.RateLimit.PreAuth.GlobalInstant.QueueLimit
+	out.PreAuth.GlobalInstant.RetryAfterSeconds = parsed.Policies.RateLimit.PreAuth.GlobalInstant.RetryAfterSeconds
+	if out.PreAuth.GlobalInstant.MaxInflight <= 0 || out.PreAuth.GlobalInstant.RetryAfterSeconds <= 0 || out.PreAuth.GlobalInstant.QueueLimit < 0 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+
+	out.Observability.SamplingPercent.Throttle = parsed.Policies.RateLimit.Observability.SamplingPercent.Throttle
+	out.Observability.SamplingPercent.TemporaryIsolation = parsed.Policies.RateLimit.Observability.SamplingPercent.TemporaryIsolation
+	out.Observability.SamplingPercent.Block = parsed.Policies.RateLimit.Observability.SamplingPercent.Block
+	out.Observability.SamplingPercent.Error = parsed.Policies.RateLimit.Observability.SamplingPercent.Error
+	if out.Observability.SamplingPercent.Throttle < 0 || out.Observability.SamplingPercent.Throttle > 100 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+	if out.Observability.SamplingPercent.TemporaryIsolation < 0 || out.Observability.SamplingPercent.TemporaryIsolation > 100 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+	if out.Observability.SamplingPercent.Block < 0 || out.Observability.SamplingPercent.Block > 100 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+	if out.Observability.SamplingPercent.Error < 0 || out.Observability.SamplingPercent.Error > 100 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+
+	out.Behavior.RetryAfterFallbackSeconds = parsed.Policies.RateLimit.Behavior.RetryAfterFallbackSeconds
+	out.Behavior.FailOpen = parsed.Policies.RateLimit.Behavior.FailOpen
+	if out.Behavior.RetryAfterFallbackSeconds <= 0 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+	for _, item := range parsed.Policies.RateLimit.Behavior.BypassRoutePatterns {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		out.Behavior.BypassRoutePatterns = append(out.Behavior.BypassRoutePatterns, trimmed)
+	}
+	if len(out.Behavior.BypassRoutePatterns) == 0 {
+		return policytypes.CompiledRateLimitPolicyGroup{}, policyErrorx.ErrPolicyInvalid
+	}
+	return out, nil
+}
+
+func compileBucketPolicy(src policyConfigYAML.RateLimitBucketPolicy) policytypes.CompiledRateLimitBucketPolicy {
+	return policytypes.CompiledRateLimitBucketPolicy{
+		Capacity:      src.Capacity,
+		Refill:        src.Refill,
+		PeriodSeconds: src.PeriodSeconds,
+	}
 }

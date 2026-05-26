@@ -14,6 +14,7 @@ type PolicySet struct {
 // RuntimePolicies carries compiled typed runtime variables for middleware callers.
 type RuntimePolicies struct {
 	AdminCIDR CompiledAdminCIDRPolicy
+	RateLimit CompiledRateLimitPolicyGroup
 }
 
 // CompiledAdminCIDRPolicy is typed runtime variable parsed from YAML contract.
@@ -22,6 +23,52 @@ type CompiledAdminCIDRPolicy struct {
 	Enabled   bool
 	Mode      string
 	Allowlist []string
+}
+
+// CompiledRateLimitPolicyGroup groups rate-limit runtime policies by function scope.
+type CompiledRateLimitPolicyGroup struct {
+	PreAuth       CompiledRateLimitPreAuthPolicy
+	PostAuth      CompiledRateLimitPostAuthPolicy
+	Observability CompiledRateLimitObservabilityPolicy
+	Behavior      CompiledRateLimitBehaviorPolicy
+}
+
+type CompiledRateLimitPreAuthPolicy struct {
+	GlobalInstant CompiledRateLimitGlobalInstantPolicy
+	IP            CompiledRateLimitBucketPolicy
+}
+
+type CompiledRateLimitPostAuthPolicy struct {
+	IPDevice CompiledRateLimitBucketPolicy
+}
+
+type CompiledRateLimitGlobalInstantPolicy struct {
+	MaxInflight       int64
+	QueueLimit        int64
+	RetryAfterSeconds int64
+}
+
+type CompiledRateLimitBucketPolicy struct {
+	Capacity      int64
+	Refill        int64
+	PeriodSeconds int64
+}
+
+type CompiledRateLimitObservabilityPolicy struct {
+	SamplingPercent CompiledRateLimitSamplingPercentPolicy
+}
+
+type CompiledRateLimitSamplingPercentPolicy struct {
+	Throttle           int
+	TemporaryIsolation int
+	Block              int
+	Error              int
+}
+
+type CompiledRateLimitBehaviorPolicy struct {
+	RetryAfterFallbackSeconds int64
+	FailOpen                  bool
+	BypassRoutePatterns       []string
 }
 
 // PolicySourceMeta describes low-cost source metadata used for change detection.

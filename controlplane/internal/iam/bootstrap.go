@@ -132,7 +132,7 @@ func (m *Module) runAdminRotationScheduler(ctx context.Context) {
 		if err == nil {
 			attempt = 0
 			iamMetrics.ObserveAdminKeyRotationOutcome(iamMetrics.OutcomeSuccess)
-			logger.SysInfoFields(op, "rotation scheduler tick completed", logger.Fields{"run_id": runID, "result": "success_or_noop", "reason": "none"})
+			logger.SysDebugFields(op, "rotation scheduler tick completed", logger.Fields{"run_id": runID, "result": "success_or_noop", "reason": "none"})
 			continue
 		}
 		if errors.Is(err, iamErrorx.ErrAdminRotationLockBusy) {

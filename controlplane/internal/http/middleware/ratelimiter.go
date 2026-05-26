@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"controlplane/internal/observability"
+	policytypes "controlplane/internal/policyengine/runtime/types"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/logger"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,13 +29,62 @@ const (
 	rateLimitDecisionThrottle   = "throttle"
 	rateLimitDecisionIsolation  = "temporary_isolation"
 	rateLimitDecisionBlock      = "block"
-	rateLimitThrottleSamplePct  = 10
-	rateLimitIsolationSamplePct = 50
-	rateLimitBlockSamplePct     = 100
-	rateLimitErrorSamplePct     = 100
 )
 
 var rateLimitEngine = ratelimit.NewDecisionEngine()
+
+type rateLimitPolicyConfig struct {
+	preAuthCapacity          int64
+	preAuthRefill            int64
+	preAuthPeriod            time.Duration
+	postAuthCapacity         int64
+	postAuthRefill           int64
+	postAuthPeriod           time.Duration
+	globalInstantMaxInflight int64
+	globalInstantRetryAfter  time.Duration
+	retryFallback            time.Duration
+	throttleSample           int
+	isolationSample          int
+	blockSample              int
+	errorSample              int
+	bypassRoutes             map[string]struct{}
+}
+
+var rateLimitPolicyHolder atomic.Value
+var rateLimitInflight atomic.Int64
+
+func currentRateLimitPolicy() rateLimitPolicyConfig {
+	v := rateLimitPolicyHolder.Load()
+	if v == nil {
+		panic("ratelimiter: runtime policy is not initialized")
+	}
+	return v.(rateLimitPolicyConfig)
+}
+
+// InitRateLimitPolicy nạp runtime policy cho rate-limit và fallback về default an toàn nếu thiếu key.
+func InitRateLimitPolicy(policy policytypes.CompiledRateLimitPolicyGroup) {
+	bypassRoutes := map[string]struct{}{}
+	for _, route := range policy.Behavior.BypassRoutePatterns {
+		bypassRoutes[route] = struct{}{}
+	}
+	cfg := rateLimitPolicyConfig{
+		preAuthCapacity:          policy.PreAuth.IP.Capacity,
+		preAuthRefill:            policy.PreAuth.IP.Refill,
+		preAuthPeriod:            time.Duration(policy.PreAuth.IP.PeriodSeconds) * time.Second,
+		postAuthCapacity:         policy.PostAuth.IPDevice.Capacity,
+		postAuthRefill:           policy.PostAuth.IPDevice.Refill,
+		postAuthPeriod:           time.Duration(policy.PostAuth.IPDevice.PeriodSeconds) * time.Second,
+		globalInstantMaxInflight: policy.PreAuth.GlobalInstant.MaxInflight,
+		globalInstantRetryAfter:  time.Duration(policy.PreAuth.GlobalInstant.RetryAfterSeconds) * time.Second,
+		retryFallback:            time.Duration(policy.Behavior.RetryAfterFallbackSeconds) * time.Second,
+		throttleSample:           policy.Observability.SamplingPercent.Throttle,
+		isolationSample:          policy.Observability.SamplingPercent.TemporaryIsolation,
+		blockSample:              policy.Observability.SamplingPercent.Block,
+		errorSample:              policy.Observability.SamplingPercent.Error,
+		bypassRoutes:             bypassRoutes,
+	}
+	rateLimitPolicyHolder.Store(cfg)
+}
 
 var (
 	rateLimitCheckTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -135,6 +186,17 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string, capacity, refill i
 			c.Next()
 			return
 		}
+		if !acquireGlobalInstantPermit() {
+			retryAfter := currentRateLimitPolicy().globalInstantRetryAfter
+			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(retryAfter))
+			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBlocked).Inc()
+			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionThrottle, rateLimitScopeIP).Inc()
+			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, rateLimitDecisionThrottle, "global_instant_cap", retryAfter, 0, "global")
+			apires.RespondTooManyRequests(c, "too many requests")
+			c.Abort()
+			return
+		}
+		defer releaseGlobalInstantPermit()
 
 		if limiter == nil || name == "" || capacity <= 0 || refill <= 0 || period <= 0 {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultAllow).Inc()
@@ -186,13 +248,14 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string, capacity, refill i
 
 		evalStart := time.Now()
 
+		policyCfg := currentRateLimitPolicy()
 		res, err := limiter.Allow(
 			c.Request.Context(),
 			key,
 			ratelimit.Rate{
-				Capacity: capacity,
-				Refill:   refill,
-				Period:   period,
+				Capacity: policyCfg.preAuthCapacity,
+				Refill:   policyCfg.preAuthRefill,
+				Period:   policyCfg.preAuthPeriod,
 			},
 			1,
 		)
@@ -323,13 +386,14 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, name string, capacity, refill 
 		}
 
 		evalStart := time.Now()
+		policyCfg := currentRateLimitPolicy()
 		res, err := limiter.Allow(
 			c.Request.Context(),
 			key,
 			ratelimit.Rate{
-				Capacity: capacity,
-				Refill:   refill,
-				Period:   period,
+				Capacity: policyCfg.postAuthCapacity,
+				Refill:   policyCfg.postAuthRefill,
+				Period:   policyCfg.postAuthPeriod,
 			},
 			1,
 		)
@@ -391,12 +455,8 @@ func formatRetryAfterSeconds(retryAfter time.Duration) string {
 // - Được gọi ở đầu PreAuth/PostAuth để short-circuit.
 // - Nếu thêm endpoint mới kiểu health/ops, cần cập nhật tại đây để tránh false deny.
 func shouldBypassRateLimit(routePattern string) bool {
-	switch strings.TrimSpace(routePattern) {
-	case "/metrics", "/api/v1/health/liveness", "/api/v1/health/readiness", "/api/v1/health/startup":
-		return true
-	default:
-		return false
-	}
+	_, ok := currentRateLimitPolicy().bypassRoutes[strings.TrimSpace(routePattern)]
+	return ok
 }
 
 // routePatternOf lấy route đã normalize (nếu có), fallback về URL path.
@@ -426,7 +486,7 @@ func retryAfterFromRate(res ratelimit.Result) time.Duration {
 	if res.RetryAfter > 0 {
 		return res.RetryAfter
 	}
-	return 2 * time.Second
+	return currentRateLimitPolicy().retryFallback
 }
 
 // emitRateLimitSecurityEvent ghi log security riêng cho anti-probing.
@@ -491,15 +551,44 @@ func shouldEmitRateLimitSecurityEvent(c *gin.Context, decision, subjectKey strin
 func samplingPercentByDecision(decision string) int {
 	switch strings.TrimSpace(decision) {
 	case "error":
-		return rateLimitErrorSamplePct
+		return currentRateLimitPolicy().errorSample
 	case rateLimitDecisionThrottle:
-		return rateLimitThrottleSamplePct
+		return currentRateLimitPolicy().throttleSample
 	case rateLimitDecisionIsolation:
-		return rateLimitIsolationSamplePct
+		return currentRateLimitPolicy().isolationSample
 	case rateLimitDecisionBlock:
-		return rateLimitBlockSamplePct
+		return currentRateLimitPolicy().blockSample
 	default:
-		return rateLimitErrorSamplePct
+		return currentRateLimitPolicy().errorSample
+	}
+}
+
+func acquireGlobalInstantPermit() bool {
+	cfg := currentRateLimitPolicy()
+	if cfg.globalInstantMaxInflight <= 0 {
+		return true
+	}
+	for {
+		cur := rateLimitInflight.Load()
+		if cur >= cfg.globalInstantMaxInflight {
+			rateLimitLocalCacheTotal.WithLabelValues("global_inflight_reject", rateLimitScopeIP).Inc()
+			return false
+		}
+		if rateLimitInflight.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func releaseGlobalInstantPermit() {
+	for {
+		cur := rateLimitInflight.Load()
+		if cur <= 0 {
+			return
+		}
+		if rateLimitInflight.CompareAndSwap(cur, cur-1) {
+			return
+		}
 	}
 }
 

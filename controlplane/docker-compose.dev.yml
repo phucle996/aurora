@@ -1,5 +1,5 @@
 services:
-  controlplane:
+  controlplane1:
     build:
       context: .
       dockerfile: Dockerfile.dev
@@ -7,7 +7,7 @@ services:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: controlplane-dev
+    container_name: controlplane-dev-1
     working_dir: /app
     env_file:
       - .env
@@ -17,11 +17,8 @@ services:
       - ./tmp:/app/tmp
       - ./dev/tls:/app/dev/tls
       - ./policies.yaml:/app/runtime/policies/policy.yaml:ro
-    ports:
-      - "28000:8080"
-      - "29090:9090"
-      - "29443:9443"
     environment:
+      APP_NODE_ID: controlplane-dev-1
       PSQL_HOST: psql
       PSQL_PORT: "5432"
     depends_on:
@@ -38,6 +35,102 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  controlplane2:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: controlplane-dev-2
+    working_dir: /app
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - controlplane_go_mod:/go/pkg/mod
+      - ./tmp:/app/tmp
+      - ./dev/tls:/app/dev/tls
+      - ./policies.yaml:/app/runtime/policies/policy.yaml:ro
+    environment:
+      APP_NODE_ID: controlplane-dev-2
+      PSQL_HOST: psql
+      PSQL_PORT: "5432"
+    depends_on:
+      psql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+      tempo:
+        condition: service_started
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  controlplane3:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: controlplane-dev-3
+    working_dir: /app
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - controlplane_go_mod:/go/pkg/mod
+      - ./tmp:/app/tmp
+      - ./dev/tls:/app/dev/tls
+      - ./policies.yaml:/app/runtime/policies/policy.yaml:ro
+    environment:
+      APP_NODE_ID: controlplane-dev-3
+      PSQL_HOST: psql
+      PSQL_PORT: "5432"
+    depends_on:
+      psql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+      tempo:
+        condition: service_started
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  envoy:
+    image: envoyproxy/envoy:v1.33.2
+    container_name: controlplane-envoy
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+    volumes:
+      - ./dev/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
+      - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
+    ports:
+      - "80:8080"
+      - "443:8443"
+      - "28000:8080"
+      - "29901:9901"
+    depends_on:
+      controlplane1:
+        condition: service_started
+      controlplane2:
+        condition: service_started
+      controlplane3:
+        condition: service_started
+    restart: unless-stopped
 
   psql:
     image: postgres:17-bookworm
