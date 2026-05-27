@@ -310,7 +310,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected parsable access token, got %v", err)
 	}
-	if claims.DeviceID != result.RuntimeDeviceID {
+	if claims.AccessKey != result.RuntimeDeviceID {
 		t.Fatalf("unexpected device claims: %#v", claims)
 	}
 }

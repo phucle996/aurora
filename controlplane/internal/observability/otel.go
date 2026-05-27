@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	"controlplane/pkg/constant"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -21,7 +22,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const traceparentHeader = "traceparent"
+// HeaderTraceparent được định nghĩa tập trung ở constant.HeaderTraceparent
+
 
 type OTel struct {
 	tracer     trace.Tracer
@@ -186,5 +188,5 @@ func ExtractTraceparent(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.Header.Get(traceparentHeader))
+	return strings.TrimSpace(r.Header.Get(constant.HeaderTraceparent))
 }

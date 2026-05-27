@@ -68,7 +68,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			Expires:  time.Unix(0, 0),
 		})
 		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookie.DeviceIDName,
+			Name:     cookie.AccessKeyName,
 			Value:    "",
 			Path:     "/",
 			Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -79,7 +79,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			Expires:  time.Unix(0, 0),
 		})
 		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookie.DeviceSecretName,
+			Name:     cookie.AccessSecretName,
 			Value:    "",
 			Path:     "/",
 			Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -121,7 +121,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 				Expires:  time.Unix(0, 0),
 			})
 			http.SetCookie(c.Writer, &http.Cookie{
-				Name:     cookie.DeviceIDName,
+				Name:     cookie.AccessKeyName,
 				Value:    "",
 				Path:     "/",
 				Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -132,7 +132,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 				Expires:  time.Unix(0, 0),
 			})
 			http.SetCookie(c.Writer, &http.Cookie{
-				Name:     cookie.DeviceSecretName,
+				Name:     cookie.AccessSecretName,
 				Value:    "",
 				Path:     "/",
 				Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -180,7 +180,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 		MaxAge:   int(time.Until(result.RefreshExpiresAt).Seconds()),
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceIDName,
+		Name:     cookie.AccessKeyName,
 		Value:    result.RuntimeDeviceID,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -191,7 +191,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 		MaxAge:   int(time.Until(result.AccessExpiresAt).Seconds()),
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceSecretName,
+		Name:     cookie.AccessSecretName,
 		Value:    result.DeviceSecret,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),

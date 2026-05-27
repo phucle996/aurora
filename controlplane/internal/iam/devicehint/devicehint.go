@@ -1,9 +1,22 @@
-// Package iamDeviceHint implements client-supplied device naming + persistent
-// client device identifier rules per idea v0.3
-// (controlplane/internal/iam/docs/idea/iam-device-name-from-client-header-idea.md).
+// ============================================================================
+// 📂 PACKAGE: iam/devicehint - Client Device Hint Sanitization & Resolution
+// ============================================================================
 //
-// Boundary: this package is pure (no Redis/DB). It is consumed by service
-// layer to derive sanitized device_name and client_device_id from headers.
+// 📌 VAI TRÒ (ROLE):
+//   - Chuẩn hoá dữ liệu device hint do client gửi qua headers.
+//   - Resolve `device_name` và `client_device_id` theo rule deterministic.
+//
+// 🎯 SOURCE OF TRUTH (SoT):
+//   - Rule set theo idea v0.3:
+//     `internal/iam/docs/idea/iam-device-name-from-client-header-idea.md`.
+//
+// 🔒 BOUNDARY:
+//   - Package thuần (pure), không đọc/ghi Redis, DB, network.
+//   - Chỉ xử lý sanitize/resolve string và sinh fallback UUID cục bộ.
+//
+// 🔄 CALLSITE FLOW:
+//   - Handler nhận headers: `X-Device-Hostname`, `X-Device-Name`, `X-Client-Device-Id`.
+//   - Service layer gọi package này để chuẩn hoá trước khi persist/runtime-bind.
 package iamDeviceHint
 
 import (

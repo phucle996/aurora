@@ -205,7 +205,7 @@ func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
 			foundAccess = true
 		case constant.RefreshTokenName:
 			foundRefresh = true
-		case constant.DeviceIDName:
+		case constant.AccessKeyName:
 			if ck.Value == "runtime-device-1" {
 				foundDevice = true
 			}
@@ -216,7 +216,7 @@ func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
 		}
 	}
 	if !foundAccess || !foundRefresh || !foundDevice || !foundClientDeviceID {
-		t.Fatalf("expected %s, %s, %s and %s cookies, got %#v", constant.AccessTokenName, constant.RefreshTokenName, constant.DeviceIDName, constant.ClientDeviceIDName, cookies)
+		t.Fatalf("expected %s, %s, %s and %s cookies, got %#v", constant.AccessTokenName, constant.RefreshTokenName, constant.AccessKeyName, constant.ClientDeviceIDName, cookies)
 	}
 	if w.Result().Header.Get("X-Client-Device-Id") != "cdid-bootstrap-1" {
 		t.Fatalf("expected X-Client-Device-Id header to mirror cookie, got %q", w.Result().Header.Get("X-Client-Device-Id"))
@@ -244,7 +244,7 @@ func TestAuthHandlerSessionSuccessWithAuthContext(t *testing.T) {
 	h := newAuthHandler(&authServiceStub{})
 	router.GET("/session", func(c *gin.Context) {
 		c.Set(constant.ContextKeyUserID, "user-1")
-		c.Set(constant.ContextKeyRuntimeDeviceID, "device-1")
+		c.Set(constant.ContextKeyRuntimeAccessKey, "device-1")
 		h.Session(c)
 	})
 
@@ -281,7 +281,7 @@ func TestAuthHandlerSessionReadOnlyNoSetCookie(t *testing.T) {
 	h := newAuthHandler(&authServiceStub{})
 	router.GET("/session", func(c *gin.Context) {
 		c.Set(constant.ContextKeyUserID, "user-1")
-		c.Set(constant.ContextKeyRuntimeDeviceID, "device-1")
+		c.Set(constant.ContextKeyRuntimeAccessKey, "device-1")
 		h.Session(c)
 	})
 

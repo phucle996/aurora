@@ -134,7 +134,7 @@ func TestRefreshTokenHandlerSuccessSetsCookies(t *testing.T) {
 		if ck.Name == cookie.RefreshTokenName && ck.Value == "refresh-token-next" {
 			foundRefresh = true
 		}
-		if ck.Name == cookie.DeviceIDName && ck.Value == "runtime-device-next" {
+		if ck.Name == cookie.AccessKeyName && ck.Value == "runtime-device-next" {
 			foundDevice = true
 		}
 	}

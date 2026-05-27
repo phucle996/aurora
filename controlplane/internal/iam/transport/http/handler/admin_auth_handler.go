@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	deviceHint "controlplane/internal/iam/devicehint"
 	iamErrorx "controlplane/internal/iam/errorx"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
@@ -28,8 +28,13 @@ type AdminAuthHandler struct {
 }
 
 // NewAdminAuthHandler tạo HTTP handler cho admin auth endpoints.
-func NewAdminAuthHandler(cfg *config.Config, svc iamSvcInterface.AdminAPIKeyService) *AdminAuthHandler {
-	return &AdminAuthHandler{svc: svc, cfg: cfg}
+func NewAdminAuthHandler(cfg *config.Config,
+	svc iamSvcInterface.AdminAPIKeyService,
+) *AdminAuthHandler {
+	return &AdminAuthHandler{
+		svc: svc,
+		cfg: cfg,
+	}
 }
 
 // Login godoc
@@ -64,6 +69,8 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 			clientDeviceIDHint = cookieValue
 		}
 	}
+
+	// call to service
 	result, err := h.svc.AdminLogin(ctx, iamEntity.AdminLoginRequest{
 		RawAPIKey:       strings.TrimSpace(request.AdminAPIKey),
 		MFAMethod:       strings.TrimSpace(strings.ToLower(request.MFAMethod)),
@@ -103,7 +110,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		MaxAge:   int(time.Until(result.ExpiresAt).Seconds()),
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceIDName,
+		Name:     cookie.AccessKeyName,
 		Value:    result.DeviceID,
 		Path:     "/admin",
 		Domain:   domain,
@@ -114,7 +121,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		MaxAge:   int(time.Until(result.ExpiresAt).Seconds()),
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceSecretName,
+		Name:     cookie.AccessSecretName,
 		Value:    result.DeviceSecret,
 		Path:     "/admin",
 		Domain:   domain,
@@ -136,13 +143,17 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		Expires:  cdidExpires,
 		MaxAge:   int(time.Until(cdidExpires).Seconds()),
 	})
-	c.Header(deviceHint.HeaderClientDeviceID, result.ClientDeviceID)
 
 	logger.HandlerInfo(c, op, "admin login successful")
+
+	// set client device id header for device tracking
+	c.Header(deviceHint.HeaderClientDeviceID, result.ClientDeviceID)
+
+	// trả về thời gian còn lại của phiên để fe sẽ call refresh trước khi hết hạn
 	c.Header("X-Session-Expires-In", strconv.Itoa(int(time.Until(result.ExpiresAt).Seconds())))
+
 	apires.RespondSuccess(c, map[string]any{"ok": true}, "ok")
 }
-
 
 // Session godoc
 // @Summary Admin session bootstrap
@@ -171,11 +182,11 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	deviceID, _ := c.Cookie(cookie.DeviceIDName)
-	deviceSecretValue, _ := c.Cookie(cookie.DeviceSecretName)
-	if deviceSecret, ok := c.Get(constant.ContextKeyAdminDeviceSecret); ok {
-		if fromCtx, castOK := deviceSecret.(string); castOK {
-			deviceSecretValue = fromCtx
+	accessKey, _ := c.Cookie(cookie.AccessKeyName)
+	accessSecretValue, _ := c.Cookie(cookie.AccessSecretName)
+	if accessSecret, ok := c.Get(constant.ContextKeyAdminAccessSecret); ok {
+		if fromCtx, castOK := accessSecret.(string); castOK {
+			accessSecretValue = fromCtx
 		}
 	}
 	var requestIP *string
@@ -186,12 +197,12 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
 		userAgent = &ua
 	}
-	if value, ok := c.Get(constant.ContextKeyAdminDeviceID); ok {
-		if deviceIDCtx, castOK := value.(string); castOK {
-			deviceID = deviceIDCtx
+	if value, ok := c.Get(constant.ContextKeyAdminAccessKey); ok {
+		if accessKeyCtx, castOK := value.(string); castOK {
+			accessKey = accessKeyCtx
 		}
 	}
-	result, err := h.svc.RefreshAdminSession(ctx, strings.TrimSpace(deviceID), requestIP, userAgent)
+	result, err := h.svc.RefreshAdminSession(ctx, strings.TrimSpace(accessKey), requestIP, userAgent)
 	if err != nil {
 		switch {
 		case errors.Is(err, iamErrorx.ErrInvalidArgument):
@@ -221,7 +232,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 			MaxAge:   maxAge,
 		})
 	http.SetCookie(c.Writer,
-		&http.Cookie{Name: cookie.DeviceIDName,
+		&http.Cookie{Name: cookie.AccessKeyName,
 			Value:    result.DeviceID,
 			Path:     "/admin",
 			Domain:   domain,
@@ -231,8 +242,8 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 			Expires:  result.ExpiresAt,
 			MaxAge:   maxAge})
 	http.SetCookie(c.Writer,
-		&http.Cookie{Name: cookie.DeviceSecretName,
-			Value:    strings.TrimSpace(deviceSecretValue),
+		&http.Cookie{Name: cookie.AccessSecretName,
+			Value:    strings.TrimSpace(accessSecretValue),
 			Path:     "/admin",
 			Domain:   domain,
 			HttpOnly: true,
@@ -246,7 +257,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 
 // Logout godoc
 // @Summary Admin logout
-// @Description Xóa runtime session admin: clear cookies admin_api_token, device_id, device_secret và cleanup runtime secret trong Redis.
+// @Description Xóa runtime session admin: clear cookies admin_api_token, access_key, access_secret và cleanup runtime secret trong Redis.
 // @Tags admin-auth
 // @Produce json
 // @Success 204 {string} string "No Content"
@@ -257,10 +268,10 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	deviceID, _ := c.Cookie(cookie.DeviceIDName)
-	if value, ok := c.Get(constant.ContextKeyAdminDeviceID); ok {
-		if deviceIDCtx, castOK := value.(string); castOK {
-			deviceID = deviceIDCtx
+	accessKey, _ := c.Cookie(cookie.AccessKeyName)
+	if value, ok := c.Get(constant.ContextKeyAdminAccessKey); ok {
+		if accessKeyCtx, castOK := value.(string); castOK {
+			accessKey = accessKeyCtx
 		}
 	}
 	var requestIP *string
@@ -271,7 +282,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
 		userAgent = &ua
 	}
-	if err := h.svc.AdminLogout(ctx, strings.TrimSpace(deviceID), requestIP, userAgent); err != nil {
+	if err := h.svc.AdminLogout(ctx, strings.TrimSpace(accessKey), requestIP, userAgent); err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return
@@ -292,7 +303,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 		MaxAge:   -1,
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceIDName,
+		Name:     cookie.AccessKeyName,
 		Value:    "",
 		Path:     "/admin",
 		Domain:   domain,
@@ -303,7 +314,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 		MaxAge:   -1,
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceSecretName,
+		Name:     cookie.AccessSecretName,
 		Value:    "",
 		Path:     "/admin",
 		Domain:   domain,

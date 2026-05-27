@@ -41,7 +41,7 @@ func envInt(key string, fallback int) int {
 func NewCoreTestConfig(schema string) *config.Config {
 	cfg := config.LoadConfig()
 	cfg.SchemaSQL.Core = schema
-	cfg.App.NodeID = "core-test-node"
+	cfg.App.AppName = "core-test-node"
 	cfg.Psql.Host = envString("CORE_TEST_PSQL_HOST", "127.0.0.1")
 	cfg.Psql.Port = envInt("CORE_TEST_PSQL_PORT", 15433)
 	cfg.Psql.User = envString("CORE_TEST_PSQL_USER", "postgres")

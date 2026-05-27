@@ -111,7 +111,7 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		Subject:   user.ID.String(),
 		Role:      "",
 		Level:     0,
-		DeviceID:  runtimeDeviceID,
+		AccessKey: runtimeDeviceID,
 		TokenID:   accessJTI.String(),
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),

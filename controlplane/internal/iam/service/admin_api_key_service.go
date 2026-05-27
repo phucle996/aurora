@@ -390,7 +390,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
 		Subject:   "admin",
-		DeviceID:  deviceID,
+		AccessKey: deviceID,
 		TokenID:   adminJTI.String(),
 		TokenUse:  "admin_api_token",
 		IssuedAt:  now.Unix(),
@@ -477,7 +477,7 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, deviceID s
 	}
 	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
 		Subject:   "admin",
-		DeviceID:  trimmedDeviceID,
+		AccessKey: trimmedDeviceID,
 		TokenID:   adminJTI.String(),
 		TokenUse:  "admin_api_token",
 		IssuedAt:  now.Unix(),

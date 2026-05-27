@@ -241,7 +241,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		MaxAge:   int(time.Until(result.RefreshExpiresAt).Seconds()),
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceIDName,
+		Name:     cookie.AccessKeyName,
 		Value:    result.RuntimeDeviceID,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -252,7 +252,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		MaxAge:   int(time.Until(result.AccessExpiresAt).Seconds()),
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.DeviceSecretName,
+		Name:     cookie.AccessSecretName,
 		Value:    result.DeviceSecret,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
@@ -292,7 +292,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Session(c *gin.Context) {
 	const op = "iam.auth.session"
 
-	if strings.TrimSpace(middleware.GetUserID(c)) == "" || strings.TrimSpace(middleware.GetRuntimeDeviceID(c)) == "" {
+	if strings.TrimSpace(middleware.GetUserID(c)) == "" || strings.TrimSpace(middleware.GetRuntimeAccessKey(c)) == "" {
 		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidCredentials, "session invalid auth context")
 		apires.RespondUnauthorized(c, "unauthorized")
 		return

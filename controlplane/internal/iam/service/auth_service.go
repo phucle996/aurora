@@ -379,7 +379,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		Subject:   user.ID.String(),
 		Role:      "",
 		Level:     0,
-		DeviceID:  runtimeDeviceID,
+		AccessKey: runtimeDeviceID,
 		TokenID:   accessJTI.String(),
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),

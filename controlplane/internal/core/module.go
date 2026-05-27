@@ -51,7 +51,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Modu
 	// 2) Runtime provider for low-latency reads with cache-aside policy.
 	provider := coreCache.NewCacheAsideSecretProviderWithTTL(readService, cfg.Security.SecretCacheTTL)
 	// 3) Rotation + cache invalidation orchestration.
-	bus := coreCache.NewRedisSecretInvalidationBus(rds, provider, cfg.App.NodeID)
+	bus := coreCache.NewRedisSecretInvalidationBus(rds, provider, cfg.App.AppName)
 	rotationService := coreSvcImpl.NewSecretRotationService(repo, bus)
 	// 5) Zone dependencies injection.
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)

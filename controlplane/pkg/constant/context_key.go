@@ -5,8 +5,8 @@ package constant
 // / the middleware set the context key when the request is authenticated
 // / the handler can get the value from the context
 const (
-	ContextKeyAdminDeviceID     = "admin.device_id"
-	ContextKeyAdminDeviceSecret = "admin.device_secret"
+	ContextKeyAdminAccessKey    = "admin.access_key"
+	ContextKeyAdminAccessSecret = "admin.access_secret"
 	ContextKeyAdminTokenJTI     = "admin.token_jti"
 
 	ContextKeyJWTClaims       = "jwt_claims"
@@ -15,7 +15,11 @@ const (
 	ContextKeyJTI             = "jti"
 	ContextKeyLevel           = "level"
 	ContextKeyTenant          = "tenant"
-	ContextKeyRuntimeDeviceID = "runtime_device_id"
+	ContextKeyRuntimeAccessKey = "runtime_access_key"
 	ContextKeyTrackedDeviceID = "tracked_device_id"
 	ContextKeyTrackingID      = "tracking_id"
+
+	ContextKeyHeaderDeviceHostname = "header.device_hostname"
+	ContextKeyHeaderDeviceName     = "header.device_name"
+	ContextKeyHeaderClientDeviceID = "header.client_device_id"
 )

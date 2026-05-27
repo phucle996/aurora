@@ -13,4 +13,9 @@ const (
 	HeaderRateLimitRemaining = "X-RateLimit-Remaining"
 	HeaderRateLimitReset     = "X-RateLimit-Reset"
 	HeaderRetryAfter         = "Retry-After"
+
+	// Tracing and Request ID headers
+	HeaderTraceparent = "traceparent"
+	HeaderXRequestID  = "X-Request-ID"
 )
+

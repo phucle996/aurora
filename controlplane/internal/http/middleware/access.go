@@ -36,6 +36,20 @@ var accessMiddleware = struct {
 	handler gin.HandlerFunc
 }{}
 
+// InitAccess khởi tạo dependency runtime cho middleware Access.
+//
+// CONTRACT:
+// - Bắt buộc gọi ở bootstrap app trước khi bất kỳ route nào dùng Access().
+// - Cho phép gọi lại; handler active sẽ được thay thế theo cách atomic.
+//
+// BOUNDARY:
+// - Hàm này chỉ làm wiring dependency cho middleware (secret provider,
+//   redis blacklist client, runtime device cache, grace window).
+// - Không trực tiếp thực hiện auth check theo từng request.
+//
+// FAIL-CLOSED:
+// - Nếu không gọi InitAccess, Access() sẽ trả middleware fail-closed với
+//   HTTP 503 (authentication temporarily unavailable).
 func InitAccess(sp security.SecretProvider, rdb *redis.Client,
 	runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) {
 	accessMiddleware.mu.Lock()
@@ -141,24 +155,24 @@ func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCa
 
 		// Bước 6 (tuỳ chọn theo runtimeCache): xác minh ràng buộc phiên device.
 		// Điều kiện pass:
-		// - cookie device_id/device_secret tồn tại,
-		// - device_id cookie == device_id trong JWT,
+		// - cookie access_key/access_secret tồn tại,
+		// - access_key cookie == access_key trong JWT,
 		// - jti + secret khớp runtime record trong Redis tương ứng device hiện tại.
 		if runtimeCache != nil {
-			deviceIDCookieValue, deviceIDCookieErr := c.Cookie(constant.DeviceIDName)
-			deviceSecretValue, deviceSecretErr := c.Cookie(constant.DeviceSecretName)
-			deviceIDCookie := strings.TrimSpace(deviceIDCookieValue)
-			deviceSecret := strings.TrimSpace(deviceSecretValue)
-			deviceIDClaim := strings.TrimSpace(claims.DeviceID)
+			accessKeyCookieValue, accessKeyCookieErr := c.Cookie(constant.AccessKeyName)
+			accessSecretValue, accessSecretErr := c.Cookie(constant.AccessSecretName)
+			accessKeyCookie := strings.TrimSpace(accessKeyCookieValue)
+			accessSecret := strings.TrimSpace(accessSecretValue)
+			accessKeyClaim := strings.TrimSpace(claims.AccessKey)
 			jti := strings.TrimSpace(claims.TokenID)
-			if deviceIDCookieErr != nil || deviceSecretErr != nil || deviceIDCookie == "" || deviceSecret == "" || deviceIDClaim == "" || jti == "" || strings.TrimSpace(claims.Subject) == "" {
-				clearUserDeviceCookies(c, cookieDomain, cookiePath)
+			if accessKeyCookieErr != nil || accessSecretErr != nil || accessKeyCookie == "" || accessSecret == "" || accessKeyClaim == "" || jti == "" || strings.TrimSpace(claims.Subject) == "" {
+				clearUserAccessCookies(c, cookieDomain, cookiePath)
 				apires.RespondUnauthorized(c, "unauthorized")
 				c.Abort()
 				return
 			}
-			if deviceIDCookie != deviceIDClaim {
-				clearUserDeviceCookies(c, cookieDomain, cookiePath)
+			if accessKeyCookie != accessKeyClaim {
+				clearUserAccessCookies(c, cookieDomain, cookiePath)
 				apires.RespondUnauthorized(c, "unauthorized")
 				c.Abort()
 				return
@@ -168,14 +182,14 @@ func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCa
 			defer cancel()
 			// Query model mới:
 			// key chính: iam:user:device:runtime:<user_id>:<device_id>
-			record, err := runtimeCache.GetDeviceRuntimeByUserDevice(ctx, claims.Subject, deviceIDClaim)
+			record, err := runtimeCache.GetDeviceRuntimeByUserDevice(ctx, claims.Subject, accessKeyClaim)
 			if err != nil {
 				apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 				c.Abort()
 				return
 			}
-			if record == nil || !iamCache.MatchRuntime(record, deviceIDCookie, deviceSecret, jti, graceWindow) {
-				clearUserDeviceCookies(c, cookieDomain, cookiePath)
+			if record == nil || !iamCache.MatchRuntime(record, accessKeyCookie, accessSecret, jti, graceWindow) {
+				clearUserAccessCookies(c, cookieDomain, cookiePath)
 				apires.RespondUnauthorized(c, "unauthorized")
 				c.Abort()
 				return
@@ -192,7 +206,7 @@ func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCa
 		c.Set(constant.ContextKeyUserID, claims.Subject)
 		c.Set(constant.ContextKeyRole, claims.Role)
 		c.Set(constant.ContextKeyJTI, claims.TokenID)
-		c.Set(constant.ContextKeyRuntimeDeviceID, claims.DeviceID)
+		c.Set(constant.ContextKeyRuntimeAccessKey, claims.AccessKey)
 		c.Set(constant.ContextKeyLevel, claims.Level)
 		c.Set(constant.ContextKeyTenant, claims.TenantID)
 
@@ -209,8 +223,8 @@ func GetTrackedDeviceID(c *gin.Context) string {
 	return getContextString(c, constant.ContextKeyTrackedDeviceID)
 }
 
-func GetRuntimeDeviceID(c *gin.Context) string {
-	return getContextString(c, constant.ContextKeyRuntimeDeviceID)
+func GetRuntimeAccessKey(c *gin.Context) string {
+	return getContextString(c, constant.ContextKeyRuntimeAccessKey)
 }
 
 func getContextString(c *gin.Context, key string) string {
@@ -225,11 +239,11 @@ func getContextString(c *gin.Context, key string) string {
 	return s
 }
 
-func clearUserDeviceCookies(c *gin.Context, cookieDomain, cookiePath string) {
+func clearUserAccessCookies(c *gin.Context, cookieDomain, cookiePath string) {
 	secure := c.Request.TLS != nil
 	exp := time.Unix(0, 0)
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     constant.DeviceIDName,
+		Name:     constant.AccessKeyName,
 		Value:    "",
 		Path:     cookiePath,
 		Domain:   cookieDomain,
@@ -240,7 +254,7 @@ func clearUserDeviceCookies(c *gin.Context, cookieDomain, cookiePath string) {
 		Expires:  exp,
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     constant.DeviceSecretName,
+		Name:     constant.AccessSecretName,
 		Value:    "",
 		Path:     cookiePath,
 		Domain:   cookieDomain,

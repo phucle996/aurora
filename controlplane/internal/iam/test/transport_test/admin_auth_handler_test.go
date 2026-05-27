@@ -101,14 +101,14 @@ func TestAdminAuthHandlerLoginSuccessSetsThreeCookies(t *testing.T) {
 	for _, ck := range cookies {
 		m[ck.Name] = ck
 	}
-	if m[cookie.AdminAPITokenName] == nil || m[cookie.DeviceIDName] == nil || m[cookie.DeviceSecretName] == nil {
-		t.Fatalf("expected 3 cookies admin_api_token/device_id/device_secret")
+	if m[cookie.AdminAPITokenName] == nil || m[cookie.AccessKeyName] == nil || m[cookie.AccessSecretName] == nil {
+		t.Fatalf("expected 3 cookies admin_api_token/access_key/access_secret")
 	}
 	if !m[cookie.AdminAPITokenName].HttpOnly {
 		t.Fatalf("admin_api_token must be HttpOnly")
 	}
-	if !m[cookie.DeviceSecretName].HttpOnly {
-		t.Fatalf("device_secret must be HttpOnly")
+	if !m[cookie.AccessSecretName].HttpOnly {
+		t.Fatalf("access_secret must be HttpOnly")
 	}
 }
 
@@ -214,7 +214,7 @@ func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 	r.POST("/admin/auth/logout", h.Logout)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/logout", nil)
-	req.AddCookie(&http.Cookie{Name: cookie.DeviceIDName, Value: "device-1"})
+	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-1"})
 	req.Header.Set("User-Agent", "transport-test-agent")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -227,10 +227,10 @@ func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 	for _, ck := range cookies {
 		m[ck.Name] = ck
 	}
-	if m[cookie.AdminAPITokenName] == nil || m[cookie.DeviceIDName] == nil || m[cookie.DeviceSecretName] == nil {
+	if m[cookie.AdminAPITokenName] == nil || m[cookie.AccessKeyName] == nil || m[cookie.AccessSecretName] == nil {
 		t.Fatalf("expected clear 3 cookies")
 	}
-	if m[cookie.AdminAPITokenName].MaxAge != -1 || m[cookie.DeviceIDName].MaxAge != -1 || m[cookie.DeviceSecretName].MaxAge != -1 {
+	if m[cookie.AdminAPITokenName].MaxAge != -1 || m[cookie.AccessKeyName].MaxAge != -1 || m[cookie.AccessSecretName].MaxAge != -1 {
 		t.Fatalf("expected cookies max-age -1 on logout")
 	}
 }

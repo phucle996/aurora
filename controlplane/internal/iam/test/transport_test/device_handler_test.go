@@ -46,7 +46,7 @@ var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 func withUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set(constant.ContextKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
-		c.Set(constant.ContextKeyRuntimeDeviceID, "runtime-device-1")
+		c.Set(constant.ContextKeyRuntimeAccessKey, "runtime-device-1")
 		c.Set(constant.ContextKeyTrackedDeviceID, "177682fc-3e96-4a5a-84eb-b5e9c71af721")
 		c.Next()
 	}
@@ -124,7 +124,7 @@ func TestDeviceHandlerLogoutOthersRequiresTrackedDeviceID(t *testing.T) {
 	router.POST("/devices/logout-others",
 		func(c *gin.Context) {
 			c.Set(constant.ContextKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
-			c.Set(constant.ContextKeyRuntimeDeviceID, "runtime-device-1")
+			c.Set(constant.ContextKeyRuntimeAccessKey, "runtime-device-1")
 			c.Next()
 		},
 		h.LogoutOtherDevices,

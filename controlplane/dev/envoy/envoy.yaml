@@ -86,6 +86,8 @@ static_resources:
                     - header:
                         key: referrer-policy
                         value: strict-origin-when-cross-origin
+                  response_headers_to_remove:
+                    - "traceparent"
                   virtual_hosts:
                     - name: controlplane_vhost
                       domains:

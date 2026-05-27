@@ -60,13 +60,15 @@ impl AppContainer {
         crate::observability::resource::ResourceMonitor::start_monitor();
 
         // 0b. Khởi tạo 1 Worker ban đầu hoạt động nhận tin
-        self.worker_pool.spawn_worker(
-            1,
-            self.config.clone(),
-            self.policy_engine.clone(),
-            self.redis_job.clone(),
-            self.redis_internal_zone.clone()
-        ).await;
+        self.worker_pool
+            .spawn_worker(
+                1,
+                self.config.clone(),
+                self.policy_engine.clone(),
+                self.redis_job.clone(),
+                self.redis_internal_zone.clone(),
+            )
+            .await;
 
         // 0d. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
         let config_scale = self.config.clone();
@@ -92,35 +94,48 @@ impl AppContainer {
 
                 // 2. Thu thập chỉ số hàng đợi thực tế từ Redis
                 let stream_key = format!("jobs:{}", config_scale.zone_id);
-                let lag = crate::infra::redis::query::query_stream_lag(redis_job_scale.client(), &stream_key).await.unwrap_or(0);
-                let latency = crate::infra::redis::query::query_stream_latency_ms(redis_job_scale.client(), &stream_key).await.unwrap_or(0.0);
+                let lag = crate::infra::redis::query::query_stream_lag(
+                    redis_job_scale.client(),
+                    &stream_key,
+                )
+                .await
+                .unwrap_or(0);
+                let latency = crate::infra::redis::query::query_stream_latency_ms(
+                    redis_job_scale.client(),
+                    &stream_key,
+                )
+                .await
+                .unwrap_or(0.0);
                 let active_conns = 0; // Thống kê kết nối giả lập
 
                 // 3. Đánh giá tải thực tế
                 let active_ids = worker_pool_scale.active_worker_ids();
                 let current_count = active_ids.len();
 
-                let target_count = auto_scaler.evaluate_scale(current_count, lag, latency, active_conns);
+                let target_count =
+                    auto_scaler.evaluate_scale(current_count, lag, latency, active_conns);
 
                 Logger::sys_info(
                     "worker.scaler",
                     &format!(
                         "Autoscaler Check: Current = {}, Target = {}, Lag = {}, Latency = {:.2}ms",
                         current_count, target_count, lag, latency
-                    )
+                    ),
                 );
 
                 if target_count > current_count {
                     // Scale Up: Spawn thêm worker
                     for i in 1..=target_count {
                         if !active_ids.contains(&i) {
-                            worker_pool_scale.spawn_worker(
-                                i,
-                                config_scale.clone(),
-                                policy_engine_scale.clone(),
-                                redis_job_scale.clone(),
-                                redis_internal_zone_scale.clone()
-                            ).await;
+                            worker_pool_scale
+                                .spawn_worker(
+                                    i,
+                                    config_scale.clone(),
+                                    policy_engine_scale.clone(),
+                                    redis_job_scale.clone(),
+                                    redis_internal_zone_scale.clone(),
+                                )
+                                .await;
                         }
                     }
                 } else if target_count < current_count {

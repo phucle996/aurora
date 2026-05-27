@@ -56,7 +56,7 @@ func TestAdminCriticalSignature(t *testing.T) {
 	router := gin.New()
 	router.POST("/admin/critical",
 		func(c *gin.Context) {
-			c.Set(constant.ContextKeyAdminDeviceID, deviceID)
+			c.Set(constant.ContextKeyAdminAccessKey, deviceID)
 		},
 		middleware.AdminCriticalSignature(),
 		func(c *gin.Context) {

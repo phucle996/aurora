@@ -8,7 +8,7 @@ const (
 	AccessTokenName    = "access_token"
 	RefreshTokenName   = "refresh_token"
 	AdminAPITokenName  = "admin_api_token"
-	DeviceIDName       = "device_id"
-	DeviceSecretName   = "device_secret"
+	AccessKeyName      = "access_key"
+	AccessSecretName   = "access_secret"
 	ClientDeviceIDName = "client_device_id"
 )

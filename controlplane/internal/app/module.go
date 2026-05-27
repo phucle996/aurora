@@ -221,9 +221,9 @@ func (m *Modules) Stop() {
 	}
 }
 
-func buildAdminPublicKeyResolver(adminDeviceRuntime iamCache.AdminDeviceRuntimeCache, adminRepo iamRepoInterface.AdminAPIKeyRepository) func(ctx context.Context, deviceID string) (string, error) {
-	return func(ctx context.Context, deviceID string) (string, error) {
-		runtimeRecord, err := adminDeviceRuntime.GetDeviceRuntime(ctx, deviceID)
+func buildAdminPublicKeyResolver(adminDeviceRuntime iamCache.AdminDeviceRuntimeCache, adminRepo iamRepoInterface.AdminAPIKeyRepository) func(ctx context.Context, accessKey string) (string, error) {
+	return func(ctx context.Context, accessKey string) (string, error) {
+		runtimeRecord, err := adminDeviceRuntime.GetDeviceRuntime(ctx, accessKey)
 		if err != nil {
 			return "", err
 		}

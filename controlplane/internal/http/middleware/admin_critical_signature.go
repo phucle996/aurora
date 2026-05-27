@@ -24,7 +24,7 @@ import (
 const sigNoncePrefix = "iam:admin:critical:nonce:"
 
 type sigRuntime struct {
-	loadPubKey func(ctx context.Context, deviceID string) (string, error)
+	loadPubKey func(ctx context.Context, accessKey string) (string, error)
 	rds        *goredis.Client
 	nonceTTL   time.Duration
 	skew       time.Duration
@@ -51,13 +51,13 @@ var sigState = struct {
 // - nonceTTL là thời gian Redis giữ nonce đã dùng để chống replay.
 // - skew là độ lệch thời gian tối đa cho X-Admin-Timestamp.
 func InitAdminCriticalSignature(
-	loadPubKey func(ctx context.Context, deviceID string) (string, error),
+	loadPubKey func(ctx context.Context, accessKey string) (string, error),
 	rds *goredis.Client,
 	nonceTTL time.Duration,
 	skew time.Duration,
 ) error {
 	if loadPubKey == nil {
-		return errors.New("admin critical signature: load device public key is required")
+		return errors.New("admin critical signature: load access public key is required")
 	}
 	if rds == nil {
 		return errors.New("admin critical signature: redis client is required")
@@ -82,13 +82,13 @@ func InitAdminCriticalSignature(
 
 // AdminCriticalSignature xác thực chữ ký Ed25519 cho critical action.
 //
-// Middleware này phải chạy sau AdminAPIKeyAuth(WithInjectDeviceID()), vì deviceID
+// Middleware này phải chạy sau AdminAPIKeyAuth(WithInjectAccessKey()), vì accessKey
 // trong JWT/cookie đã được auth middleware xác thực và inject vào gin.Context.
 //
 // Flow intentionally explicit:
 // 1. đọc signature/timestamp/nonce headers.
 // 2. kiểm tra timestamp nằm trong clock skew cho phép.
-// 3. lấy admin device id đã được auth middleware inject.
+// 3. lấy admin access key đã được auth middleware inject.
 // 4. đọc body, hash body, rồi restore body để handler phía sau vẫn đọc được.
 // 5. load public key từ source-of-truth qua function đã inject.
 // 6. verify Ed25519 signature trên canonical payload.
@@ -112,7 +112,7 @@ func AdminCriticalSignature() gin.HandlerFunc {
 			return
 		}
 
-		deviceID, ok := readDeviceID(c)
+		accessKey, ok := readAccessKey(c)
 		if !ok {
 			denySig(c)
 			return
@@ -124,19 +124,19 @@ func AdminCriticalSignature() gin.HandlerFunc {
 			return
 		}
 
-		pubKey, ok := loadSigKey(c.Request.Context(), runtime.loadPubKey, deviceID)
+		pubKey, ok := loadSigKey(c.Request.Context(), runtime.loadPubKey, accessKey)
 		if !ok {
 			denySig(c)
 			return
 		}
 
-		payload := buildSigPayload(c, bodyHash, proof, deviceID)
+		payload := buildSigPayload(c, bodyHash, proof, accessKey)
 		if !verifySig(pubKey, payload, proof.signature) {
 			denySig(c)
 			return
 		}
 
-		reserved, err := reserveSigNonce(c.Request.Context(), runtime.rds, runtime.nonceTTL, deviceID, proof.nonce)
+		reserved, err := reserveSigNonce(c.Request.Context(), runtime.rds, runtime.nonceTTL, accessKey, proof.nonce)
 		if err != nil {
 			sigUnavailable(c)
 			return
@@ -180,14 +180,14 @@ func readSigProof(c *gin.Context, skew time.Duration) (sigProof, bool) {
 	return proof, true
 }
 
-func readDeviceID(c *gin.Context) (string, bool) {
-	raw, exists := c.Get(constant.ContextKeyAdminDeviceID)
+func readAccessKey(c *gin.Context) (string, bool) {
+	raw, exists := c.Get(constant.ContextKeyAdminAccessKey)
 	if !exists {
 		return "", false
 	}
-	deviceID, ok := raw.(string)
-	deviceID = strings.TrimSpace(deviceID)
-	return deviceID, ok && deviceID != ""
+	accessKey, ok := raw.(string)
+	accessKey = strings.TrimSpace(accessKey)
+	return accessKey, ok && accessKey != ""
 }
 
 func readSigBody(c *gin.Context) ([sha256.Size]byte, bool) {
@@ -205,10 +205,10 @@ func readSigBody(c *gin.Context) ([sha256.Size]byte, bool) {
 
 func loadSigKey(
 	ctx context.Context,
-	loadPubKey func(ctx context.Context, deviceID string) (string, error),
-	deviceID string,
+	loadPubKey func(ctx context.Context, accessKey string) (string, error),
+	accessKey string,
 ) (ed25519.PublicKey, bool) {
-	pubKeyRaw, err := loadPubKey(ctx, deviceID)
+	pubKeyRaw, err := loadPubKey(ctx, accessKey)
 	if err != nil {
 		return nil, false
 	}
@@ -223,7 +223,7 @@ func buildSigPayload(
 	c *gin.Context,
 	bodyHash [sha256.Size]byte,
 	proof sigProof,
-	deviceID string,
+	accessKey string,
 ) string {
 	return fmt.Sprintf("%s\n%s\n%s\n%x\n%s\n%s\n%s",
 		strings.ToUpper(c.Request.Method),
@@ -232,7 +232,7 @@ func buildSigPayload(
 		bodyHash,
 		proof.tsRaw,
 		proof.nonce,
-		deviceID,
+		accessKey,
 	)
 }
 
@@ -258,8 +258,8 @@ func decodeSigB64(value string, expectedSize int) ([]byte, bool) {
 	return decoded, true
 }
 
-func reserveSigNonce(ctx context.Context, rds *goredis.Client, ttl time.Duration, deviceID string, nonce string) (bool, error) {
-	nonceKey := sigNoncePrefix + strings.TrimSpace(deviceID) + ":" + strings.TrimSpace(nonce)
+func reserveSigNonce(ctx context.Context, rds *goredis.Client, ttl time.Duration, accessKey string, nonce string) (bool, error) {
+	nonceKey := sigNoncePrefix + strings.TrimSpace(accessKey) + ":" + strings.TrimSpace(nonce)
 	return rds.SetNX(ctx, nonceKey, "1", ttl).Result()
 }
 

@@ -39,7 +39,7 @@ type OTelCfg struct {
 }
 
 type AppCfg struct {
-	NodeID             string
+	AppName            string
 	TimeZone           string
 	HTTPPort           int
 	LogLV              string
@@ -135,7 +135,7 @@ func LoadConfig() *Config {
 
 	return &Config{
 		App: AppCfg{
-			NodeID:             getEnv("APP_NODE_ID", "controlplane"),
+			AppName:            getEnv("APP_NAME", "controlplane"),
 			TimeZone:           getEnv("APP_TIMEZONE", "UTC"),
 			HTTPPort:           getEnvAsInt("APP_HTTP_PORT", 8080),
 			PublicDomain:       strings.TrimSpace(getEnv("APP_PUBLIC_DOMAIN", "")),
@@ -145,7 +145,6 @@ func LoadConfig() *Config {
 		},
 		OTel: OTelCfg{
 			Enabled:       getEnvAsBool("OTEL_ENABLED", true),
-			ServiceName:   "aurora-controlplane",
 			ExporterType:  getEnv("OTEL_EXPORTER_TYPE", "otlpgrpc"),
 			Endpoint:      getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4317"),
 			Insecure:      getEnvAsBool("OTEL_EXPORTER_OTLP_INSECURE", true),

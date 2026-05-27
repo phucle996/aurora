@@ -46,7 +46,7 @@ func (h *LogoutHandler) Logout(c *gin.Context) {
 	defer cancel()
 
 	userID := strings.TrimSpace(middleware.GetUserID(c))
-	runtimeDeviceID := strings.TrimSpace(middleware.GetRuntimeDeviceID(c))
+	runtimeDeviceID := strings.TrimSpace(middleware.GetRuntimeAccessKey(c))
 
 	// Cho phép logout dù thiếu runtime_device_id (best-effort) miễn là user_id còn hợp lệ.
 	if userID == "" {
@@ -78,8 +78,8 @@ func clearAuthCookies(c *gin.Context, cfg *config.Config) {
 	}{
 		{cookie.AccessTokenName, true},
 		{cookie.RefreshTokenName, true},
-		{cookie.DeviceIDName, false},
-		{cookie.DeviceSecretName, true},
+		{cookie.AccessKeyName, false},
+		{cookie.AccessSecretName, true},
 	} {
 		http.SetCookie(c.Writer, &http.Cookie{
 			Name:     cookieDef.name,

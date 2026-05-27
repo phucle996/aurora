@@ -67,7 +67,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 
 	router.POST("/admin/auth/logout",
 		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectDeviceID(),
+			middleware.WithInjectAccessKey(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_admin_auth_logout_postauth", 20, 20, time.Minute),
 		module.AdminAuthHandler.Logout,
@@ -75,8 +75,8 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/admin/auth/refresh",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectDeviceID(),
-			middleware.WithInjectDeviceSecret(),
+			middleware.WithInjectAccessKey(),
+			middleware.WithInjectAccessSecret(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_admin_auth_refresh_postauth", 30, 30, time.Minute),
 		middleware.AdminCriticalSignature(),
@@ -85,7 +85,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/admin/auth/rotate-key",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectDeviceID(),
+			middleware.WithInjectAccessKey(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_admin_auth_rotate_key_postauth", 10, 10, time.Minute),
 		middleware.AdminCriticalSignature(),

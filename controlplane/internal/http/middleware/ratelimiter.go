@@ -335,7 +335,7 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, name string, capacity, refill 
 		}
 
 		clientIP := clientIdentity(c)
-		runtimeDeviceID := strings.TrimSpace(GetRuntimeDeviceID(c))
+		runtimeDeviceID := strings.TrimSpace(GetRuntimeAccessKey(c))
 		userID := strings.TrimSpace(GetUserID(c))
 
 		ruleScope := rateLimitScopeIPTracking
