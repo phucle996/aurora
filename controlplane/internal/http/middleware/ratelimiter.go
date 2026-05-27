@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"controlplane/internal/observability"
-	policytypes "controlplane/internal/policyengine/runtime/types"
+	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/logger"
@@ -62,7 +62,7 @@ func currentRateLimitPolicy() rateLimitPolicyConfig {
 }
 
 // InitRateLimitPolicy nạp runtime policy cho rate-limit và fallback về default an toàn nếu thiếu key.
-func InitRateLimitPolicy(policy policytypes.CompiledRateLimitPolicyGroup) {
+func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 	bypassRoutes := map[string]struct{}{}
 	for _, route := range policy.Behavior.BypassRoutePatterns {
 		bypassRoutes[route] = struct{}{}

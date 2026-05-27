@@ -147,7 +147,7 @@ Trước khi chạm tới bất cứ dòng code nào của route `/admin/auth/lo
     * **Hành động**: Bắt tất cả các Panic, ghi log chi tiết stack trace và trả về HTTP `500 Internal Server Error` một cách lịch sự cho client.
 2. **`middleware.RequestID()` (Trace ID & Request ID Alignment)**:
     * **Nhiệm vụ**: Liên kết định danh giao dịch duy nhất cho toàn bộ luồng xử lý và ghi nhận vào Logger Context.
-    * **Hành động**: 
+    * **Hành động**:
       * Kiểm tra header `X-Request-ID` do **Envoy Proxy** sinh ra ở tầng biên để kế thừa.
       * Nếu không có, cố gắng trích xuất trực tiếp mã `Trace ID` từ W3C `traceparent` header (của Envoy/APM) để đồng bộ tuyệt đối giữa log phẳng (Loki) và biểu đồ vết (Tempo).
       * Nếu cả hai đều trống, tự sinh một chuỗi ngẫu nhiên mới (fallback). Đặt định danh thu được vào context của Gin qua key `logger.KeyRequestID` để mọi câu lệnh log phía sau tự động gắn tag, đồng thời trả về response header `X-Request-ID`.

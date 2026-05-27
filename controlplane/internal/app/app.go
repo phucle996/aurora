@@ -8,6 +8,8 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
+	"controlplane/internal/policyengine"
+	otelPolicy "controlplane/internal/policyengine/policies/otel"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
@@ -100,13 +102,39 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
+	// Early boot Policy Engine (System Infrastructure)
+	policyModule, err := policyengine.New(cfg, rds)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: policy engine init failed: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			policyModule.Stop()
+		}
+	}()
+
+	policySet, err := policyModule.EngineService.Current(ctx)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: failed to get active policy set: %w", err)
+	}
+	otelCfg := &policySet.Runtime.OTel
+
 	// Observability bootstrap: OTel trước, Prometheus sau.
-	otelObs, err := observability.InitOTel(ctx, &cfg.OTel, "aurora-controlplane")
+	otelObs, err := observability.InitOTel(ctx, otelCfg, "aurora-controlplane")
 	if err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: otel init failed: %w", err)
 	}
 	app.otel = otelObs
+
+	// Hook OTel updates dynamically to the Policy Engine!
+	policyModule.EngineService.RegisterOTelHook(func(newOTelCfg *otelPolicy.CompiledPolicy) {
+		if err := otelObs.Update(context.Background(), newOTelCfg, "aurora-controlplane"); err != nil {
+			logger.SysError("app", fmt.Sprintf("failed to hot-swap OTel config: %v", err))
+		}
+	})
 
 	promObs, err := observability.InitPrometheus("aurora_controlplane")
 	if err != nil {
@@ -140,7 +168,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 
 	// Module bootstrap.
-	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter)
+	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter, policyModule)
 	if err != nil {
 		// Fail-fast: module graph ảnh hưởng cross-module (core security provider,
 		// IAM wiring, middleware auth). Không degrade ở app runtime bootstrap.

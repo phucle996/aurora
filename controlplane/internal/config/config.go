@@ -7,7 +7,6 @@ import (
 
 type Config struct {
 	App        AppCfg
-	OTel       OTelCfg
 	Security   SecurityCfg
 	Psql       PsqlCfg
 	Redis      RedisCfg
@@ -25,18 +24,7 @@ type PrometheusCfg struct {
 	DefaultStep  time.Duration
 }
 
-type OTelCfg struct {
-	Enabled       bool
-	ServiceName   string
-	ExporterType  string
-	Endpoint      string
-	Insecure      bool
-	SamplingRatio float64
-	ExportTimeout time.Duration
-	BatchTimeout  time.Duration
-	BatchMaxSize  int
-	BatchMaxQueue int
-}
+
 
 type AppCfg struct {
 	AppName            string
@@ -143,17 +131,7 @@ func LoadConfig() *Config {
 			AllowedOrigins:     getEnvAsCSV("APP_ALLOWED_ORIGINS", nil),
 			OAuthAllowedScopes: getEnvAsCSV("APP_OAUTH_ALLOWED_SCOPES", []string{"profile", "email", "offline_access"}),
 		},
-		OTel: OTelCfg{
-			Enabled:       getEnvAsBool("OTEL_ENABLED", true),
-			ExporterType:  getEnv("OTEL_EXPORTER_TYPE", "otlpgrpc"),
-			Endpoint:      getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4317"),
-			Insecure:      getEnvAsBool("OTEL_EXPORTER_OTLP_INSECURE", true),
-			SamplingRatio: getEnvAsFloat64("OTEL_TRACES_SAMPLER_ARG", 1.0),
-			ExportTimeout: getEnvAsDuration("OTEL_EXPORT_TIMEOUT", 5*time.Second),
-			BatchTimeout:  getEnvAsDuration("OTEL_BSP_SCHEDULE_DELAY", 2*time.Second),
-			BatchMaxSize:  getEnvAsInt("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
-			BatchMaxQueue: getEnvAsInt("OTEL_BSP_MAX_QUEUE_SIZE", 2048),
-		},
+
 		Security: SecurityCfg{
 			RuntimeMasterKey:          strings.TrimSpace(getEnv("SECURITY_RUNTIME_MASTER_KEY", "")),
 			AccessSecretTTL:           15 * time.Minute,

@@ -36,3 +36,19 @@ policies:
         - /api/v1/health/liveness
         - /api/v1/health/readiness
         - /api/v1/health/startup
+  otel:
+    enabled: true
+    exporter_type: otlpgrpc
+    endpoint: http://127.0.0.1:4317
+    insecure: true
+    sampling_ratio: 1.0
+    export_timeout: 5s
+    batch_timeout: 2s
+    batch_max_size: 512
+    batch_max_queue: 2048
+    tls:
+      mode: disable
+      ca_cert_path: ""
+      cert_path: ""
+      key_path: ""
+

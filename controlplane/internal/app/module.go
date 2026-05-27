@@ -32,7 +32,7 @@ type Modules struct {
 	// IAM là module authn/authz của controlplane.
 	IAM *iam.Module
 	// PolicyEngine là runtime hot-reload module cho policies.
-	PolicyEngine *policyengine.Module
+	PolicyEngine *policyengine.Engine
 	probeCancel  context.CancelFunc
 }
 
@@ -58,6 +58,7 @@ func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
+	policyEngineModule *policyengine.Engine,
 ) (*Modules, error) {
 	// 1) Global health surface.
 	health := healthhandler.NewHealthHandler(db, rds)
@@ -104,11 +105,7 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, fmt.Errorf("app: init iam module: %w", err)
 	}
 
-	// 6) Policy engine bootstrap (runtime-only, fail-fast nếu dependency/wiring lỗi).
-	policyEngineModule, err := policyengine.NewModule(cfg, rds)
-	if err != nil {
-		return nil, fmt.Errorf("app: init policy engine module: %w", err)
-	}
+	// 6) Policy engine bootstrap (Được truyền từ ngoài vào như hạ tầng hệ thống)
 	if policyEngineModule == nil {
 		return nil, errors.New("app: init policy engine module: engine service is required")
 	}
@@ -131,7 +128,7 @@ func NewGlobalModules(cfg *config.Config,
 	}, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client, policyModule *policyengine.Module) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client, policyModule *policyengine.Engine) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}

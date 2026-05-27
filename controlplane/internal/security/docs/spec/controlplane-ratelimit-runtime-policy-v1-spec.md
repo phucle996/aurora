@@ -1,19 +1,24 @@
 # Controlplane RateLimit Runtime Policy v1 Spec
 
 ## 1) Mục tiêu
+
 Policy hóa tham số vận hành của:
+
 - `internal/http/middleware/ratelimiter.go`
 - `internal/security/ratelimit/decision_engine.go`
 
 để tune runtime nhanh, giảm sửa code trực tiếp khi vận hành.
 
 ## 2) Phạm vi
+
 ### Trong phạm vi
+
 - Contract policy keys cho rate admission, escalation, bypass, sampling, local guard.
 - Typed parse schema trong policyengine runtime config.
 - Wiring runtime snapshot từ policyengine sang middleware/ratelimit.
 
 ### Ngoài phạm vi
+
 - Risk engine/scoring độc lập.
 - Thay đổi business logic IAM.
 - Thay đổi public error envelope.
@@ -21,6 +26,7 @@ Policy hóa tham số vận hành của:
 ## 3) Runtime policy contract
 
 ## 3.1 YAML shape đề xuất
+
 ```yaml
 version: v1
 policies:
@@ -65,6 +71,7 @@ policies:
 ```
 
 ## 3.2 Field contract (must)
+
 - `capacity`, `refill`: int64 > 0.
 - `period_seconds`: int > 0.
 - `preauth.global_instant.max_inflight`: int > 0.
@@ -82,6 +89,7 @@ policies:
 - `fail_open`: bool.
 
 ## 4) Mapping contract code ↔ policy
+
 - `RateLimitPreAuth(...)` admission baseline lấy từ `rate_limit.preauth.ip`.
 - `RateLimitPreAuth(...)` global instant gate lấy từ `rate_limit.preauth.global_instant`.
 - HTTP status cho global instant reject là contract cố định ở middleware (429), không policy hóa ở v1.
@@ -93,6 +101,7 @@ policies:
 - `Bucket.SetFailOpen(...)` bind với `rate_limit.behavior.fail_open`.
 
 ## 5) Default/fallback behavior
+
 - Nếu key policy thiếu/invalid:
   - log warning nội bộ,
   - fallback về default hardcoded hiện tại (safe defaults),
@@ -101,6 +110,7 @@ policies:
   - dùng full default hiện tại.
 
 ## 6) Validation rules
+
 - Validation chạy lúc load policy snapshot.
 - Invalid critical fields:
   - không apply snapshot mới,
@@ -108,12 +118,15 @@ policies:
 - Validation errors phải có reason rõ trong internal log.
 
 ## 7) Observability contract
+
 ### Metrics (tối thiểu)
+
 - `security_ratelimit_policy_reload_total{result}`
 - `security_ratelimit_policy_active_version{}` (gauge=1 với label version/checksum)
 - `security_ratelimit_policy_fallback_total{field}`
 
 ### Logs (tối thiểu)
+
 - `policy_type=rate_limit`
 - `policy_version`
 - `policy_checksum`
@@ -121,17 +134,22 @@ policies:
 - `fallback_fields`
 
 ## 8) Rollout plan
+
 ### Phase 1
+
 - Policy hóa preauth global instant gate + admission + bypass + retry_after_fallback.
 - Giữ escalation defaults hiện tại.
 
 ### Phase 2
+
 - Policy hóa decision_engine TTL/threshold/window.
 
 ### Phase 3
+
 - Policy hóa sampling + fail_open behavior per class (nếu cần).
 
 ## 9) Acceptance criteria
+
 - Có thể tune admission/escalation qua YAML không sửa code.
 - Có thể tune giới hạn tổng số request tức thời (preauth global instant) qua YAML.
 - Fallback/default hoạt động đúng khi policy thiếu/sai.
@@ -139,6 +157,7 @@ policies:
 - Build + tests pass cho policy parsing và middleware behavior chính.
 
 ## 10) Open questions
+
 1. `fail_open` có cho phép phân tách theo route class (`public_read`, `auth_sensitive`) không?
 2. `bypass.route_patterns` dùng exact match hay pattern syntax (glob/regex)?
 3. Có cần chia sampling theo route class ngoài decision-level không?
