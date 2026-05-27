@@ -8,7 +8,7 @@ Tài liệu này phân tích chi tiết vai trò độc bản, ranh giới thi�
 
 Sự kết hợp này tuân thủ triết lý **"Defense in Depth" (Phòng thủ nhiều lớp)**. Cụ thể:
 
-```
+```mermaid
 +---------------------------------------------------------------------------------+
 |                                 REDIS STREAM & LOCK                             |
 |    - RAM (In-Memory)  |  Tốc độ siêu tốc (Microseconds)  |  Tính chất tạm thời  |
@@ -35,13 +35,17 @@ Sự kết hợp này tuân thủ triết lý **"Defense in Depth" (Phòng thủ
 ## 2. ⚡ Chi Tiết Vai Trò Từng Thành Phần
 
 ### 2.1 Redis: Ephemeral Distributed Coordinator
+
 Hệ thống sử dụng Redis như một **"Người điều phối giao thông phân tán"** thời gian thực nhờ tốc độ xử lý trên RAM cực nhanh:
+
 * **Khóa tranh chấp tức thời (Distributed Lease Lock):** Sử dụng `SET locks:job:ID locked NX EX TTL` đảm bảo tại một thời điểm chỉ có duy nhất `1` Worker trên toàn bộ cụm Dataplane (gồm nhiều instance chạy ở nhiều Server vật lý khác nhau) chiếm quyền xử lý Job đó.
 * **Tự động phục hồi khi Crash (Fail-safe TTL):** Nếu Node đang chạy bị sập nguồn đột ngột, khóa trên Redis tự động biến mất sau khi hết hạn (TTL). Job đó sẽ tự động được thu hồi trên Redis Stream để instance khác xử lý lại mà không bị treo vĩnh viễn.
 
 ### 2.2 SQLite: Local Durable Registry & Idempotency Guard
+
 SQLite hoạt động như một **"Sổ cái ghi chép chứng cứ vật lý"** được lưu cứng xuống đĩa cứng của chính server chạy Dataplane đó:
-* **Chống trùng lặp tuyệt đối (Strict Idempotency Guard):** 
+
+* **Chống trùng lặp tuyệt đối (Strict Idempotency Guard):**
   Nếu Redis gặp sự cố đứt gãy mạng tạm thời dẫn đến việc giải phóng khóa sớm và phân phối lại Job cũ đã chạy xong. Khi Job bị gửi lại lần 2, Worker sẽ truy vấn SQLite. SQLite báo: *"Job ID này tôi đã xử lý thành công xuống đĩa cứng rồi!"* ➔ Worker lập tức hủy bỏ tiến trình chạy, tránh thảm họa chạy lại tác vụ có tác dụng phụ (e.g., tạo trùng 2 máy chủ VPS cho khách hàng).
 * **Khả năng tự trị khi mất mạng (Offline Resilience):**
   Nếu kết nối đến Controlplane hoặc mạng chính bị gián đoạn, Dataplane vẫn tiếp tục thực thi Job, ghi vết thành công vào SQLite. Ngay khi mạng khôi phục, cơ chế đồng bộ nền sẽ đẩy kết quả (Sync state) từ SQLite lên Controlplane mà không sợ mất mát thông tin.
@@ -53,20 +57,23 @@ SQLite hoạt động như một **"Sổ cái ghi chép chứng cứ vật lý"*
 ## 3. 🛡️ Kịch Bản Ứng Phó Sự Cố (Failure Scenario Walkthroughs)
 
 ### Kịch bản A: Instance Dataplane bị đột tử (Crash/Sập nguồn)
+
 * **Nếu chỉ có SQLite:** Không có cơ chế nào để các instance ở Server khác biết Node này đã chết để nhảy vào cứu hộ Job.
 * **Thực tế phối hợp:** Khóa Lease Lock trên Redis tự động hết hạn (TTL). Instance khác chiếm lại khóa, SQLite của instance mới chưa có bản ghi này ➔ Instance mới xử lý lại Job một cách an toàn.
 
 ### Kịch bản B: Redis gặp sự cố Split-brain hoặc Quá tải
+
 * **Nguy cơ:** Redis bị mất trạng thái khóa, giải phóng sớm khiến Job cũ bị phân phối lại (Duplicate Delivery).
 * **Thực tế phối hợp:** Khi Node nhận lại Job trùng lặp, nó truy vấn SQLite cục bộ. Thấy trạng thái của Job ID đã là `COMPLETED` ➔ Từ chối chạy tiếp, lập tức bỏ qua. Hệ thống được bảo vệ 100%.
 
 ### Kịch bản C: Mất kết nối diện rộng (Sập mạng Controlplane & Redis)
+
 * **Thực tế phối hợp:** Dataplane vẫn hoạt động cục bộ, ghi nhận trạng thái Job vào SQLite. Khi có mạng trở lại, nó thực hiện gửi ACK và gRPC report bù, không để mất bất kỳ giao dịch nào của người dùng.
 
 ---
 
 ## 4. 💡 Kết Luận Thiết Kế
 
-Sự kết hợp giữa **Redis** và **SQLite** là minh chứng của một hệ thống có **tính thực thi nhanh nhạy thời gian thực (Redis)** kết hợp cùng **sự kiên cố, chắc chắn về lưu trữ (SQLite)**. 
+Sự kết hợp giữa **Redis** và **SQLite** là minh chứng của một hệ thống có **tính thực thi nhanh nhạy thời gian thực (Redis)** kết hợp cùng **sự kiên cố, chắc chắn về lưu trữ (SQLite)**.
 
 Tuyệt đối không được bỏ bất kỳ thành phần nào trong hai: Bỏ Redis sẽ mất khả năng điều phối phân tán nhanh; bỏ SQLite sẽ mất đi lá chắn bảo vệ cuối cùng chống lại sự cố trùng lặp dữ liệu và mất mạng cục bộ.
