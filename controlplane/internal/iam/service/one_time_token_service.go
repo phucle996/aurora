@@ -9,7 +9,7 @@ import (
 	"controlplane/internal/config"
 	iamCache "controlplane/internal/iam/cache"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 )
@@ -27,22 +27,22 @@ func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID 
 	purpose = strings.TrimSpace(purpose)
 	userID = strings.TrimSpace(userID)
 	if purpose == "" || userID == "" {
-		return "", time.Time{}, apperr.Wrap(iamErrorx.ErrOneTimeTokenInvalidPurposeOrUser, iamErrorx.ReasonOneTimeTokenInvalidPurposeOrUser, nil)
+		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser, nil, "invalid_purpose_or_user")
 	}
 	if s.cfg == nil || s.cfg.Security.OneTimeTokenTTL <= 0 {
-		return "", time.Time{}, apperr.Wrap(iamErrorx.ErrOneTimeTokenIssueFailed, iamErrorx.ReasonOneTimeTokenIssueConfigError, nil)
+		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenIssueFailed, nil, "config_error")
 	}
 
 	rawToken, err := security.GenerateToken(43)
 	if err != nil {
-		return "", time.Time{}, apperr.Wrap(iamErrorx.ErrOneTimeTokenIssueFailed, iamErrorx.ReasonOneTimeTokenIssueDependencyError, err)
+		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenIssueFailed, err, "dependency_error")
 	}
 	tokenHash := security.HashTokenSHA256(rawToken)
 	if err := s.cache.SetHashedToken(ctx, purpose, userID, tokenHash, s.cfg.Security.OneTimeTokenTTL); err != nil {
-		if errors.Is(err, iamErrorx.ErrOneTimeTokenCacheUnavailable) {
-			return "", time.Time{}, apperr.Wrap(iamErrorx.ErrOneTimeTokenIssueFailed, iamErrorx.ReasonOneTimeTokenIssueDependencyError, err)
+		if errors.Is(err, iamTaxonomy.ErrOneTimeTokenCacheUnavailable) {
+			return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenIssueFailed, err, "cache_unavailable")
 		}
-		return "", time.Time{}, apperr.Wrap(iamErrorx.ErrOneTimeTokenIssueFailed, iamErrorx.ReasonOneTimeTokenIssueDependencyError, err)
+		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenIssueFailed, err, "cache_error")
 	}
 
 	expiresAt := time.Now().UTC().Add(s.cfg.Security.OneTimeTokenTTL)
@@ -54,22 +54,22 @@ func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userI
 	userID = strings.TrimSpace(userID)
 	plainToken = strings.TrimSpace(plainToken)
 	if purpose == "" || userID == "" {
-		return false, apperr.Wrap(iamErrorx.ErrOneTimeTokenInvalidPurposeOrUser, iamErrorx.ReasonOneTimeTokenInvalidPurposeOrUser, nil)
+		return false, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser, nil, "invalid_purpose_or_user")
 	}
 	if plainToken == "" {
-		return false, apperr.Wrap(iamErrorx.ErrOneTimeTokenInvalidOrExpired, iamErrorx.ReasonOneTimeTokenInvalidOrExpired, nil)
+		return false, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenInvalidOrExpired, nil, "invalid_or_expired")
 	}
 
 	tokenHash := security.HashTokenSHA256(plainToken)
 	consumed, err := s.cache.ConsumeHashedToken(ctx, purpose, userID, tokenHash)
 	if err != nil {
-		if errors.Is(err, iamErrorx.ErrOneTimeTokenCacheUnavailable) {
-			return false, apperr.Wrap(iamErrorx.ErrOneTimeTokenConsumeFailed, iamErrorx.ReasonOneTimeTokenConsumeDependencyErr, err)
+		if errors.Is(err, iamTaxonomy.ErrOneTimeTokenCacheUnavailable) {
+			return false, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenConsumeFailed, err, "cache_unavailable")
 		}
-		return false, apperr.Wrap(iamErrorx.ErrOneTimeTokenConsumeFailed, iamErrorx.ReasonOneTimeTokenConsumeDependencyErr, err)
+		return false, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenConsumeFailed, err, "cache_error")
 	}
 	if !consumed {
-		return false, apperr.Wrap(iamErrorx.ErrOneTimeTokenInvalidOrExpired, iamErrorx.ReasonOneTimeTokenInvalidOrExpired, nil)
+		return false, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenInvalidOrExpired, nil, "invalid_or_expired")
 	}
 	return true, nil
 }

@@ -10,6 +10,7 @@ import (
 	"controlplane/internal/observability"
 	"controlplane/internal/policyengine"
 	otelPolicy "controlplane/internal/policyengine/policies/otel"
+	promPolicy "controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
@@ -131,17 +132,34 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	// Hook OTel updates dynamically to the Policy Engine!
 	policyModule.EngineService.RegisterOTelHook(func(newOTelCfg *otelPolicy.CompiledPolicy) {
-		if err := otelObs.Update(context.Background(), newOTelCfg, "aurora-controlplane"); err != nil {
+		if err := otelObs.Update(context.Background(), newOTelCfg, cfg.App.AppName); err != nil {
 			logger.SysError("app", fmt.Sprintf("failed to hot-swap OTel config: %v", err))
 		}
 	})
 
-	promObs, err := observability.InitPrometheus("aurora_controlplane")
+	promCfg := &policySet.Runtime.Prometheus
+
+	// init Prometheus với hỗ trợ Fail-Open / Fail-Close động!
+	var promObs *observability.Prometheus
+	promObs, err = observability.InitPrometheus(cfg.App.AppName)
 	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: prometheus init failed: %w", err)
+		if promCfg.FailStrategy == "fail_open" {
+			logger.SysWarn("bootstrap", fmt.Sprintf("prometheus init failed (FAIL-OPEN): %v. Falling back to NullPrometheus.", err))
+			promObs = observability.NullPrometheus()
+			err = nil // clear error to continue boot
+		} else {
+			app.Stop()
+			return nil, fmt.Errorf("bootstrap: prometheus init failed (FAIL-CLOSE): %w", err)
+		}
 	}
+	promObs.UpdatePolicy(promCfg)
 	app.prom = promObs
+
+	// Hook Prometheus updates dynamically to the Policy Engine!
+	policyModule.EngineService.RegisterPrometheusHook(func(newPromCfg *promPolicy.CompiledPolicy) {
+		promObs.UpdatePolicy(newPromCfg)
+		logger.SysInfo("app", "Prometheus dynamic policy swapped successfully (hot-swap)")
+	})
 
 	ratelimiter := ratelimit.NewBucket(rds)
 	ratelimiter.SetFailOpen(false)

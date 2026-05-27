@@ -11,7 +11,7 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 	cookie "controlplane/pkg/constant"
 
@@ -52,7 +52,7 @@ func TestRefreshTokenHandlerMissingCookie(t *testing.T) {
 func TestRefreshTokenHandlerInvalidSessionClearsCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := newRefreshTokenHandler(&refreshTokenServiceStub{err: iamErrorx.ErrInvalidSession})
+	h := newRefreshTokenHandler(&refreshTokenServiceStub{err: iamTaxonomy.ErrInvalidSession})
 	router.POST("/refresh", h.Refresh)
 
 	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)
@@ -72,7 +72,7 @@ func TestRefreshTokenHandlerInvalidSessionClearsCookies(t *testing.T) {
 func TestRefreshTokenHandlerAuthenticationUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := newRefreshTokenHandler(&refreshTokenServiceStub{err: iamErrorx.ErrAuthenticationUnavailable})
+	h := newRefreshTokenHandler(&refreshTokenServiceStub{err: iamTaxonomy.ErrAuthenticationUnavailable})
 	router.POST("/refresh", h.Refresh)
 
 	req := httptest.NewRequest(http.MethodPost, "/refresh", nil)

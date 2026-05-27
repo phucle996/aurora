@@ -5,8 +5,8 @@ import (
 	"math/rand"
 	"time"
 
-	iamErrorx "controlplane/internal/iam/errorx"
 	iamMetrics "controlplane/internal/iam/metrics"
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/logger"
 	"errors"
 )
@@ -29,7 +29,7 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 	}
 
 	if err := m.adminAPIKeyService.Bootstrap(ctx, "system-bootstrap"); err != nil {
-		if errors.Is(err, iamErrorx.ErrAdminBootstrapNotAllowed) {
+		if errors.Is(err, iamTaxonomy.ErrAdminBootstrapNotAllowed) {
 			// Bootstrap already completed in a previous run.
 		} else {
 			return err
@@ -131,28 +131,28 @@ func (m *Module) runAdminRotationScheduler(ctx context.Context) {
 		err := m.adminAPIKeyService.TryProcessAdminKeyRotationTrigger(ctx)
 		if err == nil {
 			attempt = 0
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamMetrics.OutcomeSuccess)
+			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.OutcomeSuccess)
 			logger.SysDebugFields(op, "rotation scheduler tick completed", logger.Fields{"run_id": runID, "result": "success_or_noop", "reason": "none"})
 			continue
 		}
-		if errors.Is(err, iamErrorx.ErrAdminRotationLockBusy) {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamMetrics.AdminRotationOutcomeLockContention)
+		if errors.Is(err, iamTaxonomy.ErrAdminRotationLockBusy) {
+			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotationOutcomeLockContention)
 			logger.SysInfoFields(op, "rotation scheduler lock contention", logger.Fields{"run_id": runID, "result": "noop", "reason": "lock_busy"})
 			continue
 		}
-		if errors.Is(err, iamErrorx.ErrAdminRotationDelivery) {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamMetrics.AdminRotationOutcomeDeliveryFail)
+		if errors.Is(err, iamTaxonomy.ErrAdminRotationDelivery) {
+			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotationOutcomeDeliveryFail)
 		} else {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamMetrics.AdminRotationOutcomeRotateFail)
+			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotationOutcomeRotateFail)
 		}
 
 		if attempt < len(backoffSchedule)-1 {
 			attempt++
 		}
 		retry := backoffSchedule[attempt]
-		reason := iamMetrics.AdminRotationOutcomeRotateFail
-		if errors.Is(err, iamErrorx.ErrAdminRotationDelivery) {
-			reason = iamMetrics.AdminRotationOutcomeDeliveryFail
+		reason := iamTaxonomy.AdminRotationOutcomeRotateFail
+		if errors.Is(err, iamTaxonomy.ErrAdminRotationDelivery) {
+			reason = iamTaxonomy.AdminRotationOutcomeDeliveryFail
 		}
 		logger.SysWarnFields(op, "rotation scheduler tick failed", err, logger.Fields{"run_id": runID, "attempt": attempt + 1, "reason": reason, "result": "retry", "retry_in": retry.String()})
 		select {

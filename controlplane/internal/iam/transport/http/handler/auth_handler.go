@@ -13,7 +13,7 @@ import (
 	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	domainservice "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	cookie "controlplane/pkg/constant"
@@ -90,17 +90,17 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	fullname := strings.TrimSpace(request.Fullname)
 
 	if username == "" || email == "" || password == "" || rePassword == "" || fullname == "" {
-		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidArgument, "register validation failed")
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
 	if password != rePassword {
-		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidArgument, "register validation failed")
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
 	if !isStrongPassword(password) {
-		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidArgument, "register validation failed")
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
@@ -115,11 +115,11 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 
 	if err := h.authSvc.RegisterAccount(ctx, user, profile, password); err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "register validation failed")
 			apires.RespondBadRequest(c, "invalid request")
 			return
-		case errors.Is(err, iamErrorx.ErrUserAlreadyExist):
+		case errors.Is(err, iamTaxonomy.ErrUserAlreadyExist):
 			logger.HandlerWarn(c, op, err, "register conflict")
 			apires.RespondConflict(c, "resource already exists")
 			return
@@ -165,7 +165,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	password := strings.TrimSpace(request.Password)
 	devicePublicKey := strings.TrimSpace(request.DevicePublicKey)
 	if username == "" || password == "" || devicePublicKey == "" {
-		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidArgument, "login validation failed")
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "login validation failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
@@ -198,15 +198,15 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidCredentials):
+		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
 			logger.HandlerWarn(c, op, err, "login invalid credentials")
 			apires.RespondUnauthorized(c, "invalid credentials")
 			return
-		case errors.Is(err, iamErrorx.ErrVerificationRequired):
+		case errors.Is(err, iamTaxonomy.ErrVerificationRequired):
 			logger.HandlerWarn(c, op, err, "login verification required")
 			apires.RespondForbidden(c, "please check your email to verify account")
 			return
-		case errors.Is(err, iamErrorx.ErrAuthenticationUnavailable):
+		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
 			logger.HandlerWarn(c, op, err, "login authentication unavailable")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			return
@@ -293,7 +293,7 @@ func (h *AuthHandler) Session(c *gin.Context) {
 	const op = "iam.auth.session"
 
 	if strings.TrimSpace(middleware.GetUserID(c)) == "" || strings.TrimSpace(middleware.GetRuntimeAccessKey(c)) == "" {
-		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidCredentials, "session invalid auth context")
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidCredentials, "session invalid auth context")
 		apires.RespondUnauthorized(c, "unauthorized")
 		return
 	}

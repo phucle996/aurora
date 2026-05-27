@@ -8,7 +8,7 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 
 	"github.com/google/uuid"
@@ -91,7 +91,7 @@ func newDeviceService(d iamRepoInterface.DeviceRepository, r iamRepoInterface.Re
 func TestDeviceServiceListMyDevicesInvalidUserID(t *testing.T) {
 	svc := newDeviceService(&deviceRepoMock{}, &refreshRepoMock{})
 	_, err := svc.ListMyDevices(context.Background(), "not-uuid", 10, 0)
-	if !errors.Is(err, iamErrorx.ErrInvalidArgument) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {
 		revokeFn: func(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) { return 0, nil },
 	})
 	err := svc.RevokeMyDevice(context.Background(), uuid.NewString(), uuid.NewString(), nil, nil)
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 }

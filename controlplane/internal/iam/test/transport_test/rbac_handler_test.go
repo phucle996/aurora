@@ -11,7 +11,7 @@ import (
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 
 	"github.com/gin-gonic/gin"
@@ -69,7 +69,7 @@ func TestRbacHandlerCreateRoleInvalidArgument(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := handler.NewRbacHandler(&rbacServiceStub{createRoleFn: func(ctx context.Context, role *iamEntity.Role) error {
-		return iamErrorx.ErrInvalidArgument
+		return iamTaxonomy.ErrInvalidArgument
 	}})
 	r.POST("/admin/rbac/roles", h.CreateRole)
 
@@ -88,7 +88,7 @@ func TestRbacHandlerCreateRoleNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := handler.NewRbacHandler(&rbacServiceStub{createRoleFn: func(ctx context.Context, role *iamEntity.Role) error {
-		return iamErrorx.ErrRoleNotFound
+		return iamTaxonomy.ErrRoleNotFound
 	}})
 	r.POST("/admin/rbac/roles", h.CreateRole)
 

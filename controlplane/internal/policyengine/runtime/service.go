@@ -41,6 +41,7 @@ import (
 	policyErrorx "controlplane/internal/policyengine/errorx"
 	"controlplane/internal/policyengine/policies/admincidr"
 	"controlplane/internal/policyengine/policies/otel"
+	"controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/policyengine/policies/ratelimit"
 	policytypes "controlplane/internal/policyengine/runtime/types"
 	"controlplane/pkg/logger"
@@ -66,9 +67,10 @@ type PoliciesFile struct {
 
 // PoliciesRuntimeRoot gom các nhánh cấu hình chính sách thô dưới dạng modular.
 type PoliciesRuntimeRoot struct {
-	AdminCIDR admincidr.AdminCIDRPolicy `yaml:"admin_cidr"`
-	RateLimit ratelimit.RateLimitPolicy `yaml:"rate_limit"`
-	OTel      otel.OTelPolicy           `yaml:"otel"`
+	AdminCIDR  admincidr.AdminCIDRPolicy   `yaml:"admin_cidr"`
+	RateLimit  ratelimit.RateLimitPolicy   `yaml:"rate_limit"`
+	OTel       otel.OTelPolicy             `yaml:"otel"`
+	Prometheus prometheus.PrometheusPolicy `yaml:"prometheus"`
 }
 
 // EngineService là cấu trúc dịch vụ cốt lõi quản lý việc reload chính sách.
@@ -82,8 +84,9 @@ type EngineService struct {
 	subscriber    PolicyEventSubscriber
 	lastChecksum  string
 	lastMetaKey   string
-	lastReloadAt  time.Time
-	otelHooks     []func(*otel.CompiledPolicy)
+	lastReloadAt    time.Time
+	otelHooks       []func(*otel.CompiledPolicy)
+	prometheusHooks []func(*prometheus.CompiledPolicy)
 }
 
 // NewEngineService khởi tạo EngineService và liên kết các thành phần hạ tầng (source adapter, pub/sub notifier).
@@ -153,6 +156,17 @@ func (s *EngineService) RegisterOTelHook(hook func(*otel.CompiledPolicy)) {
 	s.otelHooks = append(s.otelHooks, hook)
 }
 
+// RegisterPrometheusHook đăng ký một hàm callback (hook) nhận sự thay đổi cấu hình Prometheus.
+// Hook này chỉ được trigger khi cấu hình Prometheus thực sự có thay đổi so với snapshot trước đó.
+//
+// # Tham số:
+//   - `hook`: Hàm callback chạy ngầm nhận vào cấu hình Prometheus đã được compile.
+func (s *EngineService) RegisterPrometheusHook(hook func(*prometheus.CompiledPolicy)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prometheusHooks = append(s.prometheusHooks, hook)
+}
+
 // Reload nạp tệp YAML thô, validate tính hợp lệ của toàn bộ policies, so sánh checksum,
 // cooldown và hoán đổi nguyên tử snapshot nếu có thay đổi thực tế.
 //
@@ -219,6 +233,16 @@ func (s *EngineService) Reload(ctx context.Context) (*policytypes.PolicySet, err
 		s.mu.RUnlock()
 		for _, hook := range hooks {
 			go hook(&next.Runtime.OTel)
+		}
+	}
+
+	// Chỉ trigger các Prometheus hooks nếu cấu hình Prometheus thực sự thay đổi hoặc trong lần nạp đầu tiên.
+	if old == nil || !reflect.DeepEqual(old.Runtime.Prometheus, next.Runtime.Prometheus) {
+		s.mu.RLock()
+		hooks := s.prometheusHooks
+		s.mu.RUnlock()
+		for _, hook := range hooks {
+			go hook(&next.Runtime.Prometheus)
 		}
 	}
 
@@ -340,7 +364,7 @@ func (s *EngineService) loadPolicySnapshotFromSource(ctx context.Context) (*poli
 		UpdatedAt:   now,
 		Source:      meta.Path,
 		ChecksumSHA: hex.EncodeToString(checksum[:]),
-		Policies:    map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR, "otel": runtimePolicies.OTel},
+		Policies:    map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR, "otel": runtimePolicies.OTel, "prometheus": runtimePolicies.Prometheus},
 		Runtime:     runtimePolicies,
 	}
 	metaKey := strings.TrimSpace(meta.Path) + ":" + strings.TrimSpace(meta.Version) + ":" + fmt.Sprintf("%d", meta.Size)
@@ -382,9 +406,15 @@ func compilePolicies(parsed PoliciesFile) (policytypes.RuntimePolicies, error) {
 		return policytypes.RuntimePolicies{}, err
 	}
 
+	prom, err := prometheus.Compile(parsed.Policies.Prometheus)
+	if err != nil {
+		return policytypes.RuntimePolicies{}, err
+	}
+
 	return policytypes.RuntimePolicies{
-		AdminCIDR: cidr,
-		RateLimit: rl,
-		OTel:      ot,
+		AdminCIDR:  cidr,
+		RateLimit:  rl,
+		OTel:       ot,
+		Prometheus: prom,
 	}, nil
 }

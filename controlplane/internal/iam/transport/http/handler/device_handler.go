@@ -10,7 +10,7 @@ import (
 
 	"controlplane/internal/http/middleware"
 	domainservice "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/logger"
 
@@ -38,7 +38,7 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	result, err := h.deviceSvc.ListMyDevices(ctx, userID, limit, offset)
 	if err != nil {
-		if errors.Is(err, iamErrorx.ErrInvalidArgument) {
+		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
 			return
@@ -80,12 +80,12 @@ func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 	deviceID := c.Param("device_id")
 	err := h.deviceSvc.RevokeMyDevice(ctx, userID, deviceID, ip, userAgent)
 	if err != nil {
-		if errors.Is(err, iamErrorx.ErrInvalidArgument) {
+		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
 			return
 		}
-		if errors.Is(err, iamErrorx.ErrInvalidSession) {
+		if errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 			logger.HandlerWarn(c, op, err, "forbidden revoke")
 			apires.RespondForbidden(c, "forbidden")
 			return
@@ -121,7 +121,7 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 	}
 	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, currentTrackedDeviceID, ip, userAgent)
 	if err != nil {
-		if errors.Is(err, iamErrorx.ErrInvalidArgument) {
+		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
 			return
@@ -152,7 +152,7 @@ func (h *DeviceHandler) LogoutAllDevices(c *gin.Context) {
 	}
 	affected, err := h.deviceSvc.LogoutAllDevices(ctx, userID, ip, userAgent)
 	if err != nil {
-		if errors.Is(err, iamErrorx.ErrInvalidArgument) {
+		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
 			return

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/internal/observability"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -76,7 +77,7 @@ const (
 )
 
 func ObserveRegisterOutcome(result string, cachePath string) {
-	observeAuthAttempt(registerFlowName, result == OutcomeSuccess)
+	observeAuthAttempt(registerFlowName, result == iamTaxonomy.OutcomeSuccess)
 	observeRegister(result, cachePath)
 }
 
@@ -101,7 +102,7 @@ func registerMetricOperation(operation string) string {
 }
 
 func ObserveLoginOutcome(result string) {
-	observeAuthAttempt(loginFlowName, result == OutcomeSuccess)
+	observeAuthAttempt(loginFlowName, result == iamTaxonomy.OutcomeSuccess)
 	observeLogin(result)
 }
 
@@ -109,21 +110,21 @@ func ObserveLoginVerifyMailPublish(published bool, err error, duration time.Dura
 	if prom := observability.CurrentPrometheus(); prom != nil {
 		prom.ObserveRedis("iam.login.publish_verify_mail_job", duration, err)
 	}
-	observeLogin(LoginOutcomeVerifyMailPublishAttempt)
+	observeLogin(iamTaxonomy.LoginOutcomeVerifyMailPublishAttempt)
 	if err != nil {
-		observeLogin(LoginOutcomeVerifyMailPublishError)
+		observeLogin(iamTaxonomy.LoginOutcomeVerifyMailPublishError)
 		return
 	}
 	if published {
-		observeLogin(LoginOutcomeVerifyMailPublishSuccess)
+		observeLogin(iamTaxonomy.LoginOutcomeVerifyMailPublishSuccess)
 		return
 	}
-	observeLogin(LoginOutcomeVerifyMailPublishDuplicate)
+	observeLogin(iamTaxonomy.LoginOutcomeVerifyMailPublishDuplicate)
 }
 
 func ObserveRefreshTokenOutcome(result string) {
 	result = normalizeResult(result)
-	observeAuthAttempt(refreshTokenFlowName, result == OutcomeSuccess)
+	observeAuthAttempt(refreshTokenFlowName, result == iamTaxonomy.OutcomeSuccess)
 	observeRefreshToken(result)
 }
 
@@ -151,9 +152,9 @@ func observeAuthAttempt(flow string, success bool) {
 	if flow == "" {
 		flow = "unknown"
 	}
-	result := OutcomeFailure
+	result := iamTaxonomy.OutcomeFailure
 	if success {
-		result = OutcomeSuccess
+		result = iamTaxonomy.OutcomeSuccess
 	}
 	authAttemptsCounter.WithLabelValues(flow, result).Inc()
 }
@@ -186,7 +187,7 @@ func observeRefreshToken(result string) {
 func normalizeResult(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {
-		return OutcomeUnknown
+		return iamTaxonomy.OutcomeUnknown
 	}
 	return value
 }

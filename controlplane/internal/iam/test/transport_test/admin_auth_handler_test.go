@@ -14,7 +14,7 @@ import (
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvc "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 	"controlplane/pkg/apperr"
 	cookie "controlplane/pkg/constant"
@@ -116,7 +116,7 @@ func TestAdminAuthHandlerLoginUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, iamErrorx.ErrAdminLoginMFAInvalid
+		return iamEntity.AdminLoginResult{}, iamTaxonomy.ErrAdminLoginMFAInvalid
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -140,7 +140,7 @@ func TestAdminAuthHandlerLoginUnauthorizedWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamErrorx.ErrAdminLoginMFAInvalid, iamErrorx.ReasonAdminLoginMFAInvalid, errors.New("totp mismatch"))
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, errors.New("totp mismatch"), iamTaxonomy.AdminLoginOutcomeMFAInvalid)
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -170,7 +170,7 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAdminLoginDependencyError, errors.New("db timeout"))
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), iamTaxonomy.AdminLoginOutcomeAuthUnavailable)
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -256,7 +256,7 @@ func TestAdminAuthHandlerRotateKeyLockBusyUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{rotateFn: func(ctx context.Context, actor string) error {
-		return iamErrorx.ErrAdminRotationLockBusy
+		return iamTaxonomy.ErrAdminRotationLockBusy
 	}})
 	r.POST("/admin/auth/rotate-key", h.RotateKey)
 

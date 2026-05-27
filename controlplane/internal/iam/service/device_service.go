@@ -11,8 +11,8 @@ import (
 	iamCache "controlplane/internal/iam/cache"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
 	iamMetrics "controlplane/internal/iam/metrics"
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
@@ -33,7 +33,7 @@ func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository, refreshToken
 func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonRbacInvalidArgument, err)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -43,7 +43,7 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 	}
 	items, listErr := s.deviceRepo.ListDevicesByUserID(ctx, uid, limit, offset)
 	if listErr != nil {
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, listErr)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
 	presenceByTracked := map[string]iamCache.UserDeviceRuntime{}
 	if s.deviceRuntime != nil {
@@ -82,25 +82,25 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID string, deviceID string, ip *string, userAgent *string) error {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		return apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonRbacInvalidArgument, err)
+		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
 	}
 	did, err := uuid.Parse(deviceID)
 	if err != nil {
-		return apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonRbacInvalidArgument, err)
+		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
 	}
 	_, getErr := s.deviceRepo.GetDeviceByIDAndUserID(ctx, did, uid)
 	if getErr != nil {
 		if errors.Is(getErr, pgx.ErrNoRows) {
-			return apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, getErr)
+			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, getErr, "invalid_session")
 		}
-		return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, getErr)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, getErr, "dependency_error")
 	}
 	if revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, did, uid); revokeErr != nil {
-		return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, revokeErr)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 	_, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, uid, did)
 	if revokeTokenErr != nil {
-		return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, revokeTokenErr)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 	s.publishDeviceAudit(ctx, uid, "device.revoked", "warning", ip, userAgent, map[string]string{"target_device_id": strings.TrimSpace(deviceID)})
 	return nil
@@ -109,22 +109,22 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID string, devic
 func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID string, currentTrackedDeviceID string, ip *string, userAgent *string) (int64, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		return 0, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonRbacInvalidArgument, err)
+		return 0, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
 	}
 	var keep *uuid.UUID
 	if currentTrackedDeviceID != "" {
 		parsed, parseErr := uuid.Parse(currentTrackedDeviceID)
 		if parseErr != nil {
-			return 0, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonRbacInvalidArgument, parseErr)
+			return 0, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, parseErr, "invalid_argument")
 		}
 		keep = &parsed
 	}
 	if _, revokeErr := s.deviceRepo.RevokeOtherDevicesByUserID(ctx, uid, keep); revokeErr != nil {
-		return 0, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, revokeErr)
+		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 	affected, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByUserID(ctx, uid, keep)
 	if revokeTokenErr != nil {
-		return 0, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, revokeTokenErr)
+		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 	s.publishDeviceAudit(ctx, uid, "device.logout_others", "warning", ip, userAgent, map[string]string{"affected_count": strconv.FormatInt(affected, 10)})
 	return affected, nil

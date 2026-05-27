@@ -2,7 +2,7 @@ package iamCache
 
 import (
 	"context"
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	"fmt"
 	"strings"
 	"time"
@@ -18,11 +18,11 @@ type OneTimeTokenCache interface {
 type noopOneTimeTokenCache struct{}
 
 func (noopOneTimeTokenCache) SetHashedToken(context.Context, string, string, string, time.Duration) error {
-	return iamErrorx.ErrOneTimeTokenCacheUnavailable
+	return iamTaxonomy.ErrOneTimeTokenCacheUnavailable
 }
 
 func (noopOneTimeTokenCache) ConsumeHashedToken(context.Context, string, string, string) (bool, error) {
-	return false, iamErrorx.ErrOneTimeTokenCacheUnavailable
+	return false, iamTaxonomy.ErrOneTimeTokenCacheUnavailable
 }
 
 type redisOneTimeTokenCache struct {

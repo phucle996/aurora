@@ -1,4 +1,4 @@
-package iamMetrics
+package iamTaxonomy
 
 const (
 	OutcomeSuccess = "success"

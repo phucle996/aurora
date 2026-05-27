@@ -7,7 +7,7 @@ import (
 
 func TestAppErrorUnwrapSupportsErrorsIs(t *testing.T) {
 	kind := errors.New("domain kind")
-	err := Wrap(kind, "reason_code", errors.New("raw cause"))
+	err := Wrap(kind, errors.New("raw cause"), "reason_code")
 	if !errors.Is(err, kind) {
 		t.Fatalf("expected errors.Is true")
 	}
@@ -16,8 +16,8 @@ func TestAppErrorUnwrapSupportsErrorsIs(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error extract success")
 	}
-	if appErr.Reason != "reason_code" {
-		t.Fatalf("expected reason_code got %q", appErr.Reason)
+	if appErr.Outcome != "reason_code" {
+		t.Fatalf("expected reason_code got %q", appErr.Outcome)
 	}
 	if appErr.Cause == nil || appErr.Cause.Error() != "raw cause" {
 		t.Fatalf("expected cause preserved")
@@ -26,7 +26,7 @@ func TestAppErrorUnwrapSupportsErrorsIs(t *testing.T) {
 
 func TestAppErrorFormatsWithoutReason(t *testing.T) {
 	kind := errors.New("iam: invalid")
-	err := Wrap(kind, "", nil)
+	err := Wrap(kind, nil, "")
 	if err.Error() != "iam: invalid" {
 		t.Fatalf("expected kind-only error string, got %q", err.Error())
 	}
@@ -34,17 +34,18 @@ func TestAppErrorFormatsWithoutReason(t *testing.T) {
 
 func TestLogFieldsExtractsKindReasonCause(t *testing.T) {
 	kind := errors.New("iam: admin login mfa invalid")
-	err := Wrap(kind, "admin_login_mfa_validate_error", errors.New("line1\nline2"))
+	err := Wrap(kind, errors.New("line1\nline2"), "admin_login_mfa_validate_error")
 
 	fields := LogFields(err)
 	if fields == nil {
 		t.Fatalf("expected fields")
 	}
-	if fields["error_kind"] != kind.Error() {
-		t.Fatalf("unexpected error_kind: %v", fields["error_kind"])
+	// error_kind bị loại bỏ khỏi LogFields — đã có trong `error` field của logger rồi.
+	if _, exists := fields["error_kind"]; exists {
+		t.Fatalf("error_kind should not be present in LogFields output, got: %v", fields["error_kind"])
 	}
-	if fields["error_reason"] != "admin_login_mfa_validate_error" {
-		t.Fatalf("unexpected error_reason: %v", fields["error_reason"])
+	if fields["outcome"] != "admin_login_mfa_validate_error" {
+		t.Fatalf("unexpected outcome: %v", fields["outcome"])
 	}
 	if fields["error_cause"] != "line1 line2" {
 		t.Fatalf("unexpected error_cause: %v", fields["error_cause"])
@@ -53,7 +54,7 @@ func TestLogFieldsExtractsKindReasonCause(t *testing.T) {
 
 func TestLogFieldsRedactsSensitiveCause(t *testing.T) {
 	kind := errors.New("iam: admin login mfa invalid")
-	err := Wrap(kind, "admin_login_mfa_validate_error", errors.New("secret=abc token=xyz"))
+	err := Wrap(kind, errors.New("secret=abc token=xyz"), "admin_login_mfa_validate_error")
 
 	fields := LogFields(err)
 	if fields == nil {

@@ -7,7 +7,7 @@ import (
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/pkg/apperr"
 
@@ -75,15 +75,15 @@ func TestRbacServiceGetRoleInvalidUUIDMapsInvalidArgument(t *testing.T) {
 	}}, nil, nil)
 
 	_, err := svc.GetRole(context.Background(), "bad-id")
-	if !errors.Is(err, iamErrorx.ErrInvalidArgument) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonRbacInvalidArgument {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != "invalid_argument" {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
@@ -93,15 +93,15 @@ func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 	}}, nil, nil)
 
 	_, err := svc.GetRole(context.Background(), uuid.NewString())
-	if !errors.Is(err, iamErrorx.ErrRoleNotFound) {
+	if !errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
 		t.Fatalf("expected ErrRoleNotFound, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonRbacRoleNotFound {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != "role_not_found" {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
@@ -112,15 +112,15 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 	}}, nil, nil)
 
 	_, err := svc.ListRoles(context.Background())
-	if !errors.Is(err, iamErrorx.ErrAuthenticationUnavailable) {
+	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonRbacDependencyError {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != "dependency_error" {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
 		t.Fatalf("expected raw cause preserved")

@@ -1,4 +1,4 @@
-package iamErrorx
+package iamTaxonomy
 
 import "errors"
 

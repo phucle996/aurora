@@ -144,8 +144,14 @@ func OTelTraceContext(obs *observability.OTel) gin.HandlerFunc {
 func PrometheusHTTPMetrics(obs *observability.Prometheus) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// [FAIL-OPEN CONTRACT]: Nếu hệ thống thu thập metrics Prometheus chưa sẵn sàng,
-		// bỏ qua việc đo lường một cách an toàn và tiếp tục xử lý nghiệp vụ.
+		// hoặc bị tắt trong chính sách động, bỏ qua đo lường an toàn.
 		if obs == nil {
+			c.Next()
+			return
+		}
+
+		policy := obs.GetPolicy()
+		if policy == nil || !policy.Enabled {
 			c.Next()
 			return
 		}
@@ -168,12 +174,30 @@ func PrometheusHTTPMetrics(obs *observability.Prometheus) gin.HandlerFunc {
 
 // PrometheusMetricsEndpoint xuất bản endpoint (/metrics) để Prometheus Server vào cào dữ liệu (scrape).
 func PrometheusMetricsEndpoint(obs *observability.Prometheus) gin.HandlerFunc {
-	if obs == nil {
-		return func(c *gin.Context) {
+	return func(c *gin.Context) {
+		if obs == nil {
 			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
 		}
+
+		policy := obs.GetPolicy()
+		if policy == nil || !policy.Enabled || !policy.ExposeMetric.Enabled {
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+
+		// Xác minh đường dẫn động cào dữ liệu
+		expectedPath := "/metrics"
+		if policy.ExposeMetric.RoutePath != "" {
+			expectedPath = policy.ExposeMetric.RoutePath
+		}
+		if c.Request.URL.Path != expectedPath {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+
+		gin.WrapH(obs.HTTPHandler())(c)
 	}
-	return gin.WrapH(obs.HTTPHandler())
 }
 
 // requestRoute chuẩn hóa đường dẫn URL của HTTP Request thành một định dạng khuôn mẫu (Route Template) duy nhất.

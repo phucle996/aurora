@@ -9,7 +9,7 @@ import (
 
 	"controlplane/internal/config"
 	domainservice "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	apires "controlplane/pkg/apires"
 	cookie "controlplane/pkg/constant"
 	"controlplane/pkg/logger"
@@ -23,8 +23,14 @@ type RefreshTokenHandler struct {
 }
 
 // NewRefreshTokenHandler tạo HTTP handler cho refresh token endpoint.
-func NewRefreshTokenHandler(cfg *config.Config, refreshTokenSvc domainservice.RefreshTokenService) *RefreshTokenHandler {
-	return &RefreshTokenHandler{refreshTokenSvc: refreshTokenSvc, cfg: cfg}
+func NewRefreshTokenHandler(
+	cfg *config.Config,
+	refreshTokenSvc domainservice.RefreshTokenService,
+) *RefreshTokenHandler {
+	return &RefreshTokenHandler{
+		refreshTokenSvc: refreshTokenSvc,
+		cfg:             cfg,
+	}
 }
 
 // Refresh godoc
@@ -89,7 +95,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
 		})
-		logger.HandlerWarn(c, op, iamErrorx.ErrInvalidSession, "refresh token missing")
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidSession, "refresh token missing")
 		apires.RespondUnauthorized(c, "invalid session")
 		return
 	}
@@ -97,7 +103,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 	result, err := h.refreshTokenSvc.Refresh(ctx, strings.TrimSpace(rawRefreshToken))
 	if err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidSession):
+		case errors.Is(err, iamTaxonomy.ErrInvalidSession):
 			http.SetCookie(c.Writer, &http.Cookie{
 				Name:     cookie.AccessTokenName,
 				Value:    "",
@@ -145,7 +151,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			logger.HandlerWarn(c, op, err, "refresh token invalid session")
 			apires.RespondUnauthorized(c, "invalid session")
 			return
-		case errors.Is(err, iamErrorx.ErrAuthenticationUnavailable):
+		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
 			logger.HandlerWarn(c, op, err, "refresh token authentication unavailable")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			return

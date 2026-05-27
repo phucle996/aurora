@@ -9,7 +9,7 @@ import (
 
 	"controlplane/internal/iam/cache"
 	"controlplane/internal/iam/domain/entity"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/internal/iam/test/testutil"
@@ -66,7 +66,7 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 	}
 
 	_, err = refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected old refresh token to be invalid, got %v", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 
 	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, &integrationSecretProvider{})
 	_, err = refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected invalid session for blocked user, got %v", err)
 	}
 

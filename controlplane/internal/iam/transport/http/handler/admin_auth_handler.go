@@ -12,7 +12,7 @@ import (
 	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
@@ -82,10 +82,10 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument),
-			errors.Is(err, iamErrorx.ErrAdminLoginInvalidCredential),
-			errors.Is(err, iamErrorx.ErrAdminLoginMFAInvalid),
-			errors.Is(err, iamErrorx.ErrAdminLoginDeviceBindingFailed):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument),
+			errors.Is(err, iamTaxonomy.ErrAdminLoginInvalidCredential),
+			errors.Is(err, iamTaxonomy.ErrAdminLoginMFAInvalid),
+			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceBindingFailed):
 			logger.HandlerWarn(c, op, err, "admin login unauthorized")
 			apires.RespondUnauthorized(c, "unauthorized")
 			return
@@ -205,7 +205,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	result, err := h.svc.RefreshAdminSession(ctx, strings.TrimSpace(accessKey), requestIP, userAgent)
 	if err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "admin refresh unauthorized")
 			apires.RespondUnauthorized(c, "unauthorized")
 			return
@@ -343,7 +343,7 @@ func (h *AdminAuthHandler) RotateKey(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	if err := h.svc.RotateAdminAPIKeyEmergency(ctx, "admin-emergency-rotate"); err != nil {
-		if errors.Is(err, iamErrorx.ErrAdminRotationLockBusy) {
+		if errors.Is(err, iamTaxonomy.ErrAdminRotationLockBusy) {
 			logger.HandlerWarn(c, op, err, "rotation lock busy")
 			apires.RespondUnauthorized(c, "unauthorized")
 			return

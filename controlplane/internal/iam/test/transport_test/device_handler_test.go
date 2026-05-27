@@ -9,7 +9,7 @@ import (
 
 	"controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 	"controlplane/pkg/constant"
 
@@ -88,7 +88,7 @@ func TestDeviceHandlerListMyDevicesSuccess(t *testing.T) {
 func TestDeviceHandlerRevokeForbidden(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := handler.NewDeviceHandler(&deviceServiceStub{revokeErr: iamErrorx.ErrInvalidSession})
+	h := handler.NewDeviceHandler(&deviceServiceStub{revokeErr: iamTaxonomy.ErrInvalidSession})
 	router.POST("/devices/:device_id/revoke", withUser(), h.RevokeMyDevice)
 
 	req := httptest.NewRequest(http.MethodPost, "/devices/aaa/revoke", nil)

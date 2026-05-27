@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -114,7 +114,7 @@ func (c *userDeviceRuntimeCache) SetDeviceRuntime(ctx context.Context, runtime U
 	runtime.TrackedDeviceID = strings.TrimSpace(runtime.TrackedDeviceID)
 	if runtime.DeviceID == "" || runtime.DeviceSecretHash == "" ||
 		runtime.CurrentJTI == "" || runtime.UserID == "" || runtime.TrackedDeviceID == "" {
-		return iamErrorx.ErrUserDeviceRuntimeInvalid
+		return iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	if runtime.Version <= 0 {
 		runtime.Version = 1
@@ -156,7 +156,7 @@ func (c *userDeviceRuntimeCache) GetDeviceRuntimeByUserDevice(ctx context.Contex
 	userID = strings.TrimSpace(userID)
 	deviceID = strings.TrimSpace(deviceID)
 	if userID == "" || deviceID == "" {
-		return nil, iamErrorx.ErrUserDeviceRuntimeInvalid
+		return nil, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	raw, err := c.rdb.Get(ctx, c.userDeviceKey(userID, deviceID)).Result()
 	if err == goredis.Nil {
@@ -170,7 +170,7 @@ func (c *userDeviceRuntimeCache) GetDeviceRuntimeByUserDevice(ctx context.Contex
 		return nil, fmt.Errorf("iam cache: invalid user device runtime payload: %w", jsonErr)
 	}
 	if strings.TrimSpace(record.DeviceSecretHash) == "" || strings.TrimSpace(record.DeviceID) == "" {
-		return nil, iamErrorx.ErrUserDeviceRuntimeInvalid
+		return nil, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	return &record, nil
 }
@@ -194,7 +194,7 @@ func (c *userDeviceRuntimeCache) RotateFragmentForUserDevice(ctx context.Context
 	newDeviceSecretHash = strings.TrimSpace(newDeviceSecretHash)
 	newJTI = strings.TrimSpace(newJTI)
 	if userID == "" || deviceID == "" || newDeviceID == "" || newDeviceSecretHash == "" || newJTI == "" {
-		return false, iamErrorx.ErrUserDeviceRuntimeInvalid
+		return false, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	lua := `
 local raw = redis.call('GET', KEYS[1])
@@ -257,7 +257,7 @@ func (c *userDeviceRuntimeCache) TouchDeviceRuntimeByUserDevice(ctx context.Cont
 	userID = strings.TrimSpace(userID)
 	deviceID = strings.TrimSpace(deviceID)
 	if userID == "" || deviceID == "" {
-		return false, iamErrorx.ErrUserDeviceRuntimeInvalid
+		return false, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	ipValue := ""
 	if ip != nil {
@@ -313,7 +313,7 @@ func (c *userDeviceRuntimeCache) DeleteDeviceRuntimeByUserDevice(ctx context.Con
 	userID = strings.TrimSpace(userID)
 	deviceID = strings.TrimSpace(deviceID)
 	if userID == "" || deviceID == "" {
-		return iamErrorx.ErrUserDeviceRuntimeInvalid
+		return iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	pipe := c.rdb.TxPipeline()
 	pipe.Del(ctx, c.userDeviceKey(userID, deviceID))
@@ -335,7 +335,7 @@ func (c *userDeviceRuntimeCache) ScanByUser(ctx context.Context, userID string, 
 	}
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
-		return nil, iamErrorx.ErrUserDeviceRuntimeInvalid
+		return nil, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	if limit <= 0 {
 		limit = 100
@@ -379,7 +379,7 @@ func (c *userDeviceRuntimeCache) ScanByUser(ctx context.Context, userID string, 
 			return nil, fmt.Errorf("iam cache: invalid user device runtime payload: %w", jsonErr)
 		}
 		if record.UserID != userID {
-			return nil, iamErrorx.ErrUserDeviceRuntimeInvalid
+			return nil, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 		}
 		out = append(out, record)
 	}

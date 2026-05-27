@@ -15,7 +15,7 @@ import (
 	middleware "controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 	constant "controlplane/pkg/constant"
 
@@ -74,7 +74,7 @@ func TestAuthHandlerRegisterAccountBadRequest(t *testing.T) {
 func TestAuthHandlerRegisterAccountConflict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := newAuthHandler(&authServiceStub{err: iamErrorx.ErrUserAlreadyExist})
+	h := newAuthHandler(&authServiceStub{err: iamTaxonomy.ErrUserAlreadyExist})
 	router.POST("/register", h.RegisterAccount)
 
 	body, _ := json.Marshal(map[string]any{
@@ -138,7 +138,7 @@ func TestAuthHandlerLoginBadRequest(t *testing.T) {
 func TestAuthHandlerLoginInvalidCredentials(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := newAuthHandler(&authServiceStub{loginErr: iamErrorx.ErrInvalidCredentials})
+	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrInvalidCredentials})
 	router.POST("/login", h.Login)
 
 	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
@@ -154,7 +154,7 @@ func TestAuthHandlerLoginInvalidCredentials(t *testing.T) {
 func TestAuthHandlerLoginVerificationRequired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := newAuthHandler(&authServiceStub{loginErr: iamErrorx.ErrVerificationRequired})
+	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrVerificationRequired})
 	router.POST("/login", h.Login)
 
 	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})

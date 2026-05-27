@@ -10,7 +10,7 @@ import (
 	"controlplane/internal/config"
 	iamCache "controlplane/internal/iam/cache"
 	iamEntity "controlplane/internal/iam/domain/entity"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/pkg/apperr"
 )
@@ -60,15 +60,15 @@ func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil)
 
 	_, err := svc.AdminLogin(context.Background(), iamEntity.AdminLoginRequest{})
-	if !errors.Is(err, iamErrorx.ErrInvalidArgument) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected invalid argument kind, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAdminLoginInvalidArgument {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.AdminLoginOutcomeInvalidArgument {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
@@ -76,15 +76,15 @@ func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil)
 
 	_, err := svc.RefreshAdminSession(context.Background(), " ", nil, nil)
-	if !errors.Is(err, iamErrorx.ErrInvalidArgument) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected invalid argument kind, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAdminRefreshInvalidArgument {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.AdminRefreshOutcomeInvalidArgument {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
@@ -96,15 +96,15 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, deviceRT, nil)
 
 	err := svc.AdminLogout(context.Background(), "device-1", nil, nil)
-	if !errors.Is(err, iamErrorx.ErrInvalidArgument) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected invalid argument kind, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAdminLogoutCacheError {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != "logout_cache_error" {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
 		t.Fatalf("expected raw cause preserved")
@@ -119,15 +119,15 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, deviceRT, nil)
 
 	_, err := svc.RefreshAdminSession(context.Background(), "device-1", nil, nil)
-	if !errors.Is(err, iamErrorx.ErrAuthenticationUnavailable) {
+	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected authentication unavailable kind, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAdminRefreshCacheError {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.AdminRefreshOutcomeLoadRuntimeErr {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
 		t.Fatalf("expected raw cause preserved")

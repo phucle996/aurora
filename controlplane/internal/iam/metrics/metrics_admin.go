@@ -3,6 +3,7 @@ package iamMetrics
 import (
 	"time"
 
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/internal/observability"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -48,7 +49,7 @@ func ObserveAdminLoginOutcome(result string) {
 	}
 	result = normalizeResult(result)
 	adminLoginTotalCounter.WithLabelValues(result).Inc()
-	observeAuthAttempt("admin_login", result == OutcomeSuccess)
+	observeAuthAttempt("admin_login", result == iamTaxonomy.OutcomeSuccess)
 }
 
 func ObserveAdminKeyRotationOutcome(result string) {
@@ -66,7 +67,7 @@ func ObserveAdminRefreshOutcome(result string) {
 	if adminRefreshTotalCounter != nil {
 		adminRefreshTotalCounter.WithLabelValues(result).Inc()
 	}
-	observeAuthAttempt(adminRefreshFlowName, result == OutcomeSuccess)
+	observeAuthAttempt(adminRefreshFlowName, result == iamTaxonomy.OutcomeSuccess)
 }
 
 func ObserveAdminRefreshLatency(duration time.Duration, err error) {

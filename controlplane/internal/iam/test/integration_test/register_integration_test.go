@@ -9,7 +9,7 @@ import (
 
 	"controlplane/internal/iam/cache"
 	"controlplane/internal/iam/domain/entity"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	testutil "controlplane/internal/iam/test/testutil"
@@ -74,7 +74,7 @@ func TestRegisterAccountIntegrationDuplicateWithRealPostgresRedis(t *testing.T) 
 	}
 
 	err := svc.RegisterAccount(ctx, iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Integration User"}, "secret123")
-	if !errors.Is(err, iamErrorx.ErrUserAlreadyExist) {
+	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist on duplicate, got %v", err)
 	}
 	if count := testutil.CountUsersByIdentity(ctx, t, db, cfg.SchemaSQL.IAM, username, email); count != 1 {
@@ -151,7 +151,7 @@ func TestRegisterAccountIntegrationDuplicateMarksBitmapAfterDBConflict(t *testin
 	}
 
 	err := svc.RegisterAccount(ctx, iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Integration User"}, "secret123")
-	if !errors.Is(err, iamErrorx.ErrUserAlreadyExist) {
+	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist after DB conflict, got %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("seed register should succeed: %v", err)
 	}
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-	if !errors.Is(err, iamErrorx.ErrVerificationRequired) {
+	if !errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 		t.Fatalf("expected verification required, got %v", err)
 	}
 	var count int

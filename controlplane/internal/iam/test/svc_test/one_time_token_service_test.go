@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/pkg/apperr"
 )
@@ -79,12 +79,12 @@ func TestOneTimeTokenServiceInvalidPurposeOrUser(t *testing.T) {
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{})
 
 	_, _, err := svc.Issue(context.Background(), "", "u1")
-	if !errors.Is(err, iamErrorx.ErrOneTimeTokenInvalidPurposeOrUser) {
+	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
 	}
 
 	_, err = svc.Consume(context.Background(), "account_verify", "", "abc")
-	if !errors.Is(err, iamErrorx.ErrOneTimeTokenInvalidPurposeOrUser) {
+	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
 	}
 }
@@ -95,7 +95,7 @@ func TestOneTimeTokenServiceInvalidTTL(t *testing.T) {
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{})
 
 	_, _, err := svc.Issue(context.Background(), "account_verify", "u1")
-	if !errors.Is(err, iamErrorx.ErrOneTimeTokenIssueFailed) {
+	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenIssueFailed) {
 		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
 	}
 }
@@ -135,7 +135,7 @@ func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 	}
 
 	ok, err = svc.Consume(context.Background(), "account_verify", "u1", token)
-	if !errors.Is(err, iamErrorx.ErrOneTimeTokenInvalidOrExpired) {
+	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidOrExpired) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidOrExpired, got %v", err)
 	}
 	if ok {
@@ -149,19 +149,19 @@ func TestOneTimeTokenServiceCacheError(t *testing.T) {
 
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{
 		setFn: func(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
-			return iamErrorx.ErrOneTimeTokenCacheUnavailable
+			return iamTaxonomy.ErrOneTimeTokenCacheUnavailable
 		},
 	})
 
 	_, _, err := svc.Issue(context.Background(), "account_verify", "u1")
-	if !errors.Is(err, iamErrorx.ErrOneTimeTokenIssueFailed) {
+	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenIssueFailed) {
 		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonOneTimeTokenIssueDependencyError {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != "cache_unavailable" {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }

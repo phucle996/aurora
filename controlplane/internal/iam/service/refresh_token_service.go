@@ -10,8 +10,8 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
 	iamMetrics "controlplane/internal/iam/metrics"
+	"controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 
@@ -41,70 +41,70 @@ func NewRefreshTokenService(
 }
 
 func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken string) (result *iamEntity.RefreshTokenResult, err error) {
-	refreshOutcome := iamMetrics.OutcomeSuccess
+	refreshOutcome := iamTaxonomy.OutcomeSuccess
 	defer func() {
 		iamMetrics.ObserveRefreshTokenOutcome(refreshOutcome)
 	}()
 
 	if rawRefreshToken == "" {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 
 	refreshContext, ctxErr := s.repo.LoadRefreshContextByHash(ctx, security.HashTokenSHA256(rawRefreshToken))
 	if ctxErr != nil {
 		if errors.Is(ctxErr, pgx.ErrNoRows) {
-			refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-			return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, ctxErr)
+			refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, ctxErr, iamTaxonomy.RefreshOutcomeInvalidSession)
 		}
-		refreshOutcome = iamMetrics.RefreshOutcomeLoadSessionError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, ctxErr)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeLoadSessionError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, ctxErr, iamTaxonomy.RefreshOutcomeLoadSessionError)
 	}
 	if refreshContext == nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 	session := &refreshContext.Session
 	if time.Now().UTC().After(session.ExpiresAt) {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 	if session.DeviceID == nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 	trackedDeviceID := *session.DeviceID
 
 	user := &refreshContext.User
 	if user.ID == (uuid.UUID{}) {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 	if user.Status == iamEntity.UserStatusPendingActive || user.Status == iamEntity.UserStatusSuspended || user.Status == iamEntity.UserStatusDisabled {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 	if refreshContext.Device == nil || refreshContext.Device.Status == iamEntity.DeviceStatusRevoked {
-		refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
 	if s.secrets == nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshAuthUnavailable, nil)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
 
 	now := time.Now().UTC()
 
 	accessJTI, idErr := uuid.NewV7()
 	if idErr != nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshTokenIssue, idErr)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
 	runtimeDeviceID := uuid.NewString()
 	rawDeviceSecret, secretErr := security.GenerateToken(32)
 	if secretErr != nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshTokenIssue, secretErr)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
 	accessExpiresAt := now.Add(s.cfg.Security.AccessSecretTTL)
 	accessToken, accessErr := security.Sign(ctx, s.secrets, security.SecretFamilyAccess, security.Claims{
@@ -118,22 +118,22 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		ExpiresAt: accessExpiresAt.Unix(),
 	})
 	if accessErr != nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
+		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
 		if errors.Is(accessErr, security.ErrEmptySecret) {
-			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshAuthUnavailable, accessErr)
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 		}
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshTokenIssue, accessErr)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
 
 	rawNextRefreshToken, refreshErr := security.GenerateToken(43)
 	if refreshErr != nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshTokenIssue, refreshErr)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeGenerateRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshErr, iamTaxonomy.RefreshOutcomeGenerateRefreshErr)
 	}
 	nextRefreshID, refreshIDErr := uuid.NewV7()
 	if refreshIDErr != nil {
-		refreshOutcome = iamMetrics.RefreshOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshTokenIssue, refreshIDErr)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeGenerateRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshIDErr, iamTaxonomy.RefreshOutcomeGenerateRefreshErr)
 	}
 	nextRefreshExpiresAt := now.Add(s.cfg.Security.RefreshTokenTTL)
 	nextRefreshToken := iamEntity.RefreshToken{
@@ -148,12 +148,12 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	}
 
 	if rotateErr := s.repo.RotateRefreshToken(ctx, *session, nextRefreshToken); rotateErr != nil {
-		if errors.Is(rotateErr, iamErrorx.ErrInvalidSession) || errors.Is(rotateErr, pgx.ErrNoRows) {
-			refreshOutcome = iamMetrics.RefreshOutcomeInvalidSession
-			return nil, apperr.Wrap(iamErrorx.ErrInvalidSession, iamErrorx.ReasonRefreshInvalidSession, rotateErr)
+		if errors.Is(rotateErr, iamTaxonomy.ErrInvalidSession) || errors.Is(rotateErr, pgx.ErrNoRows) {
+			refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
+			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, rotateErr, iamTaxonomy.RefreshOutcomeInvalidSession)
 		}
-		refreshOutcome = iamMetrics.RefreshOutcomeRotateRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, rotateErr)
+		refreshOutcome = iamTaxonomy.RefreshOutcomeRotateRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, rotateErr, iamTaxonomy.RefreshOutcomeRotateRefreshErr)
 	}
 
 	if s.deviceRuntime != nil {
@@ -173,8 +173,8 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 			LastSeenAt:       now.Unix(),
 		}
 		if setErr := s.deviceRuntime.SetDeviceRuntime(ctx, runtime, runtimeTTL); setErr != nil {
-			refreshOutcome = iamMetrics.RefreshOutcomeIssueAccessError
-			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonRefreshDependencyError, setErr)
+			refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 		}
 	}
 

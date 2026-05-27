@@ -11,7 +11,7 @@ import (
 	"controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
@@ -164,7 +164,7 @@ func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
 	}, &presenceCacheMock{checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return true, false, nil }}, nil)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
-	if !errors.Is(err, iamErrorx.ErrUserAlreadyExist) {
+	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist, got %v", err)
 	}
 	if !checked {
@@ -205,14 +205,14 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 func TestAuthServiceRegisterAccountDuplicateFromRepoMarksCache(t *testing.T) {
 	marked := false
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
-		return iamErrorx.ErrUserAlreadyExist
+		return iamTaxonomy.ErrUserAlreadyExist
 	}}, &presenceCacheMock{
 		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, false, nil },
 		markFn:  func(ctx context.Context, username string, email string) error { marked = true; return nil },
 	}, nil)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
-	if !errors.Is(err, iamErrorx.ErrUserAlreadyExist) {
+	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist, got %v", err)
 	}
 	if !marked {
@@ -222,14 +222,14 @@ func TestAuthServiceRegisterAccountDuplicateFromRepoMarksCache(t *testing.T) {
 
 func TestAuthServiceRegisterAccountDuplicateStillReturnsDuplicateWhenMarkFails(t *testing.T) {
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
-		return iamErrorx.ErrUserAlreadyExist
+		return iamTaxonomy.ErrUserAlreadyExist
 	}}, &presenceCacheMock{
 		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, false, nil },
 		markFn:  func(ctx context.Context, username string, email string) error { return fmt.Errorf("redis down") },
 	}, nil)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
-	if !errors.Is(err, iamErrorx.ErrUserAlreadyExist) {
+	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist, got %v", err)
 	}
 }
@@ -261,10 +261,10 @@ func TestAuthServiceRegisterAccountValidation(t *testing.T) {
 		password string
 		want     error
 	}{
-		{name: "missing username", user: iamEntity.User{Username: "", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "secret123", want: iamErrorx.ErrInvalidArgument},
-		{name: "missing email", user: iamEntity.User{Username: "alice.nguyen", Email: ""}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "secret123", want: iamErrorx.ErrInvalidArgument},
-		{name: "missing fullname", user: iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: ""}, password: "secret123", want: iamErrorx.ErrInvalidArgument},
-		{name: "missing password", user: iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "", want: iamErrorx.ErrInvalidArgument},
+		{name: "missing username", user: iamEntity.User{Username: "", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "secret123", want: iamTaxonomy.ErrInvalidArgument},
+		{name: "missing email", user: iamEntity.User{Username: "alice.nguyen", Email: ""}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "secret123", want: iamTaxonomy.ErrInvalidArgument},
+		{name: "missing fullname", user: iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: ""}, password: "secret123", want: iamTaxonomy.ErrInvalidArgument},
+		{name: "missing password", user: iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "", want: iamTaxonomy.ErrInvalidArgument},
 	}
 
 	for _, test := range tests {
@@ -281,7 +281,7 @@ func TestAuthServiceRegisterAccountValidation(t *testing.T) {
 func TestAuthServiceLoginUserNotFound(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) { return nil, nil }}, nil, nil)
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-	if !errors.Is(err, iamErrorx.ErrInvalidCredentials) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
 }
@@ -291,15 +291,15 @@ func TestAuthServiceLoginNoRowsErrorMapsInvalidCredentials(t *testing.T) {
 		return nil, pgx.ErrNoRows
 	}}, nil, nil)
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-	if !errors.Is(err, iamErrorx.ErrInvalidCredentials) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAuthLoginInvalidCredentials {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.LoginOutcomeInvalidCredentials {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
 		t.Fatalf("expected pgx.ErrNoRows cause preserved")
@@ -312,7 +312,7 @@ func TestAuthServiceLoginWrongPassword(t *testing.T) {
 		return &iamEntity.LoginUser{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Username: username, PasswordHash: hash, Status: iamEntity.UserStatusActive}, nil
 	}}, nil, &secretProviderMock{})
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "wrongpass", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-	if !errors.Is(err, iamErrorx.ErrInvalidCredentials) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
 }
@@ -323,7 +323,7 @@ func TestAuthServiceLoginPendingActiveBlocked(t *testing.T) {
 		return &iamEntity.LoginUser{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Username: username, PasswordHash: hash, Status: iamEntity.UserStatusPendingActive}, nil
 	}}, nil, &secretProviderMock{})
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-	if !errors.Is(err, iamErrorx.ErrVerificationRequired) {
+	if !errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 		t.Fatalf("expected ErrVerificationRequired, got %v", err)
 	}
 }
@@ -377,15 +377,15 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 func TestAuthServiceRegisterInvalidArgumentReturnsEnvelope(t *testing.T) {
 	svc := newAuthService(&authRepoMock{}, &presenceCacheMock{}, nil)
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{}, iamEntity.UserProfile{}, "")
-	if !errors.Is(err, iamErrorx.ErrInvalidArgument) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAuthRegisterInvalidArgument {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.RegisterOutcomeInvalidArgument {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
@@ -395,15 +395,15 @@ func TestAuthServiceLoginLoadUserErrorReturnsEnvelope(t *testing.T) {
 		return nil, raw
 	}}, nil, &secretProviderMock{})
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
-	if !errors.Is(err, iamErrorx.ErrAuthenticationUnavailable) {
+	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonAuthLoginDependencyError {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.LoginOutcomeLoadUserError {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
 		t.Fatalf("expected raw cause preserved")

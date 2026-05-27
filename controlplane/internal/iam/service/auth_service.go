@@ -19,8 +19,8 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
 	iamMetrics "controlplane/internal/iam/metrics"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 
@@ -77,8 +77,8 @@ func NewAuthService(cfg *config.Config,
 
 func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) (err error) {
 	startedAt := time.Now()
-	result := iamMetrics.OutcomeSuccess
-	cachePath := iamMetrics.RegisterCachePathMiss
+	result := iamTaxonomy.OutcomeSuccess
+	cachePath := iamTaxonomy.RegisterCachePathMiss
 	defer func() {
 		iamMetrics.ObserveRegisterOutcome(result, cachePath)
 		iamMetrics.ObserveRegisterDB("total", time.Since(startedAt), err)
@@ -86,9 +86,9 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 
 	// Callsite validate trước khi chạm cache/DB để fail-fast và giảm load dependency.
 	if user.Username == "" || user.Email == "" || profile.Fullname == "" || password == "" {
-		result = iamMetrics.RegisterOutcomeInvalidArgument
-		cachePath = iamMetrics.RegisterCachePathNotChecked
-		return apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthRegisterInvalidArgument, nil)
+		result = iamTaxonomy.RegisterOutcomeInvalidArgument
+		cachePath = iamTaxonomy.RegisterCachePathNotChecked
+		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.RegisterOutcomeInvalidArgument)
 	}
 
 	// Presence cache chỉ là acceleration path. Cache lỗi thì fallback ở callsite:
@@ -97,40 +97,40 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	usernameHit, emailHit, cacheErr := s.presence.Check(ctx, user.Username, user.Email)
 	iamMetrics.ObserveRegisterRedis("presence_check", time.Since(cacheStartedAt), cacheErr)
 	if cacheErr != nil {
-		cachePath = iamMetrics.RegisterCachePathFallback
+		cachePath = iamTaxonomy.RegisterCachePathFallback
 	}
 
 	if cacheErr == nil && (usernameHit || emailHit) {
 		// Cache hit nghi ngờ duplicate -> xác nhận lại ở DB (SoT).
-		cachePath = iamMetrics.RegisterCachePathHitDBCheck
+		cachePath = iamTaxonomy.RegisterCachePathHitDBCheck
 		dbCheckStartedAt := time.Now()
 		exists, checkErr := s.repo.CheckUserExist(ctx, user.Username, user.Email)
 		iamMetrics.ObserveRegisterDB("exist_check", time.Since(dbCheckStartedAt), checkErr)
 		if checkErr != nil {
-			result = iamMetrics.RegisterOutcomeExistCheckError
-			return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthRegisterDependencyError, checkErr)
+			result = iamTaxonomy.RegisterOutcomeExistCheckError
+			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, checkErr, iamTaxonomy.RegisterOutcomeExistCheckError)
 		}
 		if exists {
-			result = iamMetrics.RegisterOutcomeAlreadyExists
-			return apperr.Wrap(iamErrorx.ErrUserAlreadyExist, iamErrorx.ReasonAuthRegisterUserExists, nil)
+			result = iamTaxonomy.RegisterOutcomeAlreadyExists
+			return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, nil, iamTaxonomy.RegisterOutcomeAlreadyExists)
 		}
 	}
 	if cacheErr == nil && !(usernameHit || emailHit) {
-		cachePath = iamMetrics.RegisterCachePathMiss
+		cachePath = iamTaxonomy.RegisterCachePathMiss
 	}
 
 	// Input đã validate ở callsite; từ đây là dependency operations.
 	passwordHash, hashErr := security.HashPassword(password)
 	if hashErr != nil {
-		result = iamMetrics.RegisterOutcomeHashPasswordErr
-		return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthRegisterDependencyError, hashErr)
+		result = iamTaxonomy.RegisterOutcomeHashPasswordErr
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, hashErr, iamTaxonomy.RegisterOutcomeHashPasswordErr)
 	}
 
 	now := time.Now().UTC()
 	userID, idErr := uuid.NewV7()
 	if idErr != nil {
-		result = iamMetrics.RegisterOutcomeIDGenerateErr
-		return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthRegisterDependencyError, idErr)
+		result = iamTaxonomy.RegisterOutcomeIDGenerateErr
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.RegisterOutcomeIDGenerateErr)
 	}
 
 	user.ID = userID
@@ -161,22 +161,22 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		if errors.As(insertErr, &pgErr) && pgErr.Code == "23505" {
 			constraint := strings.ToLower(pgErr.ConstraintName)
 			if strings.Contains(constraint, "users_email_lower_uidx") || strings.Contains(constraint, "users_username_lower_uidx") {
-				result = iamMetrics.RegisterOutcomeAlreadyExists
+				result = iamTaxonomy.RegisterOutcomeAlreadyExists
 				markStartedAt := time.Now()
 				markErr := s.presence.MarkExists(ctx, user.Username, user.Email)
 				iamMetrics.ObserveRegisterRedis("presence_mark_duplicate", time.Since(markStartedAt), markErr)
-				return apperr.Wrap(iamErrorx.ErrUserAlreadyExist, iamErrorx.ReasonAuthRegisterUserExists, insertErr)
+				return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, insertErr, iamTaxonomy.RegisterOutcomeAlreadyExists)
 			}
 		}
-		if errors.Is(insertErr, iamErrorx.ErrUserAlreadyExist) {
-			result = iamMetrics.RegisterOutcomeAlreadyExists
+		if errors.Is(insertErr, iamTaxonomy.ErrUserAlreadyExist) {
+			result = iamTaxonomy.RegisterOutcomeAlreadyExists
 			markStartedAt := time.Now()
 			markErr := s.presence.MarkExists(ctx, user.Username, user.Email)
 			iamMetrics.ObserveRegisterRedis("presence_mark_duplicate", time.Since(markStartedAt), markErr)
-			return apperr.Wrap(iamErrorx.ErrUserAlreadyExist, iamErrorx.ReasonAuthRegisterUserExists, insertErr)
+			return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, insertErr, iamTaxonomy.RegisterOutcomeAlreadyExists)
 		}
-		result = iamMetrics.RegisterOutcomeInsertError
-		return apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthRegisterDependencyError, insertErr)
+		result = iamTaxonomy.RegisterOutcomeInsertError
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, insertErr, iamTaxonomy.RegisterOutcomeInsertError)
 	}
 
 	markStartedAt := time.Now()
@@ -188,7 +188,7 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 
 func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (result *iamEntity.LoginResult, err error) {
 	startedAt := time.Now()
-	loginOutcome := iamMetrics.OutcomeSuccess
+	loginOutcome := iamTaxonomy.OutcomeSuccess
 	defer func() {
 		iamMetrics.ObserveLoginOutcome(loginOutcome)
 		iamMetrics.ObserveRegisterDB("login_total", time.Since(startedAt), err)
@@ -198,59 +198,59 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	username := strings.TrimSpace(req.Username)
 	password := strings.TrimSpace(req.Password)
 	if username == "" || password == "" {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamTaxonomy.LoginOutcomeInvalidCredentials)
 	}
 	// Device public key là contract bắt buộc của login flow.
 	devicePublicKey := strings.TrimSpace(req.DevicePublicKey)
 	if devicePublicKey == "" {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidArgument
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthLoginInvalidArgument, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidArgument
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.LoginOutcomeInvalidArgument)
 	}
 	// Callsite normalize/decode key để repo chỉ nhận canonical form.
 	canonicalDevicePublicKey, devicePublicKeyErr := normalizeUserDevicePublicKey(devicePublicKey)
 	if devicePublicKeyErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidDevicePubKey
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthLoginInvalidDevicePublicKey, devicePublicKeyErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidDevicePubKey
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, devicePublicKeyErr, iamTaxonomy.LoginOutcomeInvalidDevicePubKey)
 	}
 
 	// Repo load user là SoT; no fallback source khác cho identity.
 	user, loadErr := s.repo.GetLoginUserByUsername(ctx, username)
 	if loadErr != nil {
 		if errors.Is(loadErr, pgx.ErrNoRows) {
-			loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-			return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, loadErr)
+			loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, loadErr, iamTaxonomy.LoginOutcomeInvalidCredentials)
 		}
-		loginOutcome = iamMetrics.LoginOutcomeLoadUserError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, loadErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeLoadUserError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, loadErr, iamTaxonomy.LoginOutcomeLoadUserError)
 	}
 	if user == nil {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamTaxonomy.LoginOutcomeInvalidCredentials)
 	}
 
 	verified, verifyErr := security.VerifyPassword(user.PasswordHash, password)
 	if verifyErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, verifyErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, verifyErr, iamTaxonomy.LoginOutcomeInvalidCredentials)
 	}
 	if !verified {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamTaxonomy.LoginOutcomeInvalidCredentials)
 	}
 
 	// Pending-active: trigger verification side effect theo policy ở callsite.
 	// Nếu OTT/publisher config thiếu -> degrade thành VerificationRequired.
 	if user.Status == iamEntity.UserStatusPendingActive {
 		if s.ott == nil || s.streamPublisher == nil || s.cfg == nil || s.cfg.Security.OneTimeTokenTTL <= 0 {
-			loginOutcome = iamMetrics.LoginOutcomeVerificationReq
-			return nil, apperr.Wrap(iamErrorx.ErrVerificationRequired, iamErrorx.ReasonAuthLoginVerificationRequired, nil)
+			loginOutcome = iamTaxonomy.LoginOutcomeVerificationReq
+			return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamTaxonomy.LoginOutcomeVerificationReq)
 		}
 		requestedAt := time.Now().UTC()
 		verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", user.ID.String())
 		if issueErr != nil {
-			loginOutcome = iamMetrics.LoginOutcomeVerificationIssue
-			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginVerificationIssueError, issueErr)
+			loginOutcome = iamTaxonomy.LoginOutcomeVerificationIssue
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, issueErr, iamTaxonomy.LoginOutcomeVerificationIssue)
 		}
 		requestID := uuid.Must(uuid.NewV7()).String()
 		idempotencyKey := fmt.Sprintf("%s:%s:%s", "account_verify", user.ID.String(), requestID)
@@ -289,26 +289,26 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			span.RecordError(publishErr)
 			span.SetStatus(codes.Error, publishErr.Error())
 			span.End()
-			loginOutcome = iamMetrics.LoginOutcomeVerificationPublish
-			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginVerificationPublishFail, publishErr)
+			loginOutcome = iamTaxonomy.LoginOutcomeVerificationPublish
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, publishErr, iamTaxonomy.LoginOutcomeVerificationPublish)
 		}
 		span.End()
-		loginOutcome = iamMetrics.LoginOutcomeVerificationReq
-		return nil, apperr.Wrap(iamErrorx.ErrVerificationRequired, iamErrorx.ReasonAuthLoginVerificationRequired, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeVerificationReq
+		return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamTaxonomy.LoginOutcomeVerificationReq)
 	}
 	if user.Status == iamEntity.UserStatusSuspended || user.Status == iamEntity.UserStatusDisabled {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamTaxonomy.LoginOutcomeInvalidCredentials)
 	}
 
 	// Service dependency guard ở callsite để trả reason chính xác sớm.
 	if s.secrets == nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginAuthUnavailable, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 	if s.deviceRepo == nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 
 	now := time.Now().UTC()
@@ -348,30 +348,30 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	trackedDevice, deviceErr := s.deviceRepo.UpsertLoginDevice(ctx, buildLoginDevice(user.ID, canonicalDevicePublicKey, req.IP, req.UserAgent, now, deviceName, clientDeviceID))
 	iamMetrics.ObserveLoginLastSeenFlush(flushLabel)
 	if deviceErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, deviceErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, deviceErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 	if trackedDevice == nil || strings.TrimSpace(trackedDevice.ID) == "" || trackedDevice.Status == iamEntity.DeviceStatusRevoked {
-		loginOutcome = iamMetrics.LoginOutcomeInvalidCredentials
-		return nil, apperr.Wrap(iamErrorx.ErrInvalidCredentials, iamErrorx.ReasonAuthLoginInvalidCredentials, nil)
+		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamTaxonomy.LoginOutcomeInvalidCredentials)
 	}
 	trackedDeviceID, trackedErr := uuid.Parse(strings.TrimSpace(trackedDevice.ID))
 	if trackedErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, trackedErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, trackedErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 
 	// Runtime fragment generation: lỗi ở đây là auth dependency error (fail-close).
 	runtimeDeviceID := uuid.NewString()
 	rawDeviceSecret, secretErr := security.GenerateToken(32)
 	if secretErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, secretErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 	accessJTI, idErr := uuid.NewV7()
 	if idErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, idErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 	accessExp := now.Add(accessTTL)
 	// Access token chứa runtime_device_id + jti để middleware verify với runtime cache.
@@ -386,24 +386,24 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		ExpiresAt: accessExp.Unix(),
 	})
 	if accessErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginAuthUnavailable, accessErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 
 	rawRefresh, refreshErr := security.GenerateToken(43)
 	if refreshErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, refreshErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeGenerateRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshErr, iamTaxonomy.LoginOutcomeGenerateRefreshErr)
 	}
 	refreshID, refreshIDErr := uuid.NewV7()
 	if refreshIDErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, refreshIDErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeGenerateRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshIDErr, iamTaxonomy.LoginOutcomeGenerateRefreshErr)
 	}
 	familyID, familyErr := uuid.NewV7()
 	if familyErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginTokenIssue, familyErr)
+		loginOutcome = iamTaxonomy.LoginOutcomeGenerateRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, familyErr, iamTaxonomy.LoginOutcomeGenerateRefreshErr)
 	}
 	refreshExp := now.Add(refreshTTL)
 
@@ -419,8 +419,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		ExpiresAt:     refreshExp,
 	}
 	if persistErr := s.repo.CreateRefreshTokenSession(ctx, *rt); persistErr != nil {
-		loginOutcome = iamMetrics.LoginOutcomePersistRefreshErr
-		return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, persistErr)
+		loginOutcome = iamTaxonomy.LoginOutcomePersistRefreshErr
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, persistErr, iamTaxonomy.LoginOutcomePersistRefreshErr)
 	}
 
 	if s.deviceRuntime != nil {
@@ -448,8 +448,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			if s.refreshTokenRepo != nil {
 				_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
 			}
-			loginOutcome = iamMetrics.LoginOutcomeIssueAccessError
-			return nil, apperr.Wrap(iamErrorx.ErrAuthenticationUnavailable, iamErrorx.ReasonAuthLoginDependencyError, setErr)
+			loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 		}
 	}
 
@@ -524,7 +524,7 @@ func (s *AuthService) Logout(ctx context.Context, userID string, runtimeDeviceID
 	// Validate input ở callsite trước khi thao tác runtime/revoke.
 	uid, err := uuid.Parse(strings.TrimSpace(userID))
 	if err != nil {
-		return apperr.Wrap(iamErrorx.ErrInvalidArgument, iamErrorx.ReasonAuthLoginInvalidCredentials, err)
+		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
 	}
 	runtimeDeviceID = strings.TrimSpace(runtimeDeviceID)
 	var trackedDeviceRef string

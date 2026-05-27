@@ -10,7 +10,7 @@ import (
 	"controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
@@ -116,7 +116,7 @@ func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, secret
 func TestRefreshTokenServiceInvalidSessionWhenTokenEmpty(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{}, &secretProviderMock{})
 	_, err := svc.Refresh(context.Background(), "")
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 		return nil, nil
 	}}, &secretProviderMock{})
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 }
@@ -136,15 +136,15 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 		return nil, pgx.ErrNoRows
 	}}, &secretProviderMock{})
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonRefreshInvalidSession {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.RefreshOutcomeInvalidSession {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
 		t.Fatalf("expected pgx.ErrNoRows cause preserved")
@@ -156,7 +156,7 @@ func TestRefreshTokenServiceInvalidSessionWhenExpired(t *testing.T) {
 		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
 	}}, &secretProviderMock{})
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 }
@@ -173,7 +173,7 @@ func TestRefreshTokenServiceInvalidSessionWhenUserStatusBlocked(t *testing.T) {
 		},
 	}, &secretProviderMock{})
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 }
@@ -190,15 +190,15 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 		},
 	}, &secretProviderMock{})
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrInvalidSession) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonRefreshInvalidSession {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.RefreshOutcomeInvalidSession {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
 		t.Fatalf("expected pgx.ErrNoRows cause preserved")
@@ -220,7 +220,7 @@ func TestRefreshTokenServiceAuthenticationUnavailable(t *testing.T) {
 		},
 	}, nil)
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrAuthenticationUnavailable) {
+	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
 }
@@ -246,15 +246,15 @@ func TestRefreshTokenServiceRotateError(t *testing.T) {
 		return security.SecretCandidate{Family: family, Value: "secret-key", IsPrimary: true}, nil
 	}})
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamErrorx.ErrAuthenticationUnavailable) {
+	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Reason != iamErrorx.ReasonRefreshDependencyError {
-		t.Fatalf("unexpected reason: %q", appErr.Reason)
+	if appErr.Outcome != iamTaxonomy.RefreshOutcomeRotateRefreshErr {
+		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
 		t.Fatalf("expected raw cause preserved")

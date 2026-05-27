@@ -9,7 +9,7 @@ import (
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamErrorx "controlplane/internal/iam/errorx"
+	"controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/logger"
@@ -42,10 +42,10 @@ func (h *RbacHandler) ListRoles(c *gin.Context) {
 	roles, err := h.rbacSvc.ListRoles(ctx)
 	if err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, iamErrorx.ErrRoleNotFound), errors.Is(err, iamErrorx.ErrPermissionNotFound):
+		case errors.Is(err, iamTaxonomy.ErrRoleNotFound), errors.Is(err, iamTaxonomy.ErrPermissionNotFound):
 			logger.HandlerWarn(c, op, err, "rbac resource not found")
 			apires.RespondNotFound(c, "resource not found")
 		default:
@@ -86,10 +86,10 @@ func (h *RbacHandler) CreateRole(c *gin.Context) {
 	}
 	if err := h.rbacSvc.CreateRole(ctx, role); err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, iamErrorx.ErrRoleNotFound), errors.Is(err, iamErrorx.ErrPermissionNotFound):
+		case errors.Is(err, iamTaxonomy.ErrRoleNotFound), errors.Is(err, iamTaxonomy.ErrPermissionNotFound):
 			logger.HandlerWarn(c, op, err, "rbac resource not found")
 			apires.RespondNotFound(c, "resource not found")
 		default:
@@ -128,10 +128,10 @@ func (h *RbacHandler) UpdateRole(c *gin.Context) {
 	role, err := h.rbacSvc.GetRole(ctx, id)
 	if err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, iamErrorx.ErrRoleNotFound), errors.Is(err, iamErrorx.ErrPermissionNotFound):
+		case errors.Is(err, iamTaxonomy.ErrRoleNotFound), errors.Is(err, iamTaxonomy.ErrPermissionNotFound):
 			logger.HandlerWarn(c, op, err, "rbac resource not found")
 			apires.RespondNotFound(c, "resource not found")
 		default:
@@ -144,10 +144,10 @@ func (h *RbacHandler) UpdateRole(c *gin.Context) {
 	role.Role.Name = strings.TrimSpace(req.Name)
 	if err := h.rbacSvc.UpdateRole(ctx, role.Role); err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, iamErrorx.ErrRoleNotFound), errors.Is(err, iamErrorx.ErrPermissionNotFound):
+		case errors.Is(err, iamTaxonomy.ErrRoleNotFound), errors.Is(err, iamTaxonomy.ErrPermissionNotFound):
 			logger.HandlerWarn(c, op, err, "rbac resource not found")
 			apires.RespondNotFound(c, "resource not found")
 		default:
@@ -176,10 +176,10 @@ func (h *RbacHandler) DeleteRole(c *gin.Context) {
 	defer cancel()
 	if err := h.rbacSvc.DeleteRole(ctx, strings.TrimSpace(c.Param("id"))); err != nil {
 		switch {
-		case errors.Is(err, iamErrorx.ErrInvalidArgument):
+		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, iamErrorx.ErrRoleNotFound), errors.Is(err, iamErrorx.ErrPermissionNotFound):
+		case errors.Is(err, iamTaxonomy.ErrRoleNotFound), errors.Is(err, iamTaxonomy.ErrPermissionNotFound):
 			logger.HandlerWarn(c, op, err, "rbac resource not found")
 			apires.RespondNotFound(c, "resource not found")
 		default:

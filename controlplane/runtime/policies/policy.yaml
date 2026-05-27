@@ -51,4 +51,16 @@ policies:
       ca_cert_path: ""
       cert_path: ""
       key_path: ""
+  prometheus:
+    enabled: true
+    fail_strategy: fail_open
+    query_client:
+      enabled: true
+      base_url: http://127.0.0.1:9090
+      query_timeout: 5s
+      default_step: 15s
+    expose_metrics:
+      enabled: true
+      route_path: /metrics
+
 

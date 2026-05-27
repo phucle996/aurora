@@ -10,7 +10,7 @@ import (
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamErrorx "controlplane/internal/iam/errorx"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
 	"controlplane/internal/security"
 )
@@ -62,7 +62,7 @@ func TestAdminBootstrapLockFailed(t *testing.T) {
 	}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
 	err := svc.Bootstrap(context.Background(), "tester")
-	if !errors.Is(err, iamErrorx.ErrAdminBootstrapLockFailed) {
+	if !errors.Is(err, iamTaxonomy.ErrAdminBootstrapLockFailed) {
 		t.Fatalf("expected ErrAdminBootstrapLockFailed, got %v", err)
 	}
 }
@@ -76,7 +76,7 @@ func TestAdminBootstrapNotAllowedWhenActiveKeyExists(t *testing.T) {
 	}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
 	err := svc.Bootstrap(context.Background(), "tester")
-	if !errors.Is(err, iamErrorx.ErrAdminBootstrapNotAllowed) {
+	if !errors.Is(err, iamTaxonomy.ErrAdminBootstrapNotAllowed) {
 		t.Fatalf("expected ErrAdminBootstrapNotAllowed, got %v", err)
 	}
 }
