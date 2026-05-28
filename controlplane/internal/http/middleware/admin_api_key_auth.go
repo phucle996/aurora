@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -213,6 +214,13 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		if options.injectTokenJTI {
 			c.Set(constant.ContextKeyAdminTokenJTI, strings.TrimSpace(claims.TokenID))
 		}
+
+		expiresIn := claims.ExpiresAt - time.Now().Unix()
+		if expiresIn < 0 {
+			expiresIn = 0
+		}
+		c.Header("X-Session-Expires-In", strconv.FormatInt(expiresIn, 10))
+
 		c.Next()
 	}
 }

@@ -151,9 +151,6 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	// set client device id header for device tracking
 	c.Header(deviceHint.HeaderClientDeviceID, result.ClientDeviceID)
 
-	// trả về thời gian còn lại của phiên để fe sẽ call refresh trước khi hết hạn
-	c.Header("X-Session-Expires-In", strconv.Itoa(int(time.Until(result.ExpiresAt).Seconds())))
-
 	apires.RespondSuccess(c, map[string]any{"ok": true}, "ok")
 }
 
@@ -185,12 +182,6 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	defer cancel()
 
 	accessKey, _ := c.Cookie(cookie.AccessKeyName)
-	accessSecretValue, _ := c.Cookie(cookie.AccessSecretName)
-	if accessSecret, ok := c.Get(constant.ContextKeyAdminAccessSecret); ok {
-		if fromCtx, castOK := accessSecret.(string); castOK {
-			accessSecretValue = fromCtx
-		}
-	}
 	var requestIP *string
 	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
 		requestIP = &ip
@@ -245,7 +236,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 			MaxAge:   maxAge})
 	http.SetCookie(c.Writer,
 		&http.Cookie{Name: cookie.AccessSecretName,
-			Value:    strings.TrimSpace(accessSecretValue),
+			Value:    result.AccessSecret,
 			Path:     "/admin",
 			Domain:   domain,
 			HttpOnly: true,

@@ -10,7 +10,7 @@ import {
 } from 'react'
 
 import { AdminUnauthorizedError, getAdminSession, type AdminSession } from '@/lib/admin-session'
-import { subscribeAdminUnauthorized } from '@/lib/admin-auth-events'
+import { subscribeAdminUnauthorized, subscribeAdminSessionRefresh } from '@/lib/admin-auth-events'
 
 export type AdminSessionNotice = 'session_expired' | ''
 
@@ -113,6 +113,21 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
       if (mountedRef.current) {
         setState(nextState)
       }
+    })
+  }, [])
+
+  useEffect(() => {
+    return subscribeAdminSessionRefresh(() => {
+      // Khi nhận được tín hiệu refresh session ngầm thành công, gọi resolveAdminSession ngầm để đồng bộ state
+      resolveAdminSession()
+        .then((nextState) => {
+          if (mountedRef.current) {
+            setState(nextState)
+          }
+        })
+        .catch(() => {
+          // Bỏ qua lỗi check session ngầm để tránh ảnh hưởng tiêu cực đến UX
+        })
     })
   }, [])
 

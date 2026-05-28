@@ -95,7 +95,7 @@ sequenceDiagram
 
     %% PHASE 5: Response Cookies
     rect rgba(139, 92, 246, 0.08)
-        Note over Handler: 6. Thiết lập 4 Cookies & Header phản hồi
+        Note over Handler: 6. Thiết lập 4 Cookies phản hồi
         Handler->>Client: HTTP 200 OK + cookies: <br/> 1) admin_api_token (HttpOnly, Secure, Lax)<br/> 2) access_key (Non-HttpOnly)<br/> 3) access_secret (HttpOnly, Secure)<br/> 4) client_device_id (Hạn 1 năm)
     end
 ```
@@ -293,7 +293,7 @@ Khi Service trả về kết quả thành công (`AdminLoginResult`), Handler ti
       * *Cơ chế*: Hạn dùng cố định **365 ngày** để ghi vết phần cứng thiết bị.
 2. **Đặt Headers phản hồi**:
     * `X-Client-Device-ID`: Trả về mã thiết bị vật lý định danh.
-    * `X-Session-Expires-In`: Trả về số giây còn lại của phiên làm việc để Client kích hoạt cơ chế tự động refresh ngầm (Silent Refresh).
+    *(Lưu ý: API Login không còn trả về header `X-Session-Expires-In` để đảm bảo tính phân tách trách nhiệm. Frontend sẽ tự động gọi `/admin/auth/session` ngay sau đó).
 3. **HTTP Response**:
     * Trả về HTTP `200 OK` kèm JSON:
 
@@ -336,3 +336,27 @@ Hệ thống thiết lập ranh giới bảo mật nghiêm ngặt đối với d
    * **Envoy Edge Proxy** được cấu hình thuộc tính `response_headers_to_remove` chứa `"traceparent"`.
    * Trước khi gói tin phản hồi HTTP thực tế rời khỏi Envoy để quay lại trình duyệt của Client, Envoy sẽ **tự động bóc tách và triệt tiêu** hoàn toàn header `traceparent` ra khỏi Response.
    * Client bên ngoài chỉ nhận được duy nhất header **`X-Request-ID`** phục vụ việc báo lỗi/tra cứu log thô thông thường, đảm bảo kiến trúc hạ tầng tracing bên trong hoàn toàn ẩn giấu đối với mạng công cộng.
+
+---
+
+## 5. Cơ Chế Sliding Session & Tự Phục Hồi (Self-Healing / Retry on 401)
+
+Nhằm tối ưu hóa trải nghiệm người dùng (UX), nâng cao độ an toàn của hệ thống HA và hỗ trợ **tự động kéo dài (scale) thời gian sử dụng** (không bắt người dùng đăng nhập lại hàng ngày sau khi ngủ dậy), hệ thống triển khai hai cơ chế bảo vệ cực kỳ cao cấp ở Frontend Fetch Client:
+
+### A. Proactive Silent Session Refresh & Token Rotation (Gia Hạn Chủ Động)
+* **Kích hoạt**: Bất cứ khi nào Frontend nhận được HTTP response header `X-Session-Expires-In` với giá trị TTL `< 300` giây (5 phút), nó sẽ tự động kích hoạt tiến trình refresh ngầm.
+* **Chống Race Condition (Multi-tab Lock)**: Sử dụng `localStorage` làm khóa chia sẻ liên tab (`admin_session_refresh_lock` có hiệu lực tối đa 10 giây). Chỉ duy nhất **1 tab** gửi yêu cầu `POST /admin/auth/refresh` ngầm.
+* **Token Rotation**: Backend hủy phiên cũ, sinh mới toàn bộ cặp `access_key` (UUID v7 mới) và `access_secret` (48 bytes mới), cập nhật lại cookie và trả về token mới.
+* **Hủy Phiên Cũ Tạm Thời (Grace Period 10s)**: Session cũ trong Redis không bị xóa cứng lập tức mà được giảm TTL xuống **10 giây**. Khoảng thời gian này giúp tất cả các request song song đang bay (in-flight) của các tab khác hoàn tất êm đẹp mà không bị lỗi xác thực 401.
+
+### B. Reactive Self-Healing (Retry on 401)
+* **Kịch bản**: Người dùng đi ngủ và mở máy tính vào ngày hôm sau, lúc này token JWT trong cookie trình duyệt đã hết hạn và request nghiệp vụ gửi đi lập tức trả về lỗi `401 Unauthorized` từ backend.
+* **Hành vi Tự Phục Hồi**:
+  1. Fetch Client chặn lỗi `401` lại, **tạm ngừng** việc báo lỗi ra ứng dụng.
+  2. Frontend sử dụng cơ chế Tab-Lock để gửi duy nhất một request `/admin/auth/refresh` ngầm lên backend.
+  3. **Nếu Refresh thành công** (nghĩa là session thực tế trong Redis của backend vẫn còn hiệu lực do được touch liên tục trước đó):
+     * Cập nhật cookie xác thực mới.
+     * Phát sự kiện `emitAdminSessionRefresh()` để đồng bộ hóa React state.
+     * **Tự động gửi lại request nghiệp vụ ban đầu (Retry)** với cookie mới. Trải nghiệm người dùng hoàn toàn mượt mà, không hề bị gián đoạn hay bị đá về trang login.
+  4. **Nếu Refresh thất bại** (phiên thực sự đã hết hạn vĩnh viễn):
+     * Phát sự kiện `emitAdminUnauthorized()` để chuyển hướng người dùng về trang Login một cách an toàn.

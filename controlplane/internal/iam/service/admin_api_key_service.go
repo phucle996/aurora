@@ -683,16 +683,52 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 	}
 
 	now := time.Now().UTC()
-	adminJTI, jtiErr := uuid.NewV7()
-	if jtiErr != nil {
+
+	// Sinh mới access key (UUID v7)
+	accessKeyNewUUID, uuidErr := uuid.NewV7()
+	if uuidErr != nil {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, jtiErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, uuidErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
+	accessKeyNew := accessKeyNewUUID.String()
+
+	// Sinh mới access secret
+	accessSecretNew, genErr := security.GenerateToken(48)
+	if genErr != nil {
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, genErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
+	}
+
+	// Sinh mới token JTI (UUID v7)
+	tokenJTINewUUID, uuidErr := uuid.NewV7()
+	if uuidErr != nil {
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, uuidErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
+	}
+	tokenJTINew := tokenJTINewUUID.String()
+
+	// Thiết lập session mới trong Redis cache
+	if err := s.sessionCache.SetAccessSession(ctx, iamCache.AdminAccessSession{
+		AccessKey:         accessKeyNew,
+		AccessSecretHash:  security.HashTokenSHA256(accessSecretNew),
+		TrackedDeviceID:   runtimeRecord.TrackedDeviceID,
+		DevicePublicKey:   runtimeRecord.DevicePublicKey,
+		TokenJTI:          tokenJTINew,
+		Version:           1,
+		LastSeenAt:        now.UTC().Unix(),
+		LastSeenIP:        runtimeRecord.LastSeenIP,
+		LastSeenUserAgent: runtimeRecord.LastSeenUserAgent,
+	}, s.cfg.Security.AdminSessionTTL); err != nil {
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, err, iamTaxonomy.AdminRefreshOutcomeSystemError)
+	}
+
+	// Ký JWT mới với JTI mới và access key mới
 	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
 		Subject:   "admin",
-		AccessKey: trimmedAccessKey,
-		TokenID:   adminJTI.String(),
-		TokenUse:  "admin_api_token",
+		AccessKey: accessKeyNew,
+		TokenID:   tokenJTINew,
+		TokenUse:  "admin_api",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
 	})
@@ -704,9 +740,13 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 
+	// Đặt TTL của session cũ về 10 giây để các request song song đang bay hoàn tất êm đẹp, sau đó tự hủy
+	_ = s.sessionCache.TouchAccessSession(ctx, trimmedAccessKey, 10*time.Second)
+
 	return iamEntity.AdminLoginResult{
 		AdminAPIToken: adminAPIToken,
-		AccessKey:     trimmedAccessKey,
+		AccessKey:     accessKeyNew,
+		AccessSecret:  accessSecretNew,
 		ExpiresAt:     now.Add(s.cfg.Security.AdminSessionTTL),
 	}, nil
 }
