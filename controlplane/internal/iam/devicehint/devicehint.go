@@ -1,22 +1,28 @@
 // ============================================================================
-// 📂 PACKAGE: iam/devicehint - Client Device Hint Sanitization & Resolution
+// 📂 PACKAGE: iam/devicehint - Chuẩn hoá & Giải Quyết Mã Thiết Bị Đầu Cuối
 // ============================================================================
 //
-// 📌 VAI TRÒ (ROLE):
-//   - Chuẩn hoá dữ liệu device hint do client gửi qua headers.
-//   - Resolve `device_name` và `client_device_id` theo rule deterministic.
+// 📌 CHỨC NĂNG CHÍNH:
+//   - Chuẩn hoá hostname và định danh thiết bị (client_device_id) từ HTTP Headers.
 //
-// 🎯 SOURCE OF TRUTH (SoT):
-//   - Rule set theo idea v0.3:
-//     `internal/iam/docs/idea/iam-device-name-from-client-header-idea.md`.
+// 🎯 QUY TẮC PHÂN GIẢI & CHUẨN HOÁ (SPECIFICATION):
+//   1. ResolveDeviceName:
+//      - Ưu tiên X-Device-Hostname (hostnameHeader). Nếu không hợp lệ hoặc rỗng,
+//        sẽ chuyển sang X-Device-Name (hostnameAlias).
+//      - Nếu cả hai đều rỗng hoặc không hợp lệ, trả về mặc định "unknown device".
+//   2. SanitizeHostname:
+//      - Chỉ giữ lại ký tự chữ cái (a-z, A-Z), số (0-9), và các dấu chấm (.), gạch dưới (_), gạch ngang (-).
+//      - Độ dài giới hạn từ 2 đến 64 ký tự. Nếu sau khi lọc ít hơn 2 ký tự hoặc rỗng, trả về "".
+//   3. SanitizeClientDeviceID:
+//      - Chỉ cho phép các ký tự: chữ cái (a-z, A-Z), số (0-9), dấu chấm (.), gạch dưới (_), gạch ngang (-).
+//      - Độ dài tối đa là 128 ký tự. Nếu chứa ký tự lạ hoặc vượt giới hạn, trả về chuỗi rỗng "".
+//   4. ResolveClientDeviceID:
+//      - Kiểm tra tính hợp lệ của mã định danh do Client gửi lên.
+//      - Nếu mã hợp lệ, trả về mã đó kèm nguồn gốc (ProvenanceClient).
+//      - Nếu mã rỗng/lỗi, tự sinh một chuỗi UUID ngẫu nhiên an toàn kèm nguồn gốc (ProvenanceServerBootstrap).
 //
-// 🔒 BOUNDARY:
-//   - Package thuần (pure), không đọc/ghi Redis, DB, network.
-//   - Chỉ xử lý sanitize/resolve string và sinh fallback UUID cục bộ.
-//
-// 🔄 CALLSITE FLOW:
-//   - Handler nhận headers: `X-Device-Hostname`, `X-Device-Name`, `X-Client-Device-Id`.
-//   - Service layer gọi package này để chuẩn hoá trước khi persist/runtime-bind.
+// 🔒 PHẠM VI (BOUNDARY):
+//   - Package thuần túy (pure functions), không tương tác mạng, DB hay cache Redis.
 package iamDeviceHint
 
 import (

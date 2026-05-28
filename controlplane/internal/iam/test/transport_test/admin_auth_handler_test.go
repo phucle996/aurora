@@ -24,9 +24,9 @@ import (
 
 type adminAuthServiceStub struct {
 	loginFn   func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error)
-	refreshFn func(ctx context.Context, deviceID string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
-	logoutFn  func(ctx context.Context, deviceID string, ip *string, userAgent *string) error
-	rotateFn  func(ctx context.Context, actor string) error
+	refreshFn func(ctx context.Context, accessKey string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
+	logoutFn  func(ctx context.Context, accessKey string, ip *string, userAgent *string) error
+	rotateFn  func(ctx context.Context) error
 }
 
 var _ iamSvc.AdminAPIKeyService = (*adminAuthServiceStub)(nil)
@@ -38,21 +38,21 @@ func (s *adminAuthServiceStub) AdminLogin(ctx context.Context, req iamEntity.Adm
 	}
 	return iamEntity.AdminLoginResult{}, nil
 }
-func (s *adminAuthServiceStub) AdminLogout(ctx context.Context, deviceID string, ip *string, userAgent *string) error {
+func (s *adminAuthServiceStub) AdminLogout(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
 	if s.logoutFn != nil {
-		return s.logoutFn(ctx, deviceID, ip, userAgent)
+		return s.logoutFn(ctx, accessKey, ip, userAgent)
 	}
 	return nil
 }
-func (s *adminAuthServiceStub) RefreshAdminSession(ctx context.Context, deviceID string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+func (s *adminAuthServiceStub) RefreshAdminSession(ctx context.Context, accessKey string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	if s.refreshFn != nil {
-		return s.refreshFn(ctx, deviceID, ip, userAgent)
+		return s.refreshFn(ctx, accessKey, ip, userAgent)
 	}
 	return iamEntity.AdminLoginResult{}, nil
 }
-func (s *adminAuthServiceStub) RotateAdminAPIKeyEmergency(ctx context.Context, actor string) error {
+func (s *adminAuthServiceStub) RotateAdminAPIKeyEmergency(ctx context.Context) error {
 	if s.rotateFn != nil {
-		return s.rotateFn(ctx, actor)
+		return s.rotateFn(ctx)
 	}
 	return nil
 }
@@ -75,8 +75,8 @@ func TestAdminAuthHandlerLoginSuccessSetsThreeCookies(t *testing.T) {
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
 		return iamEntity.AdminLoginResult{
 			AdminAPIToken: "admin-token",
-			DeviceID:      "device-1",
-			DeviceSecret:  "secret-1",
+			AccessKey:     "device-1",
+			AccessSecret:  "secret-1",
 			ExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
 		}, nil
 	}})
@@ -140,7 +140,7 @@ func TestAdminAuthHandlerLoginUnauthorizedWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, errors.New("totp mismatch"), iamTaxonomy.AdminLoginOutcomeMFAInvalid)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, errors.New("totp mismatch"), iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -170,7 +170,7 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), iamTaxonomy.AdminLoginOutcomeAuthUnavailable)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), iamTaxonomy.AdminLoginOutcomeSystemError)
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -199,9 +199,9 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, deviceID string, ip *string, userAgent *string) error {
-		if deviceID != "device-1" {
-			t.Fatalf("expected device id propagated")
+	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
+		if accessKey != "device-1" {
+			t.Fatalf("expected access key propagated")
 		}
 		if ip == nil || strings.TrimSpace(*ip) == "" {
 			t.Fatalf("expected request ip propagated")
@@ -238,12 +238,14 @@ func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 func TestAdminAuthHandlerLogoutInternalError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, deviceID string, ip *string, userAgent *string) error {
+	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
 		return errors.New("boom")
 	}})
 	r.POST("/admin/auth/logout", h.Logout)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-1"})
+	req.Header.Set("User-Agent", "transport-test-agent")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -255,7 +257,7 @@ func TestAdminAuthHandlerLogoutInternalError(t *testing.T) {
 func TestAdminAuthHandlerRotateKeyLockBusyUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := newAdminAuthHandler(&adminAuthServiceStub{rotateFn: func(ctx context.Context, actor string) error {
+	h := newAdminAuthHandler(&adminAuthServiceStub{rotateFn: func(ctx context.Context) error {
 		return iamTaxonomy.ErrAdminRotationLockBusy
 	}})
 	r.POST("/admin/auth/rotate-key", h.RotateKey)

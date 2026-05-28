@@ -362,8 +362,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 
 	// Runtime fragment generation: lỗi ở đây là auth dependency error (fail-close).
-	runtimeDeviceID := uuid.NewString()
-	rawDeviceSecret, secretErr := security.GenerateToken(32)
+	accessKey := uuid.NewString()
+	accessSecret, secretErr := security.GenerateToken(32)
 	if secretErr != nil {
 		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamTaxonomy.LoginOutcomeIssueAccessError)
@@ -374,12 +374,12 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.LoginOutcomeIssueAccessError)
 	}
 	accessExp := now.Add(accessTTL)
-	// Access token chứa runtime_device_id + jti để middleware verify với runtime cache.
+	// Access token chứa accessKey + jti để middleware verify với runtime cache.
 	accessToken, accessErr := security.Sign(ctx, s.secrets, security.SecretFamilyAccess, security.Claims{
 		Subject:   user.ID.String(),
 		Role:      "",
 		Level:     0,
-		AccessKey: runtimeDeviceID,
+		AccessKey: accessKey,
 		TokenID:   accessJTI.String(),
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),
@@ -428,8 +428,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		// Không fallback chạy tiếp vì sẽ tạo access token không verify được runtime.
 		runtimeTTL := accessTTL
 		runtime := iamCache.UserDeviceRuntime{
-			DeviceID:         runtimeDeviceID,
-			DeviceSecretHash: security.HashTokenSHA256(rawDeviceSecret),
+			DeviceID:         accessKey,
+			DeviceSecretHash: security.HashTokenSHA256(accessSecret),
 			CurrentJTI:       accessJTI.String(),
 			TrackedDeviceID:  trackedDeviceID.String(),
 			UserID:           user.ID.String(),
@@ -459,8 +459,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	return &iamEntity.LoginResult{
 		AccessToken:              accessToken,
 		RefreshToken:             rawRefresh,
-		RuntimeDeviceID:          runtimeDeviceID,
-		DeviceSecret:             rawDeviceSecret,
+		RuntimeDeviceID:          accessKey,
+		DeviceSecret:             accessSecret,
 		TrackedDeviceID:          trackedDeviceID.String(),
 		ClientDeviceID:           clientDeviceID,
 		ClientDeviceIDProvenance: string(clientDeviceProvenance),
@@ -520,21 +520,21 @@ func cleanOptionalString(value *string) *string {
 	return &cleaned
 }
 
-func (s *AuthService) Logout(ctx context.Context, userID string, runtimeDeviceID string) error {
+func (s *AuthService) Logout(ctx context.Context, userID string, accessKey string) error {
 	// Validate input ở callsite trước khi thao tác runtime/revoke.
 	uid, err := uuid.Parse(strings.TrimSpace(userID))
 	if err != nil {
 		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
 	}
-	runtimeDeviceID = strings.TrimSpace(runtimeDeviceID)
+	accessKey = strings.TrimSpace(accessKey)
 	var trackedDeviceRef string
-	if s.deviceRuntime != nil && runtimeDeviceID != "" {
+	if s.deviceRuntime != nil && accessKey != "" {
 		// Runtime read/delete là best-effort: lỗi cache không làm fail logout toàn bộ.
-		record, getErr := s.deviceRuntime.GetDeviceRuntimeByUserDevice(ctx, userID, runtimeDeviceID)
+		record, getErr := s.deviceRuntime.GetDeviceRuntimeByUserDevice(ctx, userID, accessKey)
 		if getErr == nil && record != nil {
 			trackedDeviceRef = strings.TrimSpace(record.TrackedDeviceID)
 		}
-		_ = s.deviceRuntime.DeleteDeviceRuntimeByUserDevice(ctx, userID, runtimeDeviceID)
+		_ = s.deviceRuntime.DeleteDeviceRuntimeByUserDevice(ctx, userID, accessKey)
 	}
 	if trackedDeviceRef != "" {
 		// Có tracked device -> revoke scope theo device để chính xác hơn.

@@ -9,5 +9,5 @@ import (
 type AuthService interface {
 	RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) error
 	Login(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.LoginResult, error)
-	Logout(ctx context.Context, userID string, runtimeDeviceID string) error
+	Logout(ctx context.Context, userID string, accessKey string) error
 }

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	iamMetrics "controlplane/internal/iam/metrics"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/logger"
 	"errors"
 )
@@ -20,7 +20,7 @@ import (
 // Lưu ý:
 // - Business logic rotate nằm ở service/repo.
 // - Bootstrap chỉ orchestration, không chứa persistence logic.
-func (m *Module) Bootstrap(ctx context.Context) error {
+func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
@@ -60,7 +60,7 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 //
 // Hiện tại bao gồm:
 // - admin key rotation scheduler caller.
-func (m *Module) Stop() {
+func (m *IAMModule) Stop() {
 	if m == nil {
 		return
 	}
@@ -81,7 +81,7 @@ func (m *Module) Stop() {
 	}
 }
 
-func (m *Module) runAdminSessionFinalizeScheduler(ctx context.Context) {
+func (m *IAMModule) runAdminSessionFinalizeScheduler(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -108,7 +108,7 @@ func (m *Module) runAdminSessionFinalizeScheduler(ctx context.Context) {
 // Logging:
 // - dùng system logger,
 // - log theo run_id/attempt/reason/result để phục vụ vận hành.
-func (m *Module) runAdminRotationScheduler(ctx context.Context) {
+func (m *IAMModule) runAdminRotationScheduler(ctx context.Context) {
 	const op = "iam.rotation.scheduler"
 	baseTick := 30 * time.Second
 	backoffSchedule := []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
@@ -131,28 +131,21 @@ func (m *Module) runAdminRotationScheduler(ctx context.Context) {
 		err := m.adminAPIKeyService.TryProcessAdminKeyRotationTrigger(ctx)
 		if err == nil {
 			attempt = 0
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.OutcomeSuccess)
 			logger.SysDebugFields(op, "rotation scheduler tick completed", logger.Fields{"run_id": runID, "result": "success_or_noop", "reason": "none"})
 			continue
 		}
 		if errors.Is(err, iamTaxonomy.ErrAdminRotationLockBusy) {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotationOutcomeLockContention)
 			logger.SysInfoFields(op, "rotation scheduler lock contention", logger.Fields{"run_id": runID, "result": "noop", "reason": "lock_busy"})
 			continue
-		}
-		if errors.Is(err, iamTaxonomy.ErrAdminRotationDelivery) {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotationOutcomeDeliveryFail)
-		} else {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotationOutcomeRotateFail)
 		}
 
 		if attempt < len(backoffSchedule)-1 {
 			attempt++
 		}
 		retry := backoffSchedule[attempt]
-		reason := iamTaxonomy.AdminRotationOutcomeRotateFail
+		reason := iamTaxonomy.AdminRotateFail
 		if errors.Is(err, iamTaxonomy.ErrAdminRotationDelivery) {
-			reason = iamTaxonomy.AdminRotationOutcomeDeliveryFail
+			reason = iamTaxonomy.AdminRotateDeliveryFail
 		}
 		logger.SysWarnFields(op, "rotation scheduler tick failed", err, logger.Fields{"run_id": runID, "attempt": attempt + 1, "reason": reason, "result": "retry", "retry_in": retry.String()})
 		select {
@@ -165,7 +158,7 @@ func (m *Module) runAdminRotationScheduler(ctx context.Context) {
 
 // runDeviceCapReconciler vá drift do lock skip ở login flow (BR-009).
 // Tick mỗi 60s, tối đa 100 user/batch.
-func (m *Module) runDeviceCapReconciler(ctx context.Context) {
+func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 	const op = "iam.device_cap.reconciler"
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	// initial jitter 0-30s để các replica không cùng tick ngay sau restart

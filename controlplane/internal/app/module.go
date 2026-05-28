@@ -1,3 +1,36 @@
+// ============================================================================
+// 🏛️ ARCHITECTURAL COMPONENT: GLOBAL APPLICATION GRAPH & DI CONTAINER (SOT)
+// ============================================================================
+// Thiết kế bởi: Antigravity AI & SRE Platform Engineering Team.
+//
+// 📜 SOVEREIGN CONTRACT (Hợp đồng Tối cao) & CHỨC NĂNG CHÍNH:
+//   - Tệp tin này là **SOURCE OF TRUTH (SoT) DUY NHẤT** kiến tạo nên toàn bộ đồ thị phụ thuộc
+//     (Dependency Graph - DI) của ứng dụng Control Plane.
+//   - Chức năng cốt lõi: Thiết lập trật tự khởi dựng, kết nối các luồng phụ thuộc chéo giữa
+//     các module độc lập, quản lý vòng đời (Lifecycle) và phân phối tài nguyên hệ thống
+//     (Database Pool, Redis Client, Ratelimiter) cho các module thành phần.
+//
+// 🛡️ SRE HA ARCHITECTURAL BOUNDARY (Ranh giới Phân loại & Phục hồi Sự cố):
+//   Hệ thống khởi dựng được phân hoạch thành hai phân hạng rõ rệt nhằm đạt tính HA tối đa:
+//
+//   🟢 PHÂN HẠNG 1: TIER-0 (CRITICAL DEPENDENCIES - SAI LÀ FAIL-FAST TOÀN CỤC)
+//     - Các module: `Core`, `IAM`, `PolicyEngine`, `Health`, và các Global Middlewares.
+//     - Chính sách: Nếu xảy ra bất kỳ lỗi khởi dựng nào ở các cấu phần này, tiến trình
+//       BẮT BUỘC phải dừng ngay lập tức (Fail-Fast) và trả lỗi về hàm main để Kubelet
+//       phát hiện thông qua Startup Probe và đưa Pod vào vòng lặp cảnh báo (CrashLoopback).
+//
+//   🔵 PHÂN HẠNG 2: TIER-1 (NON-CRITICAL DEPENDENCIES - SAI LÀ DEGRADE CHỌN LỌC)
+//     - Các module: `Hypervisor` (ảo hóa hệ thống), v.v.
+//     - Chính sách: Lỗi kết nối API mạng, lỗi drift cấu hình hạ tầng của các phân hệ này
+//       TUYỆT ĐỐI KHÔNG ĐƯỢC PHÉP làm sập Control Plane. Hệ thống phải thực hiện
+//       **Graceful Degradation (Suy giảm tính năng chọn lọc)**:
+//       1. Bắt lỗi (Catch Error) tại biên khởi dựng.
+//       2. Ghi log cảnh báo mức hệ thống (observability alert).
+//       3. Khởi tạo một phiên bản câm mang lỗi (Dummy Degraded Instance - Null Object Pattern)
+//          để thay thế, bảo đảm không gây ra Nil Pointer Panic khi chạy các logic nghiệp vụ sau.
+//       4. Vô hiệu hóa tính năng (Disable) cục bộ phân hệ đó và tiếp tục khởi động thành công ứng dụng.
+// ============================================================================
+
 package app
 
 import (
@@ -12,6 +45,7 @@ import (
 	coreSvcImpl "controlplane/internal/core/service"
 	healthhandler "controlplane/internal/http/handler"
 	"controlplane/internal/http/middleware"
+	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	iamCache "controlplane/internal/iam/cache"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -19,6 +53,7 @@ import (
 	"controlplane/internal/policyengine"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
+	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -30,7 +65,9 @@ type Modules struct {
 	// Core là module hạ tầng lõi (secrets/zone...).
 	Core *core.Module
 	// IAM là module authn/authz của controlplane.
-	IAM *iam.Module
+	IAM *iam.IAMModule
+	// Hypervisor là module vệ tinh Tier-1 (ảo hóa). Cho phép chạy ở trạng thái suy giảm (Degraded).
+	Hypervisor *hypervisor.HypervisorModule
 	// PolicyEngine là runtime hot-reload module cho policies.
 	PolicyEngine *policyengine.Engine
 	probeCancel  context.CancelFunc
@@ -38,28 +75,16 @@ type Modules struct {
 
 // NewGlobalModules là điểm dựng module graph ở app-layer và là nơi fail-fast
 // chính cho bootstrap cross-module.
-//
-// CONTRACT:
-//   - Dựng theo thứ tự: Core -> security adapter -> IAM -> middleware wiring.
-//   - Chỉ `health.MarkReady()` khi toàn bộ graph dựng thành công.
-//   - Bất kỳ lỗi ở dependency bắt buộc/cross-module phải return error ngay để
-//     caller (NewApplication/main) quyết định dừng app.
-//
-// BOUNDARY:
-// - Hàm này chỉ làm wiring + lifecycle bootstrap giữa các module.
-// - Không chứa business policy của từng module (IAM/Core/domain).
-// - Không tự degrade âm thầm các dependency bắt buộc.
-//
-// NOTES:
-// - Time drift probe ở đây là read-only observability concern.
-// - Security adapter được dựng tại app-layer để giảm magic trong core module.
-// - Đây là nơi tập trung nhất quán fail-fast cho lỗi liên quan nhiều module.
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	policyEngineModule *policyengine.Engine,
 ) (*Modules, error) {
+	// ------------------------------------------------------------------------
+	// GIAI ĐOẠN 1: KHỞI TẠO HỆ THỐNG GIÁM SÁT & OBSERVABILITY
+	// ------------------------------------------------------------------------
+
 	// 1) Global health surface.
 	health := healthhandler.NewHealthHandler(db, rds)
 
@@ -88,27 +113,50 @@ func NewGlobalModules(cfg *config.Config,
 		}
 	}()
 
+	// ------------------------------------------------------------------------
+	// GIAI ĐOẠN 2: KHỞI TẠO CÁC PHÂN HỆ TIER-0 (CRITICAL) - SAI LÀ FAIL-FAST
+	// ------------------------------------------------------------------------
+
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
 	coreModule, err := core.NewModule(cfg, db, rds)
 	if err != nil {
-		return nil, fmt.Errorf("app: init core module: %w", err)
+		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
 	if coreModule == nil || coreModule.RuntimeSecretProvider == nil {
-		return nil, errors.New("app: init core module: runtime secret provider is required")
+		return nil, errors.New("app: init critical core module: runtime secret provider is required")
 	}
+
 	// 4) Adapter runtime provider -> security provider để cấp cho IAM/middlewares.
 	securityProvider := coreSvcImpl.NewSecuritySecretProvider(coreModule.RuntimeSecretProvider)
 
 	// 5) IAM module bootstrap phụ thuộc security provider từ core runtime.
 	iamModule, err := iam.NewModule(cfg, db, rds, rateLimiter, securityProvider)
 	if err != nil {
-		return nil, fmt.Errorf("app: init iam module: %w", err)
+		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
 
 	// 6) Policy engine bootstrap (Được truyền từ ngoài vào như hạ tầng hệ thống)
 	if policyEngineModule == nil {
-		return nil, errors.New("app: init policy engine module: engine service is required")
+		return nil, errors.New("app: init critical policy engine module: engine service is required")
 	}
+
+	// ------------------------------------------------------------------------
+	// GIAI ĐOẠN 3: KHỞI TẠO CÁC PHÂN HỆ TIER-1 (NON-CRITICAL) - SAI LÀ DEGRADE GRACEFUL
+	// ------------------------------------------------------------------------
+	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ ảo hóa Hypervisor
+	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
+	hypervisorModule, err := hypervisor.NewModule(cfg, db)
+	if err != nil {
+		// Log lỗi nghiêm trọng mức hệ thống phục vụ Alerting/Observability
+		logger.SysError("graceful.degradation.hypervisor", fmt.Sprintf("Failed to initialize hypervisor module: %v. Running in degraded mode.", err))
+		
+		// Sử dụng Null Object Pattern (Dummy Degraded Module) để tránh Nil Pointer Panic sau này
+		hypervisorModule = hypervisor.NewDegradedModule(err)
+	}
+
+	// ------------------------------------------------------------------------
+	// GIAI ĐOẠN 4: THIẾT LẬP MIDDLEWARES & AN TOÀN ĐỊNH TUYẾN TOÀN CỤC
+	// ------------------------------------------------------------------------
 
 	// 7) Global middleware bootstrap (cross-module wiring).
 	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rds, policyEngineModule); err != nil {
@@ -123,6 +171,7 @@ func NewGlobalModules(cfg *config.Config,
 		Health:       health,
 		Core:         coreModule,
 		IAM:          iamModule,
+		Hypervisor:   hypervisorModule,
 		PolicyEngine: policyEngineModule,
 		probeCancel:  probeCancel,
 	}, nil
@@ -157,18 +206,18 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		iamCache.NewUserDeviceRuntimeCache(rds),
 		10*time.Second,
 	)
-	adminDeviceRuntime := iamCache.NewAdminDeviceRuntimeCache(rds)
+	adminAccessSession := iamCache.NewAdminAccessSessionCache(rds)
 	adminRotateTrigger := iamCache.NewAdminKeyRotationTriggerCache(rds)
 	if err := middleware.InitAdminAPIKeyAuth(
 		securityProvider,
-		adminDeviceRuntime.VerifyDeviceSecret,
+		adminAccessSession.VerifyAccessSecret,
 		adminRotateTrigger.SetRotationRequired,
 	); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}
 	adminRepo := iamRepoImpl.NewAdminAPIKeyRepository(cfg, db)
 	if err := middleware.InitAdminCriticalSignature(
-		buildAdminPublicKeyResolver(adminDeviceRuntime, adminRepo),
+		buildAdminPublicKeyResolver(adminAccessSession, adminRepo),
 		rds,
 		time.Minute,
 		2*time.Minute,
@@ -195,7 +244,8 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 // Thứ tự hiện tại:
 // 1) mark health not-ready,
 // 2) stop IAM module,
-// 3) stop Core module.
+// 3) stop Hypervisor module,
+// 4) stop Core module.
 func (m *Modules) Stop() {
 	if m == nil {
 		return
@@ -210,6 +260,9 @@ func (m *Modules) Stop() {
 	if m.IAM != nil {
 		m.IAM.Stop()
 	}
+	if m.Hypervisor != nil {
+		m.Hypervisor.Stop()
+	}
 	if m.Core != nil {
 		m.Core.Stop()
 	}
@@ -218,9 +271,9 @@ func (m *Modules) Stop() {
 	}
 }
 
-func buildAdminPublicKeyResolver(adminDeviceRuntime iamCache.AdminDeviceRuntimeCache, adminRepo iamRepoInterface.AdminAPIKeyRepository) func(ctx context.Context, accessKey string) (string, error) {
+func buildAdminPublicKeyResolver(adminAccessSession iamCache.AdminAccessSessionCache, adminRepo iamRepoInterface.AdminAPIKeyRepository) func(ctx context.Context, accessKey string) (string, error) {
 	return func(ctx context.Context, accessKey string) (string, error) {
-		runtimeRecord, err := adminDeviceRuntime.GetDeviceRuntime(ctx, accessKey)
+		runtimeRecord, err := adminAccessSession.GetAccessSession(ctx, accessKey)
 		if err != nil {
 			return "", err
 		}

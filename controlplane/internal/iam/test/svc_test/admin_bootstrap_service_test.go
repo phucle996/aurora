@@ -46,13 +46,7 @@ func (m *adminBootstrapRepoMock) RollbackBootstrap(ctx context.Context, payload 
 func (m *adminBootstrapRepoMock) AcquireRotationLock(ctx context.Context) (iamRepoInterface.BootstrapLock, error) {
 	return nil, nil
 }
-func (m *adminBootstrapRepoMock) PrepareNextAdminAPIKey(ctx context.Context, actor string, keyHash string, expiresAt time.Time) error {
-	return nil
-}
-func (m *adminBootstrapRepoMock) CommitPreparedAdminAPIKeyRotation(ctx context.Context) error {
-	return nil
-}
-func (m *adminBootstrapRepoMock) RollbackPreparedAdminAPIKeyRotation(ctx context.Context) error {
+func (m *adminBootstrapRepoMock) PrepareNextAdminAPIKey(ctx context.Context, key iamEntity.AdminAPIKey) error {
 	return nil
 }
 

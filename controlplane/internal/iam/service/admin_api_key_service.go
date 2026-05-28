@@ -30,7 +30,7 @@
 //     Postgres Database.
 //   - Phiên Admin dùng mô hình **Fragment Token** (3 mảnh) thay vì 1 access token đơn thông thường:
 //     Mảnh 1 — JWT access token ngắn hạn (stateless, ký bằng `SecretFamilyAdminAPIKey`).
-//     Mảnh 2 — `access_key`: định danh phiên, lưu trong Redis (`AdminDeviceRuntimeCache`).
+//     Mảnh 2 — `access_key`: định danh phiên, lưu trong Redis (`AdminAccessSessionCache`).
 //     Mảnh 3 — `access_secret`: bí mật phiên, chỉ lưu dạng hash trong Redis.
 //     Middleware phải xác thực cả 3 mảnh khớp nhau thì phiên mới được coi là hợp lệ.
 //
@@ -103,7 +103,7 @@ type AdminAPIKeyService struct {
 	repo            iamRepoInterface.AdminAPIKeyRepository
 	telegram        *telegram.TelegramClient
 	secrets         security.SecretProvider
-	deviceRT        iamCache.AdminDeviceRuntimeCache
+	sessionCache    iamCache.AdminAccessSessionCache
 	apiKeyCache     iamCache.AdminAPIKeyCache
 	rotationTrigger iamCache.AdminKeyRotationTriggerCache
 }
@@ -115,7 +115,7 @@ func NewAdminAPIKeyService(
 	repo iamRepoInterface.AdminAPIKeyRepository,
 	telegram *telegram.TelegramClient,
 	secrets security.SecretProvider,
-	deviceRT iamCache.AdminDeviceRuntimeCache,
+	sessionCache iamCache.AdminAccessSessionCache,
 	apiKeyCache iamCache.AdminAPIKeyCache,
 	rotationTrigger ...iamCache.AdminKeyRotationTriggerCache,
 ) iamSvcInterface.AdminAPIKeyService {
@@ -123,61 +123,97 @@ func NewAdminAPIKeyService(
 	if len(rotationTrigger) > 0 {
 		trigger = rotationTrigger[0]
 	}
-	return &AdminAPIKeyService{
+	svc := &AdminAPIKeyService{
 		cfg:             cfg,
 		repo:            repo,
 		telegram:        telegram,
 		secrets:         secrets,
-		deviceRT:        deviceRT,
+		sessionCache:    sessionCache,
 		apiKeyCache:     apiKeyCache,
 		rotationTrigger: trigger,
 	}
+	if apiKeyCache != nil {
+		// Đăng ký nhận sự kiện đồng bộ xóa RAM cache từ các Pod HA khác
+		apiKeyCache.SubscribeInvalidation(context.Background(), func() {
+			apiKeyCache.InvalidateActiveAPIKey()
+		})
+	}
+	return svc
 }
 
-// RotateAdminAPIKeyEmergency thực thi rotation admin API key khẩn cấp
-// (compromise hoặc theo trigger từ scheduler/operator).
+// RotateAdminAPIKeyEmergency thực thi quy trình xoay vòng Admin API Key khẩn cấp.
+// Quy trình này được kích hoạt khi phát hiện hoặc nghi ngờ hệ thống bị thỏa hiệp (compromise)
+// hoặc được kích hoạt tự động theo chính sách của scheduler/operator.
 //
-// Flow:
-//  1. acquire rotation lock toàn cục để chống đồng thời,
-//  2. sinh API key mới + tính hash + expiry,
-//  3. notify plaintext key qua Telegram trước khi persist,
-//  4. persist key mới vào DB ở trạng thái next-active,
-//  5. invalidate RAM cache active key + clear rotation trigger.
+// Callsite:
+//   - Được gọi từ HTTP Handler (`admin_auth_handler.go`) thông qua endpoint `/admin/auth/rotate-key`
+//     khi operator chủ động kích hoạt thủ công.
+//   - Được gọi từ scheduler định kỳ thông qua `TryProcessAdminKeyRotationTrigger`.
 //
-// Boundary:
-// - Plaintext key chỉ tồn tại trong RAM + Telegram message, không log.
-// - Nếu Telegram fail thì abort để tránh ghi DB mà operator không nhận được key.
-func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context, actor string) error {
+// Notes:
+//   - Quy trình này chạy đồng bộ và sử dụng cơ chế Distributed Advisory Lock ở DB để ngăn chặn race condition.
+//   - Chế độ an toàn tuyệt đối: Khóa API Key nguyên bản (plaintext) chỉ tồn tại duy nhất trong RAM
+//     và tin nhắn Telegram, không bao giờ được ghi xuống log hệ thống.
+//   - Giao dịch có điều kiện: Nếu kênh thông báo Telegram lỗi, quy trình sẽ huỷ bỏ (abort) ngay lập tức
+//     để đảm bảo không ghi khóa mới vào DB khi operator chưa nhận được.
+func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) error {
+	// Bước 1: Acquire rotation lock toàn cục để chống thực thi đồng thời (race condition)
 	lock, err := s.repo.AcquireRotationLock(ctx)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already held") {
-			return apperr.Wrap(iamTaxonomy.ErrAdminRotationLockBusy, err, "lock_busy")
+			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateLockBusy)
+			return apperr.Wrap(iamTaxonomy.ErrAdminRotationLockBusy, err, iamTaxonomy.AdminRotateLockBusy)
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, "dependency_error")
+		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
 	}
 	defer lock.Release(ctx)
 
+	// Bước 2: Sinh ngẫu nhiên API key mới (plaintext) + tính toán hash SHA256 và thời gian hết hạn
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, "dependency_error")
+		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
 	}
-	keyHash := security.HashTokenSHA256(plainKey)
 	expiresAt := time.Now().UTC().Add(s.cfg.Security.AdminAPITokenTTL)
 
+	// Bước 3: Thông báo khóa plaintext qua kênh Telegram khẩn cấp an toàn trước khi lưu DB.
+	// Nếu bước này lỗi, bắt buộc hủy bỏ (abort) để tránh mồ côi khóa trong database.
 	msg := fmt.Sprintf("<b>ADMIN ROTATION SUCCESS</b>\nAPI Key: <code>%s</code>\nExpires: <code>%s</code>", plainKey, expiresAt.Format(time.RFC3339))
 	if sendErr := s.telegram.SendMessage(msg); sendErr != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationDelivery, sendErr, "delivery_error")
+		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateDeliveryFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationDelivery, sendErr, iamTaxonomy.AdminRotateDeliveryFail)
 	}
 
-	if err := s.repo.PrepareNextAdminAPIKey(ctx, actor, keyHash, expiresAt); err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, "dependency_error")
+	// Bước 4: Tạo thực thể AdminAPIKey và lưu vào cơ sở dữ liệu ở trạng thái active kế tiếp
+	newID, uuidErr := uuid.NewV7()
+	if uuidErr != nil {
+		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, uuidErr, iamTaxonomy.AdminRotateFail)
 	}
-	if s.apiKeyCache != nil {
-		s.apiKeyCache.InvalidateActiveAPIKey()
+
+	actor := "admin-emergency-rotate"
+	apiKeyEntity := iamEntity.AdminAPIKey{
+		ID:        newID,
+		KeyHash:   security.HashTokenSHA256(plainKey),
+		CreatedBy: &actor,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: expiresAt,
 	}
-	if s.rotationTrigger != nil {
-		_ = s.rotationTrigger.ClearRotationRequired(ctx)
+
+	if err := s.repo.PrepareNextAdminAPIKey(ctx, apiKeyEntity); err != nil {
+		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
 	}
+
+	// Bước 5: Vô hiệu hóa RAM cache active key hiện tại để buộc các phiên sau load key mới từ DB,
+	// đồng thời xóa cờ chỉ định xoay vòng khóa khẩn cấp (nếu có) và phát tin hiệu Pub/Sub cho cụm HA.
+	s.apiKeyCache.InvalidateActiveAPIKey()
+	_ = s.apiKeyCache.PublishInvalidation(ctx)
+	_ = s.rotationTrigger.ClearRotationRequired(ctx)
+
+	// Ghi nhận thành công thực tế của việc xoay vòng khóa
+	iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.OutcomeSuccess)
 	return nil
 }
 
@@ -193,70 +229,80 @@ func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Conte
 	}
 	required, err := s.rotationTrigger.HasRotationRequired(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, "trigger_error")
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
 	}
 	if !required {
 		return nil
 	}
-	if err := s.RotateAdminAPIKeyEmergency(ctx, "system-scheduler"); err != nil {
+	if err := s.RotateAdminAPIKeyEmergency(ctx); err != nil {
 		return err
 	}
 	return nil
 }
 
-// Bootstrap khởi tạo admin API key đầu tiên cho hệ thống.
+// Bootstrap khởi tạo Admin API Key và các thiết lập bảo mật đầu tiên cho toàn bộ hệ thống.
+// Quy trình này thiết lập các khóa truy cập, cơ chế xác thực hai lớp (TOTP), và mã khôi phục khẩn cấp.
 //
-// Flow:
-// 1) lock bootstrap toàn cục,
-// 2) kiểm tra chưa có key active,
-// 3) tạo API key + TOTP secret + recovery codes,
-// 4) persist DB,
-// 5) notify Telegram,
-// 6) nếu notify fail thì rollback DB.
+// Callsite:
+//   - Được gọi một lần duy nhất khi hệ thống được dựng lên (Bootstrap/Provisioning stage)
+//     thông qua CLI command hoặc HTTP Init API.
+//
+// Notes:
+//   - Quy trình sử dụng cơ chế Bootstrap Advisory Lock để đảm bảo chỉ có duy nhất một tiến trình
+//     thực thi khởi tạo thành công tại một thời điểm trên toàn cụm HA.
+//   - Chế độ tự động hoàn trả (Rollback): Nếu hệ thống không thể thông báo thông tin bảo mật đầu tiên
+//     đến Telegram SRE sau 3 lần thử lại (do Telegram sập hoặc ngắt mạng), DB sẽ được rollback sạch sẽ
+//     để đảm bảo không tồn tại khóa truy cập mồ côi mà người vận hành không biết.
 func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error {
+	// Bước 1: Lock bootstrap toàn cục để đảm bảo chạy đơn chiếc duy nhất trên toàn cụm HA
 	lock, err := s.repo.AcquireBootstrapLock(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapLockFailed, err, "lock_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapLockFailed, err, iamTaxonomy.AdminRotateLockBusy)
 	}
 	defer lock.Release(ctx)
 
+	// Bước 2: Kiểm tra tiền đề điều kiện (Precondition) - hệ thống phải chưa có active key nào
 	now := time.Now().UTC()
 	active, err := s.loadActiveAdminAPIKey(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPreconditionFailed, err, "precondition_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPreconditionFailed, err, iamTaxonomy.AdminRotateFail)
 	}
 	if active != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapNotAllowed, nil, "not_allowed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapNotAllowed, nil, iamTaxonomy.AdminRotateFail)
 	}
 
 	expiresAt := now.Add(s.cfg.Security.AdminAPITokenTTL)
 
+	// Bước 3: Tạo ngẫu nhiên Admin API key nguyên bản (plaintext) và mã hóa SHA256 để lưu DB
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, "persist_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
 	}
 	keyHash := security.HashTokenSHA256(plainKey)
 
+	// Bước 4: Tạo cấu hình TOTP 2FA (MFA) mặc định và mã hóa khóa bí mật (secret key)
 	totpResult, err := security.GenerateTOTP("controlplane-admin", "admin@system")
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, "persist_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
 	}
 	secretCipher, err := security.EncryptSecret(totpResult.Secret)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, "persist_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
 	}
 
+	// Bước 5: Sinh 8 mã khôi phục khẩn cấp (One-time Recovery Codes) dùng để backup khi mất 2FA
 	recoveryHashes := make([]string, 0, 8)
 	recoveryPlains := make([]string, 0, 8)
 	for i := 0; i < 8; i++ {
 		code, genErr := security.GenerateRecoveryCode(24)
 		if genErr != nil {
-			return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, genErr, "persist_failed")
+			return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, genErr, iamTaxonomy.AdminRotateFail)
 		}
 		recoveryPlains = append(recoveryPlains, code)
 		recoveryHashes = append(recoveryHashes, security.HashRecoveryCode(code))
 	}
 
+	// Bước 6: Lưu tất cả dữ liệu khởi tạo đầu tiên vào Cơ sở dữ liệu thông qua Repository
 	payload := iamEntity.AdminBootstrapPayload{
 		Actor:              actor,
 		KeyHash:            keyHash,
@@ -267,7 +313,20 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 	}
 	_, err = s.repo.Bootstrap(ctx, payload)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, "persist_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
+	}
+
+	// Bước 7: Thông báo toàn bộ thông tin bảo mật nguyên bản (API Key, TOTP, Recovery Codes) qua Telegram của SRE.
+	// Có cơ chế Retry tự động 3 lần (với Backoff tăng dần) chống rung mạng.
+	var formattedCodes string
+	if len(recoveryPlains) == 0 {
+		formattedCodes = "<i>(none)</i>"
+	} else {
+		formatted := make([]string, 0, len(recoveryPlains))
+		for index, code := range recoveryPlains {
+			formatted = append(formatted, fmt.Sprintf("%d) <code>%s</code>", index+1, code))
+		}
+		formattedCodes = strings.Join(formatted, "\n")
 	}
 
 	msg := fmt.Sprintf(
@@ -280,7 +339,7 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 		plainKey,
 		expiresAt.Format(time.RFC3339),
 		totpResult.Secret,
-		formatRecoveryCodesForTelegram(recoveryPlains),
+		formattedCodes,
 	)
 	backoff := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 	var notifyErr error
@@ -295,10 +354,12 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 		}
 	}
 
+	// Bước 8: Giao dịch có điều kiện hoàn trả (Rollback)
+	// Nếu SRE không nhận được tin nhắn bảo mật đầu tiên, buộc phải xóa bỏ toàn bộ dữ liệu vừa bootstrap ở DB.
 	if rbErr := s.repo.RollbackBootstrap(ctx, payload); rbErr != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapRollbackFailed, rbErr, "rollback_failed")
+		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapRollbackFailed, rbErr, iamTaxonomy.AdminRotateDeliveryFail)
 	}
-	return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapNotifyFailed, notifyErr, "notify_failed")
+	return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapNotifyFailed, notifyErr, iamTaxonomy.AdminRotateDeliveryFail)
 }
 
 // AdminLogin xác thực admin credentials và cấp runtime fragments cho `/admin`.
@@ -320,16 +381,27 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// Sử dụng defer để tự động ghi nhận chỉ số telemetry (metrics) kết quả đăng nhập của Admin khi hàm kết thúc.
 	defer func() { iamMetrics.ObserveAdminLoginOutcome(loginOutcome) }()
 
-	// --- BƯỚC 1: XÁC THỰC THAM SỐ ĐẦU VÀO (INPUT VALIDATION) ---
-	// Đảm bảo không có trường dữ liệu bắt buộc nào (API Key, MFA Method, MFA Code, Device Public Key) bị trống.
-	if strings.TrimSpace(req.RawAPIKey) == "" || strings.TrimSpace(req.MFAMethod) == "" || strings.TrimSpace(req.MFACode) == "" || strings.TrimSpace(req.DevicePublicKey) == "" {
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidArgument
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.AdminLoginOutcomeInvalidArgument)
-	}
-
 	// --- BƯỚC 2: CHUẨN HÓA VÀ KIỂM TRA KHÓA CÔNG KHAI THIẾT BỊ (DEVICE PUBLIC KEY NORMALIZATION) ---
 	// Chuẩn hóa chuỗi khóa công khai Ed25519 nhận được từ Client sang định dạng chuẩn thống nhất.
-	canonicalPublicKey, keyErr := normalizeDevicePublicKey(strings.TrimSpace(req.DevicePublicKey))
+	var canonicalPublicKey string
+	var keyErr error
+	rawKey := strings.TrimSpace(req.DevicePublicKey)
+	if rawKey == "" {
+		keyErr = fmt.Errorf("empty key")
+	} else {
+		var decoded []byte
+		decoded, keyErr = base64.StdEncoding.DecodeString(rawKey)
+		if keyErr != nil {
+			decoded, keyErr = base64.RawStdEncoding.DecodeString(rawKey)
+		}
+		if keyErr == nil {
+			if len(decoded) != ed25519.PublicKeySize {
+				keyErr = fmt.Errorf("invalid key size")
+			} else {
+				canonicalPublicKey = base64.StdEncoding.EncodeToString(decoded)
+			}
+		}
+	}
 	if keyErr != nil {
 		loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidDevicePublicKey
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, keyErr, iamTaxonomy.AdminLoginOutcomeInvalidArgument)
@@ -342,8 +414,8 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// Nạp API Key đang hoạt động của Admin từ bộ nhớ đệm 2 lớp (Cache-aside pattern: RAM/Redis hoặc DB).
 	active, err := s.loadActiveAdminAPIKey(ctx)
 	if err != nil {
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeLoadActiveKeyError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.AdminLoginOutcomeLoadActiveKeyError)
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
 	// Nếu không tồn tại API Key nào đang hoạt động trong hệ thống, từ chối đăng nhập.
 	if active == nil {
@@ -357,14 +429,38 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 
 	// --- BƯỚC 4: XÁC THỰC ĐA YẾU TỐ (MFA VALIDATION) ---
-	mfaMethod := strings.TrimSpace(strings.ToLower(req.MFAMethod))
-	switch mfaMethod {
-	case "totp":
+	switch req.MFAMethod {
+	case iamEntity.MFATypeTOTP:
 		// Phân hệ TOTP: Nạp khóa bí mật 2FA của Admin từ cơ sở dữ liệu.
-		secret, secErr := s.loadAdminTOTPSecret(ctx)
-		if secErr != nil {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeLoadTOTPSecretError
-			return iamEntity.AdminLoginResult{}, secErr
+		var secret string
+		settings, err := s.repo.GetAdmin2FASettings(ctx)
+		if err != nil {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
+		}
+		if settings == nil || strings.TrimSpace(settings.SecretCiphertext) == "" {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, "mfa_invalid")
+		}
+
+		var cachedSecret string
+		var cacheFound bool
+		if s.apiKeyCache != nil {
+			cachedSecret, cacheFound = s.apiKeyCache.GetTOTPSecret(settings.UpdatedAt)
+		}
+
+		if cacheFound {
+			secret = cachedSecret
+		} else {
+			decSecret, decErr := security.DecryptSecret(settings.SecretCiphertext)
+			if decErr != nil {
+				loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+				return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, decErr, "dependency_error")
+			}
+			secret = decSecret
+			if s.apiKeyCache != nil {
+				s.apiKeyCache.SetTOTPSecret(settings.UpdatedAt, secret, 5*time.Minute)
+			}
 		}
 
 		code := strings.TrimSpace(req.MFACode)
@@ -372,12 +468,12 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 
 		// Ngăn chặn mã xác thực hoặc khóa bí mật trống.
 		if code == "" {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeMFAInvalidEmptyCode
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeMFAInvalidEmptyCode)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 		}
 		if secret == "" {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeMFAInvalidEmptySecret
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeMFAInvalidEmptySecret)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 		}
 
 		// Thực hiện giải mã cryptographic secret và đối khớp mã TOTP với chu kỳ 30 giây và sai số lệch giờ cho phép (Skew) là 1 chu kỳ.
@@ -388,15 +484,15 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 			Algorithm: otp.AlgorithmSHA1,
 		})
 		if totpErr != nil {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeMFAValidateError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, totpErr, iamTaxonomy.AdminLoginOutcomeMFAValidateError)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, totpErr, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 		}
 		if !okTOTP {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeMFAInvalidCodeOrTimeSkew
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeMFAInvalidCodeOrTimeSkew)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 		}
 
-	case "recovery_code":
+	case iamEntity.MFATypeRecoveryCode:
 		// Phân hệ Recovery Code (Mã Khôi Phục): Thực hiện băm SHA256 mã khôi phục để đối khớp.
 		codeHash := security.HashRecoveryCode(req.MFACode)
 
@@ -404,49 +500,41 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		// hệ thống sử dụng Distributed Lock của Redis qua phương thức AcquireRecoveryConsumeLock.
 		unlock, lockErr := s.apiKeyCache.AcquireRecoveryConsumeLock(ctx, codeHash, 5*time.Second)
 		if lockErr != nil {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeRecoveryLockError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, lockErr, iamTaxonomy.AdminLoginOutcomeRecoveryLockError)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, lockErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 		}
 		defer unlock()
 
 		// Thực hiện tiêu hủy mã khôi phục trong Database (chỉ cho phép sử dụng duy nhất một lần).
 		consumed, consumeErr := s.repo.ConsumeRecoveryCode(ctx, codeHash, now)
 		if consumeErr != nil {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeConsumeRecoveryError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, consumeErr, iamTaxonomy.AdminLoginOutcomeConsumeRecoveryError)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, consumeErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 		}
 		if !consumed {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeMFAInvalid
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeMFAInvalid)
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 		}
 
 	default:
 		// Từ chối nếu phương thức MFA không thuộc các loại được hỗ trợ.
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeMFAInvalid
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeMFAInvalid)
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 	}
 
 	// --- BƯỚC 5: TẠO CẶP ĐỊNH DANH PHIÊN CHẠY (RUNTIME SESSION CONFIGURATION) ---
-	// Sinh mã UUID ngẫu nhiên cho access_key (DeviceID) để định danh phiên làm việc.
-	deviceID := uuid.NewString()
-	// Sinh khóa bí mật của thiết bị (access_secret / Device Secret) ngẫu nhiên dài 48 bytes có tính mật mã bảo mật cao.
-	deviceSecret, genErr := security.GenerateToken(48)
-	if genErr != nil {
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeDeviceSecretIssueError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, genErr, iamTaxonomy.AdminLoginOutcomeDeviceSecretIssueError)
+	// Sinh mã UUIDv7 ngẫu nhiên cho Access Key để định danh phiên làm việc hiện tại (mapped vào DeviceID trong API contract).
+	accessKeyUUID, uuidErr := uuid.NewV7()
+	if uuidErr != nil {
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, uuidErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
-
-	// Khởi tạo bản ghi trạng thái phiên tạm thời trong Redis.
-	tokenJTI := ""
-	if err := s.deviceRT.SetDeviceRuntime(ctx, iamCache.AdminDeviceRuntime{
-		DeviceID:         deviceID,
-		DeviceSecretHash: security.HashTokenSHA256(deviceSecret),
-		TrackedDeviceID:  "",
-		TokenJTI:         tokenJTI,
-		Version:          1,
-	}, s.cfg.Security.AdminSessionTTL); err != nil {
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeRuntimeCacheError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, err, iamTaxonomy.AdminLoginOutcomeRuntimeCacheError)
+	accessKey := accessKeyUUID.String()
+	// Sinh khóa bí mật Access Secret ngẫu nhiên dài 48 bytes có tính mật mã bảo mật cao (mapped vào DeviceSecret trong API contract).
+	accessSecret, genErr := security.GenerateToken(48)
+	if genErr != nil {
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, genErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
 
 	// --- BƯỚC 6: ĐĂNG KÝ VÀ LIÊN KẾT THIẾT BỊ VẬT LÝ VỚI DATABASE ---
@@ -456,84 +544,89 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 
 	// Phân giải tên thiết bị gợi ý từ Client (HostnameHint & HostnameAlias).
 	deviceName := deviceHint.ResolveDeviceName(req.HostnameHint, req.HostnameAlias)
-	// Phân giải mã định danh thiết bị trình duyệt dài hạn (ClientDeviceID).
+	// Phân giải định danh thiết bị từ client gửi lên:
+	// - clientDeviceID: Chuỗi định danh duy nhất của thiết bị dưới dạng string (lấy từ Header/Cookie X-Client-Device-Id).
+	// - clientDeviceProvenance: Nguồn gốc của mã định danh này, cho biết ID này là do client cung cấp ("client") hay do hệ thống tự sinh mới ("server-bootstrap").
 	clientDeviceID, clientDeviceProvenance := deviceHint.ResolveClientDeviceID(req.ClientDeviceID)
-	cdidPtr := clientDeviceID
+
+	// Chuyển đổi mã chuỗi sang định dạng UUID (ID thiết bị Admin dùng làm khóa chính trong Postgres & tracking redis).
+	// Nếu mã từ client không hợp lệ hoặc rỗng, hệ thống sẽ tự động sinh mã UUID mới (Self-healing) và đánh dấu nguồn gốc là "server-bootstrap".
+	deviceID, parseErr := uuid.Parse(clientDeviceID)
+	if parseErr != nil {
+		deviceID = uuid.New()
+		clientDeviceID = deviceID.String()
+		clientDeviceProvenance = deviceHint.ProvenanceServerBootstrap
+	}
 
 	// Ghi nhận thiết bị vật lý của Admin xuống Postgres Database.
 	deviceBinding, bindErr := s.repo.UpsertAdminDeviceBinding(ctx, iamEntity.AdminDeviceBindingInput{
+		ID:                   deviceID,
 		DeviceName:           deviceName,
 		PublicKey:            canonicalPublicKey,
 		PublicKeyFingerprint: fph,
-		ClientDeviceID:       &cdidPtr,
 		Now:                  now,
 	})
 	if bindErr != nil {
-		// Rollback: Xóa bản ghi runtime session đã ghi nhận trước đó ở Redis nếu việc binding DB thất bại.
-		_ = s.deviceRT.DeleteDeviceSecret(ctx, deviceID)
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeUpsertDeviceBindingErr
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginDeviceBindingFailed, bindErr, iamTaxonomy.AdminLoginOutcomeUpsertDeviceBindingErr)
+		if errors.Is(bindErr, iamTaxonomy.ErrAdminLoginDeviceRevoked) {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(bindErr, bindErr, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
+		}
+		if errors.Is(bindErr, iamTaxonomy.ErrAdminLoginDeviceQuarantined) {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(bindErr, bindErr, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
+		}
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginDeviceBindingFailed, bindErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
 
-	// --- BƯỚC 7: THIẾT LẬP VÀ LIÊN KẾT PHIÊN LÀM VIỆC CHÍNH THỨC ---
-	// Kiểm tra sự sẵn có của Master Secrets của hệ thống để thực hiện ký số.
-	if s.secrets == nil {
-		_ = s.deviceRT.DeleteDeviceSecret(ctx, deviceID)
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeAuthUnavailable
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.AdminLoginOutcomeAuthUnavailable)
-	}
-
+	// --- BƯỚC 7: KÝ SỐ MẬT MÃ ACCESS TOKEN JWT (PRACTICAL FAIL-FAST) ---
 	// Sinh Token ID duy nhất sử dụng UUIDv7 để phục vụ JTI Claim giúp định danh chính xác JWT.
 	adminJTI, jtiErr := uuid.NewV7()
 	if jtiErr != nil {
-		_ = s.deviceRT.DeleteDeviceSecret(ctx, deviceID)
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeJTIIssueError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, jtiErr, iamTaxonomy.AdminLoginOutcomeJTIIssueError)
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, jtiErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
-	tokenJTI = adminJTI.String()
+	tokenJTI := adminJTI.String()
 
-	// Cập nhật lại bản ghi Live Runtime Session hoàn chỉnh trong Redis Cache.
-	if err := s.deviceRT.SetDeviceRuntime(ctx, iamCache.AdminDeviceRuntime{
-		DeviceID:         deviceID,
-		DeviceSecretHash: security.HashTokenSHA256(deviceSecret),
+	// Thực hiện ký số tạo JWT chứa các claims bảo mật để phân quyền cho Admin.
+	// LƯU Ý QUAN TRỌNG: TokenUse đã được cập nhật chính xác từ "admin_api_token" sang "admin_api" theo đặc tả thiết kế mới.
+	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
+		Subject:   "admin",
+		AccessKey: accessKey,
+		TokenID:   tokenJTI,
+		TokenUse:  "admin_api",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
+	})
+	if signErr != nil {
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		if errors.Is(signErr, security.ErrEmptySecret) {
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, signErr, iamTaxonomy.AdminLoginOutcomeSystemError)
+		}
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminLoginOutcomeSystemError)
+	}
+
+	// --- BƯỚC 8: THIẾT LẬP VÀ LIÊN KẾT PHIÊN LÀM VIỆC TRONG REDIS ---
+	// Khởi tạo bản ghi Live Runtime Session hoàn chỉnh trong Redis Cache sau khi đã ký số thành công.
+	if err := s.sessionCache.SetAccessSession(ctx, iamCache.AdminAccessSession{
+		AccessKey:        accessKey,
+		AccessSecretHash: security.HashTokenSHA256(accessSecret),
 		TrackedDeviceID:  deviceBinding.ID.String(),
 		DevicePublicKey:  canonicalPublicKey,
 		TokenJTI:         tokenJTI,
 		Version:          1,
 		LastSeenAt:       now.UTC().Unix(),
 	}, s.cfg.Security.AdminSessionTTL); err != nil {
-		_ = s.deviceRT.DeleteDeviceSecret(ctx, deviceID)
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeRuntimeUpdateError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, err, iamTaxonomy.AdminLoginOutcomeRuntimeUpdateError)
-	}
-
-	// --- BƯỚC 8: KÝ SỐ MẬT MÃ ACCESS TOKEN JWT ---
-	// Thực hiện ký số tạo JWT chứa các claims bảo mật để phân quyền cho Admin.
-	// LƯU Ý QUAN TRỌNG: TokenUse đã được cập nhật chính xác từ "admin_api_token" sang "admin_api" theo đặc tả thiết kế mới.
-	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
-		Subject:   "admin",
-		AccessKey: deviceID,
-		TokenID:   adminJTI.String(),
-		TokenUse:  "admin_api",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
-	})
-	if signErr != nil {
-		_ = s.deviceRT.DeleteDeviceSecret(ctx, deviceID)
-		loginOutcome = iamTaxonomy.AdminLoginOutcomeSignTokenError
-		if errors.Is(signErr, security.ErrEmptySecret) {
-			loginOutcome = iamTaxonomy.AdminLoginOutcomeAuthUnavailable
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, signErr, iamTaxonomy.AdminLoginOutcomeAuthUnavailable)
-		}
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminLoginOutcomeSignTokenError)
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, err, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
 
 	// --- BƯỚC 9: TRẢ VỀ KẾT QUẢ ĐĂNG NHẬP THÀNH CÔNG ---
-	// Trả về AdminLoginResult chứa JWT, access_key (DeviceID), access_secret (DeviceSecret) của phiên và thời gian hết hạn.
+	// Trả về AdminLoginResult chứa JWT, Access Key, Access Secret của phiên và thời gian hết hạn.
 	return iamEntity.AdminLoginResult{
 		AdminAPIToken:            adminAPIToken,
-		DeviceID:                 deviceID,
-		DeviceSecret:             deviceSecret,
+		AccessKey:                accessKey,
+		AccessSecret:             accessSecret,
 		ClientDeviceID:           clientDeviceID,
 		ClientDeviceIDProvenance: string(clientDeviceProvenance),
 		ExpiresAt:                now.Add(s.cfg.Security.AdminSessionTTL),
@@ -553,7 +646,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 //   - Không sinh device_id mới; reuse device_id của runtime hiện tại.
 //   - Mọi lỗi cache/sign quy về ErrAuthenticationUnavailable hoặc
 //     ErrAdminLoginTokenIssueFailed để handler map HTTP nhất quán.
-func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, deviceID string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	startedAt := time.Now()
 	refreshOutcome := iamTaxonomy.OutcomeSuccess
 	defer func() {
@@ -565,118 +658,114 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, deviceID s
 		iamMetrics.ObserveAdminRefreshLatency(time.Since(startedAt), observeErr)
 	}()
 
-	trimmedDeviceID := strings.TrimSpace(deviceID)
-	if trimmedDeviceID == "" {
+	trimmedAccessKey := strings.TrimSpace(accessKey)
+	if trimmedAccessKey == "" {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeInvalidArgument
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.AdminRefreshOutcomeInvalidArgument)
 	}
-	runtimeRecord, runtimeErr := s.deviceRT.GetDeviceRuntime(ctx, trimmedDeviceID)
+	runtimeRecord, runtimeErr := s.sessionCache.GetAccessSession(ctx, trimmedAccessKey)
 	if runtimeErr != nil {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeLoadRuntimeErr
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, runtimeErr, iamTaxonomy.AdminRefreshOutcomeLoadRuntimeErr)
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, runtimeErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 	if runtimeRecord == nil {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeRuntimeNotFound
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.AdminRefreshOutcomeRuntimeNotFound)
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeInvalidSession
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
 	}
-	casOK, casErr := s.deviceRT.CompareAndTouchDeviceRuntime(ctx, trimmedDeviceID, runtimeRecord.Version, s.cfg.Security.AdminSessionTTL, ip, userAgent)
+	casOK, casErr := s.sessionCache.CompareAndTouchAccessSession(ctx, trimmedAccessKey, runtimeRecord.Version, s.cfg.Security.AdminSessionTTL, ip, userAgent)
 	if casErr != nil {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeTouchRuntimeErr
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, casErr, iamTaxonomy.AdminRefreshOutcomeTouchRuntimeErr)
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, casErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 	if !casOK {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeRuntimeConflict
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.AdminRefreshOutcomeRuntimeConflict)
-	}
-	if s.secrets == nil {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeAuthUnavailable
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.AdminRefreshOutcomeAuthUnavailable)
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeInvalidSession
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.AdminRefreshOutcomeInvalidSession)
 	}
 
 	now := time.Now().UTC()
 	adminJTI, jtiErr := uuid.NewV7()
 	if jtiErr != nil {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeJTIIssueError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, jtiErr, iamTaxonomy.AdminRefreshOutcomeJTIIssueError)
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, jtiErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
 		Subject:   "admin",
-		AccessKey: trimmedDeviceID,
+		AccessKey: trimmedAccessKey,
 		TokenID:   adminJTI.String(),
 		TokenUse:  "admin_api_token",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
 	})
 	if signErr != nil {
-		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSignTokenError
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
 		if errors.Is(signErr, security.ErrEmptySecret) {
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, signErr, iamTaxonomy.AdminRefreshOutcomeAuthUnavailable)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, signErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 		}
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminRefreshOutcomeSignTokenError)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 
 	return iamEntity.AdminLoginResult{
 		AdminAPIToken: adminAPIToken,
-		DeviceID:      trimmedDeviceID,
+		AccessKey:     trimmedAccessKey,
 		ExpiresAt:     now.Add(s.cfg.Security.AdminSessionTTL),
 	}, nil
 }
 
-// formatRecoveryCodesForTelegram render danh sách recovery code thành block
-// HTML có đánh số, an toàn cho Telegram parse_mode=HTML.
-func formatRecoveryCodesForTelegram(codes []string) string {
-	if len(codes) == 0 {
-		return "<i>(none)</i>"
-	}
-	formatted := make([]string, 0, len(codes))
-	for index, code := range codes {
-		formatted = append(formatted, fmt.Sprintf("%d) <code>%s</code>", index+1, code))
-	}
-	return strings.Join(formatted, "\n")
-}
-
-// AdminLogout cleanup runtime fragment state theo device_id (nếu có).
-// Handler sẽ chịu trách nhiệm clear cookie phía client.
-func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, deviceID string, ip *string, userAgent *string) error {
-	trimmedDeviceID := strings.TrimSpace(deviceID)
-	if trimmedDeviceID == "" {
-		return nil
-	}
-	runtimeRecord, runtimeErr := s.deviceRT.GetDeviceRuntime(ctx, trimmedDeviceID)
+// AdminLogout thực hiện phế bỏ phiên làm việc của Admin ngay lập tức bằng cách xóa access key khỏi Redis Cache.
+// Để bảo toàn thông tin thiết bị cuối cùng mà không làm ảnh hưởng đến thời gian phản hồi (latency),
+// việc cập nhật thông tin thiết bị xuống Postgres Database được thực hiện bất đồng bộ (Asynchronous Background Flush)
+// dưới cơ chế bảo vệ cắt tải chủ động (Load Shedding) sử dụng context timeout 1 giây và chỉ ghi khi thực sự thay đổi (LastSeenDirty = true).
+func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
+	// 1. Đọc nhanh thông tin session hiện tại trong Redis để lấy dữ liệu thiết bị (nếu có).
+	runtimeRecord, runtimeErr := s.sessionCache.GetAccessSession(ctx, accessKey)
 	if runtimeErr != nil {
-		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, runtimeErr, "logout_cache_error")
+		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, runtimeErr, iamTaxonomy.AdminLogoutOutcomeSystemError)
 	}
+
+	// 2. PHẾ BỎ PHIÊN LÀM VIỆC LẬP TỨC (SECURITY EXTREMELY CRITICAL)
+	// Thực hiện xóa session khỏi Redis trước để đảm bảo phiên chạy bị vô hiệu hóa ngay lập tức.
+	if err := s.sessionCache.DeleteAccessSession(ctx, accessKey); err != nil {
+		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, iamTaxonomy.AdminLogoutOutcomeSystemError)
+	}
+
+	// 3. CẬP NHẬT TRẠNG THÁI THIẾT BỊ BẤT ĐỒNG BỘ (ASYNCHRONOUS DB FLUSH)
+	// Đẩy tác vụ ghi DB xuống một background goroutine để không block luồng phản hồi chính (Latency < 1ms).
 	if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
-		runtimeIP := strings.TrimSpace(runtimeRecord.LastSeenIP)
-		runtimeUA := strings.TrimSpace(runtimeRecord.LastSeenUserAgent)
-		if ip != nil {
-			requestIP := strings.TrimSpace(*ip)
-			if requestIP != "" && requestIP != runtimeIP {
-				runtimeIP = requestIP
-				runtimeRecord.LastSeenDirty = true
+		go func() {
+			// Tạo một context chạy nền tách biệt hoàn toàn với timeout chặt chẽ (1s) để tránh treo khi DB chậm/quá tải.
+			bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+
+			runtimeIP := strings.TrimSpace(runtimeRecord.LastSeenIP)
+			runtimeUA := strings.TrimSpace(runtimeRecord.LastSeenUserAgent)
+			dirty := runtimeRecord.LastSeenDirty
+
+			if ip != nil {
+				requestIP := strings.TrimSpace(*ip)
+				if requestIP != "" && requestIP != runtimeIP {
+					runtimeIP = requestIP
+					dirty = true
+				}
 			}
-		}
-		if userAgent != nil {
-			requestUA := strings.TrimSpace(*userAgent)
-			if requestUA != "" && requestUA != runtimeUA {
-				runtimeUA = requestUA
-				runtimeRecord.LastSeenDirty = true
+			if userAgent != nil {
+				requestUA := strings.TrimSpace(*userAgent)
+				if requestUA != "" && requestUA != runtimeUA {
+					runtimeUA = requestUA
+					dirty = true
+				}
 			}
-		}
-		// Chỉ flush DB khi runtime đánh dấu dirty để tránh write mỗi request.
-		if runtimeRecord.LastSeenDirty {
-			seenAtUnix := runtimeRecord.LastSeenAt
-			if seenAtUnix <= 0 {
-				seenAtUnix = time.Now().UTC().Unix()
+
+			if dirty {
+				seenAtUnix := runtimeRecord.LastSeenAt
+				if seenAtUnix <= 0 {
+					seenAtUnix = time.Now().UTC().Unix()
+				}
+				// Nuốt mọi lỗi ở luồng nền vì tác vụ đăng xuất chính đã hoàn thành thành công và để bảo vệ DB.
+				_ = s.repo.TouchAdminDeviceLastSeen(bgCtx, runtimeRecord.TrackedDeviceID, optionalStringPointer(runtimeIP), optionalStringPointer(runtimeUA), time.Unix(seenAtUnix, 0).UTC())
 			}
-			if err := s.repo.TouchAdminDeviceLastSeen(ctx, runtimeRecord.TrackedDeviceID, optionalStringPointer(runtimeIP), optionalStringPointer(runtimeUA), time.Unix(seenAtUnix, 0).UTC()); err != nil {
-				return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "logout_runtime_error")
-			}
-		}
+		}()
 	}
-	if err := s.deviceRT.DeleteDeviceSecret(ctx, trimmedDeviceID); err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "logout_cache_error")
-	}
+
 	return nil
 }
 
@@ -691,9 +780,9 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, deviceID string, i
 // - Chỉ flush DB khi runtime đánh dấu LastSeenDirty = true.
 // - Lỗi flush DB hoặc xoá cache bị nuốt để vòng quét tiếp tục với device kế.
 func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inactiveBefore time.Time, limit int) error {
-	records, err := s.deviceRT.ScanDeviceRuntimes(ctx, limit)
+	records, err := s.sessionCache.ScanAccessSessions(ctx, limit)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "finalize_dependency_error")
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.AdminFinalizeOutcomeSystemError)
 	}
 	threshold := inactiveBefore.UTC().Unix()
 	for _, record := range records {
@@ -702,41 +791,14 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 		}
 		// Finalize chỉ ghi last_seen nếu có delta đã track trong Redis runtime.
 		if strings.TrimSpace(record.TrackedDeviceID) != "" && record.LastSeenDirty {
-			_ = s.repo.TouchAdminDeviceLastSeen(ctx, record.TrackedDeviceID, optionalStringPointer(record.LastSeenIP), optionalStringPointer(record.LastSeenUserAgent), time.Unix(record.LastSeenAt, 0).UTC())
+			_ = s.repo.TouchAdminDeviceLastSeen(ctx, record.TrackedDeviceID, optionalStringPointer(record.LastSeenIP),
+				optionalStringPointer(record.LastSeenUserAgent), time.Unix(record.LastSeenAt, 0).UTC())
 		}
-		_ = s.deviceRT.DeleteDeviceSecret(ctx, record.DeviceID)
+		_ = s.sessionCache.DeleteAccessSession(ctx, record.AccessKey)
 	}
 	return nil
 }
 
-// loadAdminTOTPSecret đọc TOTP secret active từ DB, decrypt và cache RAM 5 phút.
-//
-// Mục tiêu:
-// - giảm số lần decrypt + call DB trong burst login,
-// - vẫn fallback DB khi cache miss/expired.
-func (s *AdminAPIKeyService) loadAdminTOTPSecret(ctx context.Context) (string, error) {
-	settings, err := s.repo.GetAdmin2FASettings(ctx)
-	if err != nil {
-		return "", apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "dependency_error")
-	}
-	if settings == nil || strings.TrimSpace(settings.SecretCiphertext) == "" {
-		return "", apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, "mfa_invalid")
-	}
-	if s.apiKeyCache != nil {
-		if secret, ok := s.apiKeyCache.GetTOTPSecret(settings.UpdatedAt); ok {
-			return secret, nil
-		}
-	}
-
-	secret, decErr := security.DecryptSecret(settings.SecretCiphertext)
-	if decErr != nil {
-		return "", apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, decErr, "dependency_error")
-	}
-	if s.apiKeyCache != nil {
-		s.apiKeyCache.SetTOTPSecret(settings.UpdatedAt, secret, 5*time.Minute)
-	}
-	return secret, nil
-}
 
 // loadActiveAdminAPIKey đọc key active với chiến lược RAM cache + fallback DB.
 //
@@ -774,21 +836,6 @@ func (s *AdminAPIKeyService) loadActiveAdminAPIKey(ctx context.Context) (*iamEnt
 	return item, nil
 }
 
-// joinCodes format danh sách recovery codes thành chuỗi nhiều dòng để notify.
-func joinCodes(codes []string) string {
-	if len(codes) == 0 {
-		return ""
-	}
-	out := ""
-	for i, code := range codes {
-		if i > 0 {
-			out += "\n"
-		}
-		out += code
-	}
-	return out
-}
-
 // optionalStringPointer trả *string khi raw có nội dung sau trim, ngược lại
 // trả nil để repo phân biệt "không cập nhật" vs "set rỗng".
 func optionalStringPointer(raw string) *string {
@@ -797,27 +844,4 @@ func optionalStringPointer(raw string) *string {
 		return nil
 	}
 	return &value
-}
-
-// normalizeDevicePublicKey decode + validate ed25519 public key (32 bytes) từ
-// chuỗi base64 (std hoặc raw), sau đó re-encode về base64 std làm canonical
-// form cho storage và so sánh fingerprint nhất quán.
-func normalizeDevicePublicKey(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", fmt.Errorf("empty key")
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		decoded, err = base64.RawStdEncoding.DecodeString(value)
-	}
-	if err != nil {
-		return "", err
-	}
-	if len(decoded) != ed25519.PublicKeySize {
-		return "", fmt.Errorf("invalid key size")
-	}
-
-	return base64.StdEncoding.EncodeToString(decoded), nil
 }

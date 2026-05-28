@@ -27,7 +27,7 @@ type AdminBootstrapPayload struct {
 
 type AdminLoginRequest struct {
 	RawAPIKey       string
-	MFAMethod       string
+	MFAMethod       MFAType
 	MFACode         string
 	DevicePublicKey string
 	HostnameHint    string
@@ -37,8 +37,8 @@ type AdminLoginRequest struct {
 
 type AdminLoginResult struct {
 	AdminAPIToken            string
-	DeviceID                 string
-	DeviceSecret             string
+	AccessKey                string
+	AccessSecret             string
 	ClientDeviceID           string
 	ClientDeviceIDProvenance string
 	ExpiresAt                time.Time
@@ -52,13 +52,13 @@ type Admin2FASettings struct {
 }
 
 type AdminDeviceBindingInput struct {
+	ID                   uuid.UUID
 	DeviceName           string
 	DeviceType           *string
 	OSName               *string
 	BrowserName          *string
 	PublicKey            string
 	PublicKeyFingerprint string
-	ClientDeviceID       *string
 	LastSeenIP           *string
 	LastSeenUserAgent    *string
 	LastSeenAt           *time.Time

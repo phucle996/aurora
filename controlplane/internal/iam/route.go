@@ -8,18 +8,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterRoutes(router *gin.Engine, module *Module) {
+func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	if router == nil || module == nil {
 		return
 	}
 
 	router.POST("/api/v1/auth/register",
+		middleware.RateLimitPostAuth(module.rateLimiter, "iam_auth_register_rate", 30, 30, time.Minute),
 		module.AuthHandler.RegisterAccount,
 	)
 	router.POST("/api/v1/auth/login",
+		middleware.RateLimitPostAuth(module.rateLimiter, "iam_auth_login_postauth", 40, 40, time.Minute),
 		module.AuthHandler.Login,
 	)
 	router.POST("/api/v1/auth/refresh",
+		middleware.RateLimitPostAuth(module.rateLimiter, "iam_auth_refresh_postauth", 40, 40, time.Minute),
 		module.RefreshTokenHandler.Refresh,
 	)
 	userAccessGuard := middleware.Access()

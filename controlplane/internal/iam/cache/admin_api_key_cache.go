@@ -50,6 +50,12 @@ type AdminAPIKeyCache interface {
 	// InvalidateActiveAPIKey xoá snapshot active key, dùng sau rotation hoặc
 	// khi DB thay đổi bất ngờ.
 	InvalidateActiveAPIKey()
+
+	// PublishInvalidation gửi sự kiện xóa cache lên Redis Pub/Sub cho các Pod HA khác.
+	PublishInvalidation(ctx context.Context) error
+
+	// SubscribeInvalidation đăng ký lắng nghe sự kiện xóa cache từ Redis Pub/Sub.
+	SubscribeInvalidation(ctx context.Context, callback func())
 }
 
 type cachedAdminTOTPSecret struct {
@@ -169,6 +175,28 @@ func (c *adminAPIKeyCache) InvalidateActiveAPIKey() {
 	c.mu.Lock()
 	c.activeKey = nil
 	c.mu.Unlock()
+}
+
+func (c *adminAPIKeyCache) PublishInvalidation(ctx context.Context) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	return c.rdb.Publish(ctx, "sre:admin:invalidation", "invalidate").Err()
+}
+
+func (c *adminAPIKeyCache) SubscribeInvalidation(ctx context.Context, callback func()) {
+	if c == nil || c.rdb == nil {
+		return
+	}
+	go func() {
+		pubsub := c.rdb.Subscribe(context.Background(), "sre:admin:invalidation")
+		defer pubsub.Close()
+
+		ch := pubsub.Channel()
+		for range ch {
+			callback()
+		}
+	}()
 }
 
 func (c *adminAPIKeyCache) recoveryConsumeLockKey(codeHash string) string {

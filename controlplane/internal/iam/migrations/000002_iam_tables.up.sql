@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS devices (
     quarantined_at timestamptz NULL, -- Thời điểm quarantine device
     risk_flags jsonb NOT NULL DEFAULT '{}'::jsonb, -- Cờ rủi ro dạng key-value, không chứa secret
     revoked_at timestamptz NULL, -- Thời điểm revoke device
+    client_device_id varchar(128) NULL, -- Persistent client device ID
     last_seen_ip inet NULL, -- IP gần nhất của device
     last_seen_user_agent text NULL, -- User-agent gần nhất
     last_seen_at timestamptz NULL, -- Thời điểm hoạt động gần nhất
@@ -114,6 +115,7 @@ COMMENT ON COLUMN devices.trusted_at IS 'Timestamp when the device was marked tr
 COMMENT ON COLUMN devices.quarantined_at IS 'Timestamp when the device was marked quarantined.';
 COMMENT ON COLUMN devices.risk_flags IS 'Risk flags for the device in key-value form. Must not contain raw secrets or token material.';
 COMMENT ON COLUMN devices.revoked_at IS 'Timestamp when the device was revoked.';
+COMMENT ON COLUMN devices.client_device_id IS 'Persistent opaque device identifier supplied by the client (X-Client-Device-Id) or bootstrapped by server. Identity key for repeat logins; never exposes devices.id.';
 COMMENT ON COLUMN devices.last_seen_ip IS 'Most recent IP address seen from this device.';
 COMMENT ON COLUMN devices.last_seen_user_agent IS 'Most recent user agent seen from this device.';
 COMMENT ON COLUMN devices.last_seen_at IS 'Timestamp when this device was last seen active.';

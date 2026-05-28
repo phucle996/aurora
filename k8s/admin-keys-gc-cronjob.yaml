@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: admin-keys-gc
+  namespace: controlplane
+  labels:
+    app: admin-keys-gc
+    tier: cron
+spec:
+  schedule: "0 0 * * *" # Chạy định kỳ lúc 00:00 hàng ngày
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: admin-keys-gc
+        spec:
+          containers:
+          - name: postgres-client
+            image: postgres:16-alpine
+            command:
+            - /bin/sh
+            - -c
+            - psql -h $(DB_HOST) -p $(DB_PORT) -U $(DB_USER) -d $(DB_NAME) -c "CALL cleanup_expired_admin_keys();"
+            env:
+            - name: DB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: host
+            - name: DB_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: port
+            - name: DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: username
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: database
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: password
+          restartPolicy: OnFailure

@@ -54,40 +54,29 @@ const (
 )
 
 const (
-	AdminLoginOutcomeInvalidArgument          = "invalid_argument"
-	AdminLoginOutcomeInvalidDevicePublicKey   = "invalid_device_public_key"
-	AdminLoginOutcomeLoadActiveKeyError       = "load_active_key_error"
-	AdminLoginOutcomeInvalidCredential        = "invalid_credential"
-	AdminLoginOutcomeLoadTOTPSecretError      = "load_totp_secret_error"
-	AdminLoginOutcomeMFAInvalidEmptyCode      = "mfa_invalid_empty_code"
-	AdminLoginOutcomeMFAInvalidEmptySecret    = "mfa_invalid_empty_secret"
-	AdminLoginOutcomeMFAValidateError         = "mfa_validate_error"
-	AdminLoginOutcomeMFAInvalidCodeOrTimeSkew = "mfa_invalid_code_or_time_skew"
-	AdminLoginOutcomeRecoveryLockError        = "recovery_lock_error"
-	AdminLoginOutcomeConsumeRecoveryError     = "consume_recovery_error"
-	AdminLoginOutcomeMFAInvalid               = "mfa_invalid"
-	AdminLoginOutcomeDeviceSecretIssueError   = "device_secret_issue_error"
-	AdminLoginOutcomeRuntimeCacheError        = "runtime_cache_error"
-	AdminLoginOutcomeUpsertDeviceBindingErr   = "upsert_device_binding_error"
-	AdminLoginOutcomeAuthUnavailable          = "auth_unavailable"
-	AdminLoginOutcomeJTIIssueError            = "jti_issue_error"
-	AdminLoginOutcomeRuntimeUpdateError       = "runtime_update_error"
-	AdminLoginOutcomeSignTokenError           = "sign_token_error"
+	AdminLoginOutcomeInvalidArgument        = "invalid_argument"
+	AdminLoginOutcomeInvalidDevicePublicKey = "invalid_device_public_key"
+	AdminLoginOutcomeInvalidCredential      = "invalid_credential"
+	AdminLoginOutcomeSystemError            = "system_error"
 )
 
 const (
 	AdminRefreshOutcomeInvalidArgument = "invalid_argument"
-	AdminRefreshOutcomeLoadRuntimeErr  = "load_runtime_error"
-	AdminRefreshOutcomeRuntimeNotFound = "runtime_not_found"
-	AdminRefreshOutcomeTouchRuntimeErr = "touch_runtime_error"
-	AdminRefreshOutcomeRuntimeConflict = "runtime_conflict"
-	AdminRefreshOutcomeAuthUnavailable = "auth_unavailable"
-	AdminRefreshOutcomeJTIIssueError   = "jti_issue_error"
-	AdminRefreshOutcomeSignTokenError  = "sign_token_error"
+	AdminRefreshOutcomeInvalidSession  = "invalid_session"
+	AdminRefreshOutcomeSystemError     = "system_error"
 )
 
 const (
-	AdminRotationOutcomeLockContention = "lock_contention"
-	AdminRotationOutcomeDeliveryFail   = "delivery_fail"
-	AdminRotationOutcomeRotateFail     = "rotate_fail"
+	AdminRotateLockBusy     = "lock_contention"
+	AdminRotateDeliveryFail = "delivery_fail"
+	AdminRotateFail         = "rotate_fail"
+)
+
+const (
+	AdminLogoutOutcomeInvalidArgument = "invalid_argument"
+	AdminLogoutOutcomeSystemError     = "system_error"
+)
+
+const (
+	AdminFinalizeOutcomeSystemError = "finalize_dependency_error"
 )

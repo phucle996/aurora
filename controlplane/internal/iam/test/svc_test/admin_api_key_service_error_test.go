@@ -15,43 +15,43 @@ import (
 	"controlplane/pkg/apperr"
 )
 
-type adminDeviceRuntimeCacheMock struct {
-	getFn     func(ctx context.Context, deviceID string) (*iamCache.AdminDeviceRuntime, error)
-	compareFn func(ctx context.Context, deviceID string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error)
-	scanFn    func(ctx context.Context, limit int) ([]iamCache.AdminDeviceRuntime, error)
-	deleteFn  func(ctx context.Context, deviceID string) error
+type adminAccessSessionCacheMock struct {
+	getFn     func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error)
+	compareFn func(ctx context.Context, accessKey string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error)
+	scanFn    func(ctx context.Context, limit int) ([]iamCache.AdminAccessSession, error)
+	deleteFn  func(ctx context.Context, accessKey string) error
 }
 
-func (m *adminDeviceRuntimeCacheMock) SetDeviceRuntime(ctx context.Context, runtime iamCache.AdminDeviceRuntime, ttl time.Duration) error {
+func (m *adminAccessSessionCacheMock) SetAccessSession(ctx context.Context, session iamCache.AdminAccessSession, ttl time.Duration) error {
 	return nil
 }
-func (m *adminDeviceRuntimeCacheMock) VerifyDeviceSecret(ctx context.Context, deviceID string, rawDeviceSecret string) (bool, error) {
+func (m *adminAccessSessionCacheMock) VerifyAccessSecret(ctx context.Context, accessKey string, rawAccessSecret string) (bool, error) {
 	return false, nil
 }
-func (m *adminDeviceRuntimeCacheMock) GetDeviceRuntime(ctx context.Context, deviceID string) (*iamCache.AdminDeviceRuntime, error) {
+func (m *adminAccessSessionCacheMock) GetAccessSession(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
 	if m.getFn != nil {
-		return m.getFn(ctx, deviceID)
+		return m.getFn(ctx, accessKey)
 	}
 	return nil, nil
 }
-func (m *adminDeviceRuntimeCacheMock) TouchDeviceSecret(ctx context.Context, deviceID string, ttl time.Duration) error {
+func (m *adminAccessSessionCacheMock) TouchAccessSession(ctx context.Context, accessKey string, ttl time.Duration) error {
 	return nil
 }
-func (m *adminDeviceRuntimeCacheMock) CompareAndTouchDeviceRuntime(ctx context.Context, deviceID string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
+func (m *adminAccessSessionCacheMock) CompareAndTouchAccessSession(ctx context.Context, accessKey string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
 	if m.compareFn != nil {
-		return m.compareFn(ctx, deviceID, expectedVersion, ttl, ip, userAgent)
+		return m.compareFn(ctx, accessKey, expectedVersion, ttl, ip, userAgent)
 	}
 	return false, nil
 }
-func (m *adminDeviceRuntimeCacheMock) ScanDeviceRuntimes(ctx context.Context, limit int) ([]iamCache.AdminDeviceRuntime, error) {
+func (m *adminAccessSessionCacheMock) ScanAccessSessions(ctx context.Context, limit int) ([]iamCache.AdminAccessSession, error) {
 	if m.scanFn != nil {
 		return m.scanFn(ctx, limit)
 	}
 	return nil, nil
 }
-func (m *adminDeviceRuntimeCacheMock) DeleteDeviceSecret(ctx context.Context, deviceID string) error {
+func (m *adminAccessSessionCacheMock) DeleteAccessSession(ctx context.Context, accessKey string) error {
 	if m.deleteFn != nil {
-		return m.deleteFn(ctx, deviceID)
+		return m.deleteFn(ctx, accessKey)
 	}
 	return nil
 }
@@ -90,10 +90,10 @@ func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
 
 func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	raw := errors.New("redis down")
-	deviceRT := &adminDeviceRuntimeCacheMock{getFn: func(ctx context.Context, deviceID string) (*iamCache.AdminDeviceRuntime, error) {
+	sessionCache := &adminAccessSessionCacheMock{getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
 		return nil, raw
 	}}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, deviceRT, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, sessionCache, nil)
 
 	err := svc.AdminLogout(context.Background(), "device-1", nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -103,7 +103,7 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != "logout_cache_error" {
+	if appErr.Outcome != iamTaxonomy.AdminLogoutOutcomeSystemError {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
@@ -113,10 +113,10 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 
 func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	raw := errors.New("redis timeout")
-	deviceRT := &adminDeviceRuntimeCacheMock{getFn: func(ctx context.Context, deviceID string) (*iamCache.AdminDeviceRuntime, error) {
+	sessionCache := &adminAccessSessionCacheMock{getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
 		return nil, raw
 	}}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, deviceRT, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, sessionCache, nil)
 
 	_, err := svc.RefreshAdminSession(context.Background(), "device-1", nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
@@ -126,7 +126,7 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.AdminRefreshOutcomeLoadRuntimeErr {
+	if appErr.Outcome != iamTaxonomy.AdminRefreshOutcomeSystemError {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
@@ -141,16 +141,16 @@ func TestAdminLogoutSkipsDBFlushWhenLastSeenNotDirty(t *testing.T) {
 		return nil
 	}}
 	deleteCalls := 0
-	deviceRT := &adminDeviceRuntimeCacheMock{
-		getFn: func(ctx context.Context, deviceID string) (*iamCache.AdminDeviceRuntime, error) {
-			return &iamCache.AdminDeviceRuntime{DeviceID: deviceID, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenDirty: false}, nil
+	sessionCache := &adminAccessSessionCacheMock{
+		getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
+			return &iamCache.AdminAccessSession{AccessKey: accessKey, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenDirty: false}, nil
 		},
-		deleteFn: func(ctx context.Context, deviceID string) error {
+		deleteFn: func(ctx context.Context, accessKey string) error {
 			deleteCalls++
 			return nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, deviceRT, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, sessionCache, nil)
 
 	if err := svc.AdminLogout(context.Background(), "device-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -175,16 +175,18 @@ func TestAdminLogoutFlushesDBWhenLastSeenDirty(t *testing.T) {
 		}
 		return nil
 	}}
-	deviceRT := &adminDeviceRuntimeCacheMock{
-		getFn: func(ctx context.Context, deviceID string) (*iamCache.AdminDeviceRuntime, error) {
-			return &iamCache.AdminDeviceRuntime{DeviceID: deviceID, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenIP: "10.0.0.1", LastSeenUserAgent: "ua-1", LastSeenDirty: true}, nil
+	sessionCache := &adminAccessSessionCacheMock{
+		getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
+			return &iamCache.AdminAccessSession{AccessKey: accessKey, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenIP: "10.0.0.1", LastSeenUserAgent: "ua-1", LastSeenDirty: true}, nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, deviceRT, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, sessionCache, nil)
 
 	if err := svc.AdminLogout(context.Background(), "device-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// Đợi Goroutine chạy nền cập nhật DB hoàn tất
+	time.Sleep(10 * time.Millisecond)
 	if touchCalls != 1 {
 		t.Fatalf("expected db flush once when dirty, got %d", touchCalls)
 	}

@@ -12,7 +12,7 @@ import (
 	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
@@ -73,7 +73,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	// call to service
 	result, err := h.svc.AdminLogin(ctx, iamEntity.AdminLoginRequest{
 		RawAPIKey:       strings.TrimSpace(request.AdminAPIKey),
-		MFAMethod:       strings.TrimSpace(strings.ToLower(request.MFAMethod)),
+		MFAMethod:       iamEntity.MFAType(strings.TrimSpace(strings.ToLower(request.MFAMethod))),
 		MFACode:         strings.TrimSpace(request.MFACode),
 		DevicePublicKey: strings.TrimSpace(request.DevicePublicKey),
 		HostnameHint:    hostnameHint,
@@ -85,6 +85,8 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument),
 			errors.Is(err, iamTaxonomy.ErrAdminLoginInvalidCredential),
 			errors.Is(err, iamTaxonomy.ErrAdminLoginMFAInvalid),
+			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceRevoked),
+			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceQuarantined),
 			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceBindingFailed):
 			logger.HandlerWarn(c, op, err, "admin login unauthorized")
 			apires.RespondUnauthorized(c, "unauthorized")
@@ -111,7 +113,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessKeyName,
-		Value:    result.DeviceID,
+		Value:    result.AccessKey,
 		Path:     "/admin",
 		Domain:   domain,
 		HttpOnly: false,
@@ -122,7 +124,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessSecretName,
-		Value:    result.DeviceSecret,
+		Value:    result.AccessSecret,
 		Path:     "/admin",
 		Domain:   domain,
 		HttpOnly: true,
@@ -233,7 +235,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 		})
 	http.SetCookie(c.Writer,
 		&http.Cookie{Name: cookie.AccessKeyName,
-			Value:    result.DeviceID,
+			Value:    result.AccessKey,
 			Path:     "/admin",
 			Domain:   domain,
 			HttpOnly: false,
@@ -274,6 +276,47 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 			accessKey = accessKeyCtx
 		}
 	}
+	trimmedAccessKey := strings.TrimSpace(accessKey)
+	if trimmedAccessKey == "" {
+		secure := c.Request.TLS != nil
+		domain := strings.TrimSpace(h.cfg.App.PublicDomain)
+		exp := time.Unix(0, 0)
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     cookie.AdminAPITokenName,
+			Value:    "",
+			Path:     "/admin",
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  exp,
+			MaxAge:   -1,
+		})
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     cookie.AccessKeyName,
+			Value:    "",
+			Path:     "/admin",
+			Domain:   domain,
+			HttpOnly: false,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  exp,
+			MaxAge:   -1,
+		})
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     cookie.AccessSecretName,
+			Value:    "",
+			Path:     "/admin",
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  exp,
+			MaxAge:   -1,
+		})
+		c.Status(http.StatusNoContent)
+		return
+	}
 	var requestIP *string
 	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
 		requestIP = &ip
@@ -282,7 +325,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
 		userAgent = &ua
 	}
-	if err := h.svc.AdminLogout(ctx, strings.TrimSpace(accessKey), requestIP, userAgent); err != nil {
+	if err := h.svc.AdminLogout(ctx, trimmedAccessKey, requestIP, userAgent); err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return
@@ -342,7 +385,7 @@ func (h *AdminAuthHandler) RotateKey(c *gin.Context) {
 	const op = "iam.admin_auth.rotate_key"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	if err := h.svc.RotateAdminAPIKeyEmergency(ctx, "admin-emergency-rotate"); err != nil {
+	if err := h.svc.RotateAdminAPIKeyEmergency(ctx); err != nil {
 		if errors.Is(err, iamTaxonomy.ErrAdminRotationLockBusy) {
 			logger.HandlerWarn(c, op, err, "rotation lock busy")
 			apires.RespondUnauthorized(c, "unauthorized")
@@ -352,5 +395,5 @@ func (h *AdminAuthHandler) RotateKey(c *gin.Context) {
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
-	apires.RespondSuccess(c, map[string]any{"ok": true}, "ok")
+	apires.RespondSuccess(c, nil, "ok")
 }

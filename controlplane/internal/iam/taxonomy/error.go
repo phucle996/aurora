@@ -34,6 +34,8 @@ var (
 	ErrAdminLoginInvalidCredential   = errors.New("iam: admin login invalid credential")
 	ErrAdminLoginMFAInvalid          = errors.New("iam: admin login mfa invalid")
 	ErrAdminLoginDeviceBindingFailed = errors.New("iam: admin login device binding failed")
+	ErrAdminLoginDeviceRevoked       = errors.New("iam: admin login device is revoked")
+	ErrAdminLoginDeviceQuarantined   = errors.New("iam: admin login device is quarantined")
 	ErrAdminLoginTokenIssueFailed    = errors.New("iam: admin login token issue failed")
 	ErrAdminCriticalSignatureInvalid = errors.New("iam: admin critical signature invalid")
 	ErrAdminCriticalStepUpInvalid    = errors.New("iam: admin critical step-up invalid")

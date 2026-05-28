@@ -22,7 +22,5 @@ type AdminAPIKeyRepository interface {
 	Bootstrap(ctx context.Context, payload iamEntity.AdminBootstrapPayload) (bootstrappedAt time.Time, err error)
 	RollbackBootstrap(ctx context.Context, payload iamEntity.AdminBootstrapPayload) error
 	AcquireRotationLock(ctx context.Context) (BootstrapLock, error)
-	PrepareNextAdminAPIKey(ctx context.Context, actor string, keyHash string, expiresAt time.Time) error
-	CommitPreparedAdminAPIKeyRotation(ctx context.Context) error
-	RollbackPreparedAdminAPIKeyRotation(ctx context.Context) error
+	PrepareNextAdminAPIKey(ctx context.Context, key iamEntity.AdminAPIKey) error
 }

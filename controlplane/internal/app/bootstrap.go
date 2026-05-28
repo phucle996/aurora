@@ -34,5 +34,16 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 		}
 	}
 
+	// ------------------------------------------------------------------------
+	// 🟢 HẠNG MỤC 2: KHỞI CHẠY TIER-1 (NON-CRITICAL MODULES)
+	// ------------------------------------------------------------------------
+	// SRE Note: Nếu quá trình khởi chạy ngầm (Bootstrap) của Hypervisor bị lỗi,
+	// chúng ta chỉ ghi nhận log sự cố mà không chặn dòng khởi động toàn cục.
+	if modules.Hypervisor != nil {
+		if err := modules.Hypervisor.Bootstrap(ctx); err != nil {
+			logger.SysError("hypervisor.bootstrap.failed", err.Error())
+		}
+	}
+
 	return nil
 }

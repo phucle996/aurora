@@ -24,6 +24,14 @@ CREATE INDEX IF NOT EXISTS devices_user_id_idx ON devices(user_id);
 CREATE INDEX IF NOT EXISTS devices_status_idx ON devices(status);
 CREATE INDEX IF NOT EXISTS devices_last_seen_at_idx ON devices(last_seen_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS devices_user_client_device_uidx
+    ON devices(user_id, client_device_id)
+    WHERE client_device_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS devices_user_active_seen_idx
+    ON devices (user_id, last_seen_at DESC, created_at DESC)
+    WHERE status != 'revoked';
+
 CREATE UNIQUE INDEX IF NOT EXISTS device_challenges_nonce_uidx ON device_challenges(nonce);
 CREATE INDEX IF NOT EXISTS device_challenges_user_id_idx ON device_challenges(user_id);
 CREATE INDEX IF NOT EXISTS device_challenges_device_id_idx ON device_challenges(device_id);
