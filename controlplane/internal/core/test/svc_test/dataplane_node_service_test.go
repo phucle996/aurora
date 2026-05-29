@@ -1,4 +1,4 @@
-package coreSvcImpl
+package svc_test
 
 import (
 	"context"
@@ -6,8 +6,10 @@ import (
 	"time"
 
 	coreEntity "controlplane/internal/core/domain/entity"
+	coreSvcImpl "controlplane/internal/core/service"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // Mock repository and cache for unit testing
@@ -57,62 +59,66 @@ func (m *mockDataplaneNodeRepo) ListReadyClusters(ctx context.Context) ([]coreEn
 	return out, nil
 }
 
-type mockDataplaneCache struct {
+type mockDataplaneCacheForService struct {
 	leases  map[string]bool
 	metrics map[string]map[string]interface{}
 }
 
-func (m *mockDataplaneCache) AcquireLease(ctx context.Context, zoneID string, ttl time.Duration) error {
+func (m *mockDataplaneCacheForService) AcquireLease(ctx context.Context, zoneID string, ttl time.Duration) error {
 	m.leases[zoneID] = true
 	return nil
 }
 
-func (m *mockDataplaneCache) CheckLeaseExists(ctx context.Context, zoneID string) (bool, error) {
+func (m *mockDataplaneCacheForService) CheckLeaseExists(ctx context.Context, zoneID string) (bool, error) {
 	return m.leases[zoneID], nil
 }
 
-func (m *mockDataplaneCache) SaveClusterMetrics(ctx context.Context, clusterID string, metrics map[string]interface{}, ttl time.Duration) error {
+func (m *mockDataplaneCacheForService) SaveClusterMetrics(ctx context.Context, clusterID string, metrics map[string]interface{}, ttl time.Duration) error {
 	m.metrics[clusterID] = metrics
 	return nil
 }
 
-func (m *mockDataplaneCache) GetClusterMetrics(ctx context.Context, clusterID string) (map[string]interface{}, error) {
+func (m *mockDataplaneCacheForService) GetClusterMetrics(ctx context.Context, clusterID string) (map[string]interface{}, error) {
 	return m.metrics[clusterID], nil
 }
 
-type mockZoneRepo struct {
+func (m *mockDataplaneCacheForService) Subscribe(ctx context.Context, channel string) *goredis.PubSub {
+	return nil
+}
+
+type mockZoneRepoForService struct {
 	zones    map[uuid.UUID]coreEntity.Zone
 	services map[uuid.UUID][]coreEntity.ZoneService
 }
 
-func (m *mockZoneRepo) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
+func (m *mockZoneRepoForService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
 	return nil, nil
 }
-func (m *mockZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone) error {
+func (m *mockZoneRepoForService) CreateZone(ctx context.Context, zone coreEntity.Zone) error {
 	return nil
 }
-func (m *mockZoneRepo) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
+func (m *mockZoneRepoForService) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
 	if z, ok := m.zones[id]; ok {
 		return &z, nil
 	}
 	return nil, nil
 }
-func (m *mockZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
+func (m *mockZoneRepoForService) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
 	return nil
 }
-func (m *mockZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) error {
+func (m *mockZoneRepoForService) DeleteZone(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
-func (m *mockZoneRepo) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
+func (m *mockZoneRepoForService) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
 	return false, nil
 }
-func (m *mockZoneRepo) HasEnabledZoneServicesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
+func (m *mockZoneRepoForService) HasEnabledZoneServicesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
 	return false, nil
 }
-func (m *mockZoneRepo) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
+func (m *mockZoneRepoForService) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
 	return m.services[zoneID], nil
 }
-func (m *mockZoneRepo) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
+func (m *mockZoneRepoForService) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	return nil, nil
 }
 
@@ -123,11 +129,11 @@ func TestVerifyClusterStatus_FastPath(t *testing.T) {
 		clusters: make(map[string]coreEntity.DataplaneNode),
 		status:   make(map[string]coreEntity.DataplaneNodeStatus),
 	}
-	cache := &mockDataplaneCache{
+	cache := &mockDataplaneCacheForService{
 		leases:  make(map[string]bool),
 		metrics: make(map[string]map[string]interface{}),
 	}
-	zoneRepo := &mockZoneRepo{
+	zoneRepo := &mockZoneRepoForService{
 		zones:    make(map[uuid.UUID]coreEntity.Zone),
 		services: make(map[uuid.UUID][]coreEntity.ZoneService),
 	}
@@ -135,7 +141,7 @@ func TestVerifyClusterStatus_FastPath(t *testing.T) {
 	// 1. Setup Lease on Cache (simulating active heartbeat)
 	cache.leases[zoneID.String()] = true
 
-	svc := NewDataplaneNodeService(repo, cache, zoneRepo)
+	svc := coreSvcImpl.NewDataplaneNodeService(repo, cache, zoneRepo)
 
 	// 2. Call VerifyClusterStatus
 	status, err := svc.VerifyClusterStatus(context.Background(), zoneID.String())
@@ -161,11 +167,11 @@ func TestVerifyClusterStatus_SlowPath_LeaseExpired(t *testing.T) {
 		clusters: make(map[string]coreEntity.DataplaneNode),
 		status:   make(map[string]coreEntity.DataplaneNodeStatus),
 	}
-	cache := &mockDataplaneCache{
+	cache := &mockDataplaneCacheForService{
 		leases:  make(map[string]bool),
 		metrics: make(map[string]map[string]interface{}),
 	}
-	zoneRepo := &mockZoneRepo{
+	zoneRepo := &mockZoneRepoForService{
 		zones:    make(map[uuid.UUID]coreEntity.Zone),
 		services: make(map[uuid.UUID][]coreEntity.ZoneService),
 	}
@@ -184,7 +190,7 @@ func TestVerifyClusterStatus_SlowPath_LeaseExpired(t *testing.T) {
 	// Simulation: Lease key on Redis does not exist (expired)
 	cache.leases[zoneID.String()] = false
 
-	svc := NewDataplaneNodeService(repo, cache, zoneRepo)
+	svc := coreSvcImpl.NewDataplaneNodeService(repo, cache, zoneRepo)
 
 	// Call VerifyClusterStatus
 	status, err := svc.VerifyClusterStatus(context.Background(), zoneID.String())

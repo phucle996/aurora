@@ -55,10 +55,18 @@ type DataplaneCache interface {
 
 	// GetClusterMetrics đọc metrics động của cụm Dataplane phục vụ cho việc cân bằng tải.
 	GetClusterMetrics(ctx context.Context, clusterID string) (map[string]interface{}, error)
+
+	// Subscribe đăng ký lắng nghe tin nhắn từ Redis Pub/Sub channel.
+	Subscribe(ctx context.Context, channel string) *goredis.PubSub
 }
 
 type DataplaneCacheImpl struct {
 	rdb *goredis.Client
+}
+
+// Subscribe thực hiện subscribe vào một channel cụ thể trên Redis.
+func (c *DataplaneCacheImpl) Subscribe(ctx context.Context, channel string) *goredis.PubSub {
+	return c.rdb.Subscribe(ctx, channel)
 }
 
 // NewDataplaneCacheImpl khởi tạo thực thể Cache triển khai cho Dataplane.

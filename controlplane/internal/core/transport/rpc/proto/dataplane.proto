@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package core.rpc;
+
+option go_package = "controlplane/internal/core/transport/rpc/proto";
+
+message HeartbeatRequest {
+  string cluster_id = 1;
+  string zone_id = 2;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+}
+
+service DataplaneRegistryService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}

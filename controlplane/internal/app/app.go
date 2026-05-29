@@ -211,6 +211,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	app.grpc = g
 
+	if g != nil && g.Server != nil && g.Server.Server != nil {
+		modules.Core.RegisterGRPCServices(g.Server.Server)
+	}
+
 	// Register tất cả HTTP routes sau khi modules đã sẵn sàng.
 	RegisterRoutes(engine, modules)
 

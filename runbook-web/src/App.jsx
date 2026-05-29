@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import Sidebar from './components/Sidebar'
-import Header from './components/Header'
-import Home from './pages/Home'
-import AuthTokenModel from './pages/AuthTokenModel'
+import Sidebar from './components/Sidebar.jsx'
+import Header from './components/Header.jsx'
+import Home from './pages/Home.jsx'
+import AuthTokenModel from './pages/AuthTokenModel.jsx'
+import { useTheme } from './lib/theme.js'
 
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [currentPage, setCurrentPage] = useState('auth-token-model')
+  const theme = useTheme()
 
   const renderPage = () => {
     switch (currentPage) {
@@ -19,7 +21,7 @@ function App() {
   }
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100">
+    <div className="flex h-screen bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <Sidebar
         open={sidebarOpen}
         currentPage={currentPage}
@@ -30,6 +32,9 @@ function App() {
         <Header
           onMenuClick={() => setSidebarOpen(!sidebarOpen)}
           currentPage={currentPage}
+          onNavigate={setCurrentPage}
+          theme={theme.theme}
+          onToggleTheme={theme.toggle}
         />
         <main className="flex-1 overflow-y-auto">
           {renderPage()}

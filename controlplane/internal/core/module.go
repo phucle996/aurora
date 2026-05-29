@@ -1,7 +1,37 @@
+// ======================================================================================================
+// 📂 MODULE: controlplane/internal/core/module.go
+//            Đặc Tả Quản Lý Vòng Đời & Inject Dependency Core Module
+// ======================================================================================================
+//
+// 📜 HIỆP ĐỒNG THIẾT KẾ & BOOTSTRAP AN TOÀN (DESIGN CONTRACT & LIFECYCLE):
+//   - Đóng vai trò là trung tâm lắp ghép đồ thị phụ thuộc (Dependency Graph Builder) của Core Module.
+//   - Quản lý vòng đời chạy nền (Start/Stop) của các tiến trình background an toàn:
+//
+//     1) GRACEFUL LIFECYCLE MANAGEMENT:
+//        * Đảm bảo mọi background workers (Invalidation Bus, Dataplane Orchestrator, Redis Subscriber)
+//          đều được kiểm soát bởi các context cancellation biệt lập.
+//        * Tắt gracefully sạch sẽ toàn bộ tài nguyên khi hệ thống shutdown, ngăn chặn rò rỉ RAM/Socket.
+//
+//     2) PORTABLE gRPC REGISTRATION PORT:
+//        * Cung cấp phương thức `RegisterGRPCServices` cho tầng app bootstrap đăng ký các API RPC của Core.
+//
+// 🎯 SOURCE OF TRUTH (SoT):
+//   - Định hình toàn bộ sơ đồ wiring của Core Module.
+//
+// 🔒 RANH GIỚI BẢO MẬT & KIẾN TRÚC (CRITICAL ARCHITECTURAL BOUNDARY):
+//   - Ranh giới thiết kế DI (Dependency Injection) khép kín. Không phơi bày cấu trúc persistance thô ra ngoài.
+//
+// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
+//   - Bất kỳ lỗi khởi tạo dependency bắt buộc (DB/Redis) sẽ chặn đứng tiến trình chạy và ném lỗi sớm (Fail-Fast).
+//
+// ======================================================================================================
+
 package core
 
 import (
 	"context"
+	"fmt"
+
 	"controlplane/internal/config"
 	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
@@ -10,37 +40,35 @@ import (
 	coreRepoImpl "controlplane/internal/core/repository"
 	coreSvcImpl "controlplane/internal/core/service"
 	coreHandler "controlplane/internal/core/transport/http/handler"
+	coreRpcHandler "controlplane/internal/core/transport/rpc/handler"
+	coreProto "controlplane/internal/core/transport/rpc/proto"
 	"controlplane/pkg/logger"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
 )
 
 type Module struct {
-	cfg                   *config.Config
-	SecretRepository      coreRepoInterface.SecretRepository
-	SecretRotationService coreSvcInterface.SecretRotationService
-	SecretReadService     coreSvcInterface.SecretReadService
-	RuntimeSecretProvider coreSvcInterface.RuntimeSecretProvider
-	ZoneRepository        coreRepoInterface.ZoneRepository
-	ZoneService           coreSvcInterface.ZoneService
-	ZoneHandler           *coreHandler.ZoneHandler
-	DataplaneNodeRepository coreRepoInterface.DataplaneNodeRepository
-	DataplaneNodeService    coreSvcInterface.DataplaneNodeService
-	DataplaneOrchestrator   *coreSvcImpl.DataplaneOrchestrator
-	invalidationBus       *coreCache.RedisSecretInvalidationBus
-	listenCancel          context.CancelFunc
-	orchestratorCancel    context.CancelFunc
+	cfg                          *config.Config
+	SecretRepository             coreRepoInterface.SecretRepository
+	SecretRotationService        coreSvcInterface.SecretRotationService
+	SecretReadService            coreSvcInterface.SecretReadService
+	RuntimeSecretProvider        coreSvcInterface.RuntimeSecretProvider
+	ZoneRepository               coreRepoInterface.ZoneRepository
+	ZoneService                  coreSvcInterface.ZoneService
+	ZoneHandler                  *coreHandler.ZoneHandler
+	DataplaneNodeRepository      coreRepoInterface.DataplaneNodeRepository
+	DataplaneNodeService         coreSvcInterface.DataplaneNodeService
+	DataplaneOrchestrator        *coreSvcImpl.DataplaneOrchestrator
+	DataplaneHeartbeatSubscriber *coreSvcImpl.DataplaneHeartbeatSubscriber
+	invalidationBus              *coreCache.RedisSecretInvalidationBus
+	listenCancel                 context.CancelFunc
+	orchestratorCancel           context.CancelFunc
+	subscriberCancel             context.CancelFunc
 }
 
-// NewModule dựng dependency graph của Core và trả về lỗi wiring/bootstrap để
-// caller ở app-layer quyết định policy warning/fatal.
-//
-// Contract ổn định:
-// - Core phải cung cấp được secret runtime + security provider cho các module khác.
-// - Lỗi dependency bắt buộc (config/db/security provider) phải return error sớm.
-// - Không panic trong flow bình thường; quyết định dừng app nằm ở app module.
+// NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
 func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Module, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("core module: config is required")
@@ -88,28 +116,39 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Modu
 	if dataplaneOrchestrator == nil {
 		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane orchestrator is nil")
 	}
+	dataplaneHeartbeatSubscriber := coreSvcImpl.NewDataplaneHeartbeatSubscriber(dataplaneCache, dataplaneNodeService)
+	if dataplaneHeartbeatSubscriber == nil {
+		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane subscriber is nil")
+	}
 
 	return &Module{
-		cfg:                     cfg,
-		SecretRepository:        repo,
-		SecretRotationService:   rotationService,
-		SecretReadService:       readService,
-		RuntimeSecretProvider:   provider,
-		ZoneRepository:          zoneRepo,
-		ZoneService:             zoneService,
-		ZoneHandler:             zoneHandler,
-		DataplaneNodeRepository: dataplaneNodeRepo,
-		DataplaneNodeService:    dataplaneNodeService,
-		DataplaneOrchestrator:   dataplaneOrchestrator,
-		invalidationBus:         bus,
+		cfg:                          cfg,
+		SecretRepository:             repo,
+		SecretRotationService:        rotationService,
+		SecretReadService:            readService,
+		RuntimeSecretProvider:        provider,
+		ZoneRepository:               zoneRepo,
+		ZoneService:                  zoneService,
+		ZoneHandler:                  zoneHandler,
+		DataplaneNodeRepository:      dataplaneNodeRepo,
+		DataplaneNodeService:         dataplaneNodeService,
+		DataplaneOrchestrator:        dataplaneOrchestrator,
+		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
+		invalidationBus:              bus,
 	}, nil
 }
 
-// Bootstrap khởi tạo các side-effect lâu dài của module:
-// - Listen global invalidation bus.
-// - Ensure 4 initial secret families.
-//
-// Lỗi Bootstrap được trả về để app-layer quyết định shutdown.
+// RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
+func (m *Module) RegisterGRPCServices(server *grpc.Server) {
+	if m == nil || m.DataplaneNodeService == nil {
+		return
+	}
+	handler := coreRpcHandler.NewDataplaneGRPCHandler(m.DataplaneNodeService)
+	coreProto.RegisterDataplaneRegistryServiceServer(server, handler)
+	logger.SysInfo("grpc", "registered DataplaneRegistryService onto gRPC server")
+}
+
+// Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
 	if m == nil || m.SecretRotationService == nil {
 		return nil
@@ -128,6 +167,12 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 		m.orchestratorCancel = cancel
 		go m.DataplaneOrchestrator.Start(orchCtx)
 	}
+	if m.DataplaneHeartbeatSubscriber != nil && m.subscriberCancel == nil {
+		subCtx, cancel := context.WithCancel(ctx)
+		m.subscriberCancel = cancel
+		go m.DataplaneHeartbeatSubscriber.Start(subCtx)
+	}
+
 	families := []coreEntity.BootstrapSecretFamily{
 		{Code: "access_token", Name: "Access Token", Description: "Primary signing secret for user access tokens."},
 		{Code: "refresh_token", Name: "Refresh Token", Description: "Primary signing secret for refresh token flows."},
@@ -142,7 +187,7 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-// Stop hủy các background goroutine của module.
+// Stop hủy các background goroutine của module Core an toàn.
 func (m *Module) Stop() {
 	if m == nil {
 		return
@@ -154,5 +199,9 @@ func (m *Module) Stop() {
 	if m.orchestratorCancel != nil {
 		m.orchestratorCancel()
 		m.orchestratorCancel = nil
+	}
+	if m.subscriberCancel != nil {
+		m.subscriberCancel()
+		m.subscriberCancel = nil
 	}
 }
