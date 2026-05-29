@@ -1,26 +1,73 @@
+# ============================================================================
+# 🌐 CLOUD-NATIVE HIGH-AVAILABILITY DEPLOYMENT ARCHITECTURE (DEVELOPMENT PLATFORM)
+# ============================================================================
+# 
+# 📌 VAI TRÒ HỆ THỐNG & TRIẾT LÝ THIẾT KẾ (SRE & ARCHITECTURE SPECIFICATIONS):
+#   - Đây là bản thiết kế hoàn chỉnh cho hệ thống Cloud-Native phân tán, mô phỏng môi trường
+#     Production độ sẵn sàng cao (High-Availability - HA) trực tiếp tại môi trường Local Development.
+#   - Đảm bảo tính cô lập dữ liệu (data isolation), loại bỏ Single Point of Failure (SPoF),
+#     và tối ưu hóa hiệu năng truyền dẫn mạng liên vùng (eliminating cross-region network latency).
+# 
+# 🛠️ MÔ HÌNH THÀNH PHẦN (SYSTEM MODULES OVERVIEW):
+#   1. 🛑 CONTROLPLANE CLUSTER (HA - 3 NODES):
+#      - controlplane1, controlplane2, controlplane3 phân tán tải và đảm bảo failover.
+#      - Lắng nghe APIs (HTTP & gRPC) phía sau Envoy Load Balancer trung tâm.
+#   2. 🛡️ ENVOY INGRESS GATEWAY (MAIN EDGE PROXY):
+#      - Định tuyến thông minh, TLS Termination, và Load Balancing (Least Request policy).
+#   3. 📦 TRỤC DỮ LIỆU BỀN VỮNG (PERSISTENCE LAYER):
+#      - PostgreSQL 17 (Cơ sở dữ liệu trung tâm chứa thông tin Tenant, Zone, Audit, v.v.).
+#      - Redis Core (Quản lý Identity Sessions, Rate Limiting, và Cache trạng thái).
+#   4. 🔒 PHÂN LẬP CACHE VÀ HÀNG ĐỢI ZONE-SPECIFIC (REDIS ISOLATION):
+#      - redis-job (Port 6380): Broker quản lý và phân phối Job Queue (Redis Streams) toàn hệ thống.
+#      - redis-dataplane-z1 (Port 6381): Cache nội bộ cô lập của Zone 1 (Asia Southeast).
+#      - redis-dataplane-z2 (Port 6382): Cache nội bộ cô lập của Zone 2 (US West).
+#   5. 🚀 DATAPLANE NODE CLUSTER (RUST-BASED RUNTINES):
+#      - dataplane-z1-n1: Phục vụ Zone 1 (stateless, tiêu thụ job, đồng bộ local policy qua Redis Z1).
+#      - dataplane-z2-n1 & dataplane-z2-n2: Cụm HA Active-Active phục vụ US West (Zone 2).
+#   6. 🔀 ENVOY ZONE INGRESS GATEWAYS (DATAPLANE LOAD BALANCERS):
+#      - envoy-zone1 (Port 8081): Định tuyến gRPC trực tiếp vào Node đơn lẻ của Zone 1.
+#      - envoy-zone2 (Port 8082): Phân phối gRPC Round-Robin & Active Health Checks cho Zone 2.
+#   7. 📊 HỆ THỐNG QUAN SÁT TOÀN DIỆN (360-DEGREE OBSERVABILITY):
+#      - OpenTelemetry Collector, Prometheus, Grafana Loki, Tempo, Promtail, Grafana.
+#      - Cho phép Trace, Metrics, Logs liên thông mượt mà qua các nhãn định danh hạ tầng.
+
 services:
+
+  # ============================================================================
+  # 🛑 PHẦN 1: CONTROLPLANE CLUSTER - HIGH AVAILABILITY (HA) APPLICATION TIERS
+  # ============================================================================
+  # Cụm ba (3) thực thể Controlplane chạy song song để đảm bảo tính sẵn sàng cao.
+  # Nếu một node bị crash hoặc bảo trì, hệ thống vẫn tiếp tục vận hành bình thường.
+  # gRPC và HTTP traffic sẽ được Envoy phân phối đều dựa trên thuật toán Least Request.
+
   controlplane1:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      # Chạy Dockerfile.prod: biên dịch Go binary tĩnh (CGO_ENABLED=0), image runtime chỉ ~30MB.
+      # Không có hot-reload. Mỗi lần thay đổi code cần `docker compose up --build` để rebuild.
+      dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
     container_name: controlplane-dev-1
-    working_dir: /app
+    init: true
     env_file:
       - .env
     volumes:
-      - .:/app
-      - controlplane_go_mod:/go/pkg/mod
-      - ./tmp:/app/tmp
-      - ./dev/tls:/app/dev/tls
-      - ./policies.yaml:/app/runtime/policies/policy.yaml:ro
+      # Mount TLS certs vào đúng path mà binary prod đọc (xem GRPC_TLS_* trong .env).
+      - ./dev/tls:/etc/controlplane/tls:ro
+      # Binary prod chạy với WORKDIR /var/lib/controlplane và đọc policy tại
+      # 'runtime/policies/policy.yaml' (path tương đối). Mount vào đúng path tuyệt đối.
+      - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
       APP_NODE_ID: controlplane-dev-1
       PSQL_HOST: psql
       PSQL_PORT: "5432"
+      # Override TLS paths để khớp với mount point mới của prod container.
+      GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
+      GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
+      GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
     depends_on:
       psql:
         condition: service_healthy
@@ -39,25 +86,25 @@ services:
   controlplane2:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
     container_name: controlplane-dev-2
-    working_dir: /app
+    init: true
     env_file:
       - .env
     volumes:
-      - .:/app
-      - controlplane_go_mod:/go/pkg/mod
-      - ./tmp:/app/tmp
-      - ./dev/tls:/app/dev/tls
-      - ./policies.yaml:/app/runtime/policies/policy.yaml:ro
+      - ./dev/tls:/etc/controlplane/tls:ro
+      - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
       APP_NODE_ID: controlplane-dev-2
       PSQL_HOST: psql
       PSQL_PORT: "5432"
+      GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
+      GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
+      GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
     depends_on:
       psql:
         condition: service_healthy
@@ -76,25 +123,25 @@ services:
   controlplane3:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
     container_name: controlplane-dev-3
-    working_dir: /app
+    init: true
     env_file:
       - .env
     volumes:
-      - .:/app
-      - controlplane_go_mod:/go/pkg/mod
-      - ./tmp:/app/tmp
-      - ./dev/tls:/app/dev/tls
-      - ./policies.yaml:/app/runtime/policies/policy.yaml:ro
+      - ./dev/tls:/etc/controlplane/tls:ro
+      - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
       APP_NODE_ID: controlplane-dev-3
       PSQL_HOST: psql
       PSQL_PORT: "5432"
+      GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
+      GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
+      GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
     depends_on:
       psql:
         condition: service_healthy
@@ -110,19 +157,28 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # ============================================================================
+  # 🛡️ PHẦN 2: CENTRAL ENVOY EDGE INGRESS CONTROLLER
+  # ============================================================================
+  # Cổng ngõ (Ingress Gateway) phân tán tải tối ưu cho toàn bộ cụm Controlplane.
+  # Envoy chịu trách nhiệm terminate kết nối SSL/TLS, xử lý HTTP/2, gRPC proxy,
+  # và phân chia tải thông qua giải thuật LEAST_REQUEST để tối ưu hóa tài nguyên.
+
   envoy:
     image: envoyproxy/envoy:v1.33.2
     container_name: controlplane-envoy
     command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
     volumes:
+      # Cung cấp cấu hình định tuyến tĩnh và động v3 API cho Envoy.
       - ./dev/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      # Cung cấp chứng chỉ SSL chất lượng cao phục vụ TLS termination tại Edge.
       - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
       - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
     ports:
-      - "80:8080"
-      - "443:8443"
-      - "28000:8080"
-      - "29901:9901"
+      - "80:8080"      # Cổng HTTP tiêu chuẩn định tuyến đến Cloud UI/Admin UI
+      - "443:8443"     # Cổng HTTPS bảo mật terminate TLS cho các giao tiếp an toàn
+      - "28000:8080"   # Cổng gRPC / API Gateway phục vụ các ứng dụng khách bên ngoài
+      - "29901:9901"   # Cổng Envoy Administration & Statistics Dashboard để giám sát hiệu năng
     depends_on:
       controlplane1:
         condition: service_started
@@ -134,6 +190,12 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ============================================================================
+  # 📦 PHẦN 3: CENTRAL DATA & STATE PERSISTENCE LAYERS
+  # ============================================================================
+  # Hệ thống lưu trữ dữ liệu trung tâm bền vững (Centralized Storage Systems).
+  # Sử dụng PostgreSQL 17 cho dữ liệu quan hệ có cấu trúc và Redis Core cho Cache/Sessions.
+
   psql:
     image: postgres:17-bookworm
     container_name: controlplane-psql
@@ -142,10 +204,12 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "15433:5432"
+      - "15433:5432"  # Ánh xạ ra cổng host độc lập để tránh xung đột với DB cục bộ của nhà phát triển
     volumes:
+      # Sử dụng named volume để lưu trữ dữ liệu bền vững, tránh mất mát dữ liệu khi container bị hủy.
       - controlplane_psql_data:/var/lib/postgresql/data
     healthcheck:
+      # Thực thi pg_isready định kỳ để đảm bảo DB chỉ nhận kết nối khi đã sẵn sàng hoàn toàn.
       test: ["CMD-SHELL", "pg_isready -U postgres -d controlplane"]
       interval: 5s
       timeout: 5s
@@ -155,9 +219,9 @@ services:
   redis:
     image: redis:8-bookworm
     container_name: controlplane-redis
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes"] # Bật AOF (Append Only File) để tối đa hóa tính bền vững dữ liệu
     ports:
-      - "16380:6379"
+      - "16380:6379"  # Port core Redis dùng cho Identity Sessions và Rate Limiting
     volumes:
       - controlplane_redis_data:/data
     healthcheck:
@@ -167,16 +231,216 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # ============================================================================
+  # 🔒 PHẦN 4: ISOLATED REDIS CACHES PER GEOGRAPHIC ZONE (HIGH-AVAILABILITY)
+  # ============================================================================
+  # TRIẾT LÝ SRE VÀ THIẾT KẾ CÔ LẬP DỮ LIỆU (DATA ISOLATION & LATENCY OPTIMIZATION):
+  #   - Nhằm đạt được tính độc lập hoàn toàn giữa các vùng địa lý, loại bỏ cross-region latency.
+  #   - redis-job (Cổng 6380): Chuyên dụng để phân phối Job Queue (Streams).
+  #   - redis-dataplane-z1 (Cổng 6381): Cache cục bộ dành riêng cho Phân vùng Đông Nam Á (Zone 1).
+  #   - redis-dataplane-z2 (Cổng 6382): Cache cục bộ dành riêng cho Phân vùng US West (Zone 2).
+  #   - Nếu một Zone bị cô lập do mất kết nối mạng hoặc lỗi hạ tầng, các Zone khác vẫn hoạt động
+  #     bình thường mà không bị ảnh hưởng chéo (mục tiêu cốt lõi của tính năng SRE HA).
+
+  redis-job:
+    image: redis:7.2-alpine
+    container_name: controlplane-redis-job
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - controlplane_redis_job_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis-dataplane-z1:
+    image: redis:7.2-alpine
+    container_name: controlplane-redis-dataplane-z1
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6381:6379"
+    volumes:
+      - controlplane_redis_dp_z1_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis-dataplane-z2:
+    image: redis:7.2-alpine
+    container_name: controlplane-redis-dataplane-z2
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6382:6379"
+    volumes:
+      - controlplane_redis_dp_z2_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================================
+  # 🚀 PHẦN 5: DATAPLANE ZONE 1 (SINGLE RUST-NODE - ASIA SOUTHEAST ZONE)
+  # ============================================================================
+  # Phân vùng Địa lý 1 (Zone 1 - Asia Southeast):
+  #   - Nhận nhiệm vụ xử lý tác vụ cục bộ trong khu vực Đông Nam Á.
+  #   - Định danh duy nhất bởi UUIDv7 đã được seed vào Postgres: 01903e8c-55c1-7da3-87de-6e69622d1df7.
+  #   - Được bổ trợ cổng bảo mật gRPC Load Balancing bởi Envoy-Zone1 tại Port 8081.
+
+  dataplane-z1-n1:
+    build:
+      context: ../dataplane
+      # Dockerfile.prod: multi-stage Rust build → binary tĩnh tối giản trong debian:slim.
+      # Không cargo-watch, không source mount, không signal routing issue.
+      dockerfile: Dockerfile.prod
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: dataplane-z1-n1
+    init: true
+    volumes:
+      # Mount policy config cho binary prod đọc từ path chuẩn /etc/dataplane/.
+      - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
+    environment:
+      ZONE_ID: "01903e8c-55c1-7da3-87de-6e69622d1df7"
+      REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
+      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
+      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
+      # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
+      POLICY_FILE: /etc/dataplane/policy.yaml
+      APP_LOG_LEVEL: "info"
+    depends_on:
+      controlplane1:
+        condition: service_started
+      redis-job:
+        condition: service_healthy
+      redis-dataplane-z1:
+        condition: service_healthy
+    restart: unless-stopped
+
+  envoy-zone1:
+    image: envoyproxy/envoy:v1.33.2
+    container_name: envoy-zone1
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+    volumes:
+      # Mount tệp cấu hình chuyên dụng định tuyến gRPC trực tiếp cho Zone 1.
+      - ./dev/envoy/envoy-zone1.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8081:8080" # Expose cổng Ingress gRPC của Zone 1 ra ngoài máy host tại cổng 8081
+    depends_on:
+      dataplane-z1-n1:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================================================
+  # 🚀 PHẦN 6: DATAPLANE ZONE 2 (HIGH-AVAILABILITY CLUSTER - US WEST ZONE)
+  # ============================================================================
+  # Phân vùng Địa lý 2 (Zone 2 - US West):
+  #   - Bản thiết kế High-Availability đích thực: Chạy hai (2) nodes Rust hoạt động Active-Active.
+  #   - Định danh chung bởi UUIDv7 của Zone 2: 01903e8c-55c1-7da3-87de-6e69622d1df8.
+  #   - Phía trước là Envoy-Zone2 (Port 8082) có nhiệm vụ phân bổ tải gRPC Round-Robin
+  #     kèm theo cơ chế Active Health Checks để tự động phát hiện và loại bỏ node bị lỗi.
+
+  dataplane-z2-n1:
+    build:
+      context: ../dataplane
+      dockerfile: Dockerfile.prod
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: dataplane-z2-n1
+    init: true
+    volumes:
+      - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
+    environment:
+      ZONE_ID: "01903e8c-55c1-7da3-87de-6e69622d1df8"
+      REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
+      # Cả hai Node trong Zone 2 đều trỏ chung về bộ đệm cách ly của Zone 2 để chia sẻ dữ liệu đồng nhất.
+      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z2:6379/0"
+      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-2:9090"
+      POLICY_FILE: /etc/dataplane/policy.yaml
+      APP_LOG_LEVEL: "info"
+    depends_on:
+      controlplane2:
+        condition: service_started
+      redis-job:
+        condition: service_healthy
+      redis-dataplane-z2:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dataplane-z2-n2:
+    build:
+      context: ../dataplane
+      dockerfile: Dockerfile.prod
+      args:
+        LOCAL_USER: phucle
+        LOCAL_UID: 1000
+        LOCAL_GID: 1000
+    container_name: dataplane-z2-n2
+    init: true
+    volumes:
+      - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
+    environment:
+      ZONE_ID: "01903e8c-55c1-7da3-87de-6e69622d1df8"
+      REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
+      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z2:6379/0"
+      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-3:9090"
+      POLICY_FILE: /etc/dataplane/policy.yaml
+      APP_LOG_LEVEL: "info"
+    depends_on:
+      controlplane3:
+        condition: service_started
+      redis-job:
+        condition: service_healthy
+      redis-dataplane-z2:
+        condition: service_healthy
+    restart: unless-stopped
+
+  envoy-zone2:
+    image: envoyproxy/envoy:v1.33.2
+    container_name: envoy-zone2
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info"]
+    volumes:
+      # Cấu hình định tuyến Round-Robin thông minh cho các Dataplane Nodes thuộc Zone 2.
+      - ./dev/envoy/envoy-zone2.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8082:8080" # Expose cổng Ingress gRPC của Zone 2 ra ngoài máy host tại cổng 8082
+    depends_on:
+      dataplane-z2-n1:
+        condition: service_started
+      dataplane-z2-n2:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================================================
+  # 📊 PHẦN 7: INDUSTRIAL 360-DEGREE OBSERVABILITY INFRASTRUCTURE
+  # ============================================================================
+  # Trục giám sát hiệu năng sản xuất tiêu chuẩn công nghiệp (Production-Grade Observability).
+  # Kết hợp Metrics (Prometheus), Logs tập trung (Loki + Promtail), Traces phân tán (Tempo),
+  # và OpenTelemetry Collector làm bộ điều phối luồng dữ liệu giám sát thống nhất.
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.136.0
     container_name: controlplane-otel-collector
     command:
       - "--config=/etc/otelcol-contrib/config.yaml"
     volumes:
+      # Nạp tệp cấu hình các receivers, processors, và exporters của OpenTelemetry.
       - ./dev/otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
     ports:
-      - "14317:4317"
-      - "14318:4318"
+      - "14317:4317"  # Cổng nhận OpenTelemetry gRPC Traces & Metrics
+      - "14318:4318"  # Cổng nhận OpenTelemetry HTTP Traces & Metrics
     restart: unless-stopped
 
   prometheus:
@@ -185,12 +449,13 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      # Bật tính năng live-reload thông qua HTTP POST request để tránh restart server khi đổi config.
       - "--web.enable-lifecycle"
     volumes:
       - ./dev/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - controlplane_prometheus_data:/prometheus
     ports:
-      - "19091:9090"
+      - "19091:9090"  # Cổng xem biểu đồ và truy vấn Prometheus UI
     restart: unless-stopped
 
   loki:
@@ -202,7 +467,7 @@ services:
       - ./dev/loki/loki-config.yml:/etc/loki/config.yml:ro
       - controlplane_loki_data:/loki
     ports:
-      - "13100:3100"
+      - "13100:3100"  # REST API của Loki cung cấp dữ liệu logs cho Grafana
     restart: unless-stopped
 
   tempo:
@@ -214,7 +479,7 @@ services:
       - ./dev/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
       - controlplane_tempo_data:/var/tempo
     ports:
-      - "13200:3200"
+      - "13200:3200"  # REST API của Tempo cung cấp trace phân tán cho Grafana
     restart: unless-stopped
 
   promtail:
@@ -223,8 +488,11 @@ services:
     command:
       - "-config.file=/etc/promtail/config.yml"
     volumes:
+      # Nạp cấu hình chỉ thị thư mục log và cơ chế gán nhãn Loki cho Promtail.
       - ./dev/loki/promtail-config.yml:/etc/promtail/config.yml:ro
+      # Mount Docker socket để Promtail tự động trích xuất siêu dữ liệu (metadata) của các containers.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Đọc logs trực tiếp từ file logs thô của hệ thống Docker Engine.
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - controlplane_promtail_positions:/tmp
     depends_on:
@@ -236,14 +504,16 @@ services:
     image: grafana/grafana:12.2.0
     container_name: controlplane-grafana
     environment:
+      # Tài khoản quản trị tối cao của hệ thống Dashboard Grafana
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false" # Khóa tính năng tự đăng ký để bảo đảm an ninh mạng nội bộ
     volumes:
       - controlplane_grafana_data:/var/lib/grafana
+      # Tự động nạp sẵn các Data Sources (Loki, Tempo, Prometheus) và các Dashboards tiêu chuẩn.
       - ./dev/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "13001:3000"
+      - "13001:3000"  # Cổng UI chính thức của Grafana để giám sát và phân tích toàn hệ thống
     depends_on:
       prometheus:
         condition: service_started
@@ -255,6 +525,12 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ============================================================================
+  # 💻 PHẦN 8: FRONTEND DEVELOPER WORKSPACE APPLICATIONS
+  # ============================================================================
+  # Các giao diện điều khiển (User Interfaces) viết bằng React/Next.js/Vite.
+  # Phục vụ lập trình viên quản trị hệ thống, khách hàng Cloud, và quy trình xử lý sự cố.
+
   cloud-ui:
     image: node:20-alpine
     container_name: cloud-ui-dev
@@ -264,8 +540,9 @@ services:
       - cloud_ui_node_modules:/workspace/node_modules
     command: ["sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --hostname 0.0.0.0 --port 3000"]
     ports:
-      - "3000:3000"
+      - "3000:3000"   # Cổng truy cập của Cloud Console UI dành cho Tenants
     environment:
+      # Bật chế độ Polling giám sát file thay đổi trong container chạy trên nền Linux/WSL
       CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
 
@@ -278,7 +555,7 @@ services:
       - admin_ui_node_modules:/workspace/node_modules
     command: ["sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --port 5173"]
     ports:
-      - "5173:5173"
+      - "5173:5173"   # Cổng truy cập của Admin Portal dành cho Quản trị viên tối cao
     environment:
       CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
@@ -292,21 +569,50 @@ services:
       - runbook_web_node_modules:/workspace/node_modules
     command: ["sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --port 5173"]
     ports:
-      - "5174:5173"
+      - "5174:5173"   # Giao diện quản lý quy trình xử lý sự cố tự động (SRE Runbooks)
     environment:
       CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
 
+# ============================================================================
+# 💾 ĐỊNH NGHĨA CÁC VOLUMES BỀN VỮNG TOÀN CỤM (PERSISTENT NAMED VOLUMES)
+# ============================================================================
+# Định nghĩa các ổ đĩa ảo có tên (named volumes) được quản lý trực tiếp bởi Docker.
+# Đảm bảo dữ liệu của cơ sở dữ liệu quan hệ, bộ nhớ đệm Redis, logs, metrics,
+# và cache biên dịch phần mềm không bị xóa mất khi các containers bị tắt hay xoay vòng.
 
 volumes:
+  # Caching thư viện Golang cho cụm Controlplane
   controlplane_go_mod:
+  # Thư mục chứa tệp dữ liệu vật lý của PostgreSQL
   controlplane_psql_data:
+  # Thư mục lưu snapshot dữ liệu của Redis Core
   controlplane_redis_data:
+  # Cơ sở dữ liệu chuỗi thời gian của Prometheus
   controlplane_prometheus_data:
+  # Bộ đệm dữ liệu dấu vết phân tán của Grafana Tempo
   controlplane_tempo_data:
+  # Bộ đệm logs của Grafana Loki
   controlplane_loki_data:
+  # Vị trí lưu dấu chỉ mục đọc logs của Promtail
   controlplane_promtail_positions:
+  # Dữ liệu cấu hình người dùng và cài đặt Grafana Dashboards
   controlplane_grafana_data:
+  # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
   cloud_ui_node_modules:
   admin_ui_node_modules:
   runbook_web_node_modules:
+  # Ổ đĩa lưu trữ hàng đợi công việc Redis Job
+  controlplane_redis_job_data:
+  # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 1
+  controlplane_redis_dp_z1_data:
+  # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 2
+  controlplane_redis_dp_z2_data:
+  # Các ổ đĩa lưu cache biên dịch Cargo Target và Cargo Registry độc lập cho từng Dataplane Node
+  # giúp triệt tiêu tuyệt đối lỗi ghi đè file nhị phân chéo khi các cụm Rust Nodes khởi động song song.
+  dataplane_cargo_target_z1:
+  dataplane_cargo_cache_z1:
+  dataplane_cargo_target_z2_n1:
+  dataplane_cargo_cache_z2_n1:
+  dataplane_cargo_target_z2_n2:
+  dataplane_cargo_cache_z2_n2:

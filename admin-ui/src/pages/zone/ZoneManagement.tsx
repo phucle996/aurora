@@ -108,6 +108,9 @@ function normalizeZoneRow(item: ZoneRow): ZoneRow {
   }
 }
 
+// Global Promise Deduplicator to eliminate duplicate network requests in React 18 Strict Mode/remounts.
+let activeZonesPromise: Promise<any> | null = null
+
 export default function ZoneManagementPage() {
   usePageMeta('Zone Management | Aurora Admin', 'Manage zones, statuses, and service availability across regions.')
   const [zones, setZones] = useState<ZoneRow[]>([])
@@ -121,24 +124,30 @@ export default function ZoneManagementPage() {
     setLoading(true)
     setError('')
     try {
-      const response = await Fetch('/admin/core/zones')
-      if (!response.ok) {
-        throw new Error(await readErrorMessage(response))
+      if (!activeZonesPromise) {
+        activeZonesPromise = Fetch('/admin/core/zones').then(async (response) => {
+          if (!response.ok) {
+            const errText = await readErrorMessage(response)
+            throw new Error(errText)
+          }
+          return response.json()
+        })
       }
 
-      const payload = (await response.json()) as ZoneListResponse
+      const payload = (await activeZonesPromise) as ZoneListResponse
       setZones((payload.data?.items ?? []).map(normalizeZoneRow))
       setCurrentPage(1)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Cannot load zones')
       setZones([])
     } finally {
+      activeZonesPromise = null
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    void Promise.resolve().then(loadZones)
+    void loadZones()
   }, [])
 
   const filteredZones = useMemo(() => {

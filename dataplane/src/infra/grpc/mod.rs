@@ -38,18 +38,24 @@ impl GrpcSecurityConfig {
         client_cert_path: &str,
         client_key_path: &str,
     ) -> Result<(), String> {
-        println!(
-            "Infra gRPC: Building mTLS credentials configuration: CA={}, Cert={}, Key={}",
-            ca_cert_path, client_cert_path, client_key_path
+        crate::observability::logger::Logger::sys_info(
+            "infra.grpc",
+            &format!(
+                "Infra gRPC: Building mTLS credentials configuration: CA={}, Cert={}, Key={}",
+                ca_cert_path, client_cert_path, client_key_path
+            ),
         );
         Ok(())
     }
 
     /// Xây dựng TLS Connector sử dụng xác thực một chiều (Standard TLS).
     pub fn build_tls_connector(ca_cert_path: &str) -> Result<(), String> {
-        println!(
-            "Infra gRPC: Building standard one-way TLS credentials configuration: CA={}",
-            ca_cert_path
+        crate::observability::logger::Logger::sys_info(
+            "infra.grpc",
+            &format!(
+                "Infra gRPC: Building standard one-way TLS credentials configuration: CA={}",
+                ca_cert_path
+            ),
         );
         Ok(())
     }

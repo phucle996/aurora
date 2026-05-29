@@ -116,6 +116,22 @@ static_resources:
                         - "adminui.aurora.local"
                         - "adminui.aurora.local:443"
                       routes:
+                        - match: { prefix: "/admin/" }
+                          route:
+                            cluster: controlplane_cluster
+                            timeout: 10s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 3s
+                        - match: { prefix: "/api/" }
+                          route:
+                            cluster: controlplane_cluster
+                            timeout: 10s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 3s
                         - match: { prefix: "/" }
                           route:
                             cluster: admin_ui_cluster
@@ -129,6 +145,14 @@ static_resources:
                         - "runbook.aurora.local"
                         - "runbook.aurora.local:443"
                       routes:
+                        - match: { prefix: "/api/" }
+                          route:
+                            cluster: controlplane_cluster
+                            timeout: 10s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 3s
                         - match: { prefix: "/" }
                           route:
                             cluster: runbook_web_cluster

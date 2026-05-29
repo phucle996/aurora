@@ -1,0 +1,13 @@
+# Loại bỏ build artifact host khỏi context để cargo trong image rebuild đúng
+target/
+**/target/
+
+# VCS & IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Logs / runtime
+*.log
+.env.local

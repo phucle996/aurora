@@ -34,9 +34,13 @@ impl AutoScaleEngine {
         // 1. Kiểm thử ngưỡng tài nguyên cứng (90% Safeguard)
         let hard_limit = (self.max_workers as f64 * 0.9) as usize;
         if active_connections >= hard_limit {
-            println!(
-                "Autoscaler ALERT: Hard resource threshold reached ({}/{}). Freeze local scaling up!",
-                active_connections, self.max_workers
+            crate::observability::logger::Logger::sys_warn(
+                "worker.scaler",
+                &format!(
+                    "Autoscaler ALERT: Hard resource threshold reached ({}/{}). Freeze local scaling up!",
+                    active_connections, self.max_workers
+                ),
+                "hard_resource_threshold",
             );
             return current_workers;
         }
@@ -45,14 +49,17 @@ impl AutoScaleEngine {
         if lag > 100 || latency_ms > 500.0 {
             // Tải cao hoặc xử lý chậm -> Tăng thêm luồng xử lý (mỗi lần tăng 2 worker)
             let target = (current_workers + 2).min(self.max_workers);
-            println!(
-                "Autoscaler: High load detected (lag={}, latency={:.2}ms). Scaling up target: {} workers (cap={})",
-                lag, latency_ms, target, self.max_workers
+            crate::observability::logger::Logger::sys_info(
+                "worker.scaler",
+                &format!(
+                    "Autoscaler: High load detected (lag={}, latency={:.2}ms). Scaling up target: {} workers (cap={})",
+                    lag, latency_ms, target, self.max_workers
+                ),
             );
             target
         } else if lag == 0 {
-            // Hàng đợi rỗng hoàn toàn -> Tiết kiệm tài nguyên scale về 0 luồng
-            println!("Autoscaler: Stream queue is completely empty. Scaling down to 0 (Idle Mode)...");
+            // Hàng đợi rỗng hoàn toàn -> Tiết kiệm tài nguyên scale về 0 luồng.
+            // Không log tại đây: caller chịu trách nhiệm log khi target thực sự đổi.
             0
         } else {
             // Giữ nguyên quy mô hiện hành

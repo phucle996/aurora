@@ -28,7 +28,10 @@ pub struct OtelTracer;
 impl OtelTracer {
     /// Khởi tạo OpenTelemetry tracer pipeline kết nối tới Tempo.
     pub fn init() {
-        println!("Observability OTel: OpenTelemetry tracer successfully initialized. Pipeline connected to Tempo.");
+        crate::observability::logger::Logger::sys_info(
+            "tracing.init",
+            "Observability OTel: OpenTelemetry tracer successfully initialized. Pipeline connected to Tempo.",
+        );
     }
 
     /// Trích xuất mã trace_id và liên kết trực tiếp vào Span Context của thread hiện tại.
@@ -42,6 +45,12 @@ impl OtelTracer {
         //   - Sử dụng `opentelemetry::global` và `tracing::Span` để inject context.
         //   - Đảm bảo mọi bản ghi log (`logger.rs`) xuất ra sau thời điểm này đều tự động
         //     mang theo nhãn `trace_id` tương ứng.
-        println!("Observability OTel: Extracted trace ID '{}' and injected context into current task span", trace_id);
+        crate::observability::logger::Logger::sys_debug(
+            "tracing.span",
+            &format!(
+                "Observability OTel: Extracted trace ID '{}' and injected context into current task span",
+                trace_id
+            ),
+        );
     }
 }

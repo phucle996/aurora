@@ -54,7 +54,10 @@ impl JobResultReporter {
         // Trên môi trường Production:
         //   - Sử dụng connection pool để lấy kết nối Redis.
         //   - Thực thi câu lệnh XADD đẩy bản ghi kết quả JSON.
-        println!("Job Result Reporter: Successfully published outcome to Redis stream");
+        crate::observability::logger::Logger::sys_info(
+            "job.result",
+            "Job Result Reporter: Successfully published outcome to Redis stream",
+        );
         Ok(())
     }
 

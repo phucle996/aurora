@@ -42,6 +42,7 @@ import (
 	coreHandler "controlplane/internal/core/transport/http/handler"
 	coreRpcHandler "controlplane/internal/core/transport/rpc/handler"
 	coreProto "controlplane/internal/core/transport/rpc/proto"
+	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -66,10 +67,11 @@ type Module struct {
 	listenCancel                 context.CancelFunc
 	orchestratorCancel           context.CancelFunc
 	subscriberCancel             context.CancelFunc
+	rateLimiter                  *ratelimit.Bucket
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Module, error) {
+func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket) (*Module, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("core module: config is required")
 	}
@@ -135,6 +137,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Modu
 		DataplaneOrchestrator:        dataplaneOrchestrator,
 		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
 		invalidationBus:              bus,
+		rateLimiter:                  rateLimiter,
 	}, nil
 }
 

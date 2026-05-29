@@ -115,13 +115,17 @@ impl AppContainer {
                 let target_count =
                     auto_scaler.evaluate_scale(current_count, lag, latency, active_conns);
 
-                Logger::sys_info(
-                    "worker.scaler",
-                    &format!(
-                        "Autoscaler Check: Current = {}, Target = {}, Lag = {}, Latency = {:.2}ms",
-                        current_count, target_count, lag, latency
-                    ),
-                );
+                // Chỉ log khi target khác với current (có scale up/down thực sự).
+                // Khi hệ thống đứng yên ở cùng mức worker, autoscaler im lặng để tránh log spam.
+                if target_count != current_count {
+                    Logger::sys_info(
+                        "worker.scaler",
+                        &format!(
+                            "Autoscaler scaling: {} -> {} workers (lag={}, latency={:.2}ms)",
+                            current_count, target_count, lag, latency
+                        ),
+                    );
+                }
 
                 if target_count > current_count {
                     // Scale Up: Spawn thêm worker
@@ -191,14 +195,17 @@ impl AppContainer {
 
         // 2. Kích hoạt Dedicated Policy Watcher Worker thông qua Worker Pool
         let policy_engine_clone = self.policy_engine.clone();
-        let policy_path = PathBuf::from("config/policy.yaml");
+        let policy_file = std::env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string());
+        let policy_path = PathBuf::from(&policy_file);
         let adapter = YamlFileAdapter::new(policy_path);
 
         self.worker_pool
             .spawn_dedicated_policy_watcher(0, move |token| async move {
                 adapter
                     .start_watch(token, move || {
-                        let path = PathBuf::from("config/policy.yaml");
+                        let path = PathBuf::from(
+                            std::env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string())
+                        );
                         if let Ok(raw_yaml) = std::fs::read_to_string(&path) {
                             let checksum = PolicySet::calculate_checksum(&raw_yaml);
                             if let Ok(mut new_policy) = serde_yaml::from_str::<PolicySet>(&raw_yaml)

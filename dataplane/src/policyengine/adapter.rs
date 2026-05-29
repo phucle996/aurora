@@ -56,7 +56,10 @@ impl YamlFileAdapter {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        println!("Policy Engine Adapter: Started watching policy file at {:?}", self.file_path);
+        crate::observability::logger::Logger::sys_info(
+            "policy.adapter",
+            &format!("Policy Engine Adapter: Started watching policy file at {}", self.file_path.display()),
+        );
         
         // Cú pháp Polling fallback mỗi 3 giây tương thích 100% với defaultPolicyPollPeriod của Controlplane
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
@@ -64,7 +67,10 @@ impl YamlFileAdapter {
         loop {
             tokio::select! {
                 _ = token.cancelled() => {
-                    println!("Policy Engine Adapter: Watch loop received cancellation. Exiting gracefully.");
+                    crate::observability::logger::Logger::sys_info(
+                        "policy.adapter",
+                        "Policy Engine Adapter: Watch loop received cancellation. Exiting gracefully.",
+                    );
                     break;
                 }
                 _ = interval.tick() => {

@@ -1,0 +1,206 @@
+{
+  "app": {
+    "title": "Aurora Runbook",
+    "subtitle": "运维知识库",
+    "version": "v2.2"
+  },
+  "header": {
+    "search_placeholder": "搜索 Runbook…",
+    "search_no_results": "未找到结果:",
+    "search_navigate_hint": "使用 ↑ ↓ 导航,↵ 打开",
+    "search_close_hint": "Esc 关闭",
+    "toggle_theme_light": "切换为浅色",
+    "toggle_theme_dark": "切换为深色",
+    "toggle_sidebar": "切换侧边栏",
+    "language": "语言"
+  },
+  "nav": {
+    "groups": {
+      "auth": "认证",
+      "security": "安全",
+      "infra": "基础设施",
+      "general": "通用"
+    },
+    "items": {
+      "auth-token-model": "令牌模型与生命周期",
+      "auth-login-flow": "登录流程",
+      "auth-refresh-flow": "刷新流程",
+      "auth-logout-flow": "登出流程",
+      "auth-mfa": "MFA 与升级认证",
+      "auth-device-binding": "设备绑定",
+      "sec-threat-model": "威胁模型",
+      "sec-secrets": "密钥与轮换",
+      "sec-audit": "审计与合规",
+      "infra-redis": "Redis 缓存",
+      "infra-postgres": "PostgreSQL",
+      "infra-envoy": "Envoy 代理",
+      "home": "首页"
+    },
+    "soon": "即将推出",
+    "soon_tooltip": "即将推出"
+  },
+  "page_titles": {
+    "auth-token-model": {
+      "title": "管理员认证令牌模型与生命周期",
+      "subtitle": "Aurora 管理员认证规范",
+      "badge": "v2.2 • Production Ready"
+    },
+    "home": {
+      "title": "Aurora Runbook",
+      "subtitle": "运维知识库",
+      "badge": "Dev"
+    }
+  },
+  "home": {
+    "hero": {
+      "badges": {
+        "platform": "平台",
+        "cloud_native": "云原生",
+        "stack": "Go • PostgreSQL • Redis"
+      },
+      "title": "Aurora Platform",
+      "tagline": "遵循 <strong>controlplane / dataplane / agent</strong> 模型的基础设施编排 — 为运行在异构运行时上的租户提供认证/授权、IAM、拓扑、计费和任务流水线。",
+      "goal": "目标:清晰分离编排权限与工作负载执行,将真实数据源保留在 PostgreSQL 中,使用 Redis 作为高可用的安全实时协调通道。"
+    },
+    "stats": {
+      "source_of_truth": "真实数据源",
+      "coordination": "协调",
+      "edge_proxy": "边缘代理",
+      "runtime": "运行时"
+    },
+    "planes": {
+      "section_title": "三平面模型",
+      "section_desc": "Aurora 清晰分离三层职责 — 任何层级互不越界。",
+      "controlplane": {
+        "tag": "Brain",
+        "title": "Controlplane",
+        "desc": "中央编排层 — 接收请求、验证策略、向 DB 写入规范状态、向 dataplane/agent 分发命令。",
+        "p1": "HTTP / gRPC 入口",
+        "p2": "IAM、计费、拓扑、任务",
+        "p3": "真实数据源:PostgreSQL",
+        "p4": "通过 Redis Stream 分发任务"
+      },
+      "dataplane": {
+        "tag": "Workforce",
+        "title": "Dataplane",
+        "desc": "靠近资源的运行时层 — 消费命令、执行任务、向 controlplane 报告状态。",
+        "p1": "消费 Redis Stream",
+        "p2": "执行长时运行工作负载",
+        "p3": "与 DB 状态对账",
+        "p4": "不进行策略决策"
+      },
+      "agent": {
+        "tag": "Edge",
+        "title": "Agent",
+        "desc": "靠近 host/node/VM 的边缘进程 — 接收特定命令、执行本地副作用、发送心跳与结果。",
+        "p1": "运行于 host / node / VM",
+        "p2": "本地副作用",
+        "p3": "心跳 + 结果",
+        "p4": "不持有业务状态"
+      }
+    },
+    "architecture": {
+      "title": "系统架构",
+      "desc": "客户端、边缘代理、controlplane 集群、dataplane 工作器、agent 与基础设施存储之间的数据流。",
+      "footer": "PostgreSQL 是真实数据源 · Redis 是实时协调通道 · Envoy 是唯一面向客户端的边缘"
+    },
+    "request_flow": {
+      "title": "主请求流程",
+      "desc": "每个 HTTP/gRPC 请求按固定层顺序通过,以确保策略与审计。",
+      "s1": "客户端",
+      "s1_desc": "Admin UI、Cloud UI、API 客户端调用 HTTP/gRPC",
+      "s2": "Envoy 边缘",
+      "s2_desc": "TLS 终止、vhost 路由、集群间 mTLS",
+      "s3": "中间件链",
+      "s3_desc": "request ID → auth → access log → rate limit → origin/cookie guard",
+      "s4": "处理器",
+      "s4_desc": "绑定并验证请求,调用服务",
+      "s5": "服务",
+      "s5_desc": "业务逻辑 + 策略决策,如需访问 DB 则调用 repository",
+      "s6": "仓库",
+      "s6_desc": "唯一向 PostgreSQL 发出 SQL 的位置",
+      "s7": "异步分支",
+      "s7_desc": "服务写入状态后将作业/事件入队到 Redis Stream",
+      "s8": "响应",
+      "s8_desc": "处理器返回 — 不向客户端泄露内部错误"
+    },
+    "modules": {
+      "title": "业务模块",
+      "desc_prefix": "Controlplane 在以下目录下按业务模块拆分:",
+      "iam_desc": "认证、RBAC、MFA、设备",
+      "tenant_desc": "多租户边界",
+      "core_desc": "共享内核类型",
+      "policy_desc": "规则评估",
+      "security_desc": "加密、速率限制",
+      "observability_desc": "追踪、指标",
+      "mail_desc": "SMTP、通知",
+      "hypervisor_desc": "VM 生命周期"
+    },
+    "principles": {
+      "title": "设计原则",
+      "desc": "在扩展过程中保持代码库健康的架构约束。",
+      "p1_title": "严格分层",
+      "p1_desc": "Handler → Service → Repository → DB。不允许跳过或混合。SQL 只在 repository。",
+      "p2_title": "PostgreSQL 是 SoT",
+      "p2_desc": "所有持久化业务状态都位于 PostgreSQL。Redis 仅用于队列/缓存/协调/瞬态状态。",
+      "p3_title": "模块本地错误",
+      "p3_desc": "每个模块拥有自己的 errorx。内部错误不向客户端泄露;handler 映射到标准 HTTP 状态码。",
+      "p4_title": "不存储原始密钥",
+      "p4_desc": "原始密钥/令牌/key 永不存入 DB。明文仅在内存中暂存。",
+      "p5_title": "可重放的事件",
+      "p5_desc": "Redis 临时丢失不会破坏状态。PostgreSQL 是规范的重放/对账来源。",
+      "p6_title": "通用错误",
+      "p6_desc": "认证错误必须通用 — 永不泄露用户是否存在。"
+    },
+    "footer": {
+      "line1": "Aurora Platform • runbook.aurora.local",
+      "line2": "云原生基础设施编排"
+    }
+  },
+  "common": {
+    "hero_badges": {
+      "version": "v2.2",
+      "updated": "更新于 2026-05-29",
+      "production_ready": "Production Ready"
+    }
+  },
+  "auth_token_model": {
+    "hero": {
+      "title": "Aurora 管理员认证",
+      "subtitle": "令牌模型与生命周期",
+      "scope": "范围:管理员 / SRE / 运维 (非最终用户)"
+    },
+    "key_props": {
+      "fragment": "3 片段令牌",
+      "fragment_value": "JWT + AccessKey + AccessSecret",
+      "session_ttl": "会话 TTL",
+      "session_ttl_value": "15 分钟",
+      "device_binding": "设备绑定",
+      "device_binding_value": "Ed25519 公钥",
+      "revocation": "撤销",
+      "revocation_value": "< 1ms (Redis DEL)",
+      "ha_grace": "HA 宽限期",
+      "ha_grace_value": "10 秒",
+      "plane_isolation": "平面隔离",
+      "plane_isolation_value": "管理员 / 用户分离"
+    },
+    "footer": "Aurora 管理员认证 • 令牌模型与生命周期 • v2.2",
+    "footer_sub": "更新于 2026-05-29 • runbook.aurora.local"
+  },
+  "search": {
+    "exec_summary": "执行摘要",
+    "token_model": "令牌模型",
+    "lifecycle": "令牌生命周期",
+    "token_components": "令牌组件",
+    "redis_storage": "Redis 会话存储",
+    "token_rotation": "令牌轮换",
+    "cookie_spec": "Cookie 规范",
+    "inactivity": "空闲超时",
+    "device_binding": "设备绑定",
+    "threat_model": "威胁模型与缓解",
+    "config": "配置",
+    "principles": "安全原则",
+    "guarantees": "运行保证",
+    "references": "参考资料"
+  }
+}

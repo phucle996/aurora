@@ -66,9 +66,12 @@ impl WorkerLifecycleManager {
 
         let worker_token = child_token.clone();
         tokio::spawn(async move {
-            println!(
-                "Worker Pool: Worker {} provisioned and starting active job ingestion loop...",
-                worker_id
+            crate::observability::logger::Logger::sys_info(
+                "worker.lifecycle",
+                &format!(
+                    "Worker Pool: Worker {} provisioned and starting active job ingestion loop...",
+                    worker_id
+                ),
             );
 
             crate::job_receiver::consumer::JobConsumer::start_ingestion(
@@ -81,7 +84,10 @@ impl WorkerLifecycleManager {
             )
             .await;
 
-            println!("Worker Pool: Worker {} has gracefully terminated.", worker_id);
+            crate::observability::logger::Logger::sys_info(
+                "worker.lifecycle",
+                &format!("Worker Pool: Worker {} has gracefully terminated.", worker_id),
+            );
         });
     }
 
@@ -89,7 +95,10 @@ impl WorkerLifecycleManager {
     pub fn terminate_worker(&self, worker_id: usize) {
         let mut active = self.active_workers.lock().unwrap();
         if let Some(token) = active.remove(&worker_id) {
-            println!("Worker Pool: Signaling Worker {} to gracefully shutdown...", worker_id);
+            crate::observability::logger::Logger::sys_info(
+                "worker.lifecycle",
+                &format!("Worker Pool: Signaling Worker {} to gracefully shutdown...", worker_id),
+            );
             token.cancel();
         }
     }
@@ -111,18 +120,37 @@ impl WorkerLifecycleManager {
         let token_clone = token.clone();
 
         tokio::spawn(async move {
-            println!("Worker Pool: Dedicated Policy Watcher Worker {} started under lifecycle surveillance...", watcher_id);
+            crate::observability::logger::Logger::sys_info(
+                "worker.lifecycle",
+                &format!(
+                    "Worker Pool: Dedicated Policy Watcher Worker {} started under lifecycle surveillance...",
+                    watcher_id
+                ),
+            );
             
             // Khởi chạy future thực thi việc watch file/subscribe
             let watcher_future = make_watcher_future(token_clone);
             
             tokio::select! {
                 _ = token.cancelled() => {
-                    println!("Worker Pool: Dedicated Policy Watcher Worker {} shutdown gracefully.", watcher_id);
+                    crate::observability::logger::Logger::sys_info(
+                        "worker.lifecycle",
+                        &format!(
+                            "Worker Pool: Dedicated Policy Watcher Worker {} shutdown gracefully.",
+                            watcher_id
+                        ),
+                    );
                 }
                 res = watcher_future => {
                     if let Err(err) = res {
-                        eprintln!("Worker Pool ERROR: Dedicated Policy Watcher Worker {} crashed: {}", watcher_id, err);
+                        crate::observability::logger::Logger::sys_error(
+                            "worker.lifecycle",
+                            &format!(
+                                "Worker Pool ERROR: Dedicated Policy Watcher Worker {} crashed",
+                                watcher_id
+                            ),
+                            &err.to_string(),
+                        );
                         // Bắn tín hiệu hồi sinh về Lifecycle Manager
                         let _ = tx.send(WorkerSignal::RestartWorker(watcher_id)).await;
                     }
@@ -134,6 +162,9 @@ impl WorkerLifecycleManager {
     /// Phát tín hiệu dừng đồng loạt cho toàn bộ các worker trong pool.
     pub fn shutdown(&self) {
         self.cancel_token.cancel();
-        println!("Worker Pool: Global cancellation token triggered. Broadcasing to all workers...");
+        crate::observability::logger::Logger::sys_info(
+            "worker.lifecycle",
+            "Worker Pool: Global cancellation token triggered. Broadcasting to all workers...",
+        );
     }
 }

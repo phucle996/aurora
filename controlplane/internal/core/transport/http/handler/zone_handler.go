@@ -7,7 +7,7 @@ import (
 	"time"
 
 	coreEntity "controlplane/internal/core/domain/entity"
-	domainservice "controlplane/internal/core/domain/service"
+	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreErrorx "controlplane/internal/core/errorx"
 	requestdto "controlplane/internal/core/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
@@ -18,10 +18,10 @@ import (
 )
 
 type ZoneHandler struct {
-	zoneSvc domainservice.ZoneService
+	zoneSvc coreSvcInterface.ZoneService
 }
 
-func NewZoneHandler(zoneSvc domainservice.ZoneService) *ZoneHandler {
+func NewZoneHandler(zoneSvc coreSvcInterface.ZoneService) *ZoneHandler {
 	return &ZoneHandler{zoneSvc: zoneSvc}
 }
 
@@ -56,7 +56,14 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondCreated(c, zone, "zone created")
+	apires.RespondCreated(c, gin.H{
+		"id":         zone.ID,
+		"code":       zone.Code,
+		"name":       zone.Name,
+		"status":     string(zone.Status),
+		"created_at": zone.CreatedAt,
+		"updated_at": zone.UpdatedAt,
+	}, "zone created")
 }
 
 func (h *ZoneHandler) ListZones(c *gin.Context) {
@@ -70,7 +77,18 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
-	apires.RespondSuccess(c, gin.H{"items": items, "total": len(items)}, "zones fetched")
+	rows := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, gin.H{
+			"id":         item.ID,
+			"code":       item.Code,
+			"name":       item.Name,
+			"status":     string(item.Status),
+			"created_at": item.CreatedAt,
+			"updated_at": item.UpdatedAt,
+		})
+	}
+	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zones fetched")
 }
 
 func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
@@ -110,7 +128,14 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondSuccess(c, zone, "zone status updated")
+	apires.RespondSuccess(c, gin.H{
+		"id":         zone.ID,
+		"code":       zone.Code,
+		"name":       zone.Name,
+		"status":     string(zone.Status),
+		"created_at": zone.CreatedAt,
+		"updated_at": zone.UpdatedAt,
+	}, "zone status updated")
 }
 
 func (h *ZoneHandler) DeleteZone(c *gin.Context) {
@@ -169,7 +194,18 @@ func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondSuccess(c, items, "zone services fetched")
+	rows := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, gin.H{
+			"id":           item.ID,
+			"zone_id":      item.ZoneID,
+			"service_type": string(item.ServiceType),
+			"enabled":      item.Enabled,
+			"created_at":   item.CreatedAt,
+			"updated_at":   item.UpdatedAt,
+		})
+	}
+	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zone services fetched")
 }
 
 func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
@@ -210,5 +246,12 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondSuccess(c, item, "zone service updated")
+	apires.RespondSuccess(c, gin.H{
+		"id":           item.ID,
+		"zone_id":      item.ZoneID,
+		"service_type": string(item.ServiceType),
+		"enabled":      item.Enabled,
+		"created_at":   item.CreatedAt,
+		"updated_at":   item.UpdatedAt,
+	}, "zone service updated")
 }

@@ -36,7 +36,10 @@ impl Executor for MailExecutor {
     ///   3. Gửi lệnh qua SMTP/HTTPS tới Mail Server.
     ///   4. Trả về `ExecutionResult` tương ứng.
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
-        println!("Mail Executor: Dispatching email delivery task: job_id={}", payload.job_id);
+        crate::observability::logger::Logger::sys_info(
+            "executor.mail",
+            &format!("Mail Executor: Dispatching email delivery task: job_id={}", payload.job_id),
+        );
         
         // Trên môi trường Production thực tế:
         //   - Thực thi lệnh gọi SMTP Client với cơ chế Timeout chặt chẽ.

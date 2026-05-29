@@ -1,0 +1,206 @@
+{
+  "app": {
+    "title": "Aurora Runbook",
+    "subtitle": "Operational Knowledge Base",
+    "version": "v2.2"
+  },
+  "header": {
+    "search_placeholder": "Search runbook…",
+    "search_no_results": "No results for",
+    "search_navigate_hint": "Use ↑ ↓ to navigate, ↵ to open",
+    "search_close_hint": "Esc to close",
+    "toggle_theme_light": "Switch to light",
+    "toggle_theme_dark": "Switch to dark",
+    "toggle_sidebar": "Toggle sidebar",
+    "language": "Language"
+  },
+  "nav": {
+    "groups": {
+      "auth": "Authentication",
+      "security": "Security",
+      "infra": "Infrastructure",
+      "general": "General"
+    },
+    "items": {
+      "auth-token-model": "Token Model & Lifecycle",
+      "auth-login-flow": "Login Flow",
+      "auth-refresh-flow": "Refresh Flow",
+      "auth-logout-flow": "Logout Flow",
+      "auth-mfa": "MFA & Step-Up",
+      "auth-device-binding": "Device Binding",
+      "sec-threat-model": "Threat Model",
+      "sec-secrets": "Secrets & Rotation",
+      "sec-audit": "Audit & Compliance",
+      "infra-redis": "Redis Cache",
+      "infra-postgres": "PostgreSQL",
+      "infra-envoy": "Envoy Proxy",
+      "home": "Home"
+    },
+    "soon": "soon",
+    "soon_tooltip": "Coming soon"
+  },
+  "page_titles": {
+    "auth-token-model": {
+      "title": "Admin Auth Token Model & Lifecycle",
+      "subtitle": "Aurora Admin Authentication Specification",
+      "badge": "v2.2 • Production Ready"
+    },
+    "home": {
+      "title": "Aurora Runbook",
+      "subtitle": "Operational Knowledge Base",
+      "badge": "Dev"
+    }
+  },
+  "home": {
+    "hero": {
+      "badges": {
+        "platform": "Platform",
+        "cloud_native": "Cloud-native",
+        "stack": "Go • PostgreSQL • Redis"
+      },
+      "title": "Aurora Platform",
+      "tagline": "Infrastructure orchestration following the <strong>controlplane / dataplane / agent</strong> model — providing authn/authz, IAM, topology, billing, and task pipelines for tenants running on heterogeneous runtimes.",
+      "goal": "Goal: cleanly separate orchestration authority from workload execution, keep the source of truth in PostgreSQL, and use Redis as the safe realtime coordination channel for HA."
+    },
+    "stats": {
+      "source_of_truth": "Source of Truth",
+      "coordination": "Coordination",
+      "edge_proxy": "Edge Proxy",
+      "runtime": "Runtime"
+    },
+    "planes": {
+      "section_title": "Three-plane model",
+      "section_desc": "Aurora cleanly separates three layers of responsibility — no layer overlaps another.",
+      "controlplane": {
+        "tag": "Brain",
+        "title": "Controlplane",
+        "desc": "Central orchestration layer — accepts requests, validates policy, writes canonical state to DB, dispatches commands to dataplane/agent.",
+        "p1": "HTTP / gRPC entrypoint",
+        "p2": "IAM, billing, topology, task",
+        "p3": "Source of truth: PostgreSQL",
+        "p4": "Dispatch jobs via Redis Stream"
+      },
+      "dataplane": {
+        "tag": "Workforce",
+        "title": "Dataplane",
+        "desc": "Runtime layer near resources — consumes commands, executes tasks, reports state back to controlplane.",
+        "p1": "Consume Redis Stream",
+        "p2": "Execute long-running workload",
+        "p3": "Reconcile state with DB",
+        "p4": "Does not decide policy"
+      },
+      "agent": {
+        "tag": "Edge",
+        "title": "Agent",
+        "desc": "Edge process near host/node/VM — receives specific commands, performs local side-effects, sends heartbeat & result.",
+        "p1": "Run on host / node / VM",
+        "p2": "Local side-effects",
+        "p3": "Heartbeat + result",
+        "p4": "No business state"
+      }
+    },
+    "architecture": {
+      "title": "System Architecture",
+      "desc": "Data flow between client, edge proxy, controlplane cluster, dataplane workers, agents, and infrastructure stores.",
+      "footer": "PostgreSQL is source of truth · Redis is the realtime coordination channel · Envoy is the only client-facing edge"
+    },
+    "request_flow": {
+      "title": "Main request flow",
+      "desc": "Each HTTP/gRPC request goes through fixed layers to ensure policy & audit.",
+      "s1": "Client",
+      "s1_desc": "Admin UI, Cloud UI, API client calls HTTP/gRPC",
+      "s2": "Envoy edge",
+      "s2_desc": "TLS termination, vhost routing, mTLS between cluster",
+      "s3": "Middleware chain",
+      "s3_desc": "request ID → auth → access log → rate limit → origin/cookie guard",
+      "s4": "Handler",
+      "s4_desc": "Bind & validate request, call service",
+      "s5": "Service",
+      "s5_desc": "Business logic + policy decision, call repository if DB needed",
+      "s6": "Repository",
+      "s6_desc": "Only place that emits SQL to PostgreSQL",
+      "s7": "Async branch",
+      "s7_desc": "Service writes state then enqueues job/event to Redis Stream",
+      "s8": "Response",
+      "s8_desc": "Handler returns — no internal error leakage to client"
+    },
+    "modules": {
+      "title": "Business modules",
+      "desc_prefix": "Controlplane is split by business module under",
+      "iam_desc": "Auth, RBAC, MFA, device",
+      "tenant_desc": "Multi-tenant boundary",
+      "core_desc": "Shared kernel types",
+      "policy_desc": "Rule evaluation",
+      "security_desc": "Crypto, rate limit",
+      "observability_desc": "Tracing, metrics",
+      "mail_desc": "SMTP, notifications",
+      "hypervisor_desc": "VM lifecycle"
+    },
+    "principles": {
+      "title": "Design principles",
+      "desc": "Architectural constraints that keep the codebase healthy as it scales.",
+      "p1_title": "Strict layers",
+      "p1_desc": "Handler → Service → Repository → DB. No skipping, no mixing. SQL only in repository.",
+      "p2_title": "PostgreSQL as SoT",
+      "p2_desc": "All durable business state lives in PostgreSQL. Redis is for queue/cache/coordination/transient state only.",
+      "p3_title": "Module-local errors",
+      "p3_desc": "Each module owns its errorx. No internal error leaks to client; handler maps to standard HTTP codes.",
+      "p4_title": "No raw secrets",
+      "p4_desc": "Never store raw secret/token/key in DB. Plaintext only exists transiently in RAM.",
+      "p5_title": "Replay-safe events",
+      "p5_desc": "Transient Redis loss does not corrupt state. PostgreSQL is the canonical replay/reconcile source.",
+      "p6_title": "Generic errors",
+      "p6_desc": "Authentication errors must be generic — never leak whether a user exists or not."
+    },
+    "footer": {
+      "line1": "Aurora Platform • runbook.aurora.local",
+      "line2": "Cloud-native infrastructure orchestration"
+    }
+  },
+  "common": {
+    "hero_badges": {
+      "version": "v2.2",
+      "updated": "Updated 2026-05-29",
+      "production_ready": "Production Ready"
+    }
+  },
+  "auth_token_model": {
+    "hero": {
+      "title": "Aurora Admin Authentication",
+      "subtitle": "Token Model & Lifecycle",
+      "scope": "Scope: Admin / SRE / Operator (not end-user)"
+    },
+    "key_props": {
+      "fragment": "3-Fragment Token",
+      "fragment_value": "JWT + AccessKey + AccessSecret",
+      "session_ttl": "Session TTL",
+      "session_ttl_value": "15 minutes",
+      "device_binding": "Device Binding",
+      "device_binding_value": "Ed25519 public key",
+      "revocation": "Revocation",
+      "revocation_value": "< 1ms (Redis DEL)",
+      "ha_grace": "HA Grace Period",
+      "ha_grace_value": "10 seconds",
+      "plane_isolation": "Plane Isolation",
+      "plane_isolation_value": "Admin / User separated"
+    },
+    "footer": "Aurora Admin Authentication • Token Model & Lifecycle • v2.2",
+    "footer_sub": "Updated 2026-05-29 • runbook.aurora.local"
+  },
+  "search": {
+    "exec_summary": "Executive Summary",
+    "token_model": "Token Model",
+    "lifecycle": "Token Lifecycle",
+    "token_components": "Token Components",
+    "redis_storage": "Redis Session Storage",
+    "token_rotation": "Token Rotation",
+    "cookie_spec": "Cookie Specification",
+    "inactivity": "Inactivity Timeout",
+    "device_binding": "Device Binding",
+    "threat_model": "Threat Model & Mitigations",
+    "config": "Configuration",
+    "principles": "Security Principles",
+    "guarantees": "Operational Guarantees",
+    "references": "References"
+  }
+}

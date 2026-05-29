@@ -80,16 +80,16 @@ impl PolicyEngine {
         let mut gate = self.write_gate.lock().expect("CRITICAL: PolicyEngine write gate Mutex poisoned");
 
         // Step 2.1: Deduplication Check
+        // No-op nhanh: nội dung không đổi -> không log để tránh spam khi watcher tick.
         if gate.last_checksum == new_policy.checksum_sha {
-            println!("Policy Engine: Swap skipped. Checksum is identical to active snapshot.");
             return Ok(());
         }
 
         // Step 2.2: Cooldown Check (5 seconds)
+        // Reload storm protection: bỏ qua trong yên lặng, caller sẽ thử lại sau.
         let now = Instant::now();
         if let Some(last_reload) = gate.last_reload_at {
             if now.duration_since(last_reload).as_secs() < 5 {
-                println!("Policy Engine: Swap skipped. Cooldown filter active (less than 5s since last reload).");
                 return Ok(());
             }
         }
@@ -105,7 +105,13 @@ impl PolicyEngine {
         gate.last_checksum = new_policy.checksum_sha.clone();
         gate.last_reload_at = Some(now);
 
-        println!("Policy Engine: Lock-free atomic swap completed successfully. Checksum: {}", new_policy.checksum_sha);
+        crate::observability::logger::Logger::sys_info(
+            "policy.swap",
+            &format!(
+                "Policy Engine: Lock-free atomic swap completed successfully. Checksum: {}",
+                new_policy.checksum_sha
+            ),
+        );
         Ok(())
     }
 }

@@ -38,7 +38,13 @@ impl Executor for VpsExecutor {
     ///   3. Gửi lệnh API vật lý tới Libvirt/KVM tạo VPS.
     ///   4. Nếu thành công -> Ghi nhận SQLite và trả về `ExecutionResult`.
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
-        println!("Hypervisor Executor: Processing VPS orchestration: topic={}, resource_id={}", payload.job_topic, payload.resource_id);
+        crate::observability::logger::Logger::sys_info(
+            "executor.vps",
+            &format!(
+                "Hypervisor Executor: Processing VPS orchestration: topic={}, resource_id={}",
+                payload.job_topic, payload.resource_id
+            ),
+        );
         
         // Trên môi trường Production thực tế:
         //   - Step 1: sqlite_db.check_idempotency(&payload.job_id, payload.job_version)

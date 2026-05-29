@@ -29,7 +29,10 @@ pub struct PromRegistry;
 impl PromRegistry {
     /// Khởi tạo Prometheus registry và mở cổng export metrics (mặc định cổng `:2112/metrics`).
     pub fn init() {
-        println!("Observability Prometheus: Dynamic metrics registry initialized. Exporting on port :2112...");
+        crate::observability::logger::Logger::sys_info(
+            "metrics.init",
+            "Observability Prometheus: Dynamic metrics registry initialized. Exporting on port :2112...",
+        );
     }
 
     /// Tăng bộ đếm RPC lên 1 đơn vị với nhãn (labels) tùy biến linh hoạt.
@@ -42,9 +45,12 @@ impl PromRegistry {
         // Trên môi trường Production thực tế:
         //   - Sử dụng `prometheus::CounterVec` để khai báo linh hoạt.
         //   - Gắn nhãn động: rpc_name, status, zone_id, dataplane_id.
-        println!(
-            "Observability Prometheus: Metric counter 'dataplane_rpc_total' incremented (+1) for '{}' [{}]. Labels: {:?}",
-            rpc_name, status, labels
+        crate::observability::logger::Logger::sys_debug(
+            "metrics.counter",
+            &format!(
+                "Observability Prometheus: Metric counter 'dataplane_rpc_total' incremented (+1) for '{}' [{}]. Labels: {:?}",
+                rpc_name, status, labels
+            ),
         );
     }
 }

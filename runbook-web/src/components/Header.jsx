@@ -1,59 +1,48 @@
 import { useState, useEffect, useRef } from 'react'
-
-const PAGE_TITLES = {
-  'auth-token-model': {
-    title: 'Admin Auth Token Model & Lifecycle',
-    subtitle: 'Aurora Admin Authentication Specification',
-    badge: 'v2.2 • Production Ready',
-  },
-  home: {
-    title: 'Aurora Runbook',
-    subtitle: 'Operational Knowledge Base',
-    badge: 'Dev',
-  },
-}
+import { useTranslation } from 'react-i18next'
+import LanguageSwitcher from './LanguageSwitcher.jsx'
 
 const SEARCH_INDEX = [
-  { page: 'auth-token-model', anchor: 'section-0', title: 'Executive Summary', keywords: 'overview summary fragment token defense depth' },
-  { page: 'auth-token-model', anchor: 'section-1', title: 'Token Model', keywords: 'fragment jwt accesskey accesssecret architecture user plane separation' },
-  { page: 'auth-token-model', anchor: 'section-2', title: 'Token Lifecycle', keywords: 'state diagram active grace blacklisted expired revoked transitions' },
-  { page: 'auth-token-model', anchor: 'section-3', title: 'Token Components', keywords: 'jwt access_token access_key access_secret client_device_id uuid v7 hs256 hmac sha256' },
-  { page: 'auth-token-model', anchor: 'section-4', title: 'Redis Session Storage', keywords: 'redis session record verification jti blacklist iam admin cache' },
-  { page: 'auth-token-model', anchor: 'section-5', title: 'Token Rotation', keywords: 'rotation refresh ha grace period cas version' },
-  { page: 'auth-token-model', anchor: 'section-6', title: 'Cookie Specification', keywords: 'cookie httponly secure samesite path lax matrix flags' },
-  { page: 'auth-token-model', anchor: 'section-7', title: 'Inactivity Timeout', keywords: 'inactivity timeout 15 minutes redis ttl auto expire silent refresh' },
-  { page: 'auth-token-model', anchor: 'section-8', title: 'Device Binding', keywords: 'device binding ed25519 public key tracking revocation' },
-  { page: 'auth-token-model', anchor: 'section-9', title: 'Threat Model & Mitigations', keywords: 'threat hijacking xss csrf replay mitm brute force enumeration' },
-  { page: 'auth-token-model', anchor: 'section-10', title: 'Configuration', keywords: 'config security cfg go struct ttl admin api token session' },
-  { page: 'auth-token-model', anchor: 'section-11', title: 'Security Principles', keywords: 'principles defense depth zero trust short lived fail closed stateless' },
-  { page: 'auth-token-model', anchor: 'section-12', title: 'Operational Guarantees', keywords: 'guarantees instant logout revocation latency' },
-  { page: 'auth-token-model', anchor: 'section-13', title: 'References', keywords: 'rfc 7519 6238 8032 9562 owasp nist' },
+  { page: 'auth-token-model', anchor: 'section-0', titleKey: 'search.exec_summary', keywords: 'overview summary fragment token defense depth' },
+  { page: 'auth-token-model', anchor: 'section-1', titleKey: 'search.token_model', keywords: 'fragment jwt accesskey accesssecret architecture user plane separation' },
+  { page: 'auth-token-model', anchor: 'section-2', titleKey: 'search.lifecycle', keywords: 'state diagram active grace blacklisted expired revoked transitions' },
+  { page: 'auth-token-model', anchor: 'section-3', titleKey: 'search.token_components', keywords: 'jwt access_token access_key access_secret client_device_id uuid v7 hs256 hmac sha256' },
+  { page: 'auth-token-model', anchor: 'section-4', titleKey: 'search.redis_storage', keywords: 'redis session record verification jti blacklist iam admin cache' },
+  { page: 'auth-token-model', anchor: 'section-5', titleKey: 'search.token_rotation', keywords: 'rotation refresh ha grace period cas version' },
+  { page: 'auth-token-model', anchor: 'section-6', titleKey: 'search.cookie_spec', keywords: 'cookie httponly secure samesite path lax matrix flags' },
+  { page: 'auth-token-model', anchor: 'section-7', titleKey: 'search.inactivity', keywords: 'inactivity timeout 15 minutes redis ttl auto expire silent refresh' },
+  { page: 'auth-token-model', anchor: 'section-8', titleKey: 'search.device_binding', keywords: 'device binding ed25519 public key tracking revocation' },
+  { page: 'auth-token-model', anchor: 'section-9', titleKey: 'search.threat_model', keywords: 'threat hijacking xss csrf replay mitm brute force enumeration' },
+  { page: 'auth-token-model', anchor: 'section-10', titleKey: 'search.config', keywords: 'config security cfg go struct ttl admin api token session' },
+  { page: 'auth-token-model', anchor: 'section-11', titleKey: 'search.principles', keywords: 'principles defense depth zero trust short lived fail closed stateless' },
+  { page: 'auth-token-model', anchor: 'section-12', titleKey: 'search.guarantees', keywords: 'guarantees instant logout revocation latency' },
+  { page: 'auth-token-model', anchor: 'section-13', titleKey: 'search.references', keywords: 'rfc 7519 6238 8032 9562 owasp nist' },
 ]
 
-function search(query) {
+function searchEntries(query, t) {
   const q = query.toLowerCase().trim()
   if (!q) return []
   return SEARCH_INDEX.filter((entry) => {
-    const haystack = (entry.title + ' ' + entry.keywords).toLowerCase()
+    const localized = t(entry.titleKey, { defaultValue: '' })
+    const haystack = (localized + ' ' + entry.keywords).toLowerCase()
     return q.split(/\s+/).every((token) => haystack.includes(token))
   }).slice(0, 8)
 }
 
 export default function Header({ onMenuClick, currentPage, onNavigate, theme, onToggleTheme }) {
-  const meta = PAGE_TITLES[currentPage] || PAGE_TITLES.home
+  const { t } = useTranslation()
+  const meta = t(`page_titles.${currentPage}`, { returnObjects: true, defaultValue: t('page_titles.home', { returnObjects: true }) })
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [activeIdx, setActiveIdx] = useState(0)
   const inputRef = useRef(null)
   const wrapRef = useRef(null)
 
-  const results = search(query)
+  const results = searchEntries(query, t)
 
   useEffect(() => {
     const onClick = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
-        setOpen(false)
-      }
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
     }
     document.addEventListener('mousedown', onClick)
     return () => document.removeEventListener('mousedown', onClick)
@@ -76,9 +65,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
   }, [])
 
   const goTo = (entry) => {
-    if (entry.page !== currentPage && onNavigate) {
-      onNavigate(entry.page)
-    }
+    if (entry.page !== currentPage && onNavigate) onNavigate(entry.page)
     setOpen(false)
     setQuery('')
     setTimeout(() => {
@@ -102,11 +89,11 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
   }
 
   return (
-    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 flex items-center gap-4">
+    <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-3 flex items-center gap-3">
       <button
         onClick={onMenuClick}
         className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors flex-shrink-0 text-slate-700 dark:text-slate-200"
-        aria-label="Toggle sidebar"
+        aria-label={t('header.toggle_sidebar')}
       >
         ☰
       </button>
@@ -120,7 +107,6 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
         </p>
       </div>
 
-      {/* Search bar */}
       <div ref={wrapRef} className="flex-1 max-w-2xl mx-auto relative">
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500 pointer-events-none">
@@ -129,7 +115,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
           <input
             ref={inputRef}
             type="text"
-            placeholder="Search runbook…"
+            placeholder={t('header.search_placeholder')}
             value={query}
             onChange={(e) => {
               setQuery(e.target.value)
@@ -149,7 +135,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
           <div className="absolute top-full left-0 right-0 mt-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl shadow-slate-300/40 dark:shadow-black/40 z-50 overflow-hidden">
             {results.length === 0 ? (
               <div className="p-4 text-sm text-slate-500 text-center">
-                No results for{' '}
+                {t('header.search_no_results')}{' '}
                 <span className="text-slate-700 dark:text-slate-300">"{query}"</span>
               </div>
             ) : (
@@ -168,7 +154,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
                       <span className="text-base mt-0.5">📄</span>
                       <span className="flex-1 min-w-0">
                         <span className="block text-sm font-medium truncate">
-                          {r.title}
+                          {t(r.titleKey, { defaultValue: r.titleKey })}
                         </span>
                         <span className="block text-[11px] text-slate-500 truncate">
                           {r.page} → #{r.anchor}
@@ -180,19 +166,20 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
               </ul>
             )}
             <div className="px-4 py-2 border-t border-slate-200 dark:border-slate-800 text-[11px] text-slate-500 flex items-center justify-between">
-              <span>Use ↑ ↓ to navigate, ↵ to open</span>
-              <span>Esc to close</span>
+              <span>{t('header.search_navigate_hint')}</span>
+              <span>{t('header.search_close_hint')}</span>
             </div>
           </div>
         )}
       </div>
 
-      {/* Theme toggle */}
+      <LanguageSwitcher />
+
       <button
         onClick={onToggleTheme}
         className="p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 transition-colors flex-shrink-0"
-        aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
+        aria-label={theme === 'dark' ? t('header.toggle_theme_light') : t('header.toggle_theme_dark')}
+        title={theme === 'dark' ? t('header.toggle_theme_light') : t('header.toggle_theme_dark')}
       >
         {theme === 'dark' ? (
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -206,7 +193,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
         )}
       </button>
 
-      <span className="px-3 py-1 bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 rounded-full text-xs font-semibold flex-shrink-0 hidden lg:inline-block">
+      <span className="px-3 py-1 bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/30 rounded-full text-xs font-semibold flex-shrink-0 hidden xl:inline-block">
         {meta.badge}
       </span>
     </header>

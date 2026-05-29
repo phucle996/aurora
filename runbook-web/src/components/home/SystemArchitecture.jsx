@@ -41,7 +41,7 @@ const Arrow = ({ label }) => (
   </div>
 )
 
-export default function SystemArchitecture() {
+export default function SystemArchitecture({ footerText }) {
   return (
     <div className="space-y-2">
       {/* Client tier */}
@@ -145,8 +145,7 @@ export default function SystemArchitecture() {
       </Layer>
 
       <p className="text-xs text-slate-500 dark:text-slate-400 mt-4 text-center italic">
-        PostgreSQL là source of truth · Redis là kênh điều phối realtime · Envoy là biên duy
-        nhất tiếp xúc client
+        {footerText || "PostgreSQL is source of truth · Redis is realtime coordination channel · Envoy is the only client-facing edge"}
       </p>
     </div>
   )

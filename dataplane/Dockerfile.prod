@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1.7
+
+# ============================================================================
+# Stage 1: Builder - biên dịch binary release của aurora-dataplane
+# ============================================================================
+FROM rust:latest AS builder
+WORKDIR /src
+
+# 1. Pre-warm dependency cache: chỉ copy manifest, build dummy để cache layer deps.
+COPY Cargo.toml Cargo.lock* ./
+RUN mkdir -p src \
+    && echo "fn main() {}" > src/main.rs \
+    && cargo build --release --bin aurora-dataplane \
+    && rm -rf src \
+       target/release/aurora-dataplane \
+       target/release/aurora-dataplane.d \
+       target/release/deps/aurora_dataplane* \
+       target/release/.fingerprint/aurora-dataplane-*
+
+# 2. Copy toàn bộ source thật (target/ host đã bị .dockerignore loại trừ).
+COPY . .
+
+# 3. Force-touch các file .rs để cargo nhận thay đổi và rebuild crate chính.
+RUN find src -name "*.rs" -exec touch {} + \
+    && cargo build --release --bin aurora-dataplane \
+    && test -s target/release/aurora-dataplane
+
+# ============================================================================
+# Stage 2: Runtime - debian slim tối giản, non-root user
+# ============================================================================
+FROM debian:bookworm-slim AS runtime
+ARG LOCAL_USER=phucle
+ARG LOCAL_UID=1000
+ARG LOCAL_GID=1000
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
+    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --home-dir /var/lib/dataplane --shell /bin/bash ${LOCAL_USER} \
+    && mkdir -p /var/lib/dataplane /var/log/dataplane /etc/dataplane \
+    && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/dataplane /var/log/dataplane /etc/dataplane
+
+COPY --from=builder /src/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
+
+WORKDIR /var/lib/dataplane
+USER ${LOCAL_USER}:${LOCAL_USER}
+
+ENTRYPOINT ["/usr/local/bin/aurora-dataplane"]

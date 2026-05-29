@@ -1,6 +1,7 @@
 use dotenvy::dotenv;
+use std::env;
 use std::error::Error;
-use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -46,6 +47,8 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
 
     // 2. Initialize structured logging system
     Logger::init();
+    // Flush stdout ngay lập tức sau init để đảm bảo log hiển thị trong Docker non-TTY (block-buffered stdout).
+    std::io::stdout().flush().ok();
 
     // 3. Load config from Environment
     let cfg = Config::load();
@@ -66,7 +69,9 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
                 "CRITICAL: Failed to initialize local SQLite database connection pool",
                 &err,
             );
-            std::process::abort();
+            std::io::stdout().flush().ok();
+            std::io::stderr().flush().ok();
+            std::process::exit(1);
         }
     };
 
@@ -85,7 +90,9 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
                 "CRITICAL: Failed to initialize Job Queue Redis client connection pool",
                 &err,
             );
-            std::process::abort();
+            std::io::stdout().flush().ok();
+            std::io::stderr().flush().ok();
+            std::process::exit(1);
         }
     };
 
@@ -104,13 +111,20 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
                 "CRITICAL: Failed to initialize Internal Zone Redis client connection pool",
                 &err,
             );
-            std::process::abort();
+            std::io::stdout().flush().ok();
+            std::io::stderr().flush().ok();
+            std::process::exit(1);
         }
     };
 
     // 7. Load and Parse Initial YAML Policy file
-    let policy_path = PathBuf::from("config/policy.yaml");
-    let initial_yaml = match fs::read_to_string(&policy_path) {
+    // Đường dẫn ưu tiên theo thứ tự:
+    //   1. Biến môi trường POLICY_FILE (được set bởi Docker/K8s volume mount).
+    //   2. config/policy.yaml (fallback cho dev local không qua container).
+    let policy_path = PathBuf::from(
+        env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string()),
+    );
+    let initial_yaml = match std::fs::read_to_string(&policy_path) {
         Ok(s) => s,
         Err(err) => {
             Logger::sys_error(
@@ -121,7 +135,9 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
                 ),
                 &err.to_string(),
             );
-            std::process::abort();
+            std::io::stdout().flush().ok();
+            std::io::stderr().flush().ok();
+            std::process::exit(1);
         }
     };
 
@@ -133,7 +149,9 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
                 "CRITICAL: Failed to parse initial YAML policy file",
                 &err.to_string(),
             );
-            std::process::abort();
+            std::io::stdout().flush().ok();
+            std::io::stderr().flush().ok();
+            std::process::exit(1);
         }
     };
 

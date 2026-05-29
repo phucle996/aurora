@@ -37,14 +37,20 @@ impl LazyHealClient {
     ///   3. Cập nhật trạng thái sức khỏe và báo cáo lên hệ thống điều phối nếu xảy ra lỗi.
     ///   4. Ngủ đông 60 giây trước khi lặp lại chu kỳ mới.
     pub async fn start_lazy_heartbeat_loop() {
-        println!("RPC Heal: Starting lazy downstream agents health check loop...");
+        crate::observability::logger::Logger::sys_info(
+            "rpc.heal",
+            "RPC Heal: Starting lazy downstream agents health check loop...",
+        );
         
         tokio::spawn(async move {
             loop {
                 // Trên môi trường Production thực tế:
                 //   - Thực hiện Ping-check tới các socket vật lý của KVM Agent/Hypervisor local.
                 //   - Xác minh tính sẵn sàng của các cổng kết nối downstream gửi đi.
-                println!("RPC Heal: Verifying local KVM agent and downstream virtualization node health...");
+                crate::observability::logger::Logger::sys_debug(
+                    "rpc.heal",
+                    "RPC Heal: Verifying local KVM agent and downstream virtualization node health...",
+                );
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
         });

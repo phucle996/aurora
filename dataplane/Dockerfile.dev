@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:latest AS dev
+ARG LOCAL_USER=phucle
+ARG LOCAL_UID=1000
+ARG LOCAL_GID=1000
+
+WORKDIR /app
+
+RUN groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
+    && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --create-home --shell /bin/bash ${LOCAL_USER} \
+    && mkdir -p /var/lib/dataplane /var/log/dataplane /etc/dataplane \
+    && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/dataplane /var/log/dataplane /etc/dataplane /usr/local/cargo
+
+# Optimize build speed by downloading pre-compiled cargo-watch binary instead of compiling it
+RUN curl -L https://github.com/watchexec/cargo-watch/releases/download/v8.4.1/cargo-watch-v8.4.1-x86_64-unknown-linux-gnu.tar.xz | tar -xJ --strip-components=1 -C /usr/local/bin
+
+COPY Cargo.toml Cargo.lock* ./
+
+# Pre-compile dependencies to leverage Docker layer caching
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build
+
+RUN rm -rf src
+
+COPY . .
+
+RUN chown -R ${LOCAL_USER}:${LOCAL_USER} /app /usr/local/cargo
+
+USER ${LOCAL_USER}:${LOCAL_USER}
+
+CMD ["cargo", "watch", "-x", "run"]

@@ -131,7 +131,10 @@ pub async fn acknowledge_message(client: &redis::Client, stream_key: &str, group
         .query_async(&mut conn)
         .await
         .map_err(|e| e.to_string())?;
-    println!("Infra Redis: Stream message {} successfully XACKed in group {}", msg_id, group);
+    crate::observability::logger::Logger::sys_debug(
+        "infra.redis",
+        &format!("Infra Redis: Stream message {} successfully XACKed in group {}", msg_id, group),
+    );
     Ok(())
 }
 
@@ -163,7 +166,10 @@ pub async fn release_lease_lock(client: &redis::Client, lock_key: &str) -> Resul
         .query_async(&mut conn)
         .await
         .map_err(|e| e.to_string())?;
-    println!("Infra Redis: Distributed lease lock '{}' successfully released", lock_key);
+    crate::observability::logger::Logger::sys_debug(
+        "infra.redis",
+        &format!("Infra Redis: Distributed lease lock '{}' successfully released", lock_key),
+    );
     Ok(())
 }
 

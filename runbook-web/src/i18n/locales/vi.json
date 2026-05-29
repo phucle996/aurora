@@ -1,0 +1,206 @@
+{
+  "app": {
+    "title": "Aurora Runbook",
+    "subtitle": "Cẩm nang vận hành",
+    "version": "v2.2"
+  },
+  "header": {
+    "search_placeholder": "Tìm kiếm trong runbook…",
+    "search_no_results": "Không có kết quả cho",
+    "search_navigate_hint": "Dùng ↑ ↓ để di chuyển, ↵ để mở",
+    "search_close_hint": "Esc để đóng",
+    "toggle_theme_light": "Chuyển sang sáng",
+    "toggle_theme_dark": "Chuyển sang tối",
+    "toggle_sidebar": "Bật/tắt sidebar",
+    "language": "Ngôn ngữ"
+  },
+  "nav": {
+    "groups": {
+      "auth": "Xác thực",
+      "security": "Bảo mật",
+      "infra": "Hạ tầng",
+      "general": "Chung"
+    },
+    "items": {
+      "auth-token-model": "Mô hình & Vòng đời Token",
+      "auth-login-flow": "Luồng đăng nhập",
+      "auth-refresh-flow": "Luồng làm mới",
+      "auth-logout-flow": "Luồng đăng xuất",
+      "auth-mfa": "MFA & Step-Up",
+      "auth-device-binding": "Ràng buộc thiết bị",
+      "sec-threat-model": "Mô hình mối đe dọa",
+      "sec-secrets": "Bí mật & Xoay vòng",
+      "sec-audit": "Audit & Tuân thủ",
+      "infra-redis": "Redis Cache",
+      "infra-postgres": "PostgreSQL",
+      "infra-envoy": "Envoy Proxy",
+      "home": "Trang chủ"
+    },
+    "soon": "sắp có",
+    "soon_tooltip": "Sắp ra mắt"
+  },
+  "page_titles": {
+    "auth-token-model": {
+      "title": "Mô hình & Vòng đời Token Admin",
+      "subtitle": "Đặc tả xác thực Admin Aurora",
+      "badge": "v2.2 • Sẵn sàng Production"
+    },
+    "home": {
+      "title": "Aurora Runbook",
+      "subtitle": "Cẩm nang vận hành",
+      "badge": "Dev"
+    }
+  },
+  "home": {
+    "hero": {
+      "badges": {
+        "platform": "Nền tảng",
+        "cloud_native": "Cloud-native",
+        "stack": "Go • PostgreSQL • Redis"
+      },
+      "title": "Aurora Platform",
+      "tagline": "Hệ điều phối hạ tầng theo mô hình <strong>controlplane / dataplane / agent</strong> — cung cấp authn/authz, IAM, topology, billing, task pipeline cho các tenant chạy trên nhiều runtime hỗn hợp.",
+      "goal": "Mục tiêu: tách biệt rạch ròi quyền điều phối với workload thực thi, đảm bảo source of truth nằm ở PostgreSQL, và giữ Redis là kênh điều phối realtime an toàn cho HA."
+    },
+    "stats": {
+      "source_of_truth": "Source of Truth",
+      "coordination": "Điều phối",
+      "edge_proxy": "Edge Proxy",
+      "runtime": "Runtime"
+    },
+    "planes": {
+      "section_title": "Mô hình 3 mặt phẳng",
+      "section_desc": "Aurora tách rõ ba lớp trách nhiệm — không lớp nào lấn sang lớp khác.",
+      "controlplane": {
+        "tag": "Brain",
+        "title": "Controlplane",
+        "desc": "Lớp điều phối trung tâm — nhận request, validate policy, ghi state chuẩn vào DB, phát lệnh xuống dataplane/agent.",
+        "p1": "HTTP / gRPC entrypoint",
+        "p2": "IAM, billing, topology, task",
+        "p3": "Source of truth: PostgreSQL",
+        "p4": "Phát job qua Redis Stream"
+      },
+      "dataplane": {
+        "tag": "Workforce",
+        "title": "Dataplane",
+        "desc": "Lớp xử lý runtime gần tài nguyên — tiêu thụ lệnh, thực hiện task, báo trạng thái ngược lại controlplane.",
+        "p1": "Tiêu thụ Redis Stream",
+        "p2": "Chạy workload dài hạn",
+        "p3": "Reconcile state với DB",
+        "p4": "Không quyết định policy"
+      },
+      "agent": {
+        "tag": "Edge",
+        "title": "Agent",
+        "desc": "Tiến trình edge gần host/node/VM — nhận lệnh đặc thù, thực hiện side effect cục bộ, gửi heartbeat & result.",
+        "p1": "Chạy trên host / node / VM",
+        "p2": "Side-effects cục bộ",
+        "p3": "Heartbeat + kết quả",
+        "p4": "Không lưu state nghiệp vụ"
+      }
+    },
+    "architecture": {
+      "title": "Kiến trúc hệ thống",
+      "desc": "Luồng dữ liệu giữa client, edge proxy, controlplane cluster, dataplane workers, agents, và các infrastructure store.",
+      "footer": "PostgreSQL là source of truth · Redis là kênh điều phối realtime · Envoy là biên duy nhất tiếp xúc client"
+    },
+    "request_flow": {
+      "title": "Luồng request chính",
+      "desc": "Mỗi request HTTP/gRPC đi qua các tầng theo thứ tự cố định để đảm bảo policy & audit.",
+      "s1": "Client",
+      "s1_desc": "Admin UI, Cloud UI, API client gọi HTTP/gRPC",
+      "s2": "Envoy edge",
+      "s2_desc": "TLS termination, vhost routing, mTLS giữa cluster",
+      "s3": "Middleware chain",
+      "s3_desc": "request ID → auth → access log → rate limit → origin/cookie guard",
+      "s4": "Handler",
+      "s4_desc": "Bind & validate request, gọi service",
+      "s5": "Service",
+      "s5_desc": "Business logic + policy decision, gọi repository nếu cần DB",
+      "s6": "Repository",
+      "s6_desc": "Nơi duy nhất phát SQL vào PostgreSQL",
+      "s7": "Async branch",
+      "s7_desc": "Service ghi state rồi enqueue job/event lên Redis Stream",
+      "s8": "Response",
+      "s8_desc": "Handler return — không rò internal error ra client"
+    },
+    "modules": {
+      "title": "Các module nghiệp vụ",
+      "desc_prefix": "Controlplane chia theo module nghiệp vụ trong",
+      "iam_desc": "Auth, RBAC, MFA, thiết bị",
+      "tenant_desc": "Ranh giới multi-tenant",
+      "core_desc": "Shared kernel types",
+      "policy_desc": "Đánh giá rule",
+      "security_desc": "Crypto, rate limit",
+      "observability_desc": "Tracing, metrics",
+      "mail_desc": "SMTP, thông báo",
+      "hypervisor_desc": "Vòng đời VM"
+    },
+    "principles": {
+      "title": "Nguyên tắc thiết kế",
+      "desc": "Những ràng buộc kiến trúc giữ codebase lành mạnh khi scale.",
+      "p1_title": "Phân lớp nghiêm ngặt",
+      "p1_desc": "Handler → Service → Repository → DB. Không skip, không trộn. SQL chỉ được phép xuất hiện trong repository.",
+      "p2_title": "PostgreSQL là SoT",
+      "p2_desc": "Mọi business state bền vững nằm ở PostgreSQL. Redis chỉ phục vụ queue/cache/coordination/transient state.",
+      "p3_title": "Lỗi cục bộ theo module",
+      "p3_desc": "Mỗi module có errorx riêng. Không leak internal error ra client; handler dịch về HTTP code chuẩn.",
+      "p4_title": "Không lưu raw secret",
+      "p4_desc": "Không lưu raw secret/token/key trong DB. Plaintext chỉ tồn tại trong RAM tạm thời.",
+      "p5_title": "Replay-safe events",
+      "p5_desc": "Mất Redis tạm thời không hỏng state. PostgreSQL là nguồn replay/reconcile chuẩn.",
+      "p6_title": "Lỗi chung",
+      "p6_desc": "Authentication errors phải generic — không leak thông tin tồn tại / không tồn tại của user."
+    },
+    "footer": {
+      "line1": "Aurora Platform • runbook.aurora.local",
+      "line2": "Điều phối hạ tầng cloud-native"
+    }
+  },
+  "common": {
+    "hero_badges": {
+      "version": "v2.2",
+      "updated": "Cập nhật 2026-05-29",
+      "production_ready": "Sẵn sàng Production"
+    }
+  },
+  "auth_token_model": {
+    "hero": {
+      "title": "Xác thực Admin Aurora",
+      "subtitle": "Mô hình & Vòng đời Token",
+      "scope": "Phạm vi: Admin / SRE / Operator (không phải end-user)"
+    },
+    "key_props": {
+      "fragment": "Token 3 mảnh",
+      "fragment_value": "JWT + AccessKey + AccessSecret",
+      "session_ttl": "TTL phiên",
+      "session_ttl_value": "15 phút",
+      "device_binding": "Ràng buộc thiết bị",
+      "device_binding_value": "Khóa công khai Ed25519",
+      "revocation": "Thu hồi",
+      "revocation_value": "< 1ms (Redis DEL)",
+      "ha_grace": "Thời gian ân hạn HA",
+      "ha_grace_value": "10 giây",
+      "plane_isolation": "Cô lập mặt phẳng",
+      "plane_isolation_value": "Admin / User tách biệt"
+    },
+    "footer": "Xác thực Admin Aurora • Mô hình & Vòng đời Token • v2.2",
+    "footer_sub": "Cập nhật 2026-05-29 • runbook.aurora.local"
+  },
+  "search": {
+    "exec_summary": "Tóm tắt",
+    "token_model": "Mô hình Token",
+    "lifecycle": "Vòng đời Token",
+    "token_components": "Thành phần Token",
+    "redis_storage": "Lưu trữ phiên Redis",
+    "token_rotation": "Xoay vòng Token",
+    "cookie_spec": "Đặc tả Cookie",
+    "inactivity": "Timeout không hoạt động",
+    "device_binding": "Ràng buộc thiết bị",
+    "threat_model": "Mô hình mối đe dọa & Mitigation",
+    "config": "Cấu hình",
+    "principles": "Nguyên tắc bảo mật",
+    "guarantees": "Đảm bảo vận hành",
+    "references": "Tài liệu tham khảo"
+  }
+}

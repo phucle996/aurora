@@ -25,7 +25,10 @@ pub struct SqliteDb;
 impl SqliteDb {
     /// Khởi tạo và thiết lập connection pool kết nối tới database SQLite cục bộ.
     pub fn init_connection(_path: &str) -> Result<Self, String> {
-        println!("Infra SQLite: Initialized local database pool. WAL mode active. Thread safety: Serialized.");
+        crate::observability::logger::Logger::sys_info(
+            "infra.sqlite",
+            "Infra SQLite: Initialized local database pool. WAL mode active. Thread safety: Serialized.",
+        );
         Ok(Self)
     }
 
@@ -36,7 +39,10 @@ impl SqliteDb {
     ///   2. Nếu tồn tại bản ghi đã thành công -> Trả về `Ok(true)` (Duplicate Job - Drop xử lý).
     ///   3. Nếu chưa tồn tại -> Trả về `Ok(false)` (New Job - Cho phép đi tiếp).
     pub fn check_idempotency(&self, job_id: &str, version: u32) -> Result<bool, String> {
-        println!("Infra SQLite: Querying idempotency cache for job_id={} version={}", job_id, version);
+        crate::observability::logger::Logger::sys_debug(
+            "infra.sqlite",
+            &format!("Infra SQLite: Querying idempotency cache for job_id={} version={}", job_id, version),
+        );
         Ok(false) // Mặc định trả về false cho skeletal implementation
     }
 }

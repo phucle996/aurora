@@ -47,8 +47,9 @@ impl PolicyNotifier {
         //   - Khởi chạy một vòng lặp lắng nghe tin nhắn Pub/Sub không chặn (async message loop).
         //   - Khi có tin nhắn, parse JSON kiểm tra tính hợp lệ trước khi báo lại cho callsite.
 
-        println!(
-            "Policy Engine Notifier: Subscribed to policy changed notifications via Redis Pub/Sub"
+        crate::observability::logger::Logger::sys_info(
+            "policy.notifier",
+            "Policy Engine Notifier: Subscribed to policy changed notifications via Redis Pub/Sub",
         );
         Ok(())
     }

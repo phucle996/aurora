@@ -43,10 +43,12 @@ impl RedisClientManager {
         };
 
         // Ghi log kết nối
-        println!(
-            "Infra Redis: Real client manager successfully initialized. Url: {}, Security: {}",
-            redis_url,
-            tls_status
+        crate::observability::logger::Logger::sys_info(
+            "infra.redis",
+            &format!(
+                "Infra Redis: Real client manager successfully initialized. Url: {}, Security: {}",
+                redis_url, tls_status
+            ),
         );
 
         // Bỏ qua cảnh báo unused bằng cách đóng gói các tham số TLS trong debug print

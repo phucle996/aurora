@@ -82,7 +82,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			middleware.WithInjectAccessSecret(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "iam_admin_auth_refresh_postauth", 30, 30, time.Minute),
-		middleware.AdminCriticalSignature(),
 		module.AdminAuthHandler.Refresh,
 	)
 	router.POST("/admin/auth/rotate-key",

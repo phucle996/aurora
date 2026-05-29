@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import Section from '../components/spec/Section.jsx'
 import Callout from '../components/spec/Callout.jsx'
 import KeyValueTable from '../components/spec/KeyValueTable.jsx'
@@ -6,33 +7,34 @@ import StateDiagram from '../components/spec/StateDiagram.jsx'
 import CodeBlock from '../components/spec/CodeBlock.jsx'
 
 export default function AuthTokenModel() {
+  const { t } = useTranslation()
   return (
     <div className="max-w-5xl mx-auto px-8 py-10 space-y-12">
       {/* Hero */}
       <header className="bg-gradient-to-br from-indigo-100 via-white to-purple-100 dark:from-indigo-900/40 dark:via-slate-900 dark:to-purple-900/40 border border-indigo-200 dark:border-indigo-800/50 rounded-2xl p-8">
         <div className="flex flex-wrap items-center gap-2 text-xs mb-4">
-          <span className="px-2.5 py-1 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 rounded-full border border-indigo-300 dark:border-indigo-500/30">v2.2</span>
-          <span className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-full border border-slate-300 dark:border-slate-700">Updated 2026-05-29</span>
-          <span className="px-2.5 py-1 bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 rounded-full border border-emerald-300 dark:border-emerald-500/30">Production Ready</span>
+          <span className="px-2.5 py-1 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 rounded-full border border-indigo-300 dark:border-indigo-500/30">{t('common.hero_badges.version')}</span>
+          <span className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-full border border-slate-300 dark:border-slate-700">{t('common.hero_badges.updated')}</span>
+          <span className="px-2.5 py-1 bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 rounded-full border border-emerald-300 dark:border-emerald-500/30">{t('common.hero_badges.production_ready')}</span>
         </div>
         <h1 className="text-4xl font-bold mb-3 bg-gradient-to-r from-indigo-700 to-purple-700 dark:from-white dark:to-indigo-200 bg-clip-text text-transparent">
-          Aurora Admin Authentication
+          {t('auth_token_model.hero.title')}
         </h1>
-        <p className="text-lg text-slate-700 dark:text-slate-300 mb-2">Token Model &amp; Lifecycle</p>
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">Scope: Admin / SRE / Operator (not end-user)</p>
+        <p className="text-lg text-slate-700 dark:text-slate-300 mb-2">{t('auth_token_model.hero.subtitle')}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">{t('auth_token_model.hero.scope')}</p>
 
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {[
-            { label: '3-Fragment Token', value: 'JWT + AccessKey + AccessSecret' },
-            { label: 'Session TTL', value: '15 minutes' },
-            { label: 'Device Binding', value: 'Ed25519 public key' },
-            { label: 'Revocation', value: '< 1ms (Redis DEL)' },
-            { label: 'HA Grace Period', value: '10 seconds' },
-            { label: 'Plane Isolation', value: 'Admin / User separated' },
+            { labelKey: 'auth_token_model.key_props.fragment', valueKey: 'auth_token_model.key_props.fragment_value' },
+            { labelKey: 'auth_token_model.key_props.session_ttl', valueKey: 'auth_token_model.key_props.session_ttl_value' },
+            { labelKey: 'auth_token_model.key_props.device_binding', valueKey: 'auth_token_model.key_props.device_binding_value' },
+            { labelKey: 'auth_token_model.key_props.revocation', valueKey: 'auth_token_model.key_props.revocation_value' },
+            { labelKey: 'auth_token_model.key_props.ha_grace', valueKey: 'auth_token_model.key_props.ha_grace_value' },
+            { labelKey: 'auth_token_model.key_props.plane_isolation', valueKey: 'auth_token_model.key_props.plane_isolation_value' },
           ].map((p) => (
-            <div key={p.label} className="bg-white/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3">
-              <p className="text-[11px] uppercase tracking-wider text-slate-500">{p.label}</p>
-              <p className="font-semibold text-slate-900 dark:text-slate-100 text-sm mt-1">{p.value}</p>
+            <div key={p.labelKey} className="bg-white/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-lg p-3">
+              <p className="text-[11px] uppercase tracking-wider text-slate-500">{t(p.labelKey)}</p>
+              <p className="font-semibold text-slate-900 dark:text-slate-100 text-sm mt-1">{t(p.valueKey)}</p>
             </div>
           ))}
         </div>
@@ -443,8 +445,8 @@ T=15.5m: Request with old cookies → 401 Unauthorized`} />
       </Section>
 
       <footer className="border-t border-slate-200 dark:border-slate-800 pt-6 text-center text-sm text-slate-500">
-        <p>Aurora Admin Authentication • Token Model &amp; Lifecycle • v2.2</p>
-        <p className="mt-1">Updated 2026-05-29 • runbook.aurora.local</p>
+        <p>{t('auth_token_model.footer')}</p>
+        <p className="mt-1">{t('auth_token_model.footer_sub')}</p>
       </footer>
     </div>
   )

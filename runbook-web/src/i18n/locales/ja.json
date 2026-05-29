@@ -1,0 +1,206 @@
+{
+  "app": {
+    "title": "Aurora Runbook",
+    "subtitle": "運用ナレッジベース",
+    "version": "v2.2"
+  },
+  "header": {
+    "search_placeholder": "Runbook を検索…",
+    "search_no_results": "結果なし:",
+    "search_navigate_hint": "↑ ↓ で移動、↵ で開く",
+    "search_close_hint": "Esc で閉じる",
+    "toggle_theme_light": "ライトに切替",
+    "toggle_theme_dark": "ダークに切替",
+    "toggle_sidebar": "サイドバー切替",
+    "language": "言語"
+  },
+  "nav": {
+    "groups": {
+      "auth": "認証",
+      "security": "セキュリティ",
+      "infra": "インフラ",
+      "general": "一般"
+    },
+    "items": {
+      "auth-token-model": "トークンモデルとライフサイクル",
+      "auth-login-flow": "ログインフロー",
+      "auth-refresh-flow": "リフレッシュフロー",
+      "auth-logout-flow": "ログアウトフロー",
+      "auth-mfa": "MFA とステップアップ",
+      "auth-device-binding": "デバイスバインディング",
+      "sec-threat-model": "脅威モデル",
+      "sec-secrets": "シークレットとローテーション",
+      "sec-audit": "監査とコンプライアンス",
+      "infra-redis": "Redis キャッシュ",
+      "infra-postgres": "PostgreSQL",
+      "infra-envoy": "Envoy プロキシ",
+      "home": "ホーム"
+    },
+    "soon": "近日",
+    "soon_tooltip": "近日公開"
+  },
+  "page_titles": {
+    "auth-token-model": {
+      "title": "管理者認証トークンモデルとライフサイクル",
+      "subtitle": "Aurora 管理者認証仕様",
+      "badge": "v2.2 • Production Ready"
+    },
+    "home": {
+      "title": "Aurora Runbook",
+      "subtitle": "運用ナレッジベース",
+      "badge": "Dev"
+    }
+  },
+  "home": {
+    "hero": {
+      "badges": {
+        "platform": "プラットフォーム",
+        "cloud_native": "クラウドネイティブ",
+        "stack": "Go • PostgreSQL • Redis"
+      },
+      "title": "Aurora Platform",
+      "tagline": "<strong>controlplane / dataplane / agent</strong> モデルに基づくインフラオーケストレーション — 異種ランタイム上で動作するテナント向けに、認証/認可、IAM、トポロジー、課金、タスクパイプラインを提供します。",
+      "goal": "目標: オーケストレーション権限とワークロード実行を明確に分離し、PostgreSQL を信頼できる情報源 (SoT) として保ち、Redis を HA のための安全なリアルタイム調整チャネルとして使用すること。"
+    },
+    "stats": {
+      "source_of_truth": "信頼できる情報源",
+      "coordination": "調整",
+      "edge_proxy": "エッジプロキシ",
+      "runtime": "ランタイム"
+    },
+    "planes": {
+      "section_title": "3 プレーンモデル",
+      "section_desc": "Aurora は 3 つの責務レイヤーを明確に分離 — どのレイヤーも他のレイヤーに介入しません。",
+      "controlplane": {
+        "tag": "Brain",
+        "title": "Controlplane",
+        "desc": "中央オーケストレーション層 — リクエスト受信、ポリシー検証、DB への正規 state 書き込み、dataplane/agent への命令ディスパッチ。",
+        "p1": "HTTP / gRPC エントリポイント",
+        "p2": "IAM、課金、トポロジー、タスク",
+        "p3": "信頼できる情報源: PostgreSQL",
+        "p4": "Redis Stream 経由でジョブ配信"
+      },
+      "dataplane": {
+        "tag": "Workforce",
+        "title": "Dataplane",
+        "desc": "リソース近傍のランタイム層 — 命令を消費し、タスクを実行し、controlplane へ状態を報告。",
+        "p1": "Redis Stream を消費",
+        "p2": "長時間実行ワークロード",
+        "p3": "DB と state を整合",
+        "p4": "ポリシー判断は行わない"
+      },
+      "agent": {
+        "tag": "Edge",
+        "title": "Agent",
+        "desc": "host/node/VM 近傍のエッジプロセス — 特定の命令を受信、ローカル副作用を実行、ハートビートと結果を送信。",
+        "p1": "host / node / VM 上で動作",
+        "p2": "ローカル副作用",
+        "p3": "ハートビート + 結果",
+        "p4": "業務 state を保持しない"
+      }
+    },
+    "architecture": {
+      "title": "システムアーキテクチャ",
+      "desc": "クライアント、エッジプロキシ、controlplane クラスター、dataplane ワーカー、agent、インフラストアの間のデータフロー。",
+      "footer": "PostgreSQL は信頼できる情報源 · Redis はリアルタイム調整チャネル · Envoy は唯一のクライアント向けエッジ"
+    },
+    "request_flow": {
+      "title": "メインリクエストフロー",
+      "desc": "各 HTTP/gRPC リクエストはポリシーと監査を保証するため固定された層を通過します。",
+      "s1": "クライアント",
+      "s1_desc": "Admin UI、Cloud UI、API クライアントが HTTP/gRPC を呼び出し",
+      "s2": "Envoy エッジ",
+      "s2_desc": "TLS 終端、vhost ルーティング、クラスター間 mTLS",
+      "s3": "ミドルウェアチェーン",
+      "s3_desc": "request ID → auth → access log → rate limit → origin/cookie guard",
+      "s4": "ハンドラ",
+      "s4_desc": "リクエストを bind & validate し、サービスを呼び出す",
+      "s5": "サービス",
+      "s5_desc": "ビジネスロジック + ポリシー判断、必要に応じて repository を呼び出す",
+      "s6": "リポジトリ",
+      "s6_desc": "PostgreSQL に SQL を発行する唯一の場所",
+      "s7": "非同期分岐",
+      "s7_desc": "サービスが state を書き込んだ後、Redis Stream にジョブ/イベントをエンキュー",
+      "s8": "レスポンス",
+      "s8_desc": "ハンドラが返却 — 内部エラーをクライアントへ漏らさない"
+    },
+    "modules": {
+      "title": "ビジネスモジュール",
+      "desc_prefix": "Controlplane は次の配下にビジネスモジュールごとに分割",
+      "iam_desc": "認証、RBAC、MFA、デバイス",
+      "tenant_desc": "マルチテナント境界",
+      "core_desc": "共有カーネル型",
+      "policy_desc": "ルール評価",
+      "security_desc": "暗号、レート制限",
+      "observability_desc": "トレーシング、メトリクス",
+      "mail_desc": "SMTP、通知",
+      "hypervisor_desc": "VM ライフサイクル"
+    },
+    "principles": {
+      "title": "設計原則",
+      "desc": "コードベースを健全に保つアーキテクチャ制約。",
+      "p1_title": "厳密なレイヤー",
+      "p1_desc": "Handler → Service → Repository → DB。スキップや混在は禁止。SQL は repository のみ。",
+      "p2_title": "PostgreSQL は SoT",
+      "p2_desc": "永続的な業務 state はすべて PostgreSQL に存在。Redis はキュー/キャッシュ/調整/一時 state のみ。",
+      "p3_title": "モジュールローカルなエラー",
+      "p3_desc": "各モジュールは独自の errorx を持つ。内部エラーをクライアントへ漏らさず、handler が標準 HTTP コードへマップ。",
+      "p4_title": "raw secret は保存しない",
+      "p4_desc": "raw secret/token/key は DB に保存しない。プレーンテキストは RAM に一時的にのみ存在。",
+      "p5_title": "リプレイ安全なイベント",
+      "p5_desc": "Redis の一時的な喪失で state は壊れない。PostgreSQL が正規のリプレイ/整合ソース。",
+      "p6_title": "汎用エラー",
+      "p6_desc": "認証エラーは汎用でなければならない — ユーザー存在の有無を漏らさない。"
+    },
+    "footer": {
+      "line1": "Aurora Platform • runbook.aurora.local",
+      "line2": "クラウドネイティブインフラオーケストレーション"
+    }
+  },
+  "common": {
+    "hero_badges": {
+      "version": "v2.2",
+      "updated": "更新: 2026-05-29",
+      "production_ready": "Production Ready"
+    }
+  },
+  "auth_token_model": {
+    "hero": {
+      "title": "Aurora 管理者認証",
+      "subtitle": "トークンモデルとライフサイクル",
+      "scope": "範囲: 管理者 / SRE / 運用者 (エンドユーザーではない)"
+    },
+    "key_props": {
+      "fragment": "3 フラグメントトークン",
+      "fragment_value": "JWT + AccessKey + AccessSecret",
+      "session_ttl": "セッション TTL",
+      "session_ttl_value": "15 分",
+      "device_binding": "デバイスバインディング",
+      "device_binding_value": "Ed25519 公開鍵",
+      "revocation": "失効",
+      "revocation_value": "< 1ms (Redis DEL)",
+      "ha_grace": "HA 猶予期間",
+      "ha_grace_value": "10 秒",
+      "plane_isolation": "プレーン分離",
+      "plane_isolation_value": "管理者 / ユーザー分離"
+    },
+    "footer": "Aurora 管理者認証 • トークンモデルとライフサイクル • v2.2",
+    "footer_sub": "更新: 2026-05-29 • runbook.aurora.local"
+  },
+  "search": {
+    "exec_summary": "エグゼクティブサマリー",
+    "token_model": "トークンモデル",
+    "lifecycle": "トークンライフサイクル",
+    "token_components": "トークン構成要素",
+    "redis_storage": "Redis セッションストレージ",
+    "token_rotation": "トークンローテーション",
+    "cookie_spec": "Cookie 仕様",
+    "inactivity": "非アクティブタイムアウト",
+    "device_binding": "デバイスバインディング",
+    "threat_model": "脅威モデルと緩和策",
+    "config": "構成",
+    "principles": "セキュリティ原則",
+    "guarantees": "運用保証",
+    "references": "参考文献"
+  }
+}

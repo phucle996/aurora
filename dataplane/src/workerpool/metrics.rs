@@ -42,13 +42,22 @@ impl WorkerMetricsManager {
     pub fn record_metrics(metrics: MetricsType) {
         match metrics {
             MetricsType::RedisStreamLag(lag) => {
-                println!("Worker Metrics: Current consumer group stream lag recorded: {}", lag);
+                crate::observability::logger::Logger::sys_debug(
+                    "worker.metrics",
+                    &format!("Worker Metrics: Current consumer group stream lag recorded: {}", lag),
+                );
             }
             MetricsType::HandlerLatencyMs(latency) => {
-                println!("Worker Metrics: Dynamic execution latency recorded: {:.2} ms", latency);
+                crate::observability::logger::Logger::sys_debug(
+                    "worker.metrics",
+                    &format!("Worker Metrics: Dynamic execution latency recorded: {:.2} ms", latency),
+                );
             }
             MetricsType::ActiveConnectionsCount(count) => {
-                println!("Worker Metrics: Current active consumer connections: {}", count);
+                crate::observability::logger::Logger::sys_debug(
+                    "worker.metrics",
+                    &format!("Worker Metrics: Current active consumer connections: {}", count),
+                );
             }
         }
     }
