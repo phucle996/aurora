@@ -130,6 +130,8 @@ services:
         condition: service_started
       controlplane3:
         condition: service_started
+      runbook-web:
+        condition: service_started
     restart: unless-stopped
 
   psql:
@@ -281,6 +283,21 @@ services:
       CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
 
+  runbook-web:
+    image: node:20-alpine
+    container_name: runbook-web-dev
+    working_dir: /workspace
+    volumes:
+      - ../runbook-web:/workspace
+      - runbook_web_node_modules:/workspace/node_modules
+    command: ["sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --port 5173"]
+    ports:
+      - "5174:5173"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+    restart: unless-stopped
+
+
 volumes:
   controlplane_go_mod:
   controlplane_psql_data:
@@ -292,3 +309,4 @@ volumes:
   controlplane_grafana_data:
   cloud_ui_node_modules:
   admin_ui_node_modules:
+  runbook_web_node_modules:

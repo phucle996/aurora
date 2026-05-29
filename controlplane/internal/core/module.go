@@ -26,8 +26,12 @@ type Module struct {
 	ZoneRepository        coreRepoInterface.ZoneRepository
 	ZoneService           coreSvcInterface.ZoneService
 	ZoneHandler           *coreHandler.ZoneHandler
+	DataplaneNodeRepository coreRepoInterface.DataplaneNodeRepository
+	DataplaneNodeService    coreSvcInterface.DataplaneNodeService
+	DataplaneOrchestrator   *coreSvcImpl.DataplaneOrchestrator
 	invalidationBus       *coreCache.RedisSecretInvalidationBus
 	listenCancel          context.CancelFunc
+	orchestratorCancel    context.CancelFunc
 }
 
 // NewModule dựng dependency graph của Core và trả về lỗi wiring/bootstrap để
@@ -66,16 +70,38 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client) (*Modu
 	if zoneHandler == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone handler is nil")
 	}
+
+	// 6) Dataplane dependencies injection
+	dataplaneNodeRepo := coreRepoImpl.NewDataplaneNodeRepoImpl(cfg, db)
+	if dataplaneNodeRepo == nil {
+		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane repository is nil")
+	}
+	dataplaneCache := coreCache.NewDataplaneCacheImpl(rds)
+	if dataplaneCache == nil {
+		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane cache is nil")
+	}
+	dataplaneNodeService := coreSvcImpl.NewDataplaneNodeService(dataplaneNodeRepo, dataplaneCache, zoneRepo)
+	if dataplaneNodeService == nil {
+		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane service is nil")
+	}
+	dataplaneOrchestrator := coreSvcImpl.NewDataplaneOrchestrator(dataplaneNodeRepo, dataplaneCache)
+	if dataplaneOrchestrator == nil {
+		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane orchestrator is nil")
+	}
+
 	return &Module{
-		cfg:                   cfg,
-		SecretRepository:      repo,
-		SecretRotationService: rotationService,
-		SecretReadService:     readService,
-		RuntimeSecretProvider: provider,
-		ZoneRepository:        zoneRepo,
-		ZoneService:           zoneService,
-		ZoneHandler:           zoneHandler,
-		invalidationBus:       bus,
+		cfg:                     cfg,
+		SecretRepository:        repo,
+		SecretRotationService:   rotationService,
+		SecretReadService:       readService,
+		RuntimeSecretProvider:   provider,
+		ZoneRepository:          zoneRepo,
+		ZoneService:             zoneService,
+		ZoneHandler:             zoneHandler,
+		DataplaneNodeRepository: dataplaneNodeRepo,
+		DataplaneNodeService:    dataplaneNodeService,
+		DataplaneOrchestrator:   dataplaneOrchestrator,
+		invalidationBus:         bus,
 	}, nil
 }
 
@@ -96,6 +122,11 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 				logger.SysWarn("core", err.Error())
 			}
 		}()
+	}
+	if m.DataplaneOrchestrator != nil && m.orchestratorCancel == nil {
+		orchCtx, cancel := context.WithCancel(ctx)
+		m.orchestratorCancel = cancel
+		go m.DataplaneOrchestrator.Start(orchCtx)
 	}
 	families := []coreEntity.BootstrapSecretFamily{
 		{Code: "access_token", Name: "Access Token", Description: "Primary signing secret for user access tokens."},
@@ -119,5 +150,9 @@ func (m *Module) Stop() {
 	if m.listenCancel != nil {
 		m.listenCancel()
 		m.listenCancel = nil
+	}
+	if m.orchestratorCancel != nil {
+		m.orchestratorCancel()
+		m.orchestratorCancel = nil
 	}
 }

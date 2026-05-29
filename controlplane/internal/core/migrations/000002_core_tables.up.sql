@@ -90,16 +90,16 @@ COMMENT ON COLUMN zone_services.updated_at IS 'Timestamp when zone service row w
 CREATE TABLE IF NOT EXISTS dataplane_nodes (
     id UUID PRIMARY KEY,
     status dataplane_node_status NOT NULL,
-    zone_id UUID NOT NULL REFERENCES zones(id),
-    capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+    zone_id UUID NOT NULL UNIQUE REFERENCES zones(id),
+    endpoint TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE dataplane_nodes IS 'Dataplane node registry snapshot. Each dataplane node must belong to exactly one zone.';
-COMMENT ON COLUMN dataplane_nodes.id IS 'Primary key and unique identity of dataplane node (UUIDv7) issued by dataplane/controlplane identity flow.';
-COMMENT ON COLUMN dataplane_nodes.status IS 'Current runtime lifecycle status of dataplane node.';
-COMMENT ON COLUMN dataplane_nodes.zone_id IS 'Foreign key to zone that this dataplane node belongs to.';
-COMMENT ON COLUMN dataplane_nodes.capabilities IS 'JSONB capability map of node-exposed features used for routing and eligibility checks.';
-COMMENT ON COLUMN dataplane_nodes.created_at IS 'Timestamp when dataplane node row was created.';
-COMMENT ON COLUMN dataplane_nodes.updated_at IS 'Timestamp when dataplane node row was last updated.';
+COMMENT ON TABLE dataplane_nodes IS 'Dataplane cluster registry snapshot. Each zone contains exactly one active dataplane cluster.';
+COMMENT ON COLUMN dataplane_nodes.id IS 'Primary key and unique identity of dataplane cluster (UUIDv7) issued by identity flow.';
+COMMENT ON COLUMN dataplane_nodes.status IS 'Current runtime lifecycle status of the dataplane cluster.';
+COMMENT ON COLUMN dataplane_nodes.zone_id IS 'Foreign key and unique link to the zone that this dataplane cluster belongs to.';
+COMMENT ON COLUMN dataplane_nodes.endpoint IS 'The public/internal gRPC or HTTP load balancer URL of the dataplane cluster in this zone.';
+COMMENT ON COLUMN dataplane_nodes.created_at IS 'Timestamp when dataplane cluster row was created.';
+COMMENT ON COLUMN dataplane_nodes.updated_at IS 'Timestamp when dataplane cluster row was last updated.';

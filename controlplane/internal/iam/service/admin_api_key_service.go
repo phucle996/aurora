@@ -744,10 +744,11 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 	_ = s.sessionCache.TouchAccessSession(ctx, trimmedAccessKey, 10*time.Second)
 
 	return iamEntity.AdminLoginResult{
-		AdminAPIToken: adminAPIToken,
-		AccessKey:     accessKeyNew,
-		AccessSecret:  accessSecretNew,
-		ExpiresAt:     now.Add(s.cfg.Security.AdminSessionTTL),
+		AdminAPIToken:  adminAPIToken,
+		AccessKey:      accessKeyNew,
+		AccessSecret:   accessSecretNew,
+		ClientDeviceID: runtimeRecord.TrackedDeviceID,
+		ExpiresAt:      now.Add(s.cfg.Security.AdminSessionTTL),
 	}, nil
 }
 

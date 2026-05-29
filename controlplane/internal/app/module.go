@@ -149,7 +149,7 @@ func NewGlobalModules(cfg *config.Config,
 	if err != nil {
 		// Log lỗi nghiêm trọng mức hệ thống phục vụ Alerting/Observability
 		logger.SysError("graceful.degradation.hypervisor", fmt.Sprintf("Failed to initialize hypervisor module: %v. Running in degraded mode.", err))
-		
+
 		// Sử dụng Null Object Pattern (Dummy Degraded Module) để tránh Nil Pointer Panic sau này
 		hypervisorModule = hypervisor.NewDegradedModule(err)
 	}

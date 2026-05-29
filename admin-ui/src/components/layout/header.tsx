@@ -1,8 +1,8 @@
-import { Link } from '@tanstack/react-router'
 import {
   Bell,
   ChevronDown,
   CircleHelp,
+  LogOut,
   Menu,
   PanelLeft,
   Search,
@@ -11,6 +11,14 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
 import ThemeSwitcher from '@/components/layout/theme-switcher'
+import { useAdminSession } from '@/hooks/useAdminSession'
+import { Fetch } from '@/lib/fetch'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 type AppHeaderProps = {
   onToggleSidebar: () => void
@@ -18,6 +26,18 @@ type AppHeaderProps = {
 }
 
 export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppHeaderProps) {
+  const { clearSession } = useAdminSession()
+
+  const handleLogout = async () => {
+    try {
+      await Fetch('/admin/auth/logout', { method: 'POST' })
+    } catch (err) {
+      console.error('Failed to log out on server:', err)
+    } finally {
+      clearSession()
+    }
+  }
+
   return (
     <header className="sticky top-0 z-20 border-b border-border/70 bg-card shadow-[0_1px_0_rgba(15,23,42,0.03)]">
       <div className="flex min-h-14 flex-wrap items-center gap-3 px-4 py-3 md:px-6 md:py-0">
@@ -67,19 +87,29 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
 
           <ThemeSwitcher />
 
-          <Link
-            to="/auth/admin"
-            className="inline-flex items-center gap-2 rounded-md px-1 py-1 transition-colors hover:bg-accent sm:px-2 sm:py-1.5"
-          >
-            <Avatar className="h-8 w-8 border border-border/70">
-              <AvatarFallback className="bg-primary text-xs font-bold text-primary-foreground">SA</AvatarFallback>
-            </Avatar>
-            <div className="hidden min-w-0 text-left lg:block">
-              <p className="truncate text-xs font-bold text-foreground">System Admin</p>
-              <p className="truncate text-[11px] text-muted-foreground">Platform Administrator</p>
-            </div>
-            <ChevronDown className="hidden h-4 w-4 text-muted-foreground lg:block" />
-          </Link>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-md px-1 py-1 transition-colors hover:bg-accent sm:px-2 sm:py-1.5 focus:outline-none cursor-pointer"
+              >
+                <Avatar className="h-8 w-8 border border-border/70">
+                  <AvatarFallback className="bg-primary text-xs font-bold text-primary-foreground">SA</AvatarFallback>
+                </Avatar>
+                <div className="hidden min-w-0 text-left lg:block">
+                  <p className="truncate text-xs font-bold text-foreground">System Admin</p>
+                  <p className="truncate text-[11px] text-muted-foreground">Platform Administrator</p>
+                </div>
+                <ChevronDown className="hidden h-4 w-4 text-muted-foreground lg:block" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuItem onClick={handleLogout} variant="destructive" className="cursor-pointer flex items-center gap-2">
+                <LogOut className="h-4 w-4" />
+                <span>Đăng xuất</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </header>

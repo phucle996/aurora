@@ -68,38 +68,48 @@ function buildUnauthenticatedState(overrides?: Partial<AdminSessionState>): Admi
   }
 }
 
-async function resolveAdminSession(signal?: AbortSignal): Promise<AdminSessionState> {
-  let retryCount = 0
+let activeResolvePromise: Promise<AdminSessionState> | null = null
 
-  while (true) {
-    try {
-      const session = await getAdminSession(signal)
-      const nextState = buildAuthenticatedState(session)
-      cachedState = nextState
-      return nextState
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        throw error
-      }
-
-      if (error instanceof AdminUnauthorizedError) {
-        cachedState = unauthenticatedState
-        return unauthenticatedState
-      }
-
-      if (retryCount < 2) {
-        retryCount += 1
-        await new Promise((resolve) => window.setTimeout(resolve, 1500))
-        continue
-      }
-
-      const failedState: AdminSessionState = buildUnauthenticatedState({
-        error: error instanceof Error ? error.message : 'Cannot verify admin session.',
-      })
-      cachedState = failedState
-      return failedState
-    }
+function resolveAdminSession(): Promise<AdminSessionState> {
+  if (activeResolvePromise) {
+    return activeResolvePromise
   }
+
+  activeResolvePromise = (async () => {
+    let retryCount = 0
+
+    while (true) {
+      try {
+        const session = await getAdminSession()
+        const nextState = buildAuthenticatedState(session)
+        cachedState = nextState
+        return nextState
+      } catch (error) {
+        if (error instanceof AdminUnauthorizedError) {
+          cachedState = unauthenticatedState
+          return unauthenticatedState
+        }
+
+        if (retryCount < 2) {
+          retryCount += 1
+          await new Promise((resolve) => window.setTimeout(resolve, 1500))
+          continue
+        }
+
+        const failedState: AdminSessionState = buildUnauthenticatedState({
+          error: error instanceof Error ? error.message : 'Cannot verify admin session.',
+        })
+        cachedState = failedState
+        return failedState
+      }
+    }
+  })()
+
+  activeResolvePromise.finally(() => {
+    activeResolvePromise = null
+  })
+
+  return activeResolvePromise
 }
 
 export function AdminSessionProvider({ children }: { children: ReactNode }) {
@@ -118,16 +128,13 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     return subscribeAdminSessionRefresh(() => {
-      // Khi nhận được tín hiệu refresh session ngầm thành công, gọi resolveAdminSession ngầm để đồng bộ state
-      resolveAdminSession()
-        .then((nextState) => {
-          if (mountedRef.current) {
-            setState(nextState)
-          }
-        })
-        .catch(() => {
-          // Bỏ qua lỗi check session ngầm để tránh ảnh hưởng tiêu cực đến UX
-        })
+      // Khi nhận được tín hiệu refresh session ngầm thành công,
+      // cập nhật trực tiếp cachedState và local state thành authenticated: true mà không cần gọi API /admin/auth/session dư thừa
+      const nextState = buildAuthenticatedState({ authenticated: true })
+      cachedState = nextState
+      if (mountedRef.current) {
+        setState(nextState)
+      }
     })
   }, [])
 
@@ -141,9 +148,7 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    const controller = new AbortController()
     const timeoutID = window.setTimeout(() => {
-      controller.abort()
       const timeoutState = buildUnauthenticatedState({
         error: 'Session check timeout. Please sign in again.',
       })
@@ -154,7 +159,7 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
     }, sessionLoadingTimeoutMs)
     setState((current) => (current.loading ? current : initialState))
 
-    void resolveAdminSession(controller.signal)
+    void resolveAdminSession()
       .then((nextState) => {
         window.clearTimeout(timeoutID)
         if (mountedRef.current) {
@@ -163,9 +168,6 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
       })
       .catch((error) => {
         window.clearTimeout(timeoutID)
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return
-        }
         if (mountedRef.current) {
           setState(
             buildUnauthenticatedState({
@@ -178,37 +180,21 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
     return () => {
       window.clearTimeout(timeoutID)
       mountedRef.current = false
-      controller.abort()
     }
   }, [])
 
   const refreshSession = useCallback(async () => {
-    const controller = new AbortController()
     if (mountedRef.current) {
       setState((current) => ({ ...current, loading: true, error: '', notice: '' }))
     }
 
     try {
-      const timeoutID = window.setTimeout(() => {
-        controller.abort()
-      }, sessionLoadingTimeoutMs)
-      const nextState = await resolveAdminSession(controller.signal)
-      window.clearTimeout(timeoutID)
+      const nextState = await resolveAdminSession()
       if (mountedRef.current) {
         setState(nextState)
       }
       return nextState
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        const timeoutState = buildUnauthenticatedState({
-          error: 'Session check timeout. Please sign in again.',
-        })
-        cachedState = timeoutState
-        if (mountedRef.current) {
-          setState(timeoutState)
-        }
-        return timeoutState
-      }
       const failedState = buildUnauthenticatedState({
         error: error instanceof Error ? error.message : 'Cannot verify admin session.',
       })

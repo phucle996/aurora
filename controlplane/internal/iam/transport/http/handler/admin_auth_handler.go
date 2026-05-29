@@ -116,7 +116,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		Value:    result.AccessKey,
 		Path:     "/admin",
 		Domain:   domain,
-		HttpOnly: false,
+		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  result.ExpiresAt,
@@ -139,7 +139,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		Value:    result.ClientDeviceID,
 		Path:     "/admin",
 		Domain:   domain,
-		HttpOnly: false,
+		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  cdidExpires,
@@ -229,7 +229,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 			Value:    result.AccessKey,
 			Path:     "/admin",
 			Domain:   domain,
-			HttpOnly: false,
+			HttpOnly: true,
 			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			Expires:  result.ExpiresAt,
@@ -244,6 +244,23 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 			SameSite: http.SameSiteLaxMode,
 			Expires:  result.ExpiresAt,
 			MaxAge:   maxAge})
+
+	// Gia hạn Cookie định danh thiết bị dài hạn (365 ngày) tương tự như luồng Login
+	cdidExpires := time.Now().UTC().Add(365 * 24 * time.Hour)
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     cookie.ClientDeviceIDName,
+		Value:    result.ClientDeviceID,
+		Path:     "/admin",
+		Domain:   domain,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  cdidExpires,
+		MaxAge:   int(time.Until(cdidExpires).Seconds()),
+	})
+
+	logger.HandlerInfo(c, op, "admin refresh successful")
+
 	c.Header("X-Session-Expires-In", strconv.Itoa(maxAge))
 	apires.RespondSuccess(c, nil, "ok")
 }
@@ -288,7 +305,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 			Value:    "",
 			Path:     "/admin",
 			Domain:   domain,
-			HttpOnly: false,
+			HttpOnly: true,
 			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			Expires:  exp,
@@ -341,7 +358,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 		Value:    "",
 		Path:     "/admin",
 		Domain:   domain,
-		HttpOnly: false,
+		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  exp,

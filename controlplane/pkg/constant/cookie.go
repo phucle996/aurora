@@ -7,7 +7,7 @@ package constant
 const (
 	AccessTokenName    = "access_token"
 	RefreshTokenName   = "refresh_token"
-	AdminAPITokenName  = "admin_api_token"
+	AdminAPITokenName  = "access_token"
 	AccessKeyName      = "access_key"
 	AccessSecretName   = "access_secret"
 	ClientDeviceIDName = "client_device_id"

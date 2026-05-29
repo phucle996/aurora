@@ -124,6 +124,19 @@ static_resources:
                               retry_on: "connect-failure,refused-stream,reset"
                               num_retries: 1
                               per_try_timeout: 5s
+                    - name: runbook_vhost
+                      domains:
+                        - "runbook.aurora.local"
+                        - "runbook.aurora.local:443"
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: runbook_web_cluster
+                            timeout: 15s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 5s
                     - name: localhost_fallback
                       domains:
                         - "localhost"
@@ -137,6 +150,8 @@ static_resources:
                               retry_on: "connect-failure,refused-stream,reset"
                               num_retries: 1
                               per_try_timeout: 3s
+                upgrade_configs:
+                  - upgrade_type: websocket
                 http_filters:
                   - name: envoy.filters.http.router
                     typed_config:
@@ -150,8 +165,6 @@ static_resources:
       circuit_breakers:
         thresholds:
           - priority: DEFAULT
-            # app max_inflight per instance = 2444
-            # envoy cluster gate ~= 1.2x * 2444 * 3 instances = 8798
             max_requests: 8798
             max_pending_requests: 8798
             max_connections: 8798
@@ -201,6 +214,20 @@ static_resources:
                   address:
                     socket_address:
                       address: admin-ui
+                      port_value: 5173
+
+    - name: runbook_web_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: runbook_web_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: runbook-web-dev
                       port_value: 5173
 
 admin:
