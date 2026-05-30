@@ -1,10 +1,10 @@
 import { useTranslation } from 'react-i18next'
-import Section from '../components/spec/Section.jsx'
-import Callout from '../components/spec/Callout.jsx'
-import KeyValueTable from '../components/spec/KeyValueTable.jsx'
-import FragmentCards from '../components/spec/FragmentCards.jsx'
-import StateDiagram from '../components/spec/StateDiagram.jsx'
-import CodeBlock from '../components/spec/CodeBlock.jsx'
+import Section from '../../components/spec/Section.jsx'
+import Callout from '../../components/spec/Callout.jsx'
+import KeyValueTable from '../../components/spec/KeyValueTable.jsx'
+import FragmentCards from '../../components/spec/FragmentCards.jsx'
+import StateDiagram from '../../components/spec/StateDiagram.jsx'
+import CodeBlock from '../../components/spec/CodeBlock.jsx'
 
 export default function AuthTokenModel() {
   const { t } = useTranslation()

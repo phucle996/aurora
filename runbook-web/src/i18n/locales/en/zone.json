@@ -4,112 +4,136 @@
       "title": "Zone Management",
       "subtitle": "Infrastructure Zone Operations Runbook",
       "badge": "v2.2 • Production Ready"
+    },
+    "zone-workflow": {
+      "title": "Zone Creation Workflow",
+      "subtitle": "End-to-end zone provisioning guide",
+      "badge": "v2.2 • Production Ready"
     }
   },
   "zone_management": {
-    "hero": {
-      "title": "Zone Management Runbook",
-      "subtitle": "Operational guide for managing infrastructure zones in the controlplane"
-    },
-    "warning": {
-      "title": "Zone is Root Topology",
-      "desc": "Zone is the root infrastructure unit. All dataplane nodes, services, and workloads are anchored to a zone. Changes to zone status or services have blast radius across all workloads running on that zone. Always follow the runbook and have a rollback plan."
-    },
-    "toc": {
-      "title": "Quick Navigation",
-      "create": "1. Creating a New Zone",
-      "status_transitions": "2. Zone Status Transitions",
-      "service_management": "3. Managing Zone Services",
-      "deletion": "4. Deleting a Zone",
-      "troubleshooting": "5. Troubleshooting"
-    },
+    "hero": { "title": "Zone Management Runbook", "subtitle": "Operational guide for managing infrastructure zones in the controlplane" },
+    "warning": { "title": "Zone is Root Topology", "desc": "Zone is the root infrastructure unit. All dataplane nodes, services, and workloads are anchored to a zone. Changes to zone status or services have blast radius across all workloads running on that zone. Always follow the runbook and have a rollback plan." },
+    "nav": { "s1": "Creating a New Zone", "s2": "Status Transitions", "s3": "Managing Services", "s4": "Deleting a Zone", "s5": "Troubleshooting" },
     "create": {
       "title": "Creating a New Zone",
-      "prerequisites_title": "Prerequisites",
-      "prerequisites": [
-        "Admin API key with valid MFA",
-        "Zone code must be unique (e.g., us-east-1, edge-hcm-1)",
-        "Geographic location must be selected from the autocomplete list",
-        "At least one service must be enabled (hypervisor, storage, mail, k8s, or ai)"
-      ],
+      "prereq_title": "Prerequisites",
+      "prereq": ["Admin API key with valid MFA", "Zone code must be unique (e.g. us-east-1, edge-hcm-1)", "Geographic location must be selected from the autocomplete list", "At least one service must be enabled"],
+      "fields": [["Field", "Description", "Constraints"], ["Zone Name", "Human-readable display name", "e.g. \"US East 1\""], ["Zone Code", "Unique slug identifier", "Auto-slugified, e.g. \"us-east-1\""], ["Location", "Geographic location", "Must select from autocomplete list"], ["Services", "Enabled service set", "At least one required"]],
       "steps_title": "Steps",
-      "steps": [
-        "Navigate to Admin UI → Zones → Add Zone",
-        "Fill in zone details",
-        "Select enabled services",
-        "Click \"Create Zone\"",
-        "Zone is created with status planned"
-      ],
-      "note": "New zones always start in planned status. Status cannot be set during creation. Transition to active after dataplane registration."
+      "steps": ["Navigate to Admin UI → Zones → Add Zone", "Fill in zone name, zone code, and geographic location", "Select at least one enabled service (see Section 3 for service details)", "Click Create Zone", "Zone is created with status planned"],
+      "note_title": "Initial Status",
+      "note": "New zones always start in planned status. Status cannot be set during creation. Transition to active only after dataplane registration is complete."
     },
-    "status_transitions": {
+    "transitions": {
       "title": "Zone Status Transitions",
-      "state_machine_title": "State Machine",
-      "rules_title": "Transition Rules",
-      "planned_to_active": "planned → active",
-      "planned_to_active_desc": "Zone is ready to serve traffic. Dataplane must be registered first.",
-      "active_to_draining": "active → draining",
-      "active_to_draining_desc": "Gracefully drain workloads. No new workloads accepted, existing ones continue.",
-      "active_to_maintenance": "active → maintenance",
-      "active_to_maintenance_desc": "Enter maintenance mode. Zone services can be updated. No traffic accepted.",
-      "any_to_disabled": "any → disabled",
-      "any_to_disabled_desc": "Disable zone. All workloads must be migrated away first.",
-      "how_to_title": "How to Transition",
-      "how_to_steps": [
-        "Navigate to Admin UI → Zones → Select zone",
-        "Click \"Update Status\"",
-        "Select target status from dropdown",
-        "Confirm transition",
-        "Monitor zone status in real-time"
-      ]
-    },
-    "service_management": {
-      "title": "Managing Zone Services",
-      "when_title": "When Can Services Be Updated?",
-      "when_desc": "Zone services can only be updated when the zone is in planned or maintenance status. This prevents accidental service configuration changes while the zone is actively serving traffic.",
-      "workflow_title": "Workflow: Enable/Disable a Service",
-      "workflow_steps": [
-        "If zone is active, transition to maintenance",
-        "Navigate to Admin UI → Zones → Select zone → Services",
-        "Toggle service enabled/disabled",
-        "Confirm changes",
-        "Transition zone back to active when ready"
+      "states_title": "States",
+      "states": [
+        { "label": "PLANNED", "note": "Initial state — zone created, dataplane not yet registered" },
+        { "label": "ACTIVE", "note": "Serving traffic — dataplane registered and healthy" },
+        { "label": "DRAINING", "note": "No new workloads — existing workloads finishing" },
+        { "label": "MAINTENANCE", "note": "No traffic — services can be updated" },
+        { "label": "DISABLED", "note": "Zone offline — required before deletion" }
       ],
-      "warning": "Disabling a service while workloads are running on it will cause service disruption. Always drain workloads first."
+      "transitions_title": "Transitions",
+      "transitions": [
+        { "from": "PLANNED", "to": "ACTIVE", "label": "Dataplane registered and healthy" },
+        { "from": "ACTIVE", "to": "DRAINING", "label": "Graceful drain — no new workloads accepted" },
+        { "from": "ACTIVE", "to": "MAINTENANCE", "label": "Enter maintenance — all traffic stopped" },
+        { "from": "DRAINING", "to": "MAINTENANCE", "label": "All workloads drained" },
+        { "from": "MAINTENANCE", "to": "ACTIVE", "label": "Maintenance complete — resume traffic" },
+        { "from": "ANY", "to": "DISABLED", "label": "Disable zone — all workloads must be migrated first" }
+      ],
+      "how_to_title": "How to Transition",
+      "how_to": ["Navigate to Admin UI → Zones → Select zone", "Click Update Status", "Select target status from the dropdown (only valid transitions are shown)", "Confirm the transition", "Monitor zone status in real-time on the zone detail page"],
+      "warning_title": "Transition to disabled",
+      "warning": "Transitioning any zone to disabled stops all traffic immediately. Ensure all workloads are migrated to another zone before proceeding."
+    },
+    "services": {
+      "title": "Managing Zone Services",
+      "table": [["Service", "Description", "Requirement"], ["hypervisor", "VM / container orchestration", "Requires dataplane node with hypervisor capability"], ["storage", "Block & object storage", "Requires dataplane node with storage capability"], ["mail", "Email delivery service", "Requires SMTP relay configured on dataplane"], ["k8s", "Kubernetes cluster", "Requires dataplane node with k8s capability"], ["ai", "AI / ML workloads", "Requires dataplane node with GPU capability"]],
+      "when_title": "When Can Services Be Updated?",
+      "when": "Zone services can only be modified when the zone is in planned or maintenance status.",
+      "workflow_title": "Workflow: Enable / Disable a Service",
+      "workflow": ["If zone is active, transition to maintenance first", "Navigate to Admin UI → Zones → Select zone → Services", "Toggle the target service enabled / disabled", "Confirm changes", "Transition zone back to active when ready"],
+      "drain_note": "Drain all workloads and update status: active → maintenance",
+      "warning_title": "Service Disruption Risk",
+      "warning": "Disabling a service while workloads are running on it will cause immediate service disruption. Always drain workloads from the affected service before disabling it."
     },
     "deletion": {
       "title": "Deleting a Zone",
-      "preconditions_title": "Deletion Preconditions (All 3 Required)",
-      "precondition_1_title": "Zone status must be disabled",
-      "precondition_1_desc": "Transition zone through the state machine to disabled status",
-      "precondition_2_title": "No dataplane nodes attached",
-      "precondition_2_desc": "Deregister all dataplane clusters from the zone",
-      "precondition_3_title": "No enabled services",
-      "precondition_3_desc": "Disable all 5 services (hypervisor, storage, mail, k8s, ai)",
+      "danger_title": "Irreversible Operation",
+      "danger": "Zone deletion is permanent. All zone metadata, service configuration, and audit history will be removed.",
+      "precond_title": "Deletion Preconditions — All 3 Required",
+      "precond": [["#", "Precondition", "How to Satisfy"], ["1", "Zone status must be disabled", "Transition through the state machine to disabled"], ["2", "No dataplane nodes attached", "Deregister all dataplane clusters from the zone"], ["3", "No enabled services", "Disable all 5 services: hypervisor, storage, mail, k8s, ai"]],
       "workflow_title": "Deletion Workflow",
-      "workflow_steps": [
-        "Drain all workloads from the zone",
-        "Deregister dataplane cluster(s)",
-        "Disable all zone services",
-        "Transition zone status to disabled",
-        "Navigate to Admin UI → Zones → Select zone",
-        "Click \"Delete Zone\"",
-        "Confirm deletion (irreversible)"
-      ],
-      "warning": "Zone deletion is irreversible. Ensure all workloads are migrated and all preconditions are met before proceeding."
+      "workflow": ["Drain all workloads from the zone", "Deregister all dataplane cluster(s) from the zone", "Disable all zone services (hypervisor, storage, mail, k8s, ai)", "Transition zone status to disabled", "Navigate to Admin UI → Zones → Select zone", "Click Delete Zone", "Confirm deletion in the dialog — this action cannot be undone"]
     },
     "troubleshooting": {
       "title": "Troubleshooting",
-      "cannot_activate_title": "Cannot transition zone to active",
-      "cannot_activate_cause": "Zone is in planned status but dataplane is not registered.",
-      "cannot_activate_solution": "Register dataplane cluster first. Zone can only transition to active after dataplane is ready.",
-      "cannot_update_services_title": "Cannot update zone services",
-      "cannot_update_services_cause": "Zone is in active, draining, or disabled status.",
-      "cannot_update_services_solution": "Transition zone to maintenance status first, then update services.",
-      "cannot_delete_title": "Cannot delete zone",
-      "cannot_delete_cause": "One or more preconditions not met (status not disabled, dataplane still attached, or services still enabled).",
-      "cannot_delete_solution": "Check all 3 preconditions above. Run through the deletion workflow step-by-step."
+      "items": [
+        { "title": "Cannot transition zone to active", "cause": "Zone is in planned status but no dataplane is registered.", "solution": "Register a dataplane cluster first. Zone can only transition to active after a healthy dataplane node is attached." },
+        { "title": "Cannot update zone services", "cause": "Zone is in active, draining, or disabled status.", "solution": "Transition zone to maintenance status first, then update services." },
+        { "title": "Cannot delete zone", "cause": "One or more preconditions not met — status not disabled, dataplane still attached, or services still enabled.", "solution": "Check all 3 preconditions in Section 4 and run through the deletion workflow step-by-step." },
+        { "title": "Zone stuck in draining", "cause": "Long-running workloads are preventing drain completion.", "solution": "Check active workloads on the zone. Force-terminate stalled workloads if safe to do so, then retry the drain." }
+      ],
+      "help_title": "Need More Help?",
+      "help": "Contact the infrastructure team or check the controlplane logs via Grafana → Loki."
+    }
+  },
+  "zone_workflow": {
+    "hero": { "title": "Zone Creation Workflow", "subtitle": "End-to-end guide: from planning to zone active serving traffic" },
+    "nav": { "s1": "Planning", "s2": "Create Zone", "s3": "Register Dataplane", "s4": "Activate Zone", "s5": "Verify & Monitor", "s6": "Rollback" },
+    "steps_flow": ["Plan", "Create", "Register Dataplane", "Activate", "Verify"],
+    "planning": {
+      "title": "Planning",
+      "checklist_title": "Checklist before creating a Zone",
+      "checklist": ["Confirm zone code does not already exist", "Choose geographic location matching latency target", "Identify required service set for this zone", "Prepare dataplane node with correct capabilities", "Have Admin API key with valid MFA"],
+      "table": [["Decision", "Description", "Example"], ["Zone Name", "Human-readable display name", "US East 1"], ["Zone Code", "Unique slug, auto-slugified", "us-east-1"], ["Location", "Geographic region from autocomplete", "us-east"], ["Services", "Service set to enable from the start", "hypervisor, storage"], ["Dataplane", "Node to register into this zone", "dataplane-z1-n1"]]
     },
-    "footer": "For additional support, contact the infrastructure team or check the controlplane logs."
+    "create": {
+      "title": "Create Zone",
+      "intro": "There are 2 ways to create a zone: via Admin UI or directly via API.",
+      "ui_title": "Option 1 — Admin UI",
+      "ui_steps": ["Go to Admin UI → Zones → Add Zone", "Fill in Zone Name, Zone Code, and select Location from autocomplete", "Toggle on required services", "Click Create Zone"],
+      "api_title": "Option 2 — API",
+      "result_title": "Expected Result",
+      "result": "Zone is created with status: planned. Zone ID (UUIDv7) will be used in subsequent steps."
+    },
+    "dataplane": {
+      "title": "Register Dataplane",
+      "warning_title": "Required before Activate",
+      "warning": "Zone cannot transition to active if no dataplane node is registered and healthy.",
+      "register_title": "Register dataplane node",
+      "table": [["Field", "Description", "Notes"], ["node_id", "UUIDv7 of the dataplane node", "Must match ZONE_ID in dataplane env"], ["grpc_endpoint", "gRPC address of the node", "Format host:port, no scheme"], ["capabilities", "List of services the node supports", "Must include all services enabled in the zone"]],
+      "verify_title": "Verify dataplane is connected",
+      "verify": ["Go to Admin UI → Zones → Select zone → Dataplanes", "Confirm node appears with status connected", "Check Grafana → Metrics: dataplane_heartbeat_total is incrementing"]
+    },
+    "activate": {
+      "title": "Activate Zone",
+      "prereq_title": "Conditions to Activate",
+      "prereq": ["Zone is in planned status", "At least 1 dataplane node registered and healthy", "At least 1 service enabled"],
+      "ui_title": "Option 1 — Admin UI",
+      "ui_steps": ["Go to Admin UI → Zones → Select zone", "Click Update Status", "Select active from dropdown", "Confirm transition"],
+      "api_title": "Option 2 — API",
+      "result_title": "Zone is Active",
+      "result": "Zone starts accepting traffic immediately after transitioning to active. Controlplane will begin routing workloads to this zone."
+    },
+    "verify": {
+      "title": "Verify & Monitor",
+      "checklist_title": "Post-Activate Checklist",
+      "table": [["Check", "How", "Expected Result"], ["Zone status", "Admin UI → Zones → Select zone", "Status: active"], ["Dataplane heartbeat", "Grafana → dataplane_heartbeat_total", "Incrementing every 10s"], ["gRPC connectivity", "Grafana → Loki → container=dataplane-z1-n1", "No error logs"], ["Service availability", "Admin UI → Zones → Services", "All enabled services show healthy"], ["Job queue", "Redis → redis-job → XLEN job:zone:<id>", "Queue not blocked"]],
+      "grafana_title": "Grafana Dashboard",
+      "grafana": "Open Grafana → Dashboards → Zone Overview to see all metrics for the new zone. Filter by label zone_id."
+    },
+    "rollback": {
+      "title": "Rollback",
+      "when_title": "When to Rollback?",
+      "when": "Rollback when the new zone causes unexpected errors: dataplane cannot connect, service not healthy, or workloads fail after routing to the new zone.",
+      "steps_title": "Rollback Procedure",
+      "steps": ["Transition zone to draining — stop accepting new workloads", "Wait for current workloads to complete or migrate to another zone", "Transition zone to maintenance", "Investigate root cause via Grafana Loki + Tempo", "Fix the issue, then transition back to active or delete zone if no longer needed"],
+      "help_title": "Need Support?",
+      "help": "Contact the infrastructure team with zone ID and incident timestamp. Check logs at Grafana → Loki."
+    }
   }
 }

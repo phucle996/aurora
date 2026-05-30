@@ -20,6 +20,7 @@
       "auth-mfa": "MFA 및 단계적 인증",
       "auth-device-binding": "디바이스 바인딩",
       "zone-management": "존 운영 워크플로",
+      "zone-workflow": "존 생성 워크플로",
       "sec-threat-model": "위협 모델",
       "sec-secrets": "시크릿 및 로테이션",
       "sec-audit": "감사 및 컴플라이언스",

@@ -1,22 +1,31 @@
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate, useLocation } from 'react-router-dom'
 import LanguageSwitcher from './LanguageSwitcher.jsx'
 
+// Map route path → i18n page_titles key
+const PATH_TO_PAGE_KEY = {
+  '/auth/token-model': 'auth-token-model',
+  '/zone/management': 'zone-management',
+  '/zone/workflow': 'zone-workflow',
+  '/home': 'home',
+}
+
 const SEARCH_INDEX = [
-  { page: 'auth-token-model', anchor: 'section-0', titleKey: 'search.exec_summary', keywords: 'overview summary fragment token defense depth' },
-  { page: 'auth-token-model', anchor: 'section-1', titleKey: 'search.token_model', keywords: 'fragment jwt accesskey accesssecret architecture user plane separation' },
-  { page: 'auth-token-model', anchor: 'section-2', titleKey: 'search.lifecycle', keywords: 'state diagram active grace blacklisted expired revoked transitions' },
-  { page: 'auth-token-model', anchor: 'section-3', titleKey: 'search.token_components', keywords: 'jwt access_token access_key access_secret client_device_id uuid v7 hs256 hmac sha256' },
-  { page: 'auth-token-model', anchor: 'section-4', titleKey: 'search.redis_storage', keywords: 'redis session record verification jti blacklist iam admin cache' },
-  { page: 'auth-token-model', anchor: 'section-5', titleKey: 'search.token_rotation', keywords: 'rotation refresh ha grace period cas version' },
-  { page: 'auth-token-model', anchor: 'section-6', titleKey: 'search.cookie_spec', keywords: 'cookie httponly secure samesite path lax matrix flags' },
-  { page: 'auth-token-model', anchor: 'section-7', titleKey: 'search.inactivity', keywords: 'inactivity timeout 15 minutes redis ttl auto expire silent refresh' },
-  { page: 'auth-token-model', anchor: 'section-8', titleKey: 'search.device_binding', keywords: 'device binding ed25519 public key tracking revocation' },
-  { page: 'auth-token-model', anchor: 'section-9', titleKey: 'search.threat_model', keywords: 'threat hijacking xss csrf replay mitm brute force enumeration' },
-  { page: 'auth-token-model', anchor: 'section-10', titleKey: 'search.config', keywords: 'config security cfg go struct ttl admin api token session' },
-  { page: 'auth-token-model', anchor: 'section-11', titleKey: 'search.principles', keywords: 'principles defense depth zero trust short lived fail closed stateless' },
-  { page: 'auth-token-model', anchor: 'section-12', titleKey: 'search.guarantees', keywords: 'guarantees instant logout revocation latency' },
-  { page: 'auth-token-model', anchor: 'section-13', titleKey: 'search.references', keywords: 'rfc 7519 6238 8032 9562 owasp nist' },
+  { path: '/auth/token-model', anchor: 'section-0', titleKey: 'search.exec_summary', keywords: 'overview summary fragment token defense depth' },
+  { path: '/auth/token-model', anchor: 'section-1', titleKey: 'search.token_model', keywords: 'fragment jwt accesskey accesssecret architecture user plane separation' },
+  { path: '/auth/token-model', anchor: 'section-2', titleKey: 'search.lifecycle', keywords: 'state diagram active grace blacklisted expired revoked transitions' },
+  { path: '/auth/token-model', anchor: 'section-3', titleKey: 'search.token_components', keywords: 'jwt access_token access_key access_secret client_device_id uuid v7 hs256 hmac sha256' },
+  { path: '/auth/token-model', anchor: 'section-4', titleKey: 'search.redis_storage', keywords: 'redis session record verification jti blacklist iam admin cache' },
+  { path: '/auth/token-model', anchor: 'section-5', titleKey: 'search.token_rotation', keywords: 'rotation refresh ha grace period cas version' },
+  { path: '/auth/token-model', anchor: 'section-6', titleKey: 'search.cookie_spec', keywords: 'cookie httponly secure samesite path lax matrix flags' },
+  { path: '/auth/token-model', anchor: 'section-7', titleKey: 'search.inactivity', keywords: 'inactivity timeout 15 minutes redis ttl auto expire silent refresh' },
+  { path: '/auth/token-model', anchor: 'section-8', titleKey: 'search.device_binding', keywords: 'device binding ed25519 public key tracking revocation' },
+  { path: '/auth/token-model', anchor: 'section-9', titleKey: 'search.threat_model', keywords: 'threat hijacking xss csrf replay mitm brute force enumeration' },
+  { path: '/auth/token-model', anchor: 'section-10', titleKey: 'search.config', keywords: 'config security cfg go struct ttl admin api token session' },
+  { path: '/auth/token-model', anchor: 'section-11', titleKey: 'search.principles', keywords: 'principles defense depth zero trust short lived fail closed stateless' },
+  { path: '/auth/token-model', anchor: 'section-12', titleKey: 'search.guarantees', keywords: 'guarantees instant logout revocation latency' },
+  { path: '/auth/token-model', anchor: 'section-13', titleKey: 'search.references', keywords: 'rfc 7519 6238 8032 9562 owasp nist' },
 ]
 
 function searchEntries(query, t) {
@@ -29,9 +38,12 @@ function searchEntries(query, t) {
   }).slice(0, 8)
 }
 
-export default function Header({ onMenuClick, currentPage, onNavigate, theme, onToggleTheme }) {
+export default function Header({ onMenuClick, theme, onToggleTheme }) {
   const { t } = useTranslation()
-  const meta = t(`page_titles.${currentPage}`, { returnObjects: true, defaultValue: t('page_titles.home', { returnObjects: true }) })
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const pageKey = PATH_TO_PAGE_KEY[pathname] || 'home'
+  const meta = t(`page_titles.${pageKey}`, { returnObjects: true, defaultValue: t('page_titles.home', { returnObjects: true }) })
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [activeIdx, setActiveIdx] = useState(0)
@@ -65,7 +77,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
   }, [])
 
   const goTo = (entry) => {
-    if (entry.page !== currentPage && onNavigate) onNavigate(entry.page)
+    if (entry.path !== pathname) navigate(entry.path)
     setOpen(false)
     setQuery('')
     setTimeout(() => {
@@ -141,7 +153,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
             ) : (
               <ul className="py-1 max-h-80 overflow-y-auto">
                 {results.map((r, i) => (
-                  <li key={`${r.page}-${r.anchor}`}>
+                  <li key={`${r.path}-${r.anchor}`}>
                     <button
                       onMouseEnter={() => setActiveIdx(i)}
                       onClick={() => goTo(r)}
@@ -157,7 +169,7 @@ export default function Header({ onMenuClick, currentPage, onNavigate, theme, on
                           {t(r.titleKey, { defaultValue: r.titleKey })}
                         </span>
                         <span className="block text-[11px] text-slate-500 truncate">
-                          {r.page} → #{r.anchor}
+                          {r.path} → #{r.anchor}
                         </span>
                       </span>
                     </button>

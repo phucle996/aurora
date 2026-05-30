@@ -1,66 +1,131 @@
 {
   "page_titles": {
-    "zone-management": { "title": "ゾーン管理", "subtitle": "インフラゾーン運用 Runbook", "badge": "v2.2 • Production Ready" }
+    "zone-management": { "title": "ゾーン管理", "subtitle": "インフラゾーン運用ランブック", "badge": "v2.2 • Production Ready" },
+    "zone-workflow": { "title": "ゾーン作成ワークフロー", "subtitle": "プランニングからアクティブまでのエンドツーエンドガイド", "badge": "v2.2 • Production Ready" }
   },
   "zone_management": {
-    "hero": { "title": "ゾーン管理 Runbook", "subtitle": "controlplane のインフラゾーン運用ガイド" },
-    "warning": {
-      "title": "ゾーンはルートトポロジー",
-      "desc": "ゾーンは根本的なインフラ単位です。すべての dataplane ノード、サービス、ワークロードはゾーンに紐付けられています。ゾーンのステータスやサービスの変更は、そのゾーンで稼働中のすべてのワークロードに影響します。必ず Runbook に従い、ロールバック計画を用意してください。"
-    },
-    "toc": { "title": "クイックナビゲーション", "create": "1. 新しいゾーンの作成", "status_transitions": "2. ゾーンステータスの遷移", "service_management": "3. ゾーンサービスの管理", "deletion": "4. ゾーンの削除", "troubleshooting": "5. トラブルシューティング" },
+    "hero": { "title": "ゾーン管理ランブック", "subtitle": "コントロールプレーンのインフラゾーン管理運用ガイド" },
+    "warning": { "title": "ゾーンはルートトポロジー", "desc": "ゾーンは基本インフラ単位です。すべてのデータプレーンノード、サービス、ワークロードはゾーンに紐付けられます。常にランブックに従い、ロールバック計画を用意してください。" },
+    "nav": { "s1": "新しいゾーンの作成", "s2": "ステータス遷移", "s3": "サービス管理", "s4": "ゾーンの削除", "s5": "トラブルシューティング" },
     "create": {
       "title": "新しいゾーンの作成",
-      "prerequisites_title": "前提条件",
-      "prerequisites": ["有効な MFA を持つ Admin API キー", "ゾーンコードは一意である必要があります (例: us-east-1、edge-hcm-1)", "地理的な場所はオートコンプリートリストから選択する必要があります", "少なくとも 1 つのサービスを有効にする必要があります (hypervisor、storage、mail、k8s、または ai)"],
+      "prereq_title": "前提条件",
+      "prereq": ["有効なMFAを持つAdmin APIキー", "ゾーンコードは一意（例：us-east-1）", "地理的な場所はオートコンプリートから選択", "少なくとも1つのサービスを有効化"],
+      "fields": [["フィールド", "説明", "制約"], ["Zone Name", "表示名", "例：\"US East 1\""], ["Zone Code", "一意のスラッグ", "自動スラッグ化"], ["Location", "地理的な場所", "リストから選択"], ["Services", "有効なサービスセット", "1つ以上必要"]],
       "steps_title": "手順",
-      "steps": ["Admin UI → Zones → Add Zone に移動", "ゾーンの詳細を入力", "有効にするサービスを選択", "\"Create Zone\" をクリック", "ゾーンは planned ステータスで作成されます"],
-      "note": "新しいゾーンは常に planned ステータスで開始します。作成時にステータスを設定することはできません。dataplane 登録後に active に遷移してください。"
+      "steps": ["Admin UI → Zones → Add Zone に移動", "ゾーン名、コード、場所を入力", "サービスを選択", "Create Zone をクリック", "ゾーンは planned で作成されます"],
+      "note_title": "初期ステータス",
+      "note": "新しいゾーンは常に planned で開始します。データプレーン登録後に active に遷移してください。"
     },
-    "status_transitions": {
-      "title": "ゾーンステータスの遷移",
-      "state_machine_title": "ステートマシン",
-      "rules_title": "遷移ルール",
-      "planned_to_active": "planned → active", "planned_to_active_desc": "ゾーンがトラフィックを処理する準備ができています。先に dataplane を登録する必要があります。",
-      "active_to_draining": "active → draining", "active_to_draining_desc": "ワークロードを段階的にドレインします。新しいワークロードは受け付けず、既存のものは継続します。",
-      "active_to_maintenance": "active → maintenance", "active_to_maintenance_desc": "メンテナンスモードに入ります。ゾーンサービスを更新できます。トラフィックは受け付けません。",
-      "any_to_disabled": "任意 → disabled", "any_to_disabled_desc": "ゾーンを無効化します。すべてのワークロードを事前に移行する必要があります。",
+    "transitions": {
+      "title": "ゾーンステータス遷移",
+      "states_title": "ステータス",
+      "states": [
+        { "label": "PLANNED", "note": "初期状態 — データプレーン未登録" },
+        { "label": "ACTIVE", "note": "トラフィック提供中" },
+        { "label": "DRAINING", "note": "新規ワークロード不可" },
+        { "label": "MAINTENANCE", "note": "サービス更新可能" },
+        { "label": "DISABLED", "note": "削除前に必要" }
+      ],
+      "transitions_title": "遷移",
+      "transitions": [
+        { "from": "PLANNED", "to": "ACTIVE", "label": "データプレーン登録済みで正常" },
+        { "from": "ACTIVE", "to": "DRAINING", "label": "グレースフルドレイン" },
+        { "from": "ACTIVE", "to": "MAINTENANCE", "label": "メンテナンス開始" },
+        { "from": "DRAINING", "to": "MAINTENANCE", "label": "ドレイン完了" },
+        { "from": "MAINTENANCE", "to": "ACTIVE", "label": "メンテナンス完了" },
+        { "from": "ANY", "to": "DISABLED", "label": "先にワークロードを移行" }
+      ],
       "how_to_title": "遷移方法",
-      "how_to_steps": ["Admin UI → Zones → ゾーンを選択", "\"Update Status\" をクリック", "ドロップダウンからターゲットステータスを選択", "遷移を確認", "リアルタイムでゾーンステータスを監視"]
+      "how_to": ["Admin UI → Zones → ゾーン選択", "Update Status をクリック", "対象ステータスを選択", "遷移を確認", "リアルタイムで監視"],
+      "warning_title": "disabled への遷移",
+      "warning": "disabled に遷移すると全トラフィックが即座に停止します。事前に全ワークロードを移行してください。"
     },
-    "service_management": {
-      "title": "ゾーンサービスの管理",
-      "when_title": "サービスを更新できるのはいつですか？",
-      "when_desc": "ゾーンサービスは、ゾーンが planned または maintenance ステータスの場合にのみ更新できます。これにより、ゾーンがトラフィックを処理中にサービス設定が誤って変更されることを防ぎます。",
-      "workflow_title": "ワークフロー: サービスの有効化/無効化",
-      "workflow_steps": ["ゾーンが active の場合、maintenance に遷移", "Admin UI → Zones → ゾーンを選択 → Services に移動", "サービスを有効/無効に切り替え", "変更を確認", "準備ができたらゾーンを active に戻す"],
-      "warning": "ワークロードが稼働中にサービスを無効にすると、サービス中断が発生します。必ず先にワークロードをドレインしてください。"
+    "services": {
+      "title": "ゾーンサービス管理",
+      "table": [["サービス", "説明", "要件"], ["hypervisor", "VM / コンテナ", "hypervisor capability が必要"], ["storage", "ストレージ", "storage capability が必要"], ["mail", "メール配信", "SMTPリレーの設定が必要"], ["k8s", "Kubernetes", "k8s capability が必要"], ["ai", "AI / ML", "GPU が必要"]],
+      "when_title": "サービスはいつ更新できますか？",
+      "when": "planned または maintenance ステータスのときのみ変更できます。",
+      "workflow_title": "サービスの有効化 / 無効化",
+      "workflow": ["active の場合、先に maintenance に遷移", "Admin UI → Zones → ゾーン選択 → Services", "サービスをトグル", "変更を確認", "準備ができたら active に戻す"],
+      "drain_note": "全ワークロードをドレイン後、active → maintenance に遷移",
+      "warning_title": "サービス中断リスク",
+      "warning": "実行中のサービスを無効にすると即座に中断が発生します。必ずドレイン後に無効化してください。"
     },
     "deletion": {
       "title": "ゾーンの削除",
-      "preconditions_title": "削除の前提条件 (3 つすべて必須)",
-      "precondition_1_title": "ゾーンのステータスが disabled であること",
-      "precondition_1_desc": "ステートマシンを通じてゾーンを disabled ステータスに遷移させる",
-      "precondition_2_title": "dataplane ノードが存在しないこと",
-      "precondition_2_desc": "ゾーンからすべての dataplane クラスターの登録を解除する",
-      "precondition_3_title": "有効なサービスが存在しないこと",
-      "precondition_3_desc": "5 つのサービスをすべて無効にする (hypervisor、storage、mail、k8s、ai)",
+      "danger_title": "元に戻せない操作",
+      "danger": "ゾーンの削除は永続的です。すべてのメタデータ、設定、監査履歴が削除されます。",
+      "precond_title": "削除の前提条件 — 3つすべて必要",
+      "precond": [["#", "前提条件", "満たし方"], ["1", "ステータスが disabled", "ステートマシンで disabled に遷移"], ["2", "データプレーンなし", "すべてのクラスターを登録解除"], ["3", "有効なサービスなし", "5つのサービスをすべて無効化"]],
       "workflow_title": "削除ワークフロー",
-      "workflow_steps": ["ゾーンからすべてのワークロードをドレイン", "dataplane クラスターの登録を解除", "すべてのゾーンサービスを無効化", "ゾーンステータスを disabled に遷移", "Admin UI → Zones → ゾーンを選択", "\"Delete Zone\" をクリック", "削除を確認 (元に戻せません)"],
-      "warning": "ゾーンの削除は元に戻せません。すべてのワークロードが移行され、すべての前提条件が満たされていることを確認してから実行してください。"
+      "workflow": ["全ワークロードをドレイン", "データプレーンを登録解除", "全サービスを無効化", "ステータスを disabled に遷移", "Admin UI → Zones → ゾーン選択", "Delete Zone をクリック", "削除を確認"]
     },
     "troubleshooting": {
       "title": "トラブルシューティング",
-      "cannot_activate_title": "ゾーンを active に遷移できない",
-      "cannot_activate_cause": "ゾーンは planned ステータスですが、dataplane が登録されていません。",
-      "cannot_activate_solution": "先に dataplane クラスターを登録してください。dataplane の準備ができた後にのみ、ゾーンを active に遷移できます。",
-      "cannot_update_services_title": "ゾーンサービスを更新できない",
-      "cannot_update_services_cause": "ゾーンが active、draining、または disabled ステータスです。",
-      "cannot_update_services_solution": "先にゾーンを maintenance ステータスに遷移させてから、サービスを更新してください。",
-      "cannot_delete_title": "ゾーンを削除できない",
-      "cannot_delete_cause": "1 つ以上の前提条件が満たされていません (ステータスが disabled でない、dataplane がまだ存在する、またはサービスがまだ有効)。",
-      "cannot_delete_solution": "上記の 3 つの前提条件を確認してください。削除ワークフローを段階的に実行してください。"
+      "items": [
+        { "title": "ゾーンを active に遷移できない", "cause": "データプレーンが登録されていない。", "solution": "先にデータプレーンを登録してください。" },
+        { "title": "サービスを更新できない", "cause": "active、draining、または disabled ステータス。", "solution": "maintenance に遷移してからサービスを更新してください。" },
+        { "title": "ゾーンを削除できない", "cause": "前提条件が満たされていない。", "solution": "セクション4の3つの前提条件を確認してください。" },
+        { "title": "draining でスタック", "cause": "長時間実行中のワークロードがある。", "solution": "スタックしたワークロードを確認し、安全であれば強制終了してください。" }
+      ],
+      "help_title": "さらにサポートが必要ですか？",
+      "help": "インフラチームに連絡するか、Grafana → Loki でログを確認してください。"
+    }
+  },
+  "zone_workflow": {
+    "hero": { "title": "ゾーン作成ワークフロー", "subtitle": "エンドツーエンドガイド：プランニングからゾーンアクティブまで" },
+    "nav": { "s1": "プランニング", "s2": "ゾーン作成", "s3": "データプレーン登録", "s4": "ゾーン有効化", "s5": "確認 & 監視", "s6": "ロールバック" },
+    "steps_flow": ["計画", "作成", "データプレーン登録", "有効化", "確認"],
+    "planning": {
+      "title": "プランニング",
+      "checklist_title": "ゾーン作成前のチェックリスト",
+      "checklist": ["ゾーンコードが存在しないことを確認", "レイテンシ目標に合った場所を選択", "必要なサービスセットを特定", "正しいcapabilityのデータプレーンを準備", "有効なMFAのAdmin APIキーを用意"],
+      "table": [["決定事項", "説明", "例"], ["Zone Name", "表示名", "US East 1"], ["Zone Code", "一意のスラッグ", "us-east-1"], ["Location", "地理的地域", "us-east"], ["Services", "有効にするサービス", "hypervisor, storage"], ["Dataplane", "登録するノード", "dataplane-z1-n1"]]
     },
-    "footer": "追加サポートが必要な場合は、インフラチームに連絡するか、controlplane のログを確認してください。"
+    "create": {
+      "title": "ゾーン作成",
+      "intro": "ゾーンを作成する方法は2つあります：Admin UI経由またはAPI経由。",
+      "ui_title": "方法1 — Admin UI",
+      "ui_steps": ["Admin UI → Zones → Add Zone に移動", "Zone Name、Zone Code、Location を入力", "必要なサービスをトグルオン", "Create Zone をクリック"],
+      "api_title": "方法2 — API",
+      "result_title": "期待される結果",
+      "result": "ゾーンは planned で作成されます。Zone ID（UUIDv7）は後続のステップで使用します。"
+    },
+    "dataplane": {
+      "title": "データプレーン登録",
+      "warning_title": "有効化前に必須",
+      "warning": "データプレーンが登録されていない場合、ゾーンは active に遷移できません。",
+      "register_title": "データプレーンノードの登録",
+      "table": [["フィールド", "説明", "注意"], ["node_id", "データプレーンのUUIDv7", "ZONE_IDと一致する必要あり"], ["grpc_endpoint", "gRPCアドレス", "host:port形式"], ["capabilities", "サポートするサービス", "ゾーンの有効サービスを含む必要あり"]],
+      "verify_title": "接続確認",
+      "verify": ["Admin UI → Zones → ゾーン選択 → Dataplanes", "connected ステータスを確認", "Grafana → dataplane_heartbeat_total が増加していることを確認"]
+    },
+    "activate": {
+      "title": "ゾーン有効化",
+      "prereq_title": "有効化の条件",
+      "prereq": ["ゾーンが planned ステータス", "データプレーンが登録済みで正常", "サービスが1つ以上有効"],
+      "ui_title": "方法1 — Admin UI",
+      "ui_steps": ["Admin UI → Zones → ゾーン選択", "Update Status をクリック", "active を選択", "遷移を確認"],
+      "api_title": "方法2 — API",
+      "result_title": "ゾーンがアクティブ",
+      "result": "ゾーンは active に遷移した直後からトラフィックを受け付けます。"
+    },
+    "verify": {
+      "title": "確認 & 監視",
+      "checklist_title": "有効化後のチェックリスト",
+      "table": [["確認項目", "方法", "期待される結果"], ["ゾーンステータス", "Admin UI → Zones", "active"], ["ハートビート", "Grafana → dataplane_heartbeat_total", "10秒ごとに増加"], ["gRPC接続", "Grafana → Loki", "エラーなし"], ["サービス", "Admin UI → Services", "すべて正常"], ["キュー", "Redis → XLEN job:zone:<id>", "ブロックなし"]],
+      "grafana_title": "Grafanaダッシュボード",
+      "grafana": "Grafana → Dashboards → Zone Overview で zone_id ラベルでフィルタリング。"
+    },
+    "rollback": {
+      "title": "ロールバック",
+      "when_title": "ロールバックが必要な場合",
+      "when": "データプレーン接続不可、サービス異常、またはワークロード失敗時にロールバック。",
+      "steps_title": "ロールバック手順",
+      "steps": ["draining に遷移", "ワークロードが完了するまで待機", "maintenance に遷移", "Grafana Loki + Tempo で調査", "修正後に active に戻すか削除"],
+      "help_title": "サポートが必要ですか？",
+      "help": "ゾーンIDとタイムスタンプをインフラチームに連絡。Grafana → Loki でログを確認。"
+    }
   }
 }

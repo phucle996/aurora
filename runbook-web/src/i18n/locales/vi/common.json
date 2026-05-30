@@ -30,6 +30,7 @@
       "auth-mfa": "MFA & Step-Up",
       "auth-device-binding": "Ràng buộc thiết bị",
       "zone-management": "Quy trình vận hành Zone",
+      "zone-workflow": "Quy trình tạo Zone",
       "sec-threat-model": "Mô hình mối đe dọa",
       "sec-secrets": "Bí mật & Xoay vòng",
       "sec-audit": "Audit & Tuân thủ",

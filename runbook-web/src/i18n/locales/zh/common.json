@@ -20,6 +20,7 @@
       "auth-mfa": "MFA 与升级认证",
       "auth-device-binding": "设备绑定",
       "zone-management": "Zone 运维工作流",
+      "zone-workflow": "Zone 创建工作流",
       "sec-threat-model": "威胁模型",
       "sec-secrets": "密钥与轮换",
       "sec-audit": "审计与合规",

@@ -1,261 +1,209 @@
-import { AlertCircle, CheckCircle, Clock, Zap } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import Section from '../../components/spec/Section.jsx'
+import Callout from '../../components/spec/Callout.jsx'
+import KeyValueTable from '../../components/spec/KeyValueTable.jsx'
+import CodeBlock from '../../components/spec/CodeBlock.jsx'
+import PageLayout from '../../components/PageLayout.jsx'
+
+const STATE_COLORS = [
+  'border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300',
+  'border-emerald-400 dark:border-emerald-500/50 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  'border-amber-400 dark:border-amber-500/50 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  'border-blue-400 dark:border-blue-500/50 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300',
+  'border-red-400 dark:border-red-500/50 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-300',
+]
 
 export default function ZoneManagement() {
+  const { t } = useTranslation()
+
+  const nav = [
+    { num: 1, label: t('zone_management.nav.s1'), href: '#section-1' },
+    { num: 2, label: t('zone_management.nav.s2'), href: '#section-2' },
+    { num: 3, label: t('zone_management.nav.s3'), href: '#section-3' },
+    { num: 4, label: t('zone_management.nav.s4'), href: '#section-4' },
+    { num: 5, label: t('zone_management.nav.s5'), href: '#section-5' },
+  ]
+
+  const states = t('zone_management.transitions.states', { returnObjects: true })
+  const transitions = t('zone_management.transitions.transitions', { returnObjects: true })
+  const services = t('zone_management.services.table', { returnObjects: true })
+  const createFields = t('zone_management.create.fields', { returnObjects: true })
+  const precond = t('zone_management.deletion.precond', { returnObjects: true })
+  const troubleItems = t('zone_management.troubleshooting.items', { returnObjects: true })
+
   return (
-    <div className="max-w-4xl mx-auto p-8 space-y-8">
-      {/* Header */}
-      <div className="space-y-2">
-        <h1 className="text-4xl font-bold">Zone Management Runbook</h1>
-        <p className="text-lg text-slate-600 dark:text-slate-400">
-          Operational guide for managing infrastructure zones in the controlplane
-        </p>
-      </div>
+    <PageLayout
+      nav={nav}
+      header={
+        <>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 text-white text-lg">
+              🗺️
+            </span>
+            <div>
+              <h1 className="text-3xl font-bold text-slate-900 dark:text-slate-100">
+                {t('zone_management.hero.title')}
+              </h1>
+              <p className="text-slate-500 dark:text-slate-400 text-sm mt-0.5">
+                {t('zone_management.hero.subtitle')}
+              </p>
+            </div>
+          </div>
+          <Callout type="warning" title={t('zone_management.warning.title')}>
+            {t('zone_management.warning.desc')}
+          </Callout>
+        </>
+      }
+    >
 
-      {/* Warning Banner */}
-      <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg p-4 flex gap-3">
-        <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-        <div>
-          <p className="font-semibold text-amber-900 dark:text-amber-100">Zone is Root Topology</p>
-          <p className="text-sm text-amber-800 dark:text-amber-200 mt-1">
-            Zone is the root infrastructure unit. All dataplane nodes, services, and workloads are anchored to a zone. Changes to zone status or services have blast radius across all workloads running on that zone. Always follow the runbook and have a rollback plan.
-          </p>
-        </div>
-      </div>
-
-      {/* Table of Contents */}
-      <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6 space-y-3">
-        <h2 className="font-semibold text-lg">Quick Navigation</h2>
-        <ul className="space-y-2 text-sm">
-          <li><a href="#create" className="text-blue-600 dark:text-blue-400 hover:underline">1. Creating a New Zone</a></li>
-          <li><a href="#status-transitions" className="text-blue-600 dark:text-blue-400 hover:underline">2. Zone Status Transitions</a></li>
-          <li><a href="#service-management" className="text-blue-600 dark:text-blue-400 hover:underline">3. Managing Zone Services</a></li>
-          <li><a href="#deletion" className="text-blue-600 dark:text-blue-400 hover:underline">4. Deleting a Zone</a></li>
-          <li><a href="#troubleshooting" className="text-blue-600 dark:text-blue-400 hover:underline">5. Troubleshooting</a></li>
-        </ul>
-      </div>
-
-      {/* Section 1: Creating a Zone */}
-      <section id="create" className="space-y-4">
-        <h2 className="text-2xl font-bold flex items-center gap-2">
-          <Zap className="w-6 h-6" />
-          Creating a New Zone
-        </h2>
-
-        <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6 space-y-4">
-          <h3 className="font-semibold">Prerequisites</h3>
-          <ul className="list-disc list-inside space-y-2 text-sm">
-            <li>Admin API key with valid MFA</li>
-            <li>Zone code must be unique (e.g., us-east-1, edge-hcm-1)</li>
-            <li>Geographic location must be selected from the autocomplete list</li>
-            <li>At least one service must be enabled (hypervisor, storage, mail, k8s, or ai)</li>
+      {/* ── Section 1: Creating a Zone ── */}
+      <Section number={1} title={t('zone_management.create.title')}>
+        <Callout type="info" title={t('zone_management.create.prereq_title')}>
+          <ul className="list-disc list-inside space-y-1 mt-1">
+            {t('zone_management.create.prereq', { returnObjects: true }).map((item, i) => (
+              <li key={i}>{item}</li>
+            ))}
           </ul>
+        </Callout>
 
-          <h3 className="font-semibold mt-6">Steps</h3>
-          <ol className="list-decimal list-inside space-y-3 text-sm">
-            <li>Navigate to Admin UI → Zones → Add Zone</li>
-            <li>Fill in zone details:
-              <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
-                <li><strong>Zone Name:</strong> Human-readable name (e.g., "US East 1")</li>
-                <li><strong>Zone Code:</strong> Unique identifier (e.g., "us-east-1") — auto-slugified</li>
-                <li><strong>Location:</strong> Geographic location from autocomplete</li>
-              </ul>
-            </li>
-            <li>Select enabled services:
-              <ul className="list-disc list-inside ml-4 mt-2 space-y-1">
-                <li><strong>Hypervisor:</strong> VM/container orchestration</li>
-                <li><strong>Storage:</strong> Block/object storage</li>
-                <li><strong>Mail:</strong> Email service</li>
-                <li><strong>Kubernetes:</strong> K8s cluster</li>
-                <li><strong>AI:</strong> AI/ML workloads</li>
-              </ul>
-            </li>
-            <li>Click "Create Zone"</li>
-            <li>Zone is created with status <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded text-sm">planned</code></li>
-          </ol>
+        <KeyValueTable
+          headers={createFields[0]}
+          rows={createFields.slice(1)}
+        />
 
-          <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded p-3 mt-4">
-            <p className="text-sm text-blue-900 dark:text-blue-100">
-              <strong>Note:</strong> New zones always start in <code className="bg-blue-200 dark:bg-blue-900 px-1 rounded">planned</code> status. Status cannot be set during creation. Transition to <code className="bg-blue-200 dark:bg-blue-900 px-1 rounded">active</code> after dataplane registration.
-            </p>
-          </div>
-        </div>
-      </section>
+        <p className="font-semibold text-slate-800 dark:text-slate-200 mt-4">
+          {t('zone_management.create.steps_title')}
+        </p>
+        <ol className="list-decimal list-inside space-y-2 text-sm">
+          {t('zone_management.create.steps', { returnObjects: true }).map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+        </ol>
 
-      {/* Section 2: Status Transitions */}
-      <section id="status-transitions" className="space-y-4">
-        <h2 className="text-2xl font-bold flex items-center gap-2">
-          <Clock className="w-6 h-6" />
-          Zone Status Transitions
-        </h2>
+        <Callout type="info" title={t('zone_management.create.note_title')}>
+          {t('zone_management.create.note')}
+        </Callout>
+      </Section>
 
-        <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6 space-y-4">
-          <h3 className="font-semibold">State Machine</h3>
-          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded p-4 font-mono text-sm overflow-x-auto">
-            <pre>{`planned ──→ active ──→ draining ──→ maintenance ──→ active
-   └──→ disabled ←──────────────────────────────┘
-        ↑
-        └─────────────────────────────────────────┘`}</pre>
-          </div>
-
-          <h3 className="font-semibold mt-6">Transition Rules</h3>
-          <div className="space-y-3 text-sm">
-            <div className="border-l-4 border-blue-500 pl-4">
-              <p className="font-semibold">planned → active</p>
-              <p className="text-slate-600 dark:text-slate-400">Zone is ready to serve traffic. Dataplane must be registered first.</p>
-            </div>
-            <div className="border-l-4 border-blue-500 pl-4">
-              <p className="font-semibold">active → draining</p>
-              <p className="text-slate-600 dark:text-slate-400">Gracefully drain workloads. No new workloads accepted, existing ones continue.</p>
-            </div>
-            <div className="border-l-4 border-blue-500 pl-4">
-              <p className="font-semibold">active → maintenance</p>
-              <p className="text-slate-600 dark:text-slate-400">Enter maintenance mode. Zone services can be updated. No traffic accepted.</p>
-            </div>
-            <div className="border-l-4 border-red-500 pl-4">
-              <p className="font-semibold">any → disabled</p>
-              <p className="text-slate-600 dark:text-slate-400">Disable zone. All workloads must be migrated away first.</p>
-            </div>
-          </div>
-
-          <h3 className="font-semibold mt-6">How to Transition</h3>
-          <ol className="list-decimal list-inside space-y-2 text-sm">
-            <li>Navigate to Admin UI → Zones → Select zone</li>
-            <li>Click "Update Status"</li>
-            <li>Select target status from dropdown</li>
-            <li>Confirm transition</li>
-            <li>Monitor zone status in real-time</li>
-          </ol>
-        </div>
-      </section>
-
-      {/* Section 3: Service Management */}
-      <section id="service-management" className="space-y-4">
-        <h2 className="text-2xl font-bold flex items-center gap-2">
-          <CheckCircle className="w-6 h-6" />
-          Managing Zone Services
-        </h2>
-
-        <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6 space-y-4">
-          <h3 className="font-semibold">When Can Services Be Updated?</h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400">
-            Zone services can only be updated when the zone is in <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">planned</code> or <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">maintenance</code> status. This prevents accidental service configuration changes while the zone is actively serving traffic.
+      {/* ── Section 2: Status Transitions ── */}
+      <Section number={2} title={t('zone_management.transitions.title')}>
+        <div className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+          <p className="text-xs uppercase tracking-wider text-slate-500 mb-3 font-semibold">
+            {t('zone_management.transitions.states_title')}
           </p>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            {states.map((s, i) => (
+              <div key={i} className={`border-2 rounded-lg p-3 ${STATE_COLORS[i]}`}>
+                <p className="font-mono font-bold text-sm">{s.label}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">{s.note}</p>
+              </div>
+            ))}
+          </div>
 
-          <h3 className="font-semibold mt-6">Workflow: Enable/Disable a Service</h3>
-          <ol className="list-decimal list-inside space-y-3 text-sm">
-            <li>If zone is <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">active</code>, transition to <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">maintenance</code>
-              <ul className="list-disc list-inside ml-4 mt-2">
-                <li>Drain all workloads from the zone</li>
-                <li>Update status: active → maintenance</li>
-              </ul>
+          <p className="text-xs uppercase tracking-wider text-slate-500 mt-5 mb-2 font-semibold">
+            {t('zone_management.transitions.transitions_title')}
+          </p>
+          <ul className="space-y-1.5 text-sm">
+            {transitions.map((tr, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 whitespace-nowrap">{tr.from}</span>
+                <span className="text-slate-400 dark:text-slate-500">→</span>
+                <span className="font-mono text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 whitespace-nowrap">{tr.to}</span>
+                <span className="text-slate-600 dark:text-slate-400">{tr.label}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <CodeBlock
+          language="ascii"
+          code={`planned ──→ active ──→ draining ──→ maintenance ──→ active
+                  └──────────────────────────────→ disabled
+                                                       ↑
+draining ──────────────────────────────────────────────┘`}
+        />
+
+        <p className="font-semibold text-slate-800 dark:text-slate-200 mt-4">
+          {t('zone_management.transitions.how_to_title')}
+        </p>
+        <ol className="list-decimal list-inside space-y-2 text-sm">
+          {t('zone_management.transitions.how_to', { returnObjects: true }).map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+        </ol>
+
+        <Callout type="warning" title={t('zone_management.transitions.warning_title')}>
+          {t('zone_management.transitions.warning')}
+        </Callout>
+      </Section>
+
+      {/* ── Section 3: Service Management ── */}
+      <Section number={3} title={t('zone_management.services.title')}>
+        <KeyValueTable headers={services[0]} rows={services.slice(1)} />
+
+        <Callout type="info" title={t('zone_management.services.when_title')}>
+          {t('zone_management.services.when')}
+        </Callout>
+
+        <p className="font-semibold text-slate-800 dark:text-slate-200 mt-4">
+          {t('zone_management.services.workflow_title')}
+        </p>
+        <ol className="list-decimal list-inside space-y-3 text-sm">
+          {t('zone_management.services.workflow', { returnObjects: true }).map((step, i) => (
+            <li key={i}>
+              {step}
+              {i === 0 && (
+                <ul className="list-disc list-inside ml-5 mt-1.5 space-y-1 text-slate-600 dark:text-slate-400">
+                  <li>{t('zone_management.services.drain_note')}</li>
+                </ul>
+              )}
             </li>
-            <li>Navigate to Admin UI → Zones → Select zone → Services</li>
-            <li>Toggle service enabled/disabled</li>
-            <li>Confirm changes</li>
-            <li>Transition zone back to <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">active</code> when ready</li>
-          </ol>
+          ))}
+        </ol>
 
-          <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded p-3 mt-4">
-            <p className="text-sm text-red-900 dark:text-red-100">
-              <strong>Warning:</strong> Disabling a service while workloads are running on it will cause service disruption. Always drain workloads first.
-            </p>
-          </div>
-        </div>
-      </section>
+        <Callout type="danger" title={t('zone_management.services.warning_title')}>
+          {t('zone_management.services.warning')}
+        </Callout>
+      </Section>
 
-      {/* Section 4: Deletion */}
-      <section id="deletion" className="space-y-4">
-        <h2 className="text-2xl font-bold flex items-center gap-2">
-          <AlertCircle className="w-6 h-6" />
-          Deleting a Zone
-        </h2>
+      {/* ── Section 4: Deletion ── */}
+      <Section number={4} title={t('zone_management.deletion.title')}>
+        <Callout type="danger" title={t('zone_management.deletion.danger_title')}>
+          {t('zone_management.deletion.danger')}
+        </Callout>
 
-        <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6 space-y-4">
-          <h3 className="font-semibold">Deletion Preconditions (All 3 Required)</h3>
-          <div className="space-y-2 text-sm">
-            <div className="flex gap-2">
-              <span className="text-red-600 dark:text-red-400 font-bold">1.</span>
-              <div>
-                <p className="font-semibold">Zone status must be <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">disabled</code></p>
-                <p className="text-slate-600 dark:text-slate-400">Transition zone through the state machine to disabled status</p>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <span className="text-red-600 dark:text-red-400 font-bold">2.</span>
-              <div>
-                <p className="font-semibold">No dataplane nodes attached</p>
-                <p className="text-slate-600 dark:text-slate-400">Deregister all dataplane clusters from the zone</p>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <span className="text-red-600 dark:text-red-400 font-bold">3.</span>
-              <div>
-                <p className="font-semibold">No enabled services</p>
-                <p className="text-slate-600 dark:text-slate-400">Disable all 5 services (hypervisor, storage, mail, k8s, ai)</p>
-              </div>
-            </div>
-          </div>
+        <p className="font-semibold text-slate-800 dark:text-slate-200 mt-4">
+          {t('zone_management.deletion.precond_title')}
+        </p>
+        <KeyValueTable headers={precond[0]} rows={precond.slice(1)} />
 
-          <h3 className="font-semibold mt-6">Deletion Workflow</h3>
-          <ol className="list-decimal list-inside space-y-3 text-sm">
-            <li>Drain all workloads from the zone</li>
-            <li>Deregister dataplane cluster(s)</li>
-            <li>Disable all zone services</li>
-            <li>Transition zone status to <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">disabled</code></li>
-            <li>Navigate to Admin UI → Zones → Select zone</li>
-            <li>Click "Delete Zone"</li>
-            <li>Confirm deletion (irreversible)</li>
-          </ol>
+        <p className="font-semibold text-slate-800 dark:text-slate-200 mt-4">
+          {t('zone_management.deletion.workflow_title')}
+        </p>
+        <ol className="list-decimal list-inside space-y-2 text-sm">
+          {t('zone_management.deletion.workflow', { returnObjects: true }).map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+        </ol>
+      </Section>
 
-          <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded p-3 mt-4">
-            <p className="text-sm text-red-900 dark:text-red-100">
-              <strong>Critical:</strong> Zone deletion is irreversible. Ensure all workloads are migrated and all preconditions are met before proceeding.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* Section 5: Troubleshooting */}
-      <section id="troubleshooting" className="space-y-4">
-        <h2 className="text-2xl font-bold">Troubleshooting</h2>
-
+      {/* ── Section 5: Troubleshooting ── */}
+      <Section number={5} title={t('zone_management.troubleshooting.title')}>
         <div className="space-y-4">
-          <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6">
-            <h3 className="font-semibold mb-3">Cannot transition zone to active</h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-              <strong>Cause:</strong> Zone is in <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">planned</code> status but dataplane is not registered.
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              <strong>Solution:</strong> Register dataplane cluster first. Zone can only transition to active after dataplane is ready.
-            </p>
-          </div>
-
-          <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6">
-            <h3 className="font-semibold mb-3">Cannot update zone services</h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-              <strong>Cause:</strong> Zone is in <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">active</code>, <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">draining</code>, or <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">disabled</code> status.
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              <strong>Solution:</strong> Transition zone to <code className="bg-slate-200 dark:bg-slate-800 px-2 py-1 rounded">maintenance</code> status first, then update services.
-            </p>
-          </div>
-
-          <div className="bg-slate-50 dark:bg-slate-900 rounded-lg p-6">
-            <h3 className="font-semibold mb-3">Cannot delete zone</h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-              <strong>Cause:</strong> One or more preconditions not met (status not disabled, dataplane still attached, or services still enabled).
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">
-              <strong>Solution:</strong> Check all 3 preconditions above. Run through the deletion workflow step-by-step.
-            </p>
-          </div>
+          {troubleItems.map((item, i) => (
+            <div key={i} className="bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+              <p className="font-semibold text-slate-900 dark:text-slate-100 mb-2">{item.title}</p>
+              <p className="text-sm text-slate-600 dark:text-slate-400 mb-1"><strong>Cause:</strong> {item.cause}</p>
+              <p className="text-sm text-slate-600 dark:text-slate-400"><strong>Solution:</strong> {item.solution}</p>
+            </div>
+          ))}
         </div>
-      </section>
 
-      {/* Footer */}
-      <div className="border-t border-slate-200 dark:border-slate-700 pt-6 text-sm text-slate-600 dark:text-slate-400">
-        <p>For additional support, contact the infrastructure team or check the controlplane logs.</p>
-      </div>
-    </div>
+        <Callout type="info" title={t('zone_management.troubleshooting.help_title')}>
+          {t('zone_management.troubleshooting.help')}
+        </Callout>
+      </Section>
+
+    </PageLayout>
   )
 }

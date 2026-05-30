@@ -20,6 +20,7 @@
       "auth-mfa": "MFA とステップアップ",
       "auth-device-binding": "デバイスバインディング",
       "zone-management": "ゾーン運用フロー",
+      "zone-workflow": "ゾーン作成ワークフロー",
       "sec-threat-model": "脅威モデル",
       "sec-secrets": "シークレットとローテーション",
       "sec-audit": "監査とコンプライアンス",

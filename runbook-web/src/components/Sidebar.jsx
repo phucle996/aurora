@@ -1,70 +1,71 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate, useLocation } from 'react-router-dom'
 
 const NAV_TREE = [
   {
     id: 'auth',
     icon: '🔐',
     children: [
-      { id: 'auth-token-model', icon: '🧩', status: 'ready' },
-      { id: 'auth-login-flow', icon: '🚪', status: 'todo' },
-      { id: 'auth-refresh-flow', icon: '♻️', status: 'todo' },
-      { id: 'auth-logout-flow', icon: '🚫', status: 'todo' },
-      { id: 'auth-mfa', icon: '🛡️', status: 'todo' },
-      { id: 'auth-device-binding', icon: '📱', status: 'todo' },
+      { id: 'auth-token-model', icon: '🧩', path: '/auth/token-model', status: 'ready' },
+      { id: 'auth-login-flow', icon: '🚪', path: '/auth/login-flow', status: 'todo' },
+      { id: 'auth-refresh-flow', icon: '♻️', path: '/auth/refresh-flow', status: 'todo' },
+      { id: 'auth-logout-flow', icon: '🚫', path: '/auth/logout-flow', status: 'todo' },
+      { id: 'auth-mfa', icon: '🛡️', path: '/auth/mfa', status: 'todo' },
+      { id: 'auth-device-binding', icon: '📱', path: '/auth/device-binding', status: 'todo' },
     ],
   },
   {
     id: 'zone',
     icon: '🌍',
     children: [
-      { id: 'zone-management', icon: '⚙️', status: 'ready' },
+      { id: 'zone-management', icon: '⚙️', path: '/zone/management', status: 'ready' },
+      { id: 'zone-workflow', icon: '🔄', path: '/zone/workflow', status: 'ready' },
     ],
   },
   {
     id: 'security',
     icon: '🔒',
     children: [
-      { id: 'sec-threat-model', icon: '⚠️', status: 'todo' },
-      { id: 'sec-secrets', icon: '🔑', status: 'todo' },
-      { id: 'sec-audit', icon: '📋', status: 'todo' },
+      { id: 'sec-threat-model', icon: '⚠️', path: '/security/threat-model', status: 'todo' },
+      { id: 'sec-secrets', icon: '🔑', path: '/security/secrets', status: 'todo' },
+      { id: 'sec-audit', icon: '📋', path: '/security/audit', status: 'todo' },
     ],
   },
   {
     id: 'infra',
     icon: '🏗️',
     children: [
-      { id: 'infra-redis', icon: '💾', status: 'todo' },
-      { id: 'infra-postgres', icon: '🐘', status: 'todo' },
-      { id: 'infra-envoy', icon: '🚦', status: 'todo' },
+      { id: 'infra-redis', icon: '💾', path: '/infra/redis', status: 'todo' },
+      { id: 'infra-postgres', icon: '🐘', path: '/infra/postgres', status: 'todo' },
+      { id: 'infra-envoy', icon: '🚦', path: '/infra/envoy', status: 'todo' },
     ],
   },
   {
     id: 'general',
     icon: '📚',
-    children: [{ id: 'home', icon: '🏠', status: 'ready' }],
+    children: [
+      { id: 'home', icon: '🏠', path: '/home', status: 'ready' },
+    ],
   },
 ]
 
-const PAGE_TO_GROUP = NAV_TREE.reduce((acc, g) => {
-  g.children.forEach((c) => {
-    acc[c.id] = g.id
-  })
+// Map path → group id for initial expand
+const PATH_TO_GROUP = NAV_TREE.reduce((acc, g) => {
+  g.children.forEach((c) => { acc[c.path] = g.id })
   return acc
 }, {})
 
-export default function Sidebar({ open, currentPage, onNavigate }) {
+export default function Sidebar({ open }) {
   const { t } = useTranslation()
-  const initialGroup = PAGE_TO_GROUP[currentPage] || 'auth'
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+
+  const initialGroup = PATH_TO_GROUP[pathname] || 'auth'
   const [expanded, setExpanded] = useState({ [initialGroup]: true })
 
   const toggle = (id) =>
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
-
-  const handleClick = (page) => {
-    if (page.status === 'todo') return
-    onNavigate(page.id)
-  }
 
   return (
     <aside
@@ -82,7 +83,7 @@ export default function Sidebar({ open, currentPage, onNavigate }) {
       <nav className="flex-1 overflow-y-auto p-3 space-y-1">
         {NAV_TREE.map((group) => {
           const isExpanded = !!expanded[group.id]
-          const hasActiveChild = group.children.some((c) => c.id === currentPage)
+          const hasActiveChild = group.children.some((c) => c.path === pathname)
           return (
             <div key={group.id}>
               <button
@@ -98,13 +99,8 @@ export default function Sidebar({ open, currentPage, onNavigate }) {
                   <span>{t(`nav.groups.${group.id}`)}</span>
                 </span>
                 <svg
-                  className={`w-3.5 h-3.5 text-slate-400 dark:text-slate-500 transition-transform ${
-                    isExpanded ? 'rotate-90' : ''
-                  }`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
+                  className={`w-3.5 h-3.5 text-slate-400 dark:text-slate-500 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"
                 >
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                 </svg>
@@ -113,12 +109,12 @@ export default function Sidebar({ open, currentPage, onNavigate }) {
               {isExpanded && (
                 <div className="ml-4 mt-1 mb-2 pl-3 border-l border-slate-200 dark:border-slate-800 space-y-0.5">
                   {group.children.map((child) => {
-                    const active = child.id === currentPage
+                    const active = child.path === pathname
                     const todo = child.status === 'todo'
                     return (
                       <button
                         key={child.id}
-                        onClick={() => handleClick(child)}
+                        onClick={() => !todo && navigate(child.path)}
                         disabled={todo}
                         className={`w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
                           active

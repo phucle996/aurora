@@ -30,6 +30,7 @@
       "auth-mfa": "MFA & Step-Up",
       "auth-device-binding": "Device Binding",
       "zone-management": "Zone Workflow",
+      "zone-workflow": "Zone Creation Workflow",
       "sec-threat-model": "Threat Model",
       "sec-secrets": "Secrets & Rotation",
       "sec-audit": "Audit & Compliance",

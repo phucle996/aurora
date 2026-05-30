@@ -4,112 +4,136 @@
       "title": "Quản lý Zone",
       "subtitle": "Cẩm nang vận hành Zone hạ tầng",
       "badge": "v2.2 • Sẵn sàng Production"
+    },
+    "zone-workflow": {
+      "title": "Quy trình tạo Zone",
+      "subtitle": "Hướng dẫn end-to-end từ planning đến zone active",
+      "badge": "v2.2 • Sẵn sàng Production"
     }
   },
   "zone_management": {
-    "hero": {
-      "title": "Cẩm nang Quản lý Zone",
-      "subtitle": "Hướng dẫn vận hành zone hạ tầng trong controlplane"
-    },
-    "warning": {
-      "title": "Zone là Root Topology",
-      "desc": "Zone là đơn vị hạ tầng gốc. Mọi dataplane node, service, và workload đều neo vào một zone. Thay đổi trạng thái zone hoặc service có blast radius đến toàn bộ workload đang chạy trên zone đó. Luôn tuân theo runbook và có kế hoạch rollback."
-    },
-    "toc": {
-      "title": "Điều hướng nhanh",
-      "create": "1. Tạo Zone mới",
-      "status_transitions": "2. Chuyển trạng thái Zone",
-      "service_management": "3. Quản lý Zone Services",
-      "deletion": "4. Xóa Zone",
-      "troubleshooting": "5. Xử lý sự cố"
-    },
+    "hero": { "title": "Cẩm nang Quản lý Zone", "subtitle": "Hướng dẫn vận hành zone hạ tầng trong controlplane" },
+    "warning": { "title": "Zone là Root Topology", "desc": "Zone là đơn vị hạ tầng gốc. Mọi dataplane node, service, và workload đều neo vào một zone. Thay đổi trạng thái zone hoặc service có blast radius đến toàn bộ workload đang chạy trên zone đó. Luôn tuân theo runbook và có kế hoạch rollback." },
+    "nav": { "s1": "Tạo Zone mới", "s2": "Chuyển trạng thái", "s3": "Quản lý Services", "s4": "Xóa Zone", "s5": "Xử lý sự cố" },
     "create": {
       "title": "Tạo Zone mới",
-      "prerequisites_title": "Điều kiện tiên quyết",
-      "prerequisites": [
-        "Admin API key với MFA hợp lệ",
-        "Zone code phải là duy nhất (ví dụ: us-east-1, edge-hcm-1)",
-        "Vị trí địa lý phải được chọn từ danh sách autocomplete",
-        "Ít nhất một service phải được bật (hypervisor, storage, mail, k8s, hoặc ai)"
-      ],
+      "prereq_title": "Điều kiện tiên quyết",
+      "prereq": ["Admin API key với MFA hợp lệ", "Zone code phải là duy nhất (ví dụ: us-east-1, edge-hcm-1)", "Vị trí địa lý phải được chọn từ danh sách autocomplete", "Ít nhất một service phải được bật"],
+      "fields": [["Trường", "Mô tả", "Ràng buộc"], ["Zone Name", "Tên hiển thị, human-readable", "Ví dụ: \"US East 1\""], ["Zone Code", "Slug định danh duy nhất", "Auto-slugified, ví dụ: \"us-east-1\""], ["Location", "Vị trí địa lý", "Phải chọn từ danh sách autocomplete"], ["Services", "Tập service được bật", "Ít nhất một service"]],
       "steps_title": "Các bước thực hiện",
-      "steps": [
-        "Vào Admin UI → Zones → Add Zone",
-        "Điền thông tin zone",
-        "Chọn các service cần bật",
-        "Nhấn \"Create Zone\"",
-        "Zone được tạo với trạng thái planned"
-      ],
+      "steps": ["Vào Admin UI → Zones → Add Zone", "Điền zone name, zone code, và chọn location", "Chọn ít nhất một service cần bật (xem Section 3)", "Click Create Zone", "Zone được tạo với status planned"],
+      "note_title": "Trạng thái ban đầu",
       "note": "Zone mới luôn bắt đầu ở trạng thái planned. Không thể set status khi tạo. Chuyển sang active sau khi đăng ký dataplane."
     },
-    "status_transitions": {
+    "transitions": {
       "title": "Chuyển trạng thái Zone",
-      "state_machine_title": "Sơ đồ trạng thái",
-      "rules_title": "Quy tắc chuyển trạng thái",
-      "planned_to_active": "planned → active",
-      "planned_to_active_desc": "Zone sẵn sàng phục vụ traffic. Dataplane phải được đăng ký trước.",
-      "active_to_draining": "active → draining",
-      "active_to_draining_desc": "Drain workload dần dần. Không nhận workload mới, workload hiện tại tiếp tục chạy.",
-      "active_to_maintenance": "active → maintenance",
-      "active_to_maintenance_desc": "Vào chế độ bảo trì. Zone services có thể được cập nhật. Không nhận traffic.",
-      "any_to_disabled": "bất kỳ → disabled",
-      "any_to_disabled_desc": "Vô hiệu hóa zone. Tất cả workload phải được migrate đi trước.",
-      "how_to_title": "Cách chuyển trạng thái",
-      "how_to_steps": [
-        "Vào Admin UI → Zones → Chọn zone",
-        "Nhấn \"Update Status\"",
-        "Chọn trạng thái đích từ dropdown",
-        "Xác nhận chuyển trạng thái",
-        "Theo dõi trạng thái zone theo thời gian thực"
-      ]
-    },
-    "service_management": {
-      "title": "Quản lý Zone Services",
-      "when_title": "Khi nào có thể cập nhật Services?",
-      "when_desc": "Zone services chỉ có thể cập nhật khi zone ở trạng thái planned hoặc maintenance. Điều này ngăn thay đổi cấu hình service khi zone đang phục vụ traffic thực.",
-      "workflow_title": "Quy trình: Bật/Tắt Service",
-      "workflow_steps": [
-        "Nếu zone đang active, chuyển sang maintenance",
-        "Vào Admin UI → Zones → Chọn zone → Services",
-        "Toggle service bật/tắt",
-        "Xác nhận thay đổi",
-        "Chuyển zone về active khi sẵn sàng"
+      "states_title": "Các trạng thái",
+      "states": [
+        { "label": "PLANNED", "note": "Trạng thái ban đầu — zone đã tạo, chưa đăng ký dataplane" },
+        { "label": "ACTIVE", "note": "Đang phục vụ traffic — dataplane đã đăng ký và healthy" },
+        { "label": "DRAINING", "note": "Không nhận workload mới — workload hiện tại đang hoàn thành" },
+        { "label": "MAINTENANCE", "note": "Không có traffic — có thể cập nhật services" },
+        { "label": "DISABLED", "note": "Zone offline — bắt buộc trước khi xóa" }
       ],
-      "warning": "Tắt service khi workload đang chạy trên đó sẽ gây gián đoạn dịch vụ. Luôn drain workload trước."
+      "transitions_title": "Các chuyển trạng thái",
+      "transitions": [
+        { "from": "PLANNED", "to": "ACTIVE", "label": "Dataplane đã đăng ký và healthy" },
+        { "from": "ACTIVE", "to": "DRAINING", "label": "Drain dần — không nhận workload mới" },
+        { "from": "ACTIVE", "to": "MAINTENANCE", "label": "Vào bảo trì — dừng toàn bộ traffic" },
+        { "from": "DRAINING", "to": "MAINTENANCE", "label": "Tất cả workload đã drain xong" },
+        { "from": "MAINTENANCE", "to": "ACTIVE", "label": "Bảo trì xong — tiếp tục nhận traffic" },
+        { "from": "ANY", "to": "DISABLED", "label": "Vô hiệu hóa zone — phải migrate workload trước" }
+      ],
+      "how_to_title": "Cách chuyển trạng thái",
+      "how_to": ["Vào Admin UI → Zones → Chọn zone", "Click Update Status", "Chọn trạng thái đích từ dropdown (chỉ hiện các chuyển trạng thái hợp lệ)", "Xác nhận chuyển trạng thái", "Theo dõi trạng thái zone theo thời gian thực"],
+      "warning_title": "Chuyển sang disabled",
+      "warning": "Chuyển zone sang disabled sẽ dừng toàn bộ traffic ngay lập tức. Đảm bảo tất cả workload đã được migrate sang zone khác trước."
+    },
+    "services": {
+      "title": "Quản lý Zone Services",
+      "table": [["Service", "Mô tả", "Yêu cầu"], ["hypervisor", "Điều phối VM / container", "Yêu cầu dataplane node có capability hypervisor"], ["storage", "Block & object storage", "Yêu cầu dataplane node có capability storage"], ["mail", "Dịch vụ gửi email", "Yêu cầu SMTP relay được cấu hình trên dataplane"], ["k8s", "Kubernetes cluster", "Yêu cầu dataplane node có capability k8s"], ["ai", "AI / ML workloads", "Yêu cầu dataplane node có GPU"]],
+      "when_title": "Khi nào có thể cập nhật Services?",
+      "when": "Zone services chỉ có thể cập nhật khi zone ở trạng thái planned hoặc maintenance.",
+      "workflow_title": "Quy trình: Bật / Tắt Service",
+      "workflow": ["Nếu zone đang active, chuyển sang maintenance trước", "Vào Admin UI → Zones → Chọn zone → Services", "Toggle service bật / tắt", "Xác nhận thay đổi", "Chuyển zone về active khi sẵn sàng"],
+      "drain_note": "Drain tất cả workload và cập nhật status: active → maintenance",
+      "warning_title": "Nguy cơ gián đoạn dịch vụ",
+      "warning": "Tắt service khi workload đang chạy trên đó sẽ gây gián đoạn ngay lập tức. Luôn drain workload trước khi tắt service."
     },
     "deletion": {
       "title": "Xóa Zone",
-      "preconditions_title": "Điều kiện xóa (Bắt buộc đủ 3)",
-      "precondition_1_title": "Trạng thái zone phải là disabled",
-      "precondition_1_desc": "Chuyển zone qua state machine đến trạng thái disabled",
-      "precondition_2_title": "Không còn dataplane node nào",
-      "precondition_2_desc": "Hủy đăng ký tất cả dataplane cluster khỏi zone",
-      "precondition_3_title": "Không còn service nào được bật",
-      "precondition_3_desc": "Tắt tất cả 5 services (hypervisor, storage, mail, k8s, ai)",
+      "danger_title": "Thao tác không thể hoàn tác",
+      "danger": "Xóa zone là vĩnh viễn. Toàn bộ metadata, cấu hình service, và lịch sử audit sẽ bị xóa.",
+      "precond_title": "Điều kiện xóa — Bắt buộc đủ 3",
+      "precond": [["#", "Điều kiện", "Cách thỏa mãn"], ["1", "Trạng thái zone phải là disabled", "Chuyển qua state machine đến disabled"], ["2", "Không còn dataplane node nào", "Hủy đăng ký tất cả dataplane cluster"], ["3", "Không còn service nào được bật", "Tắt tất cả 5 services: hypervisor, storage, mail, k8s, ai"]],
       "workflow_title": "Quy trình xóa Zone",
-      "workflow_steps": [
-        "Drain tất cả workload khỏi zone",
-        "Hủy đăng ký dataplane cluster",
-        "Tắt tất cả zone services",
-        "Chuyển trạng thái zone về disabled",
-        "Vào Admin UI → Zones → Chọn zone",
-        "Nhấn \"Delete Zone\"",
-        "Xác nhận xóa (không thể hoàn tác)"
-      ],
-      "warning": "Xóa zone là thao tác không thể hoàn tác. Đảm bảo tất cả workload đã được migrate và đủ điều kiện trước khi thực hiện."
+      "workflow": ["Drain tất cả workload khỏi zone", "Hủy đăng ký tất cả dataplane cluster", "Tắt tất cả zone services", "Chuyển trạng thái zone về disabled", "Vào Admin UI → Zones → Chọn zone", "Click Delete Zone", "Xác nhận xóa trong dialog — không thể hoàn tác"]
     },
     "troubleshooting": {
       "title": "Xử lý sự cố",
-      "cannot_activate_title": "Không thể chuyển zone sang active",
-      "cannot_activate_cause": "Zone đang ở trạng thái planned nhưng dataplane chưa được đăng ký.",
-      "cannot_activate_solution": "Đăng ký dataplane cluster trước. Zone chỉ có thể chuyển sang active sau khi dataplane sẵn sàng.",
-      "cannot_update_services_title": "Không thể cập nhật zone services",
-      "cannot_update_services_cause": "Zone đang ở trạng thái active, draining, hoặc disabled.",
-      "cannot_update_services_solution": "Chuyển zone sang trạng thái maintenance trước, sau đó cập nhật services.",
-      "cannot_delete_title": "Không thể xóa zone",
-      "cannot_delete_cause": "Một hoặc nhiều điều kiện chưa thỏa mãn (status chưa disabled, dataplane vẫn còn, hoặc services vẫn còn bật).",
-      "cannot_delete_solution": "Kiểm tra lại 3 điều kiện ở trên. Thực hiện từng bước trong quy trình xóa zone."
+      "items": [
+        { "title": "Không thể chuyển zone sang active", "cause": "Zone đang ở trạng thái planned nhưng chưa có dataplane nào được đăng ký.", "solution": "Đăng ký dataplane cluster trước. Zone chỉ có thể chuyển sang active sau khi có dataplane node healthy." },
+        { "title": "Không thể cập nhật zone services", "cause": "Zone đang ở trạng thái active, draining, hoặc disabled.", "solution": "Chuyển zone sang trạng thái maintenance trước, sau đó cập nhật services." },
+        { "title": "Không thể xóa zone", "cause": "Một hoặc nhiều điều kiện chưa thỏa mãn — status chưa disabled, dataplane vẫn còn, hoặc services vẫn còn bật.", "solution": "Kiểm tra lại 3 điều kiện ở Section 4 và thực hiện từng bước trong quy trình xóa." },
+        { "title": "Zone bị kẹt ở trạng thái draining", "cause": "Workload chạy lâu đang ngăn quá trình drain hoàn thành.", "solution": "Kiểm tra workload đang active trên zone. Force-terminate workload bị kẹt nếu an toàn, sau đó thử drain lại." }
+      ],
+      "help_title": "Cần hỗ trợ thêm?",
+      "help": "Liên hệ đội hạ tầng hoặc kiểm tra log controlplane qua Grafana → Loki."
+    }
+  },
+  "zone_workflow": {
+    "hero": { "title": "Quy trình tạo Zone", "subtitle": "Hướng dẫn end-to-end: từ planning đến zone active phục vụ traffic" },
+    "nav": { "s1": "Planning", "s2": "Tạo Zone", "s3": "Đăng ký Dataplane", "s4": "Kích hoạt Zone", "s5": "Kiểm tra & Giám sát", "s6": "Rollback" },
+    "steps_flow": ["Lên kế hoạch", "Tạo", "Đăng ký Dataplane", "Kích hoạt", "Kiểm tra"],
+    "planning": {
+      "title": "Planning",
+      "checklist_title": "Checklist trước khi tạo Zone",
+      "checklist": ["Xác nhận zone code chưa tồn tại trong hệ thống", "Chọn geographic location phù hợp với latency target", "Xác định service set cần thiết cho zone này", "Chuẩn bị dataplane node với đúng capabilities", "Có Admin API key với MFA hợp lệ"],
+      "table": [["Quyết định", "Mô tả", "Ví dụ"], ["Zone Name", "Tên hiển thị, human-readable", "US East 1"], ["Zone Code", "Slug định danh duy nhất, auto-slugified", "us-east-1"], ["Location", "Vùng địa lý từ danh sách autocomplete", "us-east"], ["Services", "Tập service cần bật ngay từ đầu", "hypervisor, storage"], ["Dataplane", "Node sẽ đăng ký vào zone này", "dataplane-z1-n1"]]
     },
-    "footer": "Để được hỗ trợ thêm, liên hệ đội hạ tầng hoặc kiểm tra log của controlplane."
+    "create": {
+      "title": "Tạo Zone",
+      "intro": "Có 2 cách tạo zone: qua Admin UI hoặc trực tiếp qua API.",
+      "ui_title": "Cách 1 — Admin UI",
+      "ui_steps": ["Vào Admin UI → Zones → Add Zone", "Điền Zone Name, Zone Code, và chọn Location từ autocomplete", "Toggle bật các service cần thiết", "Click Create Zone"],
+      "api_title": "Cách 2 — API",
+      "result_title": "Kết quả mong đợi",
+      "result": "Zone được tạo với status: planned. Zone ID (UUIDv7) sẽ dùng cho các bước tiếp theo."
+    },
+    "dataplane": {
+      "title": "Đăng ký Dataplane",
+      "warning_title": "Bắt buộc trước khi Kích hoạt",
+      "warning": "Zone không thể chuyển sang active nếu chưa có dataplane node nào được đăng ký và healthy.",
+      "register_title": "Đăng ký dataplane node",
+      "table": [["Field", "Mô tả", "Ghi chú"], ["node_id", "UUIDv7 của dataplane node", "Phải khớp với ZONE_ID trong env của dataplane"], ["grpc_endpoint", "Địa chỉ gRPC của node", "Dạng host:port, không có scheme"], ["capabilities", "Danh sách service node hỗ trợ", "Phải bao gồm tất cả service đã bật trong zone"]],
+      "verify_title": "Kiểm tra dataplane đã kết nối",
+      "verify": ["Vào Admin UI → Zones → Chọn zone → Dataplanes", "Xác nhận node xuất hiện với status connected", "Kiểm tra Grafana → Metrics: dataplane_heartbeat_total tăng đều"]
+    },
+    "activate": {
+      "title": "Kích hoạt Zone",
+      "prereq_title": "Điều kiện để Kích hoạt",
+      "prereq": ["Zone đang ở status planned", "Ít nhất 1 dataplane node đã đăng ký và healthy", "Ít nhất 1 service đã được bật"],
+      "ui_title": "Cách 1 — Admin UI",
+      "ui_steps": ["Vào Admin UI → Zones → Chọn zone", "Click Update Status", "Chọn active từ dropdown", "Xác nhận chuyển trạng thái"],
+      "api_title": "Cách 2 — API",
+      "result_title": "Zone đã Active",
+      "result": "Zone bắt đầu nhận traffic ngay sau khi chuyển sang active. Controlplane sẽ bắt đầu route workload đến zone này."
+    },
+    "verify": {
+      "title": "Kiểm tra & Giám sát",
+      "checklist_title": "Checklist sau khi Kích hoạt",
+      "table": [["Kiểm tra", "Cách thực hiện", "Kết quả mong đợi"], ["Zone status", "Admin UI → Zones → Chọn zone", "Status: active"], ["Dataplane heartbeat", "Grafana → dataplane_heartbeat_total", "Tăng đều mỗi 10s"], ["gRPC connectivity", "Grafana → Loki → container=dataplane-z1-n1", "Không có error log"], ["Service availability", "Admin UI → Zones → Services", "Tất cả service enabled hiển thị healthy"], ["Job queue", "Redis → redis-job → XLEN job:zone:<id>", "Queue không bị tắc"]],
+      "grafana_title": "Grafana Dashboard",
+      "grafana": "Mở Grafana → Dashboards → Zone Overview để xem toàn bộ metrics của zone mới. Filter theo label zone_id."
+    },
+    "rollback": {
+      "title": "Rollback",
+      "when_title": "Khi nào cần Rollback?",
+      "when": "Rollback khi zone mới gây ra lỗi không mong muốn: dataplane không kết nối được, service không healthy, hoặc workload bị lỗi sau khi route vào zone mới.",
+      "steps_title": "Quy trình Rollback",
+      "steps": ["Chuyển zone về draining — ngừng nhận workload mới", "Chờ workload hiện tại hoàn thành hoặc migrate sang zone khác", "Chuyển zone về maintenance", "Điều tra nguyên nhân qua Grafana Loki + Tempo", "Fix vấn đề, sau đó chuyển lại active hoặc xóa zone nếu không cần"],
+      "help_title": "Cần hỗ trợ?",
+      "help": "Liên hệ đội hạ tầng với zone ID và timestamp của sự cố. Kiểm tra logs tại Grafana → Loki."
+    }
   }
 }
