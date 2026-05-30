@@ -1,0 +1,51 @@
+{
+  "app": {
+    "title": "Aurora Runbook",
+    "subtitle": "Cẩm nang vận hành",
+    "version": "v2.2"
+  },
+  "header": {
+    "search_placeholder": "Tìm kiếm trong runbook…",
+    "search_no_results": "Không có kết quả cho",
+    "search_navigate_hint": "Dùng ↑ ↓ để di chuyển, ↵ để mở",
+    "search_close_hint": "Esc để đóng",
+    "toggle_theme_light": "Chuyển sang sáng",
+    "toggle_theme_dark": "Chuyển sang tối",
+    "toggle_sidebar": "Bật/tắt sidebar",
+    "language": "Ngôn ngữ"
+  },
+  "nav": {
+    "groups": {
+      "auth": "Xác thực",
+      "zone": "Quản lý Zone",
+      "security": "Bảo mật",
+      "infra": "Hạ tầng",
+      "general": "Chung"
+    },
+    "items": {
+      "auth-token-model": "Mô hình & Vòng đời Token",
+      "auth-login-flow": "Luồng đăng nhập",
+      "auth-refresh-flow": "Luồng làm mới",
+      "auth-logout-flow": "Luồng đăng xuất",
+      "auth-mfa": "MFA & Step-Up",
+      "auth-device-binding": "Ràng buộc thiết bị",
+      "zone-management": "Quy trình vận hành Zone",
+      "sec-threat-model": "Mô hình mối đe dọa",
+      "sec-secrets": "Bí mật & Xoay vòng",
+      "sec-audit": "Audit & Tuân thủ",
+      "infra-redis": "Redis Cache",
+      "infra-postgres": "PostgreSQL",
+      "infra-envoy": "Envoy Proxy",
+      "home": "Trang chủ"
+    },
+    "soon": "sắp có",
+    "soon_tooltip": "Sắp ra mắt"
+  },
+  "common": {
+    "hero_badges": {
+      "version": "v2.2",
+      "updated": "Cập nhật 2026-05-29",
+      "production_ready": "Sẵn sàng Production"
+    }
+  }
+}

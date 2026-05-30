@@ -1,50 +1,5 @@
 {
-  "app": {
-    "title": "Aurora Runbook",
-    "subtitle": "Cẩm nang vận hành",
-    "version": "v2.2"
-  },
-  "header": {
-    "search_placeholder": "Tìm kiếm trong runbook…",
-    "search_no_results": "Không có kết quả cho",
-    "search_navigate_hint": "Dùng ↑ ↓ để di chuyển, ↵ để mở",
-    "search_close_hint": "Esc để đóng",
-    "toggle_theme_light": "Chuyển sang sáng",
-    "toggle_theme_dark": "Chuyển sang tối",
-    "toggle_sidebar": "Bật/tắt sidebar",
-    "language": "Ngôn ngữ"
-  },
-  "nav": {
-    "groups": {
-      "auth": "Xác thực",
-      "security": "Bảo mật",
-      "infra": "Hạ tầng",
-      "general": "Chung"
-    },
-    "items": {
-      "auth-token-model": "Mô hình & Vòng đời Token",
-      "auth-login-flow": "Luồng đăng nhập",
-      "auth-refresh-flow": "Luồng làm mới",
-      "auth-logout-flow": "Luồng đăng xuất",
-      "auth-mfa": "MFA & Step-Up",
-      "auth-device-binding": "Ràng buộc thiết bị",
-      "sec-threat-model": "Mô hình mối đe dọa",
-      "sec-secrets": "Bí mật & Xoay vòng",
-      "sec-audit": "Audit & Tuân thủ",
-      "infra-redis": "Redis Cache",
-      "infra-postgres": "PostgreSQL",
-      "infra-envoy": "Envoy Proxy",
-      "home": "Trang chủ"
-    },
-    "soon": "sắp có",
-    "soon_tooltip": "Sắp ra mắt"
-  },
   "page_titles": {
-    "auth-token-model": {
-      "title": "Mô hình & Vòng đời Token Admin",
-      "subtitle": "Đặc tả xác thực Admin Aurora",
-      "badge": "v2.2 • Sẵn sàng Production"
-    },
     "home": {
       "title": "Aurora Runbook",
       "subtitle": "Cẩm nang vận hành",
@@ -156,51 +111,5 @@
       "line1": "Aurora Platform • runbook.aurora.local",
       "line2": "Điều phối hạ tầng cloud-native"
     }
-  },
-  "common": {
-    "hero_badges": {
-      "version": "v2.2",
-      "updated": "Cập nhật 2026-05-29",
-      "production_ready": "Sẵn sàng Production"
-    }
-  },
-  "auth_token_model": {
-    "hero": {
-      "title": "Xác thực Admin Aurora",
-      "subtitle": "Mô hình & Vòng đời Token",
-      "scope": "Phạm vi: Admin / SRE / Operator (không phải end-user)"
-    },
-    "key_props": {
-      "fragment": "Token 3 mảnh",
-      "fragment_value": "JWT + AccessKey + AccessSecret",
-      "session_ttl": "TTL phiên",
-      "session_ttl_value": "15 phút",
-      "device_binding": "Ràng buộc thiết bị",
-      "device_binding_value": "Khóa công khai Ed25519",
-      "revocation": "Thu hồi",
-      "revocation_value": "< 1ms (Redis DEL)",
-      "ha_grace": "Thời gian ân hạn HA",
-      "ha_grace_value": "10 giây",
-      "plane_isolation": "Cô lập mặt phẳng",
-      "plane_isolation_value": "Admin / User tách biệt"
-    },
-    "footer": "Xác thực Admin Aurora • Mô hình & Vòng đời Token • v2.2",
-    "footer_sub": "Cập nhật 2026-05-29 • runbook.aurora.local"
-  },
-  "search": {
-    "exec_summary": "Tóm tắt",
-    "token_model": "Mô hình Token",
-    "lifecycle": "Vòng đời Token",
-    "token_components": "Thành phần Token",
-    "redis_storage": "Lưu trữ phiên Redis",
-    "token_rotation": "Xoay vòng Token",
-    "cookie_spec": "Đặc tả Cookie",
-    "inactivity": "Timeout không hoạt động",
-    "device_binding": "Ràng buộc thiết bị",
-    "threat_model": "Mô hình mối đe dọa & Mitigation",
-    "config": "Cấu hình",
-    "principles": "Nguyên tắc bảo mật",
-    "guarantees": "Đảm bảo vận hành",
-    "references": "Tài liệu tham khảo"
   }
 }

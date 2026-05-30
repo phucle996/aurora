@@ -2,6 +2,7 @@ import {
   Bell,
   ChevronDown,
   CircleHelp,
+  Globe2,
   LogOut,
   Menu,
   PanelLeft,
@@ -10,8 +11,11 @@ import {
 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import ThemeSwitcher from '@/components/layout/theme-switcher'
 import { useAdminSession } from '@/hooks/useAdminSession'
+import { useZoneStore } from '@/hooks/useZoneStore'
+import { useEffect, useMemo } from 'react'
 import { Fetch } from '@/lib/fetch'
 import {
   DropdownMenu,
@@ -27,6 +31,16 @@ type AppHeaderProps = {
 
 export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppHeaderProps) {
   const { clearSession } = useAdminSession()
+  const { zones, activeZone, fetchZones, setActiveZone } = useZoneStore()
+
+  useEffect(() => {
+    void fetchZones()
+  }, [fetchZones])
+
+  const activeZoneLabel = useMemo(() => {
+    if (!activeZone) return 'Global'
+    return zones.find(z => z.id === activeZone)?.name || activeZone
+  }, [activeZone, zones])
 
   const handleLogout = async () => {
     try {
@@ -59,12 +73,44 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
           <PanelLeft className="h-4 w-4" />
         </button>
 
-        <div className="order-3 relative hidden min-w-0 basis-full sm:block md:order-2 md:max-w-[430px] md:flex-1 lg:flex-none">
+        <div className="order-3 relative hidden sm:block md:order-2 w-64">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search dashboard, metrics, tenants..."
             className="h-9 w-full border-border/80 bg-background pl-9 text-sm shadow-none"
           />
+        </div>
+
+        {/* Global Zone Selector Dropdown next to Search */}
+        <div className="order-3 md:order-2 w-64">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-9 w-full justify-between gap-2 border-border/80 bg-background px-3 text-xs shadow-none cursor-pointer hover:bg-accent"
+              >
+                <span className="flex items-center gap-1.5 font-medium truncate">
+                  <Globe2 className="size-3.5 text-muted-foreground shrink-0" />
+                  <span className="truncate">{activeZoneLabel}</span>
+                </span>
+                <ChevronDown className="size-3.5 text-muted-foreground shrink-0" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuItem onClick={() => setActiveZone(null)} className="cursor-pointer">
+                Global (All Zones)
+              </DropdownMenuItem>
+              {zones.map((zone) => (
+                <DropdownMenuItem
+                  key={zone.id}
+                  onClick={() => setActiveZone(zone.id)}
+                  className="cursor-pointer"
+                >
+                  {zone.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <div className="order-2 ml-auto flex items-center gap-1 md:order-3 md:gap-2">

@@ -1,0 +1,115 @@
+{
+  "page_titles": {
+    "zone-management": {
+      "title": "Zone Management",
+      "subtitle": "Infrastructure Zone Operations Runbook",
+      "badge": "v2.2 • Production Ready"
+    }
+  },
+  "zone_management": {
+    "hero": {
+      "title": "Zone Management Runbook",
+      "subtitle": "Operational guide for managing infrastructure zones in the controlplane"
+    },
+    "warning": {
+      "title": "Zone is Root Topology",
+      "desc": "Zone is the root infrastructure unit. All dataplane nodes, services, and workloads are anchored to a zone. Changes to zone status or services have blast radius across all workloads running on that zone. Always follow the runbook and have a rollback plan."
+    },
+    "toc": {
+      "title": "Quick Navigation",
+      "create": "1. Creating a New Zone",
+      "status_transitions": "2. Zone Status Transitions",
+      "service_management": "3. Managing Zone Services",
+      "deletion": "4. Deleting a Zone",
+      "troubleshooting": "5. Troubleshooting"
+    },
+    "create": {
+      "title": "Creating a New Zone",
+      "prerequisites_title": "Prerequisites",
+      "prerequisites": [
+        "Admin API key with valid MFA",
+        "Zone code must be unique (e.g., us-east-1, edge-hcm-1)",
+        "Geographic location must be selected from the autocomplete list",
+        "At least one service must be enabled (hypervisor, storage, mail, k8s, or ai)"
+      ],
+      "steps_title": "Steps",
+      "steps": [
+        "Navigate to Admin UI → Zones → Add Zone",
+        "Fill in zone details",
+        "Select enabled services",
+        "Click \"Create Zone\"",
+        "Zone is created with status planned"
+      ],
+      "note": "New zones always start in planned status. Status cannot be set during creation. Transition to active after dataplane registration."
+    },
+    "status_transitions": {
+      "title": "Zone Status Transitions",
+      "state_machine_title": "State Machine",
+      "rules_title": "Transition Rules",
+      "planned_to_active": "planned → active",
+      "planned_to_active_desc": "Zone is ready to serve traffic. Dataplane must be registered first.",
+      "active_to_draining": "active → draining",
+      "active_to_draining_desc": "Gracefully drain workloads. No new workloads accepted, existing ones continue.",
+      "active_to_maintenance": "active → maintenance",
+      "active_to_maintenance_desc": "Enter maintenance mode. Zone services can be updated. No traffic accepted.",
+      "any_to_disabled": "any → disabled",
+      "any_to_disabled_desc": "Disable zone. All workloads must be migrated away first.",
+      "how_to_title": "How to Transition",
+      "how_to_steps": [
+        "Navigate to Admin UI → Zones → Select zone",
+        "Click \"Update Status\"",
+        "Select target status from dropdown",
+        "Confirm transition",
+        "Monitor zone status in real-time"
+      ]
+    },
+    "service_management": {
+      "title": "Managing Zone Services",
+      "when_title": "When Can Services Be Updated?",
+      "when_desc": "Zone services can only be updated when the zone is in planned or maintenance status. This prevents accidental service configuration changes while the zone is actively serving traffic.",
+      "workflow_title": "Workflow: Enable/Disable a Service",
+      "workflow_steps": [
+        "If zone is active, transition to maintenance",
+        "Navigate to Admin UI → Zones → Select zone → Services",
+        "Toggle service enabled/disabled",
+        "Confirm changes",
+        "Transition zone back to active when ready"
+      ],
+      "warning": "Disabling a service while workloads are running on it will cause service disruption. Always drain workloads first."
+    },
+    "deletion": {
+      "title": "Deleting a Zone",
+      "preconditions_title": "Deletion Preconditions (All 3 Required)",
+      "precondition_1_title": "Zone status must be disabled",
+      "precondition_1_desc": "Transition zone through the state machine to disabled status",
+      "precondition_2_title": "No dataplane nodes attached",
+      "precondition_2_desc": "Deregister all dataplane clusters from the zone",
+      "precondition_3_title": "No enabled services",
+      "precondition_3_desc": "Disable all 5 services (hypervisor, storage, mail, k8s, ai)",
+      "workflow_title": "Deletion Workflow",
+      "workflow_steps": [
+        "Drain all workloads from the zone",
+        "Deregister dataplane cluster(s)",
+        "Disable all zone services",
+        "Transition zone status to disabled",
+        "Navigate to Admin UI → Zones → Select zone",
+        "Click \"Delete Zone\"",
+        "Confirm deletion (irreversible)"
+      ],
+      "warning": "Zone deletion is irreversible. Ensure all workloads are migrated and all preconditions are met before proceeding."
+    },
+    "troubleshooting": {
+      "title": "Troubleshooting",
+      "cannot_activate_title": "Cannot transition zone to active",
+      "cannot_activate_cause": "Zone is in planned status but dataplane is not registered.",
+      "cannot_activate_solution": "Register dataplane cluster first. Zone can only transition to active after dataplane is ready.",
+      "cannot_update_services_title": "Cannot update zone services",
+      "cannot_update_services_cause": "Zone is in active, draining, or disabled status.",
+      "cannot_update_services_solution": "Transition zone to maintenance status first, then update services.",
+      "cannot_delete_title": "Cannot delete zone",
+      "cannot_delete_cause": "One or more preconditions not met (status not disabled, dataplane still attached, or services still enabled).",
+      "cannot_delete_solution": "Check all 3 preconditions above. Run through the deletion workflow step-by-step."
+    },
+    "footer": "For additional support, contact the infrastructure team or check the controlplane logs."
+  }
+}

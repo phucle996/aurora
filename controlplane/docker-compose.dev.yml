@@ -61,14 +61,13 @@ services:
       # 'runtime/policies/policy.yaml' (path tương đối). Mount vào đúng path tuyệt đối.
       - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
-      APP_NODE_ID: controlplane-dev-1
-      PSQL_HOST: psql
-      PSQL_PORT: "5432"
       # Override TLS paths để khớp với mount point mới của prod container.
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
     depends_on:
+      pbouncer:
+        condition: service_healthy
       psql:
         condition: service_healthy
       redis:
@@ -101,13 +100,12 @@ services:
       - ./dev/tls:/etc/controlplane/tls:ro
       - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
-      APP_NODE_ID: controlplane-dev-2
-      PSQL_HOST: psql
-      PSQL_PORT: "5432"
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
     depends_on:
+      pbouncer:
+        condition: service_healthy
       psql:
         condition: service_healthy
       redis:
@@ -140,13 +138,12 @@ services:
       - ./dev/tls:/etc/controlplane/tls:ro
       - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
-      APP_NODE_ID: controlplane-dev-3
-      PSQL_HOST: psql
-      PSQL_PORT: "5432"
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
     depends_on:
+      pbouncer:
+        condition: service_healthy
       psql:
         condition: service_healthy
       redis:
@@ -209,8 +206,9 @@ services:
       POSTGRES_DB: controlplane
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      # PostgreSQL 17 defaults to scram-sha-256 — aligned with PgBouncer AUTH_TYPE below.
     ports:
-      - "15433:5432"  # Ánh xạ ra cổng host độc lập để tránh xung đột với DB cục bộ của nhà phát triển
+      - "15434:5432"  # Direct debug port for schema migrations and heavy queries
     volumes:
       # Sử dụng named volume để lưu trữ dữ liệu bền vững, tránh mất mát dữ liệu khi container bị hủy.
       - controlplane_psql_data:/var/lib/postgresql/data
@@ -220,6 +218,43 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  pbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: controlplane-pbouncer
+    environment:
+      - LISTEN_PORT=6432
+      - DB_HOST=psql
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=controlplane
+      - POOL_MODE=transaction
+      # ================================================================
+      # SECURITY: scram-sha-256 — native PostgreSQL 17 auth protocol.
+      # AUTH_QUERY lets PgBouncer fetch the scram verifier directly from
+      # pg_shadow, bypassing the MD5 userlist.txt mismatch entirely.
+      # AUTH_USER must be a superuser (or pg_shadow member) to run the query.
+      # ================================================================
+      - AUTH_TYPE=scram-sha-256
+      - AUTH_USER=postgres
+      - AUTH_QUERY=SELECT usename, passwd FROM pg_shadow WHERE usename=$1
+      - MAX_CLIENT_CONN=1000
+      - DEFAULT_POOL_SIZE=20
+      - MIN_POOL_SIZE=5
+      - RESERVE_POOL_SIZE=5
+      - IGNORE_STARTUP_PARAMETERS=extra_float_digits,search_path
+    ports:
+      - "15433:6432"  # Transparent host port replacement for developer tools
+    depends_on:
+      psql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432", "-d", "controlplane", "-U", "postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   redis:

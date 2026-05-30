@@ -1,14 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Activity, CalendarDays, ChevronDown, Globe2, Link2, Server, Users } from 'lucide-react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { Activity, CalendarDays, ChevronDown, Link2, Server, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
 import { cn } from '@/lib/utils'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { format, subDays } from 'date-fns'
 import { type DateRange } from 'react-day-picker'
+import { useZoneStore } from '@/hooks/useZoneStore'
 
 // Nhập các tab nghiệp vụ chi tiết đã được module hóa
 import { OverviewTab } from './tabs/OverviewTab'
@@ -29,7 +28,7 @@ const tabs: Array<{ key: TabKey; label: string; description: string; icon: React
 
 /**
  * Component trang chính quản trị Mail Admin (MailPage)
- * Đóng vai trò là entrypoint chính điều phối trạng thái, phân tách tab, các bộ lọc toàn cục (Zone và Khoảng thời gian).
+ * Đóng vai trò là entrypoint chính điều phối trạng thái, phân tách tab, các bộ lọc toàn cục (Khoảng thời gian và Zone từ Store).
  */
 export default function MailPage() {
   // Cập nhật metadata động cho tài liệu HTML của trang Mail Admin
@@ -44,45 +43,17 @@ export default function MailPage() {
     return 'overview'
   })
 
-  // State quản lý danh sách các vùng (Zones) và vùng đang được chọn để lọc
-  const [zones, setZones] = useState<Array<{ id: string; name: string }>>([])
-  const [selectedZone, setSelectedZone] = useState<string | null>(null)
+  // Đọc Zone ID đang hoạt động từ RAM Cache (Global Zustand Store)
+  const { activeZone } = useZoneStore()
 
-  // Điều kiện ẩn hiện bộ lọc Zone dựa trên Tab đang chọn (ví dụ: endpoints không cần lọc zone)
-  const showsZoneFilter = active !== 'endpoints'
   // Điều kiện ẩn hiện bộ lọc khoảng thời gian (Date Range)
   const showsDateRangeFilter = active === 'overview' || active === 'consumers'
-
-  // Gọi API tải danh sách Vùng hạ tầng khi bộ lọc Zone được phép hiển thị
-  useEffect(() => {
-    if (!showsZoneFilter || zones.length > 0) {
-      return
-    }
-    async function loadZones() {
-      try {
-        const resp = await Fetch('/admin/zones')
-        if (resp.ok) {
-          const body = await resp.json()
-          setZones(body.data?.items || [])
-        }
-      } catch (err) {
-        console.error('Failed to load zones', err)
-      }
-    }
-    void loadZones()
-  }, [showsZoneFilter, zones.length])
 
   // State cấu hình khoảng thời gian mặc định (7 ngày gần nhất)
   const [dateRange, setDateRange] = useState<DateRange | undefined>({
     from: subDays(new Date(), 7),
     to: new Date(),
   })
-
-  // Tên hiển thị vùng đang chọn trên nút Dropdown
-  const activeZoneLabel = useMemo(() => {
-    if (!selectedZone) return 'All Zones'
-    return zones.find(z => z.id === selectedZone)?.name || selectedZone
-  }, [selectedZone, zones])
 
   // Chuỗi nhãn hiển thị khoảng thời gian đã chọn (Ví dụ: "May 20 – May 27, 2026")
   const dateRangeLabel = useMemo(() => {
@@ -102,58 +73,30 @@ export default function MailPage() {
           </p>
         </div>
         
-        {/* Bộ lọc Vùng và Thời gian hiển thị ở góc bên phải */}
-        {showsZoneFilter || showsDateRangeFilter ? (
+        {/* Bộ lọc Khoảng thời gian hiển thị ở góc bên phải (khi tab yêu cầu) */}
+        {showsDateRangeFilter ? (
           <div className="flex flex-wrap items-center gap-3">
-            {/* Bộ lọc Vùng (Zone Dropdown) */}
-            {showsZoneFilter ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" className="h-10 min-w-36 justify-between gap-3 border-border/80 bg-card px-4 aurora-filter-text shadow-sm cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      <Globe2 className="size-4" />
-                      {activeZoneLabel}
-                    </span>
-                    <ChevronDown className="size-4 text-muted-foreground" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56">
-                  <DropdownMenuItem onClick={() => setSelectedZone(null)} className="cursor-pointer">
-                    All Zones
-                  </DropdownMenuItem>
-                  {zones.map((zone) => (
-                    <DropdownMenuItem key={zone.id} onClick={() => setSelectedZone(zone.id)} className="cursor-pointer">
-                      {zone.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-
-            {/* Bộ lọc Khoảng thời gian (Date Range Calendar Popover) */}
-            {showsDateRangeFilter ? (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="h-10 min-w-44 justify-between gap-3 border-border/80 bg-card px-4 aurora-filter-text shadow-sm cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      <CalendarDays className="size-4" />
-                      {dateRangeLabel}
-                    </span>
-                    <ChevronDown className="size-4 text-muted-foreground" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="end">
-                  <Calendar
-                    initialFocus
-                    mode="range"
-                    defaultMonth={dateRange?.from}
-                    selected={dateRange}
-                    onSelect={setDateRange}
-                    numberOfMonths={2}
-                  />
-                </PopoverContent>
-              </Popover>
-            ) : null}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" className="h-10 min-w-44 justify-between gap-3 border-border/80 bg-card px-4 aurora-filter-text shadow-sm cursor-pointer">
+                  <span className="flex items-center gap-2">
+                    <CalendarDays className="size-4" />
+                    {dateRangeLabel}
+                  </span>
+                  <ChevronDown className="size-4 text-muted-foreground" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="end">
+                <Calendar
+                  initialFocus
+                  mode="range"
+                  defaultMonth={dateRange?.from}
+                  selected={dateRange}
+                  onSelect={setDateRange}
+                  numberOfMonths={2}
+                />
+              </PopoverContent>
+            </Popover>
           </div>
         ) : null}
       </div>
@@ -189,10 +132,10 @@ export default function MailPage() {
 
       {/* Vùng hiển thị nội dung chi tiết của Tab đang kích hoạt */}
       <div className="transition-all duration-300 ease-in-out">
-        {active === 'overview' && <OverviewTab zoneID={selectedZone} dateRange={dateRange} />}
-        {active === 'consumers' && <ConsumersTab zoneID={selectedZone} dateRange={dateRange} />}
-        {active === 'gateways' && <GatewaysTab zoneID={selectedZone} />}
-        {active === 'endpoints' && <EndpointsTab zoneID={selectedZone} />}
+        {active === 'overview' && <OverviewTab zoneID={activeZone} dateRange={dateRange} />}
+        {active === 'consumers' && <ConsumersTab zoneID={activeZone} dateRange={dateRange} />}
+        {active === 'gateways' && <GatewaysTab zoneID={activeZone} />}
+        {active === 'endpoints' && <EndpointsTab zoneID={activeZone} />}
       </div>
     </div>
   )

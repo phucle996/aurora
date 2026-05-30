@@ -1,0 +1,51 @@
+{
+  "app": {
+    "title": "Aurora Runbook",
+    "subtitle": "Operational Knowledge Base",
+    "version": "v2.2"
+  },
+  "header": {
+    "search_placeholder": "Search runbook…",
+    "search_no_results": "No results for",
+    "search_navigate_hint": "Use ↑ ↓ to navigate, ↵ to open",
+    "search_close_hint": "Esc to close",
+    "toggle_theme_light": "Switch to light",
+    "toggle_theme_dark": "Switch to dark",
+    "toggle_sidebar": "Toggle sidebar",
+    "language": "Language"
+  },
+  "nav": {
+    "groups": {
+      "auth": "Authentication",
+      "zone": "Zone Management",
+      "security": "Security",
+      "infra": "Infrastructure",
+      "general": "General"
+    },
+    "items": {
+      "auth-token-model": "Token Model & Lifecycle",
+      "auth-login-flow": "Login Flow",
+      "auth-refresh-flow": "Refresh Flow",
+      "auth-logout-flow": "Logout Flow",
+      "auth-mfa": "MFA & Step-Up",
+      "auth-device-binding": "Device Binding",
+      "zone-management": "Zone Workflow",
+      "sec-threat-model": "Threat Model",
+      "sec-secrets": "Secrets & Rotation",
+      "sec-audit": "Audit & Compliance",
+      "infra-redis": "Redis Cache",
+      "infra-postgres": "PostgreSQL",
+      "infra-envoy": "Envoy Proxy",
+      "home": "Home"
+    },
+    "soon": "soon",
+    "soon_tooltip": "Coming soon"
+  },
+  "common": {
+    "hero_badges": {
+      "version": "v2.2",
+      "updated": "Updated 2026-05-29",
+      "production_ready": "Production Ready"
+    }
+  }
+}

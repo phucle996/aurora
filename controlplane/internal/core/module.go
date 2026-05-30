@@ -93,13 +93,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
 	}
 	zoneService := coreSvcImpl.NewZoneService(zoneRepo)
-	if zoneService == nil {
-		return nil, fmt.Errorf("core module: zone service unavailable: zone service is nil")
-	}
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
-	if zoneHandler == nil {
-		return nil, fmt.Errorf("core module: zone service unavailable: zone handler is nil")
-	}
 
 	// 6) Dataplane dependencies injection
 	dataplaneNodeRepo := coreRepoImpl.NewDataplaneNodeRepoImpl(cfg, db)

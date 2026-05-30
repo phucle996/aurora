@@ -1,50 +1,5 @@
 {
-  "app": {
-    "title": "Aurora Runbook",
-    "subtitle": "Operational Knowledge Base",
-    "version": "v2.2"
-  },
-  "header": {
-    "search_placeholder": "Search runbook…",
-    "search_no_results": "No results for",
-    "search_navigate_hint": "Use ↑ ↓ to navigate, ↵ to open",
-    "search_close_hint": "Esc to close",
-    "toggle_theme_light": "Switch to light",
-    "toggle_theme_dark": "Switch to dark",
-    "toggle_sidebar": "Toggle sidebar",
-    "language": "Language"
-  },
-  "nav": {
-    "groups": {
-      "auth": "Authentication",
-      "security": "Security",
-      "infra": "Infrastructure",
-      "general": "General"
-    },
-    "items": {
-      "auth-token-model": "Token Model & Lifecycle",
-      "auth-login-flow": "Login Flow",
-      "auth-refresh-flow": "Refresh Flow",
-      "auth-logout-flow": "Logout Flow",
-      "auth-mfa": "MFA & Step-Up",
-      "auth-device-binding": "Device Binding",
-      "sec-threat-model": "Threat Model",
-      "sec-secrets": "Secrets & Rotation",
-      "sec-audit": "Audit & Compliance",
-      "infra-redis": "Redis Cache",
-      "infra-postgres": "PostgreSQL",
-      "infra-envoy": "Envoy Proxy",
-      "home": "Home"
-    },
-    "soon": "soon",
-    "soon_tooltip": "Coming soon"
-  },
   "page_titles": {
-    "auth-token-model": {
-      "title": "Admin Auth Token Model & Lifecycle",
-      "subtitle": "Aurora Admin Authentication Specification",
-      "badge": "v2.2 • Production Ready"
-    },
     "home": {
       "title": "Aurora Runbook",
       "subtitle": "Operational Knowledge Base",
@@ -156,51 +111,5 @@
       "line1": "Aurora Platform • runbook.aurora.local",
       "line2": "Cloud-native infrastructure orchestration"
     }
-  },
-  "common": {
-    "hero_badges": {
-      "version": "v2.2",
-      "updated": "Updated 2026-05-29",
-      "production_ready": "Production Ready"
-    }
-  },
-  "auth_token_model": {
-    "hero": {
-      "title": "Aurora Admin Authentication",
-      "subtitle": "Token Model & Lifecycle",
-      "scope": "Scope: Admin / SRE / Operator (not end-user)"
-    },
-    "key_props": {
-      "fragment": "3-Fragment Token",
-      "fragment_value": "JWT + AccessKey + AccessSecret",
-      "session_ttl": "Session TTL",
-      "session_ttl_value": "15 minutes",
-      "device_binding": "Device Binding",
-      "device_binding_value": "Ed25519 public key",
-      "revocation": "Revocation",
-      "revocation_value": "< 1ms (Redis DEL)",
-      "ha_grace": "HA Grace Period",
-      "ha_grace_value": "10 seconds",
-      "plane_isolation": "Plane Isolation",
-      "plane_isolation_value": "Admin / User separated"
-    },
-    "footer": "Aurora Admin Authentication • Token Model & Lifecycle • v2.2",
-    "footer_sub": "Updated 2026-05-29 • runbook.aurora.local"
-  },
-  "search": {
-    "exec_summary": "Executive Summary",
-    "token_model": "Token Model",
-    "lifecycle": "Token Lifecycle",
-    "token_components": "Token Components",
-    "redis_storage": "Redis Session Storage",
-    "token_rotation": "Token Rotation",
-    "cookie_spec": "Cookie Specification",
-    "inactivity": "Inactivity Timeout",
-    "device_binding": "Device Binding",
-    "threat_model": "Threat Model & Mitigations",
-    "config": "Configuration",
-    "principles": "Security Principles",
-    "guarantees": "Operational Guarantees",
-    "references": "References"
   }
 }

@@ -2,7 +2,8 @@ import { useState } from 'react'
 import Sidebar from './components/Sidebar.jsx'
 import Header from './components/Header.jsx'
 import Home from './pages/Home.jsx'
-import AuthTokenModel from './pages/AuthTokenModel.jsx'
+import AuthTokenModel from './pages/auth/TokenModel.jsx'
+import ZoneManagement from './pages/zone/Management.jsx'
 import { useTheme } from './lib/theme.js'
 
 function App() {
@@ -14,6 +15,8 @@ function App() {
     switch (currentPage) {
       case 'auth-token-model':
         return <AuthTokenModel />
+      case 'zone-management':
+        return <ZoneManagement />
       case 'home':
       default:
         return <Home />

@@ -15,6 +15,13 @@ const NAV_TREE = [
     ],
   },
   {
+    id: 'zone',
+    icon: '🌍',
+    children: [
+      { id: 'zone-management', icon: '⚙️', status: 'ready' },
+    ],
+  },
+  {
     id: 'security',
     icon: '🔒',
     children: [

@@ -5,6 +5,7 @@ import "time"
 type ZoneStatus string
 
 const (
+	ZoneStatusPlanned     ZoneStatus = "planned"
 	ZoneStatusActive      ZoneStatus = "active"
 	ZoneStatusDraining    ZoneStatus = "draining"
 	ZoneStatusMaintenance ZoneStatus = "maintenance"
@@ -23,8 +24,9 @@ type Zone struct {
 type ZoneServiceType string
 
 const (
-	ZoneServiceTypeMail       ZoneServiceType = "mail"
 	ZoneServiceTypeHypervisor ZoneServiceType = "hypervisor"
+	ZoneServiceTypeStorage    ZoneServiceType = "storage"
+	ZoneServiceTypeMail       ZoneServiceType = "mail"
 	ZoneServiceTypeK8s        ZoneServiceType = "k8s"
 	ZoneServiceTypeAI         ZoneServiceType = "ai"
 )
@@ -36,4 +38,15 @@ type ZoneService struct {
 	Enabled     bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type CreateZoneInput struct {
+	Code                string
+	Name                string
+	Location            string
+	EnableHypervisor    bool
+	EnableStorage       bool
+	EnableMail          bool
+	EnableK8s           bool
+	EnableAI            bool
 }

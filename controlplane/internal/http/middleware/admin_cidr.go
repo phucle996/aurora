@@ -27,7 +27,7 @@ type adminCIDRAllowlist struct {
 // InitAdminCIDR khởi tạo allowlist IP/CIDR cho admin routes.
 //
 // Source of truth:
-//   - app/module.go đọc cfg.Security.AdminAllowedCIDRs và gọi hàm này một lần
+//   - app/module.go đọc policySnapshot.Runtime.AdminCIDR.Allowlist và gọi hàm này một lần
 //     khi dựng module graph.
 //   - Route chỉ gọi middleware.AdminCIDR(), không truyền config lặp lại từng route.
 //

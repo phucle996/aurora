@@ -152,4 +152,16 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.RateLimitPostAuth(module.RateLimiter, "rate_limit:admin:delete_endpoints", 10, 10, time.Minute),
 		module.EndpointHandler.Delete,
 	)
+	router.POST("/admin/mail/endpoints/:id/test-connect",
+		middleware.AdminCIDR(),
+		middleware.AdminAPIKeyAuth(),
+		middleware.RateLimitPostAuth(module.RateLimiter, "rate_limit:admin:test_endpoints", 10, 10, time.Minute),
+		module.EndpointHandler.TestConnection,
+	)
+	router.POST("/admin/mail/endpoints/try-connect",
+		middleware.AdminCIDR(),
+		middleware.AdminAPIKeyAuth(),
+		middleware.RateLimitPostAuth(module.RateLimiter, "rate_limit:admin:test_raw_endpoints", 10, 10, time.Minute),
+		module.EndpointHandler.TestConnectionRaw,
+	)
 }

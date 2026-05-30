@@ -45,7 +45,6 @@ type SecurityCfg struct {
 	DeviceActiveTTL           time.Duration
 	AdminSessionTTL           time.Duration
 	AdminTrustedDeviceTTL     time.Duration
-	AdminAllowedCIDRs         []string
 	OAuthAuthorizationCodeTTL time.Duration
 	SecretCacheTTL            time.Duration
 }
@@ -123,7 +122,7 @@ func LoadConfig() *Config {
 
 	return &Config{
 		App: AppCfg{
-			AppName:            getEnv("APP_NAME", "controlplane"),
+			AppName:            "controlplane",
 			TimeZone:           getEnv("APP_TIMEZONE", "UTC"),
 			HTTPPort:           getEnvAsInt("APP_HTTP_PORT", 8080),
 			PublicDomain:       strings.TrimSpace(getEnv("APP_PUBLIC_DOMAIN", "")),
@@ -139,9 +138,8 @@ func LoadConfig() *Config {
 			RefreshTokenTTL:           168 * time.Hour,
 			AdminAPITokenTTL:          15 * 24 * time.Hour,
 			DeviceActiveTTL:           168 * time.Hour,
-			AdminSessionTTL:           15 * time.Minute,
+			AdminSessionTTL:           30 * time.Minute,
 			AdminTrustedDeviceTTL:     30 * 24 * time.Hour,
-			AdminAllowedCIDRs:         getEnvAsCSV("SECURITY_ADMIN_ALLOWED_CIDRS", []string{"0.0.0.0/0", "::/0"}),
 			OAuthAuthorizationCodeTTL: 5 * time.Minute,
 			SecretCacheTTL:            30 * time.Second,
 		},
@@ -156,7 +154,7 @@ func LoadConfig() *Config {
 			CACertPath:    getEnv("PSQL_TLS_CA", ""),
 			CertPath:      getEnv("PSQL_TLS_CERT", ""),
 			KeyPath:       getEnv("PSQL_TLS_KEY", ""),
-			MaxConns:      20,
+			MaxConns:      100,
 			MinConns:      5,
 			MaxConnLife:   30 * time.Minute,
 			MaxConnIdle:   5 * time.Minute,
@@ -172,14 +170,14 @@ func LoadConfig() *Config {
 			CACertPath:    getEnv("REDIS_TLS_CA", ""),
 			CertPath:      getEnv("REDIS_TLS_CERT", ""),
 			KeyPath:       getEnv("REDIS_TLS_KEY", ""),
-			DialTimeout:   5 * time.Second,
-			ReadTimeout:   3 * time.Second,
-			WriteTimeout:  3 * time.Second,
-			PoolSize:      20,
-			MinIdleConns:  5,
-			PingTimeout:   5 * time.Second,
+			DialTimeout:   2 * time.Second,
+			ReadTimeout:   500 * time.Millisecond,
+			WriteTimeout:  500 * time.Millisecond,
+			PoolSize:      100,
+			MinIdleConns:  10,
+			PingTimeout:   2 * time.Second,
 			MaxRetries:    5,
-			RetryInterval: 3 * time.Second,
+			RetryInterval: 1 * time.Second,
 		},
 		RedisJob: RedisCfg{
 			Addr:          getEnv("REDIS_JOB_ADDR", "localhost:6380"),
@@ -189,14 +187,14 @@ func LoadConfig() *Config {
 			CACertPath:    getEnv("REDIS_JOB_TLS_CA", ""),
 			CertPath:      getEnv("REDIS_JOB_TLS_CERT", ""),
 			KeyPath:       getEnv("REDIS_JOB_TLS_KEY", ""),
-			DialTimeout:   5 * time.Second,
-			ReadTimeout:   3 * time.Second,
-			WriteTimeout:  3 * time.Second,
-			PoolSize:      20,
-			MinIdleConns:  5,
-			PingTimeout:   5 * time.Second,
+			DialTimeout:   2 * time.Second,
+			ReadTimeout:   500 * time.Millisecond,
+			WriteTimeout:  500 * time.Millisecond,
+			PoolSize:      100,
+			MinIdleConns:  10,
+			PingTimeout:   2 * time.Second,
 			MaxRetries:    5,
-			RetryInterval: 3 * time.Second,
+			RetryInterval: 1 * time.Second,
 		},
 		GRPC: GRPCCfg{
 			Port:             getEnv("GRPC_PORT", "9443"),

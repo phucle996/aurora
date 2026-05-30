@@ -115,13 +115,18 @@ export default function ZoneManagementPage() {
   usePageMeta('Zone Management | Aurora Admin', 'Manage zones, statuses, and service availability across regions.')
   const [zones, setZones] = useState<ZoneRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [pageSize, setPageSize] = useState(8)
   const [currentPage, setCurrentPage] = useState(1)
 
-  async function loadZones() {
-    setLoading(true)
+  async function loadZones(isSilent = false) {
+    if (isSilent) {
+      setRefreshing(true)
+    } else {
+      setLoading(true)
+    }
     setError('')
     try {
       if (!activeZonesPromise) {
@@ -136,13 +141,18 @@ export default function ZoneManagementPage() {
 
       const payload = (await activeZonesPromise) as ZoneListResponse
       setZones((payload.data?.items ?? []).map(normalizeZoneRow))
-      setCurrentPage(1)
+      if (!isSilent) {
+        setCurrentPage(1)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Cannot load zones')
-      setZones([])
+      if (!isSilent) {
+        setZones([])
+      }
     } finally {
       activeZonesPromise = null
       setLoading(false)
+      setRefreshing(false)
     }
   }
 
@@ -195,7 +205,7 @@ export default function ZoneManagementPage() {
           <div className="space-y-1">
             <h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">Zone List</h2>
             <p className="text-sm text-muted-foreground">
-              {loading ? 'Loading real-time topology data...' : `${zones.length} zones from topology-manager`}
+              {loading || refreshing ? 'Loading real-time topology data...' : `${zones.length} zones from topology-manager`}
             </p>
           </div>
           <div className="flex w-full flex-col gap-3 sm:flex-row md:max-w-[560px] md:justify-end">
@@ -214,11 +224,11 @@ export default function ZoneManagementPage() {
             <Button
               type="button"
               variant="outline"
-              onClick={() => void loadZones()}
-              disabled={loading}
+              onClick={() => void loadZones(true)}
+              disabled={loading || refreshing}
               className="h-12 rounded-lg px-4 text-sm font-semibold"
             >
-              <RefreshCcw className={cn('size-4', loading && 'animate-spin')} />
+              <RefreshCcw className={cn('size-4', (loading || refreshing) && 'animate-spin')} />
               Refresh
             </Button>
           </div>
@@ -328,7 +338,7 @@ export default function ZoneManagementPage() {
               type="button"
               variant="outline"
               size="icon"
-              disabled={safePage <= 1 || loading}
+              disabled={safePage <= 1 || loading || refreshing}
               onClick={() => goToPage(safePage - 1)}
               className="size-9 rounded-lg text-muted-foreground"
             >
@@ -342,7 +352,7 @@ export default function ZoneManagementPage() {
                   type="button"
                   variant="outline"
                   size="icon"
-                  disabled={loading}
+                  disabled={loading || refreshing}
                   onClick={() => goToPage(page)}
                   className={cn(
                     'size-9 rounded-lg',
@@ -357,7 +367,7 @@ export default function ZoneManagementPage() {
               type="button"
               variant="outline"
               size="icon"
-              disabled={safePage >= totalPages || loading}
+              disabled={safePage >= totalPages || loading || refreshing}
               onClick={() => goToPage(safePage + 1)}
               className="size-9 rounded-lg text-muted-foreground"
             >

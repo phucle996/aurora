@@ -248,7 +248,8 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
   // Khai báo hàm fetch tải danh sách SMTP Endpoints từ API
   const loadEndpoints = useCallback(async (signal: AbortSignal) => {
     void refreshKey
-    const queryParams = zoneID ? `?zone_id=${zoneID}` : ''
+    if (!zoneID) return { items: [] }
+    const queryParams = `?zone_id=${zoneID}`
     const list = await Fetch(`/admin/mail/endpoints${queryParams}`, { signal }).then((resp) => readAPIData<EndpointListItem[]>(resp))
 
     // Ánh xạ lại các cấu hình bên trong connection_config ra ngoài phẳng (flat object) để dễ vẽ bảng
@@ -271,10 +272,21 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
   // Sử dụng custom hook polling để nạp thông tin
   const state = usePollingResource(loadEndpoints, { poll: false })
 
+  if (!zoneID) {
+    return (
+      <Panel title="Endpoint Fleet">
+        <EmptyState
+          title="No Zone Selected"
+          description="Please select a specific Zone from the filter dropdown above to view and manage Mail Endpoints."
+        />
+      </Panel>
+    )
+  }
+
   // Gọi API thực hiện xóa một Endpoint SMTP
   const deleteEndpoint = async (endpoint: EndpointListItem) => {
     if (!window.confirm(`Delete endpoint ${endpoint.name}?`)) return
-    const queryParams = zoneID ? `?zone_id=${zoneID}` : ''
+    const queryParams = `?zone_id=${zoneID}`
     const resp = await Fetch(`/admin/mail/endpoints/${endpoint.id}${queryParams}`, { method: 'DELETE' })
     if (!resp.ok) {
       window.alert(await readAPIMessage(resp, 'Cannot delete endpoint.'))
@@ -309,7 +321,7 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
     })
 
     try {
-      const queryParams = zoneID ? `?zone_id=${zoneID}` : ''
+      const queryParams = `?zone_id=${zoneID}`
       const resp = await Fetch(`/admin/mail/endpoints/${endpoint.id}/test-connect${queryParams}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -344,7 +356,7 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
   // Thay đổi trạng thái kích hoạt/tạm ngưng của Endpoint nhanh từ bảng danh sách
   const updateStatus = async (endpoint: EndpointListItem, isActive: boolean) => {
     try {
-      const queryParams = zoneID ? `?zone_id=${zoneID}` : ''
+      const queryParams = `?zone_id=${zoneID}`
       const resp = await Fetch(`/admin/mail/endpoints/${endpoint.id}${queryParams}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

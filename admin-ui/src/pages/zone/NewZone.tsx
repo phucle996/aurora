@@ -1,42 +1,34 @@
-import { useMemo, useState, type ElementType, type ReactNode } from 'react'
+import { useState, type ElementType, type ReactNode } from 'react'
 import { Link, useRouter } from '@tanstack/react-router'
 import {
+  Brain,
   Database,
   Eye,
   FileText,
   Boxes,
-  MapPin,
   Mail,
   Server,
 } from 'lucide-react'
 
-import { LocationPickerDialog, type ZoneLocation } from '@/components/zone/location-picker-dialog'
+import { LocationAutocomplete, type ZoneLocation } from '@/components/zone/location-autocomplete'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Fetch } from '@/lib/fetch'
 import { cn } from '@/lib/utils'
 import { PageContent } from '@/components/layout/layout'
 
-type ZoneStatus = 'planned' | 'active' | 'degraded' | 'maintenance' | 'disabled'
-
-type ServiceKey = 'hypervisor' | 'storage' | 'smtp' | 'kubernetes'
+type ServiceKey = 'hypervisor' | 'storage' | 'mail' | 'k8s' | 'ai'
 
 const serviceItems: Array<{ key: ServiceKey; label: string; icon: ElementType }> = [
   { key: 'hypervisor', label: 'Hypervisor', icon: Server },
   { key: 'storage', label: 'Storage', icon: Database },
-  { key: 'smtp', label: 'SMTP', icon: Mail },
-  { key: 'kubernetes', label: 'Kubernetes', icon: Boxes },
+  { key: 'mail', label: 'Mail', icon: Mail },
+  { key: 'k8s', label: 'Kubernetes', icon: Boxes },
+  { key: 'ai', label: 'AI', icon: Brain },
 ]
 
 function FieldHint({ children }: { children: ReactNode }) {
@@ -47,21 +39,19 @@ function Required() {
   return <span className="text-destructive">*</span>
 }
 
-
-const statusLabels: Record<ZoneStatus, string> = {
-  planned: 'Planned',
-  active: 'Active',
-  degraded: 'Degraded',
-  maintenance: 'Maintenance',
-  disabled: 'Disabled',
-}
-
 function slugifyZoneCode(value: string) {
   return value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
+}
+
+function liveSlugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
 }
 
 async function readAPIMessage(response: Response) {
@@ -73,40 +63,22 @@ async function readAPIMessage(response: Response) {
   }
 }
 
-function PreviewStatus({ status }: { status: ZoneStatus }) {
-  const label = statusLabels[status]
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        'h-8 rounded-lg px-3 text-sm font-medium',
-        status === 'planned' && 'border-amber-200 bg-amber-50 text-amber-700',
-        status === 'active' && 'border-emerald-200 bg-emerald-50 text-emerald-700',
-        status === 'degraded' && 'border-orange-200 bg-orange-50 text-orange-700',
-        status === 'maintenance' && 'border-violet-200 bg-violet-50 text-violet-700',
-        status === 'disabled' && 'border-slate-200 bg-slate-50 text-slate-600',
-      )}
-    >
-      {label}
-    </Badge>
-  )
-}
-
 export default function NewZonePage() {
   const router = useRouter()
   const [zoneName, setZoneName] = useState('')
   const [zoneCode, setZoneCode] = useState('')
+  const [isZoneCodeManuallyEdited, setIsZoneCodeManuallyEdited] = useState(false)
   const [location, setLocation] = useState('')
-  const [status, setStatus] = useState<ZoneStatus>('planned')
   const [description, setDescription] = useState('')
-  const [locationDialogOpen, setLocationDialogOpen] = useState(false)
+
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [services, setServices] = useState<Record<ServiceKey, boolean>>({
     hypervisor: true,
     storage: true,
-    smtp: false,
-    kubernetes: true,
+    mail: false,
+    k8s: true,
+    ai: false,
   })
 
   const toggleService = (key: ServiceKey) => {
@@ -125,15 +97,10 @@ export default function NewZonePage() {
   const trimmedLocation = location.trim()
   const canSubmit = trimmedName !== '' && trimmedCode !== '' && trimmedLocation !== '' && !submitting
 
-  const enabledServices = useMemo(
-    () => Object.entries(services).filter(([, enabled]) => enabled).map(([key]) => key),
-    [services],
-  )
-
   const createZone = async () => {
     setError('')
     if (!canSubmit) {
-      setError('Please fill in zone name, code, location, and status before creating the zone.')
+      setError('Please fill in zone name, code, and location before creating the zone.')
       return
     }
 
@@ -146,11 +113,12 @@ export default function NewZonePage() {
           name: trimmedName,
           code: slugifyZoneCode(trimmedCode),
           location: trimmedLocation,
-          status,
           description: description.trim(),
-          metadata: {
-            enabled_services: enabledServices,
-          },
+          enable_hypervisor: services.hypervisor,
+          enable_storage: services.storage,
+          enable_mail: services.mail,
+          enable_k8s: services.k8s,
+          enable_ai: services.ai,
         }),
       })
 
@@ -214,7 +182,13 @@ export default function NewZonePage() {
               </Label>
               <Input
                 value={zoneName}
-                onChange={(event) => setZoneName(event.target.value)}
+                onChange={(event) => {
+                  const val = event.target.value
+                  setZoneName(val)
+                  if (!isZoneCodeManuallyEdited) {
+                    setZoneCode(liveSlugify(val))
+                  }
+                }}
                 placeholder="e.g., US East 1"
                 className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"
               />
@@ -227,51 +201,23 @@ export default function NewZonePage() {
               </Label>
               <Input
                 value={zoneCode}
-                onChange={(event) => setZoneCode(slugifyZoneCode(event.target.value))}
+                onChange={(event) => {
+                  const val = event.target.value
+                  setIsZoneCodeManuallyEdited(val !== '')
+                  setZoneCode(liveSlugify(val))
+                }}
                 placeholder="e.g., us-east-1"
                 className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"
               />
               <FieldHint>A unique code used for API and automation.</FieldHint>
             </div>
 
-            <div>
+            <div className="lg:col-span-2">
               <Label className="text-sm font-semibold text-foreground">
                 Location <Required />
               </Label>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setLocationDialogOpen(true)}
-                className="mt-3 h-12 w-full justify-between rounded-lg border-border bg-background px-4 text-left font-medium shadow-none"
-              >
-                <span className="flex min-w-0 items-center gap-3">
-                  <MapPin className="size-4 shrink-0 text-muted-foreground" />
-                  <span className={cn('truncate', location ? 'text-foreground' : 'text-muted-foreground')}>
-                    {location || 'Select location on world map'}
-                  </span>
-                </span>
-                <span className="text-xs font-semibold text-primary">Open map</span>
-              </Button>
-              <FieldHint>Search the world map and choose the geographic location for this zone.</FieldHint>
-            </div>
-
-            <div>
-              <Label className="text-sm font-semibold text-foreground">
-                Status <Required />
-              </Label>
-              <Select value={status} onValueChange={(value) => setStatus(value as ZoneStatus)}>
-                <SelectTrigger className="mt-3 h-12 w-full rounded-lg border-border bg-background px-4 shadow-none">
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="planned">Planned</SelectItem>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="degraded">Degraded</SelectItem>
-                  <SelectItem value="maintenance">Maintenance</SelectItem>
-                  <SelectItem value="disabled">Disabled</SelectItem>
-                </SelectContent>
-              </Select>
-              <FieldHint>Initial operational status for the zone.</FieldHint>
+              <LocationAutocomplete value={location} onSelect={selectLocation} />
+              <FieldHint>Search and select the geographic location for this zone.</FieldHint>
             </div>
           </div>
 
@@ -289,7 +235,7 @@ export default function NewZonePage() {
           <div className="mt-8">
             <h3 className="text-sm font-semibold text-foreground">Enabled Services</h3>
             <p className="mt-2 text-sm text-muted-foreground">Select the platform services to enable in this zone.</p>
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
               {serviceItems.map((item) => {
                 const Icon = item.icon
                 return (
@@ -327,7 +273,12 @@ export default function NewZonePage() {
               </div>
               <div className="flex items-center justify-between gap-6">
                 <span className="font-medium text-primary">Status</span>
-                <PreviewStatus status={status} />
+                <Badge
+                  variant="outline"
+                  className={cn('h-8 rounded-lg px-3 text-sm font-medium', 'border-amber-200 bg-amber-50 text-amber-700')}
+                >
+                  Planned
+                </Badge>
               </div>
             </div>
 
@@ -353,8 +304,8 @@ export default function NewZonePage() {
                 text="Use a descriptive name and a unique code so the zone is easy to identify."
               />
               <NoteItem
-                title="Select the correct location and status"
-                text="Pick the right location and initial status to match your deployment plan."
+                title="Select the correct location"
+                text="Pick the right location to match your deployment plan. Status starts as Planned automatically."
               />
               <NoteItem
                 title="Enable only needed services"
@@ -364,12 +315,7 @@ export default function NewZonePage() {
           </div>
         </aside>
       </div>
-      <LocationPickerDialog
-        open={locationDialogOpen}
-        value={location}
-        onOpenChange={setLocationDialogOpen}
-        onSelect={selectLocation}
-      />
+
     </PageContent>
   )
 }

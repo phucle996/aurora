@@ -1,0 +1,66 @@
+{
+  "page_titles": {
+    "zone-management": { "title": "Zone 管理", "subtitle": "基础设施 Zone 运维 Runbook", "badge": "v2.2 • Production Ready" }
+  },
+  "zone_management": {
+    "hero": { "title": "Zone 管理 Runbook", "subtitle": "controlplane 基础设施 Zone 运维指南" },
+    "warning": {
+      "title": "Zone 是根拓扑",
+      "desc": "Zone 是根本的基础设施单元。所有 dataplane 节点、服务和工作负载都锚定在 Zone 上。更改 Zone 状态或服务会对该 Zone 上运行的所有工作负载产生影响。请始终遵循 Runbook 并制定回滚计划。"
+    },
+    "toc": { "title": "快速导航", "create": "1. 创建新 Zone", "status_transitions": "2. Zone 状态转换", "service_management": "3. 管理 Zone 服务", "deletion": "4. 删除 Zone", "troubleshooting": "5. 故障排除" },
+    "create": {
+      "title": "创建新 Zone",
+      "prerequisites_title": "前提条件",
+      "prerequisites": ["具有有效 MFA 的 Admin API 密钥", "Zone 代码必须唯一 (例如: us-east-1、edge-hcm-1)", "必须从自动完成列表中选择地理位置", "必须启用至少一个服务 (hypervisor、storage、mail、k8s 或 ai)"],
+      "steps_title": "步骤",
+      "steps": ["导航到 Admin UI → Zones → Add Zone", "填写 Zone 详细信息", "选择要启用的服务", "点击 \"Create Zone\"", "Zone 以 planned 状态创建"],
+      "note": "新 Zone 始终以 planned 状态开始。创建时无法设置状态。注册 dataplane 后转换为 active。"
+    },
+    "status_transitions": {
+      "title": "Zone 状态转换",
+      "state_machine_title": "状态机",
+      "rules_title": "转换规则",
+      "planned_to_active": "planned → active", "planned_to_active_desc": "Zone 已准备好处理流量。必须先注册 dataplane。",
+      "active_to_draining": "active → draining", "active_to_draining_desc": "逐步排空工作负载。不接受新工作负载，现有工作负载继续运行。",
+      "active_to_maintenance": "active → maintenance", "active_to_maintenance_desc": "进入维护模式。可以更新 Zone 服务。不接受流量。",
+      "any_to_disabled": "任意 → disabled", "any_to_disabled_desc": "禁用 Zone。必须先迁移所有工作负载。",
+      "how_to_title": "如何转换",
+      "how_to_steps": ["导航到 Admin UI → Zones → 选择 Zone", "点击 \"Update Status\"", "从下拉菜单中选择目标状态", "确认转换", "实时监控 Zone 状态"]
+    },
+    "service_management": {
+      "title": "管理 Zone 服务",
+      "when_title": "何时可以更新服务？",
+      "when_desc": "Zone 服务只能在 Zone 处于 planned 或 maintenance 状态时更新。这可以防止在 Zone 处理流量时意外更改服务配置。",
+      "workflow_title": "工作流：启用/禁用服务",
+      "workflow_steps": ["如果 Zone 处于 active 状态，转换为 maintenance", "导航到 Admin UI → Zones → 选择 Zone → Services", "切换服务启用/禁用", "确认更改", "准备好后将 Zone 转换回 active"],
+      "warning": "在工作负载运行时禁用服务将导致服务中断。请始终先排空工作负载。"
+    },
+    "deletion": {
+      "title": "删除 Zone",
+      "preconditions_title": "删除前提条件 (必须满足全部 3 个)",
+      "precondition_1_title": "Zone 状态必须为 disabled",
+      "precondition_1_desc": "通过状态机将 Zone 转换为 disabled 状态",
+      "precondition_2_title": "没有附加的 dataplane 节点",
+      "precondition_2_desc": "从 Zone 注销所有 dataplane 集群",
+      "precondition_3_title": "没有启用的服务",
+      "precondition_3_desc": "禁用所有 5 个服务 (hypervisor、storage、mail、k8s、ai)",
+      "workflow_title": "删除工作流",
+      "workflow_steps": ["从 Zone 排空所有工作负载", "注销 dataplane 集群", "禁用所有 Zone 服务", "将 Zone 状态转换为 disabled", "导航到 Admin UI → Zones → 选择 Zone", "点击 \"Delete Zone\"", "确认删除 (不可逆)"],
+      "warning": "Zone 删除是不可逆的。在继续之前，请确保所有工作负载已迁移且所有前提条件均已满足。"
+    },
+    "troubleshooting": {
+      "title": "故障排除",
+      "cannot_activate_title": "无法将 Zone 转换为 active",
+      "cannot_activate_cause": "Zone 处于 planned 状态，但 dataplane 未注册。",
+      "cannot_activate_solution": "先注册 dataplane 集群。只有在 dataplane 准备好后，Zone 才能转换为 active。",
+      "cannot_update_services_title": "无法更新 Zone 服务",
+      "cannot_update_services_cause": "Zone 处于 active、draining 或 disabled 状态。",
+      "cannot_update_services_solution": "先将 Zone 转换为 maintenance 状态，然后更新服务。",
+      "cannot_delete_title": "无法删除 Zone",
+      "cannot_delete_cause": "一个或多个前提条件未满足 (状态不是 disabled、dataplane 仍然存在或服务仍然启用)。",
+      "cannot_delete_solution": "检查上述所有 3 个前提条件。逐步执行删除工作流。"
+    },
+    "footer": "如需更多支持，请联系基础设施团队或检查 controlplane 日志。"
+  }
+}

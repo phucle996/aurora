@@ -101,7 +101,7 @@ function request(baseURL: string, input: string, init?: RequestInit): Promise<Re
     if (response.ok && response.headers.has('X-Session-Expires-In')) {
       const expiresIn = parseInt(response.headers.get('X-Session-Expires-In') ?? '')
 
-      if (!isNaN(expiresIn) && expiresIn < 300 && !isAuthRoute) {
+      if (!isNaN(expiresIn) && expiresIn < 900 && !isAuthRoute) {
         const lockKey = 'admin_session_refresh_lock'
         const lockVal = localStorage.getItem(lockKey)
         const now = Date.now()

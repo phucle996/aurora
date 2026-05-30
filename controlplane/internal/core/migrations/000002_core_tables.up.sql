@@ -1,3 +1,22 @@
+-- ======================================================================================================
+-- 📂 MIGRATION: 000002_core_tables.up.sql
+--            Core Module — Table Definitions & In-Table Constraints
+-- ======================================================================================================
+--
+-- 📜 CONSTRAINT STRATEGY:
+--   - In-table constraints (CHECK, NOT NULL, UNIQUE, DEFAULT) → defined HERE in 000002
+--   - Cross-table constraints (FOREIGN KEY, referential integrity) → defined HERE in 000002
+--   - Additional indexes & informational constraints → defined in 000004_zone_constraints.up.sql
+--     to avoid breaking migrations if table structure changes.
+--
+-- 🔒 REFERENTIAL INTEGRITY:
+--   - core_secret_versions → core_secret_families: ON DELETE CASCADE
+--   - zone_services → zones: ON DELETE CASCADE
+--   - dataplane_nodes → zones: UNIQUE constraint (one dataplane per zone)
+--
+-- ======================================================================================================
+
+
 CREATE TABLE IF NOT EXISTS core_secret_families (
     id UUID PRIMARY KEY,
     code TEXT NOT NULL,

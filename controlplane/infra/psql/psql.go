@@ -51,7 +51,24 @@ func NewPostgres(ctx context.Context, cfg *config.PsqlCfg) (*pgxpool.Pool, error
 		return pool, nil
 	}
 
-	return nil, fmt.Errorf("psql: failed to connect after %d attempts: %w", cfg.MaxRetries, err)
+	return nil, fmt.Errorf("psql: failed to connect after %d attempts: %w", cfg.MaxRetries, sanitizeError(err))
+}
+
+func sanitizeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if idx := strings.Index(msg, "server error:"); idx != -1 {
+		return fmt.Errorf("db error: %s", strings.TrimSpace(msg[idx:]))
+	}
+	if idx := strings.Index(msg, "FATAL:"); idx != -1 {
+		return fmt.Errorf("db error: %s", strings.TrimSpace(msg[idx:]))
+	}
+	if strings.Contains(msg, "failed to connect to") {
+		return fmt.Errorf("db connection failure")
+	}
+	return err
 }
 
 func buildDSN(cfg *config.PsqlCfg) string {

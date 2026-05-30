@@ -374,3 +374,96 @@ func (h *EndpointHandler) Delete(c *gin.Context) {
 
 	c.Status(http.StatusNoContent)
 }
+
+// TestConnection godoc
+// @Summary Test saved mail endpoint connection
+// @Description Thực hiện bắt tay mạng (handshake) và xác thực đầy đủ với Endpoint đã lưu.
+// @Tags mail-endpoint
+// @Produce json
+// @Param zone_id query string true "Zone ID"
+// @Param id path string true "Endpoint ID"
+// @Success 200 {object} map[string]interface{} "ok"
+// @Failure 400 {object} map[string]interface{} "invalid request"
+// @Failure 404 {object} map[string]interface{} "not found"
+// @Failure 500 {object} map[string]interface{} "internal_error"
+// @Router /admin/mail/endpoints/{id}/test-connect [post]
+func (h *EndpointHandler) TestConnection(c *gin.Context) {
+	const op = "mail.endpoint.test_connection"
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	zoneIDStr := strings.TrimSpace(c.Query("zone_id"))
+	if zoneIDStr == "" {
+		logger.HandlerWarn(c, op, errors.New("missing zone_id"), "testing connection aborted: zone_id query param is required")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	zoneUUID, err := uuid.Parse(zoneIDStr)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "testing connection aborted: zone_id is not a valid UUID")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		logger.HandlerWarn(c, op, errors.New("missing endpoint id"), "testing connection aborted: endpoint id in path params is required")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	uuidID, err := uuid.Parse(id)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "testing connection aborted: endpoint id is not a valid UUID")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	err = h.svc.TestConnection(ctx, zoneUUID, uuidID)
+	if err != nil {
+		if errors.Is(err, mailTaxonomy.ErrEndpointNotFound) {
+			apires.RespondNotFound(c, "mail endpoint not found")
+		} else {
+			logger.HandlerError(c, op, err)
+			apires.RespondBadRequest(c, "Connection failed")
+		}
+		return
+	}
+
+	apires.RespondSuccess(c, nil, "Connection successful")
+}
+
+// TestConnectionRaw godoc
+// @Summary Test transient endpoint connection config
+// @Description Thực hiện chạy thử kết nối sử dụng cấu hình thô chưa lưu.
+// @Tags mail-endpoint
+// @Accept json
+// @Produce json
+// @Param payload body mailReq.CreateEndpointRequest true "Cấu hình Endpoint tạm thời"
+// @Success 200 {object} map[string]interface{} "ok"
+// @Failure 400 {object} map[string]interface{} "invalid request"
+// @Failure 500 {object} map[string]interface{} "internal_error"
+// @Router /admin/mail/endpoints/try-connect [post]
+func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
+	const op = "mail.endpoint.test_connection_raw"
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	var req mailReq.CreateEndpointRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.HandlerWarn(c, op, err, "binding CreateEndpointRequest for raw test failed")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	err := h.svc.TestConnectionRaw(ctx, mailEntity.ProviderType(req.Provider), req.ConnectionConfig)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondBadRequest(c, "Connection failed")
+		return
+	}
+
+	apires.RespondSuccess(c, nil, "Connection successful")
+}
+
