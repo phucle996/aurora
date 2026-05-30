@@ -58,6 +58,27 @@ type DataplaneCache interface {
 
 	// Subscribe đăng ký lắng nghe tin nhắn từ Redis Pub/Sub channel.
 	Subscribe(ctx context.Context, channel string) *goredis.PubSub
+
+	// ============================================================================
+	// ⚡️ PHẦN THÊM MỚI: PHỤC VỤ DUAL-PATH LIVENESS ACTIVE POOL (SRE HEALCHECK FLOW)
+	// ============================================================================
+
+	// GetActiveNodes lấy danh sách tất cả Hostname của các Node đang hoạt động trong Zone từ Redis Set.
+	// Lệnh thực thi: SMEMBERS dataplane:nodes:<zone_id>
+	GetActiveNodes(ctx context.Context, zoneID string) ([]string, error)
+
+	// CheckNodeLiveness kiểm tra xem khóa liveness của Node có tồn tại trên Redis Cache TTL không.
+	// Lệnh thực thi: EXISTS dataplane:liveness:<zone_id>:<hostname>
+	CheckNodeLiveness(ctx context.Context, zoneID string, hostname string) (bool, error)
+
+	// AcquireSalvageLock sinh khóa giải cứu nguyên tử (Atomic Salvage Lock) cho Node lỗi bằng SETNX.
+	// Lệnh thực thi: SET locks:salvage:<zone_id>:<hostname> 1 EX 30 NX
+	// Trả về true nếu giành được khóa giải cứu thành công, false nếu bị trùng lặp.
+	AcquireSalvageLock(ctx context.Context, zoneID string, hostname string) (bool, error)
+
+	// RemoveNodeFromActivePool loại bỏ Node lỗi khỏi danh sách active pool của Zone trên Redis Set.
+	// Lệnh thực thi: SREM dataplane:nodes:<zone_id> <hostname>
+	RemoveNodeFromActivePool(ctx context.Context, zoneID string, hostname string) error
 }
 
 type DataplaneCacheImpl struct {
@@ -135,3 +156,44 @@ func (c *DataplaneCacheImpl) GetClusterMetrics(ctx context.Context, clusterID st
 	}
 	return out, nil
 }
+
+// GetActiveNodes lấy danh sách tất cả Hostname của các Node đang hoạt động trong Zone từ Redis Set.
+// Lệnh thực thi: SMEMBERS dataplane:nodes:<zone_id>
+// Nhận dạng flow: Đây là bể chứa động (Active Pool) giúp CP biết được zone có những node nào mà không ghi DB.
+func (c *DataplaneCacheImpl) GetActiveNodes(ctx context.Context, zoneID string) ([]string, error) {
+	key := fmt.Sprintf("dataplane:nodes:%s", zoneID)
+	return c.rdb.SMembers(ctx, key).Result()
+}
+
+// CheckNodeLiveness kiểm tra xem khóa liveness của Node có tồn tại trên Redis Cache TTL không (O(1)).
+// Lệnh thực thi: EXISTS dataplane:liveness:<zone_id>:<hostname>
+// Nhận dạng flow: Đây là Hot-Path liveness kiểm tra xem node có liên tục gia hạn nhịp tim 5s hay không.
+func (c *DataplaneCacheImpl) CheckNodeLiveness(ctx context.Context, zoneID string, hostname string) (bool, error) {
+	key := fmt.Sprintf("dataplane:liveness:%s:%s", zoneID, hostname)
+	count, err := c.rdb.Exists(ctx, key).Result()
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// AcquireSalvageLock sinh khóa giải cứu nguyên tử (Atomic Salvage Lock) cho Node lỗi bằng SETNX.
+// Lệnh thực thi: SET locks:salvage:<zone_id>:<hostname> 1 EX 30 NX
+// Nhận dạng flow: Ngăn chặn tuyệt đối các CP replica chạy song song tranh chấp giải cứu trùng lặp cùng một node.
+func (c *DataplaneCacheImpl) AcquireSalvageLock(ctx context.Context, zoneID string, hostname string) (bool, error) {
+	key := fmt.Sprintf("locks:salvage:%s:%s", zoneID, hostname)
+	res, err := c.rdb.SetNX(ctx, key, "1", 30*time.Second).Result()
+	if err != nil {
+		return false, err
+	}
+	return res, nil
+}
+
+// RemoveNodeFromActivePool loại bỏ Node lỗi khỏi danh sách active pool của Zone trên Redis Set.
+// Lệnh thực thi: SREM dataplane:nodes:<zone_id> <hostname>
+// Nhận dạng flow: Đá node lỗi ra khỏi active pool để CP dừng quét liveness cho đến khi node này tự đăng ký lại.
+func (c *DataplaneCacheImpl) RemoveNodeFromActivePool(ctx context.Context, zoneID string, hostname string) error {
+	key := fmt.Sprintf("dataplane:nodes:%s", zoneID)
+	return c.rdb.SRem(ctx, key, hostname).Err()
+}
+

@@ -54,14 +54,16 @@ import (
 	coreErrorx "controlplane/internal/core/errorx"
 	coreCache "controlplane/internal/core/cache"
 	"controlplane/pkg/logger"
+	"sync"
 
 	"github.com/google/uuid"
 )
 
 type DataplaneNodeService struct {
-	repo     coreRepoInterface.DataplaneNodeRepository
-	cache    coreCache.DataplaneCache
-	zoneRepo coreRepoInterface.ZoneRepository
+	repo          coreRepoInterface.DataplaneNodeRepository
+	cache         coreCache.DataplaneCache
+	zoneRepo      coreRepoInterface.ZoneRepository
+	fallbackCache sync.Map // Map lưu vết nhịp tim gRPC dự phòng khi Redis sập (Key: "zone_id:hostname" -> Value: time.Time)
 }
 
 // NewDataplaneNodeService khởi tạo Service quản trị Dataplane.
@@ -222,3 +224,42 @@ func (s *DataplaneNodeService) GetEligibleClusterForZone(ctx context.Context, zo
 
 	return cluster, nil
 }
+
+// IngestFallbackHeartbeat tiếp nhận nhịp tim dự phòng qua kênh gRPC trực tiếp từ Node khi Redis sập.
+// Nhịp tim này được ghi nhận cực nhanh vào bộ nhớ trong (sync.Map) nhằm triệt tiêu tối đa rủi ro latency và DB overhead.
+func (s *DataplaneNodeService) IngestFallbackHeartbeat(ctx context.Context, hostname string, zoneID string) error {
+	key := fmt.Sprintf("%s:%s", zoneID, hostname)
+	now := time.Now().UTC()
+
+	// Ghi nhận thời gian nhận nhịp tim cuối cùng của Node vào thread-safe sync.Map
+	s.fallbackCache.Store(key, now)
+
+	logger.SysInfoFields("core.dataplane.heartbeat", "Successfully ingested fallback gRPC heartbeat", logger.Fields{
+		"hostname":  hostname,
+		"zone_id":   zoneID,
+		"timestamp": now.Format(time.RFC3339),
+	})
+
+	return nil
+}
+
+// CheckFallbackLiveness đối soát xem Node có gửi nhịp tim gRPC dự phòng hợp lệ trong vòng 8 giây qua hay không.
+// Đây là lá chắn an toàn tối quan trọng (Anti-False-Positive Shield) giúp hệ thống không báo tử nhầm node.
+func (s *DataplaneNodeService) CheckFallbackLiveness(ctx context.Context, zoneID string, hostname string) bool {
+	key := fmt.Sprintf("%s:%s", zoneID, hostname)
+
+	// Truy xuất mốc thời gian từ sync.Map
+	val, ok := s.fallbackCache.Load(key)
+	if !ok {
+		return false // Hoàn toàn không nhận được nhịp tim dự phòng nào trước đó
+	}
+
+	lastHeartbeat, ok := val.(time.Time)
+	if !ok {
+		return false
+	}
+
+	// Nếu nhịp tim nhận được trong vòng 8 giây gần nhất -> Node vẫn khỏe mạnh!
+	return time.Now().UTC().Sub(lastHeartbeat) <= 8*time.Second
+}
+

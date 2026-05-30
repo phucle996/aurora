@@ -209,3 +209,14 @@ impl Config {
         }
     }
 }
+
+/// Trích xuất Hostname tự động tại Bootstrap, fallback sang UUID v4 ngẫu nhiên
+pub fn get_node_hostname() -> String {
+    std::env::var("HOSTNAME")
+        .unwrap_or_else(|_| {
+            hostname::get()
+                .map(|h| h.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| format!("unknown-{}", uuid::Uuid::new_v4()))
+        })
+}
+

@@ -50,6 +50,7 @@ import (
 	iamCache "controlplane/internal/iam/cache"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamRepoImpl "controlplane/internal/iam/repository"
+	"controlplane/internal/mail"
 	"controlplane/internal/policyengine"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
@@ -68,6 +69,8 @@ type Modules struct {
 	IAM *iam.IAMModule
 	// Hypervisor là module vệ tinh Tier-1 (ảo hóa). Cho phép chạy ở trạng thái suy giảm (Degraded).
 	Hypervisor *hypervisor.HypervisorModule
+	// Mail là module vệ tinh Tier-1 (gửi mail). Cho phép chạy ở trạng thái suy giảm (Degraded).
+	Mail *mail.Module
 	// PolicyEngine là runtime hot-reload module cho policies.
 	PolicyEngine *policyengine.Engine
 	probeCancel  context.CancelFunc
@@ -77,7 +80,8 @@ type Modules struct {
 // chính cho bootstrap cross-module.
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
-	rds *goredis.Client,
+	rdsCore *goredis.Client,
+	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	policyEngineModule *policyengine.Engine,
 ) (*Modules, error) {
@@ -86,7 +90,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 1) Global health surface.
-	health := healthhandler.NewHealthHandler(db, rds)
+	health := healthhandler.NewHealthHandler(db, rdsCore)
 
 	// 2) Time drift probe read-only: chỉ ghi tín hiệu health/metrics, không chỉnh clock OS.
 	probe := NewTimeSyncProbe()
@@ -118,7 +122,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rds, rateLimiter)
+	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
@@ -130,7 +134,7 @@ func NewGlobalModules(cfg *config.Config,
 	securityProvider := coreSvcImpl.NewSecuritySecretProvider(coreModule.RuntimeSecretProvider)
 
 	// 5) IAM module bootstrap phụ thuộc security provider từ core runtime.
-	iamModule, err := iam.NewModule(cfg, db, rds, rateLimiter, securityProvider)
+	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, securityProvider)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -154,12 +158,20 @@ func NewGlobalModules(cfg *config.Config,
 		hypervisorModule = hypervisor.NewDegradedModule(err)
 	}
 
+	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ gửi mail Mail
+	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
+	mailModule, err := mail.NewModule(cfg, db, rdsCore, rateLimiter)
+	if err != nil {
+		logger.SysError("graceful.degradation.mail", fmt.Sprintf("Failed to initialize mail module: %v. Running in degraded mode.", err))
+		mailModule = mail.NewDegradedModule(err)
+	}
+
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 4: THIẾT LẬP MIDDLEWARES & AN TOÀN ĐỊNH TUYẾN TOÀN CỤC
 	// ------------------------------------------------------------------------
 
 	// 7) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rds, policyEngineModule); err != nil {
+	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rdsCore, policyEngineModule); err != nil {
 		return nil, err
 	}
 
@@ -172,6 +184,7 @@ func NewGlobalModules(cfg *config.Config,
 		Core:         coreModule,
 		IAM:          iamModule,
 		Hypervisor:   hypervisorModule,
+		Mail:         mailModule,
 		PolicyEngine: policyEngineModule,
 		probeCancel:  probeCancel,
 	}, nil
@@ -262,6 +275,9 @@ func (m *Modules) Stop() {
 	}
 	if m.Hypervisor != nil {
 		m.Hypervisor.Stop()
+	}
+	if m.Mail != nil {
+		_ = m.Mail.Stop(context.Background())
 	}
 	if m.Core != nil {
 		m.Core.Stop()

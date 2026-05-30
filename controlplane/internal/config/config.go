@@ -10,6 +10,7 @@ type Config struct {
 	Security   SecurityCfg
 	Psql       PsqlCfg
 	Redis      RedisCfg
+	RedisJob   RedisCfg
 	GRPC       GRPCCfg
 	Telegram   TelegramCfg
 	Dataplane  DataplaneCfg
@@ -23,8 +24,6 @@ type PrometheusCfg struct {
 	QueryTimeout time.Duration
 	DefaultStep  time.Duration
 }
-
-
 
 type AppCfg struct {
 	AppName            string
@@ -111,6 +110,7 @@ type DataplaneCfg struct {
 type SchemaSQLCfg struct {
 	Core string
 	IAM  string
+	Mail string
 }
 
 type AgentCfg struct {
@@ -181,6 +181,23 @@ func LoadConfig() *Config {
 			MaxRetries:    5,
 			RetryInterval: 3 * time.Second,
 		},
+		RedisJob: RedisCfg{
+			Addr:          getEnv("REDIS_JOB_ADDR", "localhost:6380"),
+			Password:      getEnv("REDIS_JOB_PASSWORD", ""),
+			DB:            getEnvAsInt("REDIS_JOB_DB", 0),
+			TLSEnabled:    getEnvAsBool("REDIS_JOB_TLS_ENABLED", false),
+			CACertPath:    getEnv("REDIS_JOB_TLS_CA", ""),
+			CertPath:      getEnv("REDIS_JOB_TLS_CERT", ""),
+			KeyPath:       getEnv("REDIS_JOB_TLS_KEY", ""),
+			DialTimeout:   5 * time.Second,
+			ReadTimeout:   3 * time.Second,
+			WriteTimeout:  3 * time.Second,
+			PoolSize:      20,
+			MinIdleConns:  5,
+			PingTimeout:   5 * time.Second,
+			MaxRetries:    5,
+			RetryInterval: 3 * time.Second,
+		},
 		GRPC: GRPCCfg{
 			Port:             getEnv("GRPC_PORT", "9443"),
 			PublicAddr:       getEnv("GRPC_PUBLIC_ADDR", "localhost:9443"),
@@ -204,6 +221,7 @@ func LoadConfig() *Config {
 		SchemaSQL: SchemaSQLCfg{
 			Core: "core",
 			IAM:  "iam",
+			Mail: "mail",
 		},
 		Agent: AgentCfg{
 			CACertPath: getEnv("AGENT_CA_CERT_PATH", ""),

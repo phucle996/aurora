@@ -20,6 +20,8 @@ type MockDataplaneNodeServiceForTransport struct {
 	IngestHeartbeatFunc           func(ctx context.Context, clusterID string, zoneID string) error
 	VerifyClusterStatusFunc       func(ctx context.Context, zoneID string) (string, error)
 	GetEligibleClusterForZoneFunc func(ctx context.Context, zoneID string, serviceType string) (*coreEntity.DataplaneNode, error)
+	IngestFallbackHeartbeatFunc   func(ctx context.Context, hostname string, zoneID string) error
+	CheckFallbackLivenessFunc     func(ctx context.Context, zoneID string, hostname string) bool
 }
 
 func (m *MockDataplaneNodeServiceForTransport) IngestHeartbeat(ctx context.Context, clusterID string, zoneID string) error {
@@ -41,6 +43,20 @@ func (m *MockDataplaneNodeServiceForTransport) GetEligibleClusterForZone(ctx con
 		return m.GetEligibleClusterForZoneFunc(ctx, zoneID, serviceType)
 	}
 	return nil, nil
+}
+
+func (m *MockDataplaneNodeServiceForTransport) IngestFallbackHeartbeat(ctx context.Context, hostname string, zoneID string) error {
+	if m.IngestFallbackHeartbeatFunc != nil {
+		return m.IngestFallbackHeartbeatFunc(ctx, hostname, zoneID)
+	}
+	return nil
+}
+
+func (m *MockDataplaneNodeServiceForTransport) CheckFallbackLiveness(ctx context.Context, zoneID string, hostname string) bool {
+	if m.CheckFallbackLivenessFunc != nil {
+		return m.CheckFallbackLivenessFunc(ctx, zoneID, hostname)
+	}
+	return true
 }
 
 // TestDataplaneGRPC_TransportLoop xác thực chu trình truyền nhận mạng gRPC hoàn chỉnh từ Client qua Socket tới Server.

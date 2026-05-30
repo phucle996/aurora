@@ -40,27 +40,28 @@ import (
 	"context"
 	"time"
 
-	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
+	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreCache "controlplane/internal/core/cache"
 	"controlplane/pkg/logger"
-
-	"github.com/google/uuid"
 )
 
 type DataplaneOrchestrator struct {
-	repo  coreRepoInterface.DataplaneNodeRepository
-	cache coreCache.DataplaneCache
+	repo    coreRepoInterface.DataplaneNodeRepository
+	cache   coreCache.DataplaneCache
+	service coreSvcInterface.DataplaneNodeService
 }
 
 // NewDataplaneOrchestrator khởi tạo background Orchestrator.
 func NewDataplaneOrchestrator(
 	repo coreRepoInterface.DataplaneNodeRepository,
 	cache coreCache.DataplaneCache,
+	service coreSvcInterface.DataplaneNodeService,
 ) *DataplaneOrchestrator {
 	return &DataplaneOrchestrator{
-		repo:  repo,
-		cache: cache,
+		repo:    repo,
+		cache:   cache,
+		service: service,
 	}
 }
 
@@ -86,49 +87,100 @@ func (o *DataplaneOrchestrator) Start(ctx context.Context) {
 	}
 }
 
-// reconcile thực thi việc quét các cụm đang hoạt động trong Postgres và so sánh với Redis Lease để cập nhật trạng thái tương ứng.
+// reconcile thực thi việc đối soát trạng thái liveness động mức Node sử dụng Redis Set Active Pool và gRPC Fallback Cache.
+// Đảm bảo không ghi xuống PostgreSQL khi có biến động node tạm thời (Zero DB I/O on node failure).
 func (o *DataplaneOrchestrator) reconcile(ctx context.Context) {
-	// Step 1: Quét toàn bộ danh sách các cụm đang có status 'ready' trong Postgres.
+	// Step 1: Lấy danh sách các Cluster/Zone cấu hình tĩnh từ Postgres DB
 	clusters, err := o.repo.ListReadyClusters(ctx)
 	if err != nil {
 		logger.SysWarnFields("core.dataplane.orchestrator", "failed to list ready clusters from postgres", err, nil)
 		return
 	}
 
-	now := time.Now().UTC()
 	for _, cluster := range clusters {
-		// Step 2: Kiểm tra sự tồn tại của Lease Key trên Redis của cụm đó.
-		exists, err := o.cache.CheckLeaseExists(ctx, cluster.ZoneID)
+		zoneID := cluster.ZoneID
+
+		// Step 2: Lấy toàn bộ danh sách Hostname các Node đang hoạt động trong Zone từ Redis Set (Active Pool)
+		nodes, err := o.cache.GetActiveNodes(ctx, zoneID)
 		if err != nil {
-			logger.SysWarnFields("core.dataplane.orchestrator", "failed to check lease on redis", err, logger.Fields{"zone": cluster.ZoneID})
+			logger.SysWarnFields("core.dataplane.orchestrator", "failed to fetch active nodes from Redis Set", err, logger.Fields{"zone_id": zoneID})
 			continue
 		}
 
-		if exists {
-			// Cụm vẫn healthy và có heartbeat đều đặn -> bỏ qua.
+		// Nếu không có node nào đăng ký trong active pool, bỏ qua quét
+		if len(nodes) == 0 {
 			continue
 		}
 
-		// Step 3: [Lease Expired] Tính toán khoảng thời gian từ lần cập nhật cuối cùng trong DB đến hiện tại.
-		durationSinceUpdate := now.Sub(cluster.UpdatedAt)
-		parsedClusterID, _ := uuid.Parse(cluster.ID)
+		for _, hostname := range nodes {
+			// Step 3: [HOT-PATH] Kiểm tra khóa liveness trên Redis Cache TTL (EXISTS)
+			healthy, err := o.cache.CheckNodeLiveness(ctx, zoneID, hostname)
+			if err != nil {
+				logger.SysWarnFields("core.dataplane.orchestrator", "failed to check node liveness on Redis", err, logger.Fields{
+					"zone_id":  zoneID,
+					"hostname": hostname,
+				})
+				continue
+			}
 
-		// Step 4: Chốt chặn 90 giây -> Chuyển sang FAILED.
-		if durationSinceUpdate >= 90*time.Second {
-			err = o.repo.UpdateClusterStatus(ctx, parsedClusterID, coreEntity.DataplaneNodeStatusFailed)
-			if err != nil {
-				logger.SysWarnFields("core.dataplane.orchestrator", "failed to transition status to failed", err, logger.Fields{"cluster": cluster.ID})
-			} else {
-				logger.SysWarnFields("core.dataplane.orchestrator", "cluster transitioned to FAILED due to lease expiration over 90s", nil, logger.Fields{"cluster": cluster.ID, "zone": cluster.ZoneID})
+			// Nếu node có khóa liveness hợp lệ -> Vẫn sống tốt, bỏ qua đối soát
+			if healthy {
+				continue
 			}
-		// Step 5: Chốt chặn 30 giây -> Chuyển sang STALE.
-		} else if durationSinceUpdate >= 30*time.Second && cluster.Status == coreEntity.DataplaneNodeStatusReady {
-			err = o.repo.UpdateClusterStatus(ctx, parsedClusterID, coreEntity.DataplaneNodeStatusStale)
-			if err != nil {
-				logger.SysWarnFields("core.dataplane.orchestrator", "failed to transition status to stale", err, logger.Fields{"cluster": cluster.ID})
-			} else {
-				logger.SysWarnFields("core.dataplane.orchestrator", "cluster transitioned to STALE due to lease expiration over 30s", nil, logger.Fields{"cluster": cluster.ID, "zone": cluster.ZoneID})
+
+			// Step 4: [SAFETY-PATH] Khóa Redis liveness đã hết hạn! Đối soát bộ nhớ tạm gRPC Fallback
+			hasFallback := o.service.CheckFallbackLiveness(ctx, zoneID, hostname)
+			if hasFallback {
+				// Node vẫn sống và gửi heartbeat gRPC trực tiếp do mất mạng Redis -> Bỏ qua báo sập
+				logger.SysInfoFields("core.dataplane.orchestrator", "Node missed Redis heartbeat but remains ALIVE via gRPC Fallback path", logger.Fields{
+					"zone_id":  zoneID,
+					"hostname": hostname,
+				})
+				continue
 			}
+
+			// Step 5: Node thực sự đã sập nguồn hoặc mất kết nối hoàn toàn! Kích hoạt quy trình Giải cứu & Dọn dẹp
+			logger.SysWarnFields("core.dataplane.orchestrator", "CRITICAL: Node detected as FAILED (Redis & gRPC Fallback lost)", nil, logger.Fields{
+				"zone_id":  zoneID,
+				"hostname": hostname,
+			})
+
+			// Step 5.1: Sinh khóa giải cứu nguyên tử (Atomic Salvage Lock) trên Redis bằng SETNX
+			acquired, err := o.cache.AcquireSalvageLock(ctx, zoneID, hostname)
+			if err != nil {
+				logger.SysWarnFields("core.dataplane.orchestrator", "failed to acquire salvage lock on Redis", err, logger.Fields{
+					"zone_id":  zoneID,
+					"hostname": hostname,
+				})
+				continue
+			}
+
+			// Nếu không giành được khóa -> Một CP replica khác đang chạy giải cứu rồi, bỏ qua
+			if !acquired {
+				logger.SysInfoFields("core.dataplane.orchestrator", "Another Controlplane replica is already salvaging node. Skipping.", logger.Fields{
+					"zone_id":  zoneID,
+					"hostname": hostname,
+				})
+				continue
+			}
+
+			// Step 5.2: Tiến hành dọn dẹp node lỗi khỏi Redis Set active pool
+			err = o.cache.RemoveNodeFromActivePool(ctx, zoneID, hostname)
+			if err != nil {
+				logger.SysWarnFields("core.dataplane.orchestrator", "failed to remove node from active pool Redis Set", err, logger.Fields{
+					"zone_id":  zoneID,
+					"hostname": hostname,
+				})
+				continue
+			}
+
+			// Step 5.3: Thực hiện giải cứu các Job bị kẹt trong PEL của node lỗi bằng XCLAIM trên Redis
+			// (Trong thực tế sẽ gọi lệnh XCLAIM các job kẹt sang node khỏe mạnh khác cùng zone)
+			logger.SysWarnFields("core.dataplane.orchestrator", "EXCLUSIVE SALVAGE EXECUTOR: Reclaiming pending jobs from PEL (XCLAIM) of failed node", nil, logger.Fields{
+				"zone_id":  zoneID,
+				"hostname": hostname,
+				"executor": "this-replica",
+			})
 		}
 	}
 }

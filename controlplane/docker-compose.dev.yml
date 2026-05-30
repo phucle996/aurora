@@ -73,6 +73,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-job:
+        condition: service_healthy
       prometheus:
         condition: service_started
       otel-collector:
@@ -110,6 +112,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-job:
+        condition: service_healthy
       prometheus:
         condition: service_started
       otel-collector:
@@ -146,6 +150,8 @@ services:
       psql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      redis-job:
         condition: service_healthy
       prometheus:
         condition: service_started

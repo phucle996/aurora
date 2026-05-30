@@ -43,7 +43,7 @@ const primaryItems: NavItem[] = [
 
 const infraItems: NavItem[] = [
   { label: 'Hypervisor', to: '/hypervisor', icon: Server },
-  { label: 'SMTP', to: '/smtp', icon: Mail },
+  { label: 'Mail', to: '/mail', icon: Mail },
   { label: 'Resources', to: '/resource-platform', icon: Database },
   { label: 'Storage', icon: HardDrive },
   { label: 'Kubernetes', icon: Boxes },
@@ -172,7 +172,7 @@ export default function AppSidebar({ collapsed, mobileOpen, onMobileOpenChange, 
       <aside
         className={cn(
           'hidden shrink-0 border-r border-border/70 bg-card aurora-opaque-surface transition-[width] duration-300 ease-in-out lg:flex lg:flex-col',
-          collapsed ? 'w-[60px]' : 'w-[252px]',
+          collapsed ? 'w-15' : 'w-63',
         )}
       >
         {loading ? <SidebarSkeleton collapsed={collapsed} /> : <SidebarContent collapsed={collapsed} />}

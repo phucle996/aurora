@@ -45,6 +45,7 @@ type App struct {
 	grpc       *bootstrap.GRPC
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
+	rdsJob     *goredis.Client
 	ready      bool
 }
 
@@ -95,6 +96,18 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	if rds == nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: redis client is required")
+	}
+
+	// Infrastructure bootstrap: Redis Job Broker.
+	rdsJob, err := redisinfra.NewRedis(ctx, &cfg.RedisJob)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: redis job init failed: %w", err)
+	}
+	app.rdsJob = rdsJob
+	if rdsJob == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: redis job client is required")
 	}
 
 	// Schema bootstrap phải chạy trước khi modules bắt đầu dùng DB.
@@ -186,7 +199,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 
 	// Module bootstrap.
-	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter, policyModule)
+	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule)
 	if err != nil {
 		// Fail-fast: module graph ảnh hưởng cross-module (core security provider,
 		// IAM wiring, middleware auth). Không degrade ở app runtime bootstrap.
@@ -333,5 +346,8 @@ func (a *App) Stop() {
 	}
 	if a.rds != nil {
 		_ = a.rds.Close()
+	}
+	if a.rdsJob != nil {
+		_ = a.rdsJob.Close()
 	}
 }

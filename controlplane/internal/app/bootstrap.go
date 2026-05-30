@@ -45,5 +45,11 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 		}
 	}
 
+	if modules.Mail != nil {
+		if err := modules.Mail.Start(ctx); err != nil {
+			logger.SysError("mail.bootstrap.failed", err.Error())
+		}
+	}
+
 	return nil
 }

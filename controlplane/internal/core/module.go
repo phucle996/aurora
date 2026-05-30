@@ -114,7 +114,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if dataplaneNodeService == nil {
 		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane service is nil")
 	}
-	dataplaneOrchestrator := coreSvcImpl.NewDataplaneOrchestrator(dataplaneNodeRepo, dataplaneCache)
+	dataplaneOrchestrator := coreSvcImpl.NewDataplaneOrchestrator(dataplaneNodeRepo, dataplaneCache, dataplaneNodeService)
 	if dataplaneOrchestrator == nil {
 		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane orchestrator is nil")
 	}

@@ -71,13 +71,13 @@ func (h *DataplaneGRPCHandler) Heartbeat(ctx context.Context, req *coreProto.Hea
 		return nil, status.Errorf(codes.InvalidArgument, "cluster_id and zone_id are required")
 	}
 
-	// Step 2: Gọi xuống Core Service Layer để thực hiện IngestHeartbeat (cập nhật DB & Redis).
-	err := h.service.IngestHeartbeat(ctx, req.GetClusterId(), req.GetZoneId())
+	// Step 2: Gọi xuống Core Service Layer để ghi nhận nhịp tim dự phòng vào bộ nhớ tạm cực nhanh (Zero DB I/O).
+	err := h.service.IngestFallbackHeartbeat(ctx, req.GetClusterId(), req.GetZoneId())
 	if err != nil {
 		// Ghi nhận telemetry metrics thất bại
 		coreMetric.ObserveHeartbeat("grpc", "failure")
 		logger.SysWarnFields("core.dataplane.rpc", "failed to ingest fallback heartbeat via gRPC", err, logger.Fields{"cluster": req.GetClusterId(), "zone": req.GetZoneId()})
-		return nil, status.Errorf(codes.Internal, "failed to ingest heartbeat: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to ingest fallback heartbeat: %v", err)
 	}
 
 	// Step 3: Ghi nhận telemetry metrics thành công

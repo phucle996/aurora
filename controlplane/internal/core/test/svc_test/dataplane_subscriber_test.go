@@ -17,11 +17,15 @@ import (
 
 // MockDataplaneCache triển khai mock cho DataplaneCache phục vụ test.
 type MockDataplaneCache struct {
-	AcquireLeaseFunc      func(ctx context.Context, zoneID string, ttl time.Duration) error
-	CheckLeaseExistsFunc  func(ctx context.Context, zoneID string) (bool, error)
-	SaveClusterMetricsFunc func(ctx context.Context, clusterID string, metrics map[string]interface{}, ttl time.Duration) error
-	GetClusterMetricsFunc func(ctx context.Context, clusterID string) (map[string]interface{}, error)
-	SubscribeFunc         func(ctx context.Context, channel string) *goredis.PubSub
+	AcquireLeaseFunc             func(ctx context.Context, zoneID string, ttl time.Duration) error
+	CheckLeaseExistsFunc         func(ctx context.Context, zoneID string) (bool, error)
+	SaveClusterMetricsFunc       func(ctx context.Context, clusterID string, metrics map[string]interface{}, ttl time.Duration) error
+	GetClusterMetricsFunc        func(ctx context.Context, clusterID string) (map[string]interface{}, error)
+	SubscribeFunc                func(ctx context.Context, channel string) *goredis.PubSub
+	GetActiveNodesFunc           func(ctx context.Context, zoneID string) ([]string, error)
+	CheckNodeLivenessFunc        func(ctx context.Context, zoneID string, hostname string) (bool, error)
+	AcquireSalvageLockFunc       func(ctx context.Context, zoneID string, hostname string) (bool, error)
+	RemoveNodeFromActivePoolFunc func(ctx context.Context, zoneID string, hostname string) error
 }
 
 func (m *MockDataplaneCache) AcquireLease(ctx context.Context, zoneID string, ttl time.Duration) error {
@@ -59,11 +63,41 @@ func (m *MockDataplaneCache) Subscribe(ctx context.Context, channel string) *gor
 	return nil
 }
 
+func (m *MockDataplaneCache) GetActiveNodes(ctx context.Context, zoneID string) ([]string, error) {
+	if m.GetActiveNodesFunc != nil {
+		return m.GetActiveNodesFunc(ctx, zoneID)
+	}
+	return []string{"mock-node-1"}, nil
+}
+
+func (m *MockDataplaneCache) CheckNodeLiveness(ctx context.Context, zoneID string, hostname string) (bool, error) {
+	if m.CheckNodeLivenessFunc != nil {
+		return m.CheckNodeLivenessFunc(ctx, zoneID, hostname)
+	}
+	return true, nil
+}
+
+func (m *MockDataplaneCache) AcquireSalvageLock(ctx context.Context, zoneID string, hostname string) (bool, error) {
+	if m.AcquireSalvageLockFunc != nil {
+		return m.AcquireSalvageLockFunc(ctx, zoneID, hostname)
+	}
+	return true, nil
+}
+
+func (m *MockDataplaneCache) RemoveNodeFromActivePool(ctx context.Context, zoneID string, hostname string) error {
+	if m.RemoveNodeFromActivePoolFunc != nil {
+		return m.RemoveNodeFromActivePoolFunc(ctx, zoneID, hostname)
+	}
+	return nil
+}
+
 // MockDataplaneNodeService triển khai mock cho DataplaneNodeService phục vụ test.
 type MockDataplaneNodeService struct {
 	IngestHeartbeatFunc           func(ctx context.Context, clusterID string, zoneID string) error
 	VerifyClusterStatusFunc       func(ctx context.Context, zoneID string) (string, error)
 	GetEligibleClusterForZoneFunc func(ctx context.Context, zoneID string, serviceType string) (*coreEntity.DataplaneNode, error)
+	IngestFallbackHeartbeatFunc   func(ctx context.Context, hostname string, zoneID string) error
+	CheckFallbackLivenessFunc     func(ctx context.Context, zoneID string, hostname string) bool
 }
 
 func (m *MockDataplaneNodeService) IngestHeartbeat(ctx context.Context, clusterID string, zoneID string) error {
@@ -85,6 +119,20 @@ func (m *MockDataplaneNodeService) GetEligibleClusterForZone(ctx context.Context
 		return m.GetEligibleClusterForZoneFunc(ctx, zoneID, serviceType)
 	}
 	return nil, nil
+}
+
+func (m *MockDataplaneNodeService) IngestFallbackHeartbeat(ctx context.Context, hostname string, zoneID string) error {
+	if m.IngestFallbackHeartbeatFunc != nil {
+		return m.IngestFallbackHeartbeatFunc(ctx, hostname, zoneID)
+	}
+	return nil
+}
+
+func (m *MockDataplaneNodeService) CheckFallbackLiveness(ctx context.Context, zoneID string, hostname string) bool {
+	if m.CheckFallbackLivenessFunc != nil {
+		return m.CheckFallbackLivenessFunc(ctx, zoneID, hostname)
+	}
+	return true
 }
 
 // TestDataplaneGRPCHandler_Success xác nhận gRPC handler hoạt động thành công khi payload hợp lệ.

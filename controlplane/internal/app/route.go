@@ -71,6 +71,7 @@ import (
 	"controlplane/internal/core"
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
+	"controlplane/internal/mail"
 	"controlplane/pkg/apires"
 
 	"github.com/gin-gonic/gin"
@@ -120,6 +121,21 @@ func RegisterRoutes(router *gin.Engine, m *Modules) {
 		fallbackGroup := router.Group("/api/v1/hypervisor")
 		fallbackGroup.Any("/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "HYPERVISOR_MODULE_DEGRADED: Phân hệ Hypervisor hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
+		})
+	}
+
+	// ------------------------------------------------------------------------
+	// 🌐 HẠNG MỤC 5: MAIL VỆ TINH MODULE (TIER-1 DEGRADED-RESILIENT ROUTING)
+	// ------------------------------------------------------------------------
+	// SRE HA Design Pattern: Nếu module Mail bị degraded/disabled, chúng ta không ẩn
+	// hoàn toàn endpoint (gây lỗi 404 khó hiểu cho client), mà tự động đăng ký Fallback Route
+	// trả về mã lỗi 503 Service Unavailable chuẩn cấu hình định dạng của apires.
+	if m.Mail != nil && m.Mail.IsEnabled() {
+		mail.RegisterRoutes(router, m.Mail)
+	} else {
+		fallbackGroup := router.Group("/api/v1/mail")
+		fallbackGroup.Any("/*any", func(c *gin.Context) {
+			apires.RespondServiceUnavailable(c, "MAIL_MODULE_DEGRADED: Phân hệ gửi Mail hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
 	}
 }

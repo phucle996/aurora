@@ -86,6 +86,22 @@ func (m *mockDataplaneCacheForService) Subscribe(ctx context.Context, channel st
 	return nil
 }
 
+func (m *mockDataplaneCacheForService) GetActiveNodes(ctx context.Context, zoneID string) ([]string, error) {
+	return []string{"mock-node-1"}, nil
+}
+
+func (m *mockDataplaneCacheForService) CheckNodeLiveness(ctx context.Context, zoneID string, hostname string) (bool, error) {
+	return true, nil
+}
+
+func (m *mockDataplaneCacheForService) AcquireSalvageLock(ctx context.Context, zoneID string, hostname string) (bool, error) {
+	return true, nil
+}
+
+func (m *mockDataplaneCacheForService) RemoveNodeFromActivePool(ctx context.Context, zoneID string, hostname string) error {
+	return nil
+}
+
 type mockZoneRepoForService struct {
 	zones    map[uuid.UUID]coreEntity.Zone
 	services map[uuid.UUID][]coreEntity.ZoneService

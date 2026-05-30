@@ -20,11 +20,11 @@ const AdminAPIKeyLoginPage = lazy(() => import('@/pages/auth/Login'))
 const DashboardPage = lazy(() => import('@/pages/dashboard/Dashboard'))
 const HypervisorPage = lazy(() => import('@/pages/hypervisor/Hypervisor'))
 const DetailHypervisorPage = lazy(() => import('@/pages/hypervisor/DetailHypervisor'))
-const SmtpAdminPage = lazy(() => import('@/pages/smtp/SmtpAdmin'))
-const NewSmtpEndpointPage = lazy(() => import('@/pages/smtp/NewSmtpEndpoint'))
-const EditSmtpEndpointPage = lazy(() => import('@/pages/smtp/EditSmtpEndpoint'))
-const DeliveryAttemptsPage = lazy(() => import('@/pages/smtp/DeliveryAttempts'))
-const RuntimeStatusPage = lazy(() => import('@/pages/smtp/RuntimeStatus'))
+const MailPage = lazy(() => import('@/pages/mail/MailPage'))
+const NewMailEndpointPage = lazy(() => import('@/pages/mail/NewMailEndpoint'))
+const EditMailEndpointPage = lazy(() => import('@/pages/mail/EditMailEndpoint'))
+const DeliveryAttemptsPage = lazy(() => import('@/pages/mail/DeliveryAttempts'))
+const RuntimeStatusPage = lazy(() => import('@/pages/mail/RuntimeStatus'))
 const ZoneManagementPage = lazy(() => import('@/pages/zone/ZoneManagement'))
 const NewZonePage = lazy(() => import('@/pages/zone/NewZone'))
 const ZoneDetailPage = lazy(() => import('@/pages/zone/ZoneDetail'))
@@ -88,10 +88,10 @@ function RouteFallback() {
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div className="space-y-3">
             <Skeleton className="h-4 w-28 rounded-full" />
-            <Skeleton className="h-9 w-[260px] max-w-full rounded-xl" />
-            <Skeleton className="h-4 w-[420px] max-w-full rounded-xl" />
+            <Skeleton className="h-9 w-65 max-w-full rounded-xl" />
+            <Skeleton className="h-4 w-105 max-w-full rounded-xl" />
           </div>
-          <div className="grid w-full max-w-[360px] gap-3 sm:grid-cols-2">
+          <div className="grid w-full max-w-90 gap-3 sm:grid-cols-2">
             <Skeleton className="h-11 rounded-2xl" />
             <Skeleton className="h-11 rounded-2xl" />
           </div>
@@ -117,7 +117,7 @@ function RouteFallback() {
             </div>
             <Skeleton className="h-10 w-28 rounded-2xl" />
           </div>
-          <div className="mt-8 flex h-[280px] items-end gap-4">
+          <div className="mt-8 flex h-70 items-end gap-4">
             {Array.from({ length: 12 }).map((_, index) => (
               <Skeleton
                 key={index}
@@ -233,33 +233,33 @@ const detailHypervisorRoute = createRoute({
   component: () => <RequireAdminSession component={DetailHypervisorPage} />,
 })
 
-const smtpRoute = createRoute({
+const mailRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/smtp',
-  component: () => <RequireAdminSession component={SmtpAdminPage} />,
+  path: '/mail',
+  component: () => <RequireAdminSession component={MailPage} />,
 })
 
-const newSmtpEndpointRoute = createRoute({
+const newMailEndpointRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/smtp/endpoints/new',
-  component: () => <RequireAdminSession component={NewSmtpEndpointPage} />,
+  path: '/mail/endpoints/new',
+  component: () => <RequireAdminSession component={NewMailEndpointPage} />,
 })
 
-const editSmtpEndpointRoute = createRoute({
+const editMailEndpointRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/smtp/endpoints/$id/edit',
-  component: () => <RequireAdminSession component={EditSmtpEndpointPage} />,
+  path: '/mail/endpoints/$id/edit',
+  component: () => <RequireAdminSession component={EditMailEndpointPage} />,
 })
 
 const deliveryAttemptsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/smtp/delivery-attempts',
+  path: '/mail/delivery-attempts',
   component: () => <RequireAdminSession component={DeliveryAttemptsPage} />,
 })
 
 const runtimeStatusRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/smtp/runtime-status',
+  path: '/mail/runtime-status',
   component: () => <RequireAdminSession component={RuntimeStatusPage} />,
 })
 
@@ -284,9 +284,9 @@ const routeTree = rootRoute.addChildren([
   newZoneRoute,
   hypervisorRoute,
   detailHypervisorRoute,
-  smtpRoute,
-  newSmtpEndpointRoute,
-  editSmtpEndpointRoute,
+  mailRoute,
+  newMailEndpointRoute,
+  editMailEndpointRoute,
   deliveryAttemptsRoute,
   runtimeStatusRoute,
   resourcePlatformRoute,

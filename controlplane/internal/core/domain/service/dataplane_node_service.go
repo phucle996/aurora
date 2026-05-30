@@ -47,4 +47,11 @@ type DataplaneNodeService interface {
 
 	// GetEligibleClusterForZone tìm kiếm cụm Dataplane khỏe mạnh (ready) và sẵn sàng chạy dịch vụ tương ứng tại một Zone active.
 	GetEligibleClusterForZone(ctx context.Context, zoneID string, serviceType string) (*coreEntity.DataplaneNode, error)
+
+	// IngestFallbackHeartbeat ghi nhận nhịp tim dự phòng qua kênh gRPC trực tiếp khi Redis sập.
+	// Nhịp tim này được lưu vết vào bộ nhớ tạm để tránh báo tử nhầm node.
+	IngestFallbackHeartbeat(ctx context.Context, hostname string, zoneID string) error
+
+	// CheckFallbackLiveness kiểm tra xem node có nhịp tim dự phòng hợp lệ (trong vòng 8s qua) trong bộ nhớ tạm hay không.
+	CheckFallbackLiveness(ctx context.Context, zoneID string, hostname string) bool
 }
