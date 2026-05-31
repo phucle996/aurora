@@ -16,6 +16,7 @@ import (
 	coreHandler "controlplane/internal/core/transport/http/handler"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type zoneServiceStub struct {
@@ -27,20 +28,20 @@ func (s *zoneServiceStub) ListZones(ctx context.Context) ([]coreEntity.Zone, err
 	return []coreEntity.Zone{}, nil
 }
 
-func (s *zoneServiceStub) CreateZone(ctx context.Context, code, name string, status *coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+func (s *zoneServiceStub) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
+	return nil
+}
+func (s *zoneServiceStub) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, status coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
 	return &coreEntity.Zone{}, nil
 }
-func (s *zoneServiceStub) UpdateZoneStatus(ctx context.Context, zoneID string, status coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
-	return &coreEntity.Zone{}, nil
-}
-func (s *zoneServiceStub) DeleteZone(ctx context.Context, zoneID string) error { return nil }
-func (s *zoneServiceStub) ListZoneServices(ctx context.Context, zoneID string) ([]coreEntity.ZoneService, error) {
+func (s *zoneServiceStub) DeleteZone(ctx context.Context, zoneID uuid.UUID) error { return nil }
+func (s *zoneServiceStub) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
 	return []coreEntity.ZoneService{}, nil
 }
-func (s *zoneServiceStub) UpsertZoneService(ctx context.Context, zoneID string, serviceType string, enabled bool) (*coreEntity.ZoneService, error) {
+func (s *zoneServiceStub) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	if s.upsertErr != nil {
 		return nil, s.upsertErr
 	}

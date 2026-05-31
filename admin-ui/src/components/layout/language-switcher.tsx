@@ -9,7 +9,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-type LanguageCode = 'vi' | 'zh-CN' | 'hi' | 'ja' | 'ko'
+import i18n from '@/lib/i18n'
+
+type LanguageCode = 'vi' | 'en' | 'zh-CN' | 'hi' | 'ja' | 'ko'
 
 type LanguageOption = {
   code: LanguageCode
@@ -21,7 +23,8 @@ const LANGUAGE_STORAGE_KEY = 'adminui-language'
 const DEFAULT_LANGUAGE: LanguageCode = 'vi'
 
 const LANGUAGE_OPTIONS: readonly LanguageOption[] = [
-  { code: 'vi', label: 'Vietnamese', short: 'vi' },
+  { code: 'vi', label: 'Tiếng Việt', short: 'vi' },
+  { code: 'en', label: 'English', short: 'en' },
   { code: 'zh-CN', label: 'Chinese (Simplified)', short: 'zh' },
   { code: 'hi', label: 'Hindi', short: 'hi' },
   { code: 'ja', label: 'Japanese', short: 'ja' },
@@ -87,11 +90,13 @@ export default function LanguageSwitcher() {
 
   useEffect(() => {
     applyLanguageToDocument(language)
-  }, [])
-
-  useEffect(() => {
-    applyLanguageToDocument(language)
     persistLanguage(language)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('adminui-language-change', { detail: language }))
+    }
+    if (i18n.language !== language) {
+      void i18n.changeLanguage(language)
+    }
   }, [language])
 
   useEffect(() => {
@@ -102,9 +107,18 @@ export default function LanguageSwitcher() {
       setLanguage(resolveInitialLanguage())
     }
 
+    const onCustomEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<string>
+      if (isLanguageCode(customEvent.detail)) {
+        setLanguage(customEvent.detail)
+      }
+    }
+
     window.addEventListener('storage', onStorage)
+    window.addEventListener('adminui-language-change', onCustomEvent)
     return () => {
       window.removeEventListener('storage', onStorage)
+      window.removeEventListener('adminui-language-change', onCustomEvent)
     }
   }, [])
 
@@ -142,10 +156,10 @@ export default function LanguageSwitcher() {
             <DropdownMenuRadioItem
               key={option.code}
               value={option.code}
-              className="hover:bg-gradient-to-r hover:from-sky-500 hover:via-blue-500 hover:to-cyan-500 hover:text-white focus:bg-gradient-to-r focus:from-sky-500 focus:via-blue-500 focus:to-cyan-500 focus:text-white data-[highlighted]:bg-gradient-to-r data-[highlighted]:from-sky-500 data-[highlighted]:via-blue-500 data-[highlighted]:to-cyan-500 data-[highlighted]:text-white"
+              className="hover:bg-linear-to-r hover:from-sky-500 hover:via-blue-500 hover:to-cyan-500 hover:text-white focus:bg-linear-to-r focus:from-sky-500 focus:via-blue-500 focus:to-cyan-500 focus:text-white data-highlighted:bg-linear-to-r data-highlighted:from-sky-500 data-highlighted:via-blue-500 data-highlighted:to-cyan-500 data-highlighted:text-white"
             >
               <span>{option.label}</span>
-              <span className="ml-auto text-xs text-muted-foreground group-hover/dropdown-menu-item:text-white/90 group-focus/dropdown-menu-item:text-white/90 group-data-[highlighted]/dropdown-menu-item:text-white/90">
+              <span className="ml-auto text-xs text-muted-foreground group-hover/dropdown-menu-item:text-white/90 group-focus/dropdown-menu-item:text-white/90 group-data-highlighted/dropdown-menu-item:text-white/90">
                 {option.short.toUpperCase()}
               </span>
             </DropdownMenuRadioItem>

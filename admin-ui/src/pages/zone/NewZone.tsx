@@ -1,43 +1,30 @@
-import { useState, type ElementType, type ReactNode } from 'react'
+import { useState } from 'react'
 import { Link, useRouter } from '@tanstack/react-router'
-import {
-  Brain,
-  Database,
-  Eye,
-  FileText,
-  Boxes,
-  Mail,
-  Server,
-} from 'lucide-react'
+import { toast } from 'sonner'
+import { ShieldCheck, Loader2 } from 'lucide-react'
 
-import { LocationAutocomplete, type ZoneLocation } from '@/components/zone/location-autocomplete'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { Textarea } from '@/components/ui/textarea'
 import { Fetch } from '@/lib/fetch'
-import { cn } from '@/lib/utils'
 import { PageContent } from '@/components/layout/layout'
+import { Button } from '@/components/ui/button'
+import { type ZoneLocation } from '@/components/zone/location-autocomplete'
+import { useAdminSession } from '@/hooks/useAdminSession'
+import { getOrCreateDeviceKeys, generateNonce, sha256Hex, signPayload } from '@/lib/crypto'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog'
+import {
+  InputOTP,
+  InputOTPGroup,
+  InputOTPSlot,
+} from '@/components/ui/input-otp'
 
-type ServiceKey = 'hypervisor' | 'storage' | 'mail' | 'k8s' | 'ai'
-
-const serviceItems: Array<{ key: ServiceKey; label: string; icon: ElementType }> = [
-  { key: 'hypervisor', label: 'Hypervisor', icon: Server },
-  { key: 'storage', label: 'Storage', icon: Database },
-  { key: 'mail', label: 'Mail', icon: Mail },
-  { key: 'k8s', label: 'Kubernetes', icon: Boxes },
-  { key: 'ai', label: 'AI', icon: Brain },
-]
-
-function FieldHint({ children }: { children: ReactNode }) {
-  return <p className="mt-2 text-sm text-muted-foreground">{children}</p>
-}
-
-function Required() {
-  return <span className="text-destructive">*</span>
-}
+import ZoneForm, { type ServiceKey } from './sections/ZoneForm'
+import ZonePreviewCard from './sections/ZonePreviewCard'
 
 function slugifyZoneCode(value: string) {
   return value
@@ -45,13 +32,6 @@ function slugifyZoneCode(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
-}
-
-function liveSlugify(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
 }
 
 async function readAPIMessage(response: Response) {
@@ -71,8 +51,7 @@ export default function NewZonePage() {
   const [location, setLocation] = useState('')
   const [description, setDescription] = useState('')
 
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const { session } = useAdminSession()
   const [services, setServices] = useState<Record<ServiceKey, boolean>>({
     hypervisor: true,
     storage: true,
@@ -80,6 +59,9 @@ export default function NewZonePage() {
     k8s: true,
     ai: false,
   })
+  const [isOTPOpen, setIsOTPOpen] = useState(false)
+  const [otpCode, setOtpCode] = useState('')
+  const [signing, setSigning] = useState(false)
 
   const toggleService = (key: ServiceKey) => {
     setServices((current) => ({ ...current, [key]: !current[key] }))
@@ -95,42 +77,77 @@ export default function NewZonePage() {
   const trimmedName = zoneName.trim()
   const trimmedCode = zoneCode.trim()
   const trimmedLocation = location.trim()
-  const canSubmit = trimmedName !== '' && trimmedCode !== '' && trimmedLocation !== '' && !submitting
+  const canSubmit = trimmedName !== '' && trimmedCode !== '' && trimmedLocation !== '' && !signing
 
-  const createZone = async () => {
-    setError('')
+  const handleTriggerOTP = () => {
     if (!canSubmit) {
-      setError('Please fill in zone name, code, and location before creating the zone.')
+      toast.error('Please fill in zone name, code, and location before creating the zone.')
+      return
+    }
+    setOtpCode('')
+    setIsOTPOpen(true)
+  }
+
+  const confirmCreateZoneWithOTP = async () => {
+    if (otpCode.length < 6) {
+      toast.error('Please enter a valid 6-digit verification code.')
       return
     }
 
-    setSubmitting(true)
+    setSigning(true)
     try {
-      const response = await Fetch('/admin/zones', {
+      if (!session?.accessKey) {
+        throw new Error('Admin session key not found. Please log out and sign in again.')
+      }
+
+      const deviceKeys = await getOrCreateDeviceKeys()
+      if (!deviceKeys.privateKey) {
+        throw new Error('Security keys are missing on this device. Please log out and sign in again to register your keys.')
+      }
+
+      const bodyString = JSON.stringify({
+        name: trimmedName,
+        code: slugifyZoneCode(trimmedCode),
+        location: trimmedLocation,
+        description: description.trim(),
+        enable_hypervisor: services.hypervisor,
+        enable_storage: services.storage,
+        enable_mail: services.mail,
+        enable_k8s: services.k8s,
+        enable_ai: services.ai,
+      })
+
+      const bodyHash = await sha256Hex(bodyString)
+      const timestamp = Math.floor(Date.now() / 1000).toString()
+      const nonce = generateNonce()
+      
+      const payloadStr = `POST\n/admin/core/zones\n\n${bodyHash}\n${timestamp}\n${nonce}\n${session.accessKey}`
+      const signature = await signPayload(payloadStr, deviceKeys.privateKey)
+
+      const response = await Fetch('/admin/core/zones', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: trimmedName,
-          code: slugifyZoneCode(trimmedCode),
-          location: trimmedLocation,
-          description: description.trim(),
-          enable_hypervisor: services.hypervisor,
-          enable_storage: services.storage,
-          enable_mail: services.mail,
-          enable_k8s: services.k8s,
-          enable_ai: services.ai,
-        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Signature': signature,
+          'X-Admin-Timestamp': timestamp,
+          'X-Admin-Nonce': nonce,
+          'X-Admin-StepUp-Code': otpCode,
+        },
+        body: bodyString,
       })
 
       if (!response.ok) {
         throw new Error(await readAPIMessage(response))
       }
 
+      toast.success('Zone created successfully!')
+      setIsOTPOpen(false)
       router.navigate({ to: '/zones' })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Cannot create zone')
+      const errMsg = err instanceof Error ? err.message : 'Cannot create zone'
+      toast.error(errMsg)
     } finally {
-      setSubmitting(false)
+      setSigning(false)
     }
   }
 
@@ -159,175 +176,101 @@ export default function NewZonePage() {
           <Button asChild variant="outline" className="h-12 rounded-lg px-8 text-sm font-semibold">
             <Link to="/zones">Cancel</Link>
           </Button>
-          <Button className="h-12 rounded-lg px-8 text-sm font-semibold shadow-sm" onClick={createZone} disabled={!canSubmit}>
-            {submitting ? 'Creating...' : 'Create Zone'}
+          <Button className="h-12 rounded-lg px-8 text-sm font-semibold shadow-sm" onClick={handleTriggerOTP} disabled={!canSubmit}>
+            {signing ? 'Creating...' : 'Create Zone'}
           </Button>
         </div>
       </div>
 
-      {error && (
-        <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
-          {error}
-        </div>
-      )}
-
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
-        <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
-          <h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">Zone Details</h2>
-
-          <div className="mt-6 grid gap-6 lg:grid-cols-2">
-            <div>
-              <Label className="text-sm font-semibold text-foreground">
-                Zone Name <Required />
-              </Label>
-              <Input
-                value={zoneName}
-                onChange={(event) => {
-                  const val = event.target.value
-                  setZoneName(val)
-                  if (!isZoneCodeManuallyEdited) {
-                    setZoneCode(liveSlugify(val))
-                  }
-                }}
-                placeholder="e.g., US East 1"
-                className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"
-              />
-              <FieldHint>A friendly name to identify this zone.</FieldHint>
-            </div>
-
-            <div>
-              <Label className="text-sm font-semibold text-foreground">
-                Zone Code <Required />
-              </Label>
-              <Input
-                value={zoneCode}
-                onChange={(event) => {
-                  const val = event.target.value
-                  setIsZoneCodeManuallyEdited(val !== '')
-                  setZoneCode(liveSlugify(val))
-                }}
-                placeholder="e.g., us-east-1"
-                className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"
-              />
-              <FieldHint>A unique code used for API and automation.</FieldHint>
-            </div>
-
-            <div className="lg:col-span-2">
-              <Label className="text-sm font-semibold text-foreground">
-                Location <Required />
-              </Label>
-              <LocationAutocomplete value={location} onSelect={selectLocation} />
-              <FieldHint>Search and select the geographic location for this zone.</FieldHint>
-            </div>
-          </div>
-
-          <div className="mt-7">
-            <Label className="text-sm font-semibold text-foreground">Description</Label>
-            <Textarea
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="Describe the purpose, capacity, and intended workloads..."
-              className="mt-3 min-h-28 rounded-lg border-border bg-background px-4 py-3 text-sm shadow-none"
-            />
-            <FieldHint>Provide details about this zone and its intended use.</FieldHint>
-          </div>
-
-          <div className="mt-8">
-            <h3 className="text-sm font-semibold text-foreground">Enabled Services</h3>
-            <p className="mt-2 text-sm text-muted-foreground">Select the platform services to enable in this zone.</p>
-            <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-              {serviceItems.map((item) => {
-                const Icon = item.icon
-                return (
-                  <div
-                    key={item.key}
-                    className="flex h-16 items-center justify-between rounded-lg border border-border bg-background px-4 text-left shadow-xs transition-colors hover:bg-muted/40"
-                  >
-                    <span className="flex items-center gap-3 text-sm font-medium text-foreground">
-                      <Icon className="size-5 text-primary" />
-                      {item.label}
-                    </span>
-                    <Switch checked={services[item.key]} onCheckedChange={() => toggleService(item.key)} />
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-
-        <aside className="space-y-6">
-          <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
-            <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">Zone Preview</h2>
-              <Eye className="size-5 text-primary" />
-            </div>
-
-            <div className="space-y-5 text-sm">
-              <div className="flex items-center justify-between gap-6">
-                <span className="font-medium text-primary">Zone Name</span>
-                <span className="text-right font-medium text-muted-foreground">{zoneName || '—'}</span>
-              </div>
-              <div className="flex items-center justify-between gap-6">
-                <span className="font-medium text-primary">Location</span>
-                <span className="text-right font-medium text-muted-foreground">{location || '—'}</span>
-              </div>
-              <div className="flex items-center justify-between gap-6">
-                <span className="font-medium text-primary">Status</span>
-                <Badge
-                  variant="outline"
-                  className={cn('h-8 rounded-lg px-3 text-sm font-medium', 'border-amber-200 bg-amber-50 text-amber-700')}
-                >
-                  Planned
-                </Badge>
-              </div>
-            </div>
-
-            <div className="my-7 border-t border-border" />
-
-            <div>
-              <p className="text-sm font-medium text-primary">Description</p>
-              <p className="mt-4 text-sm italic leading-6 text-muted-foreground">
-                {description.trim() || 'No description provided.'}
-              </p>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
-            <div className="mb-6 flex items-center gap-3">
-              <FileText className="size-5 text-primary" />
-              <h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">Creation Notes</h2>
-            </div>
-
-            <div className="space-y-6">
-              <NoteItem
-                title="Choose a clear name and code"
-                text="Use a descriptive name and a unique code so the zone is easy to identify."
-              />
-              <NoteItem
-                title="Select the correct location"
-                text="Pick the right location to match your deployment plan. Status starts as Planned automatically."
-              />
-              <NoteItem
-                title="Enable only needed services"
-                text="Turn on only the platform services required for this zone to keep it simple and secure."
-              />
-            </div>
-          </div>
-        </aside>
+        <ZoneForm
+          zoneName={zoneName}
+          setZoneName={setZoneName}
+          zoneCode={zoneCode}
+          setZoneCode={setZoneCode}
+          isZoneCodeManuallyEdited={isZoneCodeManuallyEdited}
+          setIsZoneCodeManuallyEdited={setIsZoneCodeManuallyEdited}
+          location={location}
+          setLocation={setLocation}
+          description={description}
+          setDescription={setDescription}
+          services={services}
+          toggleService={toggleService}
+          selectLocation={selectLocation}
+        />
+        <ZonePreviewCard
+          zoneName={zoneName}
+          location={location}
+          description={description}
+        />
       </div>
 
+      <Dialog open={isOTPOpen} onOpenChange={setIsOTPOpen}>
+        <DialogContent className="sm:max-w-110 border-[#dbe5f2] bg-white dark:border-slate-800 dark:bg-slate-950 p-0 overflow-hidden shadow-[0_20px_50px_rgba(8,112,184,0.15)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
+          <div className="relative p-6 pt-8 pb-4 text-center">
+            <div className="absolute inset-0 bg-linear-to-b from-primary/5 via-transparent to-transparent pointer-events-none" />
+            
+            <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary dark:bg-blue-500/10 dark:text-blue-400 ring-8 ring-primary/5 dark:ring-blue-500/5 animate-pulse">
+              <ShieldCheck className="h-7 w-7" />
+            </div>
+
+            <DialogHeader className="space-y-2">
+              <DialogTitle className="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
+                Security Verification
+              </DialogTitle>
+              <DialogDescription className="text-sm text-slate-500 dark:text-slate-400 px-2 leading-relaxed">
+                Zone creation is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action.
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+
+          <div className="px-6 py-4 flex flex-col items-center justify-center bg-slate-50/50 dark:bg-slate-900/30 border-y border-slate-100 dark:border-slate-800/60">
+            <div className="my-2">
+              <InputOTP
+                maxLength={6}
+                value={otpCode}
+                onChange={(val) => setOtpCode(val.replace(/\D/g, ''))}
+                disabled={signing}
+                autoFocus
+              >
+                <InputOTPGroup className="dark:text-slate-100 gap-1.5">
+                  <InputOTPSlot index={0} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
+                  <InputOTPSlot index={1} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
+                  <InputOTPSlot index={2} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
+                  <InputOTPSlot index={3} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
+                  <InputOTPSlot index={4} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
+                  <InputOTPSlot index={5} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
+                </InputOTPGroup>
+              </InputOTP>
+            </div>
+          </div>
+
+          <DialogFooter className="p-6 gap-3 sm:gap-3 bg-white dark:bg-slate-950">
+            <Button
+              variant="outline"
+              onClick={() => setIsOTPOpen(false)}
+              disabled={signing}
+              className="h-11 rounded-lg px-5 text-sm font-semibold border-slate-200 dark:border-slate-800 dark:text-slate-300"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmCreateZoneWithOTP}
+              disabled={signing || otpCode.length < 6}
+              className="h-11 rounded-lg px-6 text-sm font-semibold shadow-sm"
+            >
+              {signing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Verifying...
+                </>
+              ) : (
+                'Create Zone'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </PageContent>
-  )
-}
-
-function NoteItem({ title, text }: { title: string; text: string }) {
-  return (
-    <div className="grid grid-cols-[12px_1fr] gap-4">
-      <span className="mt-1.5 size-2 rounded-full bg-primary" />
-      <div>
-        <p className="text-sm font-semibold text-foreground">{title}</p>
-        <p className="mt-1 text-sm leading-6 text-muted-foreground">{text}</p>
-      </div>
-    </div>
   )
 }

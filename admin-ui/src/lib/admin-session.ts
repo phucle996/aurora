@@ -2,6 +2,7 @@ import { Fetch } from '@/lib/fetch'
 
 export type AdminSession = {
   authenticated: true
+  accessKey?: string
 }
 
 export class AdminUnauthorizedError extends Error {
@@ -25,9 +26,11 @@ export async function getAdminSession(signal?: AbortSignal): Promise<AdminSessio
   }
 
   let authenticated = false
+  let accessKey = ''
   try {
-    const payload = (await resp.json()) as { data?: { authenticated?: boolean } }
+    const payload = (await resp.json()) as { data?: { authenticated?: boolean; access_key?: string } }
     authenticated = payload?.data?.authenticated === true
+    accessKey = payload?.data?.access_key ?? ''
   } catch {
     authenticated = false
   }
@@ -36,5 +39,5 @@ export async function getAdminSession(signal?: AbortSignal): Promise<AdminSessio
     throw new AdminUnauthorizedError()
   }
 
-  return { authenticated: true }
+  return { authenticated: true, accessKey }
 }

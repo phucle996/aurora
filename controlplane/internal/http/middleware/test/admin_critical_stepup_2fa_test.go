@@ -39,21 +39,11 @@ func TestAdminCriticalStepUp2FA(t *testing.T) {
 		t.Fatalf("generate totp code: %v", err)
 	}
 	validReq := httptest.NewRequest(http.MethodPost, "/admin/critical", nil)
-	validReq.Header.Set(constant.HeaderAdminStepUpMethod, "totp")
 	validReq.Header.Set(constant.HeaderAdminStepUpCode, code)
 	validRec := httptest.NewRecorder()
 	router.ServeHTTP(validRec, validReq)
 	if validRec.Code != http.StatusNoContent {
 		t.Fatalf("valid step-up status = %d, want %d", validRec.Code, http.StatusNoContent)
-	}
-
-	recoveryReq := httptest.NewRequest(http.MethodPost, "/admin/critical", nil)
-	recoveryReq.Header.Set(constant.HeaderAdminStepUpMethod, "recovery_code")
-	recoveryReq.Header.Set(constant.HeaderAdminStepUpCode, code)
-	recoveryRec := httptest.NewRecorder()
-	router.ServeHTTP(recoveryRec, recoveryReq)
-	if recoveryRec.Code != http.StatusUnauthorized {
-		t.Fatalf("recovery code status = %d, want %d", recoveryRec.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -76,7 +66,6 @@ func TestAdminCriticalStepUp2FAMissingSecretUnavailable(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/critical", nil)
-	req.Header.Set(constant.HeaderAdminStepUpMethod, "totp")
 	req.Header.Set(constant.HeaderAdminStepUpCode, "123456")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -106,7 +95,6 @@ func TestAdminCriticalStepUp2FARejectsInvalidCodeBeforeLoadingSecret(t *testing.
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/critical", nil)
-	req.Header.Set(constant.HeaderAdminStepUpMethod, "totp")
 	req.Header.Set(constant.HeaderAdminStepUpCode, "not-a-code")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -145,7 +133,6 @@ func TestLoadStepUpTOTPSecretDoesNotUseStaleCacheWhenCiphertextChanges(t *testin
 		t.Fatalf("generate first code: %v", err)
 	}
 	firstReq := httptest.NewRequest(http.MethodPost, "/admin/critical", nil)
-	firstReq.Header.Set(constant.HeaderAdminStepUpMethod, "totp")
 	firstReq.Header.Set(constant.HeaderAdminStepUpCode, firstCode)
 	firstRec := httptest.NewRecorder()
 	router.ServeHTTP(firstRec, firstReq)
@@ -159,7 +146,6 @@ func TestLoadStepUpTOTPSecretDoesNotUseStaleCacheWhenCiphertextChanges(t *testin
 		t.Fatalf("generate second code: %v", err)
 	}
 	secondReq := httptest.NewRequest(http.MethodPost, "/admin/critical", nil)
-	secondReq.Header.Set(constant.HeaderAdminStepUpMethod, "totp")
 	secondReq.Header.Set(constant.HeaderAdminStepUpCode, secondCode)
 	secondRec := httptest.NewRecorder()
 	router.ServeHTTP(secondRec, secondReq)

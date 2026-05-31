@@ -2,43 +2,27 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 
 import {
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  MoreVertical,
   Plus,
   RefreshCcw,
   Search,
 } from 'lucide-react'
 
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Skeleton } from '@/components/ui/skeleton'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
 import { cn } from '@/lib/utils'
 import { PageContent } from '@/components/layout/layout'
 
-type ZoneStatus = 'active' | 'draining' | 'maintenance' | 'disabled'
+import ZoneTable, { type ZoneRow, type ZoneStatus } from './sections/ZoneTable'
 
-type ZoneRow = {
-  id: string
-  code: string
-  name: string
-  location: string
-  description: string
-  status: ZoneStatus
-  created_at?: string
-  updated_at?: string
+const statusLabels: Record<ZoneStatus, string> = {
+  planned: 'Planned',
+  active: 'Active',
+  degraded: 'Degraded',
+  maintenance: 'Maintenance',
+  disabled: 'Disabled',
+  draining: 'Draining',
 }
 
 type ZoneListResponse = {
@@ -50,40 +34,18 @@ type ZoneListResponse = {
   }
 }
 
-const statusLabels: Record<ZoneStatus, string> = {
-  active: 'Active',
-  draining: 'Draining',
-  maintenance: 'Maintenance',
-  disabled: 'Disabled',
-}
-
 function normalizeZoneStatus(value: string): ZoneStatus {
   switch (value) {
     case 'active':
     case 'draining':
     case 'maintenance':
     case 'disabled':
+    case 'planned':
+    case 'degraded':
       return value
     default:
       return 'active'
   }
-}
-
-function StatusBadge({ status }: { status: ZoneStatus }) {
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        'h-8 rounded-lg border px-3 text-sm font-medium',
-        status === 'active' && 'border-emerald-200 bg-emerald-50 text-emerald-700',
-        status === 'draining' && 'border-amber-200 bg-amber-50 text-amber-700',
-        status === 'maintenance' && 'border-violet-200 bg-violet-50 text-violet-700',
-        status === 'disabled' && 'border-slate-200 bg-slate-50 text-slate-600',
-      )}
-    >
-      {statusLabels[status]}
-    </Badge>
-  )
 }
 
 async function readErrorMessage(response: Response) {
@@ -109,7 +71,7 @@ function normalizeZoneRow(item: ZoneRow): ZoneRow {
 }
 
 // Global Promise Deduplicator to eliminate duplicate network requests in React 18 Strict Mode/remounts.
-let activeZonesPromise: Promise<any> | null = null
+let activeZonesPromise: Promise<ZoneListResponse> | null = null
 
 export default function ZoneManagementPage() {
   usePageMeta('Zone Management | Aurora Admin', 'Manage zones, statuses, and service availability across regions.')
@@ -135,11 +97,11 @@ export default function ZoneManagementPage() {
             const errText = await readErrorMessage(response)
             throw new Error(errText)
           }
-          return response.json()
+          return response.json() as Promise<ZoneListResponse>
         })
       }
 
-      const payload = (await activeZonesPromise) as ZoneListResponse
+      const payload = await activeZonesPromise
       setZones((payload.data?.items ?? []).map(normalizeZoneRow))
       if (!isSilent) {
         setCurrentPage(1)
@@ -157,7 +119,10 @@ export default function ZoneManagementPage() {
   }
 
   useEffect(() => {
-    void loadZones()
+    const timer = setTimeout(() => {
+      void loadZones()
+    }, 0)
+    return () => clearTimeout(timer)
   }, [])
 
   const filteredZones = useMemo(() => {
@@ -208,7 +173,7 @@ export default function ZoneManagementPage() {
               {loading || refreshing ? 'Loading real-time topology data...' : `${zones.length} zones from topology-manager`}
             </p>
           </div>
-          <div className="flex w-full flex-col gap-3 sm:flex-row md:max-w-[560px] md:justify-end">
+          <div className="flex w-full flex-col gap-3 sm:flex-row md:max-w-140 md:justify-end">
             <div className="relative flex-1">
               <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -240,158 +205,20 @@ export default function ZoneManagementPage() {
           </div>
         )}
 
-        <Table>
-          <TableHeader>
-            <TableRow className="border-border/80 hover:bg-transparent">
-              <TableHead className="w-[240px] px-0 pb-4 text-sm font-medium text-muted-foreground">
-                Zone
-              </TableHead>
-              <TableHead className="pb-4 text-sm font-medium text-muted-foreground">Name</TableHead>
-              <TableHead className="pb-4 text-sm font-medium text-muted-foreground">Location</TableHead>
-              <TableHead className="min-w-[360px] pb-4 text-sm font-medium text-muted-foreground">
-                Description
-              </TableHead>
-              <TableHead className="pb-4 text-sm font-medium text-muted-foreground">Status</TableHead>
-              <TableHead className="w-[90px] pb-4 text-right text-sm font-medium text-muted-foreground">
-                Actions
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loading &&
-              Array.from({ length: pageSize }).map((_, index) => (
-                <TableRow key={index} className="border-border/80 hover:bg-transparent">
-                  {Array.from({ length: 6 }).map((__, cellIndex) => (
-                    <TableCell key={cellIndex} className="py-4">
-                      <Skeleton className="h-5 w-full" />
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))}
-
-            {!loading && visibleZones.length === 0 && (
-              <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={6} className="h-40 text-center">
-                  <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                    <Search className="size-6 opacity-60" />
-                    <p className="text-sm font-semibold text-foreground">No zones found</p>
-                    <p className="text-sm">
-                      {query.trim() ? 'Try another zone name, code, location, or status.' : 'Create a zone to start topology management.'}
-                    </p>
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-
-            {!loading && visibleZones.map((zone) => (
-              <TableRow key={zone.id} className="border-border/80 hover:bg-muted/30">
-                <TableCell className="px-0 py-3.5">
-                  <div className="flex items-center gap-5">
-                    <span
-                      className={cn(
-                        'size-2.5 rounded-full',
-                        zone.status === 'active' && 'bg-emerald-500',
-                        zone.status === 'draining' && 'bg-amber-500',
-                        zone.status === 'maintenance' && 'bg-violet-500',
-                        zone.status === 'disabled' && 'bg-slate-400',
-                      )}
-                    />
-                    <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="text-sm font-semibold text-primary hover:underline">
-                      {zone.code}
-                    </Link>
-                  </div>
-                </TableCell>
-                <TableCell className="py-3.5 text-sm font-medium text-foreground">
-                  {zone.name}
-                </TableCell>
-                <TableCell className="py-3.5 text-sm font-medium text-muted-foreground">
-                  {zone.location}
-                </TableCell>
-                <TableCell className="py-3.5 text-sm font-medium text-foreground/80">
-                  {zone.description}
-                </TableCell>
-                <TableCell className="py-3.5">
-                  <StatusBadge status={zone.status} />
-                </TableCell>
-                <TableCell className="py-3.5 text-right">
-                  <button
-                    type="button"
-                    className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                    aria-label={`Open actions for ${zone.code}`}
-                  >
-                    <MoreVertical className="size-4" />
-                  </button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-
-        <div className="mt-5 flex flex-col gap-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
-          <p>
-            {filteredZones.length === 0
-              ? 'Showing 0 zones'
-              : `Showing ${startIndex + 1} to ${endIndex} of ${filteredZones.length} zones`}
-          </p>
-          <div className="flex items-center gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              disabled={safePage <= 1 || loading || refreshing}
-              onClick={() => goToPage(safePage - 1)}
-              className="size-9 rounded-lg text-muted-foreground"
-            >
-              <ChevronLeft className="size-4" />
-            </Button>
-            {Array.from({ length: totalPages }).map((_, index) => {
-              const page = index + 1
-              return (
-                <Button
-                  key={page}
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  disabled={loading || refreshing}
-                  onClick={() => goToPage(page)}
-                  className={cn(
-                    'size-9 rounded-lg',
-                    page === safePage ? 'border-primary text-primary' : 'text-muted-foreground',
-                  )}
-                >
-                  {page}
-                </Button>
-              )
-            })}
-            <Button
-              type="button"
-              variant="outline"
-              size="icon"
-              disabled={safePage >= totalPages || loading || refreshing}
-              onClick={() => goToPage(safePage + 1)}
-              className="size-9 rounded-lg text-muted-foreground"
-            >
-              <ChevronRight className="size-4" />
-            </Button>
-            <div className="relative ml-4">
-              <select
-                value={pageSize}
-                onChange={(event) => {
-                  setPageSize(Number(event.target.value))
-                  setCurrentPage(1)
-                }}
-                className="h-9 appearance-none rounded-lg border border-border bg-card py-0 pl-4 pr-9 text-sm font-medium text-muted-foreground outline-none transition-colors hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              >
-                {[4, 8, 12].map((size) => (
-                  <option key={size} value={size}>
-                    {size} / page
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            </div>
-          </div>
-        </div>
+        <ZoneTable
+          loading={loading}
+          refreshing={refreshing}
+          zones={visibleZones}
+          query={query}
+          pageSize={pageSize}
+          currentPage={currentPage}
+          totalPages={totalPages}
+          startIndex={startIndex}
+          endIndex={endIndex}
+          goToPage={goToPage}
+          setPageSize={setPageSize}
+          setCurrentPage={setCurrentPage}
+        />
       </div>
     </PageContent>
   )

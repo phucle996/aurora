@@ -12,7 +12,7 @@ import {
 } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 
-export default function ThemeSwitcher() {
+export default function ThemeSwitcher({ className }: { className?: string } = {}) {
   const [theme, setTheme] = useState<ThemeMode>(resolveThemeFromDocument)
   const transitionTimerRef = useRef<number | null>(null)
 
@@ -66,22 +66,25 @@ export default function ThemeSwitcher() {
     <button
       type="button"
       onClick={toggleTheme}
-      className="relative inline-flex size-8 items-center justify-center overflow-hidden rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className={cn(
+        "relative inline-flex size-8 items-center justify-center overflow-hidden rounded-md text-muted-foreground transition-all duration-300 hover:bg-accent hover:text-foreground active:scale-90",
+        className
+      )}
       aria-label={isDarkMode ? 'Switch to light theme' : 'Switch to dark theme'}
       title={isDarkMode ? 'Switch to light theme' : 'Switch to dark theme'}
       aria-pressed={isDarkMode}
     >
-      <span className="relative inline-flex size-4 items-center justify-center">
+      <span className="relative inline-flex size-5 items-center justify-center">
         <MoonStar
           className={cn(
-            'absolute size-4 transition-all duration-300',
-            isDarkMode ? 'scale-60 opacity-0 -rotate-12' : 'scale-100 opacity-100 rotate-0',
+            'absolute size-5 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]',
+            isDarkMode ? 'scale-0 opacity-0 -rotate-90' : 'scale-100 opacity-100 rotate-0',
           )}
         />
         <SunMedium
           className={cn(
-            'absolute size-4 transition-all duration-300',
-            isDarkMode ? 'scale-100 opacity-100 rotate-0' : 'scale-60 opacity-0 rotate-12',
+            'absolute size-5 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]',
+            isDarkMode ? 'scale-100 opacity-100 rotate-0' : 'scale-0 opacity-0 rotate-90',
           )}
         />
       </span>

@@ -60,13 +60,13 @@ var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.NewString(), Status: coreEntity.ZoneStatusActive}}
 	svc := coreSvcImpl.NewZoneService(repo)
-	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "mail", true)
+	_, err := svc.UpsertZoneService(context.Background(), uuid.MustParse(repo.zone.ID), "mail", true)
 	if !errors.Is(err, coreErrorx.ErrZoneServiceStateConflict) {
 		t.Fatalf("expected ErrZoneServiceStateConflict, got %v", err)
 	}
 
 	repo.zone.Status = coreEntity.ZoneStatusMaintenance
-	_, err = svc.UpsertZoneService(context.Background(), repo.zone.ID, "mail", true)
+	_, err = svc.UpsertZoneService(context.Background(), uuid.MustParse(repo.zone.ID), "mail", true)
 	if err != nil {
 		t.Fatalf("expected nil err, got %v", err)
 	}
@@ -75,7 +75,7 @@ func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 func TestZoneServiceUpsertInvalidType(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.NewString(), Status: coreEntity.ZoneStatusMaintenance}}
 	svc := coreSvcImpl.NewZoneService(repo)
-	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "bad-type", true)
+	_, err := svc.UpsertZoneService(context.Background(), uuid.MustParse(repo.zone.ID), "bad-type", true)
 	if !errors.Is(err, coreErrorx.ErrZoneServiceInvalidType) {
 		t.Fatalf("expected ErrZoneServiceInvalidType, got %v", err)
 	}

@@ -82,14 +82,8 @@ func AdminCriticalStepUp2FA() gin.HandlerFunc {
 			return
 		}
 
-		method := strings.TrimSpace(strings.ToLower(c.GetHeader(constant.HeaderAdminStepUpMethod)))
 		code := strings.TrimSpace(c.GetHeader(constant.HeaderAdminStepUpCode))
-		if method == "" || code == "" {
-			apires.RespondUnauthorized(c, "unauthorized")
-			c.Abort()
-			return
-		}
-		if method != "totp" {
+		if code == "" {
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
 			return

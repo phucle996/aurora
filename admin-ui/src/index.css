@@ -55,7 +55,7 @@
 
   font-family: var(--sans);
   font-feature-settings: 'cv11', 'cv05', 'ss01';
-  
+
   color-scheme: only light;
   color: var(--foreground);
   background: var(--background);
@@ -179,13 +179,20 @@ p {
   margin: 0;
 }
 
+:root {
+  --theme-duration-fast: 220ms;
+  --theme-duration: 420ms;
+  --theme-duration-slow: 620ms;
+  --theme-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 html.theme-transition,
 html.theme-transition *,
 html.theme-transition *::before,
 html.theme-transition *::after {
-  transition-property: background-color, color, border-color, box-shadow, fill, stroke;
-  transition-duration: 280ms;
-  transition-timing-function: ease;
+  transition-property: background-color, color, border-color, box-shadow, fill, stroke, transform, opacity, filter;
+  transition-duration: 420ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @layer base {
@@ -236,7 +243,7 @@ html.theme-transition *::after {
   }
 
   .aurora-section-title {
-    @apply text-base font-semibold tracking-[-0.025em] text-foreground;
+    @apply text-base font-semibold tracking-tight text-foreground;
   }
 
   .aurora-card-label {
@@ -290,6 +297,11 @@ html.theme-transition *::after {
 
 
 @keyframes aurora-skeleton-shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
 }
