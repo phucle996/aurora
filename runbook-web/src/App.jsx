@@ -7,6 +7,7 @@ import AuthTokenModel from './pages/auth/TokenModel.jsx'
 import ZoneManagement from './pages/zone/Management.jsx'
 import ZoneWorkflow from './pages/zone/Workflow.jsx'
 import SecurityRateLimit from './pages/security/RateLimit.jsx'
+import SecuritySecrets from './pages/security/Secrets.jsx'
 import { useTheme } from './lib/theme.js'
 
 function PageWrapper({ children }) {
@@ -38,6 +39,7 @@ function App() {
             <Route path="/zone/management" element={<PageWrapper><ZoneManagement /></PageWrapper>} />
             <Route path="/zone/workflow" element={<PageWrapper><ZoneWorkflow /></PageWrapper>} />
             <Route path="/security/rate-limit" element={<PageWrapper><SecurityRateLimit /></PageWrapper>} />
+            <Route path="/security/secrets" element={<PageWrapper><SecuritySecrets /></PageWrapper>} />
             <Route path="/home" element={<PageWrapper><Home /></PageWrapper>} />
             <Route path="*" element={<Navigate to="/auth/token-model" replace />} />
           </Routes>

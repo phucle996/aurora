@@ -49,5 +49,86 @@
       "updated": "Updated 2026-05-29",
       "production_ready": "Production Ready"
     }
+  },
+  "secrets": {
+    "title": "Secrets & Rotation Management",
+    "subtitle": "Background scheduler worker automatically rotates cryptographic keys, synchronizes multi-node local caches via Redis Invalidation Bus, and secures key materials.",
+    "callout_title": "CLOUD NATIVE & HIGH AVAILABILITY (HA) DESIGN",
+    "callout_desc": "Aurora's secret rotation mechanism is designed according to Zero-Downtime HA standards. While a new Primary Version is promoted to serve new signature generation, the retired Candidate versions remain operational during the Grace Period to successfully validate old tokens, eliminating user disruption.",
+    "sec1_title": "Secret Registry Overview",
+    "sec1_desc": "All keys used for encryption or signature generation are centrally registered and managed in the core_secret_families structural table. Below are the real-time operational parameters from the Database Source of Truth:",
+    "cluster_status": "Cluster Status",
+    "cluster_status_val": "ACTIVE",
+    "cluster_status_sub": "Multi-instance HA Sync",
+    "worker_frequency": "Worker Tick Frequency",
+    "worker_frequency_val": "30 Seconds",
+    "worker_frequency_sub": "Evaluates RotateAt do-time",
+    "next_evaluator": "Next Evaluator Tick",
+    "next_evaluator_sub": "PlanRotation evaluation",
+    "sync_channel": "Sync Channel",
+    "sync_channel_val": "Redis Lock",
+    "sync_channel_sub": "SETNX mutual exclusion",
+    "select_family": "Select secret family",
+    "family_rotation": "Rotation",
+    "active_record": "Active Primary Record",
+    "version_history": "Database Version History",
+    "primary_signer": "PRIMARY SIGNER",
+    "last_rotated": "Last rotated",
+    "emergency_rotation": "Request Emergency Rotation",
+    "sec2_title": "Database Specifications & Invariants",
+    "sec2_desc": "The system ensures data consistency and persistence through strict relationship constraints between core_secret_families and core_secret_versions. Key materials are never stored in plaintext; all payloads are symmetrically encrypted before writing to disk.",
+    "sec2_callout_title": "ABSOLUTE SECURITY AT-REST",
+    "sec2_callout_desc": "All key materials must be stored inside secret_ciphertext (encrypted via KMS). The secret_fingerprint contains a non-reversible cryptographic hash to facilitate collision checking without exposing the key material.",
+    "sec2_table_title": "Database Lifecycle and Grace Period Specifications",
+    "sec2_sub1_title": "1. Partial Unique Index",
+    "sec2_sub1_desc": "Each family is strictly constrained to have at most one active primary signing key version at a time to prevent signature ambiguity and collision:",
+    "sec2_sub2_title": "2. AES-256-GCM symmetric encryption via Runtime Master Key",
+    "sec2_sub2_desc": "Guarantees absolute key material security at-rest. All secret payloads are symmetrically encrypted using AES-256-GCM using the 32-byte SECURITY_RUNTIME_MASTER_KEY provided via environment variables at bootstrap:",
+    "sec2_sub3_title": "3. Version-Set Invariant",
+    "sec2_sub3_desc1": "To optimize query performance and prevent data footprint bloating of sensitive key materials, Aurora enforces a strict Version-Set Invariant: each Secret Family maintains at most 2 active versions inside the database (1 Primary Active for signing, and at most 1 Retired Candidate for verification).",
+    "sec2_sub3_desc2": "When a Primary Version expires or rotates, it is not deleted immediately. It is demoted to RETIRED and persists for exactly one TTL cycle (Grace Period) to ensure outstanding tokens verify successfully. At the next rotation cycle, the oldest RETIRED version is physically pruned (DELETE) to make space for the newcomer, ensuring a strict size boundary of 2.",
+    "sec3_title": "Scheduler Worker & Distributed Cache Invalidation",
+    "sec3_desc": "A background Goroutine worker executes a periodic ticker to evaluate RotateAt. Upon expiration, the worker secures an atomic lock, writes the new version to the database, and publishes a cache invalidation signal to all API nodes via the Redis Invalidation Bus.",
+    "sim_title": "SIMULATOR: SECURE REAL-TIME SECRET ROTATION PIPELINE",
+    "sim_subtitle": "Simulating the exact transaction flow of the secret_rotation_service.go backend",
+    "sim_start": "Run Simulation",
+    "sim_running": "Executing rotation simulation...",
+    "sim_step1": "1. Goroutine Worker Tick (30s Ticker)",
+    "sim_step2": "2. PlanRotation evaluates expiration schedule",
+    "sim_step3": "3. Acquire Redis Mutual Exclusion Lock (SETNX)",
+    "sim_step4": "4. DB Transaction: Promote new v{{version}}",
+    "sim_step5": "5. Publish cache invalidation via Redis Pub/Sub",
+    "sim_step6": "6. Completed & Multi-node local caches refreshed",
+    "sim_fallback_title": "💡 Cache Self-Healing Mechanism (Fallback):",
+    "sim_fallback_desc": "If the Redis Invalidation Bus is unavailable, local node caches will automatically expire naturally after Security.SecretCacheTTL, pulling the latest correct records from PostgreSQL.",
+    "sim_waiting": "[Simulator Idle] Click 'Run Simulation' or 'Request Emergency Rotation' to visualize execution...",
+    "sim_next_step": "Waiting for next step schedule...",
+    "families": {
+      "access_token": {
+        "name": "Access Token Signer Key",
+        "desc": "Symmetric key used to sign short-lived JWT Access Tokens."
+      },
+      "refresh_token": {
+        "name": "Refresh Token Encrypter",
+        "desc": "Symmetric key to encrypt long-lived client Refresh Tokens."
+      },
+      "admin_api_key": {
+        "name": "Admin API Signer Key",
+        "desc": "Asymmetric key pair for signing sensitive operations on Admin Control Plane."
+      },
+      "one_time_token": {
+        "name": "OTP & Password Reset Token Key",
+        "desc": "Symmetric key for encrypting one-time tokens and OTP verification codes."
+      }
+    },
+    "table": {
+      "headers": ["Family Name", "Usage Purpose", "Rotation Interval (Secret TTL)", "Grace Period Window", "Invalidation Channel"],
+      "rows": {
+        "access_token": ["access_token", "Sign JWT Access Token", "24 Hours (Active Primary)", "24 Hours (Retired Candidate - 1 TTL extension)", "Redis Pub/Sub Bus"],
+        "refresh_token": ["refresh_token", "Encrypt JWT Refresh Token", "7 Days (Active Primary)", "7 Days (Retired Candidate - 1 TTL extension)", "Redis Pub/Sub Bus"],
+        "admin_api_key": ["admin_api_key", "Sign Admin CP Transactions", "30 Days (Active Primary)", "30 Days (Retired Candidate - 1 TTL extension)", "Redis Pub/Sub Bus"],
+        "one_time_token": ["one_time_token", "Encrypt OTP & Reset links", "12 Hours (Active Primary)", "12 Hours (Retired Candidate - 1 TTL extension)", "Redis Pub/Sub Bus"]
+      }
+    }
   }
 }

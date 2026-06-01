@@ -28,7 +28,7 @@ const NAV_TREE = [
     icon: '🔒',
     children: [
       { id: 'sec-threat-model', icon: '⚠️', path: '/security/threat-model', status: 'todo' },
-      { id: 'sec-secrets', icon: '🔑', path: '/security/secrets', status: 'todo' },
+      { id: 'sec-secrets', icon: '🔑', path: '/security/secrets', status: 'ready' },
       { id: 'sec-audit', icon: '📋', path: '/security/audit', status: 'todo' },
       { id: 'sec-rate-limit', icon: '⏳', path: '/security/rate-limit', status: 'ready' },
     ],
