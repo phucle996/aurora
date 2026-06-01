@@ -36,7 +36,14 @@ type RateLimitPreAuthPolicy struct {
 }
 
 type RateLimitPostAuthPolicy struct {
-	IPDevice RateLimitBucketPolicy `yaml:"ip_device"`
+	Rules []RateLimitPathRule `yaml:"rules"`
+}
+
+type RateLimitPathRule struct {
+	Path          string `yaml:"path"`
+	Capacity      int64  `yaml:"capacity"`
+	Refill        int64  `yaml:"refill"`
+	PeriodSeconds int64  `yaml:"period_seconds"`
 }
 
 type RateLimitGlobalInstantPolicy struct {
@@ -86,7 +93,14 @@ type CompiledRateLimitPreAuthPolicy struct {
 }
 
 type CompiledRateLimitPostAuthPolicy struct {
-	IPDevice CompiledRateLimitBucketPolicy
+	Rules []CompiledRateLimitPathRule
+}
+
+type CompiledRateLimitPathRule struct {
+	Path          string
+	Capacity      int64
+	Refill        int64
+	PeriodSeconds int64
 }
 
 type CompiledRateLimitGlobalInstantPolicy struct {

@@ -6,12 +6,12 @@ import Home from './pages/Home.jsx'
 import AuthTokenModel from './pages/auth/TokenModel.jsx'
 import ZoneManagement from './pages/zone/Management.jsx'
 import ZoneWorkflow from './pages/zone/Workflow.jsx'
+import SecurityRateLimit from './pages/security/RateLimit.jsx'
 import { useTheme } from './lib/theme.js'
 
-// Wrapper that adds the standard content padding
 function PageWrapper({ children }) {
   return (
-    <div className="max-w-6xl mx-auto px-5 py-5 space-y-12">
+    <div className="max-w-[1440px] mx-auto px-6 py-5 space-y-12">
       {children}
     </div>
   )
@@ -37,6 +37,7 @@ function App() {
             <Route path="/auth/token-model" element={<PageWrapper><AuthTokenModel /></PageWrapper>} />
             <Route path="/zone/management" element={<PageWrapper><ZoneManagement /></PageWrapper>} />
             <Route path="/zone/workflow" element={<PageWrapper><ZoneWorkflow /></PageWrapper>} />
+            <Route path="/security/rate-limit" element={<PageWrapper><SecurityRateLimit /></PageWrapper>} />
             <Route path="/home" element={<PageWrapper><Home /></PageWrapper>} />
             <Route path="*" element={<Navigate to="/auth/token-model" replace />} />
           </Routes>

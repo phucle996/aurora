@@ -41,13 +41,25 @@ func Compile(src RateLimitPolicy) (CompiledPolicy, error) {
 
 	// Biên dịch các chính sách Bucket (Token Bucket Algorithm Parameters)
 	out.PreAuth.IP = compileBucketPolicy(src.PreAuth.IP)
-	out.PostAuth.IPDevice = compileBucketPolicy(src.PostAuth.IPDevice)
 
 	if out.PreAuth.IP.Capacity <= 0 || out.PreAuth.IP.Refill <= 0 || out.PreAuth.IP.PeriodSeconds <= 0 {
 		return CompiledPolicy{}, fmt.Errorf("%w: ratelimit: invalid preauth IP bucket parameters", errorx.ErrPolicyInvalid)
 	}
-	if out.PostAuth.IPDevice.Capacity <= 0 || out.PostAuth.IPDevice.Refill <= 0 || out.PostAuth.IPDevice.PeriodSeconds <= 0 {
-		return CompiledPolicy{}, fmt.Errorf("%w: ratelimit: invalid postauth IPDevice bucket parameters", errorx.ErrPolicyInvalid)
+
+	for _, rule := range src.PostAuth.Rules {
+		path := strings.TrimSpace(rule.Path)
+		if path == "" {
+			return CompiledPolicy{}, fmt.Errorf("%w: ratelimit: rule path cannot be empty", errorx.ErrPolicyInvalid)
+		}
+		if rule.Capacity <= 0 || rule.Refill <= 0 || rule.PeriodSeconds <= 0 {
+			return CompiledPolicy{}, fmt.Errorf("%w: ratelimit: invalid parameters for path %s", errorx.ErrPolicyInvalid, path)
+		}
+		out.PostAuth.Rules = append(out.PostAuth.Rules, CompiledRateLimitPathRule{
+			Path:          path,
+			Capacity:      rule.Capacity,
+			Refill:        rule.Refill,
+			PeriodSeconds: rule.PeriodSeconds,
+		})
 	}
 
 	// Biên dịch cấu hình giới hạn đồng thời (Inflight Concurrency Limit)

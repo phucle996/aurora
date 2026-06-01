@@ -52,6 +52,7 @@ import (
 	iamRepoImpl "controlplane/internal/iam/repository"
 	"controlplane/internal/mail"
 	"controlplane/internal/policyengine"
+	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
@@ -213,6 +214,11 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	}
 	middleware.InitAdminCIDR(policySnapshot.Runtime.AdminCIDR.Allowlist)
 	middleware.InitRateLimitPolicy(policySnapshot.Runtime.RateLimit)
+
+	// Đăng ký hook để tự động recompile và swap cấu hình rate limit ở runtime
+	policyModule.EngineService.RegisterRateLimitHook(func(policy *policyRateLimit.CompiledPolicy) {
+		middleware.InitRateLimitPolicy(*policy)
+	})
 	middleware.InitAccess(
 		securityProvider,
 		rds,

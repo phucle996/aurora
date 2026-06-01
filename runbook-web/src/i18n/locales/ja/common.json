@@ -24,6 +24,7 @@
       "sec-threat-model": "脅威モデル",
       "sec-secrets": "シークレットとローテーション",
       "sec-audit": "監査とコンプライアンス",
+      "sec-rate-limit": "レートリミットシステム",
       "infra-redis": "Redis キャッシュ",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy プロキシ",

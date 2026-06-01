@@ -35,7 +35,7 @@ export default function Callout({ type = 'info', title, children }) {
           <span>{title}</span>
         </p>
       )}
-      <div className="text-slate-700 dark:text-slate-300 text-sm">{children}</div>
+      <div className="text-slate-700 dark:text-slate-300 text-base">{children}</div>
     </div>
   )
 }

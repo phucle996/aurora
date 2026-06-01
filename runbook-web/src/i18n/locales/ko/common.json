@@ -24,6 +24,7 @@
       "sec-threat-model": "위협 모델",
       "sec-secrets": "시크릿 및 로테이션",
       "sec-audit": "감사 및 컴플라이언스",
+      "sec-rate-limit": "속도 제한 시스템",
       "infra-redis": "Redis 캐시",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy 프록시",

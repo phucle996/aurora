@@ -1,0 +1,81 @@
+{
+  "rate_limit": {
+    "hero": {
+      "title": "Hệ Thống Giới Hạn Tần Suất (Rate Limiting)",
+      "subtitle": "Kiến trúc kiểm soát lưu lượng bảo mật kép, tải động thông qua Policy Engine và đồng bộ hóa phi trạng thái bằng Redis Cluster."
+    },
+    "callout": {
+      "design_goals": "MỤC TIÊU THIẾT KẾ CLOUD NATIVE & HA",
+      "design_goals_desc": "Hệ thống được phát triển theo mô hình High-Availability (HA), xử lý hàng triệu request đồng thời với độ trễ dưới 1.5ms nhờ cơ chế biên dịch tĩnh route và lưu trữ phân tán hiệu năng cao trên Redis Cluster.",
+      "race_condition": "LƯU Ý TRÁNH RACE CONDITION",
+      "race_condition_desc": "Toán tử trừ token trong Redis được triển khai qua các Script Lua chạy nguyên tử (atomic Lua Script). Điều này đảm bảo tính bền vững dữ liệu, tránh xung đột ghi dữ liệu (race conditions) khi hệ thống chạy đa luồng hoặc được phân tán trên môi trường Cloud-Native HA với nhiều node ứng dụng hoạt động song song.",
+      "security_safe": "AN TOÀN BẢO MẬT & TRÁNH TRANH CHẤP TRẠNG THÁI",
+      "security_safe_desc": "Middleware sử dụng cơ chế bảo vệ bằng Khóa đọc/ghi (sync.RWMutex) hoặc hoán đổi nguyên tử (atomic.Value). Nhờ đó, trong suốt quá trình hoán đổi cấu hình, luồng request của khách hàng hoàn toàn không bị ảnh hưởng, không xảy ra tranh chấp dữ liệu (data race) hay lỗi bộ nhớ."
+    },
+    "overview": {
+      "title": "Tổng Quan Hệ Thống & Vai Trò",
+      "desc": "Hệ thống Rate Limiter trong hệ sinh thái Aurora được xây dựng trên mô hình bảo vệ hai lớp (Dual-Layer Shield). Lớp bảo vệ này chia tách rõ ràng trách nhiệm giữa việc ngăn chặn tấn công từ chối dịch vụ (DDoS) và việc quản lý công bằng tài nguyên sử dụng cho từng người dùng đã xác thực.",
+      "sre_operator_title": "🧑‍💻 SRE Operator",
+      "sre_operator_desc": "Quản lý toàn bộ cấu hình giới hạn (quota, refill rate, bypass routes) tập trung thông qua Policy Engine (file YAML). Có thể cập nhật nóng chính sách tức thời mà không cần restart server.",
+      "pre_auth_title": "🚦 Pre-Auth Shield",
+      "pre_auth_desc": "Ngăn chặn các cuộc tấn công Brute-force, DDoS thô bạo ngay từ biên mạng dựa trên địa chỉ IP. Tránh quá tải cho các tác vụ giải mã mật mã (JWT, bcrypt) và bảo vệ cơ sở dữ liệu.",
+      "post_auth_title": "🛡️ Post-Auth Engine",
+      "post_auth_desc": "Kiểm soát hạn mức sử dụng (quota) và chặn đứng spam thông minh theo từng endpoint/route nghiệp vụ cụ thể sau khi đã xác định danh tính (JWT). Áp dụng thuật toán đối khớp nhanh O(1) trong bộ nhớ để bảo vệ từng API nghiệp vụ riêng biệt khỏi việc bị quá tải hoặc khai thác quá mức."
+    },
+    "comparison": {
+      "title": "Mô Hình Pre-Auth & Post-Auth Specification",
+      "subtitle": "Bảng thông số kỹ thuật đặc tả sự khác biệt giữa hai lớp bảo vệ Pre-Auth và Post-Auth:",
+      "tab_preauth": "Cấu hình Pre-Auth (Global Shield)",
+      "tab_postauth": "Cấu hình Post-Auth (Dynamic Paths)",
+      "label_preauth_code": "Ví dụ cấu hình giới hạn IP toàn cục khi chưa đăng nhập (Pre-Auth) trong `policy.yaml`:",
+      "label_postauth_code": "Ví dụ cấu hình danh sách đường dẫn nghiệp vụ động (Post-Auth) trong `policy.yaml`:",
+      "headers": ["Thuộc Tính", "Pre-Auth Middleware", "Post-Auth Middleware", "Mô Tả & Quy Tắc Vận Hành"],
+      "rows": [
+        [
+          "Đối Tượng Định Danh (Identity)",
+          "Địa chỉ IP của client (Client IP)",
+          "Địa chỉ IP + Thiết bị (IP & Device ID) hoặc IP + User ID",
+          "Pre-Auth bảo vệ hạ tầng trước DDoS thô. Ở tầng Post-Auth: (1) Sử dụng IP + Device ID cho các endpoint nhạy cảm khi CHƯA đăng nhập (như Login, OTP, Register) nhằm chặn đứng spam brute-force từ thiết bị giả lập; (2) Sử dụng IP + User ID cho các API ĐÃ xác thực (JWT claims chứa User ID) để quản lý hạn mức sử dụng chính xác trên từng tài khoản người dùng, không phụ thuộc vào việc họ đổi IP hay đổi thiết bị."
+        ],
+        [
+          "Quy Tắc Match Đường Dẫn (Route Matching)",
+          "Không cấu hình path (Áp dụng toàn cục cho Pre-Auth)",
+          "Pre-compiled Route Path (O(1) Map Lookup)",
+          "Post-Auth lưu trữ quy tắc dưới dạng cấu trúc bản đồ (map) trong bộ nhớ. Route match ngay lập tức không tốn tài nguyên biên dịch runtime per-call."
+        ],
+        [
+          "Hành Vi Mặc Định (Fallback)",
+          "Fail-Closed (Chặn nếu Redis hoặc bộ lọc lỗi)",
+          "Fail-Open / Bypass (Bypass hoàn toàn nếu route không cấu hình)",
+          "Để đảm bảo tính bền vững của dịch vụ, các API không khai báo trong Policy Engine sẽ được tự động bỏ qua (Bypass), tránh gián đoạn các luồng nghiệp vụ mới."
+        ],
+        [
+          "Vị Trí Redis Key",
+          "rl:preauth:ip:<ip_address>",
+          "<api_path>:ip_device:<ip>:<device_id> hoặc <api_path>:ip_user:<ip>:<user_id>",
+          "Redis key được định nghĩa rõ ràng theo namespace và cấu trúc hóa trực quan giúp SRE có thể dễ dàng giám sát, truy vấn hoặc xóa quota thủ công."
+        ]
+      ]
+    },
+    "sequence": {
+      "title": "Quy Trình Hoạt Động (Sequence Diagram)",
+      "subtitle": "Sơ đồ luồng tương tác bảo mật kép xử lý một yêu cầu từ Client đi qua hệ thống điều phối rate limit:"
+    },
+    "state_machine": {
+      "title": "State Machine: Cơ Chế Xử Lý Vi Phạm",
+      "subtitle": "Hành vi của một Client IP khi tương tác với hệ thống Rate Limit được quản lý chặt chẽ qua một State Machine cục bộ tại mỗi node. Điều này ngăn chặn spam trực tiếp tới Redis khi client liên tục gửi request vi phạm (Anti-DDoS Hot-Path).",
+      "state_allow_title": "🟢 1. ALLOW STATE",
+      "state_allow_desc": "Request nằm trong quota cho phép. Redis bucket kiểm tra khả thi và chấp thuận yêu cầu đi tiếp.",
+      "state_throttle_title": "🟡 2. THROTTLE STATE",
+      "state_throttle_desc": "Yêu cầu vượt quá capacity. Kích hoạt phản hồi HTTP 429 và ghi nhận vi phạm vào local Decision Engine.",
+      "state_blocked_title": "🔴 3. BLOCKED / ISOLATED STATE",
+      "state_blocked_desc": "Client tiếp tục spam trong trạng thái Throttle. Node tự động cô lập cục bộ IP đó trong RAM để chặn đứng truy cập ngay lập tức."
+    },
+    "hot_reload": {
+      "title": "Atomic Hot-Reload & Hooks Specification",
+      "desc": "Một trong những yêu cầu khắt khe nhất của hệ thống Cloud Native HA là không được gián đoạn dịch vụ khi vận hành. Aurora Rate Limiting hỗ trợ thay đổi cấu hình nóng (hot-reload) 100% atomic thông qua cơ chế Hook:",
+      "sync_title": "Cơ chế Đồng Bộ Hooks",
+      "sync_desc": "Khi SRE thay đổi file cấu hình YAML, Policy Engine thực hiện Reload và biên dịch (Compile) các thông số mới. Khi quá trình biên dịch hoàn tất thành công và hợp lệ, Engine sẽ kích hoạt các Hooks đăng ký trong bộ nhớ để cập nhật trực tiếp Map cấu hình của Middleware."
+    }
+  }
+}

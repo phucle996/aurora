@@ -34,6 +34,7 @@
       "sec-threat-model": "Mô hình mối đe dọa",
       "sec-secrets": "Bí mật & Xoay vòng",
       "sec-audit": "Audit & Tuân thủ",
+      "sec-rate-limit": "Cơ chế Rate Limiting",
       "infra-redis": "Redis Cache",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy Proxy",

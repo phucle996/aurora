@@ -61,10 +61,11 @@ policies:
         refill: 22
         period_seconds: 9
     postauth:
-      ip_device:
-        capacity: 44
-        refill: 55
-        period_seconds: 6
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 44
+          refill: 55
+          period_seconds: 6
     observability:
       sampling_percent:
         throttle: 9
@@ -86,7 +87,7 @@ policies:
 		t.Fatalf("expected valid reload, got err: %v", err)
 	}
 
-	if snapshot.Runtime.RateLimit.PreAuth.IP.Capacity != 111 || snapshot.Runtime.RateLimit.PostAuth.IPDevice.Refill != 55 {
+	if snapshot.Runtime.RateLimit.PreAuth.IP.Capacity != 111 || len(snapshot.Runtime.RateLimit.PostAuth.Rules) != 1 || snapshot.Runtime.RateLimit.PostAuth.Rules[0].Refill != 55 {
 		t.Fatalf("rate values drifted after compile: %+v", snapshot.Runtime.RateLimit)
 	}
 	if snapshot.Runtime.RateLimit.PreAuth.GlobalInstant.MaxInflight != 3333 || snapshot.Runtime.RateLimit.PreAuth.GlobalInstant.QueueLimit != 7 {
@@ -179,10 +180,11 @@ policies:
         refill: 1200
         period_seconds: 60
     postauth:
-      ip_device:
-        capacity: 40
-        refill: 40
-        period_seconds: 60
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 40
+          refill: 40
+          period_seconds: 60
     observability:
       sampling_percent:
         throttle: 10
@@ -216,10 +218,11 @@ policies:
         refill: 1200
         period_seconds: 60
     postauth:
-      ip_device:
-        capacity: 40
-        refill: 40
-        period_seconds: 60
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 40
+          refill: 40
+          period_seconds: 60
     observability:
       sampling_percent:
         throttle: 10
@@ -252,10 +255,11 @@ policies:
         refill: 1200
         period_seconds: 60
     postauth:
-      ip_device:
-        capacity: 40
-        refill: 40
-        period_seconds: 60
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 40
+          refill: 40
+          period_seconds: 60
     observability:
       sampling_percent:
         throttle: 10
@@ -339,10 +343,11 @@ policies:
         refill: 1200
         period_seconds: 60
     postauth:
-      ip_device:
-        capacity: 40
-        refill: 40
-        period_seconds: 60
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 40
+          refill: 40
+          period_seconds: 60
     observability:
       sampling_percent:
         throttle: 10

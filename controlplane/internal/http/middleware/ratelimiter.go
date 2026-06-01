@@ -37,9 +37,7 @@ type rateLimitPolicyConfig struct {
 	preAuthCapacity          int64
 	preAuthRefill            int64
 	preAuthPeriod            time.Duration
-	postAuthCapacity         int64
-	postAuthRefill           int64
-	postAuthPeriod           time.Duration
+	postAuthPathRules        map[string]policyRateLimit.CompiledRateLimitBucketPolicy
 	globalInstantMaxInflight int64
 	globalInstantRetryAfter  time.Duration
 	retryFallback            time.Duration
@@ -56,7 +54,7 @@ var rateLimitInflight atomic.Int64
 func currentRateLimitPolicy() rateLimitPolicyConfig {
 	v := rateLimitPolicyHolder.Load()
 	if v == nil {
-		panic("ratelimiter: runtime policy is not initialized")
+		return rateLimitPolicyConfig{}
 	}
 	return v.(rateLimitPolicyConfig)
 }
@@ -67,13 +65,21 @@ func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 	for _, route := range policy.Behavior.BypassRoutePatterns {
 		bypassRoutes[route] = struct{}{}
 	}
+
+	pathRules := make(map[string]policyRateLimit.CompiledRateLimitBucketPolicy, len(policy.PostAuth.Rules))
+	for _, rule := range policy.PostAuth.Rules {
+		pathRules[rule.Path] = policyRateLimit.CompiledRateLimitBucketPolicy{
+			Capacity:      rule.Capacity,
+			Refill:        rule.Refill,
+			PeriodSeconds: rule.PeriodSeconds,
+		}
+	}
+
 	cfg := rateLimitPolicyConfig{
 		preAuthCapacity:          policy.PreAuth.IP.Capacity,
 		preAuthRefill:            policy.PreAuth.IP.Refill,
 		preAuthPeriod:            time.Duration(policy.PreAuth.IP.PeriodSeconds) * time.Second,
-		postAuthCapacity:         policy.PostAuth.IPDevice.Capacity,
-		postAuthRefill:           policy.PostAuth.IPDevice.Refill,
-		postAuthPeriod:           time.Duration(policy.PostAuth.IPDevice.PeriodSeconds) * time.Second,
+		postAuthPathRules:        pathRules,
 		globalInstantMaxInflight: policy.PreAuth.GlobalInstant.MaxInflight,
 		globalInstantRetryAfter:  time.Duration(policy.PreAuth.GlobalInstant.RetryAfterSeconds) * time.Second,
 		retryFallback:            time.Duration(policy.Behavior.RetryAfterFallbackSeconds) * time.Second,
@@ -178,7 +184,7 @@ func RegisterRateLimitMetrics(registry *prometheus.Registry, namespace string) e
 // - B5: nếu state active thì trả 429 ngay + Retry-After + security event log.
 // - B6: nếu không active thì gọi Redis token-bucket evaluate.
 // - B7: map kết quả evaluate sang allow/error/throttle và emit metric/log tương ứng.
-func RateLimitPreAuth(limiter *ratelimit.Bucket, name string, capacity, refill int64, period time.Duration) gin.HandlerFunc {
+func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		routePattern := routePatternOf(c)
 		if shouldBypassRateLimit(routePattern) {
@@ -198,7 +204,8 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string, capacity, refill i
 		}
 		defer releaseGlobalInstantPermit()
 
-		if limiter == nil || name == "" || capacity <= 0 || refill <= 0 || period <= 0 {
+		policyCfg := currentRateLimitPolicy()
+		if limiter == nil || name == "" || policyCfg.preAuthCapacity <= 0 || policyCfg.preAuthRefill <= 0 || policyCfg.preAuthPeriod <= 0 {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultAllow).Inc()
 			c.Next()
 			return
@@ -248,7 +255,6 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string, capacity, refill i
 
 		evalStart := time.Now()
 
-		policyCfg := currentRateLimitPolicy()
 		res, err := limiter.Allow(
 			c.Request.Context(),
 			key,
@@ -319,17 +325,27 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string, capacity, refill i
 // - B6: nếu state active thì trả 429 ngay + Retry-After + security event log.
 // - B7: nếu không active thì gọi Redis token-bucket evaluate.
 // - B8: map kết quả evaluate sang allow/error/throttle và emit metric/log tương ứng.
-func RateLimitPostAuth(limiter *ratelimit.Bucket, name string, capacity, refill int64, period time.Duration) gin.HandlerFunc {
+func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		routePattern := routePatternOf(c)
-		if shouldBypassRateLimit(routePattern) {
-			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIPTracking, rateLimitResultBypass).Inc()
+		if shouldBypassRateLimit(path) {
+			rateLimitCheckTotal.WithLabelValues(path, rateLimitScopeIPTracking, rateLimitResultBypass).Inc()
 			c.Next()
 			return
 		}
 
-		if limiter == nil || name == "" || capacity <= 0 || refill <= 0 || period <= 0 {
-			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIPTracking, rateLimitResultAllow).Inc()
+		policyCfg := currentRateLimitPolicy()
+
+		// 1. Tra cứu cực nhanh O(1) bằng path tĩnh trong RAM
+		rule, found := policyCfg.postAuthPathRules[path]
+		if !found {
+			// SRE không cấu hình giới hạn cho API này -> Bypass (No rate limit)
+			rateLimitCheckTotal.WithLabelValues(path, rateLimitScopeIPTracking, rateLimitResultAllow).Inc()
+			c.Next()
+			return
+		}
+
+		if limiter == nil {
+			rateLimitCheckTotal.WithLabelValues(path, rateLimitScopeIPTracking, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
@@ -338,62 +354,68 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, name string, capacity, refill 
 		runtimeDeviceID := strings.TrimSpace(GetRuntimeAccessKey(c))
 		userID := strings.TrimSpace(GetUserID(c))
 
+		// 2. Tạo Redis key sử dụng trực tiếp path làm prefix
 		ruleScope := rateLimitScopeIPTracking
-		key := ratelimit.Key(name, rateLimitScopeIPTracking, strings.TrimSpace(clientIP)+":"+runtimeDeviceID)
+		key := ratelimit.KeyIPDevice(path, clientIP, runtimeDeviceID)
 		if key == "" {
 			ruleScope = rateLimitScopeIPUser
-			key = ratelimit.KeyIPUser(name, clientIP, userID)
+			key = ratelimit.KeyIPUser(path, clientIP, userID)
+		}
+		if key == "" {
+			ruleScope = rateLimitScopeIP
+			key = ratelimit.KeyIP(path, clientIP)
+		}
+		if key == "" {
+			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultAllow).Inc()
+			c.Next()
+			return
 		}
 
+		// 3. Kiểm tra trạng thái chặn của Decision Engine
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionThrottle {
-			rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultBlocked).Inc()
-			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionThrottle, ruleScope).Inc()
+			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
+			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionThrottle, ruleScope).Inc()
 			if state.RetryAfter > 0 {
-				rateLimitRetryAfter.WithLabelValues(routePattern).Observe(state.RetryAfter.Seconds())
+				rateLimitRetryAfter.WithLabelValues(path).Observe(state.RetryAfter.Seconds())
 				c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(state.RetryAfter))
 			}
-			emitRateLimitSecurityEvent(c, routePattern, ruleScope, rateLimitDecisionThrottle, state.Reason, state.RetryAfter, 0, key)
+			emitRateLimitSecurityEvent(c, path, ruleScope, rateLimitDecisionThrottle, state.Reason, state.RetryAfter, 0, key)
 			apires.RespondTooManyRequests(c, "too many requests")
 			c.Abort()
 			return
 		}
 
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionBlock {
-			rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultBlocked).Inc()
-			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionBlock, ruleScope).Inc()
+			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
+			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionBlock, ruleScope).Inc()
 			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(state.RetryAfter))
-			rateLimitRetryAfter.WithLabelValues(routePattern).Observe(state.RetryAfter.Seconds())
-			emitRateLimitSecurityEvent(c, routePattern, ruleScope, rateLimitDecisionBlock, state.Reason, state.RetryAfter, state.RetryAfter, key)
+			rateLimitRetryAfter.WithLabelValues(path).Observe(state.RetryAfter.Seconds())
+			emitRateLimitSecurityEvent(c, path, ruleScope, rateLimitDecisionBlock, state.Reason, state.RetryAfter, state.RetryAfter, key)
 			apires.RespondTooManyRequests(c, "too many requests")
 			c.Abort()
 			return
 		}
 
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionIsolation {
-			rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultBlocked).Inc()
-			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionIsolation, ruleScope).Inc()
+			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
+			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionIsolation, ruleScope).Inc()
 			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(state.RetryAfter))
-			rateLimitRetryAfter.WithLabelValues(routePattern).Observe(state.RetryAfter.Seconds())
-			emitRateLimitSecurityEvent(c, routePattern, ruleScope, rateLimitDecisionIsolation, state.Reason, state.RetryAfter, state.RetryAfter, key)
+			rateLimitRetryAfter.WithLabelValues(path).Observe(state.RetryAfter.Seconds())
+			emitRateLimitSecurityEvent(c, path, ruleScope, rateLimitDecisionIsolation, state.Reason, state.RetryAfter, state.RetryAfter, key)
 			apires.RespondTooManyRequests(c, "too many requests")
 			c.Abort()
 			return
 		}
-		if key == "" {
-			rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultAllow).Inc()
-			c.Next()
-			return
-		}
 
+		// 4. Kiểm tra quota token bucket trên Redis
 		evalStart := time.Now()
-		policyCfg := currentRateLimitPolicy()
 		res, err := limiter.Allow(
 			c.Request.Context(),
 			key,
 			ratelimit.Rate{
-				Capacity: policyCfg.postAuthCapacity,
-				Refill:   policyCfg.postAuthRefill,
-				Period:   policyCfg.postAuthPeriod,
+				Capacity: rule.Capacity,
+				Refill:   rule.Refill,
+				Period:   time.Duration(rule.PeriodSeconds) * time.Second,
 			},
 			1,
 		)
@@ -403,30 +425,30 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, name string, capacity, refill 
 		rateLimitEvalDuration.WithLabelValues(ruleScope).Observe(time.Since(evalStart).Seconds())
 
 		if err != nil && !res.Allowed {
-			rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultError).Inc()
-			rateLimitErrorTotal.WithLabelValues(routePattern, "backend_unavailable").Inc()
-			emitRateLimitSecurityEvent(c, routePattern, ruleScope, "error", "backend_unavailable", 0, 0, key)
+			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultError).Inc()
+			rateLimitErrorTotal.WithLabelValues(path, "backend_unavailable").Inc()
+			emitRateLimitSecurityEvent(c, path, ruleScope, "error", "backend_unavailable", 0, 0, key)
 			apires.RespondServiceUnavailable(c, "rate limit temporarily unavailable")
 			c.Abort()
 			return
 		}
 
 		if !res.Allowed {
-			rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultBlocked).Inc()
-			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionThrottle, ruleScope).Inc()
+			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
+			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionThrottle, ruleScope).Inc()
 			retryAfter := retryAfterFromRate(res)
 			rateLimitEngine.RecordThrottle(key)
 			if retryAfter > 0 {
-				rateLimitRetryAfter.WithLabelValues(routePattern).Observe(retryAfter.Seconds())
+				rateLimitRetryAfter.WithLabelValues(path).Observe(retryAfter.Seconds())
 			}
-			emitRateLimitSecurityEvent(c, routePattern, ruleScope, rateLimitDecisionThrottle, "abuse_exceeded", retryAfter, 0, key)
+			emitRateLimitSecurityEvent(c, path, ruleScope, rateLimitDecisionThrottle, "abuse_exceeded", retryAfter, 0, key)
 			apires.RespondTooManyRequests(c, "too many requests")
 			c.Abort()
 			return
 		}
 
-		rateLimitCheckTotal.WithLabelValues(routePattern, ruleScope, rateLimitResultAllow).Inc()
-		rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitResultAllow, ruleScope).Inc()
+		rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultAllow).Inc()
+		rateLimitDecisionTotal.WithLabelValues(path, rateLimitResultAllow, ruleScope).Inc()
 		c.Next()
 	}
 }

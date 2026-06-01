@@ -24,6 +24,7 @@
       "sec-threat-model": "威胁模型",
       "sec-secrets": "密钥与轮换",
       "sec-audit": "审计与合规",
+      "sec-rate-limit": "限流系统",
       "infra-redis": "Redis 缓存",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy 代理",

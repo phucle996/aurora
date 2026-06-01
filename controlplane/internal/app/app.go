@@ -193,8 +193,9 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		middleware.PrometheusHTTPMetrics(promObs),
 		middleware.CORS(cfg.App.AllowedOrigins),
 		middleware.CookieOriginGuard(cfg.App.AllowedOrigins),
-		middleware.RateLimitPreAuth(ratelimiter, "global_preauth", 1200, 1200, time.Minute),
+		middleware.RateLimitPreAuth(ratelimiter, "global_preauth"),
 		middleware.AccessLog(),
+		middleware.AdminXSSI(),
 	)
 	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 

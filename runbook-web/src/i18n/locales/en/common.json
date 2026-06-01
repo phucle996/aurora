@@ -34,6 +34,7 @@
       "sec-threat-model": "Threat Model",
       "sec-secrets": "Secrets & Rotation",
       "sec-audit": "Audit & Compliance",
+      "sec-rate-limit": "Rate Limiting System",
       "infra-redis": "Redis Cache",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy Proxy",

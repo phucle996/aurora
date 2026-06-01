@@ -29,6 +29,41 @@ function toAbsoluteURL(baseURL: string, path: string): string {
   return `${normalizedBaseURL}${normalizedPath}`
 }
 
+function wrapResponse(response: Response): Response {
+  let memoizedText: Promise<string> | null = null
+
+  return new Proxy(response, {
+    get(target, prop, receiver) {
+      if (prop === 'text') {
+        return () => {
+          if (memoizedText) return memoizedText
+          memoizedText = target.text().then((text) => {
+            if (text.startsWith(")]}',\n")) {
+              return text.slice(6)
+            }
+            if (text.startsWith(")]}',")) {
+              return text.slice(5)
+            }
+            return text
+          })
+          return memoizedText
+        }
+      }
+      if (prop === 'json') {
+        return () => {
+          return receiver.text().then((text: string) => JSON.parse(text))
+        }
+      }
+
+      const val = Reflect.get(target, prop, receiver)
+      if (typeof val === 'function') {
+        return val.bind(target)
+      }
+      return val
+    }
+  })
+}
+
 function request(baseURL: string, input: string, init?: RequestInit): Promise<Response> {
   const trimmedInput = input.trim()
   const normalizedPath = trimmedInput.startsWith('/') ? trimmedInput : `/${trimmedInput}`
@@ -38,7 +73,8 @@ function request(baseURL: string, input: string, init?: RequestInit): Promise<Re
     ...init,
   }
 
-  return fetch(toAbsoluteURL(baseURL, input), reqInit).then((response) => {
+  return fetch(toAbsoluteURL(baseURL, input), reqInit).then((rawResponse) => {
+    const response = wrapResponse(rawResponse)
     const isAuthRoute = [
       '/admin/auth/refresh',
       '/admin/auth/login',

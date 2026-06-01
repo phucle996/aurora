@@ -87,6 +87,7 @@ type EngineService struct {
 	lastReloadAt    time.Time
 	otelHooks       []func(*otel.CompiledPolicy)
 	prometheusHooks []func(*prometheus.CompiledPolicy)
+	rateLimitHooks  []func(*ratelimit.CompiledPolicy)
 }
 
 // NewEngineService khởi tạo EngineService và liên kết các thành phần hạ tầng (source adapter, pub/sub notifier).
@@ -167,6 +168,17 @@ func (s *EngineService) RegisterPrometheusHook(hook func(*prometheus.CompiledPol
 	s.prometheusHooks = append(s.prometheusHooks, hook)
 }
 
+// RegisterRateLimitHook đăng ký một hàm callback (hook) nhận sự thay đổi cấu hình Rate Limit.
+// Hook này chỉ được trigger khi cấu hình Rate Limit thực sự có thay đổi so với snapshot trước đó.
+//
+// # Tham số:
+//   - `hook`: Hàm callback chạy ngầm nhận vào cấu hình Rate Limit đã được compile.
+func (s *EngineService) RegisterRateLimitHook(hook func(*ratelimit.CompiledPolicy)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rateLimitHooks = append(s.rateLimitHooks, hook)
+}
+
 // Reload nạp tệp YAML thô, validate tính hợp lệ của toàn bộ policies, so sánh checksum,
 // cooldown và hoán đổi nguyên tử snapshot nếu có thay đổi thực tế.
 //
@@ -243,6 +255,16 @@ func (s *EngineService) Reload(ctx context.Context) (*policytypes.PolicySet, err
 		s.mu.RUnlock()
 		for _, hook := range hooks {
 			go hook(&next.Runtime.Prometheus)
+		}
+	}
+
+	// Chỉ trigger các Rate Limit hooks nếu cấu hình Rate Limit thực sự thay đổi hoặc trong lần nạp đầu tiên.
+	if old == nil || !reflect.DeepEqual(old.Runtime.RateLimit, next.Runtime.RateLimit) {
+		s.mu.RLock()
+		hooks := s.rateLimitHooks
+		s.mu.RUnlock()
+		for _, hook := range hooks {
+			go hook(&next.Runtime.RateLimit)
 		}
 	}
 
