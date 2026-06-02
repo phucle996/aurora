@@ -18,39 +18,60 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// ============================================================================
+// 📌 HẰNG SỐ CẤU HÌNH PHẠM VI & KẾT QUẢ RATE LIMIT (CONSTANTS)
+// ============================================================================
 const (
-	rateLimitScopeIP           = "ip"
-	rateLimitScopeIPTracking   = "ip_tracking"
-	rateLimitScopeIPUser       = "ip_user"
-	rateLimitResultAllow       = "allow"
-	rateLimitResultBlocked     = "blocked"
-	rateLimitResultBypass      = "bypass"
-	rateLimitResultError       = "error"
-	rateLimitDecisionThrottle  = "throttle"
-	rateLimitDecisionIsolation = "temporary_isolation"
-	rateLimitDecisionBlock     = "block"
+	// Các phạm vi kiểm tra (Scope) dựa trên mức độ nhận dạng Client:
+	rateLimitScopeIP         = "ip"          // Chỉ nhận diện qua Client IP (Thô - PreAuth)
+	rateLimitScopeIPTracking = "ip_tracking"  // Nhận diện qua IP kết hợp Device ID (Mịn - PostAuth)
+	rateLimitScopeIPUser     = "ip_user"      // Nhận diện qua IP kết hợp User ID (Mịn - PostAuth)
+
+	// Các kết quả đánh giá kỹ thuật (Result):
+	rateLimitResultAllow   = "allow"   // Được phép đi qua
+	rateLimitResultBlocked = "blocked" // Bị chặn do vượt quota hoặc nằm trong blacklist
+	rateLimitResultBypass  = "bypass"  // Bỏ qua không kiểm tra (Ví dụ: health check, metrics)
+	rateLimitResultError   = "error"   // Lỗi hệ thống trong quá trình check (Ví dụ: Redis die)
+
+	// Các quyết định kiểm soát và leo thang hành vi (Decision/Escalation):
+	rateLimitDecisionThrottle  = "throttle"            // Giảm tốc / Chậm lại (Trả về 429)
+	rateLimitDecisionIsolation = "temporary_isolation" // Cách ly tạm thời đối tượng nghi vấn
+	rateLimitDecisionBlock     = "block"               // Khóa hoàn toàn truy cập
 )
 
+// ============================================================================
+// 🔄 ĐỘNG CƠ QUYẾT ĐỊNH & LƯU TRỮ CẤU HÌNH ĐỘNG (ENGINE & STORAGE)
+// ============================================================================
+
+// rateLimitEngine là Decision Engine cục bộ, quản lý danh sách đen/cách ly tạm thời (Local Deny Cache).
+// Giúp tránh phải truy vấn Redis liên tục đối với các IP/User đã được xác định là đang spam.
 var rateLimitEngine = ratelimit.NewDecisionEngine()
 
+// rateLimitPolicyConfig lưu trữ cấu hình rate limit đã biên dịch và sẵn sàng thực thi ở runtime.
 type rateLimitPolicyConfig struct {
-	preAuthCapacity          int64
-	preAuthRefill            int64
-	preAuthPeriod            time.Duration
-	postAuthPathRules        map[string]policyRateLimit.CompiledRateLimitBucketPolicy
-	globalInstantMaxInflight int64
-	globalInstantRetryAfter  time.Duration
-	retryFallback            time.Duration
-	throttleSample           int
-	isolationSample          int
-	blockSample              int
-	errorSample              int
-	bypassRoutes             map[string]struct{}
+	preAuthCapacity          int64                                                    // Sức chứa của bucket PreAuth (IP-based)
+	preAuthRefill            int64                                                    // Tốc độ nạp lại của bucket PreAuth
+	preAuthPeriod            time.Duration                                            // Chu kỳ thời gian của bucket PreAuth
+	postAuthPathRules        map[string]policyRateLimit.CompiledRateLimitBucketPolicy // Map chứa quy tắc rate limit riêng cho từng Path (Post-Auth)
+	globalInstantMaxInflight int64                                                    // Số lượng request đồng thời tối đa toàn hệ thống (Inflight limit)
+	globalInstantRetryAfter  time.Duration                                            // Thời gian client phải chờ khi chạm ngưỡng MaxInflight
+	retryFallback            time.Duration                                            // Thời gian chờ mặc định khi Redis không trả về RetryAfter
+	throttleSample           int                                                      // Tỷ lệ log sampling cho hành vi Throttle (%)
+	isolationSample          int                                                      // Tỷ lệ log sampling cho hành vi Isolation (%)
+	blockSample              int                                                      // Tỷ lệ log sampling cho hành vi Block (%)
+	errorSample              int                                                      // Tỷ lệ log sampling cho hành vi Error (%)
+	bypassRoutes             map[string]struct{}                                      // Tập hợp các route được bypass hoàn toàn
 }
 
+// Cấu hình Rate Limit được lưu trữ trong một atomic.Value để đảm bảo an toàn luồng (Thread-safety).
+// Khi có sự thay đổi từ Policy Engine (đọc từ file YAML động), cấu hình mới sẽ được ghi đè (store) atomically.
 var rateLimitPolicyHolder atomic.Value
+
+// rateLimitInflight theo dõi số lượng request hiện tại đang nằm trong pipeline xử lý của limiter.
+// Được sử dụng bởi cơ chế Global Instant Concurrency Limiter để chống quá tải tức thời (DDoS).
 var rateLimitInflight atomic.Int64
 
+// currentRateLimitPolicy là hàm helper lấy ra bản sao cấu hình rate limit hiện tại một cách an toàn luồng.
 func currentRateLimitPolicy() rateLimitPolicyConfig {
 	v := rateLimitPolicyHolder.Load()
 	if v == nil {
@@ -59,13 +80,16 @@ func currentRateLimitPolicy() rateLimitPolicyConfig {
 	return v.(rateLimitPolicyConfig)
 }
 
-// InitRateLimitPolicy nạp runtime policy cho rate-limit và fallback về default an toàn nếu thiếu key.
+// InitRateLimitPolicy nhận cấu hình đã biên dịch từ Policy Engine, chuyển đổi kiểu dữ liệu thích hợp
+// và nạp vào atomic holder để các middleware sử dụng ngay lập tức mà không cần khởi động lại ứng dụng.
 func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
+	// Khởi tạo map cho các route bypass để kiểm tra O(1):
 	bypassRoutes := map[string]struct{}{}
 	for _, route := range policy.Behavior.BypassRoutePatterns {
 		bypassRoutes[route] = struct{}{}
 	}
 
+	// Biên dịch các luật giới hạn theo từng đường dẫn (Path Rules):
 	pathRules := make(map[string]policyRateLimit.CompiledRateLimitBucketPolicy, len(policy.PostAuth.Rules))
 	for _, rule := range policy.PostAuth.Rules {
 		pathRules[rule.Path] = policyRateLimit.CompiledRateLimitBucketPolicy{
@@ -75,6 +99,7 @@ func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 		}
 	}
 
+	// Tạo cấu trúc config runtime mới:
 	cfg := rateLimitPolicyConfig{
 		preAuthCapacity:          policy.PreAuth.IP.Capacity,
 		preAuthRefill:            policy.PreAuth.IP.Refill,
@@ -89,28 +114,36 @@ func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 		errorSample:              policy.Observability.SamplingPercent.Error,
 		bypassRoutes:             bypassRoutes,
 	}
+	// Ghi đè cấu hình cũ một cách an toàn luồng (Atomic Store):
 	rateLimitPolicyHolder.Store(cfg)
 }
 
+// ============================================================================
+// 📊 KHAI BÁO CÁC CHỈ SỐ ĐO LƯỜNG PROMETHEUS (METRICS DEFINITION)
+// ============================================================================
 var (
+	// Theo dõi tổng số lượng check rate limit, phân nhóm theo API, phân khúc (Scope) và kết quả (Allow/Blocked...):
 	rateLimitCheckTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "security",
 		Name:      "ratelimit_check_total",
 		Help:      "Total number of rate limit checks by route/rule/result.",
 	}, []string{"route_pattern", "rule_scope", "result"})
 
+	// Theo dõi tổng số quyết định chặn/phạt được đưa ra (Throttle/Block/Isolation):
 	rateLimitDecisionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "security",
 		Name:      "ratelimit_decision_total",
 		Help:      "Total number of final rate limit decisions by route/scope.",
 	}, []string{"route_pattern", "decision", "rule_scope"})
 
+	// Theo dõi các lỗi phát sinh trong quá trình đánh giá (ví dụ: mất kết nối tới cụm Redis):
 	rateLimitErrorTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "security",
 		Name:      "ratelimit_error_total",
 		Help:      "Total number of rate limit evaluation errors by route/error type.",
 	}, []string{"route_pattern", "error_type"})
 
+	// Đo lường thời gian xử lý (Latency) của evaluator (không tính độ trễ mạng của Redis):
 	rateLimitEvalDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Subsystem: "security",
 		Name:      "ratelimit_eval_duration_seconds",
@@ -118,6 +151,7 @@ var (
 		Buckets:   prometheus.DefBuckets,
 	}, []string{"rule_scope"})
 
+	// Phân tích phân phối thời gian chờ (Retry-After) được trả về cho phía Client:
 	rateLimitRetryAfter = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Subsystem: "security",
 		Name:      "ratelimit_retry_after_seconds",
@@ -125,6 +159,7 @@ var (
 		Buckets:   []float64{1, 2, 3, 5, 8, 13, 21, 34, 55, 89},
 	}, []string{"route_pattern"})
 
+	// Theo dõi các hoạt động trên Cache Deny cục bộ (Hit/Evict/Add):
 	rateLimitLocalCacheTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Subsystem: "security",
 		Name:      "ratelimit_local_cache_total",
@@ -132,16 +167,12 @@ var (
 	}, []string{"action", "rule_scope"})
 )
 
+// Đăng ký module metrics với observability bootstrap của hệ thống khi package được load:
 func init() {
 	observability.RegisterModuleMetrics(RegisterRateLimitMetrics)
 }
 
-// RegisterRateLimitMetrics đăng ký toàn bộ metrics anti-probing do middleware phát ra.
-// Cách dùng:
-// - Không gọi trực tiếp ở route/handler.
-// - Hàm này được observability bootstrap gọi qua RegisterModuleMetrics trong init().
-// - Mỗi process chỉ cần register 1 lần; repeated register sẽ được bỏ qua bằng AlreadyRegisteredError.
-// Chỉ số theo dõi chính: block rate, backend error rate, eval latency theo rule scope.
+// RegisterRateLimitMetrics đăng ký toàn bộ metrics anti-probing vào Prometheus registry trung tâm.
 func RegisterRateLimitMetrics(registry *prometheus.Registry, namespace string) error {
 	_ = namespace
 	collectors := []prometheus.Collector{
@@ -152,6 +183,7 @@ func RegisterRateLimitMetrics(registry *prometheus.Registry, namespace string) e
 		rateLimitRetryAfter,
 		rateLimitLocalCacheTotal,
 	}
+	// Duyệt qua và đăng ký từng collector; bỏ qua lỗi nếu metric đã được đăng ký trước đó (AlreadyRegistered):
 	for _, collector := range collectors {
 		if err := registry.Register(collector); err != nil {
 			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
@@ -163,36 +195,30 @@ func RegisterRateLimitMetrics(registry *prometheus.Registry, namespace string) e
 	return nil
 }
 
-// RateLimitPreAuth xử lý admission trước auth với key theo IP.
-// Các case chính:
-// 1) bypass endpoint health/metrics -> cho qua ngay,
-// 2) state đang active (throttle/isolation/block) -> trả 429 + Retry-After,
-// 3) backend limiter lỗi và request bị deny -> trả 503,
-// 4) vượt ngưỡng bucket -> throttle và ghi dấu escalation.
-// Cách dùng:
-// - Gắn ở global middleware chain (app bootstrap), trước AccessLog và trước các auth/business middleware.
-// - Không gắn lại ở per-route nếu đã dùng global preauth để tránh double enforcement.
-// - capacity/refill/period là baseline admission cho toàn app hoặc nhóm route ở mức global.
-// Chỉ số theo dõi đề xuất cho nhánh middleware này:
-// - p95 eval_duration_seconds < 5ms (không tính RTT Redis),
-// - tỉ lệ backend_unavailable trên tổng check < 0.1% trong trạng thái bình thường.
-// Flow nội bộ theo từng bước:
-// - B1: lấy routePattern và check bypass list.
-// - B2: fail-open local cho config/limiter invalid (cho qua, có metric allow).
-// - B3: build key từ IP; thiếu key thì cho qua.
-// - B4: hỏi decision engine state active (throttle/isolation/block).
-// - B5: nếu state active thì trả 429 ngay + Retry-After + security event log.
-// - B6: nếu không active thì gọi Redis token-bucket evaluate.
-// - B7: map kết quả evaluate sang allow/error/throttle và emit metric/log tương ứng.
+// ============================================================================
+// 🛡️ MIDDLEWARE 1: RATE LIMIT PRE-AUTH (ADMISSION FILTER)
+// ============================================================================
+
+// RateLimitPreAuth xử lý lọc chặn thô dựa trên IP trước khi định danh người dùng.
+// Nhiệm vụ chính: Bảo vệ tài nguyên tính toán ở rìa hệ thống, ngăn chặn DDoS/Spam thô bạo.
 func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B1: LẤY ROUTE PATTERN & KIỂM TRA DANH SÁCH BYPASS (SHORT-CIRCUIT)
+		// --------------------------------------------------------------------
 		routePattern := routePatternOf(c)
 		if shouldBypassRateLimit(routePattern) {
+			// Ghi nhận metric và cho qua ngay (ví dụ: các API health check, Prometheus scrape)
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBypass).Inc()
 			c.Next()
 			return
 		}
+
+		// --------------------------------------------------------------------
+		// ⚡ BƯỚC B1.2: KIỂM TRA GIỚI HẠN REQUEST ĐỒNG THỜI TOÀN HỆ THỐNG (GLOBAL INFLIGHT)
+		// --------------------------------------------------------------------
 		if !acquireGlobalInstantPermit() {
+			// Hệ thống đang bị quá tải số lượng request đồng thời -> Từ chối ngay lập tức để tự bảo vệ
 			retryAfter := currentRateLimitPolicy().globalInstantRetryAfter
 			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(retryAfter))
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBlocked).Inc()
@@ -202,22 +228,34 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		defer releaseGlobalInstantPermit()
+		defer releaseGlobalInstantPermit() // Giải phóng slot inflight khi request xử lý xong
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B2: KIỂM TRA TÍNH HỢP LỆ CỦA CẤU HÌNH (FAIL-OPEN LOCAL)
+		// --------------------------------------------------------------------
 		policyCfg := currentRateLimitPolicy()
 		if limiter == nil || name == "" || policyCfg.preAuthCapacity <= 0 || policyCfg.preAuthRefill <= 0 || policyCfg.preAuthPeriod <= 0 {
+			// Cấu hình không hợp lệ hoặc Redis Limiter chưa sẵn sàng -> Cho qua (Fail-Open) để tránh nghẽn luồng nghiệp vụ
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B3: XÁC ĐỊNH IDENTITY CỦA CLIENT & TẠO REDIS KEY
+		// --------------------------------------------------------------------
 		key := ratelimit.Key("", name, clientIdentity(c))
 		if key == "" {
+			// Không xác định được IP client -> Cho qua để tránh block oan
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B4 & B5: TRA CỨU TRẠNG THÁI CHẶN TRONG LOCAL DENY CACHE (FAST-PATH)
+		// --------------------------------------------------------------------
+		// Kiểm tra trạng thái Throttle cục bộ:
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionThrottle {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionThrottle, rateLimitScopeIP).Inc()
@@ -231,6 +269,7 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			return
 		}
 
+		// Kiểm tra trạng thái Block cục bộ:
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionBlock {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionBlock, rateLimitScopeIP).Inc()
@@ -242,6 +281,7 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			return
 		}
 
+		// Kiểm tra trạng thái Isolation cục bộ:
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionIsolation {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionIsolation, rateLimitScopeIP).Inc()
@@ -253,6 +293,9 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			return
 		}
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B6: THỰC THI KIỂM TRA QUOTA BUCKET TRÊN REDIS (SLOW-PATH)
+		// --------------------------------------------------------------------
 		evalStart := time.Now()
 
 		res, err := limiter.Allow(
@@ -266,11 +309,19 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			1,
 		)
 
+		// Đẩy các header chuẩn Rate Limit về cho Client:
 		for k, v := range ratelimit.RateLimitHeaders(res) {
 			c.Writer.Header().Set(k, v)
 		}
 		rateLimitEvalDuration.WithLabelValues(rateLimitScopeIP).Observe(time.Since(evalStart).Seconds())
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B7: ĐÁNH GIÁ KẾT QUẢ & CẬP NHẬT TRẠNG THÁI CHẶN (ACTION MAP)
+		// --------------------------------------------------------------------
+		
+		// Trường hợp lỗi kết nối Redis (err != nil) -> Áp dụng chính sách Fail-Closed:
+		// Để bảo vệ Database trung tâm khỏi bị DDoS sập nguồn khi bộ lọc chặn (Redis) bị hỏng,
+		// chúng ta từ chối request và trả về lỗi 503 (Service Unavailable).
 		if err != nil && !res.Allowed {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultError).Inc()
 			rateLimitErrorTotal.WithLabelValues(routePattern, "backend_unavailable").Inc()
@@ -280,10 +331,13 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			return
 		}
 
+		// Trường hợp cạn kiệt Token (Vượt quota giới hạn):
 		if !res.Allowed {
 			rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitDecisionThrottle, rateLimitScopeIP).Inc()
 			retryAfter := retryAfterFromRate(res)
+			
+			// Ghi nhận vi phạm vào local engine để block nhanh các request tiếp theo ở bộ nhớ RAM:
 			rateLimitEngine.RecordThrottle(key)
 			if retryAfter > 0 {
 				rateLimitRetryAfter.WithLabelValues(routePattern).Observe(retryAfter.Seconds())
@@ -294,6 +348,7 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 			return
 		}
 
+		// Request hợp lệ và nằm trong định mức cho phép:
 		rateLimitCheckTotal.WithLabelValues(routePattern, rateLimitScopeIP, rateLimitResultAllow).Inc()
 		rateLimitDecisionTotal.WithLabelValues(routePattern, rateLimitResultAllow, rateLimitScopeIP).Inc()
 
@@ -301,32 +356,21 @@ func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
 	}
 }
 
-// RateLimitPostAuth applies identity-aware abuse rate limit.
-//
-// Rule priority:
-// 1) ip + runtime_device_id
-// 2) ip + user_id
-//
-// If both identity dimensions are missing, middleware skips enforcement.
-// Mục tiêu là giảm block oan trong NAT bằng identity-aware key trước khi fallback IP-only.
-// Cách dùng:
-// - Gắn sau middleware auth guard (Access/AdminAPIKeyAuth) để context có user/device identity.
-// - Dùng cho route nhạy cảm (auth/admin/me-device), không cần gắn cho health/public không cần identity.
-// - Nếu thiếu cả device/user identity thì middleware cho qua để tránh fail cứng sai ngữ cảnh.
-// Chỉ số theo dõi đề xuất:
-// - tỉ lệ false-positive (đánh giá qua complaint/manual review) giảm theo rollout,
-// - p95 eval_duration_seconds ở postauth không vượt preauth quá 20%.
-// Flow nội bộ theo từng bước:
-// - B1: lấy routePattern và check bypass list.
-// - B2: fail-open local cho config/limiter invalid (cho qua, có metric allow).
-// - B3: lấy identity context từ middleware trước (device/user) và build key theo ưu tiên.
-// - B4: nếu không build được key thì cho qua để tránh deny sai ngữ cảnh.
-// - B5: hỏi decision engine state active (throttle/isolation/block).
-// - B6: nếu state active thì trả 429 ngay + Retry-After + security event log.
-// - B7: nếu không active thì gọi Redis token-bucket evaluate.
-// - B8: map kết quả evaluate sang allow/error/throttle và emit metric/log tương ứng.
+// ============================================================================
+// 🛡️ MIDDLEWARE 2: RATE LIMIT POST-AUTH (IDENTITY-AWARE ABUSE LIMITER)
+// ============================================================================
+
+// RateLimitPostAuth thực hiện giới hạn tần suất dựa trên thông tin định danh chi tiết.
+// Chỉ áp dụng sau các middleware xác thực (Access, AdminAPIKeyAuth).
+// Giúp tránh việc block nhầm các máy khách hợp lệ nằm sau cùng một NAT IP bằng cách ưu tiên key:
+// 1) IP + Device ID
+// 2) IP + User ID
+// 3) IP (Fallback cuối cùng)
 func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B1: KIỂM TRA BYPASS ROUTE PATTERN (SHORT-CIRCUIT)
+		// --------------------------------------------------------------------
 		if shouldBypassRateLimit(path) {
 			rateLimitCheckTotal.WithLabelValues(path, rateLimitScopeIPTracking, rateLimitResultBypass).Inc()
 			c.Next()
@@ -335,43 +379,56 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 
 		policyCfg := currentRateLimitPolicy()
 
-		// 1. Tra cứu cực nhanh O(1) bằng path tĩnh trong RAM
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B2: TRA CỨU NHANH CẤU HÌNH ĐƯỜNG DẪN (RAM MAP O(1))
+		// --------------------------------------------------------------------
 		rule, found := policyCfg.postAuthPathRules[path]
 		if !found {
-			// SRE không cấu hình giới hạn cho API này -> Bypass (No rate limit)
+			// SRE không định nghĩa giới hạn cho đường dẫn này -> Cho qua (Bypass)
 			rateLimitCheckTotal.WithLabelValues(path, rateLimitScopeIPTracking, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
 
 		if limiter == nil {
+			// Backend Redis chưa sẵn sàng -> Cho qua (Fail-Open) để tránh block nhầm
 			rateLimitCheckTotal.WithLabelValues(path, rateLimitScopeIPTracking, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B3: LẤY THÔNG TIN ĐỊNH DANH ĐỂ BUILD IDENTITY KEY
+		// --------------------------------------------------------------------
 		clientIP := clientIdentity(c)
-		runtimeDeviceID := strings.TrimSpace(GetRuntimeAccessKey(c))
-		userID := strings.TrimSpace(GetUserID(c))
+		runtimeDeviceID := strings.TrimSpace(GetRuntimeAccessKey(c)) // Lấy Device Access Key
+		userID := strings.TrimSpace(GetUserID(c))                  // Lấy User ID từ token claims
 
-		// 2. Tạo Redis key sử dụng trực tiếp path làm prefix
+		// Xây dựng Key theo thứ tự ưu tiên giảm dần để tránh NAT Blocking:
 		ruleScope := rateLimitScopeIPTracking
-		key := ratelimit.KeyIPDevice(path, clientIP, runtimeDeviceID)
+		key := ratelimit.KeyIPDevice(path, clientIP, runtimeDeviceID) // 1. IP + Device
 		if key == "" {
 			ruleScope = rateLimitScopeIPUser
-			key = ratelimit.KeyIPUser(path, clientIP, userID)
+			key = ratelimit.KeyIPUser(path, clientIP, userID)        // 2. IP + User (Nếu thiếu Device)
 		}
 		if key == "" {
 			ruleScope = rateLimitScopeIP
-			key = ratelimit.KeyIP(path, clientIP)
+			key = ratelimit.KeyIP(path, clientIP)                    // 3. Fallback IP thô (Nếu chưa định danh)
 		}
+		
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B4: KIỂM TRA ĐIỀU KIỆN KEY RỖNG
+		// --------------------------------------------------------------------
 		if key == "" {
 			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultAllow).Inc()
 			c.Next()
 			return
 		}
 
-		// 3. Kiểm tra trạng thái chặn của Decision Engine
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B5 & B6: KIỂM TRA TRẠNG THÁI TRONG LOCAL DENY CACHE
+		// --------------------------------------------------------------------
+		// Kiểm tra trạng thái Throttle cục bộ:
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionThrottle {
 			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionThrottle, ruleScope).Inc()
@@ -385,6 +442,7 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 			return
 		}
 
+		// Kiểm tra trạng thái Block cục bộ:
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionBlock {
 			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionBlock, ruleScope).Inc()
@@ -396,6 +454,7 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 			return
 		}
 
+		// Kiểm tra trạng thái Isolation cục bộ:
 		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionIsolation {
 			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionIsolation, ruleScope).Inc()
@@ -407,7 +466,9 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 			return
 		}
 
-		// 4. Kiểm tra quota token bucket trên Redis
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B7: ĐÁNH GIÁ QUOTA TRÊN REDIS TOKEN BUCKET (SLOW-PATH)
+		// --------------------------------------------------------------------
 		evalStart := time.Now()
 		res, err := limiter.Allow(
 			c.Request.Context(),
@@ -424,6 +485,11 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 		}
 		rateLimitEvalDuration.WithLabelValues(ruleScope).Observe(time.Since(evalStart).Seconds())
 
+		// --------------------------------------------------------------------
+		// 🚀 BƯỚC B8: PHÂN LOẠI KẾT QUẢ & CẬP NHẬT TRẠNG THÁI CHẶN (ACTION MAP)
+		// --------------------------------------------------------------------
+		
+		// Lỗi kết nối Redis -> Áp dụng Fail-Closed bảo vệ DB:
 		if err != nil && !res.Allowed {
 			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultError).Inc()
 			rateLimitErrorTotal.WithLabelValues(path, "backend_unavailable").Inc()
@@ -433,10 +499,13 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 			return
 		}
 
+		// Quá quota -> Chặn và ghi nhận vi phạm vào local deny cache:
 		if !res.Allowed {
 			rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultBlocked).Inc()
 			rateLimitDecisionTotal.WithLabelValues(path, rateLimitDecisionThrottle, ruleScope).Inc()
 			retryAfter := retryAfterFromRate(res)
+			
+			// Đánh dấu vi phạm để các request sau đó bị reject ngay trên RAM:
 			rateLimitEngine.RecordThrottle(key)
 			if retryAfter > 0 {
 				rateLimitRetryAfter.WithLabelValues(path).Observe(retryAfter.Seconds())
@@ -447,23 +516,26 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 			return
 		}
 
+		// Cho phép đi qua:
 		rateLimitCheckTotal.WithLabelValues(path, ruleScope, rateLimitResultAllow).Inc()
 		rateLimitDecisionTotal.WithLabelValues(path, rateLimitResultAllow, ruleScope).Inc()
 		c.Next()
 	}
 }
 
-// formatRetryAfterSeconds chuẩn hóa Retry-After về số giây nguyên dương.
-// Cách dùng:
-// - Chỉ dùng để set HTTP header Retry-After cho nhánh deny.
-// - duration <= 0 vẫn trả về tối thiểu 1 giây để client luôn có backoff hợp lệ.
+// ============================================================================
+// 🛠️ CÁC HÀM TIỆN ÍCH & TRỢ GIÚP NỘI BỘ (HELPER FUNCTIONS)
+// ============================================================================
+
+// formatRetryAfterSeconds chuẩn hóa thời gian chờ (Duration) về dạng chuỗi giây nguyên dương.
+// Thích hợp để ghi vào Header `Retry-After`.
 func formatRetryAfterSeconds(retryAfter time.Duration) string {
 	if retryAfter <= 0 {
 		return "1"
 	}
 	seconds := int(retryAfter.Seconds())
 	if float64(seconds) < retryAfter.Seconds() {
-		seconds++
+		seconds++ // Làm tròn lên để đảm bảo an toàn thời gian chờ
 	}
 	if seconds <= 0 {
 		seconds = 1
@@ -471,21 +543,14 @@ func formatRetryAfterSeconds(retryAfter time.Duration) string {
 	return strconv.Itoa(seconds)
 }
 
-// shouldBypassRateLimit xác định các endpoint luôn được ưu tiên sống.
-// Các endpoint này không được để limiter chặn vì ảnh hưởng trực tiếp liveness/metrics scraping.
-// Cách dùng:
-// - Được gọi ở đầu PreAuth/PostAuth để short-circuit.
-// - Nếu thêm endpoint mới kiểu health/ops, cần cập nhật tại đây để tránh false deny.
+// shouldBypassRateLimit xác định nhanh xem routePattern hiện tại có được miễn kiểm tra rate limit hay không.
 func shouldBypassRateLimit(routePattern string) bool {
 	_, ok := currentRateLimitPolicy().bypassRoutes[strings.TrimSpace(routePattern)]
 	return ok
 }
 
-// routePatternOf lấy route đã normalize (nếu có), fallback về URL path.
-// Mục tiêu là giữ cardinality metrics/log ổn định để không bùng nổ chi phí quan sát.
-// Cách dùng:
-// - Dùng cho label route_pattern trong metrics/log của rate-limit.
-// - Ưu tiên FullPath() để tránh mỗi URL param tạo 1 metric series riêng.
+// routePatternOf lấy chuỗi route chuẩn hóa của Gin (Ví dụ: "/api/v1/users/:id").
+// Nếu không lấy được FullPath, fallback về URL path thô của request.
 func routePatternOf(c *gin.Context) string {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return "/"
@@ -500,10 +565,8 @@ func routePatternOf(c *gin.Context) string {
 	return path
 }
 
-// retryAfterFromRate đảm bảo nhánh 429 luôn có backoff nhất quán.
-// Nếu limiter không trả RetryAfter thì dùng mặc định 2 giây để tránh retry storm tức thời.
-// Cách dùng:
-// - Chỉ gọi sau khi quyết định deny vì quota exceeded.
+// retryAfterFromRate trả về thời gian chờ từ kết quả đánh giá của Redis Limiter.
+// Nếu không xác định được, fallback về cấu hình mặc định (retryFallback) của hệ thống.
 func retryAfterFromRate(res ratelimit.Result) time.Duration {
 	if res.RetryAfter > 0 {
 		return res.RetryAfter
@@ -511,15 +574,10 @@ func retryAfterFromRate(res ratelimit.Result) time.Duration {
 	return currentRateLimitPolicy().retryFallback
 }
 
-// emitRateLimitSecurityEvent ghi log security riêng cho anti-probing.
-// Case xử lý: chỉ ghi khi sampling cho phép; subject key luôn hash để tránh lộ dữ liệu nhạy cảm.
-// Chỉ số theo dõi chi phí log:
-// - decision=throttle dùng sampling thấp,
-// - decision=block/error giữ sampling cao để đủ forensic.
-// Cách dùng:
-// - Gọi ở mọi nhánh deny/error trước khi trả response.
-// - Không dùng cho success path để tránh phình chi phí log.
+// emitRateLimitSecurityEvent thực hiện ghi log bảo mật (Security Event Log) cho các sự kiện rate limit.
+// Sử dụng cơ chế Sampling để tránh bùng nổ dung lượng log khi bị tấn công DDoS hàng loạt.
 func emitRateLimitSecurityEvent(c *gin.Context, routePattern, ruleScope, decision, escalationReason string, retryAfter, ttl time.Duration, subjectKey string) {
+	// Kiểm tra điều kiện log sampling dựa trên loại quyết định (Throttle/Block/Isolation/Error):
 	if !shouldEmitRateLimitSecurityEvent(c, decision, subjectKey) {
 		return
 	}
@@ -533,16 +591,14 @@ func emitRateLimitSecurityEvent(c *gin.Context, routePattern, ruleScope, decisio
 		"escalation_reason": escalationReason,
 		"retry_after_ms":    retryAfter.Milliseconds(),
 		"ttl_ms":            ttl.Milliseconds(),
-		"subject_key_hash":  hashSubjectKey(subjectKey),
+		"subject_key_hash":  hashSubjectKey(subjectKey), // Hash thông tin nhạy cảm trước khi ghi log
 	}
 	logger.L().WithFields(fields).Warn("security_ratelimit_decision")
 }
 
-// shouldEmitRateLimitSecurityEvent quyết định có ghi log hay không theo sampling tất định.
-// Cách làm: hash(request_id + decision + subject) để phân phối ổn định, tránh lệch ngẫu nhiên.
-// Cách dùng:
-// - Chỉ dùng nội bộ bởi emitRateLimitSecurityEvent.
-// - Không dùng làm quyết định security, chỉ để kiểm soát chi phí observability.
+// shouldEmitRateLimitSecurityEvent thực hiện phân phối mẫu log (Sampling) mang tính tất định.
+// Sử dụng hàm băm SHA256 dựa trên: request_id + decision + subjectKey để tạo tính ổn định
+// và nhất quán trên toàn bộ môi trường Cloud Native phân tán.
 func shouldEmitRateLimitSecurityEvent(c *gin.Context, decision, subjectKey string) bool {
 	samplePercent := samplingPercentByDecision(decision)
 	if samplePercent >= 100 {
@@ -556,20 +612,11 @@ func shouldEmitRateLimitSecurityEvent(c *gin.Context, decision, subjectKey strin
 		return false
 	}
 	hash := sha256.Sum256([]byte(seed))
-	bucket := int(hash[0]) % 100
+	bucket := int(hash[0]) % 100 // Lấy byte đầu tiên để ánh xạ về dải 0-99
 	return bucket < samplePercent
 }
 
-// samplingPercentByDecision định nghĩa sampling mặc định theo mức độ nghiêm trọng.
-// Chỉ số hiện tại:
-// - throttle: 10%
-// - temporary_isolation: 50%
-// - block: 100%
-// - error: 100%
-// Chỉ số theo dõi: giảm log amplification nhưng vẫn đủ dữ liệu điều tra sự cố.
-// Cách dùng:
-// - Mapping này là default policy tại code-level.
-// - Khi có config runtime policy sau này, mapping này sẽ là fallback mặc định.
+// samplingPercentByDecision lấy tỷ lệ mẫu log tương ứng với mức độ nghiêm trọng của sự kiện.
 func samplingPercentByDecision(decision string) int {
 	switch strings.TrimSpace(decision) {
 	case "error":
@@ -585,6 +632,8 @@ func samplingPercentByDecision(decision string) int {
 	}
 }
 
+// acquireGlobalInstantPermit kiểm tra và giữ 1 slot concurrency (inflight) cho request.
+// Sử dụng vòng lặp Compare-And-Swap (CAS) an toàn đa luồng mà không gây block hệ thống.
 func acquireGlobalInstantPermit() bool {
 	cfg := currentRateLimitPolicy()
 	if cfg.globalInstantMaxInflight <= 0 {
@@ -593,6 +642,7 @@ func acquireGlobalInstantPermit() bool {
 	for {
 		cur := rateLimitInflight.Load()
 		if cur >= cfg.globalInstantMaxInflight {
+			// Ghi nhận sự kiện reject do quá tải đồng thời cục bộ:
 			rateLimitLocalCacheTotal.WithLabelValues("global_inflight_reject", rateLimitScopeIP).Inc()
 			return false
 		}
@@ -602,6 +652,7 @@ func acquireGlobalInstantPermit() bool {
 	}
 }
 
+// releaseGlobalInstantPermit giải phóng 1 slot concurrency (inflight) khi request hoàn tất xử lý.
 func releaseGlobalInstantPermit() {
 	for {
 		cur := rateLimitInflight.Load()
@@ -614,8 +665,7 @@ func releaseGlobalInstantPermit() {
 	}
 }
 
-// requestIDValue lấy request_id đã inject từ middleware RequestID để correlate log/trace.
-// Cách dùng: chỉ phục vụ log correlation, không dùng cho identity/security decision.
+// requestIDValue lấy mã Request ID duy nhất để hỗ trợ truy vết (Forensics) từ Gin context.
 func requestIDValue(c *gin.Context) string {
 	if c == nil {
 		return ""
@@ -625,9 +675,7 @@ func requestIDValue(c *gin.Context) string {
 	return strings.TrimSpace(requestID)
 }
 
-// hashSubjectKey băm subject key trước khi ghi log để tránh lộ dữ liệu thô.
-// Đồng thời vẫn giữ khả năng group sự kiện theo cùng subject trong quá trình điều tra.
-// Cách dùng: luôn gọi trước khi ghi subject vào log field.
+// hashSubjectKey băm subject key bằng SHA256 nhằm bảo mật thông tin IP/User/Device thô trong hệ thống ghi log tập trung.
 func hashSubjectKey(subject string) string {
 	subject = strings.TrimSpace(subject)
 	if subject == "" {
@@ -637,14 +685,7 @@ func hashSubjectKey(subject string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// clientIdentity lấy IP client theo thứ tự ưu tiên:
-// 1) gin ClientIP
-// 2) parse RemoteAddr
-// 3) fallback raw addr
-// Mục tiêu là luôn có identity tối thiểu cho preauth limiter.
-// Cách dùng:
-// - Dùng ở preauth để build subject key.
-// - Không coi đây là identity mạnh; postauth sẽ ưu tiên device/user khi có context.
+// clientIdentity trích xuất IP của máy khách dựa trên các header ủy nhiệm (Proxy) từ Gin.
 func clientIdentity(c *gin.Context) string {
 	if c == nil || c.Request == nil {
 		return ""

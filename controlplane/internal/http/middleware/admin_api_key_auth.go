@@ -1,3 +1,28 @@
+// ============================================================================
+// 🛡️ ARCHITECTURAL & SYSTEM CONTRACTS
+// ============================================================================
+//
+// 🤝 1. SYSTEM CONTRACT
+//   - Accepted Cookies: Yêu cầu bắt buộc 3 cookie (access_token, access_key,
+//     access_secret). Trả về generic 401 nếu thiếu để chống user enumeration.
+//   - Token Validation: Phân tích token bằng danh sách candidates hỗ trợ secret rotation.
+//   - Fail-Closed: Nếu thiếu callback khởi tạo hoặc các cấu hình bắt buộc, middleware
+//     sẽ tự động từ chối request với mã lỗi 503 Service Unavailable để tự bảo vệ.
+//
+// 📖 2. SOURCE OF TRUTH
+//   - Callback và dependency được app/module.go đọc từ cấu hình và truyền vào
+//     InitAdminAPIKeyAuth duy nhất một lần trong quá trình bootstrap hệ thống.
+//   - Router chỉ gọi middleware.AdminAPIKeyAuth() mà không cần truyền lại tham số.
+//
+// 🚧 3. SYSTEM BOUNDARY
+//   - Middleware decoupled hoàn toàn, không import trực tiếp các module IAM/Core.
+//   - Chỉ giao tiếp thông qua các contract callback được tiêm vào (verifyAccessSecret,
+//     setRotationRequired).
+//
+// 💡 4. OPERATIONAL NOTES
+//   - Hiệu năng: Xác thực token và so khớp cookie trực tiếp trên RAM giúp giảm thiểu
+//     độ trễ tối đa. Chỉ gọi DB/Redis thông qua callback verifyAccessSecret khi token hợp lệ.
+
 package middleware
 
 import (
@@ -15,18 +40,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// adminAPIKeyRotationTriggerTTL là TTL (khóa chặn) của cờ yêu cầu xoay vòng khóa.
+// Khi token hết hạn, cờ này được ghi nhận ngay lập tức để kích hoạt background worker xoay khóa tức thời.
+// Cờ có TTL 10 phút đóng vai trò rate-limiter, ngăn chặn việc hàng loạt request hết hạn song song cùng
+// gọi lệnh kích hoạt xoay khóa liên tiếp gây quá tải hệ thống (stampede prevention).
 const adminAPIKeyRotationTriggerTTL = 10 * time.Minute
 
 // adminAPIKeyAuthState giữ dependency runtime cho admin API-key middleware.
-//
-// Source of truth:
-// - app/module.go gọi InitAdminAPIKeyAuth đúng một lần khi dựng module graph.
-// - Route chỉ gọi AdminAPIKeyAuth(...) và không truyền dependency của IAM vào.
-//
-// Boundary:
-//   - Middleware không import IAM/Core module.
-//   - Middleware chỉ biết các contract tối thiểu: secret provider, verify access
-//     secret, và marker yêu cầu rotation khi token hết hạn.
 var adminAPIKeyAuthState = struct {
 	mu                  sync.RWMutex
 	secrets             security.SecretProvider
@@ -42,16 +62,9 @@ type adminAuthOptions struct {
 
 // AdminAuthOption chỉ điều khiển dữ liệu nào được inject vào gin.Context
 // sau khi admin runtime auth đã pass.
-//
-// Ví dụ:
-// - route logout cần access_key để service revoke đúng runtime session.
-// - critical action cần access_key để signature guard build canonical payload.
 type AdminAuthOption func(*adminAuthOptions)
 
 // InitAdminAPIKeyAuth khởi tạo dependency cho AdminAPIKeyAuth.
-//
-// Hàm này thuộc tầng global wiring, không gọi trong route và không gọi trong
-// từng module handler. Nếu thiếu dependency, middleware sẽ fail-closed với 503.
 func InitAdminAPIKeyAuth(
 	sp security.SecretProvider,
 	verifyAccessSecret func(ctx context.Context, accessKey string, accessSecret string) (bool, error),
@@ -75,6 +88,8 @@ func InitAdminAPIKeyAuth(
 	return nil
 }
 
+// WithInjectAccessKey chỉ định middleware tiêm access_key của Admin vào Gin Context.
+// Cần thiết cho các middleware bảo mật chạy phía sau (như kiểm tra signature).
 func WithInjectAccessKey() AdminAuthOption {
 	return func(options *adminAuthOptions) {
 		if options != nil {
@@ -83,6 +98,8 @@ func WithInjectAccessKey() AdminAuthOption {
 	}
 }
 
+// WithInjectAccessSecret chỉ định middleware tiêm access_secret vào Gin Context.
+// Thường dùng cho các luồng nghiệp vụ đặc thù cần so khớp session hoặc revoke.
 func WithInjectAccessSecret() AdminAuthOption {
 	return func(options *adminAuthOptions) {
 		if options != nil {
@@ -91,6 +108,8 @@ func WithInjectAccessSecret() AdminAuthOption {
 	}
 }
 
+// WithInjectTokenJTI chỉ định middleware tiêm JTI (JWT ID) của token vào Gin Context.
+// Phục vụ việc định danh và kiểm tra trạng thái thu hồi của chính tấm token này.
 func WithInjectTokenJTI() AdminAuthOption {
 	return func(options *adminAuthOptions) {
 		if options != nil {
@@ -99,19 +118,7 @@ func WithInjectTokenJTI() AdminAuthOption {
 	}
 }
 
-// AdminAPIKeyAuth xác thực admin runtime session bằng 3 cookie:
-// - admin_api_token: JWT ký bởi secret family admin_api_key.
-// - admin_access_key: access key claim trong JWT phải khớp cookie này.
-// - admin_access_secret: secret fragment kiểm tra qua runtime cache.
-//
-// Thứ tự guard cố ý rõ ràng:
-// 1. Đọc đủ 3 cookie.
-// 2. Load dependency đã init ở app/module.go.
-// 3. Parse JWT bằng tất cả secret candidates để hỗ trợ rotation.
-// 4. Nếu token expired, đánh dấu cần rotation nhưng vẫn trả unauthorized.
-// 5. Check access_key claim khớp cookie.
-// 6. Verify access_secret qua runtime cache.
-// 7. Inject context theo option của route rồi mới cho request đi tiếp.
+// AdminAPIKeyAuth xác thực admin runtime session bằng 3 cookie.
 func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 	options := adminAuthOptions{}
 	for _, opt := range opts {
@@ -121,8 +128,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
-		// 1) Admin runtime auth bắt buộc có đủ 3 cookie fragment.
-		// Thiếu bất kỳ phần nào đều trả generic 401 để không leak trạng thái.
+		// --------------------------------------------------------------------
+		// 🔄 Đọc đủ 3 cookie bắt buộc của Admin.
+		//   Thiếu bất kỳ phần nào đều trả generic 401 để tránh leak trạng thái.
+		// --------------------------------------------------------------------
 		token, ok := readAdminCookie(c, constant.AdminAPITokenName)
 		if !ok {
 			return
@@ -136,8 +145,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			return
 		}
 
-		// 2) Dependency phải được init từ app/module.go trước khi register route.
-		// Nếu chưa init, đây là lỗi runtime wiring nên trả 503 thay vì 401.
+		// --------------------------------------------------------------------
+		// 🔄 Load các dependency đã được khởi tạo lúc Bootstrap.
+		//   Nếu chưa init, trả lỗi 503 Service Unavailable để tự bảo vệ (Fail-Closed).
+		// --------------------------------------------------------------------
 		adminAPIKeyAuthState.mu.RLock()
 		secrets := adminAPIKeyAuthState.secrets
 		verifyAccessSecret := adminAPIKeyAuthState.verifyAccessSecret
@@ -148,8 +159,9 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			return
 		}
 
-		// 3) Parse token bằng candidate list để hỗ trợ secret rotation.
-		// ErrTokenExpired được ghi nhận riêng để kích hoạt rotation marker.
+		// --------------------------------------------------------------------
+		// 🔄 Parse JWT bằng danh sách các candidates để hỗ trợ rotation.
+		// --------------------------------------------------------------------
 		candidates, err := secrets.GetCandidates(c.Request.Context(), security.SecretFamilyAdminAPIKey)
 		if err != nil || len(candidates) == 0 {
 			abortAdminAuthUnavailable(c)
@@ -174,25 +186,32 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 				return
 			}
 		}
+
+		// --------------------------------------------------------------------
+		// 🔄 Nếu phát hiện token đã hết hạn, kích hoạt background rotation marker
+		//   để hệ thống xoay khóa trong nền. Request hiện tại vẫn bị từ chối (401).
+		// --------------------------------------------------------------------
+		if expired {
+			_ = setRotationRequired(c.Request.Context(), adminAPIKeyRotationTriggerTTL)
+		}
+
 		if !parsed {
 			abortAdminUnauthorized(c)
 			return
 		}
-		if expired {
-			// Không block trên marker lỗi: request này vẫn bị từ chối phía dưới,
-			// còn background rotation có thể retry ở request sau.
-			_ = setRotationRequired(c.Request.Context(), adminAPIKeyRotationTriggerTTL)
-		}
 
-		// 4) Token phải bind với đúng access_key cookie. Đây là lớp chống copy
-		// riêng admin_api_token sang một device runtime khác.
+		// --------------------------------------------------------------------
+		// 🔄 Kiểm tra access_key claim khớp cookie gửi lên.
+		//   Giúp chống copy trộm admin_api_token sang thiết bị khác sử dụng.
+		// --------------------------------------------------------------------
 		if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
 			abortAdminUnauthorized(c)
 			return
 		}
 
-		// 5) access_secret là fragment runtime trong Redis. Token đúng nhưng
-		// access_secret sai hoặc không còn tồn tại thì session không hợp lệ.
+		// --------------------------------------------------------------------
+		// 🔄 Verify access_secret qua runtime cache (Redis).
+		// --------------------------------------------------------------------
 		verified, err := verifyAccessSecret(c.Request.Context(), accessKey, accessSecret)
 		if err != nil {
 			abortAdminAuthUnavailable(c)
@@ -203,8 +222,9 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			return
 		}
 
-		// 6) Chỉ inject dữ liệu mà route cần. Route thường chỉ cần auth pass,
-		// critical route cần access_key để middleware signature chạy phía sau.
+		// --------------------------------------------------------------------
+		// 🔄 Inject các thông tin cần thiết vào context dựa trên option.
+		// --------------------------------------------------------------------
 		if options.injectAccessKey {
 			c.Set(constant.ContextKeyAdminAccessKey, accessKey)
 		}
@@ -215,6 +235,12 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			c.Set(constant.ContextKeyAdminTokenJTI, strings.TrimSpace(claims.TokenID))
 		}
 
+		// --------------------------------------------------------------------
+		// 🔄 Tính thời gian hết hạn còn lại của session (tính bằng giây)
+		//   và gửi qua Header phản hồi để Frontend chủ động hiển thị bộ đếm
+		//   ngược hoặc cảnh báo hết hạn session cho Admin (Session Timeout warning).
+		// Nó phụ vụ quá trình renew trinity access ở admin UI
+		// --------------------------------------------------------------------
 		expiresIn := claims.ExpiresAt - time.Now().Unix()
 		if expiresIn < 0 {
 			expiresIn = 0
@@ -225,8 +251,7 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 	}
 }
 
-// readAdminCookie gom rule "cookie bắt buộc + trim + generic unauthorized".
-// Không trả tên cookie bị thiếu để tránh user enumeration/runtime probing.
+// readAdminCookie đọc và chuẩn hóa cookie. Trả về generic 401 nếu lỗi.
 func readAdminCookie(c *gin.Context, name string) (string, bool) {
 	value, err := c.Cookie(name)
 	if err != nil || strings.TrimSpace(value) == "" {

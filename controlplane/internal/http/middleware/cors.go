@@ -1,3 +1,30 @@
+// ============================================================================
+// 🛡️ ARCHITECTURAL & SYSTEM CONTRACTS
+// ============================================================================
+//
+// 🤝 1. SYSTEM CONTRACT
+//   - CORS Management: Thiết lập các cấu hình chia sẻ tài nguyên đa nguồn (Cross-Origin Resource Sharing).
+//   - Allowed Headers: Hỗ trợ đầy đủ các headers tùy chỉnh bảo mật của hệ thống như X-Request-ID,
+//     X-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code.
+//   - Exposed Headers: Expose tiêu đề X-Session-Expires-In để cho phép Frontend Admin UI có thể đọc
+//     được thời hạn phiên làm việc còn lại.
+//   - Allowed Credentials: Bật Access-Control-Allow-Credentials để hỗ trợ các phiên xác thực qua cookie.
+//
+// 📖 2. SOURCE OF TRUTH
+//   - Danh sách allowedOrigins được cấu hình động từ biến môi trường và nạp vào duy nhất một lần
+//     trong quá trình khởi tạo ứng dụng.
+//
+// 🚧 3. SYSTEM BOUNDARY
+//   - Trong môi trường Cloud Native và Highly Available (HA), CORS nên được cấu hình trực tiếp tại Edge Proxy
+//     (Envoy Edge Gateway) để đạt tối đa hiệu năng. CORS middleware này đóng vai trò dự phòng (Fallback)
+//     an toàn cho ứng dụng khi chạy local hoặc test độc lập.
+//
+// 💡 4. OPERATIONAL NOTES
+//   - Phân tích tĩnh: Chuyển đổi danh sách cho phép (allowedOrigins) thành cấu trúc Map O(1) tại thời điểm
+//     bootstrap để tối ưu hóa tốc độ kiểm tra lúc runtime.
+//   - Preflight Termination: Nhận biết và phản hồi sớm (Fast-path termination) các request OPTIONS preflight
+//     với mã trạng thái 204 No Content.
+
 package middleware
 
 import (
@@ -7,8 +34,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CORS returns a middleware that handles Cross-Origin Resource Sharing.
+// CORS khởi tạo middleware điều phối chia sẻ tài nguyên đa nguồn (CORS).
 func CORS(allowedOrigins []string) gin.HandlerFunc {
+	// Khởi tạo Map O(1) chứa danh sách các Origin được phép truy cập:
 	origins := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		origins[strings.ToLower(strings.TrimSpace(o))] = struct{}{}
@@ -21,15 +49,20 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 			return
 		}
 
-		// Check if origin is allowed
+		// --------------------------------------------------------------------
+		// 🔄 Kiểm tra xem Origin hiện tại có nằm trong Allowlist không.
+		// --------------------------------------------------------------------
 		_, allowed := origins[origin]
 		if !allowed {
-			// Also allow if it matches the request host (same-origin)
+			// Cơ chế dự phòng: Tự động cho phép nếu Origin khớp phần đuôi (suffix) với Host hiện tại (Same-Origin).
 			if strings.HasSuffix(origin, c.Request.Host) {
 				allowed = true
 			}
 		}
 
+		// --------------------------------------------------------------------
+		// 🔄 Thiết lập CORS Headers nếu Origin được xác nhận hợp lệ.
+		// --------------------------------------------------------------------
 		if allowed {
 			c.Header("Access-Control-Allow-Origin", c.GetHeader("Origin"))
 			c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, PATCH")
@@ -39,6 +72,9 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 			c.Header("Access-Control-Max-Age", "86400")
 		}
 
+		// --------------------------------------------------------------------
+		// 🔄 Đánh chặn sớm và kết thúc preflight request (OPTIONS) tức thời.
+		// --------------------------------------------------------------------
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
