@@ -9,6 +9,7 @@ import (
 
 type ZoneService interface {
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
+	GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error)
 	CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error
 	UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, status coreEntity.ZoneStatus) (*coreEntity.Zone, error)
 	DeleteZone(ctx context.Context, zoneID uuid.UUID) error

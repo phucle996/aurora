@@ -40,6 +40,7 @@ import (
 	"controlplane/internal/config"
 	policyErrorx "controlplane/internal/policyengine/errorx"
 	"controlplane/internal/policyengine/policies/admincidr"
+	"controlplane/internal/policyengine/policies/nats"
 	"controlplane/internal/policyengine/policies/otel"
 	"controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/policyengine/policies/ratelimit"
@@ -71,6 +72,7 @@ type PoliciesRuntimeRoot struct {
 	RateLimit  ratelimit.RateLimitPolicy   `yaml:"rate_limit"`
 	OTel       otel.OTelPolicy             `yaml:"otel"`
 	Prometheus prometheus.PrometheusPolicy `yaml:"prometheus"`
+	Nats       nats.NatsPolicy             `yaml:"nats"`
 }
 
 // EngineService là cấu trúc dịch vụ cốt lõi quản lý việc reload chính sách.
@@ -88,6 +90,7 @@ type EngineService struct {
 	otelHooks       []func(*otel.CompiledPolicy)
 	prometheusHooks []func(*prometheus.CompiledPolicy)
 	rateLimitHooks  []func(*ratelimit.CompiledPolicy)
+	natsHooks       []func(*nats.CompiledPolicy)
 }
 
 // NewEngineService khởi tạo EngineService và liên kết các thành phần hạ tầng (source adapter, pub/sub notifier).
@@ -179,6 +182,17 @@ func (s *EngineService) RegisterRateLimitHook(hook func(*ratelimit.CompiledPolic
 	s.rateLimitHooks = append(s.rateLimitHooks, hook)
 }
 
+// RegisterNatsHook đăng ký một hàm callback (hook) nhận sự thay đổi cấu hình NATS.
+// Hook này chỉ được trigger khi cấu hình NATS thực sự có thay đổi so với snapshot trước đó.
+//
+// # Tham số:
+//   - `hook`: Hàm callback chạy ngầm nhận vào cấu hình NATS đã được compile.
+func (s *EngineService) RegisterNatsHook(hook func(*nats.CompiledPolicy)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.natsHooks = append(s.natsHooks, hook)
+}
+
 // Reload nạp tệp YAML thô, validate tính hợp lệ của toàn bộ policies, so sánh checksum,
 // cooldown và hoán đổi nguyên tử snapshot nếu có thay đổi thực tế.
 //
@@ -265,6 +279,16 @@ func (s *EngineService) Reload(ctx context.Context) (*policytypes.PolicySet, err
 		s.mu.RUnlock()
 		for _, hook := range hooks {
 			go hook(&next.Runtime.RateLimit)
+		}
+	}
+
+	// Chỉ trigger các NATS hooks nếu cấu hình NATS thực sự thay đổi hoặc trong lần nạp đầu tiên.
+	if old == nil || !reflect.DeepEqual(old.Runtime.Nats, next.Runtime.Nats) {
+		s.mu.RLock()
+		hooks := s.natsHooks
+		s.mu.RUnlock()
+		for _, hook := range hooks {
+			go hook(&next.Runtime.Nats)
 		}
 	}
 
@@ -386,7 +410,7 @@ func (s *EngineService) loadPolicySnapshotFromSource(ctx context.Context) (*poli
 		UpdatedAt:   now,
 		Source:      meta.Path,
 		ChecksumSHA: hex.EncodeToString(checksum[:]),
-		Policies:    map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR, "otel": runtimePolicies.OTel, "prometheus": runtimePolicies.Prometheus},
+		Policies:    map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR, "otel": runtimePolicies.OTel, "prometheus": runtimePolicies.Prometheus, "nats": runtimePolicies.Nats},
 		Runtime:     runtimePolicies,
 	}
 	metaKey := strings.TrimSpace(meta.Path) + ":" + strings.TrimSpace(meta.Version) + ":" + fmt.Sprintf("%d", meta.Size)
@@ -433,10 +457,16 @@ func compilePolicies(parsed PoliciesFile) (policytypes.RuntimePolicies, error) {
 		return policytypes.RuntimePolicies{}, err
 	}
 
+	nt, err := nats.Compile(parsed.Policies.Nats)
+	if err != nil {
+		return policytypes.RuntimePolicies{}, err
+	}
+
 	return policytypes.RuntimePolicies{
 		AdminCIDR:  cidr,
 		RateLimit:  rl,
 		OTel:       ot,
 		Prometheus: prom,
+		Nats:       nt,
 	}, nil
 }

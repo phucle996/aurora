@@ -74,6 +74,8 @@ services:
         condition: service_healthy
       redis-job:
         condition: service_healthy
+      nats:
+        condition: service_healthy
       prometheus:
         condition: service_started
       otel-collector:
@@ -112,6 +114,8 @@ services:
         condition: service_healthy
       redis-job:
         condition: service_healthy
+      nats:
+        condition: service_healthy
       prometheus:
         condition: service_started
       otel-collector:
@@ -149,6 +153,8 @@ services:
       redis:
         condition: service_healthy
       redis-job:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       prometheus:
         condition: service_started
@@ -270,6 +276,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: controlplane-nats
+    ports:
+      - "4222:4222"   # NATS client port
+      - "8222:8222"   # NATS monitoring HTTP port
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "4222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   # ============================================================================

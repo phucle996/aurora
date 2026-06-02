@@ -110,6 +110,9 @@ type mockZoneRepoForService struct {
 func (m *mockZoneRepoForService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
 	return nil, nil
 }
+func (m *mockZoneRepoForService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
+	return []coreEntity.ZoneCatalog{}, nil
+}
 func (m *mockZoneRepoForService) CreateZone(ctx context.Context, zone coreEntity.Zone) error {
 	return nil
 }

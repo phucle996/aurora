@@ -63,6 +63,9 @@ type Module struct {
 	DataplaneNodeService         coreSvcInterface.DataplaneNodeService
 	DataplaneOrchestrator        *coreSvcImpl.DataplaneOrchestrator
 	DataplaneHeartbeatSubscriber *coreSvcImpl.DataplaneHeartbeatSubscriber
+	OutboxRepository             coreRepoInterface.OutboxRepository
+	OutboxService                coreSvcInterface.OutboxService
+	outboxPublisher              func(ctx context.Context, entity string, op string, payload []byte, version uint64) error
 	invalidationBus              *coreCache.RedisSecretInvalidationBus
 	listenCancel                 context.CancelFunc
 	orchestratorCancel           context.CancelFunc
@@ -92,7 +95,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
 	}
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds)
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
 
 	// 6) Dataplane dependencies injection
@@ -117,7 +120,17 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane subscriber is nil")
 	}
 
-	return &Module{
+	// 7) Outbox setup
+	outboxRepo := coreRepoImpl.NewOutboxRepoImpl(cfg, db)
+	var pubRef func(ctx context.Context, entity string, op string, payload []byte, version uint64) error
+	outboxService := coreSvcImpl.NewOutboxServiceImpl(outboxRepo, func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
+		if pubRef == nil {
+			return fmt.Errorf("outbox_service: dynamic publisher not initialized yet")
+		}
+		return pubRef(ctx, entity, op, payload, version)
+	})
+
+	m := &Module{
 		cfg:                          cfg,
 		SecretRepository:             repo,
 		SecretRotationService:        rotationService,
@@ -130,9 +143,25 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		DataplaneNodeService:         dataplaneNodeService,
 		DataplaneOrchestrator:        dataplaneOrchestrator,
 		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
+		OutboxRepository:             outboxRepo,
+		OutboxService:                outboxService,
 		invalidationBus:              bus,
 		rateLimiter:                  rateLimiter,
-	}, nil
+	}
+
+	m.outboxPublisher = func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
+		return fmt.Errorf("outbox: publisher not registered")
+	}
+	pubRef = func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
+		return m.outboxPublisher(ctx, entity, op, payload, version)
+	}
+
+	return m, nil
+}
+
+// SetOutboxPublisher cho phép tiêm (inject) động publisher từ module NATS/EventBus ở tầng bootstrap.
+func (m *Module) SetOutboxPublisher(pub func(ctx context.Context, entity string, op string, payload []byte, version uint64) error) {
+	m.outboxPublisher = pub
 }
 
 // RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.

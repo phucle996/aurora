@@ -38,6 +38,7 @@ policies:
         - /api/v1/health/startup
   otel:
     enabled: true
+    fail_strategy: fail_open  # fail_open: OTel Collector down -> tracing disabled, startup continues
     exporter_type: otlpgrpc
     endpoint: http://127.0.0.1:4317
     insecure: true
@@ -62,5 +63,10 @@ policies:
     expose_metrics:
       enabled: true
       route_path: /metrics
+  nats:
+    tls:
+      ca_cert_path: ""
+      cert_path: ""
+      key_path: ""
 
 

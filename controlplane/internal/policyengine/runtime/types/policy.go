@@ -27,6 +27,7 @@ package policytypes
 
 import (
 	"controlplane/internal/policyengine/policies/admincidr"
+	"controlplane/internal/policyengine/policies/nats"
 	"controlplane/internal/policyengine/policies/otel"
 	"controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/policyengine/policies/ratelimit"
@@ -68,6 +69,9 @@ type RuntimePolicies struct {
 
 	// Prometheus chứa cấu hình giám sát Prometheus dynamic metrics.
 	Prometheus prometheus.CompiledPolicy
+
+	// Nats chứa cấu hình mTLS xoay vòng nóng cho hạ tầng NATS.
+	Nats nats.CompiledPolicy
 }
 
 // PolicySourceMeta mô tả siêu dữ liệu nguồn tệp tin phục vụ việc tối ưu hóa reload.

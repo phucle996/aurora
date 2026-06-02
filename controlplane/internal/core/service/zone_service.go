@@ -80,6 +80,7 @@ package coreSvcImpl
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -87,20 +88,84 @@ import (
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreErrorx "controlplane/internal/core/errorx"
+	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
+	"golang.org/x/sync/singleflight"
+)
+
+const (
+	zoneCatalogCacheKey = "core:zone:catalog"
+	zoneCatalogCacheTTL = 5 * time.Minute
 )
 
 type ZoneService struct {
-	repo coreRepoInterface.ZoneRepository
+	repo  coreRepoInterface.ZoneRepository
+	rds   *goredis.Client // nil-safe: Redis Fail-Open, fallback trực tiếp xuống DB nếu Redis lỗi
+	sfg   singleflight.Group
 }
 
-func NewZoneService(repo coreRepoInterface.ZoneRepository) coreSvcInterface.ZoneService {
-	return &ZoneService{repo: repo}
+func NewZoneService(repo coreRepoInterface.ZoneRepository, rds *goredis.Client) coreSvcInterface.ZoneService {
+	return &ZoneService{repo: repo, rds: rds}
 }
 
 func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
 	return s.repo.ListZones(ctx)
+}
+
+// GetZoneCatalog trả danh sách zone catalog tối giản (id, code, name) phục vụ Select/Dropdown UI.
+//
+// Chiến lược tối ưu hiệu năng HA:
+//   - Singleflight: dưới áp lực tải cao, khi cache miss xảy ra đồng thời, chỉ 1 goroutine xuống DB;
+//     các goroutine còn lại chờ nhận chung kết quả — tránh Cache Stampede hoàn toàn.
+//   - Redis Cache-Aside (TTL 5 phút): hot path O(1) giảm tải DB.
+//   - Fail-Open Redis: nếu Redis lỗi, hệ thống tiếp tục phục vụ bằng cách query DB trực tiếp,
+//     ghi cảnh báo SysWarn — không crash dịch vụ vì lỗi cache.
+func (s *ZoneService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
+	// --- Hot Path: Redis Cache ---
+	if s.rds != nil {
+		if cached, err := s.rds.Get(ctx, zoneCatalogCacheKey).Bytes(); err == nil {
+			var out []coreEntity.ZoneCatalog
+			if jsonErr := json.Unmarshal(cached, &out); jsonErr == nil {
+				return out, nil
+			}
+		} else if err != goredis.Nil {
+			// Redis lỗi thật sự (network/timeout) — Fail-Open: log cảnh báo, tiếp tục query DB
+			logger.SysWarn("zone.catalog", "redis get failed [FAIL-OPEN], fallback to db: "+err.Error())
+		}
+	}
+
+	// --- Singleflight: chống Cache Stampede khi cache miss ---
+	v, err, _ := s.sfg.Do("zone_catalog", func() (interface{}, error) {
+		items, dbErr := s.repo.GetZoneCatalog(ctx)
+		if dbErr != nil {
+			return nil, dbErr
+		}
+		// Write-through cache sau khi lấy được từ DB
+		if s.rds != nil {
+			if payload, jsonErr := json.Marshal(items); jsonErr == nil {
+				if setErr := s.rds.Set(ctx, zoneCatalogCacheKey, payload, zoneCatalogCacheTTL).Err(); setErr != nil {
+					logger.SysWarn("zone.catalog", "redis set failed [FAIL-OPEN]: "+setErr.Error())
+				}
+			}
+		}
+		return items, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]coreEntity.ZoneCatalog), nil
+}
+
+// evictZoneCatalogCache xóa cache catalog khi có mutation (create/update) để đảm bảo fresh data.
+func (s *ZoneService) evictZoneCatalogCache(ctx context.Context) {
+	if s.rds == nil {
+		return
+	}
+	if err := s.rds.Del(ctx, zoneCatalogCacheKey).Err(); err != nil {
+		logger.SysWarn("zone.catalog", "cache eviction failed [FAIL-OPEN]: "+err.Error())
+	}
 }
 
 // CreateZone tạo zone mới với status cố định là `planned` và upsert toàn bộ 5 zone services
@@ -143,6 +208,9 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		}
 	}
 
+	// Zone mới tạo ở planned — không ảnh hưởng catalog, nhưng evict để
+	// không bị stale khi admin chuyển nó sang active ngay sau đó.
+	s.evictZoneCatalogCache(ctx)
 	return nil
 }
 
@@ -186,6 +254,8 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	if err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus); err != nil {
 		return nil, err
 	}
+	// Status thay đổi ảnh hưởng trực tiếp tới catalog (planned/disabled bị loại khỏi catalog).
+	s.evictZoneCatalogCache(ctx)
 	return s.repo.GetZoneByID(ctx, zoneID)
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"time"
 )
@@ -17,6 +18,7 @@ type Config struct {
 	Prometheus PrometheusCfg
 	SchemaSQL  SchemaSQLCfg
 	Agent      AgentCfg
+	Nats       NatsCfg
 }
 
 type PrometheusCfg struct {
@@ -88,6 +90,18 @@ type RedisCfg struct {
 	RetryInterval time.Duration
 }
 
+type NatsCfg struct {
+	URL           string
+	TLSEnabled    bool
+	CACertPath    string
+	CertPath      string
+	KeyPath       string
+	PingInterval  time.Duration
+	MaxPingOut    int
+	MaxRetries    int
+	RetryInterval time.Duration
+}
+
 type TelegramCfg struct {
 	BotToken string
 	ChatID   string
@@ -119,10 +133,18 @@ type AgentCfg struct {
 }
 
 func LoadConfig() *Config {
+	appName := getEnv("APP_NAME", "")
+	if appName == "" {
+		if hostname, err := os.Hostname(); err == nil && hostname != "" {
+			appName = hostname
+		} else {
+			appName = "controlplane"
+		}
+	}
 
 	return &Config{
 		App: AppCfg{
-			AppName:            "controlplane",
+			AppName:            appName,
 			TimeZone:           getEnv("APP_TIMEZONE", "UTC"),
 			HTTPPort:           getEnvAsInt("APP_HTTP_PORT", 8080),
 			PublicDomain:       strings.TrimSpace(getEnv("APP_PUBLIC_DOMAIN", "")),
@@ -225,6 +247,17 @@ func LoadConfig() *Config {
 			CACertPath: getEnv("AGENT_CA_CERT_PATH", ""),
 			CAKeyPath:  getEnv("AGENT_CA_KEY_PATH", ""),
 			CertTTL:    8760 * time.Hour,
+		},
+		Nats: NatsCfg{
+			URL:           getEnv("NATS_URL", "nats://localhost:4222"),
+			TLSEnabled:    getEnvAsBool("NATS_TLS_ENABLED", false),
+			CACertPath:    getEnv("NATS_TLS_CA", ""),
+			CertPath:      getEnv("NATS_TLS_CERT", ""),
+			KeyPath:       getEnv("NATS_TLS_KEY", ""),
+			PingInterval:  2 * time.Minute,
+			MaxPingOut:    3,
+			MaxRetries:    5,
+			RetryInterval: 2 * time.Second,
 		},
 	}
 }

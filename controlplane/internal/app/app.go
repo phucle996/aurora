@@ -1,3 +1,44 @@
+// ============================================================================
+// 🛡️ ARCHITECTURAL & SYSTEM CONTRACTS
+// ============================================================================
+//
+// 🤝 1. SYSTEM CONTRACT
+//   - Root Container: App là Runtime Container duy nhất của tiến trình Controlplane,
+//     chịu toàn bộ trách nhiệm về vòng đời hệ thống (Start/Stop).
+//   - Startup Ordering: Tuân thủ nghiêm ngặt thứ tự khởi động để tránh race condition
+//     hoặc thao tác trên tài nguyên chưa sẵn sàng:
+//       Security -> Infra (PSQL / Redis) -> Migrations -> Policy Engine
+//       -> Observability -> HTTP Engine -> Modules -> gRPC -> Routes.
+//   - Single Cleanup Path: Toàn bộ đường dẫn lỗi bootstrap đều gọi app.Stop() trước khi trả về
+//     lỗi để đảm bảo không rò rỉ tài nguyên (Resource Leak).
+//
+// 🔑 2. FAIL STRATEGY MATRIX
+//   [FAIL-CLOSE] Security - RuntimeMasterKey:     Bắt buộc, không có thì hệ thống không start.
+//   [FAIL-CLOSE] Infrastructure - PostgreSQL:     Bắt buộc, mất DB thì toàn bộ nghiệp vụ tê liệt.
+//   [FAIL-CLOSE] Infrastructure - Redis:          Bắt buộc, mất Redis thì session/cache mất hoàn toàn.
+//   [FAIL-CLOSE] Infrastructure - Redis Job:      Bắt buộc, mất Job Redis thì pipeline xử lý job tê liệt.
+//   [FAIL-CLOSE] Schema Migrations:               Bắt buộc, schema sai thì data corruption ngay lập tức.
+//   [FAIL-CLOSE] Policy Engine:                   Bắt buộc, không có policy thì không thể điều phối runtime.
+//   [FAIL-OPEN / FAIL-CLOSE] OTel Tracing:        Được điều khiển bởi FailStrategy trong Policy Engine
+//                                                 (fail_open -> NullOTel/nil, fail_close -> abort).
+//   [FAIL-OPEN / FAIL-CLOSE] Prometheus:          Được điều khiển bởi FailStrategy trong Policy Engine
+//                                                 (fail_open -> NullPrometheus, fail_close -> abort).
+//   [FAIL-CLOSE] Rate Limiter:                    SetFailOpen(false) -> mất Redis thì chặn toàn bộ request.
+//   [FAIL-CLOSE] HTTP Trusted Proxies:            Sai cấu hình IP có thể bypass CIDR guard, phải crash.
+//   [FAIL-CLOSE] Module Graph:                    Fail-fast, module lỗi thì toàn bộ cross-module wiring sai.
+//
+// 📖 3. SOURCE OF TRUTH
+//   - Config được nạp từ config.LoadConfig() trước khi gọi NewApplication.
+//   - Policy Set được tải từ Policy Engine sau khi Redis và PSQL sẵn sàng.
+//
+// 🚧 4. SYSTEM BOUNDARY
+//   - App không implement nghiệp vụ trực tiếp. Tất cả logic nghiệp vụ đều nằm trong Modules.
+//   - App chỉ đảm nhận dây nối (Wiring), thứ tự khởi động và vòng đời tài nguyên.
+//
+// 💡 5. OPERATIONAL NOTES
+//   - Stop() nil-safe và idempotent, có thể gọi từ bất kỳ error path nào trong bootstrap.
+//   - Graceful Shutdown: HTTP server có 20s timeout, OTel flush có 10s timeout.
+
 package app
 
 import (
@@ -8,7 +49,9 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
+	infraNats "controlplane/infra/nats"
 	"controlplane/internal/policyengine"
+	natsPolicy "controlplane/internal/policyengine/policies/nats"
 	otelPolicy "controlplane/internal/policyengine/policies/otel"
 	promPolicy "controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/security"
@@ -22,18 +65,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	gonats "github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 // App là root runtime container của controlplane process.
-//
-// Trách nhiệm:
-// - giữ lifecycle context và hàm cancel,
-// - giữ references đến infra runtime (DB/Redis/OTel/HTTP/gRPC),
-// - start/stop toàn bộ server theo đúng thứ tự.
-//
-// Lưu ý: App.Stop() phải idempotent và nil-safe để có thể gọi
-// cả trong nhánh bootstrap error path lẫn shutdown bình thường.
+// Giữ lifecycle context, references đến infra runtime (DB/Redis/OTel/HTTP/gRPC)
+// và điều phối start/stop toàn bộ server đúng thứ tự.
 type App struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -46,23 +84,12 @@ type App struct {
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
 	rdsJob     *goredis.Client
+	natsConn   *gonats.Conn
 	ready      bool
 }
 
-// NewApplication khởi tạo toàn bộ runtime dependency và trả về App đã sẵn sàng Start().
-//
-// Startup order (fail-fast):
-// 1) validate + set runtime master key
-// 2) init Postgres + Redis
-// 3) run migrations
-// 4) init observability (OTel + Prometheus)
-// 5) init HTTP engine + middlewares
-// 6) init modules + chạy module bootstraps
-// 7) init gRPC server
-// 8) register routes + build HTTP server
-//
-// Nếu bất kỳ bước nào lỗi, hàm gọi app.Stop() để cleanup thống nhất
-// (single cleanup path) rồi trả lỗi ra ngoài.
+// NewApplication khởi tạo toàn bộ runtime dependency theo thứ tự đã định và trả về App sẵn sàng Start().
+// Nếu bất kỳ bước nào lỗi, hàm gọi app.Stop() để dọn dẹp thống nhất rồi trả lỗi ra ngoài.
 func NewApplication(cfg *config.Config) (*App, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("bootstrap: config is required")
@@ -70,7 +97,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{ctx: ctx, cancel: cancel, cfg: cfg}
 
-	// Security bootstrap: runtime master key là bắt buộc cho secret encryption/decryption.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Security bootstrap: RuntimeMasterKey bắt buộc cho AES-256 secret encryption.
+	// Thiếu key hoặc key sai định dạng -> abort ngay lập tức.
+	// --------------------------------------------------------------------
 	runtimeMasterKey, err := resolveRuntimeMasterKey(cfg.Security.RuntimeMasterKey)
 	if err != nil {
 		app.Stop()
@@ -78,7 +108,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	security.SetRuntimeMasterKey(runtimeMasterKey)
 
-	// Infrastructure bootstrap: Postgres.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Infrastructure bootstrap: PostgreSQL.
+	// Mất kết nối DB -> toàn bộ nghiệp vụ đọc/ghi dữ liệu tê liệt -> abort.
+	// --------------------------------------------------------------------
 	db, err := psql.NewPostgres(ctx, &cfg.Psql)
 	if err != nil {
 		app.Stop()
@@ -86,7 +119,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	app.psql = db
 
-	// Infrastructure bootstrap: Redis.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Infrastructure bootstrap: Redis (Session / Cache).
+	// Mất Redis chính -> session/token cache mất hoàn toàn -> abort.
+	// --------------------------------------------------------------------
 	rds, err := redisinfra.NewRedis(ctx, &cfg.Redis)
 	if err != nil {
 		app.Stop()
@@ -98,7 +134,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: redis client is required")
 	}
 
-	// Infrastructure bootstrap: Redis Job Broker.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Infrastructure bootstrap: Redis Job Broker.
+	// Mất Job Redis -> pipeline xử lý background job tê liệt hoàn toàn -> abort.
+	// --------------------------------------------------------------------
 	rdsJob, err := redisinfra.NewRedis(ctx, &cfg.RedisJob)
 	if err != nil {
 		app.Stop()
@@ -110,13 +149,29 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: redis job client is required")
 	}
 
-	// Schema bootstrap phải chạy trước khi modules bắt đầu dùng DB.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Schema bootstrap: Database migrations bắt buộc chạy trước khi modules dùng DB.
+	// Schema sai -> data corruption tức thì -> abort.
+	// --------------------------------------------------------------------
 	if err := bootstrap.RunMigrations(ctx, db, cfg); err != nil {
 		app.Stop()
 		return nil, err
 	}
 
-	// Early boot Policy Engine (System Infrastructure)
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Infrastructure bootstrap: NATS Cluster Connection.
+	// --------------------------------------------------------------------
+	natsConn, err := infraNats.NewNatsConn(ctx, cfg)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: nats init failed: %w", err)
+	}
+	app.natsConn = natsConn
+
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Policy Engine bootstrap: khởi tạo engine điều phối cấu hình runtime hệ thống.
+	// Không có Policy Engine -> không thể tải cấu hình OTel/Prometheus/RateLimit -> abort.
+	// --------------------------------------------------------------------
 	policyModule, err := policyengine.New(cfg, rds)
 	if err != nil {
 		app.Stop()
@@ -135,49 +190,78 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	otelCfg := &policySet.Runtime.OTel
 
-	// Observability bootstrap: OTel trước, Prometheus sau.
+	// --------------------------------------------------------------------
+	// [FAIL-OPEN / FAIL-CLOSE] Observability bootstrap: OpenTelemetry Tracing.
+	// Chiến lược do Policy Engine kiểm soát động qua otelCfg.FailStrategy:
+	//   - fail_open  -> lỗi OTel thì dùng NullOTel (nil), hệ thống tiếp tục không có tracing.
+	//   - fail_close -> lỗi OTel thì abort toàn bộ startup.
+	// OTelTraceContext middleware đã xử lý obs == nil an toàn (Fail-Open tại request level).
+	// --------------------------------------------------------------------
 	otelObs, err := observability.InitOTel(ctx, otelCfg, "aurora-controlplane")
 	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: otel init failed: %w", err)
+		if otelCfg.FailStrategy == "fail_open" {
+			logger.SysWarn("bootstrap", fmt.Sprintf("otel init failed [FAIL-OPEN]: %v. Tracing disabled, continuing startup.", err))
+			otelObs = nil
+			err = nil // clear error, tiếp tục startup bình thường
+		} else {
+			app.Stop()
+			return nil, fmt.Errorf("bootstrap: otel init failed [FAIL-CLOSE]: %w", err)
+		}
 	}
 	app.otel = otelObs
 
-	// Hook OTel updates dynamically to the Policy Engine!
+	// Đăng ký hook hot-swap để Policy Engine có thể cập nhật cấu hình OTel lúc runtime (không cần restart).
 	policyModule.EngineService.RegisterOTelHook(func(newOTelCfg *otelPolicy.CompiledPolicy) {
 		if err := otelObs.Update(context.Background(), newOTelCfg, cfg.App.AppName); err != nil {
 			logger.SysError("app", fmt.Sprintf("failed to hot-swap OTel config: %v", err))
 		}
 	})
 
+	// Đăng ký hook hot-swap để Policy Engine cập nhật động các chứng chỉ mTLS cho NATS
+	policyModule.EngineService.RegisterNatsHook(func(newNatsCfg *natsPolicy.CompiledPolicy) {
+		infraNats.UpdateDynamicCerts(newNatsCfg.TLS.CertPath, newNatsCfg.TLS.KeyPath)
+	})
+
 	promCfg := &policySet.Runtime.Prometheus
 
-	// init Prometheus với hỗ trợ Fail-Open / Fail-Close động!
+	// --------------------------------------------------------------------
+	// [FAIL-OPEN / FAIL-CLOSE] Observability bootstrap: Prometheus Metrics.
+	// Chiến lược do Policy Engine kiểm soát động:
+	//   - fail_open  -> lỗi Prometheus thì dùng NullPrometheus (no-op), hệ thống tiếp tục.
+	//   - fail_close -> lỗi Prometheus thì abort toàn bộ startup.
+	// --------------------------------------------------------------------
 	var promObs *observability.Prometheus
 	promObs, err = observability.InitPrometheus(cfg.App.AppName)
 	if err != nil {
 		if promCfg.FailStrategy == "fail_open" {
-			logger.SysWarn("bootstrap", fmt.Sprintf("prometheus init failed (FAIL-OPEN): %v. Falling back to NullPrometheus.", err))
+			logger.SysWarn("bootstrap", fmt.Sprintf("prometheus init failed [FAIL-OPEN]: %v. Falling back to NullPrometheus.", err))
 			promObs = observability.NullPrometheus()
-			err = nil // clear error to continue boot
+			err = nil // clear error, tiếp tục startup bình thường
 		} else {
 			app.Stop()
-			return nil, fmt.Errorf("bootstrap: prometheus init failed (FAIL-CLOSE): %w", err)
+			return nil, fmt.Errorf("bootstrap: prometheus init failed [FAIL-CLOSE]: %w", err)
 		}
 	}
 	promObs.UpdatePolicy(promCfg)
 	app.prom = promObs
 
-	// Hook Prometheus updates dynamically to the Policy Engine!
+	// Đăng ký hook hot-swap để Policy Engine có thể cập nhật cấu hình Prometheus lúc runtime.
 	policyModule.EngineService.RegisterPrometheusHook(func(newPromCfg *promPolicy.CompiledPolicy) {
 		promObs.UpdatePolicy(newPromCfg)
 		logger.SysInfo("app", "Prometheus dynamic policy swapped successfully (hot-swap)")
 	})
 
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Rate Limiter bootstrap: SetFailOpen(false) -> mất Redis thì chặn toàn bộ request.
+	// Đây là lựa chọn bảo mật cao: thà chặn request còn hơn để request vượt qua mà không bị rate limit.
+	// --------------------------------------------------------------------
 	ratelimiter := ratelimit.NewBucket(rds)
 	ratelimiter.SetFailOpen(false)
 
-	// HTTP engine bootstrap.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] HTTP Engine bootstrap: TrustedProxies là bắt buộc.
+	// Cấu hình sai IP proxy -> CIDR guard bị bypass hoặc IP spoofing -> abort.
+	// --------------------------------------------------------------------
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	if err := engine.SetTrustedProxies(cfg.App.TrustedProxies); err != nil {
@@ -185,14 +269,15 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: set trusted proxies failed: %w", err)
 	}
 
-	// Global middlewares được áp dụng trước khi register routes.
+	// Đăng ký global middlewares trước khi register routes.
+	// Thứ tự thực thi middleware quan trọng, không được đổi thứ tự tùy tiện.
 	engine.Use(
 		gin.Recovery(),
 		middleware.RequestID(),
 		middleware.OTelTraceContext(otelObs),
 		middleware.PrometheusHTTPMetrics(promObs),
-		// CORS is offloaded to Envoy Edge Ingress Gateway (see dev/envoy/envoy.yaml)
-		// for better performance and centralized gateway-level header management in HA environments.
+		// CORS được offload sang Envoy Edge Ingress Gateway (xem dev/envoy/envoy.yaml) để
+		// tối ưu hiệu năng và quản lý headers tập trung ở cấp gateway trong môi trường HA.
 		// middleware.CORS(cfg.App.AllowedOrigins),
 		middleware.CookieOriginGuard(cfg.App.AllowedOrigins),
 		middleware.RateLimitPreAuth(ratelimiter, "global_preauth"),
@@ -201,17 +286,18 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	)
 	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 
-	// Module bootstrap.
-	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule)
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Module Graph bootstrap: toàn bộ module khởi tạo và wiring.
+	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
+	// --------------------------------------------------------------------
+	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule, app.natsConn)
 	if err != nil {
-		// Fail-fast: module graph ảnh hưởng cross-module (core security provider,
-		// IAM wiring, middleware auth). Không degrade ở app runtime bootstrap.
 		app.Stop()
 		return nil, err
 	}
 	app.modules = modules
 
-	// Chạy module-level bootstrap hooks (bao gồm IAM bootstrap contract).
+	// Chạy module-level bootstrap hooks (bao gồm IAM bootstrap contract wiring middleware auth).
 	bootstrapCtx, bootstrapCancel := context.WithTimeout(app.ctx, 20*time.Second)
 	defer bootstrapCancel()
 	if err := RunModuleBootstraps(bootstrapCtx, modules); err != nil {
@@ -219,7 +305,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	// Transport bootstrap: gRPC server.
+	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Transport bootstrap: gRPC server.
+	// gRPC lỗi -> dataplane không kết nối được vào controlplane -> abort.
+	// --------------------------------------------------------------------
 	g, err := bootstrap.InitGRPCServer(&cfg.GRPC)
 	if err != nil {
 		app.Stop()
@@ -231,10 +320,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		modules.Core.RegisterGRPCServices(g.Server.Server)
 	}
 
-	// Register tất cả HTTP routes sau khi modules đã sẵn sàng.
+	// Register tất cả HTTP routes sau khi modules đã wire xong hoàn toàn.
 	RegisterRoutes(engine, modules)
 
-	// HTTP server runtime config.
+	// HTTP server runtime configuration.
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.HTTPPort),
 		Handler:           engine,
@@ -249,10 +338,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 }
 
 // resolveRuntimeMasterKey decode và validate SECURITY_RUNTIME_MASTER_KEY.
-//
-// Yêu cầu:
-// - input phải là base64/base64raw hợp lệ,
-// - output phải đúng 32 bytes (AES-256 key length).
+// Yêu cầu: input phải là base64/base64raw hợp lệ, output phải đúng 32 bytes (AES-256).
 func resolveRuntimeMasterKey(encoded string) ([]byte, error) {
 	value := strings.TrimSpace(encoded)
 	if value == "" {
@@ -272,11 +358,7 @@ func resolveRuntimeMasterKey(encoded string) ([]byte, error) {
 	return decoded, nil
 }
 
-// Start chạy runtime servers (gRPC + HTTP) theo mode non-blocking.
-//
-// Lưu ý:
-// - Start không tự retry nếu ListenAndServe lỗi.
-// - Lỗi runtime của server được log ở goroutine; caller quản lý lifecycle tổng thể.
+// Start khởi chạy HTTP và gRPC server bất đồng bộ trên các Goroutine riêng biệt.
 func (a *App) Start() error {
 	if a.grpc != nil {
 		go func() {
@@ -297,18 +379,18 @@ func (a *App) Start() error {
 	return nil
 }
 
-// Stop shutdown toàn bộ runtime theo thứ tự an toàn.
+// Stop shutdown toàn bộ runtime theo thứ tự an toàn (Graceful Shutdown).
 //
 // Thứ tự hiện tại:
-// 1) mark not-ready
-// 2) shutdown HTTP server (timeout 20s)
-// 3) stop gRPC server
-// 4) stop modules
-// 5) shutdown OTel (timeout 10s) + clear Prometheus state
-// 6) cancel root context
-// 7) close Postgres + Redis
+//  1. Mark not-ready (ngừng nhận traffic mới)
+//  2. HTTP server shutdown (timeout 20s để drain in-flight requests)
+//  3. gRPC server stop
+//  4. Modules stop (giải phóng background workers)
+//  5. OTel flush + Prometheus state clear
+//  6. Cancel root context
+//  7. Đóng PSQL pool và Redis connections
 //
-// Hàm này nil-safe để dùng được cả trong startup error path và shutdown bình thường.
+// Nil-safe và idempotent - có thể gọi từ cả startup error path và shutdown bình thường.
 func (a *App) Stop() {
 	if a == nil {
 		return
@@ -352,5 +434,8 @@ func (a *App) Stop() {
 	}
 	if a.rdsJob != nil {
 		_ = a.rdsJob.Close()
+	}
+	if a.natsConn != nil {
+		a.natsConn.Close()
 	}
 }

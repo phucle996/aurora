@@ -21,6 +21,12 @@ type Zone struct {
 	UpdatedAt time.Time
 }
 
+type ZoneCatalog struct {
+	ID   string
+	Code string
+	Name string
+}
+
 type ZoneServiceType string
 
 const (

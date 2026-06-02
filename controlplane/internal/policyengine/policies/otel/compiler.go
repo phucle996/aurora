@@ -50,6 +50,13 @@ func Compile(src OTelPolicy) (CompiledPolicy, error) {
 		BatchMaxQueue: src.BatchMaxQueue,
 	}
 
+	// Validate FailStrategy bắt buộc phải khai báo rõ ràng, không nhận giá trị mặc định ngầm.
+	strategy := strings.TrimSpace(strings.ToLower(src.FailStrategy))
+	if strategy != "fail_open" && strategy != "fail_close" {
+		return CompiledPolicy{}, fmt.Errorf("%w: otel: fail_strategy must be either 'fail_open' or 'fail_close' (got: '%s')", errorx.ErrPolicyInvalid, src.FailStrategy)
+	}
+	out.FailStrategy = strategy
+
 	if out.Enabled {
 		if out.ExporterType != "otlpgrpc" && out.ExporterType != "otlphttp" {
 			return CompiledPolicy{}, fmt.Errorf("%w: otel: unsupported exporter type: %s", errorx.ErrPolicyInvalid, out.ExporterType)

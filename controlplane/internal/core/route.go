@@ -19,6 +19,11 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.AdminCriticalStepUp2FA(),
 		module.ZoneHandler.CreateZone,
 	)
+	router.GET("/admin/core/zones/catalog",
+		middleware.AdminCIDR(),
+		middleware.AdminAPIKeyAuth(),
+		module.ZoneHandler.GetZoneCatalog,
+	)
 	router.GET("/admin/core/zones",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),

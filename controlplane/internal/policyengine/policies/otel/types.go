@@ -30,6 +30,7 @@ import "time"
 // OTelPolicy đại diện cho cấu trúc thô (raw) được ánh xạ trực tiếp từ file YAML.
 type OTelPolicy struct {
 	Enabled       bool          `yaml:"enabled"`
+	FailStrategy  string        `yaml:"fail_strategy"` // "fail_open" hoặc "fail_close"
 	ExporterType  string        `yaml:"exporter_type"`
 	Endpoint      string        `yaml:"endpoint"`
 	Insecure      bool          `yaml:"insecure"`
@@ -56,6 +57,7 @@ type OTelTLSPolicy struct {
 // CompiledPolicy đại diện cho cấu hình OTel đã được xác thực an toàn ở runtime.
 type CompiledPolicy struct {
 	Enabled       bool
+	FailStrategy  string
 	ExporterType  string
 	Endpoint      string
 	Insecure      bool
