@@ -27,11 +27,11 @@ package admincidr
 // AdminCIDRPolicy đại diện cho cấu trúc thô (raw) được ánh xạ trực tiếp từ file YAML.
 type AdminCIDRPolicy struct {
 	// Enabled bật hoặc tắt cơ chế kiểm tra IP truy cập Admin.
-	Enabled   bool     `yaml:"enabled"`
-	
+	Enabled bool `yaml:"enabled"`
+
 	// Mode xác định chế độ xử lý: "enforce" (chặn truy cập) hoặc "dryrun" (chỉ log cảnh báo).
-	Mode      string   `yaml:"mode"`
-	
+	Mode string `yaml:"mode"`
+
 	// Allowlist chứa danh sách các dải mạng IP hợp lệ dưới dạng CIDR (ví dụ: "127.0.0.1/32").
 	Allowlist []string `yaml:"allowlist"`
 }
@@ -40,11 +40,11 @@ type AdminCIDRPolicy struct {
 // Các trường trong struct này là bất biến (read-only) trong suốt chu kỳ chạy của một snapshot chính sách.
 type CompiledPolicy struct {
 	// Enabled cho biết chính sách này có đang hoạt động hay không.
-	Enabled   bool
-	
+	Enabled bool
+
 	// Mode là chế độ thực thi đã được kiểm tra tính hợp lệ ("enforce" hoặc "dryrun").
-	Mode      string
-	
+	Mode string
+
 	// Allowlist chứa danh sách CIDR hợp lệ đã được kiểm duyệt cú pháp.
 	Allowlist []string
 }

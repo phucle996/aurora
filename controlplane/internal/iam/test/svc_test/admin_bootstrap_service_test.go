@@ -10,8 +10,8 @@ import (
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 )
 

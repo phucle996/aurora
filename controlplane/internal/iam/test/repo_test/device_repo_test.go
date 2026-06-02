@@ -103,4 +103,3 @@ func TestDeviceRepositoryRevokeOtherDevices(t *testing.T) {
 		t.Fatalf("expected affected=1, got %d", affected)
 	}
 }
-

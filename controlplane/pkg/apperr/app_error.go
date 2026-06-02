@@ -79,7 +79,7 @@ func (e *AppError) Unwrap() error {
 //   - kind:    sentinel error từ errorx (SoT cho HTTP mapping).
 //   - cause:   raw error từ dependency, nil nếu lỗi thuần business logic.
 //   - outcome: tùy chọn (variadic, lấy phần tử đầu tiên nếu có) — coarse label string
-//              dùng làm bridge key giữa Loki log và Prometheus metric.
+//     dùng làm bridge key giữa Loki log và Prometheus metric.
 func Wrap(kind error, cause error, outcome ...string) error {
 	app := &AppError{Kind: kind, Cause: cause}
 	if len(outcome) > 0 {
@@ -130,8 +130,8 @@ func LogFields(err error) map[string]any {
 
 // sanitizeErrorCause làm sạch raw Cause string trước khi đưa vào Loki log.
 // Hai mục tiêu:
-//   1. Bảo mật: redact toàn bộ nếu có dấu hiệu sensitive (token/secret/password/otp/bearer).
-//   2. Kích thước: cắt cứng tại 512 ký tự để tránh Loki ingest bị choke.
+//  1. Bảo mật: redact toàn bộ nếu có dấu hiệu sensitive (token/secret/password/otp/bearer).
+//  2. Kích thước: cắt cứng tại 512 ký tự để tránh Loki ingest bị choke.
 //
 // Callsite duy nhất: LogFields() — không gọi trực tiếp từ nơi khác.
 func sanitizeErrorCause(raw string) string {

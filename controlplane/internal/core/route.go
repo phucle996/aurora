@@ -13,8 +13,8 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 
 	router.POST("/admin/core/zones",
 		middleware.AdminCIDR(),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
 		middleware.AdminAPIKeyAuth(middleware.WithInjectAccessKey()),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
 		middleware.AdminCriticalSignature(),
 		middleware.AdminCriticalStepUp2FA(),
 		module.ZoneHandler.CreateZone,

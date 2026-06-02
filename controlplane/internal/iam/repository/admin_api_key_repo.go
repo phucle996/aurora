@@ -56,7 +56,7 @@ const (
 	// adminBootstrapLockKey là khoá advisory lock độc quyền cho tiến trình bootstrap ban đầu.
 	adminBootstrapLockKey int64 = 20260514
 	// adminRotationLockKey là khoá advisory lock độc quyền cho tiến trình quay vòng khoá tự động.
-	adminRotationLockKey  int64 = 20260515
+	adminRotationLockKey int64 = 20260515
 )
 
 // AdminAPIKeyRepository thực thi các truy vấn hiệu năng cao với Postgres Database.

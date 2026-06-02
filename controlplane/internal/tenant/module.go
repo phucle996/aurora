@@ -16,7 +16,9 @@ type Module struct {
 }
 
 func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
-	if cfg == nil { return nil, errors.New("tenant module: config is required") }
+	if cfg == nil {
+		return nil, errors.New("tenant module: config is required")
+	}
 	repo := tenantRepoImpl.NewRepository(cfg, db)
 	svc := tenantSvcImpl.NewService(repo)
 	h := tenantHandler.NewHandler(svc)

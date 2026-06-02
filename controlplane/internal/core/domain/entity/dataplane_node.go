@@ -51,10 +51,10 @@ const (
 )
 
 type DataplaneNode struct {
-	ID        string              `json:"id"`        // UUIDv7 định danh duy nhất của cụm
-	Status    DataplaneNodeStatus `json:"status"`    // Trạng thái lifecycle hiện tại của cụm
-	ZoneID    string              `json:"zone_id"`    // Khóa ngoại liên kết duy nhất 1-1 tới Zone
-	Endpoint  string              `json:"endpoint"`  // Địa chỉ gRPC/HTTP Load Balancer URL của cụm
+	ID        string              `json:"id"`       // UUIDv7 định danh duy nhất của cụm
+	Status    DataplaneNodeStatus `json:"status"`   // Trạng thái lifecycle hiện tại của cụm
+	ZoneID    string              `json:"zone_id"`  // Khóa ngoại liên kết duy nhất 1-1 tới Zone
+	Endpoint  string              `json:"endpoint"` // Địa chỉ gRPC/HTTP Load Balancer URL của cụm
 	CreatedAt time.Time           `json:"created_at"`
 	UpdatedAt time.Time           `json:"updated_at"`
 }

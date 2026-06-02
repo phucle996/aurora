@@ -79,11 +79,11 @@ type EngineService struct {
 	mu  sync.RWMutex
 	cur *policytypes.PolicySet
 
-	sourceAdapter PolicySourceAdapter
-	notifier      PolicyPropagationNotifier
-	subscriber    PolicyEventSubscriber
-	lastChecksum  string
-	lastMetaKey   string
+	sourceAdapter   PolicySourceAdapter
+	notifier        PolicyPropagationNotifier
+	subscriber      PolicyEventSubscriber
+	lastChecksum    string
+	lastMetaKey     string
 	lastReloadAt    time.Time
 	otelHooks       []func(*otel.CompiledPolicy)
 	prometheusHooks []func(*prometheus.CompiledPolicy)

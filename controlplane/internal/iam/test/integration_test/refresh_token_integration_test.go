@@ -9,9 +9,9 @@ import (
 
 	"controlplane/internal/iam/cache"
 	"controlplane/internal/iam/domain/entity"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/iam/test/testutil"
 	"controlplane/internal/security"
 )

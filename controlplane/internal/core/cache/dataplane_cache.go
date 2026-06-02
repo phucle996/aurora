@@ -196,4 +196,3 @@ func (c *DataplaneCacheImpl) RemoveNodeFromActivePool(ctx context.Context, zoneI
 	key := fmt.Sprintf("dataplane:nodes:%s", zoneID)
 	return c.rdb.SRem(ctx, key, hostname).Err()
 }
-

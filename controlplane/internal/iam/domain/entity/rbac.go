@@ -26,18 +26,18 @@ type Permission struct {
 }
 
 type Role struct {
-	ID          uuid.UUID
-	Code        string
-	Name        string
-	Description *string
-	ScopeType   RoleScopeType
-	RoleLevel   int
-	IsSystem    bool
-	IsProtected bool
-	IsAssignable bool
+	ID            uuid.UUID
+	Code          string
+	Name          string
+	Description   *string
+	ScopeType     RoleScopeType
+	RoleLevel     int
+	IsSystem      bool
+	IsProtected   bool
+	IsAssignable  bool
 	OwnerTenantID *uuid.UUID
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type RolePermission struct {

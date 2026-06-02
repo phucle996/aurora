@@ -21,9 +21,9 @@
 package admincidr
 
 import (
+	errorx "controlplane/internal/policyengine/errorx"
 	"fmt"
 	"strings"
-	errorx "controlplane/internal/policyengine/errorx"
 )
 
 // Compile phân tích cú pháp, loại bỏ phần tử rỗng và xác thực tính hợp lệ của cấu hình Admin CIDR.

@@ -11,11 +11,11 @@ type DeviceStatus string
 type ChallengeStatus string
 
 const (
-	DeviceStatusNew         DeviceStatus = "new"
-	DeviceStatusRecognized  DeviceStatus = "recognized"
-	DeviceStatusTrusted     DeviceStatus = "trusted"
-	DeviceStatusSuspicious  DeviceStatus = "suspicious"
-	DeviceStatusRevoked     DeviceStatus = "revoked"
+	DeviceStatusNew        DeviceStatus = "new"
+	DeviceStatusRecognized DeviceStatus = "recognized"
+	DeviceStatusTrusted    DeviceStatus = "trusted"
+	DeviceStatusSuspicious DeviceStatus = "suspicious"
+	DeviceStatusRevoked    DeviceStatus = "revoked"
 )
 
 const (

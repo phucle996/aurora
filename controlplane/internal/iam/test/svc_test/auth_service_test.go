@@ -11,8 +11,8 @@ import (
 	"controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 

@@ -4,10 +4,10 @@
 // 🎯 SOURCE OF TRUTH (SoT):
 //   - Trạng thái phiên của Admin là tập hợp dữ liệu động được lưu trữ duy nhất trong Redis Cache.
 //   - Phiên Admin áp dụng mô hình bảo mật **Fragment Token (3 Mảnh)** thay vì Access Token đơn lẻ:
-//     - Mảnh 1: JWT Access Token ngắn hạn (Ký stateless bằng Secret Family `SecretFamilyAdminAPIKey`).
-//     - Mảnh 2: `access_key` - Định danh phiên làm việc, dùng làm key lưu trong Redis.
-//     - Mảnh 3: `access_secret` - Mã bí mật phiên, chỉ được băm SHA256 trước khi lưu trong Redis.
-//     - Middleware xác thực bắt buộc cả 3 mảnh phải trùng khớp toàn vẹn mới coi phiên là hợp lệ.
+//   - Mảnh 1: JWT Access Token ngắn hạn (Ký stateless bằng Secret Family `SecretFamilyAdminAPIKey`).
+//   - Mảnh 2: `access_key` - Định danh phiên làm việc, dùng làm key lưu trong Redis.
+//   - Mảnh 3: `access_secret` - Mã bí mật phiên, chỉ được băm SHA256 trước khi lưu trong Redis.
+//   - Middleware xác thực bắt buộc cả 3 mảnh phải trùng khớp toàn vẹn mới coi phiên là hợp lệ.
 //
 // 🔒 RANH GIỚI BẢO MẬT & CHIẾN LƯỢC XỬ LÝ LỖI (SECURITY & ERROR BOUNDARY):
 //   - **Nguyên lý Fail-Closed**: Tầng Cache tuyệt đối **KHÔNG** tự ý nuốt lỗi (swallow), tắt cảnh báo,
@@ -141,7 +141,7 @@ func (c *adminAccessSessionCache) SetAccessSession(ctx context.Context, session 
 	if session.AccessKey == "" || session.AccessSecretHash == "" {
 		return fmt.Errorf("iam cache: access session is invalid")
 	}
-	
+
 	// --- BƯỚC 5: Thực thi kiểm tra version nghiêm ngặt, KHÔNG tự gán ngầm mặc định ---
 	if session.Version <= 0 {
 		return fmt.Errorf("iam cache: version must be positive")
@@ -156,10 +156,10 @@ func (c *adminAccessSessionCache) SetAccessSession(ctx context.Context, session 
 	// --- BƯỚC 7: Sử dụng Redis TxPipeline để cập nhật đồng thời cả Session và ZSET Index ---
 	// Nhằm đảm bảo tính nguyên tử (atomic) và an toàn HA, tránh mồ côi index.
 	pipe := c.rdb.TxPipeline()
-	
+
 	// Lưu trữ phiên chính thức
 	pipe.Set(ctx, c.key(session.AccessKey), payload, ttl)
-	
+
 	// Thêm vào ZSET index với score là unix timestamp khi hết hạn (expire epoch)
 	expireAt := time.Now().UTC().Add(ttl).Unix()
 	pipe.ZAdd(ctx, c.indexKey(), goredis.Z{
@@ -215,12 +215,12 @@ func (c *adminAccessSessionCache) GetAccessSession(ctx context.Context, accessKe
 
 	// --- BƯỚC 2: Gọi lệnh GET để lấy dữ liệu thô từ Redis ---
 	raw, err := c.rdb.Get(ctx, c.key(trimmedKey)).Result()
-	
+
 	// --- BƯỚC 3: Xử lý trường hợp không tìm thấy dữ liệu (Cache Miss) ---
 	if err == goredis.Nil {
 		return nil, nil
 	}
-	
+
 	// --- BƯỚC 4: Trả lỗi trực tiếp về Caller nếu có lỗi hạ tầng mạng/Redis ---
 	if err != nil {
 		return nil, err
@@ -285,7 +285,7 @@ func (c *adminAccessSessionCache) TouchAccessSession(ctx context.Context, access
 	// --- BƯỚC 3: Sử dụng TxPipeline để touch khóa chính và cập nhật score ZSET index ---
 	pipe := c.rdb.TxPipeline()
 	pipe.Expire(ctx, c.key(trimmedKey), ttl)
-	
+
 	expireAt := time.Now().UTC().Add(ttl).Unix()
 	pipe.ZAdd(ctx, c.indexKey(), goredis.Z{
 		Score:  float64(expireAt),

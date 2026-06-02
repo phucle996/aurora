@@ -160,7 +160,7 @@ func (o *OTel) Update(ctx context.Context, newCfg *otelPolicy.CompiledPolicy, se
 		oldCfg.TLS.CACertPath == newCfg.TLS.CACertPath &&
 		oldCfg.TLS.CertPath == newCfg.TLS.CertPath &&
 		oldCfg.TLS.KeyPath == newCfg.TLS.KeyPath {
-		
+
 		if oldCfg.SamplingRatio != newCfg.SamplingRatio {
 			onlySamplingChanged = true
 		}

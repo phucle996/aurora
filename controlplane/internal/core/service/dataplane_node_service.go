@@ -48,11 +48,11 @@ import (
 	"strings"
 	"time"
 
+	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreErrorx "controlplane/internal/core/errorx"
-	coreCache "controlplane/internal/core/cache"
 	"controlplane/pkg/logger"
 	"sync"
 
@@ -262,4 +262,3 @@ func (s *DataplaneNodeService) CheckFallbackLiveness(ctx context.Context, zoneID
 	// Nếu nhịp tim nhận được trong vòng 8 giây gần nhất -> Node vẫn khỏe mạnh!
 	return time.Now().UTC().Sub(lastHeartbeat) <= 8*time.Second
 }
-

@@ -466,4 +466,3 @@ func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 
 	apires.RespondSuccess(c, nil, "Connection successful")
 }
-

@@ -18,4 +18,3 @@ const (
 	HeaderTraceparent = "traceparent"
 	HeaderXRequestID  = "X-Request-ID"
 )
-

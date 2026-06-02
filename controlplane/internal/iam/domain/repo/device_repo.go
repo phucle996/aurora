@@ -25,4 +25,3 @@ type EvictedDevice struct {
 	DeviceID       uuid.UUID
 	ClientDeviceID *string
 }
-

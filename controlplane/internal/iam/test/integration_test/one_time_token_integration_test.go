@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"controlplane/internal/iam/cache"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamtestutil "controlplane/internal/iam/test/testutil"
 )
 

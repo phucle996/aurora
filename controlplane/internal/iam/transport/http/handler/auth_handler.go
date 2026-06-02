@@ -13,7 +13,7 @@ import (
 	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	domainservice "controlplane/internal/iam/domain/service"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	cookie "controlplane/pkg/constant"
@@ -89,10 +89,19 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	rePassword := strings.TrimSpace(request.RePassword)
 	fullname := strings.TrimSpace(request.Fullname)
 
-	if username == "" || email == "" || password == "" || rePassword == "" || fullname == "" {
-		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
-		apires.RespondBadRequest(c, "invalid request")
-		return
+	var phone *string
+	if request.Phone != nil && *request.Phone != "" {
+		phone = request.Phone
+	}
+
+	var location *string
+	if request.Location != nil && *request.Location != "" {
+		location = request.Location
+	}
+
+	var timezone *string
+	if request.Timezone != nil && *request.Timezone != "" {
+		timezone = request.Timezone
 	}
 	if password != rePassword {
 		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
@@ -108,9 +117,12 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	user := iamEntity.User{
 		Username: username,
 		Email:    email,
+		Phone:    phone,
 	}
 	profile := iamEntity.UserProfile{
 		Fullname: fullname,
+		Locale:   *location,
+		Timezone: *timezone,
 	}
 
 	if err := h.authSvc.RegisterAccount(ctx, user, profile, password); err != nil {

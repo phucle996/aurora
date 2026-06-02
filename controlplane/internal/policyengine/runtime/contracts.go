@@ -18,4 +18,3 @@ type PolicyPropagationNotifier interface {
 type PolicyEventSubscriber interface {
 	SubscribePolicyChanged(ctx context.Context) (<-chan policytypes.PolicyChangedEvent, error)
 }
-

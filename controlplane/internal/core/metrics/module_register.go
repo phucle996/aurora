@@ -92,4 +92,3 @@ func normalizeNamespace(value string) string {
 func init() {
 	observability.RegisterModuleMetrics(Register)
 }
-

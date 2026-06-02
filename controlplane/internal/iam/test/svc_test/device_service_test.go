@@ -8,8 +8,8 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -46,9 +46,13 @@ func (m *deviceRepoMock) RevokeOtherDevicesByUserID(ctx context.Context, userID 
 func (m *deviceRepoMock) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
 	return nil
 }
-func (m *deviceRepoMock) ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error) { return nil, nil }
+func (m *deviceRepoMock) ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error) {
+	return nil, nil
+}
 
-func (m *deviceRepoMock) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamRepoInterface.EvictedDevice, error) { return nil, nil }
+func (m *deviceRepoMock) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamRepoInterface.EvictedDevice, error) {
+	return nil, nil
+}
 
 func (m *deviceRepoMock) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string, ip *string, userAgent *string) error {
 	return nil
@@ -73,9 +77,13 @@ func (m *refreshRepoMock) RotateRefreshToken(ctx context.Context, current iamEnt
 func (m *refreshRepoMock) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
 	return m.revokeFn(ctx, userID, exceptDeviceID)
 }
-func (m *refreshRepoMock) LoadRefreshContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) { return nil, nil }
+func (m *refreshRepoMock) LoadRefreshContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) {
+	return nil, nil
+}
 
-func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) { return 0, nil }
+func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) {
+	return 0, nil
+}
 
 func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error) {
 	return m.revokeFn(ctx, userID, &deviceID)

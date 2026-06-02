@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
+	"controlplane/internal/http/middleware"
 	tenantEntity "controlplane/internal/tenant/domain/entity"
 	tenantSvc "controlplane/internal/tenant/domain/service"
 	tenantErrorx "controlplane/internal/tenant/errorx"
 	requestdto "controlplane/internal/tenant/transport/http/dto/req"
-	"controlplane/internal/http/middleware"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/logger"
 

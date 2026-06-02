@@ -73,7 +73,7 @@ func NewDataplaneHeartbeatSubscriber(
 // Start khởi chạy vòng lặp lắng nghe tin nhắn nhịp tim từ Redis Pub/Sub bất đồng bộ.
 func (s *DataplaneHeartbeatSubscriber) Start(ctx context.Context) {
 	channelName := "core:dataplane:heartbeats:pubsub"
-	
+
 	// Step 1: Subscribe vào channel Redis Pub/Sub thông qua interface DataplaneCache.
 	pubsub := s.cache.Subscribe(ctx, channelName)
 	defer pubsub.Close()

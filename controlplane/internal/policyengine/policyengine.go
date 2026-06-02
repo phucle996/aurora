@@ -41,9 +41,9 @@ import (
 type Engine struct {
 	// EngineService là lõi điều phối xử lý logic hot-swap và sync của Engine.
 	EngineService *policyruntime.EngineService
-	
+
 	// workerCancel là hàm hủy bỏ để dừng sạch sẽ toàn bộ luồng chạy ngầm của các worker.
-	workerCancel  context.CancelFunc
+	workerCancel context.CancelFunc
 }
 
 // New khởi tạo cấu hình, liên kết Redis Pub/Sub, nạp Adapter và khởi chạy các tiến trình nền.
@@ -60,36 +60,36 @@ func New(cfg *config.Config, rds *goredis.Client) (*Engine, error) {
 	if rds == nil {
 		return nil, errors.New("policyengine: redis client is required")
 	}
-	
+
 	// Tạo Adapter đọc file YAML nội bộ
 	source := policyAdapter.NewYAMLFileSourceAdapter("runtime/policies/policy.yaml")
 	if source == nil {
 		return nil, errors.New("policyengine: source adapter is required")
 	}
-	
+
 	// Khởi tạo kênh thông báo và lắng nghe qua Redis Pub/Sub
 	notifier := policyruntime.NewRedisPubSubNotifier(rds, "policyengine.policy.changed.v1")
 	if notifier == nil {
 		return nil, errors.New("policyengine: propagation notifier is required")
 	}
-	
+
 	subscriber := notifier
 	service := policyruntime.NewEngineService(cfg, source, notifier, subscriber)
 	if service == nil {
 		return nil, errors.New("policyengine: engine service is required")
 	}
-	
+
 	// Thiết lập context điều phối vòng đời của các Goroutines chạy nền
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	service.Start(workerCtx)
-	
+
 	// Thực hiện nạp cấu hình và biên dịch lần đầu (Initial sync load).
 	// Nếu tệp cấu hình không hợp lệ ngay từ lúc khởi động, Controlplane sẽ từ chối chạy.
 	if _, err := service.Reload(workerCtx); err != nil {
 		workerCancel()
 		return nil, err
 	}
-	
+
 	return &Engine{
 		EngineService: service,
 		workerCancel:  workerCancel,

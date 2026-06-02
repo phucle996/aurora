@@ -41,12 +41,12 @@ type ZoneService struct {
 }
 
 type CreateZoneInput struct {
-	Code                string
-	Name                string
-	Location            string
-	EnableHypervisor    bool
-	EnableStorage       bool
-	EnableMail          bool
-	EnableK8s           bool
-	EnableAI            bool
+	Code             string
+	Name             string
+	Location         string
+	EnableHypervisor bool
+	EnableStorage    bool
+	EnableMail       bool
+	EnableK8s        bool
+	EnableAI         bool
 }

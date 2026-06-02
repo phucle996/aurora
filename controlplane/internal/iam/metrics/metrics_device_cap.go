@@ -3,7 +3,7 @@ package iamMetrics
 import "github.com/prometheus/client_golang/prometheus"
 
 var (
-	deviceCapEvictTotalCounter   *prometheus.CounterVec
+	deviceCapEvictTotalCounter    *prometheus.CounterVec
 	deviceCapLockSkipTotalCounter prometheus.Counter
 	deviceCapReconcileRunsTotal   *prometheus.CounterVec
 )

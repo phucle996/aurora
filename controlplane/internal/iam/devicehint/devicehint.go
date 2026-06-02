@@ -6,20 +6,20 @@
 //   - Chuẩn hoá hostname và định danh thiết bị (client_device_id) từ HTTP Headers.
 //
 // 🎯 QUY TẮC PHÂN GIẢI & CHUẨN HOÁ (SPECIFICATION):
-//   1. ResolveDeviceName:
-//      - Ưu tiên X-Device-Hostname (hostnameHeader). Nếu không hợp lệ hoặc rỗng,
-//        sẽ chuyển sang X-Device-Name (hostnameAlias).
-//      - Nếu cả hai đều rỗng hoặc không hợp lệ, trả về mặc định "unknown device".
-//   2. SanitizeHostname:
-//      - Chỉ giữ lại ký tự chữ cái (a-z, A-Z), số (0-9), và các dấu chấm (.), gạch dưới (_), gạch ngang (-).
-//      - Độ dài giới hạn từ 2 đến 64 ký tự. Nếu sau khi lọc ít hơn 2 ký tự hoặc rỗng, trả về "".
-//   3. SanitizeClientDeviceID:
-//      - Chỉ cho phép các ký tự: chữ cái (a-z, A-Z), số (0-9), dấu chấm (.), gạch dưới (_), gạch ngang (-).
-//      - Độ dài tối đa là 128 ký tự. Nếu chứa ký tự lạ hoặc vượt giới hạn, trả về chuỗi rỗng "".
-//   4. ResolveClientDeviceID:
-//      - Kiểm tra tính hợp lệ của mã định danh do Client gửi lên.
-//      - Nếu mã hợp lệ, trả về mã đó kèm nguồn gốc (ProvenanceClient).
-//      - Nếu mã rỗng/lỗi, tự sinh một chuỗi UUID ngẫu nhiên an toàn kèm nguồn gốc (ProvenanceServerBootstrap).
+//  1. ResolveDeviceName:
+//     - Ưu tiên X-Device-Hostname (hostnameHeader). Nếu không hợp lệ hoặc rỗng,
+//     sẽ chuyển sang X-Device-Name (hostnameAlias).
+//     - Nếu cả hai đều rỗng hoặc không hợp lệ, trả về mặc định "unknown device".
+//  2. SanitizeHostname:
+//     - Chỉ giữ lại ký tự chữ cái (a-z, A-Z), số (0-9), và các dấu chấm (.), gạch dưới (_), gạch ngang (-).
+//     - Độ dài giới hạn từ 2 đến 64 ký tự. Nếu sau khi lọc ít hơn 2 ký tự hoặc rỗng, trả về "".
+//  3. SanitizeClientDeviceID:
+//     - Chỉ cho phép các ký tự: chữ cái (a-z, A-Z), số (0-9), dấu chấm (.), gạch dưới (_), gạch ngang (-).
+//     - Độ dài tối đa là 128 ký tự. Nếu chứa ký tự lạ hoặc vượt giới hạn, trả về chuỗi rỗng "".
+//  4. ResolveClientDeviceID:
+//     - Kiểm tra tính hợp lệ của mã định danh do Client gửi lên.
+//     - Nếu mã hợp lệ, trả về mã đó kèm nguồn gốc (ProvenanceClient).
+//     - Nếu mã rỗng/lỗi, tự sinh một chuỗi UUID ngẫu nhiên an toàn kèm nguồn gốc (ProvenanceServerBootstrap).
 //
 // 🔒 PHẠM VI (BOUNDARY):
 //   - Package thuần túy (pure functions), không tương tác mạng, DB hay cache Redis.

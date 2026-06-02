@@ -43,13 +43,13 @@ var accessMiddleware = struct {
 // - Cho phép gọi lại; handler active sẽ được thay thế theo cách atomic.
 //
 // BOUNDARY:
-// - Hàm này chỉ làm wiring dependency cho middleware (secret provider,
-//   redis blacklist client, runtime device cache, grace window).
-// - Không trực tiếp thực hiện auth check theo từng request.
+//   - Hàm này chỉ làm wiring dependency cho middleware (secret provider,
+//     redis blacklist client, runtime device cache, grace window).
+//   - Không trực tiếp thực hiện auth check theo từng request.
 //
 // FAIL-CLOSED:
-// - Nếu không gọi InitAccess, Access() sẽ trả middleware fail-closed với
-//   HTTP 503 (authentication temporarily unavailable).
+//   - Nếu không gọi InitAccess, Access() sẽ trả middleware fail-closed với
+//     HTTP 503 (authentication temporarily unavailable).
 func InitAccess(sp security.SecretProvider, rdb *redis.Client,
 	runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) {
 	accessMiddleware.mu.Lock()

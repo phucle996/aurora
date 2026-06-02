@@ -26,8 +26,8 @@ func TestEndpointServiceCRUD(t *testing.T) {
 
 	// 1. Create Endpoint.
 	createParams := mailEntity.CreateEndpointParams{
-		ZoneID: zoneID,
-		Name:   "Production SendGrid Server",
+		ZoneID:   zoneID,
+		Name:     "Production SendGrid Server",
 		Provider: mailEntity.SendGrid,
 		ConnectionConfig: map[string]interface{}{
 			"host":     "smtp.sendgrid.net",

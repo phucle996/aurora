@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamSvcImpl "controlplane/internal/iam/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
 )
 

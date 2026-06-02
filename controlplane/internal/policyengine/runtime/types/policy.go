@@ -26,46 +26,46 @@
 package policytypes
 
 import (
-	"time"
 	"controlplane/internal/policyengine/policies/admincidr"
 	"controlplane/internal/policyengine/policies/otel"
 	"controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/policyengine/policies/ratelimit"
+	"time"
 )
 
 // PolicySet đại diện cho một Snapshot cấu hình hoàn chỉnh đang hoạt động.
 // Mỗi khi reload thành công, một PolicySet mới sẽ được tạo ra nguyên tử.
 type PolicySet struct {
 	// Version là phiên bản của tệp chính sách (ví dụ: "v1").
-	Version     string
-	
+	Version string
+
 	// UpdatedAt ghi lại mốc thời gian snapshot được tải thành công vào bộ nhớ.
-	UpdatedAt   time.Time
-	
+	UpdatedAt time.Time
+
 	// Source là đường dẫn tương đối dẫn tới tệp nguồn cấu hình (ví dụ: "runtime/policies/policy.yaml").
-	Source      string
-	
+	Source string
+
 	// ChecksumSHA là chữ ký SHA256 của tệp YAML thô để phát hiện thay đổi nhanh chóng.
 	ChecksumSHA string
-	
+
 	// Policies lưu các đối tượng chính sách thô dưới dạng generic map.
-	Policies    map[string]interface{}
-	
+	Policies map[string]interface{}
+
 	// Runtime chứa toàn bộ cấu hình chính sách đã biên dịch kiểu dữ liệu mạnh.
-	Runtime     RuntimePolicies
+	Runtime RuntimePolicies
 }
 
 // RuntimePolicies đóng vai trò gom nhóm (aggregation) các chính sách runtime hoạt động.
 type RuntimePolicies struct {
 	// AdminCIDR chứa cấu hình an ninh phân vùng admin (Admin CIDR blocklist/allowlist).
 	AdminCIDR admincidr.CompiledPolicy
-	
+
 	// RateLimit chứa cấu hình giới hạn tần suất yêu cầu (Token Bucket & Concurrency).
 	RateLimit ratelimit.CompiledPolicy
-	
+
 	// OTel chứa cấu hình giám sát OpenTelemetry dynamic tracing.
-	OTel      otel.CompiledPolicy
-	
+	OTel otel.CompiledPolicy
+
 	// Prometheus chứa cấu hình giám sát Prometheus dynamic metrics.
 	Prometheus prometheus.CompiledPolicy
 }

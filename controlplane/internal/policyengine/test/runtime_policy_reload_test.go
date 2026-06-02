@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	policyruntime "controlplane/internal/policyengine/runtime"
-	policytypes "controlplane/internal/policyengine/runtime/types"
 	policyerrorx "controlplane/internal/policyengine/errorx"
 	otel "controlplane/internal/policyengine/policies/otel"
+	policyruntime "controlplane/internal/policyengine/runtime"
+	policytypes "controlplane/internal/policyengine/runtime/types"
 )
 
 type fakeSourceAdapter struct {
@@ -33,7 +33,9 @@ func (f *fakeSourceAdapter) ReadCurrent(context.Context) ([]byte, policytypes.Po
 
 type noopNotifier struct{}
 
-func (noopNotifier) PublishPolicyChanged(context.Context, policytypes.PolicyChangedEvent) error { return nil }
+func (noopNotifier) PublishPolicyChanged(context.Context, policytypes.PolicyChangedEvent) error {
+	return nil
+}
 func (noopNotifier) SubscribePolicyChanged(context.Context) (<-chan policytypes.PolicyChangedEvent, error) {
 	ch := make(chan policytypes.PolicyChangedEvent)
 	close(ch)
@@ -383,5 +385,3 @@ policies:
 		t.Fatalf("expected ErrPolicyInvalid for unsupported TLS mode, got: %v", err)
 	}
 }
-
-

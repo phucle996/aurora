@@ -840,7 +840,6 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 	return nil
 }
 
-
 // loadActiveAdminAPIKey đọc key active với chiến lược RAM cache + fallback DB.
 //
 // Chính sách cache:

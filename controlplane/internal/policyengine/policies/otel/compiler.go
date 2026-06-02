@@ -23,11 +23,11 @@
 package otel
 
 import (
+	errorx "controlplane/internal/policyengine/errorx"
 	"fmt"
 	"os"
 	"strings"
 	"time"
-	errorx "controlplane/internal/policyengine/errorx"
 )
 
 // Compile phân tích cú pháp, chuyển đổi cấu hình thô và thực thi xác thực toàn bộ chính sách OpenTelemetry.

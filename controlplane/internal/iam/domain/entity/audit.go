@@ -34,15 +34,15 @@ const (
 )
 
 type AdminActionAudit struct {
-	ID           uuid.UUID
-	Action       string
-	ResourceType string
-	ResourceID   *string
-	Status       AdminActionAuditStatus
-	RequestIP    *string
-	RequestPath  string
+	ID            uuid.UUID
+	Action        string
+	ResourceType  string
+	ResourceID    *string
+	Status        AdminActionAuditStatus
+	RequestIP     *string
+	RequestPath   string
 	RequestMethod string
-	ErrorCode    *string
-	Metadata     map[string]any
-	CreatedAt    time.Time
+	ErrorCode     *string
+	Metadata      map[string]any
+	CreatedAt     time.Time
 }

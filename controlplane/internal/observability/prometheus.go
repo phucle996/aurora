@@ -54,10 +54,10 @@ import (
 var (
 	// currentPrometheus là thực thể lưu trữ dynamic pointer của phân hệ Prometheus đang hoạt động.
 	currentPrometheus atomic.Pointer[Prometheus]
-	
+
 	// localHostname lưu trữ tên Pod Name/Hostname hiện tại của hệ thống.
 	localHostname string
-	
+
 	// timeSyncStates định nghĩa mảng trạng thái cố định để tránh heap allocation lúc runtime loop.
 	timeSyncStates = []string{"ok", "warning", "critical", "unknown"}
 )
@@ -151,7 +151,7 @@ func NormalizeNamespace(ns string) string {
 	ns = strings.ToLower(strings.TrimSpace(ns))
 	ns = strings.ReplaceAll(ns, "-", "_")
 	ns = strings.ReplaceAll(ns, " ", "_")
-	
+
 	var clean []rune
 	for _, r := range ns {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
@@ -168,12 +168,12 @@ func NormalizeNamespace(ns string) string {
 // InitPrometheus thực hiện khởi tạo Registry mới và thiết lập toàn bộ tập hợp metrics chuẩn hóa.
 //
 // 🎯 LOGIC THỰC THI:
-//   1. Thực hiện chuẩn hóa Namespace an toàn cho Prometheus.
-//   2. Khởi tạo một Registry trống mới và đăng ký GoCollector cùng ProcessCollector của hệ thống.
-//   3. Tạo các Vector đo lường tiêu chuẩn (Request, Latency, In-Flight, Dependency, Time Drift).
-//   4. Đăng ký các Vector này vào Registry.
-//   5. Gọi `registerModuleMetrics` để tích hợp metrics từ các mô-đun nghiệp vụ độc lập khác.
-//   6. Lưu trữ đối tượng vào luồng an toàn toàn cục `currentPrometheus`.
+//  1. Thực hiện chuẩn hóa Namespace an toàn cho Prometheus.
+//  2. Khởi tạo một Registry trống mới và đăng ký GoCollector cùng ProcessCollector của hệ thống.
+//  3. Tạo các Vector đo lường tiêu chuẩn (Request, Latency, In-Flight, Dependency, Time Drift).
+//  4. Đăng ký các Vector này vào Registry.
+//  5. Gọi `registerModuleMetrics` để tích hợp metrics từ các mô-đun nghiệp vụ độc lập khác.
+//  6. Lưu trữ đối tượng vào luồng an toàn toàn cục `currentPrometheus`.
 func InitPrometheus(namespace string) (*Prometheus, error) {
 	namespace = NormalizeNamespace(namespace)
 
@@ -267,7 +267,7 @@ func InitPrometheus(namespace string) (*Prometheus, error) {
 		timeDriftGauge:     timeDriftGauge,
 		timeSyncStateGauge: timeSyncStateGauge,
 	}
-	
+
 	// Khởi tạo các con trỏ động rỗng (Dormant State) tránh lỗi truy cập bộ nhớ rỗng ban đầu
 	prom.policyConfig.Store(&promPolicy.CompiledPolicy{Enabled: false})
 	prom.queryConfig.Store(&QueryClientConfig{Enabled: false})
@@ -287,7 +287,7 @@ func (p *Prometheus) UpdatePolicy(policy *promPolicy.CompiledPolicy) {
 		return
 	}
 	p.policyConfig.Store(policy)
-	
+
 	// Đồng bộ hóa cấu hình truy vấn của Query Client tương ứng
 	p.UpdateQueryConfig(&QueryClientConfig{
 		Enabled:      policy.QueryClient.Enabled,
@@ -345,7 +345,7 @@ func (p *Prometheus) ObserveTimeDrift(seconds float64, state string) {
 		return
 	}
 	p.timeDriftGauge.Set(seconds)
-	
+
 	// Thiết lập trạng thái one-hot một cách an toàn và tối ưu bộ nhớ
 	for _, s := range timeSyncStates {
 		v := 0.0
@@ -357,13 +357,13 @@ func (p *Prometheus) ObserveTimeDrift(seconds float64, state string) {
 }
 
 // CurrentPrometheus trả về thực thể Prometheus đang hoạt động toàn cục.
-func CurrentPrometheus() *Prometheus { 
-	return currentPrometheus.Load() 
+func CurrentPrometheus() *Prometheus {
+	return currentPrometheus.Load()
 }
 
 // ClearCurrentPrometheus dọn dẹp và ngắt kết nối thực thể Prometheus toàn cục.
-func ClearCurrentPrometheus() { 
-	currentPrometheus.Store(nil) 
+func ClearCurrentPrometheus() {
+	currentPrometheus.Store(nil)
 }
 
 // HTTPHandler xuất bản đối tượng promhttp.Handler chuẩn hóa từ Registry hiện tại.
@@ -373,8 +373,8 @@ func ClearCurrentPrometheus() {
 //     (StatusServiceUnavailable) một cách an toàn thay vì gây crash ứng dụng.
 func (p *Prometheus) HTTPHandler() http.Handler {
 	if p == nil || p.registry == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { 
-			w.WriteHeader(http.StatusServiceUnavailable) 
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
 		})
 	}
 	return promhttp.HandlerFor(p.registry, promhttp.HandlerOpts{})
@@ -399,9 +399,9 @@ func (p *Prometheus) DecInFlight() {
 // 🎯 LOGIC THỰC THI & TỐI ƯU HÓA:
 //   - Kiểm tra phòng thủ (Defensive validation) tránh nil pointer.
 //   - Chuẩn hóa chuỗi và gán các nhãn (Labels) mặc định an toàn cho các tham số trống:
-//     + Nếu Route trống, gán mặc định thành `"/"`.
-//     + Nếu Method trống, gán mặc định thành `"UNKNOWN"`.
-//     + Nếu Status trống, gán mặc định thành `"0"`.
+//   - Nếu Route trống, gán mặc định thành `"/"`.
+//   - Nếu Method trống, gán mặc định thành `"UNKNOWN"`.
+//   - Nếu Status trống, gán mặc định thành `"0"`.
 //   - Gọi Vector.Inc() và Vector.Observe() để ghi chép số liệu đo lường.
 func (p *Prometheus) ObserveRequest(method, route, status string, duration time.Duration) {
 	if p == nil || p.requestTotal == nil || p.requestDuration == nil {

@@ -45,50 +45,50 @@ func PermissionModelToEntity(input Permission) iamEntity.Permission {
 }
 
 type Role struct {
-	ID          uuid.UUID `db:"id"`
-	Code        string    `db:"code"`
-	Name        string    `db:"name"`
-	Description *string   `db:"description"`
-	ScopeType   string    `db:"scope_type"`
-	RoleLevel   int       `db:"role_level"`
-	IsSystem    bool      `db:"is_system"`
-	IsProtected bool      `db:"is_protected"`
-	IsAssignable bool     `db:"is_assignable"`
+	ID            uuid.UUID  `db:"id"`
+	Code          string     `db:"code"`
+	Name          string     `db:"name"`
+	Description   *string    `db:"description"`
+	ScopeType     string     `db:"scope_type"`
+	RoleLevel     int        `db:"role_level"`
+	IsSystem      bool       `db:"is_system"`
+	IsProtected   bool       `db:"is_protected"`
+	IsAssignable  bool       `db:"is_assignable"`
 	OwnerTenantID *uuid.UUID `db:"owner_tenant_id"`
-	CreatedAt   time.Time `db:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at"`
+	CreatedAt     time.Time  `db:"created_at"`
+	UpdatedAt     time.Time  `db:"updated_at"`
 }
 
 func RoleEntityToModel(input iamEntity.Role) Role {
 	return Role{
-		ID:          input.ID,
-		Code:        input.Code,
-		Name:        input.Name,
-		Description: input.Description,
-		ScopeType:   string(input.ScopeType),
-		RoleLevel:   input.RoleLevel,
-		IsSystem:    input.IsSystem,
-		IsProtected: input.IsProtected,
-		IsAssignable: input.IsAssignable,
+		ID:            input.ID,
+		Code:          input.Code,
+		Name:          input.Name,
+		Description:   input.Description,
+		ScopeType:     string(input.ScopeType),
+		RoleLevel:     input.RoleLevel,
+		IsSystem:      input.IsSystem,
+		IsProtected:   input.IsProtected,
+		IsAssignable:  input.IsAssignable,
 		OwnerTenantID: input.OwnerTenantID,
-		CreatedAt:   input.CreatedAt,
-		UpdatedAt:   input.UpdatedAt,
+		CreatedAt:     input.CreatedAt,
+		UpdatedAt:     input.UpdatedAt,
 	}
 }
 func RoleModelToEntity(input Role) iamEntity.Role {
 	return iamEntity.Role{
-		ID:          input.ID,
-		Code:        input.Code,
-		Name:        input.Name,
-		Description: input.Description,
-		ScopeType:   iamEntity.RoleScopeType(input.ScopeType),
-		RoleLevel:   input.RoleLevel,
-		IsSystem:    input.IsSystem,
-		IsProtected: input.IsProtected,
-		IsAssignable: input.IsAssignable,
+		ID:            input.ID,
+		Code:          input.Code,
+		Name:          input.Name,
+		Description:   input.Description,
+		ScopeType:     iamEntity.RoleScopeType(input.ScopeType),
+		RoleLevel:     input.RoleLevel,
+		IsSystem:      input.IsSystem,
+		IsProtected:   input.IsProtected,
+		IsAssignable:  input.IsAssignable,
 		OwnerTenantID: input.OwnerTenantID,
-		CreatedAt:   input.CreatedAt,
-		UpdatedAt:   input.UpdatedAt,
+		CreatedAt:     input.CreatedAt,
+		UpdatedAt:     input.UpdatedAt,
 	}
 }
 

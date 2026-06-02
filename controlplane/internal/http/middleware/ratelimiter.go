@@ -19,16 +19,16 @@ import (
 )
 
 const (
-	rateLimitScopeIP            = "ip"
-	rateLimitScopeIPTracking    = "ip_tracking"
-	rateLimitScopeIPUser        = "ip_user"
-	rateLimitResultAllow        = "allow"
-	rateLimitResultBlocked      = "blocked"
-	rateLimitResultBypass       = "bypass"
-	rateLimitResultError        = "error"
-	rateLimitDecisionThrottle   = "throttle"
-	rateLimitDecisionIsolation  = "temporary_isolation"
-	rateLimitDecisionBlock      = "block"
+	rateLimitScopeIP           = "ip"
+	rateLimitScopeIPTracking   = "ip_tracking"
+	rateLimitScopeIPUser       = "ip_user"
+	rateLimitResultAllow       = "allow"
+	rateLimitResultBlocked     = "blocked"
+	rateLimitResultBypass      = "bypass"
+	rateLimitResultError       = "error"
+	rateLimitDecisionThrottle  = "throttle"
+	rateLimitDecisionIsolation = "temporary_isolation"
+	rateLimitDecisionBlock     = "block"
 )
 
 var rateLimitEngine = ratelimit.NewDecisionEngine()
