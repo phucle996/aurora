@@ -223,16 +223,19 @@ func buildSigPayload(
 	c *gin.Context,
 	bodyHash [sha256.Size]byte,
 	proof sigProof,
-	accessKey string,
+	// accessKey không được đưa vào payload string vì:
+	//   1. Đã được gửi kèm qua HttpOnly cookie — backend tự lấy từ context.
+	//   2. Expose accessKey trong payload string gây nguy cơ lộ qua log/trace.
+	//   3. Signature đã bind với device thông qua device public key lookup dùng accessKey.
+	_ string,
 ) string {
-	return fmt.Sprintf("%s\n%s\n%s\n%x\n%s\n%s\n%s",
+	return fmt.Sprintf("%s\n%s\n%s\n%x\n%s\n%s",
 		strings.ToUpper(c.Request.Method),
 		c.Request.URL.Path,
 		c.Request.URL.RawQuery,
 		bodyHash,
 		proof.tsRaw,
 		proof.nonce,
-		accessKey,
 	)
 }
 

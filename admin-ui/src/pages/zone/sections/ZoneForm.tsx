@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { slugify } from '@/lib/slugify'
 
 export type ServiceKey = 'hypervisor' | 'storage' | 'mail' | 'k8s' | 'ai'
 
@@ -25,12 +26,6 @@ function Required() {
   return <span className="text-destructive">*</span>
 }
 
-function liveSlugify(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-}
 
 interface ZoneFormProps {
   zoneName: string
@@ -77,7 +72,7 @@ export default function ZoneForm({
               const val = event.target.value
               setZoneName(val)
               if (!isZoneCodeManuallyEdited) {
-                setZoneCode(liveSlugify(val))
+                setZoneCode(slugify(val))
               }
             }}
             placeholder="e.g., US East 1"
@@ -95,7 +90,7 @@ export default function ZoneForm({
             onChange={(event) => {
               const val = event.target.value
               setIsZoneCodeManuallyEdited(val !== '')
-              setZoneCode(liveSlugify(val))
+              setZoneCode(slugify(val))
             }}
             placeholder="e.g., us-east-1"
             className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"

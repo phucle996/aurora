@@ -191,7 +191,9 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		middleware.RequestID(),
 		middleware.OTelTraceContext(otelObs),
 		middleware.PrometheusHTTPMetrics(promObs),
-		middleware.CORS(cfg.App.AllowedOrigins),
+		// CORS is offloaded to Envoy Edge Ingress Gateway (see dev/envoy/envoy.yaml)
+		// for better performance and centralized gateway-level header management in HA environments.
+		// middleware.CORS(cfg.App.AllowedOrigins),
 		middleware.CookieOriginGuard(cfg.App.AllowedOrigins),
 		middleware.RateLimitPreAuth(ratelimiter, "global_preauth"),
 		middleware.AccessLog(),

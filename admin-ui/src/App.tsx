@@ -12,7 +12,8 @@ import { toast } from 'sonner'
 import AppLayout from '@/components/layout/layout'
 import { Toaster } from '@/components/ui/sonner'
 import { Skeleton } from '@/components/ui/skeleton'
-import { AdminSessionProvider, useAdminSession } from '@/hooks/useAdminSession'
+import { AdminSessionProvider } from '@/hooks/AdminSessionProvider'
+import { useAdminSession } from '@/hooks/useAdminSession'
 
 import './App.css'
 

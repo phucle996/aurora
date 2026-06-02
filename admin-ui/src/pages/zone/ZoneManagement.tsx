@@ -5,6 +5,7 @@ import {
   Plus,
   RefreshCcw,
   Search,
+  TriangleAlert,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -165,61 +166,63 @@ export default function ZoneManagementPage() {
         </Button>
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
-        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-1">
-            <h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">Zone List</h2>
-            <p className="text-sm text-muted-foreground">
-              {loading || refreshing ? 'Loading real-time topology data...' : `${zones.length} zones from topology-manager`}
-            </p>
-          </div>
-          <div className="flex w-full flex-col gap-3 sm:flex-row md:max-w-140 md:justify-end">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value)
-                  setCurrentPage(1)
-                }}
-                placeholder="Search zones..."
-                className="h-12 rounded-lg border-border bg-background pl-11 text-sm shadow-none"
-              />
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void loadZones(true)}
-              disabled={loading || refreshing}
-              className="h-12 rounded-lg px-4 text-sm font-semibold"
-            >
-              <RefreshCcw className={cn('size-4', (loading || refreshing) && 'animate-spin')} />
-              Refresh
-            </Button>
-          </div>
-        </div>
-
-        {error && (
-          <div className="mb-5 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
-            Cannot load zones: {error}
-          </div>
-        )}
-
-        <ZoneTable
-          loading={loading}
-          refreshing={refreshing}
-          zones={visibleZones}
-          query={query}
-          pageSize={pageSize}
-          currentPage={currentPage}
-          totalPages={totalPages}
-          startIndex={startIndex}
-          endIndex={endIndex}
-          goToPage={goToPage}
-          setPageSize={setPageSize}
-          setCurrentPage={setCurrentPage}
-        />
+      {/* Warning banner: zone là root topology node */}
+      <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-500/20 dark:bg-amber-500/10">
+        <TriangleAlert className="mt-px size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <p className="text-sm leading-relaxed text-amber-800 dark:text-amber-300">
+          <span className="font-semibold">Zone là root topology logic.</span>{' '}
+          Mọi thay đổi trên zone ảnh hưởng trực tiếp đến toàn bộ hạ tầng
+          dataplane. Kiểm tra kỹ trước khi thực hiện bất kỳ hành động nào.
+        </p>
       </div>
+
+      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-end">
+        <div className="flex w-full flex-col gap-3 sm:flex-row md:max-w-140 md:justify-end">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value)
+                setCurrentPage(1)
+              }}
+              placeholder="Search zones..."
+              className="h-12 rounded-lg border-border bg-background pl-11 text-sm shadow-none"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void loadZones(true)}
+            disabled={loading || refreshing}
+            className="h-12 rounded-lg px-4 text-sm font-semibold"
+          >
+            <RefreshCcw className={cn('size-4', (loading || refreshing) && 'animate-spin')} />
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-5 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+          Cannot load zones: {error}
+        </div>
+      )}
+
+      <ZoneTable
+        loading={loading}
+        refreshing={refreshing}
+        zones={visibleZones}
+        query={query}
+        pageSize={pageSize}
+        currentPage={currentPage}
+        totalPages={totalPages}
+        startIndex={startIndex}
+        endIndex={endIndex}
+        goToPage={goToPage}
+        setPageSize={setPageSize}
+        setCurrentPage={setCurrentPage}
+      />
     </PageContent>
   )
 }
