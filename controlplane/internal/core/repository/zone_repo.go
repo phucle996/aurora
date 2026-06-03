@@ -5,26 +5,19 @@
 //
 // 📜 HIỆP ĐỒNG THIẾT KẾ & TỐI ƯU HÓA HẠ TẦNG (CONTRACT & PEAK PERFORMANCE INFRASTRUCTURE):
 //   - File này chịu trách nhiệm tương tác trực tiếp với Postgres Database cho bảng 'zones' và 'zone_services'.
-//   - Triển khai và áp dụng tối ưu hóa hiệu năng cực hạn (Peak Performance Optimization) nhằm triệt tiêu hoàn toàn:
+//   - Triển khai và áp dụng tối ưu hóa hiệu năng cực hạn (Peak Performance Optimization):
 //
 //     1) TRUY VẤN TĨNH KHỞI TẠO SỚM (STATIC QUERY PRE-COMPUTATION):
 //        * Tất cả chuỗi truy vấn SQL được định dạng schema và biên dịch trước một lần duy nhất tại
 //          hàm khởi tạo `NewZoneRepoImpl`.
-//        * Triệt tiêu hoàn toàn chi phí sử dụng `fmt.Sprintf` tại runtime ở hot path, giảm thiểu
-//          các phân bổ heap dynamic memory và tiết kiệm chu kỳ CPU của Go GC.
+//        * Triệt tiêu hoàn toàn chi phí sử dụng `fmt.Sprintf` tại runtime ở hot path.
 //
 //     2) ATOMIC MULTI-WRITE TRANSACTIONS (GIAO DỊCH ĐỒNG THỜI NGUYÊN TỬ):
 //        * Các tác vụ ghi (Create, Update, Delete, Upsert) được đóng gói chặt chẽ trong database
 //          transaction (`pgx.Tx`), đảm bảo tính nhất quán tuyệt đối.
-//        * Bản ghi Outbox tương ứng được chèn đồng thời trong cùng transaction. Nếu bất kỳ cập nhật
-//          hạ tầng nào thất bại, toàn bộ sự kiện Outbox sẽ rollback, ngăn chặn hoàn toàn "ghost events".
 //
 // 🎯 SOURCE OF TRUTH (SoT):
-//   - Database schema 'core.zones' và 'core.zone_services' dưới PostgreSQL là nguồn tin cậy duy nhất cho Desired State lâu dài.
-//
-// 🔒 RANH GIỚI BẢO MẬT & KIẾN TRÚC (CRITICAL ARCHITECTURAL BOUNDARY):
-//   - Chỉ thực hiện các thao tác SQL.
-//   - Trả lỗi thô hoặc lỗi nghiệp vụ định nghĩa sẵn (`coreErrorx`) trực tiếp cho tầng Service.
+//   - Database schema 'core.zones' và 'core.zone_services' dưới PostgreSQL là nguồn tin cậy duy nhất.
 //
 // ======================================================================================================
 
@@ -48,19 +41,18 @@ import (
 )
 
 type ZoneRepoImpl struct {
-	db                        *pgxpool.Pool
-	schema                    string
-	listZonesQuery            string
-	getZoneCatalogQuery       string
-	createZoneQuery           string
-	getZoneByIDQuery          string
-	updateZoneStatusQuery     string
-	deleteZoneQuery           string
-	hasDataplaneNodesQuery    string
-	hasEnabledZoneSvcQuery    string
-	listZoneSvcByZoneIDQuery  string
-	upsertZoneServiceQuery    string
-	saveOutboxQuery           string
+	db                          *pgxpool.Pool
+	schema                      string
+	listZonesQuery              string
+	getZoneCatalogQuery         string
+	createZoneQuery             string
+	getZoneByIDQuery            string
+	updateZoneStatusQuery       string
+	deleteZoneQuery             string
+	hasDataplaneNodesQuery      string
+	hasEnabledZoneSvcQuery      string
+	listZoneSvcByZoneIDQuery    string
+	upsertZoneServiceQuery      string
 }
 
 // NewZoneRepoImpl khởi tạo một thực thể Repository mới cho Zone và biên dịch sẵn các câu lệnh SQL.
@@ -72,12 +64,13 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		listZonesQuery: fmt.Sprintf(`
 			SELECT id, code, name, status, created_at, updated_at 
 			FROM %s.zones 
+			WHERE status != 'deleted'
 			ORDER BY created_at DESC
 		`, schema),
 		getZoneCatalogQuery: fmt.Sprintf(`
 			SELECT id, code, name 
 			FROM %s.zones 
-			WHERE status NOT IN ('disabled', 'planned') 
+			WHERE status NOT IN ('disabled', 'planned', 'deleted') 
 			ORDER BY code ASC
 		`, schema),
 		createZoneQuery: fmt.Sprintf(`
@@ -87,16 +80,17 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		getZoneByIDQuery: fmt.Sprintf(`
 			SELECT id, code, name, status, created_at, updated_at 
 			FROM %s.zones 
-			WHERE id=$1 LIMIT 1
+			WHERE id=$1 AND status != 'deleted' LIMIT 1
 		`, schema),
 		updateZoneStatusQuery: fmt.Sprintf(`
 			UPDATE %s.zones 
 			SET status=$2, updated_at=now() 
-			WHERE id=$1
+			WHERE id=$1 AND status != 'deleted'
 		`, schema),
 		deleteZoneQuery: fmt.Sprintf(`
-			DELETE FROM %s.zones 
-			WHERE id=$1
+			UPDATE %s.zones 
+			SET status='deleted', updated_at=now() 
+			WHERE id=$1 AND status != 'deleted'
 		`, schema),
 		hasDataplaneNodesQuery: fmt.Sprintf(`
 			SELECT EXISTS(SELECT 1 FROM %s.dataplane_nodes WHERE zone_id=$1)
@@ -116,10 +110,6 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			ON CONFLICT (zone_id, service_type) 
 			DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now() 
 			RETURNING id, zone_id, service_type, enabled, created_at, updated_at
-		`, schema),
-		saveOutboxQuery: fmt.Sprintf(`
-			INSERT INTO %s.outbox_records (event_id, entity, op, payload, version, status, attempts, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		`, schema),
 	}
 }
@@ -162,8 +152,8 @@ func (r *ZoneRepoImpl) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCat
 	return out, rows.Err()
 }
 
-// CreateZone khởi tạo Zone mới kèm theo các services cấu hình và ghi nhận sự kiện Outbox trong cùng một transaction.
-func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool, outboxEventID string, outboxPayload []byte, outboxVersion uint64) error {
+// CreateZone khởi tạo Zone mới kèm theo các services cấu hình trong cùng một transaction.
+func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -180,27 +170,12 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 		return err
 	}
 
-	// Tạo các services đồng hành cùng Zone
 	for svcType, enabled := range svcs {
 		newID, _ := uuid.NewV7()
 		_, err = tx.Exec(ctx, r.upsertZoneServiceQuery, newID, value.ID, string(svcType), enabled)
 		if err != nil {
 			return err
 		}
-	}
-
-	// Ghi nhận sự kiện Outbox để đồng bộ cụm NATS
-	_, err = tx.Exec(ctx, r.saveOutboxQuery,
-		outboxEventID,
-		"zone",
-		"CREATE",
-		outboxPayload,
-		outboxVersion,
-		"PENDING",
-		0,
-	)
-	if err != nil {
-		return err
 	}
 
 	return tx.Commit(ctx)
@@ -219,70 +194,28 @@ func (r *ZoneRepoImpl) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEnti
 	return &zone, nil
 }
 
-// UpdateZoneStatus cập nhật trạng thái hoạt động của Zone và chèn sự kiện Outbox an toàn trong transaction.
-func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, outboxEventID string, outboxPayload []byte, outboxVersion uint64) error {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	result, err := tx.Exec(ctx, r.updateZoneStatusQuery, id, string(status))
+// UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
+func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
+	result, err := r.db.Exec(ctx, r.updateZoneStatusQuery, id, string(status))
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		return coreErrorx.ErrZoneNotFound
 	}
-
-	// Ghi nhận sự kiện Outbox đồng bộ hóa nóng
-	_, err = tx.Exec(ctx, r.saveOutboxQuery,
-		outboxEventID,
-		"zone",
-		"UPDATE",
-		outboxPayload,
-		outboxVersion,
-		"PENDING",
-		0,
-	)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
-// DeleteZone xóa hoàn toàn bản ghi Zone và ghi nhận sự kiện Outbox biến động dạng DELETE.
-func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID, outboxEventID string, outboxPayload []byte, outboxVersion uint64) error {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	result, err := tx.Exec(ctx, r.deleteZoneQuery, id)
+// DeleteZone xóa mềm Zone (soft delete: đặt status = 'deleted').
+func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) error {
+	result, err := r.db.Exec(ctx, r.deleteZoneQuery, id)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		return coreErrorx.ErrZoneNotFound
 	}
-
-	// Ghi nhận sự kiện Outbox loại bỏ Zone
-	_, err = tx.Exec(ctx, r.saveOutboxQuery,
-		outboxEventID,
-		"zone",
-		"DELETE",
-		outboxPayload,
-		outboxVersion,
-		"PENDING",
-		0,
-	)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 // HasDataplaneNodesByZone kiểm tra xem Zone hiện tại có Dataplane Nodes nào neo vào không.
@@ -322,41 +255,16 @@ func (r *ZoneRepoImpl) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid
 	return out, rows.Err()
 }
 
-// UpsertZoneServiceByZoneAndType cập nhật/upsert cấu hình dịch vụ của Zone và đồng bộ cấu hình qua Outbox.
-func (r *ZoneRepoImpl) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool, outboxEventID string, outboxPayload []byte, outboxVersion uint64) (*coreEntity.ZoneService, error) {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
+// UpsertZoneServiceByZoneAndType cập nhật/upsert cấu hình dịch vụ của Zone.
+func (r *ZoneRepoImpl) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	newID, _ := uuid.NewV7()
 	var value coreModel.ZoneService
-	err = tx.QueryRow(ctx, r.upsertZoneServiceQuery, newID, zoneID, string(serviceType), enabled).Scan(
+	err := r.db.QueryRow(ctx, r.upsertZoneServiceQuery, newID, zoneID, string(serviceType), enabled).Scan(
 		&value.ID, &value.ZoneID, &value.ServiceType, &value.Enabled, &value.CreatedAt, &value.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-
-	// Ghi nhận sự kiện Outbox để đồng bộ trạng thái mới của Zone chứa service này
-	_, err = tx.Exec(ctx, r.saveOutboxQuery,
-		outboxEventID,
-		"zone",
-		"UPDATE",
-		outboxPayload,
-		outboxVersion,
-		"PENDING",
-		0,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
 	ent := coreModel.ZoneServiceModelToEntity(value)
 	return &ent, nil
 }

@@ -31,11 +31,15 @@ func (f *fakeZoneRepo) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCat
 	return []coreEntity.ZoneCatalog{}, nil
 }
 
-func (f *fakeZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone) error { return nil }
+func (f *fakeZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
+	return nil
+}
 func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
 	return nil
 }
-func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) error { return nil }
+func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
 func (f *fakeZoneRepo) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
 	return false, nil
 }
@@ -57,7 +61,6 @@ func (f *fakeZoneRepo) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneI
 	}
 	return &coreEntity.ZoneService{ID: uuid.NewString(), ZoneID: zoneID.String(), ServiceType: serviceType, Enabled: enabled, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, nil
 }
-
 var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
 
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {

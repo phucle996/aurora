@@ -64,8 +64,8 @@ func TestDataplaneGRPC_TransportLoop(t *testing.T) {
 	// 1. Tạo mock service layer ghi nhận tham số cuộc gọi
 	called := false
 	mockSvc := &MockDataplaneNodeServiceForTransport{
-		IngestHeartbeatFunc: func(ctx context.Context, clusterID string, zoneID string) error {
-			if clusterID == "cluster-abc" && zoneID == "zone-xyz" {
+		IngestFallbackHeartbeatFunc: func(ctx context.Context, hostname string, zoneID string) error {
+			if hostname == "cluster-abc" && zoneID == "zone-xyz" {
 				called = true
 			}
 			return nil

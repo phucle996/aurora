@@ -3,76 +3,10 @@
 //            Đặc Tả Nghiệp Vụ Quản Lý Vòng Đời Zone & Zone Services
 // ======================================================================================================
 //
-// ⚠️  ZONE LÀ ROOT TOPOLOGY — THẬN TRỌNG KHI THAY ĐỔI
-// ─────────────────────────────────────────────────────
-//   Zone là đơn vị hạ tầng gốc (root topology unit) của toàn bộ hệ thống. Mọi thực thể vận hành
-//   đều được neo vào một zone cụ thể:
-//     - Dataplane nodes đăng ký và hoạt động dưới một zone.
-//     - Zone services (hypervisor, storage, mail, k8s, ai) xác định năng lực của zone đó.
-//     - Các tài nguyên cấp cao hơn (VM, volume, workload) sẽ được phân bổ dựa trên zone.
-//
-//   Hệ quả: bất kỳ thay đổi nào đến zone — đặc biệt là xóa, chuyển trạng thái, hoặc thay đổi
-//   service config — đều có thể gây hiệu ứng lan rộng (blast radius) đến toàn bộ workload đang
-//   chạy trên zone đó. Không thực hiện thay đổi zone trên production mà không có runbook rõ ràng.
-//
-// 📜 HIỆP ĐỒNG THIẾT KẾ (DESIGN CONTRACT):
-//   - ZoneService là tầng business logic duy nhất chịu trách nhiệm điều phối toàn bộ vòng đời của
-//     một Zone trong hệ thống: tạo mới, chuyển trạng thái, xóa, và quản lý các service con.
-//
-//   - Phân chia trách nhiệm rõ ràng theo layer:
-//     * Handler (transport layer): chịu trách nhiệm validate toàn bộ input từ client — uuid parse,
-//       status enum, service type enum, binding required. Không để service làm lại.
-//     * Service (business layer — file này): chỉ enforce business rules thuần — state machine
-//       transition, delete preconditions, zone-must-be-maintenance constraint.
-//     * Repository (data layer): SoT duy nhất cho trạng thái zone trong Postgres.
-//
-// 🎯 ZONE LIFECYCLE & STATE MACHINE:
-//   - Zone mới tạo luôn bắt đầu ở trạng thái `planned` — không cho phép client set status khi tạo.
-//   - Sơ đồ chuyển trạng thái hợp lệ (một chiều, không bypass):
-//
-//       planned ──────────────────────────────────────────► active
-//           └──────────────────────────────────────────────► disabled
-//
-//       active ───────────────────────────────────────────► draining
-//           ├─────────────────────────────────────────────► maintenance
-//           └─────────────────────────────────────────────► disabled
-//
-//       draining ─────────────────────────────────────────► active
-//           ├─────────────────────────────────────────────► maintenance
-//           └─────────────────────────────────────────────► disabled
-//
-//       maintenance ──────────────────────────────────────► active
-//           └─────────────────────────────────────────────► disabled
-//
-//       disabled ─────────────────────────────────────────► active
-//
-//   - Mọi transition không nằm trong sơ đồ trên đều bị từ chối với ErrZoneInvalidTransition.
-//   - Transition từ một status sang chính nó (no-op) được cho phép để idempotent.
-//
-// 🔒 ZONE SERVICE (ENABLED SERVICES) CONTRACT:
-//   - Khi tạo zone, tất cả 5 services (hypervisor, storage, mail, k8s, ai) được upsert đồng thời
-//     trong cùng một luồng CreateZone — không tách thành call riêng.
-//   - UpsertZoneService (cập nhật sau khi zone đã tồn tại) chỉ được phép khi zone đang ở trạng thái
-//     `maintenance`. Đây là guard bảo vệ tính nhất quán dữ liệu — tránh thay đổi service config
-//     khi zone đang phục vụ traffic thực.
-//
-// 🗑️ DELETE PRECONDITIONS (BẮT BUỘC ĐỦ 3 ĐIỀU KIỆN):
-//   1. Zone phải ở trạng thái `disabled`.
-//   2. Không còn dataplane node nào đang được gắn vào zone.
-//   3. Không còn enabled service nào trong zone.
-//   → Thiếu bất kỳ điều kiện nào → ErrZoneDeletePreconditionFailed.
-//   → Mục đích: tránh orphan references trong dataplane và service registry.
-//
-// 🚀 LƯU Ý VẬN HÀNH:
-//   - Service không tự log nghiệp vụ — mọi log do handler thực hiện.
-//   - Mọi lỗi trả thẳng lên caller, không wrap thêm tầng.
-//   - Dependency duy nhất là ZoneRepository — không phụ thuộc cache hay external service.
-//   - App bootstrap (module.go) đảm bảo repo không nil trước khi service được khởi tạo;
-//     service không tự kiểm tra nil repo tại runtime.
-//
-// 📞 CALLER:
-//   - HTTP handler: `controlplane/internal/core/transport/http/handler/zone_handler.go`
-//   - Module wiring: `controlplane/internal/core/module.go`
+// 📜 THIẾT KẾ & TÁCH BIỆT TRÁCH NHIỆM:
+//   - ZoneService chỉ tập trung vào logic nghiệp vụ và tương tác với Database (Source of Truth).
+//   - Toàn bộ logic quản lý bộ nhớ đệm L2 RAM Cache, đồng bộ phiên bản (Versioning) và cơ chế phát tán
+//     (Redis Pub/Sub Fanout) được che giấu hoàn toàn phía sau lớp cache (ZoneFanoutCache).
 //
 // ======================================================================================================
 
@@ -80,107 +14,73 @@ package coreSvcImpl
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
+	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreErrorx "controlplane/internal/core/errorx"
-	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
-)
-
-const (
-	zoneCatalogCacheKey = "core:zone:catalog"
-	zoneCatalogCacheTTL = 5 * time.Minute
 )
 
 type ZoneService struct {
 	repo  coreRepoInterface.ZoneRepository
-	rds   *goredis.Client // nil-safe: Redis Fail-Open, fallback trực tiếp xuống DB nếu Redis lỗi
+	cache *coreCache.ZoneFanoutCache // L2 RAM cache — COW, lock-free reads, versioned
 	sfg   singleflight.Group
 }
 
-func NewZoneService(repo coreRepoInterface.ZoneRepository, rds *goredis.Client) coreSvcInterface.ZoneService {
-	return &ZoneService{repo: repo, rds: rds}
+type catalogWithVersion struct {
+	catalog []coreEntity.ZoneCatalog
+	version int64
+}
+
+func NewZoneService(
+	repo coreRepoInterface.ZoneRepository,
+	cache *coreCache.ZoneFanoutCache,
+) coreSvcInterface.ZoneService {
+	return &ZoneService{repo: repo, cache: cache}
 }
 
 func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
 	return s.repo.ListZones(ctx)
 }
 
-// GetZoneCatalog trả danh sách zone catalog tối giản (id, code, name) phục vụ Select/Dropdown UI.
-//
-// Chiến lược tối ưu hiệu năng HA:
-//   - Singleflight: dưới áp lực tải cao, khi cache miss xảy ra đồng thời, chỉ 1 goroutine xuống DB;
-//     các goroutine còn lại chờ nhận chung kết quả — tránh Cache Stampede hoàn toàn.
-//   - Redis Cache-Aside (TTL 5 phút): hot path O(1) giảm tải DB.
-//   - Fail-Open Redis: nếu Redis lỗi, hệ thống tiếp tục phục vụ bằng cách query DB trực tiếp,
-//     ghi cảnh báo SysWarn — không crash dịch vụ vì lỗi cache.
+// GetZoneCatalog hot-path: L2 RAM cache O(1), singleflight coalesces DB misses.
 func (s *ZoneService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	// --- Hot Path: Redis Cache ---
-	if s.rds != nil {
-		if cached, err := s.rds.Get(ctx, zoneCatalogCacheKey).Bytes(); err == nil {
-			var out []coreEntity.ZoneCatalog
-			if jsonErr := json.Unmarshal(cached, &out); jsonErr == nil {
-				return out, nil
-			}
-		} else if err != goredis.Nil {
-			// Redis lỗi thật sự (network/timeout) — Fail-Open: log cảnh báo, tiếp tục query DB
-			logger.SysWarn("zone.catalog", "redis get failed [FAIL-OPEN], fallback to db: "+err.Error())
+	if s.cache != nil {
+		if catalog, ok := s.cache.GetCatalog(); ok {
+			return catalog, nil
 		}
-	}
 
-	// --- Singleflight: chống Cache Stampede khi cache miss ---
-	v, err, _ := s.sfg.Do("zone_catalog", func() (interface{}, error) {
-		items, dbErr := s.repo.GetZoneCatalog(ctx)
-		if dbErr != nil {
-			return nil, dbErr
-		}
-		// Write-through cache sau khi lấy được từ DB
-		if s.rds != nil {
-			if payload, jsonErr := json.Marshal(items); jsonErr == nil {
-				if setErr := s.rds.Set(ctx, zoneCatalogCacheKey, payload, zoneCatalogCacheTTL).Err(); setErr != nil {
-					logger.SysWarn("zone.catalog", "redis set failed [FAIL-OPEN]: "+setErr.Error())
-				}
+		// Cache miss: singleflight gom tất cả concurrent req thành 1 DB call
+		v, err, _ := s.sfg.Do("zone:catalog", func() (any, error) {
+			catalog, err := s.repo.GetZoneCatalog(ctx)
+			if err != nil {
+				return nil, err
 			}
+			// Đọc version hiện tại từ Redis qua cache interface
+			version := s.cache.GetVersion(ctx)
+			return &catalogWithVersion{catalog: catalog, version: version}, nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return items, nil
-	})
-	if err != nil {
-		return nil, err
+		result := v.(*catalogWithVersion)
+		s.cache.SetCatalog(result.catalog, result.version)
+		return result.catalog, nil
 	}
-	return v.([]coreEntity.ZoneCatalog), nil
+	return s.repo.GetZoneCatalog(ctx)
 }
 
-// evictZoneCatalogCache xóa cache catalog khi có mutation (create/update) để đảm bảo fresh data.
-func (s *ZoneService) evictZoneCatalogCache(ctx context.Context) {
-	if s.rds == nil {
-		return
-	}
-	if err := s.rds.Del(ctx, zoneCatalogCacheKey).Err(); err != nil {
-		logger.SysWarn("zone.catalog", "cache eviction failed [FAIL-OPEN]: "+err.Error())
-	}
-}
-
-// CreateZone tạo zone mới với status cố định là `planned` và upsert toàn bộ 5 zone services
-// trong cùng một luồng.
-//
-// Notes:
-//   - Status luôn hardcode là ZoneStatusPlanned — client không được phép set status khi tạo.
-//   - Tất cả 5 services (hypervisor, storage, mail, k8s, ai) đều được upsert ngay sau khi zone
-//     được tạo thành công, kể cả khi enabled=false — đảm bảo bản ghi service luôn tồn tại đầy đủ.
-//   - Nếu upsert bất kỳ service nào thất bại, zone đã được tạo nhưng service config có thể không
-//     đầy đủ — caller cần xử lý lỗi và retry hoặc cleanup nếu cần.
+// CreateZone tạo zone mới + cập nhật cache (tự động đồng bộ các replica).
 func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
 	now := time.Now().UTC()
-	zoneID, zoneIDErr := uuid.NewV7()
-	if zoneIDErr != nil {
+	zoneID, err := uuid.NewV7()
+	if err != nil {
 		zoneID = uuid.New()
 	}
 	zone := coreEntity.Zone{
@@ -191,10 +91,6 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.repo.CreateZone(ctx, zone); err != nil {
-		return err
-	}
-
 	svcs := map[coreEntity.ZoneServiceType]bool{
 		coreEntity.ZoneServiceTypeHypervisor: input.EnableHypervisor,
 		coreEntity.ZoneServiceTypeStorage:    input.EnableStorage,
@@ -202,25 +98,19 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		coreEntity.ZoneServiceTypeK8s:        input.EnableK8s,
 		coreEntity.ZoneServiceTypeAI:         input.EnableAI,
 	}
-	for svcType, enabled := range svcs {
-		if _, err := s.repo.UpsertZoneServiceByZoneAndType(ctx, zoneID, svcType, enabled); err != nil {
-			return err
-		}
+
+	if err := s.repo.CreateZone(ctx, zone, svcs); err != nil {
+		return err
 	}
 
-	// Zone mới tạo ở planned — không ảnh hưởng catalog, nhưng evict để
-	// không bị stale khi admin chuyển nó sang active ngay sau đó.
-	s.evictZoneCatalogCache(ctx)
+	// Đồng bộ qua cache
+	if s.cache != nil {
+		s.cache.PatchZone(ctx, zone)
+	}
 	return nil
 }
 
-// UpdateZoneStatus chuyển trạng thái zone theo state machine đã định nghĩa.
-//
-// Notes:
-//   - Transition từ một status sang chính nó (no-op) được cho phép — idempotent safe.
-//   - Mọi transition không hợp lệ trả ErrZoneInvalidTransition.
-//   - Sau khi update thành công, trả về zone mới nhất từ DB (source of truth).
-//   - Input validation (uuid parse, status enum) do handler thực hiện trước khi gọi vào đây.
+// UpdateZoneStatus chuyển trạng thái zone theo state machine.
 func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
 	zone, err := s.repo.GetZoneByID(ctx, zoneID)
 	if err != nil {
@@ -230,7 +120,6 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		return nil, coreErrorx.ErrZoneNotFound
 	}
 
-	// State machine transition table — mọi chuyển trạng thái phải qua bảng này.
 	allowed := map[coreEntity.ZoneStatus][]coreEntity.ZoneStatus{
 		coreEntity.ZoneStatusPlanned:     {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
 		coreEntity.ZoneStatusActive:      {coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
@@ -254,17 +143,19 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	if err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus); err != nil {
 		return nil, err
 	}
-	// Status thay đổi ảnh hưởng trực tiếp tới catalog (planned/disabled bị loại khỏi catalog).
-	s.evictZoneCatalogCache(ctx)
-	return s.repo.GetZoneByID(ctx, zoneID)
+
+	updated, err := s.repo.GetZoneByID(ctx, zoneID)
+	if err != nil {
+		return nil, err
+	}
+
+	if updated != nil && s.cache != nil {
+		s.cache.PatchZone(ctx, *updated)
+	}
+	return updated, nil
 }
 
-// DeleteZone xóa zone khi đủ 3 preconditions: disabled + không còn dataplane node + không còn enabled service.
-//
-// Notes:
-//   - Cả 3 điều kiện phải thỏa mãn đồng thời — thiếu bất kỳ điều kiện nào trả ErrZoneDeletePreconditionFailed.
-//   - Mục đích guard này là tránh orphan references trong dataplane registry và service config.
-//   - Thứ tự kiểm tra: status → nodes → services. Dừng sớm ở điều kiện đầu tiên thất bại.
+// DeleteZone xóa mềm zone khi đủ 3 preconditions.
 func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	zone, err := s.repo.GetZoneByID(ctx, zoneID)
 	if err != nil {
@@ -290,13 +181,18 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	if hasEnabledSvc {
 		return coreErrorx.ErrZoneDeletePreconditionFailed
 	}
-	return s.repo.DeleteZone(ctx, zoneID)
+
+	if err := s.repo.DeleteZone(ctx, zoneID); err != nil {
+		return err
+	}
+
+	if s.cache != nil {
+		s.cache.EvictZone(ctx, zone.ID, zone.Code)
+	}
+	return nil
 }
 
 // ListZoneServices trả danh sách tất cả zone services của một zone.
-//
-// Notes:
-//   - Kiểm tra zone tồn tại trước khi query services để trả lỗi rõ ràng hơn là empty list.
 func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
 	zone, err := s.repo.GetZoneByID(ctx, zoneID)
 	if err != nil {
@@ -308,13 +204,7 @@ func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([
 	return s.repo.ListZoneServicesByZoneID(ctx, zoneID)
 }
 
-// UpsertZoneService cập nhật trạng thái enabled/disabled của một service trong zone.
-//
-// Notes:
-//   - Chỉ được phép khi zone đang ở trạng thái `maintenance` — guard tránh thay đổi service config
-//     khi zone đang phục vụ traffic thực (active/draining).
-//   - Operator phải chuyển zone sang maintenance trước, thực hiện thay đổi, rồi chuyển lại active.
-//   - Input validation (service type enum, uuid parse) do handler thực hiện trước khi gọi vào đây.
+// UpsertZoneService cập nhật enabled/disabled của một service trong zone.
 func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	zone, err := s.repo.GetZoneByID(ctx, zoneID)
 	if err != nil {
@@ -326,5 +216,15 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 	if zone.Status != coreEntity.ZoneStatusMaintenance {
 		return nil, coreErrorx.ErrZoneServiceStateConflict
 	}
-	return s.repo.UpsertZoneServiceByZoneAndType(ctx, zoneID, serviceType, enabled)
+
+	svc, err := s.repo.UpsertZoneServiceByZoneAndType(ctx, zoneID, serviceType, enabled)
+	if err != nil {
+		return nil, err
+	}
+
+	// Zone entity không thay đổi fields nhưng catalog cần refresh
+	if s.cache != nil {
+		s.cache.PatchZone(ctx, *zone)
+	}
+	return svc, nil
 }

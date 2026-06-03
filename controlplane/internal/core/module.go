@@ -63,13 +63,13 @@ type Module struct {
 	DataplaneNodeService         coreSvcInterface.DataplaneNodeService
 	DataplaneOrchestrator        *coreSvcImpl.DataplaneOrchestrator
 	DataplaneHeartbeatSubscriber *coreSvcImpl.DataplaneHeartbeatSubscriber
-	OutboxRepository             coreRepoInterface.OutboxRepository
-	OutboxService                coreSvcInterface.OutboxService
-	outboxPublisher              func(ctx context.Context, entity string, op string, payload []byte, version uint64) error
 	invalidationBus              *coreCache.RedisSecretInvalidationBus
+	zoneCache                    *coreCache.ZoneFanoutCache
+	zoneFanout                   *coreCache.RedisFanoutBus
 	listenCancel                 context.CancelFunc
 	orchestratorCancel           context.CancelFunc
 	subscriberCancel             context.CancelFunc
+	zoneCacheCancel              context.CancelFunc
 	rateLimiter                  *ratelimit.Bucket
 }
 
@@ -90,12 +90,14 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	// 3) Rotation + cache invalidation orchestration.
 	bus := coreCache.NewRedisSecretInvalidationBus(rds, provider, cfg.App.AppName)
 	rotationService := coreSvcImpl.NewSecretRotationService(repo, bus)
-	// 5) Zone dependencies injection.
+	// 5) Zone L2 cache + fanout bus
+	zoneFanout := coreCache.NewRedisFanoutBus(rds, "core:zone:fanout")
+	zoneCache := coreCache.NewZoneFanoutCache(zoneFanout)
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
 	}
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, zoneCache)
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
 
 	// 6) Dataplane dependencies injection
@@ -120,16 +122,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane subscriber is nil")
 	}
 
-	// 7) Outbox setup
-	outboxRepo := coreRepoImpl.NewOutboxRepoImpl(cfg, db)
-	var pubRef func(ctx context.Context, entity string, op string, payload []byte, version uint64) error
-	outboxService := coreSvcImpl.NewOutboxServiceImpl(outboxRepo, func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
-		if pubRef == nil {
-			return fmt.Errorf("outbox_service: dynamic publisher not initialized yet")
-		}
-		return pubRef(ctx, entity, op, payload, version)
-	})
-
 	m := &Module{
 		cfg:                          cfg,
 		SecretRepository:             repo,
@@ -143,25 +135,13 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		DataplaneNodeService:         dataplaneNodeService,
 		DataplaneOrchestrator:        dataplaneOrchestrator,
 		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
-		OutboxRepository:             outboxRepo,
-		OutboxService:                outboxService,
 		invalidationBus:              bus,
+		zoneCache:                    zoneCache,
+		zoneFanout:                   zoneFanout,
 		rateLimiter:                  rateLimiter,
 	}
 
-	m.outboxPublisher = func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
-		return fmt.Errorf("outbox: publisher not registered")
-	}
-	pubRef = func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
-		return m.outboxPublisher(ctx, entity, op, payload, version)
-	}
-
 	return m, nil
-}
-
-// SetOutboxPublisher cho phép tiêm (inject) động publisher từ module NATS/EventBus ở tầng bootstrap.
-func (m *Module) SetOutboxPublisher(pub func(ctx context.Context, entity string, op string, payload []byte, version uint64) error) {
-	m.outboxPublisher = pub
 }
 
 // RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
@@ -198,6 +178,16 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 		m.subscriberCancel = cancel
 		go m.DataplaneHeartbeatSubscriber.Start(subCtx)
 	}
+	// Zone L2 cache fanout subscriber: lắng nghe từ Redis Pub/Sub và apply local cache thông qua HandleFanout
+	if m.zoneFanout != nil && m.zoneCache != nil && m.zoneCacheCancel == nil {
+		zoneCacheCtx, cancel := context.WithCancel(ctx)
+		m.zoneCacheCancel = cancel
+		go func() {
+			if err := m.zoneFanout.Subscribe(zoneCacheCtx, m.zoneCache.HandleFanout); err != nil && err != context.Canceled {
+				logger.SysWarn("core", "zone cache fanout subscriber stopped: "+err.Error())
+			}
+		}()
+	}
 
 	families := []coreEntity.BootstrapSecretFamily{
 		{Code: "access_token", Name: "Access Token", Description: "Primary signing secret for user access tokens."},
@@ -229,5 +219,9 @@ func (m *Module) Stop() {
 	if m.subscriberCancel != nil {
 		m.subscriberCancel()
 		m.subscriberCancel = nil
+	}
+	if m.zoneCacheCancel != nil {
+		m.zoneCacheCancel()
+		m.zoneCacheCancel = nil
 	}
 }

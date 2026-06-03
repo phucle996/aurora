@@ -55,13 +55,8 @@ import (
 	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
-	deltaengine "controlplane/internal/delta-engine"
-	brokerNats "controlplane/internal/delta-engine/broker/nats"
-	deltaTypes "controlplane/internal/delta-engine/types"
 	"controlplane/pkg/logger"
 
-	"github.com/google/uuid"
-	gonats "github.com/nats-io/nats.go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -80,8 +75,7 @@ type Modules struct {
 	// PolicyEngine là runtime hot-reload module cho policies.
 	PolicyEngine *policyengine.Engine
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
-	DeltaEngine *deltaengine.DeltaEngine
-	probeCancel  context.CancelFunc
+	probeCancel context.CancelFunc
 }
 
 // NewGlobalModules là điểm dựng module graph ở app-layer và là nơi fail-fast
@@ -92,7 +86,6 @@ func NewGlobalModules(cfg *config.Config,
 	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	policyEngineModule *policyengine.Engine,
-	natsConn *gonats.Conn,
 ) (*Modules, error) {
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 1: KHỞI TẠO HỆ THỐNG GIÁM SÁT & OBSERVABILITY
@@ -137,26 +130,6 @@ func NewGlobalModules(cfg *config.Config,
 	}
 	if coreModule == nil || coreModule.RuntimeSecretProvider == nil {
 		return nil, errors.New("app: init critical core module: runtime secret provider is required")
-	}
-
-	// 3a) Thiết lập NatsEventBus và DeltaEngine. Kết nối Outbox thông qua Dynamic Dependency Injection.
-	eventBus := brokerNats.NewNatsEventBus(natsConn, "controlplane.delta.events")
-
-	// Tiêm (Inject) hàm callback đẩy tin NATS động vào Outbox Service của Core
-	coreModule.SetOutboxPublisher(func(ctx context.Context, entity string, op string, payload []byte, version uint64) error {
-		return eventBus.Publish(ctx, deltaTypes.DeltaEvent{
-			ID:        uuid.New().String(),
-			Entity:    entity,
-			Op:        deltaTypes.DeltaOp(op),
-			Payload:   payload,
-			Version:   version,
-			Timestamp: time.Now(),
-		})
-	})
-
-	deltaEngine := deltaengine.NewDeltaEngine(eventBus, coreModule.OutboxService, rdsCore)
-	if err := deltaEngine.Start(context.Background()); err != nil {
-		return nil, fmt.Errorf("app: failed to start high-performance delta-engine: %w", err)
 	}
 
 	// 4) Adapter runtime provider -> security provider để cấp cho IAM/middlewares.
@@ -215,7 +188,6 @@ func NewGlobalModules(cfg *config.Config,
 		Hypervisor:   hypervisorModule,
 		Mail:         mailModule,
 		PolicyEngine: policyEngineModule,
-		DeltaEngine:  deltaEngine,
 		probeCancel:  probeCancel,
 	}, nil
 }

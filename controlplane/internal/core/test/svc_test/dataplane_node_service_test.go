@@ -6,6 +6,7 @@ import (
 	"time"
 
 	coreEntity "controlplane/internal/core/domain/entity"
+	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcImpl "controlplane/internal/core/service"
 
 	"github.com/google/uuid"
@@ -113,7 +114,7 @@ func (m *mockZoneRepoForService) ListZones(ctx context.Context) ([]coreEntity.Zo
 func (m *mockZoneRepoForService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
 	return []coreEntity.ZoneCatalog{}, nil
 }
-func (m *mockZoneRepoForService) CreateZone(ctx context.Context, zone coreEntity.Zone) error {
+func (m *mockZoneRepoForService) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
 	return nil
 }
 func (m *mockZoneRepoForService) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
@@ -140,6 +141,8 @@ func (m *mockZoneRepoForService) ListZoneServicesByZoneID(ctx context.Context, z
 func (m *mockZoneRepoForService) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	return nil, nil
 }
+
+var _ coreRepoInterface.ZoneRepository = (*mockZoneRepoForService)(nil)
 
 func TestVerifyClusterStatus_FastPath(t *testing.T) {
 	zoneID, _ := uuid.NewV7()

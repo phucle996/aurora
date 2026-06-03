@@ -43,13 +43,13 @@ package app
 
 import (
 	"context"
+	infraNats "controlplane/infra/nats"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
 	"controlplane/internal/app/bootstrap"
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
-	infraNats "controlplane/infra/nats"
 	"controlplane/internal/policyengine"
 	natsPolicy "controlplane/internal/policyengine/policies/nats"
 	otelPolicy "controlplane/internal/policyengine/policies/otel"
@@ -290,7 +290,8 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// [FAIL-CLOSE] Module Graph bootstrap: toàn bộ module khởi tạo và wiring.
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
-	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule, app.natsConn)
+
+	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule)
 	if err != nil {
 		app.Stop()
 		return nil, err
