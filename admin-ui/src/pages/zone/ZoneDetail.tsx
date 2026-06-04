@@ -307,13 +307,31 @@ export default function ZoneDetailPage() {
 
   const applyServices = () => {
     setServiceDrawerOpen(false)
-    void Fetch(`/admin/zones/${encodeURIComponent(zoneID)}/services`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled_services: draftServices }),
-    })
-      .then(async (response) => {
+    const serviceKeys = ['hypervisor', 'storage', 'mail', 'k8s', 'ai']
+    const currentEnabled = detail.enabled_services.map((s) => s.key)
+
+    const promises = serviceKeys.map((key) => {
+      const isCurrentlyEnabled = currentEnabled.includes(key)
+      const shouldBeEnabled = draftServices.includes(key)
+      if (isCurrentlyEnabled === shouldBeEnabled) return null
+
+      return Fetch(`/admin/zones/services`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          zone_id: zoneID,
+          service_type: key,
+          enabled: shouldBeEnabled,
+        }),
+      }).then(async (response) => {
         if (!response.ok) throw new Error(await readErrorMessage(response))
+      })
+    }).filter(Boolean) as Promise<void>[]
+
+    if (promises.length === 0) return
+
+    Promise.all(promises)
+      .then(async () => {
         await loadZoneDetail()
       })
       .catch((err) => setError(err instanceof Error ? err.message : 'Cannot update zone services'))
@@ -328,10 +346,10 @@ export default function ZoneDetailPage() {
     if (!pendingStatus) return
     const nextStatus = pendingStatus
     setPendingStatus(null)
-    void Fetch(`/admin/zones/${encodeURIComponent(zoneID)}/status`, {
+    void Fetch(`/admin/zones/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: nextStatus }),
+      body: JSON.stringify({ zone_id: zoneID, status: nextStatus }),
     })
       .then(async (response) => {
         if (!response.ok) throw new Error(await readErrorMessage(response))

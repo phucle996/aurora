@@ -30,7 +30,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
 		module.ZoneHandler.ListZones,
 	)
-	router.PATCH("/admin/core/zones/:zone_id/status",
+	router.PATCH("/admin/core/zones/status",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(middleware.WithInjectAccessKey()),
 		middleware.AdminCriticalSignature(),
@@ -47,7 +47,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.AdminAPIKeyAuth(),
 		module.ZoneHandler.ListZoneServices,
 	)
-	router.PUT("/admin/core/zones/:zone_id/services",
+	router.PUT("/admin/core/zones/services",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
 		module.ZoneHandler.UpsertZoneService,

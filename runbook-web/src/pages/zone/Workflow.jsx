@@ -33,10 +33,11 @@ const CREATE_RESPONSE = `HTTP/1.1 201 Created
   "created_at": "2026-05-30T19:00:00Z"
 }`
 
-const ACTIVATE_PAYLOAD = `PATCH /api/v1/zones/01903e8c-55c1-7da3-87de-6e69622d1df9/status
+const ACTIVATE_PAYLOAD = `PATCH /api/v1/zones/status
 Authorization: Bearer <admin-jwt>
 
 {
+  "zone_id": "01903e8c-55c1-7da3-87de-6e69622d1df9",
   "status": "active"
 }`
 

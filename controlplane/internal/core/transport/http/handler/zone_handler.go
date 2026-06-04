@@ -1,49 +1,21 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/core/transport/http/handler/zone_handler.go
-//            HTTP Handler — Zone & Zone Service Management API
-// ======================================================================================================
-//
-// ⚠️  ZONE LÀ ROOT TOPOLOGY — XEM zone_service.go ĐỂ HIỂU ĐẦY ĐỦ BLAST RADIUS
-// ─────────────────────────────────────────────────────────────────────────────
-//   Mọi thao tác qua handler này đều tác động trực tiếp đến root topology của hệ thống.
-//   Không expose thêm endpoint hay nới lỏng validation mà không có review kỹ.
-//
-// 📜 TRÁCH NHIỆM CỦA HANDLER (TRANSPORT LAYER CONTRACT):
-//   Handler chịu trách nhiệm toàn bộ input validation trước khi gọi xuống service:
-//     - Parse và validate zone_id (UUID format).
-//     - Validate status enum — chỉ chấp nhận các giá trị đã định nghĩa trong ZoneStatus.
-//     - Validate service_type enum — chỉ chấp nhận các giá trị đã định nghĩa trong ZoneServiceType.
-//     - Binding required fields qua ShouldBindJSON (code, name, enable_* fields).
-//   Service layer KHÔNG làm lại các validation này — handler là boundary duy nhất.
-//
-// 🔌 ENDPOINTS & ROUTING:
-//   Các endpoint được đăng ký tại `controlplane/internal/app/routes.go`:
-//     POST   /admin/zones                          → CreateZone
-//     GET    /admin/zones                          → ListZones
-//     PATCH  /admin/zones/:zone_id/status          → UpdateZoneStatus
-//     DELETE /admin/zones/:zone_id                 → DeleteZone
-//     GET    /admin/zones/:zone_id/services        → ListZoneServices
-//     PUT    /admin/zones/:zone_id/services        → UpsertZoneService
-//
-// 🔒 BẢO MẬT & PHÂN QUYỀN:
-//   - Tất cả endpoint đều nằm dưới prefix `/admin` — yêu cầu Admin session hợp lệ.
-//   - Middleware xác thực Admin được áp dụng ở router group, không phải trong handler.
-//
-// 🗂️ ERROR MAPPING:
-//   Handler map lỗi từ service sang HTTP status code theo quy ước:
-//     ErrZoneNotFound / ErrZoneServiceZoneNotFound  → 404 Not Found
-//     ErrZoneInvalidInput / ErrZoneServiceInvalidType → 400 Bad Request
-//     ErrZoneCodeAlreadyExists                      → 409 Conflict
-//     ErrZoneInvalidTransition                      → 409 Conflict
-//     ErrZoneDeletePreconditionFailed               → 409 Conflict
-//     ErrZoneServiceStateConflict                   → 409 Conflict
-//     default                                       → 500 Internal Server Error
-//
-// 📞 DEPENDENCY:
-//   - ZoneService interface: `controlplane/internal/core/domain/service/zone_service.go`
-//   - DTO request: `controlplane/internal/core/transport/http/dto/req/zone_request.go`
-//
-// ======================================================================================================
+/*
+Package coreHandler triển khai HTTP handlers cho Zone và Zone Service Management.
+
+DESIGN CONTRACTS:
+	1. Các thao tác thay đổi trạng thái (mutation) như update status và upsert service sử dụng thuần DTO body payload thay vì path parameter.
+	2. Phân biệt rõ: GET dùng path parameter (như list services), POST/PATCH/PUT dùng request body.
+
+SOURCE OF TRUTH:
+	1. File route.go của core module là Source of Truth cho các handler trong file này.
+	2. Struct DTO là Source of Truth cho input của handler.
+	3. Entity của domain service là Source of Truth cho output mapping sang gin.H của handler.
+
+SYSTEM BOUNDARY:
+	1. Handler sẽ không biết domain knowledge
+	2. Mọi logic validate req sẽ nằm ở handler : binding, validate cấu trúc , normalize req, trimspace ,...
+	3. Mapping domain error sang http error response tương ứng
+	4. Ủy quyền xử lý nghiệp vụ cho zoneSvc interface
+*/
 
 package coreHandler
 
@@ -201,33 +173,26 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 // @Tags         zones
 // @Accept       json
 // @Produce      json
-// @Param        zone_id path string true "Zone ID (UUID)"
 // @Param        request body requestdto.UpdateZoneStatusRequest true "Status update request"
 // @Success      200 {object} map[string]interface{} "Zone status updated successfully"
 // @Failure      400 {object} map[string]interface{} "Invalid request or invalid status"
 // @Failure      404 {object} map[string]interface{} "Zone not found"
 // @Failure      409 {object} map[string]interface{} "Invalid state transition"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/{zone_id}/status [patch]
+// @Router       /admin/zones/status [patch]
 // @Security     AdminAuth
 func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 	const op = "core.zone.update_status"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	zoneID := strings.TrimSpace(c.Param("zone_id"))
-	parsedZoneID, parseErr := uuid.Parse(zoneID)
-	if parseErr != nil {
-		logger.HandlerWarn(c, op, parseErr, "update zone invalid zone_id")
-		apires.RespondBadRequest(c, "invalid request")
-		return
-	}
 	var request requestdto.UpdateZoneStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind update zone status request failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
+
 	toStatus := coreEntity.ZoneStatus(strings.ToLower(strings.TrimSpace(request.Status)))
 	switch toStatus {
 	case coreEntity.ZoneStatusPlanned, coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDraining,
@@ -237,7 +202,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	zone, err := h.zoneSvc.UpdateZoneStatus(ctx, parsedZoneID, toStatus)
+	zone, err := h.zoneSvc.UpdateZoneStatus(ctx, request.ZoneID, toStatus)
 	if err != nil {
 		switch {
 		case errors.Is(err, coreErrorx.ErrZoneNotFound):
@@ -359,32 +324,27 @@ func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
 // @Tags         zone-services
 // @Accept       json
 // @Produce      json
-// @Param        zone_id path string true "Zone ID (UUID)"
 // @Param        request body requestdto.UpsertZoneServiceRequest true "Service update request"
 // @Success      200 {object} map[string]interface{} "Zone service updated successfully"
 // @Failure      400 {object} map[string]interface{} "Invalid request or invalid service type"
 // @Failure      404 {object} map[string]interface{} "Zone not found"
 // @Failure      409 {object} map[string]interface{} "Zone not in maintenance status"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/{zone_id}/services [put]
+// @Router       /admin/zones/services [put]
 // @Security     AdminAuth
 func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 	const op = "core.zone_service.upsert"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	zoneID := strings.TrimSpace(c.Param("zone_id"))
-	parsedZoneID, parseErr := uuid.Parse(zoneID)
-	if parseErr != nil {
-		logger.HandlerWarn(c, op, parseErr, "upsert zone service invalid zone_id")
-		apires.RespondBadRequest(c, "invalid request")
-		return
-	}
 	var request requestdto.UpsertZoneServiceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
+		logger.HandlerWarn(c, op, err, "bind upsert zone service request failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
+	parsedZoneID := request.ZoneID
+
 	serviceType := coreEntity.ZoneServiceType(strings.ToLower(strings.TrimSpace(request.ServiceType)))
 	switch serviceType {
 	case coreEntity.ZoneServiceTypeHypervisor, coreEntity.ZoneServiceTypeStorage,
@@ -394,7 +354,7 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	item, err := h.zoneSvc.UpsertZoneService(ctx, parsedZoneID, serviceType, request.Enabled)
+	item, err := h.zoneSvc.UpsertZoneService(ctx, parsedZoneID, serviceType, *request.Enabled)
 	if err != nil {
 		switch {
 		case errors.Is(err, coreErrorx.ErrZoneServiceZoneNotFound):
