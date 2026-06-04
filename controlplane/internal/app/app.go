@@ -43,7 +43,6 @@ package app
 
 import (
 	"context"
-	infraNats "controlplane/infra/nats"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
 	"controlplane/internal/app/bootstrap"
@@ -51,7 +50,6 @@ import (
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
 	"controlplane/internal/policyengine"
-	natsPolicy "controlplane/internal/policyengine/policies/nats"
 	otelPolicy "controlplane/internal/policyengine/policies/otel"
 	promPolicy "controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/security"
@@ -65,7 +63,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	gonats "github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -84,7 +81,6 @@ type App struct {
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
 	rdsJob     *goredis.Client
-	natsConn   *gonats.Conn
 	ready      bool
 }
 
@@ -159,16 +155,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 
 	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Infrastructure bootstrap: NATS Cluster Connection.
-	// --------------------------------------------------------------------
-	natsConn, err := infraNats.NewNatsConn(ctx, cfg)
-	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: nats init failed: %w", err)
-	}
-	app.natsConn = natsConn
-
-	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Policy Engine bootstrap: khởi tạo engine điều phối cấu hình runtime hệ thống.
 	// Không có Policy Engine -> không thể tải cấu hình OTel/Prometheus/RateLimit -> abort.
 	// --------------------------------------------------------------------
@@ -215,11 +201,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		if err := otelObs.Update(context.Background(), newOTelCfg, cfg.App.AppName); err != nil {
 			logger.SysError("app", fmt.Sprintf("failed to hot-swap OTel config: %v", err))
 		}
-	})
-
-	// Đăng ký hook hot-swap để Policy Engine cập nhật động các chứng chỉ mTLS cho NATS
-	policyModule.EngineService.RegisterNatsHook(func(newNatsCfg *natsPolicy.CompiledPolicy) {
-		infraNats.UpdateDynamicCerts(newNatsCfg.TLS.CertPath, newNatsCfg.TLS.KeyPath)
 	})
 
 	promCfg := &policySet.Runtime.Prometheus
@@ -435,8 +416,5 @@ func (a *App) Stop() {
 	}
 	if a.rdsJob != nil {
 		_ = a.rdsJob.Close()
-	}
-	if a.natsConn != nil {
-		a.natsConn.Close()
 	}
 }

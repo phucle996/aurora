@@ -63,10 +63,5 @@ policies:
     expose_metrics:
       enabled: true
       route_path: /metrics
-  nats:
-    tls:
-      ca_cert_path: ""
-      cert_path: ""
-      key_path: ""
 
 

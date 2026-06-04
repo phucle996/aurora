@@ -37,3 +37,31 @@ policies:
         - /api/v1/health/liveness
         - /api/v1/health/readiness
         - /api/v1/health/startup
+  otel:
+    enabled: true
+    fail_strategy: fail_open
+    exporter_type: otlpgrpc
+    endpoint: http://otel-collector:4317
+    insecure: true
+    sampling_ratio: 1.0
+    export_timeout: 5s
+    batch_timeout: 2s
+    batch_max_size: 512
+    batch_max_queue: 2048
+    tls:
+      mode: disable
+      ca_cert_path: ""
+      cert_path: ""
+      key_path: ""
+  prometheus:
+    enabled: true
+    fail_strategy: fail_open
+    query_client:
+      enabled: true
+      base_url: http://prometheus:9090
+      query_timeout: 5s
+      default_step: 15s
+    expose_metrics:
+      enabled: true
+      route_path: /metrics
+
