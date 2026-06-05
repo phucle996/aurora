@@ -62,7 +62,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		db:     db,
 		schema: schema,
 		listZonesQuery: fmt.Sprintf(`
-			SELECT id, code, name, status, created_at, updated_at 
+			SELECT id, code, name, location, status, created_at, updated_at 
 			FROM %s.zones 
 			ORDER BY created_at DESC
 		`, schema),

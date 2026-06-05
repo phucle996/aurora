@@ -73,11 +73,11 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 		Code:             request.Code,
 		Name:             request.Name,
 		Location:         request.Location,
-		EnableHypervisor: request.EnableHypervisor,
-		EnableStorage:    request.EnableStorage,
-		EnableMail:       request.EnableMail,
-		EnableK8s:        request.EnableK8s,
-		EnableAI:         request.EnableAI,
+		EnableHypervisor: boolValue(request.EnableHypervisor),
+		EnableStorage:    boolValue(request.EnableStorage),
+		EnableMail:       boolValue(request.EnableMail),
+		EnableK8s:        boolValue(request.EnableK8s),
+		EnableAI:         boolValue(request.EnableAI),
 	})
 	if err != nil {
 		switch {
@@ -160,6 +160,7 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 			"id":         item.ID,
 			"code":       item.Code,
 			"name":       item.Name,
+			"location":   item.Location,
 			"status":     string(item.Status),
 			"created_at": item.CreatedAt,
 			"updated_at": item.UpdatedAt,
@@ -381,4 +382,11 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 		"created_at":   item.CreatedAt,
 		"updated_at":   item.UpdatedAt,
 	}, "zone service updated")
+}
+
+func boolValue(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
 }

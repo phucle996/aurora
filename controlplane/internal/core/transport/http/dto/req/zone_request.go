@@ -27,15 +27,15 @@ type CreateZoneRequest struct {
 	// Location xác định vị trí vật lý/địa lý của zone.
 	Location string `json:"location"`
 	// EnableHypervisor xác định xem các dịch vụ compute KVM có được kích hoạt khi cài đặt hay không.
-	EnableHypervisor bool `json:"enable_hypervisor" binding:"required"`
+	EnableHypervisor *bool `json:"enable_hypervisor"`
 	// EnableStorage xác định xem các dịch vụ lưu trữ (storage block/volume) có được kích hoạt khi cài đặt hay không.
-	EnableStorage bool `json:"enable_storage"    binding:"required"`
+	EnableStorage *bool `json:"enable_storage"`
 	// EnableMail xác định xem dịch vụ SMTP và delivery workers có được kích hoạt khi cài đặt hay không.
-	EnableMail bool `json:"enable_mail"       binding:"required"`
+	EnableMail *bool `json:"enable_mail"`
 	// EnableK8s xác định xem dịch vụ managed Kubernetes clusters có được kích hoạt khi cài đặt hay không.
-	EnableK8s bool `json:"enable_k8s"        binding:"required"`
+	EnableK8s *bool `json:"enable_k8s"`
 	// EnableAI xác định xem dịch vụ compute hiệu năng cao GPU/AI clusters có được kích hoạt khi cài đặt hay không.
-	EnableAI bool `json:"enable_ai"         binding:"required"`
+	EnableAI *bool `json:"enable_ai"`
 }
 
 // UpdateZoneStatusRequest định nghĩa dữ liệu đầu vào để cập nhật trạng thái hoạt động của một zone.

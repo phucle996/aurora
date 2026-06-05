@@ -14,7 +14,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  MoreVertical,
   Search,
 } from 'lucide-react'
 
@@ -50,8 +49,6 @@ export type ZoneRow = {
   location: string
   description: string
   status: ZoneStatus
-  created_at?: string
-  updated_at?: string
 }
 
 const statusLabels: Record<ZoneStatus, string> = {
@@ -144,17 +141,20 @@ export default function ZoneTable({
       <Table>
         <TableHeader>
           <TableRow className="border-border/80 hover:bg-transparent">
-            <TableHead className="w-60 px-0 pb-4 text-sm font-medium text-muted-foreground">
-              Zone
+            <TableHead className="w-32 pb-4 text-sm font-medium text-muted-foreground">
+              Status
             </TableHead>
-            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">Name</TableHead>
-            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">Location</TableHead>
-            <TableHead className="min-w-90 pb-4 text-sm font-medium text-muted-foreground">
+            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">
+              Name
+            </TableHead>
+            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">
+              Code
+            </TableHead>
+            <TableHead className="min-w-[200px] pb-4 text-sm font-medium text-muted-foreground">
+              Location
+            </TableHead>
+            <TableHead className="min-w-[500px] pb-4 text-sm font-medium text-muted-foreground">
               Description
-            </TableHead>
-            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">Status</TableHead>
-            <TableHead className="w-22.5 pb-4 text-right text-sm font-medium text-muted-foreground">
-              Actions
             </TableHead>
           </TableRow>
         </TableHeader>
@@ -163,7 +163,7 @@ export default function ZoneTable({
           {loading &&
             Array.from({ length: pageSize }).map((_, index) => (
               <TableRow key={index} className="border-border/80 hover:bg-transparent">
-                {Array.from({ length: 6 }).map((__, cellIndex) => (
+                {Array.from({ length: 5 }).map((__, cellIndex) => (
                   <TableCell key={cellIndex} className="py-4">
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
@@ -174,7 +174,7 @@ export default function ZoneTable({
           {/* Trạng thái 2: Không có dữ liệu - Render giao diện empty state */}
           {!loading && zones.length === 0 && (
             <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={6} className="h-40 text-center">
+              <TableCell colSpan={5} className="h-40 text-center">
                 <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
                   <Search className="size-6 opacity-60" />
                   <p className="text-sm font-semibold text-foreground">No zones found</p>
@@ -189,50 +189,31 @@ export default function ZoneTable({
           {/* Trạng thái 3: Đã có dữ liệu - Duyệt và render danh sách các hàng dữ liệu Zone */}
           {!loading && zones.map((zone) => (
             <TableRow key={zone.id} className="border-border/80 hover:bg-muted/30">
-              {/* Cột 1: Hiển thị Code của Zone kết hợp với dấu chấm trạng thái hoạt động */}
-              <TableCell className="px-0 py-3.5">
-                <div className="flex items-center gap-5">
-                  <span
-                    className={cn(
-                      'size-2.5 rounded-full',
-                      zone.status === 'active' && 'bg-emerald-500',
-                      zone.status === 'draining' && 'bg-amber-500',
-                      zone.status === 'maintenance' && 'bg-violet-500',
-                      zone.status === 'disabled' && 'bg-slate-400',
-                      zone.status === 'planned' && 'bg-sky-500',
-                      zone.status === 'degraded' && 'bg-red-500',
-                    )}
-                  />
-                  <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="text-sm font-semibold text-primary hover:underline">
-                    {zone.code}
-                  </Link>
-                </div>
-              </TableCell>
-              {/* Cột 2: Tên của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-foreground">
-                {zone.name}
-              </TableCell>
-              {/* Cột 3: Vị trí địa lý của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground">
-                {zone.location}
-              </TableCell>
-              {/* Cột 4: Mô tả chi tiết của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-foreground/80">
-                {zone.description}
-              </TableCell>
-              {/* Cột 5: Trạng thái hoạt động hiển thị dưới dạng StatusBadge */}
+              {/* Cột 1: Trạng thái hoạt động hiển thị dưới dạng StatusBadge */}
               <TableCell className="py-3.5">
                 <StatusBadge status={zone.status} />
               </TableCell>
-              {/* Cột 6: Dropdown kích hoạt các hành động tùy chọn */}
-              <TableCell className="py-3.5 text-right">
-                <button
-                  type="button"
-                  className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  aria-label={`Open actions for ${zone.code}`}
-                >
-                  <MoreVertical className="size-4" />
-                </button>
+
+              {/* Cột 2: Tên của Zone (Clickable link to detail) */}
+              <TableCell className="py-3.5 text-sm font-medium text-foreground">
+                <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="text-sm font-semibold text-primary hover:underline">
+                  {zone.name}
+                </Link>
+              </TableCell>
+
+              {/* Cột 3: Mã của Zone (Code) */}
+              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground">
+                {zone.code}
+              </TableCell>
+
+              {/* Cột 4: Vị trí địa lý của Zone */}
+              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground whitespace-normal break-words">
+                {zone.location}
+              </TableCell>
+
+              {/* Cột 5: Mô tả chi tiết của Zone */}
+              <TableCell className="py-3.5 text-sm font-medium text-foreground/80 whitespace-normal break-words">
+                {zone.description}
               </TableCell>
             </TableRow>
           ))}
@@ -247,7 +228,7 @@ export default function ZoneTable({
             ? 'Showing 0 zones'
             : `Showing ${startIndex + 1} to ${endIndex} of ${totalZones} zones`}
         </p>
-        
+
         {/* Phần nút điều khiển chuyển trang */}
         <div className="flex items-center gap-3">
           {/* Nút chuyển về trang trước */}

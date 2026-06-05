@@ -84,13 +84,11 @@ async function readErrorMessage(response: Response) {
 function normalizeZoneRow(item: ZoneRow): ZoneRow {
   return {
     id: item.id,
-    code: item.code || item.id,
-    name: item.name || item.code || item.id,
-    location: item.location || '—',
-    description: item.description || 'No description provided.',
-    status: normalizeZoneStatus(item.status),
-    created_at: item.created_at,
-    updated_at: item.updated_at,
+    code: item.code,
+    name: item.name,
+    location: item.location || 'dont have location',
+    description: item.description || 'dont have description',
+    status: normalizeZoneStatus(item.status)
   }
 }
 

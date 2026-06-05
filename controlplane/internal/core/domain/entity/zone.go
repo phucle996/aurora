@@ -16,6 +16,7 @@ type Zone struct {
 	ID        string
 	Code      string
 	Name      string
+	Location  string
 	Status    ZoneStatus
 	CreatedAt time.Time
 	UpdatedAt time.Time
