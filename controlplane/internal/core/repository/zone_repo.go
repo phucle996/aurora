@@ -62,7 +62,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		db:     db,
 		schema: schema,
 		listZonesQuery: fmt.Sprintf(`
-			SELECT id, code, name, location, status, created_at, updated_at 
+			SELECT id, code, name, location, description, status 
 			FROM %s.zones 
 			ORDER BY created_at DESC
 		`, schema),
@@ -73,11 +73,11 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			ORDER BY code ASC
 		`, schema),
 		createZoneQuery: fmt.Sprintf(`
-			INSERT INTO %s.zones (id, code, name, status, created_at, updated_at) 
-			VALUES ($1,$2,$3,$4,$5,$6)
+			INSERT INTO %s.zones (id, code, name, location, description, status, created_at, updated_at) 
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		`, schema),
 		getZoneByIDQuery: fmt.Sprintf(`
-			SELECT id, code, name, status, created_at, updated_at 
+			SELECT id, code, name, location, description, status, created_at, updated_at 
 			FROM %s.zones 
 			WHERE id=$1 LIMIT 1
 		`, schema),
@@ -123,7 +123,7 @@ func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	out := make([]coreEntity.Zone, 0)
 	for rows.Next() {
 		var value coreModel.Zone
-		if err := rows.Scan(&value.ID, &value.Code, &value.Name, &value.Status, &value.CreatedAt, &value.UpdatedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.Code, &value.Name, &value.Location, &value.Description, &value.Status); err != nil {
 			return nil, err
 		}
 		out = append(out, coreModel.ZoneModelToEntity(value))
@@ -159,7 +159,7 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 	defer tx.Rollback(ctx)
 
 	value := coreModel.ZoneEntityToModel(zone)
-	_, err = tx.Exec(ctx, r.createZoneQuery, value.ID, value.Code, value.Name, value.Status, value.CreatedAt.UTC(), value.UpdatedAt.UTC())
+	_, err = tx.Exec(ctx, r.createZoneQuery, value.ID, value.Code, value.Name, value.Location, value.Description, value.Status, value.CreatedAt.UTC(), value.UpdatedAt.UTC())
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -182,7 +182,7 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 // GetZoneByID lấy thông tin chi tiết một Zone dựa trên ID.
 func (r *ZoneRepoImpl) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
 	var value coreModel.Zone
-	if err := r.db.QueryRow(ctx, r.getZoneByIDQuery, id).Scan(&value.ID, &value.Code, &value.Name, &value.Status, &value.CreatedAt, &value.UpdatedAt); err != nil {
+	if err := r.db.QueryRow(ctx, r.getZoneByIDQuery, id).Scan(&value.ID, &value.Code, &value.Name, &value.Location, &value.Description, &value.Status, &value.CreatedAt, &value.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}

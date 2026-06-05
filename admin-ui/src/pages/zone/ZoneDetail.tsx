@@ -45,6 +45,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Fetch } from '@/lib/fetch'
 import { cn } from '@/lib/utils'
 import { PageContent } from '@/components/layout/layout'
+import { OTPVerificationDialog } from '@/components/zone/OTPVerificationDialog'
+import { getOrCreateDeviceKeys, generateNonce, sha256Hex, signPayload } from '@/lib/crypto'
 
 // Section imports
 import ZoneKpiSection from './sections/ZoneKpiSection'
@@ -54,7 +56,10 @@ import ZoneServicesPanel, { type ZoneServiceHealth } from './sections/ZoneServic
 import ZoneInventoryPanel, { type ZoneInventoryMetric } from './sections/ZoneInventoryPanel'
 import ZoneActivityPanel, { type ZoneActivity } from './sections/ZoneActivityPanel'
 
-type ZoneStatus = 'planned' | 'active' | 'degraded' | 'maintenance' | 'disabled'
+// ─── Domain Types ───────────────────────────────────────────────────────────
+// Mirrors the API contract from GET /admin/core/zones/:zone_id
+
+type ZoneStatus = 'planned' | 'active' | 'draining' | 'maintenance' | 'disabled'
 
 type ZoneDetailZone = {
   id: string
@@ -87,36 +92,55 @@ type ZoneDetail = {
   recent_activity: ZoneActivity[]
 }
 
+// API response envelope — data is null on error
 type ZoneDetailResponse = {
   message?: string
   error?: string
   data?: ZoneDetail
 }
 
+// ─── Display Constants ───────────────────────────────────────────────────────
+
+// Human-readable labels for each zone lifecycle status
 const statusLabels: Record<ZoneStatus, string> = {
-  planned: 'Planned',
-  active: 'Active',
-  degraded: 'Degraded',
+  planned:     'Planned',
+  active:      'Active',
+  draining:    'Draining',
   maintenance: 'Maintenance',
-  disabled: 'Disabled',
+  disabled:    'Disabled',
 }
 
+// Mirrors backend state machine in zone_service.go → UpdateZoneStatus().
+// Only transitions listed here are permitted; all others are rejected by the API.
+const ALLOWED_TRANSITIONS: Record<ZoneStatus, ZoneStatus[]> = {
+  planned:     ['active', 'disabled'],
+  active:      ['draining', 'maintenance', 'disabled'],
+  draining:    ['active', 'maintenance', 'disabled'],
+  maintenance: ['active', 'disabled'],
+  disabled:    ['active'],
+}
+
+// Static catalog of zone services shown in the Manage Services drawer
 const serviceCatalog = [
   { key: 'hypervisor', label: 'Hypervisor', description: 'KVM hosts and compute placement.', icon: Server },
   { key: 'storage', label: 'Storage', description: 'Storage pools and volume capacity.', icon: Database },
   { key: 'kubernetes', label: 'Kubernetes', description: 'Managed clusters and container workloads.', icon: Layers3 },
-  { key: 'smtp', label: 'SMTP', description: 'Mail endpoints, gateways, and delivery workers.', icon: PackageCheck },
+  { key: 'mail', label: 'Mail', description: 'Mail endpoints, gateways, and delivery workers.', icon: PackageCheck },
 ]
 
+// ─── Utility Functions ───────────────────────────────────────────────────────
+
+// Extract zone UUID from URL path: /zones/<zone_id>
 function getZoneIDFromPath() {
   const segments = window.location.pathname.split('/').filter(Boolean)
   return decodeURIComponent(segments[1] ?? '')
 }
 
+// Coerce any unknown status string to a valid ZoneStatus; defaults to 'planned'
 function normalizeZoneStatus(value: string): ZoneStatus {
   switch (value) {
     case 'active':
-    case 'degraded':
+    case 'draining':
     case 'maintenance':
     case 'disabled':
     case 'planned':
@@ -126,6 +150,7 @@ function normalizeZoneStatus(value: string): ZoneStatus {
   }
 }
 
+// Returns a Tailwind bg-color class for the status indicator dot
 function statusDotColor(status: string) {
   switch (status) {
     case 'active':
@@ -133,7 +158,7 @@ function statusDotColor(status: string) {
       return 'bg-emerald-500'
     case 'planned':
       return 'bg-sky-500'
-    case 'degraded':
+    case 'draining':
     case 'warning':
       return 'bg-amber-500'
     case 'maintenance':
@@ -154,6 +179,7 @@ function titleCase(value: string) {
     .join(' ')
 }
 
+// Safely extract error message from a non-ok API response
 async function readErrorMessage(response: Response) {
   try {
     const payload = (await response.json()) as ZoneDetailResponse
@@ -163,6 +189,7 @@ async function readErrorMessage(response: Response) {
   }
 }
 
+// Normalize raw API data: coerce types, fill missing fields with safe defaults
 function normalizeDetail(value: ZoneDetail): ZoneDetail {
   return {
     zone: {
@@ -188,32 +215,46 @@ function normalizeDetail(value: ZoneDetail): ZoneDetail {
 }
 
 export default function ZoneDetailPage() {
+  // Zone ID is stable for the lifetime of this page
   const zoneID = useMemo(() => getZoneIDFromPath(), [])
+
+  // ── Core data state ──────────────────────────────────────────────────────
   const [detail, setDetail] = useState<ZoneDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  // ── Manage Services drawer ────────────────────────────────────────────────
   const [serviceDrawerOpen, setServiceDrawerOpen] = useState(false)
-  const [draftServices, setDraftServices] = useState<string[]>([])
+  const [draftServices, setDraftServices] = useState<string[]>([]) // local draft, not yet saved
+
+  // ── Inline edit (name / description) ─────────────────────────────────────
   const [editingField, setEditingField] = useState<'name' | 'description' | null>(null)
   const [draftName, setDraftName] = useState('')
   const [draftDescription, setDraftDescription] = useState('')
-  const [pendingStatus, setPendingStatus] = useState<ZoneStatus | null>(null)
+
+  // ── Status change flow: confirm → OTP → API ───────────────────────────────
+  const [pendingStatus, setPendingStatus] = useState<ZoneStatus | null>(null) // status awaiting confirmation
+  const [isStatusConfirmOpen, setIsStatusConfirmOpen] = useState(false)       // step 1: confirm dialog
+  const [isOTPOpen, setIsOTPOpen] = useState(false)                           // step 2: OTP dialog
+  const [signing, setSigning] = useState(false)                               // true while API call in-flight
+
+  // ── Delete zone dialog ────────────────────────────────────────────────────
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
 
+  // Fetch and normalize zone detail from API; also seeds draft state for editing
   const loadZoneDetail = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
       const response = await Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`)
-      if (!response.ok) {
-        throw new Error(await readErrorMessage(response))
-      }
+      if (!response.ok) throw new Error(await readErrorMessage(response))
+
       const payload = (await response.json()) as ZoneDetailResponse
-      if (!payload.data) {
-        throw new Error('Cannot load zone detail')
-      }
+      if (!payload.data) throw new Error('Cannot load zone detail')
+
       const normalizedDetail = normalizeDetail(payload.data)
       setDetail(normalizedDetail)
+      // Seed draft state so inline-edit fields start with current values
       setDraftName(normalizedDetail.zone.name)
       setDraftDescription(normalizedDetail.zone.description)
       setDraftServices(normalizedDetail.enabled_services.map((service) => service.key))
@@ -225,6 +266,7 @@ export default function ZoneDetailPage() {
     }
   }, [zoneID])
 
+  // Load on mount; void wrapper suppresses unhandled-promise lint warning
   useEffect(() => {
     void Promise.resolve().then(loadZoneDetail)
   }, [loadZoneDetail])
@@ -265,18 +307,23 @@ export default function ZoneDetailPage() {
   ].filter(Boolean)
   const canDeleteZone = deleteBlockers.length === 0
 
+  // ── Inline edit handlers ─────────────────────────────────────────────────
+
+  // Reset drafts to current values before entering edit mode
   const beginEdit = (field: 'name' | 'description') => {
     setDraftName(detail.zone.name)
     setDraftDescription(detail.zone.description)
     setEditingField(field)
   }
 
+  // Discard drafts and exit edit mode without saving
   const cancelEdit = () => {
     setDraftName(detail.zone.name)
     setDraftDescription(detail.zone.description)
     setEditingField(null)
   }
 
+  // PATCH only changed fields; no-ops if nothing changed
   const saveInlineEdit = () => {
     const nextName = draftName.trim()
     const nextDescription = draftDescription.trim()
@@ -284,7 +331,7 @@ export default function ZoneDetailPage() {
     const body: Record<string, string> = {}
     if (nextName && nextName !== detail.zone.name) body.name = nextName
     if (nextDescription !== detail.zone.description) body.description = nextDescription || ''
-    if (Object.keys(body).length === 0) return
+    if (Object.keys(body).length === 0) return // nothing changed
     void Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -297,6 +344,9 @@ export default function ZoneDetailPage() {
       .catch((err) => setError(err instanceof Error ? err.message : 'Cannot update zone'))
   }
 
+  // ── Manage Services handlers ─────────────────────────────────────────────
+
+  // Toggle a service key in local draft (not yet persisted)
   const toggleDraftService = (serviceKey: string) => {
     setDraftServices((current) => (
       current.includes(serviceKey)
@@ -305,24 +355,20 @@ export default function ZoneDetailPage() {
     ))
   }
 
+  // Fire PUT for each service whose enabled state changed; reload on success
   const applyServices = () => {
     setServiceDrawerOpen(false)
-    const serviceKeys = ['hypervisor', 'storage', 'mail', 'k8s', 'ai']
     const currentEnabled = detail.enabled_services.map((s) => s.key)
 
-    const promises = serviceKeys.map((key) => {
-      const isCurrentlyEnabled = currentEnabled.includes(key)
-      const shouldBeEnabled = draftServices.includes(key)
-      if (isCurrentlyEnabled === shouldBeEnabled) return null
+    const promises = serviceCatalog.map((service) => {
+      const isCurrentlyEnabled = currentEnabled.includes(service.key)
+      const shouldBeEnabled = draftServices.includes(service.key)
+      if (isCurrentlyEnabled === shouldBeEnabled) return null // no change
 
       return Fetch(`/admin/core/zones/services`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          zone_id: zoneID,
-          service_type: key,
-          enabled: shouldBeEnabled,
-        }),
+        body: JSON.stringify({ zone_id: zoneID, service_type: service.key, enabled: shouldBeEnabled }),
       }).then(async (response) => {
         if (!response.ok) throw new Error(await readErrorMessage(response))
       })
@@ -331,31 +377,65 @@ export default function ZoneDetailPage() {
     if (promises.length === 0) return
 
     Promise.all(promises)
-      .then(async () => {
-        await loadZoneDetail()
-      })
+      .then(async () => { await loadZoneDetail() })
       .catch((err) => setError(err instanceof Error ? err.message : 'Cannot update zone services'))
   }
 
+  // ── Status change flow ───────────────────────────────────────────────────
+
+  // Step 1: user picks a new status → open confirmation dialog
   const requestStatusChange = (status: ZoneStatus) => {
-    if (status === detail.zone.status) return
+    if (!detail) return
+    if (status === detail.zone.status) return // already current status
     setPendingStatus(status)
+    setIsStatusConfirmOpen(true)
   }
 
-  const confirmStatusChange = () => {
-    if (!pendingStatus) return
+  const confirmStatusChange = async (otpCode: string) => {
+    // Capture pendingStatus immediately at call time to avoid stale closure
+    // issues caused by onOpenChange resetting it during async flow
     const nextStatus = pendingStatus
-    setPendingStatus(null)
-    void Fetch(`/admin/core/zones/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ zone_id: zoneID, status: nextStatus }),
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await readErrorMessage(response))
-        await loadZoneDetail()
+    if (!nextStatus) return
+    setSigning(true)
+
+    try {
+      const deviceKeys = await getOrCreateDeviceKeys()
+      if (!deviceKeys.privateKey) {
+        throw new Error('Security keys are missing on this device. Please log out and sign in again to register your keys.')
+      }
+
+      const bodyString = JSON.stringify({ zone_id: zoneID, status: nextStatus })
+      const bodyHash = await sha256Hex(bodyString)
+      const timestamp = Math.floor(Date.now() / 1000).toString()
+      const nonce = generateNonce()
+      const payloadStr = `PATCH\n/admin/core/zones/status\n\n${bodyHash}\n${timestamp}\n${nonce}`
+      const signature = await signPayload(payloadStr, deviceKeys.privateKey)
+
+      const response = await Fetch(`/admin/core/zones/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Admin-Signature': signature,
+          'X-Admin-Timestamp': timestamp,
+          'X-Admin-Nonce': nonce,
+          'X-Admin-StepUp-Code': otpCode,
+        },
+        body: bodyString,
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Cannot update zone status'))
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response))
+      }
+
+      // Close dialog and clear state only after successful API call
+      setIsOTPOpen(false)
+      setPendingStatus(null)
+      await loadZoneDetail()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cannot update zone status')
+    } finally {
+      setSigning(false)
+    }
   }
 
   const confirmDeleteZone = () => {
@@ -396,24 +476,36 @@ export default function ZoneDetailPage() {
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuLabel>Update status</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {(Object.keys(statusLabels) as ZoneStatus[]).map((status) => (
-                  <DropdownMenuItem
-                    key={status}
-                    disabled={status === detail.zone.status}
-                    onSelect={() => requestStatusChange(status)}
-                    className="flex items-center justify-between gap-3"
-                  >
-                    <span>{statusLabels[status]}</span>
-                    {status === detail.zone.status && <span className="text-xs text-muted-foreground">Current</span>}
-                  </DropdownMenuItem>
-                ))}
+                {(Object.keys(statusLabels) as ZoneStatus[]).map((status) => {
+                  const isCurrent = status === detail.zone.status
+                  // A transition is valid if it appears in ALLOWED_TRANSITIONS for the current status
+                  const isAllowed = ALLOWED_TRANSITIONS[detail.zone.status]?.includes(status) ?? false
+                  const isDisabled = isCurrent || !isAllowed
+                  return (
+                    <DropdownMenuItem
+                      key={status}
+                      disabled={isDisabled}
+                      onSelect={() => requestStatusChange(status)}
+                      className="flex items-center justify-between gap-3"
+                    >
+                      <span>{statusLabels[status]}</span>
+                      {isCurrent && <span className="text-xs text-muted-foreground">Current</span>}
+                    </DropdownMenuItem>
+                  )
+                })}
               </DropdownMenuContent>
             </DropdownMenu>
             <Button variant="destructive" className="h-11 rounded-lg px-4 text-sm font-semibold shadow-sm" onClick={() => setDeleteDialogOpen(true)}>
               <Trash2 className="size-4" />
               Delete Zone
             </Button>
-            <Button className="h-11 rounded-lg px-6 text-sm font-semibold shadow-sm" onClick={() => setServiceDrawerOpen(true)}>
+            {/* Only allowed in maintenance mode — backend enforces the same constraint */}
+            <Button
+              className="h-11 rounded-lg px-6 text-sm font-semibold shadow-sm"
+              disabled={detail.zone.status !== 'maintenance'}
+              title={detail.zone.status !== 'maintenance' ? 'Zone must be in Maintenance status to manage services' : undefined}
+              onClick={() => setServiceDrawerOpen(true)}
+            >
               <Settings2 className="size-4" />
               Manage Services
             </Button>
@@ -505,21 +597,43 @@ export default function ZoneDetailPage() {
         </SheetContent>
       </Sheet>
 
-      <AlertDialog open={pendingStatus !== null} onOpenChange={(open) => !open && setPendingStatus(null)}>
+      <AlertDialog open={isStatusConfirmOpen} onOpenChange={setIsStatusConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Confirm status update</AlertDialogTitle>
             <AlertDialogDescription>
-              Update zone status from {statusLabels[detail.zone.status]} to {pendingStatus ? statusLabels[pendingStatus] : 'selected status'}?
+              Update zone status from {detail ? statusLabels[detail.zone.status] : ''} to {pendingStatus ? statusLabels[pendingStatus] : 'selected status'}?
               This change will be saved to topology manager and recorded in recent activity.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmStatusChange}>OK</AlertDialogAction>
+            <AlertDialogCancel onClick={() => {
+              setIsStatusConfirmOpen(false)
+              setPendingStatus(null)
+            }}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              setIsStatusConfirmOpen(false)
+              setIsOTPOpen(true)
+            }}>OK</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <OTPVerificationDialog
+        open={isOTPOpen}
+        onOpenChange={(open) => {
+          // Do not allow closing the dialog while signing is in progress
+          // to prevent clearing pendingStatus before the API call completes
+          if (signing) return
+          setIsOTPOpen(open)
+          if (!open) setPendingStatus(null)
+        }}
+        onConfirm={confirmStatusChange}
+        title="Security Verification"
+        description={`Changing zone status to ${pendingStatus ? statusLabels[pendingStatus] : ''} is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action.`}
+        confirmText="Verify & Update"
+        loading={signing}
+      />
 
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>

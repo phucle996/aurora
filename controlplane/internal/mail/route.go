@@ -132,6 +132,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints"),
 		module.EndpointHandler.List,
 	)
+
 	router.GET("/admin/mail/endpoints/:id",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),

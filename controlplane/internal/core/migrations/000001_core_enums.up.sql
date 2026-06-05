@@ -54,7 +54,7 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE t.typname = 'zone_service_type' AND n.nspname = current_schema()
     ) THEN
-        CREATE TYPE zone_service_type AS ENUM ('mail', 'hypervisor', 'k8s', 'ai', 'storage', 'database');
+        CREATE TYPE zone_service_type AS ENUM ('mail', 'hypervisor', 'kubernetes', 'ai', 'storage', 'database');
     END IF;
 END
 $$;
@@ -62,7 +62,7 @@ DO $$
 BEGIN
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'mail');
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'hypervisor');
-    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'k8s');
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'kubernetes');
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'ai');
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'storage');
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'database');

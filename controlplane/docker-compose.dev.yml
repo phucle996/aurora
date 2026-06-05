@@ -601,6 +601,15 @@ services:
       CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
 
+  admin-ui-nginx:
+    build:
+      context: ../admin-ui
+      dockerfile: Dockerfile.nginx
+    container_name: admin-ui-nginx
+    ports:
+      - "5175:5173"   # Chạy trên cổng 5175 ngoài máy host để tránh trùng port 5173 dev
+    restart: unless-stopped
+
   runbook-web:
     image: node:20-alpine
     container_name: runbook-web-dev

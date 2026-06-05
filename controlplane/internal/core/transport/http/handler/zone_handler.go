@@ -73,6 +73,7 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 		Code:             request.Code,
 		Name:             request.Name,
 		Location:         request.Location,
+		Description:      request.Description,
 		EnableHypervisor: boolValue(request.EnableHypervisor),
 		EnableStorage:    boolValue(request.EnableStorage),
 		EnableMail:       boolValue(request.EnableMail),
@@ -131,7 +132,10 @@ func (h *ZoneHandler) GetZoneCatalog(c *gin.Context) {
 			"name": item.Name,
 		})
 	}
-	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zone catalog fetched")
+	apires.RespondSuccess(c, gin.H{"items": rows,
+		"total": len(rows)},
+		"zone catalog fetched",
+	)
 }
 
 // ListZones godoc
@@ -157,18 +161,121 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 	rows := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, gin.H{
-			"id":         item.ID,
-			"code":       item.Code,
-			"name":       item.Name,
-			"location":   item.Location,
-			"status":     string(item.Status),
-			"created_at": item.CreatedAt,
-			"updated_at": item.UpdatedAt,
+			"id":          item.ID,
+			"code":        item.Code,
+			"name":        item.Name,
+			"location":    item.Location,
+			"description": item.Description,
+			"status":      string(item.Status),
 		})
 	}
 
 	// trả về client toàn bộ zone đang có và số lượng zone
-	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zones fetched")
+	apires.RespondSuccess(c, gin.H{"items": rows,
+		"total": len(rows)},
+		"zones fetched")
+}
+
+// GetZone godoc
+// @Summary      Get a zone detail
+// @Description  Retrieve detailed information about a single infrastructure zone by ID
+// @Tags         zones
+// @Produce      json
+// @Param        zone_id path string true "Zone ID (UUID)"
+// @Success      200 {object} map[string]interface{} "Zone detail fetched successfully"
+// @Failure      400 {object} map[string]interface{} "Invalid zone_id format"
+// @Failure      404 {object} map[string]interface{} "Zone not found"
+// @Failure      500 {object} map[string]interface{} "Internal server error"
+// @Router       /admin/zones/{zone_id} [get]
+// @Security     AdminAuth
+func (h *ZoneHandler) GetZone(c *gin.Context) {
+	const op = "core.zone.get"
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	zoneIDStr := strings.TrimSpace(c.Param("zone_id"))
+	zoneID, err := uuid.Parse(zoneIDStr)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "get zone invalid zone_id format")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	zone, err := h.zoneSvc.GetZoneByID(ctx, zoneID)
+	if err != nil {
+		if errors.Is(err, coreErrorx.ErrZoneNotFound) {
+			apires.RespondNotFound(c, "zone not found")
+			return
+		}
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	services, err := h.zoneSvc.ListZoneServices(ctx, zoneID)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	var enabledCount int
+	serviceRows := make([]gin.H, 0, len(services))
+	for _, s := range services {
+		status := "inactive"
+		if s.Enabled {
+			status = "healthy"
+			enabledCount++
+		}
+		key := string(s.ServiceType)
+		label := string(s.ServiceType)
+		switch key {
+		case "hypervisor":
+			label = "Hypervisor"
+		case "storage":
+			label = "Storage"
+		case "mail":
+			label = "Mail"
+		case "kubernetes":
+			label = "Kubernetes"
+		case "ai":
+			label = "AI"
+		}
+
+		serviceRows = append(serviceRows, gin.H{
+			"key":     key,
+			"label":   label,
+			"status":  status,
+			"latency": "12ms",
+			"uptime":  "99.9%",
+		})
+	}
+
+	apires.RespondSuccess(c, gin.H{
+		"zone": gin.H{
+			"id":          zone.ID,
+			"code":        zone.Code,
+			"name":        zone.Name,
+			"location":    zone.Location,
+			"description": zone.Description,
+			"status":      string(zone.Status),
+			"created_at":  zone.CreatedAt,
+			"updated_at":  zone.UpdatedAt,
+		},
+		"summary": gin.H{
+			"workspaces":       0,
+			"enabled_services": enabledCount,
+		},
+		"enabled_services":   serviceRows,
+		"resource_inventory": []interface{}{},
+		"workspaces": gin.H{
+			"items":  []interface{}{},
+			"total":  0,
+			"limit":  5,
+			"offset": 0,
+		},
+		"recent_activity": []interface{}{},
+	}, "zone details fetched")
 }
 
 // UpdateZoneStatus godoc
@@ -354,7 +461,7 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 	// check lỗi validate service type
 	switch serviceType {
 	case coreEntity.ZoneServiceTypeHypervisor, coreEntity.ZoneServiceTypeStorage,
-		coreEntity.ZoneServiceTypeMail, coreEntity.ZoneServiceTypeK8s, coreEntity.ZoneServiceTypeAI,
+		coreEntity.ZoneServiceTypeMail, coreEntity.ZoneServiceTypeKubernetes, coreEntity.ZoneServiceTypeAI,
 		coreEntity.ZoneServiceTypeDatabase:
 	default:
 		logger.HandlerWarn(c, op, nil, "upsert zone service invalid type: "+request.ServiceType)

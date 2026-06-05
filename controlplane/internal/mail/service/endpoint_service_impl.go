@@ -129,8 +129,8 @@ func (s *endpointServiceImpl) CreateEndpoint(
 		Provider:         params.Provider,
 		ConnectionConfig: params.ConnectionConfig,
 		IsActive:         true, // Kích hoạt hoạt động khi khởi tạo thành công
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CreatedAt:        &now,
+		UpdatedAt:        &now,
 	}
 
 	// 5. Thực hiện persist dữ liệu qua repository xuống cơ sở dữ liệu vật lý.
@@ -233,7 +233,8 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	existing.Name = params.Name
 	existing.ConnectionConfig = params.ConnectionConfig
 	existing.IsActive = params.IsActive
-	existing.UpdatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	existing.UpdatedAt = &now
 
 	// 5. Persist các trường cập nhật xuống database.
 	if err := s.endpointRepo.Update(ctx, existing, []byte(encryptedPayload)); err != nil {

@@ -12,10 +12,17 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
-    host: '127.0.0.1',
-    allowedHosts: ['admin.auroracloud.local', 'adminui.aurora.local'],
+    strictPort: true,
+    allowedHosts: ['admin.auroracloud.local', 'adminui.aurora.local', 'adminui-dev.aurora.local', 'localhost', '127.0.0.1'],
+    hmr: {
+      host: 'adminui-dev.aurora.local',
+      clientPort: 443,
+      protocol: 'wss',
+    },
   },
+
   optimizeDeps: {
     include: ["recharts", "react-is"],
   },

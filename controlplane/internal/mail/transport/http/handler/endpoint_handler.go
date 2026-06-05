@@ -164,8 +164,8 @@ func (h *EndpointHandler) Get(c *gin.Context) {
 		"provider":          endpoint.Provider,
 		"connection_config": endpoint.ConnectionConfig,
 		"is_active":         endpoint.IsActive,
-		"created_at":        endpoint.CreatedAt.Format(time.RFC3339),
-		"updated_at":        endpoint.UpdatedAt.Format(time.RFC3339),
+		"created_at":        formatTimePtr(endpoint.CreatedAt),
+		"updated_at":        formatTimePtr(endpoint.UpdatedAt),
 	}, "ok")
 }
 
@@ -208,8 +208,6 @@ func (h *EndpointHandler) List(c *gin.Context) {
 			"provider":          ep.Provider,
 			"connection_config": ep.ConnectionConfig,
 			"is_active":         ep.IsActive,
-			"created_at":        ep.CreatedAt.Format(time.RFC3339),
-			"updated_at":        ep.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 
@@ -312,8 +310,8 @@ func (h *EndpointHandler) Update(c *gin.Context) {
 		"provider":          updated.Provider,
 		"connection_config": updated.ConnectionConfig,
 		"is_active":         updated.IsActive,
-		"created_at":        updated.CreatedAt.Format(time.RFC3339),
-		"updated_at":        updated.UpdatedAt.Format(time.RFC3339),
+		"created_at":        formatTimePtr(updated.CreatedAt),
+		"updated_at":        formatTimePtr(updated.UpdatedAt),
 	}, "updated")
 }
 
@@ -465,4 +463,11 @@ func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 	}
 
 	apires.RespondSuccess(c, nil, "Connection successful")
+}
+
+func formatTimePtr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }

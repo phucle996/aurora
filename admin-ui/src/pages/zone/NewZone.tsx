@@ -36,7 +36,7 @@
 import { useState } from 'react'
 import { Link, useRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
-import { ShieldCheck, Loader2 } from 'lucide-react'
+
 
 import { Fetch } from '@/lib/fetch'
 import { slugify } from '@/lib/slugify'
@@ -44,19 +44,7 @@ import { PageContent } from '@/components/layout/layout'
 import { Button } from '@/components/ui/button'
 import { type ZoneLocation } from '@/components/zone/location-autocomplete'
 import { getOrCreateDeviceKeys, generateNonce, sha256Hex, signPayload } from '@/lib/crypto'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog'
-import {
-  InputOTP,
-  InputOTPGroup,
-  InputOTPSlot,
-} from '@/components/ui/input-otp'
+import { OTPVerificationDialog } from '@/components/zone/OTPVerificationDialog'
 
 import ZoneForm, { type ServiceKey } from './sections/ZoneForm'
 import ZonePreviewCard from './sections/ZonePreviewCard'
@@ -119,9 +107,6 @@ export default function NewZonePage() {
   /** true khi OTP dialog đang mở */
   const [isOTPOpen, setIsOTPOpen] = useState(false)
 
-  /** 6 chữ số TOTP do user nhập */
-  const [otpCode, setOtpCode] = useState('')
-
   /** true khi đang trong quá trình sign + submit — disable các nút để tránh double submit */
   const [signing, setSigning] = useState(false)
 
@@ -166,7 +151,6 @@ export default function NewZonePage() {
       toast.error('Please fill in zone name, code, and location before creating the zone.')
       return
     }
-    setOtpCode('')
     setIsOTPOpen(true)
   }
 
@@ -187,11 +171,7 @@ export default function NewZonePage() {
    *   - Mọi lỗi đều catch và hiển thị qua toast.error().
    *   - setSigning(false) trong finally để re-enable UI dù success hay fail.
    */
-  const confirmCreateZoneWithOTP = async () => {
-    if (otpCode.length < 6) {
-      toast.error('Please enter a valid 6-digit verification code.')
-      return
-    }
+  const confirmCreateZoneWithOTP = async (otpCode: string) => {
 
     setSigning(true)
     try {
@@ -338,78 +318,15 @@ export default function NewZonePage() {
           Mở sau khi form hợp lệ. User nhập TOTP → confirm → sign + submit.
           Dialog không tự close khi signing — user phải đợi kết quả.
       --------------------------------------------------------------------------- */}
-      <Dialog open={isOTPOpen} onOpenChange={setIsOTPOpen}>
-        <DialogContent className="sm:max-w-110 border-[#dbe5f2] bg-white dark:border-slate-800 dark:bg-slate-950 p-0 overflow-hidden shadow-[0_20px_50px_rgba(8,112,184,0.15)] dark:shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
-          {/* Dialog header: icon + title + description */}
-          <div className="relative p-6 pt-8 pb-4 text-center">
-            <div className="absolute inset-0 bg-linear-to-b from-primary/5 via-transparent to-transparent pointer-events-none" />
-
-            {/* Pulsing shield icon — visual cue cho critical security action */}
-            <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary dark:bg-blue-500/10 dark:text-blue-400 ring-8 ring-primary/5 dark:ring-blue-500/5 animate-pulse">
-              <ShieldCheck className="h-7 w-7" />
-            </div>
-
-            <DialogHeader className="space-y-2">
-              <DialogTitle className="text-xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
-                Security Verification
-              </DialogTitle>
-              <DialogDescription className="text-sm text-slate-500 dark:text-slate-400 px-2 leading-relaxed">
-                Zone creation is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action.
-              </DialogDescription>
-            </DialogHeader>
-          </div>
-
-          {/* OTP input area */}
-          <div className="px-6 py-4 flex flex-col items-center justify-center bg-slate-50/50 dark:bg-slate-900/30 border-y border-slate-100 dark:border-slate-800/60">
-            <div className="my-2">
-              {/* InputOTP: chỉ nhận digits, maxLength=6, autoFocus khi dialog mở */}
-              <InputOTP
-                maxLength={6}
-                value={otpCode}
-                onChange={(val) => setOtpCode(val.replace(/\D/g, ''))}
-                disabled={signing}
-                autoFocus
-              >
-                <InputOTPGroup className="dark:text-slate-100 gap-1.5">
-                  <InputOTPSlot index={0} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
-                  <InputOTPSlot index={1} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
-                  <InputOTPSlot index={2} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
-                  <InputOTPSlot index={3} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
-                  <InputOTPSlot index={4} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
-                  <InputOTPSlot index={5} className="h-12 w-11 rounded-lg border bg-white text-lg font-bold shadow-sm transition-all focus-visible:ring-2 focus-visible:ring-primary dark:bg-slate-950 dark:border-slate-800 dark:focus-visible:ring-blue-500" />
-                </InputOTPGroup>
-              </InputOTP>
-            </div>
-          </div>
-
-          {/* Dialog footer: Cancel + Confirm buttons */}
-          <DialogFooter className="p-6 gap-3 sm:gap-3 bg-white dark:bg-slate-950">
-            <Button
-              variant="outline"
-              onClick={() => setIsOTPOpen(false)}
-              disabled={signing}
-              className="h-11 rounded-lg px-5 text-sm font-semibold border-slate-200 dark:border-slate-800 dark:text-slate-300"
-            >
-              Cancel
-            </Button>
-            {/* Confirm disabled khi OTP chưa đủ 6 chữ số hoặc đang signing */}
-            <Button
-              onClick={confirmCreateZoneWithOTP}
-              disabled={signing || otpCode.length < 6}
-              className="h-11 rounded-lg px-6 text-sm font-semibold shadow-sm"
-            >
-              {signing ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Verifying...
-                </>
-              ) : (
-                'Create Zone'
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <OTPVerificationDialog
+        open={isOTPOpen}
+        onOpenChange={setIsOTPOpen}
+        onConfirm={confirmCreateZoneWithOTP}
+        title="Security Verification"
+        description="Zone creation is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action."
+        confirmText="Create Zone"
+        loading={signing}
+      />
     </PageContent>
   )
 }

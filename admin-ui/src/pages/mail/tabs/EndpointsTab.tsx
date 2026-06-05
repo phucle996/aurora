@@ -99,18 +99,6 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
 }
 
-// Tính thời gian tương đối so với hiện tại để dễ quan sát (Ví dụ: "10m ago")
-function formatRelativeTime(input: string) {
-  const value = new Date(input).getTime()
-  if (!Number.isFinite(value)) return ''
-  const diff = Math.max(Date.now() - value, 0)
-  const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
-}
 
 // Chuẩn hóa trạng thái hệ thống thành dạng viết hoa chữ đầu cách nhau (Ví dụ: "active" -> "Active")
 function statusLabel(value: string) {
@@ -210,8 +198,8 @@ type EndpointListItem = {
   provider: string
   connection_config: mapStringAny
   is_active: boolean
-  created_at: string
-  updated_at: string
+  created_at?: string
+  updated_at?: string
   // Các thuộc tính bổ sung map để hiển thị ở frontend dễ dàng
   host?: string
   port?: number
@@ -244,6 +232,21 @@ interface EndpointsTabProps {
 export function EndpointsTab({ zoneID }: EndpointsTabProps) {
   // refreshKey được thay đổi để buộc gọi lại hàm fetch tải lại dữ liệu mới nhất
   const [refreshKey, setRefreshKey] = useState(0)
+
+  // Quản lý trạng thái cửa sổ hội thoại kiểm tra kết nối thử SMTP
+  const [connState, setConnState] = useState<{
+    isOpen: boolean
+    loading: boolean
+    success: boolean | null
+    message: string
+    endpointName: string
+  }>({
+    isOpen: false,
+    loading: false,
+    success: null,
+    message: '',
+    endpointName: '',
+  })
 
   // Khai báo hàm fetch tải danh sách SMTP Endpoints từ API
   const loadEndpoints = useCallback(async (signal: AbortSignal) => {
@@ -295,20 +298,6 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
     setRefreshKey((value) => value + 1)
   }
 
-  // Quản lý trạng thái cửa sổ hội thoại kiểm tra kết nối thử SMTP
-  const [connState, setConnState] = useState<{
-    isOpen: boolean
-    loading: boolean
-    success: boolean | null
-    message: string
-    endpointName: string
-  }>({
-    isOpen: false,
-    loading: false,
-    success: null,
-    message: '',
-    endpointName: '',
-  })
 
   // Gọi API kiểm tra kết nối SMTP Server trực tiếp realtime
   const tryConnect = async (endpoint: EndpointListItem) => {
@@ -419,7 +408,6 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
                   <TableHead className="font-semibold text-foreground/80">Capacity</TableHead>
                   <TableHead className="font-semibold text-foreground/80">Secret</TableHead>
                   <TableHead className="font-semibold text-foreground/80">Status</TableHead>
-                  <TableHead className="font-semibold text-foreground/80">Updated</TableHead>
                   <TableHead className="text-right font-semibold text-foreground/80">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -442,8 +430,6 @@ export function EndpointsTab({ zoneID }: EndpointsTabProps) {
                     <TableCell className="py-3">
                       <StatusBadge value={statusLabel(item.status || 'disabled')} />
                     </TableCell>
-                    {/* Thời gian cập nhật tương đối */}
-                    <TableCell className="py-3">{formatRelativeTime(item.updated_at)}</TableCell>
                     {/* Cột các hành động điều khiển dòng */}
                     <TableCell className="text-right py-3">
                       <div className="flex justify-end gap-2">

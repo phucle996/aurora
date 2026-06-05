@@ -25,7 +25,9 @@ type CreateZoneRequest struct {
 	// Name đại diện cho tên mô tả dễ đọc của zone (ví dụ: "North Virginia").
 	Name string `json:"name"              binding:"required"`
 	// Location xác định vị trí vật lý/địa lý của zone.
-	Location string `json:"location"`
+	Location string `json:"location"         binding:"required"`
+	// Description mô tả chi tiết của zone.
+	Description string `json:"description"`
 	// EnableHypervisor xác định xem các dịch vụ compute KVM có được kích hoạt khi cài đặt hay không.
 	EnableHypervisor *bool `json:"enable_hypervisor"`
 	// EnableStorage xác định xem các dịch vụ lưu trữ (storage block/volume) có được kích hoạt khi cài đặt hay không.
@@ -50,7 +52,7 @@ type UpdateZoneStatusRequest struct {
 type UpsertZoneServiceRequest struct {
 	// ZoneID là mã định danh của zone cần cập nhật. Yêu cầu định dạng UUID hợp lệ và không rỗng.
 	ZoneID uuid.UUID `json:"zone_id" binding:"required,uuid"`
-	// ServiceType đại diện cho loại dịch vụ (ví dụ: "hypervisor", "storage", "kubernetes", "smtp").
+	// ServiceType đại diện cho loại dịch vụ (ví dụ: "hypervisor", "storage", "kubernetes", "mail").
 	ServiceType string `json:"service_type" binding:"required"`
 	// Enabled xác định trạng thái mong muốn của dịch vụ (kích hoạt/hủy kích hoạt).
 	Enabled *bool `json:"enabled"      binding:"required"`

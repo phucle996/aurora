@@ -26,8 +26,8 @@ func TestDataplaneNodeRepo_Integration(t *testing.T) {
 	clusterID, _ := uuid.NewV7()
 
 	// 1. Chèn Zone cha vào bảng zones để thỏa mãn ràng buộc khóa ngoại (Foreign Key Constraint)
-	_, err := db.Exec(ctx, "INSERT INTO zones (id, code, name, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
-		zoneID, "zone-a", "Zone A", "active", time.Now().UTC(), time.Now().UTC())
+	_, err := db.Exec(ctx, "INSERT INTO zones (id, code, name, location, description, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+		zoneID, "zone-a", "Zone A", "Vietnam", "Test zone", "active", time.Now().UTC(), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("Failed to insert parent zone: %v", err)
 	}

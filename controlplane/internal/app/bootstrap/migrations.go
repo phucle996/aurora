@@ -7,6 +7,7 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/core"
 	"controlplane/internal/iam"
+	"controlplane/internal/mail"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,23 +19,24 @@ const (
 )
 
 func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) error {
-	if db == nil {
-		return fmt.Errorf("migration: db is nil")
-	}
-	if cfg == nil {
-		return fmt.Errorf("migration: config is nil")
-	}
+	// không ccheck nil db và config
+	// db đã fail close ở app.go
+	// config mà nil thì nó sẽ fallback về default values (schema là hard code trong config file hết)
+	// ----------------------------
 
+	// acquire lock connection
 	conn, err := db.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("migration: acquire lock connection: %w", err)
 	}
 	defer conn.Release()
 
+	// bắt đầu một transaction để đảm bảo toàn bộ migration được thực hiện một lần
 	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
 		return fmt.Errorf("migration: begin transaction: %w", err)
 	}
 
+	// nếu có lỗi thì rollback transaction
 	rollback := true
 	defer func() {
 		if rollback {
@@ -44,17 +46,27 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 		}
 	}()
 
+	// acquire advisory lock để tránh xung đột migration giữa các instance
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationLockKey1, migrationLockKey2); err != nil {
 		return fmt.Errorf("migration: acquire lock: %w", err)
 	}
 
+	// core migrations
 	if err := core.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}
+
+	// iam migrations
 	if err := iam.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}
 
+	// mail migrations
+	if err := mail.ApplyMigrations(ctx, conn, cfg); err != nil {
+		return err
+	}
+
+	// commit toàn bộ migration một lần
 	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("migration: commit transaction: %w", err)
 	}

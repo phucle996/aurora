@@ -34,14 +34,21 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
 		module.ZoneHandler.ListZones,
 	)
+	router.GET("/admin/core/zones/:zone_id",
+		middleware.AdminCIDR(),
+		middleware.AdminAPIKeyAuth(),
+		module.ZoneHandler.GetZone,
+	)
 
 	router.PATCH("/admin/core/zones/status",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(middleware.WithInjectAccessKey()),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones/status"),
 		middleware.AdminCriticalSignature(),
 		middleware.AdminCriticalStepUp2FA(),
 		module.ZoneHandler.UpdateZoneStatus,
 	)
+
 	router.DELETE("/admin/core/zones/:zone_id",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),

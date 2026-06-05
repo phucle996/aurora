@@ -66,6 +66,12 @@ function RequireAdminSession({ component }: { component: ComponentType }) {
   return <LazyPage component={component} />
 }
 
+function withAdminSession(Component: ComponentType) {
+  const WrappedComponent = () => <RequireAdminSession component={Component} />
+  WrappedComponent.displayName = `withAdminSession(${Component.displayName || Component.name || 'Component'})`
+  return WrappedComponent
+}
+
 function AdminLoginGate() {
   const navigate = useNavigate()
   const state = useAdminSession()
@@ -188,86 +194,86 @@ const rootRoute = createRootRoute({
 const dashboardRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  component: () => <RequireAdminSession component={DashboardPage} />,
+  component: withAdminSession(DashboardPage),
 })
 
 const usersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/users',
-  component: () => <RequireAdminSession component={DashboardPage} />,
+  component: withAdminSession(DashboardPage),
 })
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
-  component: () => <RequireAdminSession component={DashboardPage} />,
+  component: withAdminSession(DashboardPage),
 })
 
 const zonesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/zones',
-  component: () => <RequireAdminSession component={ZoneManagementPage} />,
+  component: withAdminSession(ZoneManagementPage),
 })
 
 const zoneDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/zones/$zoneId',
-  component: () => <RequireAdminSession component={ZoneDetailPage} />,
+  component: withAdminSession(ZoneDetailPage),
 })
 
 const newZoneRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/zones/new',
-  component: () => <RequireAdminSession component={NewZonePage} />,
+  component: withAdminSession(NewZonePage),
 })
 
 const hypervisorRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/hypervisor',
-  component: () => <RequireAdminSession component={HypervisorPage} />,
+  component: withAdminSession(HypervisorPage),
 })
 
 
 const detailHypervisorRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/hypervisor/$agentId',
-  component: () => <RequireAdminSession component={DetailHypervisorPage} />,
+  component: withAdminSession(DetailHypervisorPage),
 })
 
 const mailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/mail',
-  component: () => <RequireAdminSession component={MailPage} />,
+  component: withAdminSession(MailPage),
 })
 
 const newMailEndpointRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/mail/endpoints/new',
-  component: () => <RequireAdminSession component={NewMailEndpointPage} />,
+  component: withAdminSession(NewMailEndpointPage),
 })
 
 const editMailEndpointRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/mail/endpoints/$id/edit',
-  component: () => <RequireAdminSession component={EditMailEndpointPage} />,
+  component: withAdminSession(EditMailEndpointPage),
 })
 
 const deliveryAttemptsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/mail/delivery-attempts',
-  component: () => <RequireAdminSession component={DeliveryAttemptsPage} />,
+  component: withAdminSession(DeliveryAttemptsPage),
 })
 
 const runtimeStatusRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/mail/runtime-status',
-  component: () => <RequireAdminSession component={RuntimeStatusPage} />,
+  component: withAdminSession(RuntimeStatusPage),
 })
 
 const resourcePlatformRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/resource-platform',
-  component: () => <RequireAdminSession component={ResourcePlatformAdminPage} />,
+  component: withAdminSession(ResourcePlatformAdminPage),
 })
 
 const adminLoginRoute = createRoute({

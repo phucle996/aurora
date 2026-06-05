@@ -106,6 +106,7 @@ func (r *endpointRepoPostgres) GetByID(ctx context.Context, zoneID uuid.UUID, id
 
 	var m mailModel.Endpoint
 	var idStr, zoneIDStr string
+	var createdAt, updatedAt time.Time
 	err := r.db.QueryRow(ctx, query, zoneID.String(), id.String()).Scan(
 		&idStr,
 		&zoneIDStr,
@@ -113,9 +114,11 @@ func (r *endpointRepoPostgres) GetByID(ctx context.Context, zoneID uuid.UUID, id
 		&m.Provider,
 		&m.ConnectionConfig,
 		&m.IsActive,
-		&m.CreatedAt,
-		&m.UpdatedAt,
+		&createdAt,
+		&updatedAt,
 	)
+	m.CreatedAt = &createdAt
+	m.UpdatedAt = &updatedAt
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, fmt.Errorf("mail repo: không tìm thấy endpoint (id: %s, zone: %s)", id.String(), zoneID.String())
@@ -173,6 +176,7 @@ func (r *endpointRepoPostgres) List(ctx context.Context, zoneID uuid.UUID) ([]*m
 	for rows.Next() {
 		var m mailModel.Endpoint
 		var idStr, zoneIDStr string
+		var createdAt, updatedAt time.Time
 		err := rows.Scan(
 			&idStr,
 			&zoneIDStr,
@@ -180,12 +184,14 @@ func (r *endpointRepoPostgres) List(ctx context.Context, zoneID uuid.UUID) ([]*m
 			&m.Provider,
 			&m.ConnectionConfig,
 			&m.IsActive,
-			&m.CreatedAt,
-			&m.UpdatedAt,
+			&createdAt,
+			&updatedAt,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("mail repo: lỗi scan hàng dữ liệu endpoint: %w", err)
 		}
+		m.CreatedAt = &createdAt
+		m.UpdatedAt = &updatedAt
 
 		m.ID = uuid.MustParse(idStr)
 		m.ZoneID = uuid.MustParse(zoneIDStr)

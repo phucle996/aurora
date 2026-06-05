@@ -15,8 +15,8 @@ type Endpoint struct {
 	Provider         mailEntity.ProviderType `db:"provider"`
 	ConnectionConfig []byte                  `db:"connection_config"`
 	IsActive         bool                    `db:"is_active"`
-	CreatedAt        time.Time               `db:"created_at"`
-	UpdatedAt        time.Time               `db:"updated_at"`
+	CreatedAt        *time.Time              `db:"created_at"`
+	UpdatedAt        *time.Time              `db:"updated_at"`
 }
 
 func EndpointEntityToModel(e mailEntity.Endpoint, encryptedConfig []byte) Endpoint {

@@ -84,18 +84,20 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		zoneID = uuid.New()
 	}
 	zone := coreEntity.Zone{
-		ID:        zoneID.String(),
-		Code:      strings.ToLower(strings.TrimSpace(input.Code)),
-		Name:      strings.TrimSpace(input.Name),
-		Status:    coreEntity.ZoneStatusPlanned,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          zoneID.String(),
+		Code:        strings.ToLower(strings.TrimSpace(input.Code)),
+		Name:        strings.TrimSpace(input.Name),
+		Location:    strings.TrimSpace(input.Location),
+		Description: strings.TrimSpace(input.Description),
+		Status:      coreEntity.ZoneStatusPlanned,
+		CreatedAt:   &now,
+		UpdatedAt:   &now,
 	}
 	svcs := map[coreEntity.ZoneServiceType]bool{
 		coreEntity.ZoneServiceTypeHypervisor: input.EnableHypervisor,
 		coreEntity.ZoneServiceTypeStorage:    input.EnableStorage,
 		coreEntity.ZoneServiceTypeMail:       input.EnableMail,
-		coreEntity.ZoneServiceTypeK8s:        input.EnableK8s,
+		coreEntity.ZoneServiceTypeKubernetes: input.EnableK8s,
 		coreEntity.ZoneServiceTypeAI:         input.EnableAI,
 		coreEntity.ZoneServiceTypeDatabase:   false,
 	}
@@ -109,6 +111,18 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		s.cache.PatchZone(ctx, zone)
 	}
 	return nil
+}
+
+// GetZoneByID lấy thông tin chi tiết của một Zone.
+func (s *ZoneService) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
+	zone, err := s.repo.GetZoneByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if zone == nil {
+		return nil, coreErrorx.ErrZoneNotFound
+	}
+	return zone, nil
 }
 
 // UpdateZoneStatus chuyển trạng thái zone theo state machine.

@@ -13,13 +13,14 @@ const (
 )
 
 type Zone struct {
-	ID        string
-	Code      string
-	Name      string
-	Location  string
-	Status    ZoneStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string
+	Code        string
+	Name        string
+	Location    string
+	Description string
+	Status      ZoneStatus
+	CreatedAt   *time.Time
+	UpdatedAt   *time.Time
 }
 
 type ZoneCatalog struct {
@@ -34,7 +35,7 @@ const (
 	ZoneServiceTypeHypervisor ZoneServiceType = "hypervisor"
 	ZoneServiceTypeStorage    ZoneServiceType = "storage"
 	ZoneServiceTypeMail       ZoneServiceType = "mail"
-	ZoneServiceTypeK8s        ZoneServiceType = "k8s"
+	ZoneServiceTypeKubernetes ZoneServiceType = "kubernetes"
 	ZoneServiceTypeAI         ZoneServiceType = "ai"
 	ZoneServiceTypeDatabase   ZoneServiceType = "database"
 )
@@ -52,6 +53,7 @@ type CreateZoneInput struct {
 	Code             string
 	Name             string
 	Location         string
+	Description      string
 	EnableHypervisor bool
 	EnableStorage    bool
 	EnableMail       bool

@@ -21,8 +21,8 @@ type Endpoint struct {
 	Provider         ProviderType
 	ConnectionConfig map[string]interface{}
 	IsActive         bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	CreatedAt        *time.Time
+	UpdatedAt        *time.Time
 }
 
 // CreateEndpointParams groups the inputs required to construct a new Endpoint.

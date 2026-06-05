@@ -27,7 +27,7 @@ function EmptyPanelText({ children }: { children: ReactNode }) {
 function InventoryIcon({ metricKey }: { metricKey: string }) {
   const Icon = metricKey.includes('hypervisor')
     ? Server
-    : metricKey.includes('smtp')
+    : metricKey.includes('mail')
       ? PackageCheck
       : metricKey.includes('storage') || metricKey.includes('database')
         ? Database

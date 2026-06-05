@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS zones (
     code TEXT NOT NULL,
     name TEXT NOT NULL,
     location TEXT NOT NULL,
+    description TEXT NULL,
     status zone_status NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -86,6 +87,7 @@ COMMENT ON COLUMN zones.id IS 'Primary key of zone row. Must be generated as UUI
 COMMENT ON COLUMN zones.code IS 'Stable unique zone code, for example edge-hcm-1.';
 COMMENT ON COLUMN zones.name IS 'Human-readable zone display name.';
 COMMENT ON COLUMN zones.location IS 'Human-readable physical location of the zone.';
+COMMENT ON COLUMN zones.description IS 'Optional description of the zone purpose and operational notes.';
 COMMENT ON COLUMN zones.status IS 'Operational status of zone lifecycle (planned, active, draining, maintenance, disabled).';
 COMMENT ON COLUMN zones.created_at IS 'Timestamp when zone row was created.';
 COMMENT ON COLUMN zones.updated_at IS 'Timestamp when zone row was last updated.';

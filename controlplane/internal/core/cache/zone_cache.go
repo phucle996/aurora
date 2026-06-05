@@ -41,8 +41,8 @@ const ZoneVersionKey = "core:zone:version"
 
 // zoneSnapshot là bản sao bất biến của toàn bộ trạng thái zone trong RAM.
 type zoneSnapshot struct {
-	byID      map[string]coreEntity.Zone  // "zone:id:<id>"    → Zone
-	byCode    map[string]coreEntity.Zone  // "zone:code:<code>" → Zone
+	byID      map[string]coreEntity.Zone // "zone:id:<id>"    → Zone
+	byCode    map[string]coreEntity.Zone // "zone:code:<code>" → Zone
 	catalog   []coreEntity.ZoneCatalog   // computed từ byID, sorted by code
 	expiresAt time.Time                  // TTL sentinel
 	version   int64                      // Phiên bản tăng tuần tự của RAM cache
@@ -143,7 +143,7 @@ func (c *ZoneFanoutCache) GetCatalog() ([]coreEntity.ZoneCatalog, bool) {
 func (c *ZoneFanoutCache) SetCatalog(catalog []coreEntity.ZoneCatalog, version int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	current := c.ptr.Load()
 	if version < current.version {
 		return // Dữ liệu cũ -> bỏ qua
@@ -170,10 +170,10 @@ func (c *ZoneFanoutCache) GetVersion(ctx context.Context) int64 {
 // PatchZone cập nhật local cache và phát tín hiệu update (upsert) sang các replica.
 func (c *ZoneFanoutCache) PatchZone(ctx context.Context, zone coreEntity.Zone) {
 	version := c.nextVersion(ctx)
-	
+
 	// 1. Cập nhật local RAM cache lập tức
 	c.ApplyUpsert(zone, version)
-	
+
 	// 2. Publish ra các replica khác
 	if c.fanout != nil {
 		if err := c.fanout.Publish(ctx, FanoutOpUpsert, zone, version); err != nil {
@@ -185,10 +185,10 @@ func (c *ZoneFanoutCache) PatchZone(ctx context.Context, zone coreEntity.Zone) {
 // EvictZone loại bỏ zone khỏi local cache và phát tín hiệu delete sang các replica.
 func (c *ZoneFanoutCache) EvictZone(ctx context.Context, id, code string) {
 	version := c.nextVersion(ctx)
-	
+
 	// 1. Xóa local RAM cache lập tức
 	c.ApplyDelete(id, code, version)
-	
+
 	// 2. Publish ra các replica khác
 	if c.fanout != nil {
 		payload := struct {

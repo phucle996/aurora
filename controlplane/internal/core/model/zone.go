@@ -6,45 +6,48 @@ import (
 )
 
 type Zone struct {
-	ID        string
-	Code      string
-	Name      string
-	Location  string
-	Status    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string     `db:"id"`
+	Code        string     `db:"code"`
+	Name        string     `db:"name"`
+	Location    string     `db:"location"`
+	Description string     `db:"description"`
+	Status      string     `db:"status"`
+	CreatedAt   *time.Time `db:"created_at"`
+	UpdatedAt   *time.Time `db:"updated_at"`
 }
 
 type ZoneService struct {
-	ID          string
-	ZoneID      string
-	ServiceType string
-	Enabled     bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID          string    `db:"id"`
+	ZoneID      string    `db:"zone_id"`
+	ServiceType string    `db:"service_type"`
+	Enabled     bool      `db:"enabled"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 func ZoneEntityToModel(e coreEntity.Zone) Zone {
 	return Zone{
-		ID:        e.ID,
-		Code:      e.Code,
-		Name:      e.Name,
-		Location:  e.Location,
-		Status:    string(e.Status),
-		CreatedAt: e.CreatedAt,
-		UpdatedAt: e.UpdatedAt,
+		ID:          e.ID,
+		Code:        e.Code,
+		Name:        e.Name,
+		Location:    e.Location,
+		Description: e.Description,
+		Status:      string(e.Status),
+		CreatedAt:   e.CreatedAt,
+		UpdatedAt:   e.UpdatedAt,
 	}
 }
 
 func ZoneModelToEntity(m Zone) coreEntity.Zone {
 	return coreEntity.Zone{
-		ID:        m.ID,
-		Code:      m.Code,
-		Name:      m.Name,
-		Location:  m.Location,
-		Status:    coreEntity.ZoneStatus(m.Status),
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
+		ID:          m.ID,
+		Code:        m.Code,
+		Name:        m.Name,
+		Location:    m.Location,
+		Description: m.Description,
+		Status:      coreEntity.ZoneStatus(m.Status),
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
 	}
 }
 

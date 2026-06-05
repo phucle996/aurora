@@ -39,7 +39,7 @@ function ServiceIcon({ serviceKey }: { serviceKey: string }) {
       ? Database
       : serviceKey === 'kubernetes'
         ? Layers3
-        : serviceKey === 'smtp'
+        : serviceKey === 'mail'
           ? PackageCheck
           : Clock3
   return <Icon className="size-4" />

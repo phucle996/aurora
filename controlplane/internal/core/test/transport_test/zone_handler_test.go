@@ -30,6 +30,9 @@ func (s *zoneServiceStub) ListZones(ctx context.Context) ([]coreEntity.Zone, err
 func (s *zoneServiceStub) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
 	return []coreEntity.ZoneCatalog{}, nil
 }
+func (s *zoneServiceStub) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
+	return &coreEntity.Zone{}, nil
+}
 
 func (s *zoneServiceStub) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
 	return nil
@@ -182,6 +185,19 @@ func TestZoneHandlerUpdateZoneStatusBadRequest(t *testing.T) {
 				t.Fatalf("expected 400, got %d, test case: %s", w.Code, tc.name)
 			}
 		})
+	}
+}
+
+func TestZoneHandlerGetZoneSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := coreHandler.NewZoneHandler(&zoneServiceStub{})
+	r.GET("/zones/:zone_id", h.GetZone)
+	req := httptest.NewRequest(http.MethodGet, "/zones/0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 }
 

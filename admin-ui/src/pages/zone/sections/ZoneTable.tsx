@@ -150,10 +150,10 @@ export default function ZoneTable({
             <TableHead className="pb-4 text-sm font-medium text-muted-foreground">
               Code
             </TableHead>
-            <TableHead className="min-w-[200px] pb-4 text-sm font-medium text-muted-foreground">
+            <TableHead className="min-w-50 pb-4 text-sm font-medium text-muted-foreground">
               Location
             </TableHead>
-            <TableHead className="min-w-[500px] pb-4 text-sm font-medium text-muted-foreground">
+            <TableHead className="min-w-125 pb-4 text-sm font-medium text-muted-foreground">
               Description
             </TableHead>
           </TableRow>
@@ -207,12 +207,12 @@ export default function ZoneTable({
               </TableCell>
 
               {/* Cột 4: Vị trí địa lý của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground whitespace-normal break-words">
+              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground whitespace-normal wrap-break-word">
                 {zone.location}
               </TableCell>
 
               {/* Cột 5: Mô tả chi tiết của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-foreground/80 whitespace-normal break-words">
+              <TableCell className="py-3.5 text-sm font-medium text-foreground/80 whitespace-normal wrap-break-word">
                 {zone.description}
               </TableCell>
             </TableRow>
