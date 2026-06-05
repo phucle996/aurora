@@ -31,12 +31,14 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE t.typname = 'zone_status' AND n.nspname = current_schema()
     ) THEN
-        CREATE TYPE zone_status AS ENUM ('active', 'draining', 'maintenance', 'disabled');
+        CREATE TYPE zone_status AS ENUM ('planned', 'active', 'draining', 'maintenance', 'disabled');
     END IF;
 END
 $$;
 DO $$
 BEGIN
+    -- add new zone status planned, active, draining, maintenance, disabled
+    EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'planned');
     EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
     EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'draining');
     EXECUTE format('ALTER TYPE %I.zone_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'maintenance');
@@ -52,7 +54,7 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE t.typname = 'zone_service_type' AND n.nspname = current_schema()
     ) THEN
-        CREATE TYPE zone_service_type AS ENUM ('mail', 'hypervisor', 'k8s', 'ai');
+        CREATE TYPE zone_service_type AS ENUM ('mail', 'hypervisor', 'k8s', 'ai', 'storage', 'database');
     END IF;
 END
 $$;
@@ -62,6 +64,8 @@ BEGIN
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'hypervisor');
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'k8s');
     EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'ai');
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'storage');
+    EXECUTE format('ALTER TYPE %I.zone_service_type ADD VALUE IF NOT EXISTS %L', current_schema(), 'database');
 END
 $$;
 

@@ -204,7 +204,7 @@ export default function ZoneDetailPage() {
     setLoading(true)
     setError('')
     try {
-      const response = await Fetch(`/admin/zones/${encodeURIComponent(zoneID)}`)
+      const response = await Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`)
       if (!response.ok) {
         throw new Error(await readErrorMessage(response))
       }
@@ -285,7 +285,7 @@ export default function ZoneDetailPage() {
     if (nextName && nextName !== detail.zone.name) body.name = nextName
     if (nextDescription !== detail.zone.description) body.description = nextDescription || ''
     if (Object.keys(body).length === 0) return
-    void Fetch(`/admin/zones/${encodeURIComponent(zoneID)}`, {
+    void Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -315,7 +315,7 @@ export default function ZoneDetailPage() {
       const shouldBeEnabled = draftServices.includes(key)
       if (isCurrentlyEnabled === shouldBeEnabled) return null
 
-      return Fetch(`/admin/zones/services`, {
+      return Fetch(`/admin/core/zones/services`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -346,7 +346,7 @@ export default function ZoneDetailPage() {
     if (!pendingStatus) return
     const nextStatus = pendingStatus
     setPendingStatus(null)
-    void Fetch(`/admin/zones/status`, {
+    void Fetch(`/admin/core/zones/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ zone_id: zoneID, status: nextStatus }),
@@ -361,7 +361,7 @@ export default function ZoneDetailPage() {
   const confirmDeleteZone = () => {
     if (!canDeleteZone) return
     setDeleteDialogOpen(false)
-    void Fetch(`/admin/zones/${encodeURIComponent(zoneID)}`, { method: 'DELETE' })
+    void Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`, { method: 'DELETE' })
       .then(async (response) => {
         if (!response.ok) throw new Error(await readErrorMessage(response))
         window.location.assign('/zones')

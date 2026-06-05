@@ -94,14 +94,14 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 		phone = request.Phone
 	}
 
-	var location *string
-	if request.Location != nil && *request.Location != "" {
-		location = request.Location
+	var localeStr string
+	if request.Location != nil {
+		localeStr = strings.TrimSpace(*request.Location)
 	}
 
-	var timezone *string
-	if request.Timezone != nil && *request.Timezone != "" {
-		timezone = request.Timezone
+	var timezoneStr string
+	if request.Timezone != nil {
+		timezoneStr = strings.TrimSpace(*request.Timezone)
 	}
 	if password != rePassword {
 		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
@@ -121,8 +121,8 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	}
 	profile := iamEntity.UserProfile{
 		Fullname: fullname,
-		Locale:   *location,
-		Timezone: *timezone,
+		Locale:   localeStr,
+		Timezone: timezoneStr,
 	}
 
 	if err := h.authSvc.RegisterAccount(ctx, user, profile, password); err != nil {

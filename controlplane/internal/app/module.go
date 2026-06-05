@@ -128,7 +128,10 @@ func NewGlobalModules(cfg *config.Config,
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
-	if coreModule == nil || coreModule.RuntimeSecretProvider == nil {
+	if coreModule == nil {
+		return nil, errors.New("app: init critical core module: core module is nil")
+	}
+	if coreModule.RuntimeSecretProvider == nil {
 		return nil, errors.New("app: init critical core module: runtime secret provider is required")
 	}
 
@@ -139,6 +142,9 @@ func NewGlobalModules(cfg *config.Config,
 	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, securityProvider)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
+	}
+	if iamModule == nil {
+		return nil, errors.New("app: init critical iam module: iam module is nil")
 	}
 
 	// 6) Policy engine bootstrap (Được truyền từ ngoài vào như hạ tầng hệ thống)

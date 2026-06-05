@@ -8,7 +8,7 @@ export default function CodeBlock({ code, language = 'text' }) {
       await navigator.clipboard.writeText(code)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
-    } catch (_) {
+    } catch {
       // ignore
     }
   }

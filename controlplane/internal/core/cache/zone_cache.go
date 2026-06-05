@@ -78,7 +78,7 @@ func (s *zoneSnapshot) clone() *zoneSnapshot {
 func (s *zoneSnapshot) rebuildCatalog() {
 	var catalog []coreEntity.ZoneCatalog
 	for _, z := range s.byID {
-		if z.Status != coreEntity.ZoneStatusDisabled && z.Status != coreEntity.ZoneStatusPlanned {
+		if z.Status == coreEntity.ZoneStatusActive {
 			catalog = append(catalog, coreEntity.ZoneCatalog{ID: z.ID, Code: z.Code, Name: z.Name})
 		}
 	}

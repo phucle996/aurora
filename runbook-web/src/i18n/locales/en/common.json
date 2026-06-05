@@ -20,7 +20,8 @@
       "zone": "Zone Management",
       "security": "Security",
       "infra": "Infrastructure",
-      "general": "General"
+      "general": "General",
+      "arch": "Architecture"
     },
     "items": {
       "auth-token-model": "Token Model & Lifecycle",
@@ -38,7 +39,11 @@
       "infra-redis": "Redis Cache",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy Proxy",
-      "home": "Home"
+      "home": "Home",
+      "arch-c1": "C1 — System Context",
+      "arch-c2": "C2 — Container",
+      "arch-c3": "C3 — Component",
+      "arch-c4": "C4 — Code"
     },
     "soon": "soon",
     "soon_tooltip": "Coming soon"

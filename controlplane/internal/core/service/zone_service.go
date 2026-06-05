@@ -97,6 +97,7 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		coreEntity.ZoneServiceTypeMail:       input.EnableMail,
 		coreEntity.ZoneServiceTypeK8s:        input.EnableK8s,
 		coreEntity.ZoneServiceTypeAI:         input.EnableAI,
+		coreEntity.ZoneServiceTypeDatabase:   false,
 	}
 
 	if err := s.repo.CreateZone(ctx, zone, svcs); err != nil {

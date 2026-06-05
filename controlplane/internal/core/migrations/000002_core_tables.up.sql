@@ -84,7 +84,7 @@ COMMENT ON TABLE zones IS 'Zone catalog as independent edge location taxonomy us
 COMMENT ON COLUMN zones.id IS 'Primary key of zone row. Must be generated as UUIDv7 by application/service layer.';
 COMMENT ON COLUMN zones.code IS 'Stable unique zone code, for example edge-hcm-1.';
 COMMENT ON COLUMN zones.name IS 'Human-readable zone display name.';
-COMMENT ON COLUMN zones.status IS 'Operational status of zone lifecycle (active, draining, maintenance, disabled).';
+COMMENT ON COLUMN zones.status IS 'Operational status of zone lifecycle (planned, active, draining, maintenance, disabled).';
 COMMENT ON COLUMN zones.created_at IS 'Timestamp when zone row was created.';
 COMMENT ON COLUMN zones.updated_at IS 'Timestamp when zone row was last updated.';
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -138,9 +139,9 @@ func (m *MockDataplaneNodeService) CheckFallbackLiveness(ctx context.Context, zo
 // TestDataplaneGRPCHandler_Success xác nhận gRPC handler hoạt động thành công khi payload hợp lệ.
 func TestDataplaneGRPCHandler_Success(t *testing.T) {
 	mockSvc := &MockDataplaneNodeService{
-		IngestHeartbeatFunc: func(ctx context.Context, clusterID string, zoneID string) error {
-			if clusterID != "cluster-1" || zoneID != "zone-1" {
-				t.Errorf("Unexpected params: cluster=%s, zone=%s", clusterID, zoneID)
+		IngestFallbackHeartbeatFunc: func(ctx context.Context, hostname string, zoneID string) error {
+			if hostname != "cluster-1" || zoneID != "zone-1" {
+				t.Errorf("Unexpected params: cluster=%s, zone=%s", hostname, zoneID)
 			}
 			return nil
 		},
@@ -181,7 +182,7 @@ func TestDataplaneGRPCHandler_InvalidInput(t *testing.T) {
 // TestDataplaneGRPCHandler_ServiceError xác nhận gRPC handler trả lỗi khi Service báo lỗi.
 func TestDataplaneGRPCHandler_ServiceError(t *testing.T) {
 	mockSvc := &MockDataplaneNodeService{
-		IngestHeartbeatFunc: func(ctx context.Context, clusterID string, zoneID string) error {
+		IngestFallbackHeartbeatFunc: func(ctx context.Context, hostname string, zoneID string) error {
 			return errors.New("db write error")
 		},
 	}
@@ -210,7 +211,11 @@ func TestSubscriberHeartbeat_Ingestion(t *testing.T) {
 		},
 	}
 
-	client := goredis.NewClient(&goredis.Options{Addr: "localhost:6379"})
+	redisAddr := os.Getenv("CORE_TEST_REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:16380"
+	}
+	client := goredis.NewClient(&goredis.Options{Addr: redisAddr})
 	mockCache := &MockDataplaneCache{
 		SubscribeFunc: func(ctx context.Context, channel string) *goredis.PubSub {
 			return client.Subscribe(ctx, channel)

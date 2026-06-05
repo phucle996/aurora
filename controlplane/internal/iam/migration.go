@@ -25,6 +25,14 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 		return fmt.Errorf("iam migration: config is nil")
 	}
 	schema := strings.TrimSpace(cfg.SchemaSQL.IAM)
+
+	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+		return fmt.Errorf("iam migration: begin tx: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
+	}()
+
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
 	}
@@ -33,6 +41,10 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 	}
 	if err := applyEmbeddedMigrations(ctx, conn, "iam", iammigrations.Files); err != nil {
 		return err
+	}
+
+	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("iam migration: commit tx: %w", err)
 	}
 	return nil
 }

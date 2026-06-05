@@ -27,6 +27,13 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 
 	schema := strings.TrimSpace(cfg.SchemaSQL.Mail)
 
+	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+		return fmt.Errorf("mail migration: begin tx: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
+	}()
+
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
 	}
@@ -35,6 +42,10 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 	}
 	if err := applyEmbeddedMigrations(ctx, conn, schema, mailmigrations.Files); err != nil {
 		return err
+	}
+
+	if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("mail migration: commit tx: %w", err)
 	}
 	return nil
 }

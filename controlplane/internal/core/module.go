@@ -99,6 +99,9 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	}
 	zoneService := coreSvcImpl.NewZoneService(zoneRepo, zoneCache)
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
+	if zoneHandler == nil {
+		return nil, fmt.Errorf("core module: zone handler is nil")
+	}
 
 	// 6) Dataplane dependencies injection
 	dataplaneNodeRepo := coreRepoImpl.NewDataplaneNodeRepoImpl(cfg, db)

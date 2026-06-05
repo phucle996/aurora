@@ -119,14 +119,13 @@ func newSignedCriticalRequest(
 	}
 	tsRaw := strconv.FormatInt(now.Unix(), 10)
 	bodyHash := sha256.Sum256([]byte(body))
-	payload := fmt.Sprintf("%s\n%s\n%s\n%x\n%s\n%s\n%s",
+	payload := fmt.Sprintf("%s\n%s\n%s\n%x\n%s\n%s",
 		method,
 		parsed.Path,
 		parsed.RawQuery,
 		bodyHash,
 		tsRaw,
 		nonce,
-		deviceID,
 	)
 	signature := ed25519.Sign(privateKey, []byte(payload))
 

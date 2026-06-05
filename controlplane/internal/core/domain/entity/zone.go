@@ -35,6 +35,7 @@ const (
 	ZoneServiceTypeMail       ZoneServiceType = "mail"
 	ZoneServiceTypeK8s        ZoneServiceType = "k8s"
 	ZoneServiceTypeAI         ZoneServiceType = "ai"
+	ZoneServiceTypeDatabase   ZoneServiceType = "database"
 )
 
 type ZoneService struct {

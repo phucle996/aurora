@@ -49,6 +49,16 @@ const NAV_TREE = [
       { id: 'home', icon: '🏠', path: '/home', status: 'ready' },
     ],
   },
+  {
+    id: 'arch',
+    icon: '🏛️',
+    children: [
+      { id: 'arch-c1', icon: '🗺️', path: '/arch/c1', status: 'ready' },
+      { id: 'arch-c2', icon: '📦', path: '/arch/c2', status: 'ready' },
+      { id: 'arch-c3', icon: '🧩', path: '/arch/c3', status: 'ready' },
+      { id: 'arch-c4', icon: '⌨️', path: '/arch/c4', status: 'ready' },
+    ],
+  },
 ]
 
 // Map path → group id for initial expand

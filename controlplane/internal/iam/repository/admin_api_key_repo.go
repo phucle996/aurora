@@ -234,13 +234,19 @@ func (r *AdminAPIKeyRepository) AcquireBootstrapLock(ctx context.Context) (iamRe
 	if err != nil {
 		return nil, err
 	}
+	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+		conn.Release()
+		return nil, err
+	}
 	var ok bool
 	if err := conn.QueryRow(ctx,
-		`SELECT pg_try_advisory_lock($1)`, adminBootstrapLockKey).Scan(&ok); err != nil {
+		`SELECT pg_try_advisory_xact_lock($1)`, adminBootstrapLockKey).Scan(&ok); err != nil {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
 		return nil, err
 	}
 	if !ok {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
 		return nil, fmt.Errorf("iam repo: bootstrap lock already held")
 	}
@@ -253,12 +259,18 @@ func (r *AdminAPIKeyRepository) AcquireRotationLock(ctx context.Context) (iamRep
 	if err != nil {
 		return nil, err
 	}
+	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+		conn.Release()
+		return nil, err
+	}
 	var ok bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, adminRotationLockKey).Scan(&ok); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock($1)`, adminRotationLockKey).Scan(&ok); err != nil {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
 		return nil, err
 	}
 	if !ok {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
 		return nil, fmt.Errorf("iam repo: rotation lock already held")
 	}
@@ -294,12 +306,7 @@ func (l *bootstrapLock) Release(ctx context.Context) error {
 	if l == nil || l.conn == nil {
 		return nil
 	}
-	key := l.key
-	if key == 0 {
-		key = adminBootstrapLockKey
-	}
-	_, err := l.conn.Exec(ctx,
-		`SELECT pg_advisory_unlock($1)`, key)
+	_, err := l.conn.Exec(ctx, "ROLLBACK")
 	l.conn.Release()
 	l.conn = nil
 	return err

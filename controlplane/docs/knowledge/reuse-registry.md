@@ -62,6 +62,7 @@ Mục tiêu: cho AI tra cứu nhanh **dùng cái gì ở đâu**, tránh tạo m
 ## 5) Priority Rule
 
 Khi có mâu thuẫn giữa đề xuất mới và registry này:
+
 1. Ưu tiên reuse symbol hiện có.
 2. Nếu bắt buộc tạo mới, phải ghi rõ lý do và impact compatibility.
 3. Update lại `skill-knowledge-base.md` + file này ngay sau khi chốt canonical mới.

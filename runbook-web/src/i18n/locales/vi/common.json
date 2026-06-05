@@ -20,7 +20,8 @@
       "zone": "Quản lý Zone",
       "security": "Bảo mật",
       "infra": "Hạ tầng",
-      "general": "Chung"
+      "general": "Chung",
+      "arch": "Kiến trúc hệ thống"
     },
     "items": {
       "auth-token-model": "Mô hình & Vòng đời Token",
@@ -38,7 +39,11 @@
       "infra-redis": "Redis Cache",
       "infra-postgres": "PostgreSQL",
       "infra-envoy": "Envoy Proxy",
-      "home": "Trang chủ"
+      "home": "Trang chủ",
+      "arch-c1": "C1 — System Context",
+      "arch-c2": "C2 — Container",
+      "arch-c3": "C3 — Component",
+      "arch-c4": "C4 — Code"
     },
     "soon": "sắp có",
     "soon_tooltip": "Sắp ra mắt"
@@ -122,12 +127,42 @@
       }
     },
     "table": {
-      "headers": ["Tên Family", "Mục Tiêu Sử Dụng", "Chu Kỳ Xoay Vòng (Secret TTL)", "Cửa Sổ Chuyển Tiếp (Grace Period)", "Kênh Invalidation"],
+      "headers": [
+        "Tên Family",
+        "Mục Tiêu Sử Dụng",
+        "Chu Kỳ Xoay Vòng (Secret TTL)",
+        "Cửa Sổ Chuyển Tiếp (Grace Period)",
+        "Kênh Invalidation"
+      ],
       "rows": {
-        "access_token": ["access_token", "Ký JWT Access Token", "24 Giờ (Active Primary)", "24 Giờ (Retired Candidate - sống thêm 1 TTL)", "Redis Pub/Sub Bus"],
-        "refresh_token": ["refresh_token", "Mã hóa JWT Refresh Token", "7 Ngày (Active Primary)", "7 Ngày (Retired Candidate - sống thêm 1 TTL)", "Redis Pub/Sub Bus"],
-        "admin_api_key": ["admin_api_key", "Ký giao dịch Admin CP", "30 Ngày (Active Primary)", "30 Ngày (Retired Candidate - sống thêm 1 TTL)", "Redis Pub/Sub Bus"],
-        "one_time_token": ["one_time_token", "Mã hóa OTP & Reset link", "12 Giờ (Active Primary)", "12 Giờ (Retired Candidate - sống thêm 1 TTL)", "Redis Pub/Sub Bus"]
+        "access_token": [
+          "access_token",
+          "Ký JWT Access Token",
+          "24 Giờ (Active Primary)",
+          "24 Giờ (Retired Candidate - sống thêm 1 TTL)",
+          "Redis Pub/Sub Bus"
+        ],
+        "refresh_token": [
+          "refresh_token",
+          "Mã hóa JWT Refresh Token",
+          "7 Ngày (Active Primary)",
+          "7 Ngày (Retired Candidate - sống thêm 1 TTL)",
+          "Redis Pub/Sub Bus"
+        ],
+        "admin_api_key": [
+          "admin_api_key",
+          "Ký giao dịch Admin CP",
+          "30 Ngày (Active Primary)",
+          "30 Ngày (Retired Candidate - sống thêm 1 TTL)",
+          "Redis Pub/Sub Bus"
+        ],
+        "one_time_token": [
+          "one_time_token",
+          "Mã hóa OTP & Reset link",
+          "12 Giờ (Active Primary)",
+          "12 Giờ (Retired Candidate - sống thêm 1 TTL)",
+          "Redis Pub/Sub Bus"
+        ]
       }
     }
   }

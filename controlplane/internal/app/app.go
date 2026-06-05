@@ -245,6 +245,10 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// --------------------------------------------------------------------
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
+	if engine == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: HTTP engine (Gin) router is nil")
+	}
 	if err := engine.SetTrustedProxies(cfg.App.TrustedProxies); err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: set trusted proxies failed: %w", err)
@@ -303,7 +307,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 
 	// Register tất cả HTTP routes sau khi modules đã wire xong hoàn toàn.
-	RegisterRoutes(engine, modules)
+	NewGlobalRoutes(engine, modules)
 
 	// HTTP server runtime configuration.
 	httpSrv := &http.Server{

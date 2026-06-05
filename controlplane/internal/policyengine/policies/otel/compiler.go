@@ -50,14 +50,13 @@ func Compile(src OTelPolicy) (CompiledPolicy, error) {
 		BatchMaxQueue: src.BatchMaxQueue,
 	}
 
-	// Validate FailStrategy bắt buộc phải khai báo rõ ràng, không nhận giá trị mặc định ngầm.
-	strategy := strings.TrimSpace(strings.ToLower(src.FailStrategy))
-	if strategy != "fail_open" && strategy != "fail_close" {
-		return CompiledPolicy{}, fmt.Errorf("%w: otel: fail_strategy must be either 'fail_open' or 'fail_close' (got: '%s')", errorx.ErrPolicyInvalid, src.FailStrategy)
-	}
-	out.FailStrategy = strategy
-
 	if out.Enabled {
+		// Validate FailStrategy bắt buộc phải khai báo rõ ràng, không nhận giá trị mặc định ngầm.
+		strategy := strings.TrimSpace(strings.ToLower(src.FailStrategy))
+		if strategy != "fail_open" && strategy != "fail_close" {
+			return CompiledPolicy{}, fmt.Errorf("%w: otel: fail_strategy must be either 'fail_open' or 'fail_close' (got: '%s')", errorx.ErrPolicyInvalid, src.FailStrategy)
+		}
+		out.FailStrategy = strategy
 		if out.ExporterType != "otlpgrpc" && out.ExporterType != "otlphttp" {
 			return CompiledPolicy{}, fmt.Errorf("%w: otel: unsupported exporter type: %s", errorx.ErrPolicyInvalid, out.ExporterType)
 		}
@@ -139,6 +138,7 @@ func Compile(src OTelPolicy) (CompiledPolicy, error) {
 			out.TLS.KeyPath = ""
 		}
 	} else {
+		out.FailStrategy = "fail_open"
 		out.SamplingRatio = 1.0
 		out.ExportTimeout = 5 * time.Second
 		out.BatchTimeout = 2 * time.Second

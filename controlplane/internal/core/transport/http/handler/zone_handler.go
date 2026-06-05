@@ -110,7 +110,8 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 // @Success      200 {object} map[string]interface{} "Zone catalog fetched successfully"
 // @Failure      500 {object} map[string]interface{} "Internal server error"
 // @Router       /admin/core/zones/catalog [get]
-// @Security     AdminAuth
+// @Router       /api/v1/zones/catalog [get]
+// @Security     UserAuth
 func (h *ZoneHandler) GetZoneCatalog(c *gin.Context) {
 	const op = "core.zone.catalog"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
@@ -164,6 +165,8 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 			"updated_at": item.UpdatedAt,
 		})
 	}
+
+	// trả về client toàn bộ zone đang có và số lượng zone
 	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zones fetched")
 }
 
@@ -346,9 +349,12 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 	parsedZoneID := request.ZoneID
 
 	serviceType := coreEntity.ZoneServiceType(strings.ToLower(strings.TrimSpace(request.ServiceType)))
+
+	// check lỗi validate service type
 	switch serviceType {
 	case coreEntity.ZoneServiceTypeHypervisor, coreEntity.ZoneServiceTypeStorage,
-		coreEntity.ZoneServiceTypeMail, coreEntity.ZoneServiceTypeK8s, coreEntity.ZoneServiceTypeAI:
+		coreEntity.ZoneServiceTypeMail, coreEntity.ZoneServiceTypeK8s, coreEntity.ZoneServiceTypeAI,
+		coreEntity.ZoneServiceTypeDatabase:
 	default:
 		logger.HandlerWarn(c, op, nil, "upsert zone service invalid type: "+request.ServiceType)
 		apires.RespondBadRequest(c, "invalid request")

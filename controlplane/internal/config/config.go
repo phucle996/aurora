@@ -1,3 +1,21 @@
+/*
+============================================================================
+🗺️ ARCHITECTURAL COMPONENT: CENTRAL APPLICATION CONFIGURATION
+============================================================================
+CONTRACT:
+1.Định nghĩa cấu trúc dữ liệu và khởi tạo centralized config cho application từ file .env và OS env.
+2.Đảm bảo tính Immutable trong suốt process lifecycle.
+
+SOT: file này là source of truth cho toàn bộ cấu hình tĩnh của application.
+
+BOUNDARY:
+1. file này chỉ load immutable config từ .env và OS env, không validate dữ liệu.
+2. khi sử dụng env, phải sử dụng các function helper của file này để avoid
+3. đây là immutable config , không phải dynamic config (policyengine)
+4. chỉ parse theo kiểu dữ liệu , không xác định tính đúng sai logic.
+============================================================================
+*/
+
 package config
 
 import (
@@ -6,6 +24,7 @@ import (
 	"time"
 )
 
+// Config là cấu trúc cấu hình gốc gom nhóm tất cả các cấu hình thành phần.
 type Config struct {
 	App        AppCfg
 	Security   SecurityCfg
@@ -18,15 +37,16 @@ type Config struct {
 	Prometheus PrometheusCfg
 	SchemaSQL  SchemaSQLCfg
 	Agent      AgentCfg
-	Nats       NatsCfg
 }
 
+// PrometheusCfg lưu trữ các tham số kết nối và truy vấn metrics tới Prometheus Server.
 type PrometheusCfg struct {
 	BaseURL      string
 	QueryTimeout time.Duration
 	DefaultStep  time.Duration
 }
 
+// AppCfg lưu trữ thông tin cấu hình cơ bản của Web Application và HTTP Server.
 type AppCfg struct {
 	AppName            string
 	TimeZone           string
@@ -38,6 +58,7 @@ type AppCfg struct {
 	OAuthAllowedScopes []string
 }
 
+// SecurityCfg lưu trữ các tham số bảo mật, thời hạn TTL của các loại Token và Session.
 type SecurityCfg struct {
 	RuntimeMasterKey          string
 	AccessSecretTTL           time.Duration
@@ -51,6 +72,7 @@ type SecurityCfg struct {
 	SecretCacheTTL            time.Duration
 }
 
+// PsqlCfg chứa các thông số kết nối cơ sở dữ liệu PostgreSQL và connection pool.
 type PsqlCfg struct {
 	Host          string
 	Port          int
@@ -72,6 +94,7 @@ type PsqlCfg struct {
 	RetryInterval time.Duration
 }
 
+// RedisCfg chứa các thông số kết nối Redis cho cache và job queuing.
 type RedisCfg struct {
 	Addr          string
 	Password      string
@@ -90,23 +113,13 @@ type RedisCfg struct {
 	RetryInterval time.Duration
 }
 
-type NatsCfg struct {
-	URL           string
-	TLSEnabled    bool
-	CACertPath    string
-	CertPath      string
-	KeyPath       string
-	PingInterval  time.Duration
-	MaxPingOut    int
-	MaxRetries    int
-	RetryInterval time.Duration
-}
-
+// TelegramCfg lưu thông tin tích hợp thông báo lỗi và cảnh báo qua Telegram Bot.
 type TelegramCfg struct {
 	BotToken string
 	ChatID   string
 }
 
+// GRPCCfg lưu thông số kết nối của gRPC Server và cấu hình TLS/mTLS.
 type GRPCCfg struct {
 	Port             string
 	PublicAddr       string
@@ -115,23 +128,28 @@ type GRPCCfg struct {
 	ClientCACertPath string
 }
 
+// DataplaneCfg chứa cấu hình kết nối tới phân hệ Dataplane.
 type DataplaneCfg struct {
 	GRPCTarget     string
 	RequestTimeout time.Duration
 }
 
+// SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
 	Core string
 	IAM  string
 	Mail string
 }
 
+// AgentCfg chứa cấu hình cấp phát chứng chỉ cho Dataplane Agent.
 type AgentCfg struct {
 	CACertPath string
 	CAKeyPath  string
 	CertTTL    time.Duration
 }
 
+// LoadConfig đọc cấu hình từ environment variables của hệ thống.
+// Nếu APP_NAME trống, hàm sẽ lấy hostname của máy làm AppName hoặc fallback về controlplane.
 func LoadConfig() *Config {
 	appName := getEnv("APP_NAME", "")
 	if appName == "" {
@@ -247,17 +265,6 @@ func LoadConfig() *Config {
 			CACertPath: getEnv("AGENT_CA_CERT_PATH", ""),
 			CAKeyPath:  getEnv("AGENT_CA_KEY_PATH", ""),
 			CertTTL:    8760 * time.Hour,
-		},
-		Nats: NatsCfg{
-			URL:           getEnv("NATS_URL", "nats://localhost:4222"),
-			TLSEnabled:    getEnvAsBool("NATS_TLS_ENABLED", false),
-			CACertPath:    getEnv("NATS_TLS_CA", ""),
-			CertPath:      getEnv("NATS_TLS_CERT", ""),
-			KeyPath:       getEnv("NATS_TLS_KEY", ""),
-			PingInterval:  2 * time.Minute,
-			MaxPingOut:    3,
-			MaxRetries:    5,
-			RetryInterval: 2 * time.Second,
 		},
 	}
 }

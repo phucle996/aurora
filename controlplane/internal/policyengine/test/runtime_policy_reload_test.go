@@ -275,6 +275,7 @@ policies:
         - /metrics
   otel:
     enabled: true
+    fail_strategy: fail_open
     exporter_type: otlpgrpc
     endpoint: http://localhost:4317
     insecure: true
@@ -363,6 +364,7 @@ policies:
         - /metrics
   otel:
     enabled: true
+    fail_strategy: fail_open
     exporter_type: otlpgrpc
     endpoint: http://localhost:4317
     insecure: true

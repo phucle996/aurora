@@ -339,7 +339,7 @@ export function hypervisorAgentStreamURL(agentId: string): string {
 }
 
 export async function fetchTopologyZones(): Promise<ZoneOption[]> {
-  const response = await Fetch('/admin/zones')
+  const response = await Fetch('/admin/core/zones')
   const data = await readEnvelope<{ items?: TopologyZoneItem[] }>(response, 'Cannot load zones')
   return (data.items ?? []).map((item) => {
     const code = item.code || item.id

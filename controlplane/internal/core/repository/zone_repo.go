@@ -41,18 +41,18 @@ import (
 )
 
 type ZoneRepoImpl struct {
-	db                          *pgxpool.Pool
-	schema                      string
-	listZonesQuery              string
-	getZoneCatalogQuery         string
-	createZoneQuery             string
-	getZoneByIDQuery            string
-	updateZoneStatusQuery       string
-	deleteZoneQuery             string
-	hasDataplaneNodesQuery      string
-	hasEnabledZoneSvcQuery      string
-	listZoneSvcByZoneIDQuery    string
-	upsertZoneServiceQuery      string
+	db                       *pgxpool.Pool
+	schema                   string
+	listZonesQuery           string
+	getZoneCatalogQuery      string
+	createZoneQuery          string
+	getZoneByIDQuery         string
+	updateZoneStatusQuery    string
+	deleteZoneQuery          string
+	hasDataplaneNodesQuery   string
+	hasEnabledZoneSvcQuery   string
+	listZoneSvcByZoneIDQuery string
+	upsertZoneServiceQuery   string
 }
 
 // NewZoneRepoImpl khởi tạo một thực thể Repository mới cho Zone và biên dịch sẵn các câu lệnh SQL.
@@ -64,13 +64,12 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		listZonesQuery: fmt.Sprintf(`
 			SELECT id, code, name, status, created_at, updated_at 
 			FROM %s.zones 
-			WHERE status != 'deleted'
 			ORDER BY created_at DESC
 		`, schema),
 		getZoneCatalogQuery: fmt.Sprintf(`
 			SELECT id, code, name 
 			FROM %s.zones 
-			WHERE status NOT IN ('disabled', 'planned', 'deleted') 
+			WHERE status IN ('active') 
 			ORDER BY code ASC
 		`, schema),
 		createZoneQuery: fmt.Sprintf(`
@@ -80,17 +79,16 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		getZoneByIDQuery: fmt.Sprintf(`
 			SELECT id, code, name, status, created_at, updated_at 
 			FROM %s.zones 
-			WHERE id=$1 AND status != 'deleted' LIMIT 1
+			WHERE id=$1 LIMIT 1
 		`, schema),
 		updateZoneStatusQuery: fmt.Sprintf(`
 			UPDATE %s.zones 
 			SET status=$2, updated_at=now() 
-			WHERE id=$1 AND status != 'deleted'
+			WHERE id=$1
 		`, schema),
 		deleteZoneQuery: fmt.Sprintf(`
-			UPDATE %s.zones 
-			SET status='deleted', updated_at=now() 
-			WHERE id=$1 AND status != 'deleted'
+			DELETE FROM %s.zones 
+			WHERE id=$1
 		`, schema),
 		hasDataplaneNodesQuery: fmt.Sprintf(`
 			SELECT EXISTS(SELECT 1 FROM %s.dataplane_nodes WHERE zone_id=$1)
@@ -206,7 +204,7 @@ func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 	return nil
 }
 
-// DeleteZone xóa mềm Zone (soft delete: đặt status = 'deleted').
+// DeleteZone xóa Zone khỏi cơ sở dữ liệu (hard delete).
 func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) error {
 	result, err := r.db.Exec(ctx, r.deleteZoneQuery, id)
 	if err != nil {
