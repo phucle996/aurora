@@ -18,5 +18,5 @@ type EndpointService interface {
 	TestConnection(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) error
 
 	// TestConnectionRaw performs the handshake using un-saved transient parameters (perfect for UI checks)
-	TestConnectionRaw(ctx context.Context, provider mailEntity.ProviderType, plainConfig map[string]interface{}) error
+	TestConnectionRaw(ctx context.Context, params mailEntity.CreateEndpointParams) error
 }

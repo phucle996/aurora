@@ -18,14 +18,15 @@ interface TestConnectionDialogProps {
   isOpen: boolean                         // Trạng thái mở/đóng của dialog
   onOpenChange: (open: boolean) => void   // Hàm thay đổi trạng thái ẩn hiện dialog
   loading: boolean                        // Trạng thái đang chạy tiến trình test
-  success: boolean | null                 // Kết quả test thành công hay thất bại (null nếu chưa chạy)
-  message: string                         // Nội dung chi tiết phản hồi từ máy chủ SMTP
-  endpointName: string                    // Tên Endpoint đang thực hiện kiểm tra
+  success: boolean | null                 // Trạng thái kết quả test thành công/thất bại
+  message: string                         // Nội dung chi tiết phản hồi chẩn đoán từ máy chủ SMTP
+  endpointName: string                    // Tên SMTP Endpoint đang thực hiện kiểm tra
 }
 
 /**
- * Cửa sổ hội thoại nổi chẩn đoán khả năng kết nối SMTP trực tiếp (TestConnectionDialog)
- * Thiết kế giao diện kính mờ cao cấp (Glassmorphism) với hiệu ứng vầng sáng đổi màu thích ứng theo ba trạng thái (Đang chờ - Xanh lục - Đỏ hồng).
+ * Cửa sổ hội thoại nổi chẩn đoán khả năng kết nối SMTP trực tiếp (TestConnectionDialog).
+ * Được thiết kế lại theo phong cách tối giản phẳng cao cấp (Flat Premium Style)
+ * đồng bộ hoàn hảo với hệ thống thiết kế chung của ứng dụng.
  */
 export function TestConnectionDialog({
   isOpen,
@@ -37,59 +38,62 @@ export function TestConnectionDialog({
 }: TestConnectionDialogProps) {
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} className="sm:max-w-110 overflow-hidden border-none p-0 bg-transparent shadow-none ring-0">
-        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-card p-8 shadow-2xl backdrop-blur-xl ring-1 ring-white/10">
-          {/* Vầng sáng trang trí nền tự động thay đổi màu sắc thích ứng */}
+      <DialogContent showCloseButton={!loading} className="sm:max-w-md p-6">
+        <DialogHeader className="flex flex-col items-center text-center space-y-4 pt-4">
+          {/* Icon trạng thái tròn phẳng, kích thước tiêu chuẩn, tự động đổi màu */}
           <div className={cn(
-            "absolute -right-20 -top-20 h-40 w-40 rounded-full blur-[80px] transition-colors duration-500",
-            loading ? "bg-primary/20" : success ? "bg-emerald-500/20" : "bg-rose-500/20"
-          )} />
+            "flex size-14 items-center justify-center rounded-full transition-all duration-300",
+            loading ? "bg-primary/10 text-primary animate-pulse" : success ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400" : "bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400"
+          )}>
+            {loading ? (
+              <Loader2 className="size-6 animate-spin" />
+            ) : success ? (
+              <CheckCircle2 className="size-6" />
+            ) : (
+              <XCircle className="size-6" />
+            )}
+          </div>
 
-          <DialogHeader className="relative flex flex-col items-center text-center">
-            {/* Vùng vẽ Icon thích ứng màu nền */}
-            <div className={cn(
-              "mb-6 flex size-16 items-center justify-center rounded-2xl shadow-inner transition-colors duration-500",
-              loading ? "bg-primary/10 text-primary" : success ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"
-            )}>
-              {loading ? (
-                <Loader2 className="size-8 animate-spin" />
-              ) : success ? (
-                <CheckCircle2 className="size-8" />
-              ) : (
-                <XCircle className="size-8" />
-              )}
-            </div>
-            {/* Tiêu đề trạng thái kết quả */}
-            <DialogTitle className="text-2xl font-bold tracking-tight text-foreground">
+          <div className="space-y-1.5 w-full">
+            {/* Tiêu đề trạng thái kết quả của phiên kiểm tra */}
+            <DialogTitle className="text-xl font-bold tracking-tight text-foreground">
               {loading ? 'Testing Connection' : success ? 'Connection Successful' : 'Connection Failed'}
             </DialogTitle>
-            {/* Nội dung thông điệp chi tiết */}
-            <DialogDescription className="mt-2 text-base text-muted-foreground">
-              {loading ? (
-                <>Establishing connection to <span className="font-medium text-foreground">{endpointName}</span>...</>
-              ) : (
-                message
-              )}
-            </DialogDescription>
-          </DialogHeader>
+            
+            {/* Hiển thị tên endpoint dạng monospace nhỏ gọn */}
+            <p className="text-[11px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">
+              {endpointName || 'SMTP Endpoint'}
+            </p>
+          </div>
 
-          {/* Hàng nút dưới cùng để đóng dialog nhanh */}
-          <DialogFooter className="relative mt-8 sm:justify-center">
-            <Button
-              type="button"
-              onClick={() => onOpenChange(false)}
-              className={cn(
-                "h-11 w-full rounded-xl font-semibold shadow-lg transition-all active:scale-95 cursor-pointer",
-                loading ? "bg-muted text-muted-foreground" : success
-                  ? "bg-emerald-500 hover:bg-emerald-600 text-white shadow-emerald-500/20"
-                  : "bg-rose-500 hover:bg-rose-600 text-white shadow-rose-500/20"
-              )}
-              disabled={loading}
-            >
-              {loading ? 'Please wait...' : 'Close'}
-            </Button>
-          </DialogFooter>
-        </div>
+          {/* Vùng log chẩn đoán: Box tối giản dạng font monospace, dễ dàng xem logs */}
+          <DialogDescription className="text-sm text-muted-foreground w-full bg-muted/40 dark:bg-muted/10 rounded-lg p-4 font-mono text-left max-h-48 overflow-y-auto border border-border/40 leading-relaxed break-words">
+            {loading ? (
+              <span className="flex items-center gap-2 text-foreground/80">
+                <Loader2 className="size-3.5 animate-spin shrink-0 text-primary" />
+                Establishing TCP handshake and negotiating TLS connection...
+              </span>
+            ) : (
+              message || 'No diagnostic output returned.'
+            )}
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Cụm nút bấm chân trang (Footer Actions) */}
+        <DialogFooter className="sm:justify-stretch mt-4 w-full">
+          <Button
+            type="button"
+            onClick={() => onOpenChange(false)}
+            variant={loading ? "secondary" : success ? "default" : "destructive"}
+            className={cn(
+              "h-12 w-full rounded-lg font-semibold transition-all cursor-pointer",
+              success && "bg-emerald-600 hover:bg-emerald-700 text-white dark:bg-emerald-500 dark:hover:bg-emerald-600 border-none"
+            )}
+            disabled={loading}
+          >
+            {loading ? 'Testing...' : 'Close'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

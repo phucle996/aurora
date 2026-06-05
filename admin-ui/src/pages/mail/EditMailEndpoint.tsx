@@ -83,10 +83,16 @@ export default function EditMailEndpointPage() {
     setSaving(true)
     setError('')
     try {
+      const payload = {
+        ...form,
+        ca_cert_pem: form.ca_cert_pem || undefined,
+        client_cert_pem: form.client_cert_pem || undefined,
+        client_key_pem: form.client_key_pem || undefined,
+      }
       const resp = await Fetch(`/admin/mail/endpoints/${id}`, {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
       if (!resp.ok) { setError(await readMsg(resp, 'Update failed')); setSaving(false); return }
       // Trở lại trang Mail Admin ở tab Endpoints sau khi lưu thành công

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	coreEntity "controlplane/internal/core/domain/entity"
+	coreSvcInterface "controlplane/internal/core/domain/service"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
@@ -12,29 +14,45 @@ import (
 	"github.com/google/uuid"
 )
 
+type zoneServiceMock struct {
+	coreSvcInterface.ZoneService
+	zoneID uuid.UUID
+}
+
+func (m *zoneServiceMock) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
+	return &coreEntity.Zone{
+		ID:   m.zoneID.String(),
+		Code: code,
+	}, nil
+}
+
 func TestEndpointServiceCRUD(t *testing.T) {
 	cfg := testutil.NewMailTestConfig(testutil.UniqueSchema("mail_endpoint_svc"))
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareMailSchema(t, cfg, db)
 	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 
-	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
-	service := mailSvcImpl.NewEndpointService(cfg, repo)
-	ctx := context.Background()
-
 	zoneID := uuid.New()
+	zoneSvc := &zoneServiceMock{zoneID: zoneID}
+
+	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
+	service := mailSvcImpl.NewEndpointService(cfg, repo, zoneSvc)
+	ctx := context.Background()
+	ctx = mailSvcImpl.WithZoneCode(ctx, "test-zone")
 
 	// 1. Create Endpoint.
 	createParams := mailEntity.CreateEndpointParams{
-		ZoneID:   zoneID,
-		Name:     "Production SendGrid Server",
-		Provider: mailEntity.SendGrid,
-		ConnectionConfig: map[string]interface{}{
-			"host":     "smtp.sendgrid.net",
-			"port":     float64(587),
-			"username": "apikey",
-			"password": "svc-sendgrid-key-xyz",
-		},
+		ZoneID:         zoneID,
+		Name:           "Production SendGrid Server",
+		Host:           "smtp.sendgrid.net",
+		Port:           587,
+		Username:       "apikey",
+		Password:       "svc-sendgrid-key-xyz",
+		TLSMode:        "starttls",
+		Status:         "active",
+		MaxConnections: 10,
+		Priority:       100,
+		Weight:         1,
 	}
 
 	err := service.CreateEndpoint(ctx, createParams)
@@ -43,7 +61,6 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	}
 
 	// 2. Retrieve Endpoint.
-	// Since CreateEndpoint only returns error, we retrieve the generated ID by listing endpoints in the zone.
 	list, err := service.ListEndpoints(ctx, zoneID)
 	if err != nil {
 		t.Fatalf("list endpoints failed: %v", err)
@@ -67,6 +84,12 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	if retrieved.Name != "Production SendGrid Server" {
 		t.Errorf("expected name Production SendGrid Server, got %q", retrieved.Name)
 	}
+	if retrieved.Host != "smtp.sendgrid.net" {
+		t.Errorf("expected host, got %q", retrieved.Host)
+	}
+	if retrieved.Password != "svc-sendgrid-key-xyz" {
+		t.Errorf("expected decrypted password to match, got %q", retrieved.Password)
+	}
 
 	// 3. List Endpoints.
 	if len(list) != 1 {
@@ -75,16 +98,19 @@ func TestEndpointServiceCRUD(t *testing.T) {
 
 	// 4. Update Endpoint.
 	updateParams := mailEntity.UpdateEndpointParams{
-		ZoneID: zoneID,
-		ID:     createdID,
-		Name:   "Updated SendGrid Server Name",
-		ConnectionConfig: map[string]interface{}{
-			"host":     "smtp.sendgrid.net",
-			"port":     float64(587),
-			"username": "apikey",
-			"password": "svc-sendgrid-key-new",
-		},
-		IsActive: false,
+		ZoneID:         zoneID,
+		ID:             createdID,
+		Name:           "Updated SendGrid Server Name",
+		Host:           "smtp.sendgrid.net",
+		Port:           587,
+		Username:       "apikey",
+		Password:       "svc-sendgrid-key-new",
+		TLSMode:        "starttls",
+		Status:         "active",
+		MaxConnections: 10,
+		Priority:       100,
+		Weight:         1,
+		IsActive:       false,
 	}
 
 	updated, err := service.UpdateEndpoint(ctx, updateParams)

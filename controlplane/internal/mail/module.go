@@ -52,6 +52,7 @@ import (
 	"errors"
 
 	"controlplane/internal/config"
+	"controlplane/internal/core"
 	mailCache "controlplane/internal/mail/cache"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -118,7 +119,11 @@ func NewDegradedModule(err error) *Module {
 }
 
 // NewModule constructs the Dependency Graph for the Mail Module.
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket) (*Module, error) {
+// coreModule is required to resolve cross-module dependencies (e.g. ZoneService for endpoint zone resolution).
+func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket, coreModule *core.Module) (*Module, error) {
+	if coreModule == nil {
+		return nil, errors.New("mail module: core module is required for cross-module zone resolution")
+	}
 
 	// ------------------------------------------------------------------------
 	// 🔄 GIAI ĐOẠN 1: CORE REPOSITORIES & CACHES BOOTSTRAPPING
@@ -169,7 +174,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if gatewaySvc == nil {
 		return nil, errors.New("mail module: failed to construct gateway service")
 	}
-	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo)
+	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, coreModule.ZoneService)
 	if endpointSvc == nil {
 		return nil, errors.New("mail module: failed to construct endpoint service")
 	}

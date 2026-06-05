@@ -135,7 +135,7 @@ export default function MailPage() {
         {active === 'overview' && <OverviewTab zoneID={activeZone} dateRange={dateRange} />}
         {active === 'consumers' && <ConsumersTab zoneID={activeZone} dateRange={dateRange} />}
         {active === 'gateways' && <GatewaysTab zoneID={activeZone} />}
-        {active === 'endpoints' && <EndpointsTab zoneID={activeZone} />}
+        {active === 'endpoints' && <EndpointsTab zoneCode={activeZone} />}
       </div>
     </div>
   )

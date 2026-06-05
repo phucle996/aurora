@@ -67,10 +67,23 @@ func OpenPostgres(t testing.TB, cfg *config.Config) *pgxpool.Pool {
 func PrepareMailSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := db.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", cfg.SchemaSQL.Mail)); err != nil {
+	
+	conn, err := db.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire db connection for migration: %v", err)
+	}
+	defer conn.Release()
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction for migration: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", cfg.SchemaSQL.Mail)); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	if _, err := db.Exec(ctx, fmt.Sprintf("SET search_path TO %s,public", cfg.SchemaSQL.Mail)); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL search_path TO %s,public", cfg.SchemaSQL.Mail)); err != nil {
 		t.Fatalf("set search_path: %v", err)
 	}
 
@@ -97,9 +110,13 @@ func PrepareMailSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 		if query == "" {
 			continue
 		}
-		if _, err := db.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
+		if _, err := tx.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
 			t.Fatalf("apply migration %s: %v", name, err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit migration transaction: %v", err)
 	}
 
 	t.Cleanup(func() {

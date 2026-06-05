@@ -1,41 +1,27 @@
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import {
-  BadgeInfo,
-  ChevronLeft,
-  KeyRound,
-  LockKeyhole,
-  Scale,
-  Send,
-  Server,
-  ShieldCheck,
-  Star,
-  Tags,
-  User,
-  Vault,
-  WandSparkles,
-  Zap,
-} from 'lucide-react'
+import { Send } from 'lucide-react'
+import { toast } from 'sonner'
 
-// Dialog kiểm tra khả năng kết nối thử SMTP trước khi tạo thực tế
+// Import hộp thoại hiển thị tiến trình và kết quả kiểm tra kết nối SMTP
 import { TestConnectionDialog } from './sections/TestConnectionDialog'
-
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-
+// Import component con quản lý các trường nhập liệu của form (Basic Config & Security Certs)
+import { EndpointFormFields, type EndpointForm } from './sections/EndpointFormFields'
+// Import component con hiển thị giao diện xem trước (Live Preview) thời gian thực ở cột bên phải
+import { EndpointPreviewCard } from './sections/EndpointPreviewCard'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
 import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
 
-// Khai báo giá trị khởi tạo ban đầu cho form cấu hình Endpoint SMTP
-const initialForm = {
+/**
+ * Khai báo giá trị khởi tạo mặc định cho biểu mẫu cấu hình SMTP Endpoint.
+ * Theo yêu cầu thiết kế hệ thống HA & Cloud Native, khi tạo mới một endpoint:
+ * - Trạng thái hoạt động (status) mặc định ban đầu luôn là 'planned' (lập kế hoạch).
+ * - Các chứng chỉ bảo mật và thông tin xác thực để trống.
+ * - Cổng SMTP mặc định là 587 (chuẩn STARTTLS).
+ * - Số lượng kết nối song song tối đa (max_connections) mặc định là 10.
+ */
+const initialForm: EndpointForm = {
   name: '',
   host: '',
   port: 587,
@@ -43,40 +29,16 @@ const initialForm = {
   priority: 100,
   weight: 1,
   warmup_state: 'stable',
-  status: 'disabled',
+  status: 'planned', // Trạng thái mặc định là 'planned' giống như Zone khi tạo mới
   tls_mode: 'starttls',
   password: '',
   ca_cert_pem: '',
   client_cert_pem: '',
   client_key_pem: '',
   max_connections: 10,
-  secret_ref: '',
 }
 
-type EndpointForm = typeof initialForm
-
-// Cấu hình các tùy chọn phương thức mã hóa SSL/TLS
-const tlsModeOptions = [
-  { value: 'none', label: 'None' },
-  { value: 'starttls', label: 'STARTTLS' },
-  { value: 'tls', label: 'TLS' },
-  { value: 'mtls', label: 'mTLS' },
-]
-
-// Cấu hình các tùy chọn trạng thái hoạt động của Endpoint
-const statusOptions = [
-  { value: 'disabled', label: 'Disabled' },
-  { value: 'active', label: 'Active' },
-  { value: 'suspended', label: 'Suspended' },
-]
-
-// Cấu hình các tùy chọn chế độ khởi động uy tín của địa chỉ IP (warmup)
-const warmupOptions = [
-  { value: 'stable', label: 'Stable' },
-  { value: 'warming', label: 'Warming' },
-  { value: 'paused', label: 'Paused' },
-]
-
+// Định nghĩa cấu trúc phản hồi lỗi/thành công chuẩn hóa từ API Control Plane
 type APIResponse<T = unknown> = {
   data?: T
   message?: string
@@ -84,25 +46,30 @@ type APIResponse<T = unknown> = {
 }
 
 /**
- * Component tạo mới một Endpoint gửi thư SMTP (NewMailEndpointPage)
- * Cung cấp biểu mẫu cấu hình cao cho phép kết nối thử nghiệm realtime, nhập chứng chỉ bảo mật và các cài đặt lưu lượng nâng cao.
+ * Component Page chính cho việc tạo mới Endpoint gửi thư (NewMailEndpointPage).
+ * Tổ chức giao diện dạng Dashboard 2 cột chuẩn SRE:
+ * - Cột trái: Form nhập các thông tin cấu hình chi tiết (Basic + Security).
+ * - Cột phải: Panel Live Preview cập nhật động dữ liệu realtime khi người dùng gõ.
+ * - Hỗ trợ tính năng "Try Connect" kích hoạt bắt tay SMTP trực tiếp từ trình duyệt thông qua Gateway.
  */
 export default function NewMailEndpointPage() {
-  // Đặt tiêu đề meta động cho trang web
+  // Cập nhật thẻ tiêu đề <title> và meta description động cho trình duyệt để tối ưu SEO
   usePageMeta('New Mail Endpoint | Aurora Admin', 'Create a new Mail endpoint for outbound email routing.')
   const navigate = useNavigate()
-  
-  // State quản lý toàn bộ dữ liệu của form nhập liệu
+
+  // State quản lý toàn bộ dữ liệu biểu mẫu SMTP Endpoint
   const [form, setForm] = useState<EndpointForm>(initialForm)
+  // State quản lý trạng thái submit form lên server (để hiển thị loading/disable nút bấm)
   const [loading, setLoading] = useState(false)
+  // State lưu trữ và hiển thị thông điệp lỗi hệ thống/lỗi API
   const [error, setError] = useState('')
 
-  // State quản lý trạng thái hiển thị và kết quả kiểm tra kết nối SMTP
+  // State quản lý trạng thái hộp thoại kiểm tra kết nối SMTP (Try Connect)
   const [testState, setTestState] = useState<{
-    isOpen: boolean;
-    loading: boolean;
-    success: boolean | null;
-    message: string;
+    isOpen: boolean
+    loading: boolean
+    success: boolean | null
+    message: string
   }>({
     isOpen: false,
     loading: false,
@@ -110,20 +77,35 @@ export default function NewMailEndpointPage() {
     message: '',
   })
 
-  // Hàm cập nhật giá trị form, tự động chuyển đổi sang dạng số đối với các trường numeric
+  /**
+   * Cập nhật động giá trị của một trường dữ liệu trong form state.
+   * Tự động kiểm tra nếu khóa thuộc nhóm numericKeys thì thực hiện chuyển đổi kiểu dữ liệu
+   * sang dạng Number (Float/Int) trước khi lưu vào state để đảm bảo tính nhất quán của dữ liệu gửi lên API.
+   */
   const update = (key: keyof EndpointForm, value: string) => {
     setForm((current) => ({ ...current, [key]: numericKeys.has(key) ? Number(value) : value }))
   }
 
-  // Thao tác gửi biểu mẫu tạo mới Endpoint SMTP
+  /**
+   * Xử lý sự kiện gửi biểu mẫu (submit form) để tạo mới Endpoint.
+   * Quy trình xử lý:
+   * 1. Ngăn chặn hành vi submit mặc định của trình duyệt.
+   * 2. Gọi hàm validation client-side để kiểm tra tính hợp lệ của dữ liệu (tránh lỗi logic).
+   * 3. Chuyển đổi form state sang payload chuẩn hóa (endpointPayload).
+   * 4. Gọi API POST `/admin/mail/endpoints` thông qua client Fetch tích hợp sẵn CSRF token.
+   * 5. Hiển thị toast thông báo thành công và chuyển hướng về danh sách quản lý.
+   */
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    // Kiểm tra tính hợp lệ dữ liệu biểu mẫu ở client-side trước khi gửi
+    
+    // Validate dữ liệu client-side trước khi gửi yêu cầu mạng
     const validationError = getEndpointFormValidationError(form)
     if (validationError) {
       setError(validationError)
+      toast.error(validationError)
       return
     }
+
     setLoading(true)
     setError('')
     try {
@@ -133,22 +115,34 @@ export default function NewMailEndpointPage() {
         body: JSON.stringify(endpointPayload(form)),
       })
       if (!resp.ok) throw new Error(await readAPIMessage(resp, 'Cannot create endpoint.'))
-      // Điều hướng về màn hình quản trị Mail Admin sau khi tạo thành công
+      
+      toast.success('Mail endpoint created successfully!')
+      // Điều hướng về trang quản lý email, tự động scroll đến tab endpoints
       await navigate({ to: '/mail', hash: 'endpoints' })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Cannot create endpoint.')
+      const errMsg = err instanceof Error ? err.message : 'Cannot create endpoint.'
+      setError(errMsg)
+      toast.error(errMsg)
     } finally {
       setLoading(false)
     }
   }
 
-  // Thao tác gửi lệnh kết nối thử tới SMTP Server trực tiếp
+  /**
+   * Kích hoạt tiến trình kiểm tra kết nối (Try Connect) SMTP tạm thời đến Host/Port chỉ định.
+   * Giúp quản trị viên xác thực thông tin tài khoản, máy chủ và cơ chế bảo mật TLS/mTLS 
+   * hoạt động đúng đắn trước khi lưu cấu hình chính thức vào cơ sở dữ liệu.
+   */
   const tryConnect = async () => {
+    // Validate thông tin form trước khi gửi request test kết nối
     const validationError = getEndpointFormValidationError(form)
     if (validationError) {
       setError(validationError)
+      toast.error(validationError)
       return
     }
+
+    // Mở modal thông báo tiến trình kết nối thử
     setTestState({
       isOpen: true,
       loading: true,
@@ -167,6 +161,7 @@ export default function NewMailEndpointPage() {
         resp.ok ? 'Connection successful' : 'Connection failed',
       )
 
+      // Cập nhật kết quả phản hồi của API lên modal
       setTestState(prev => ({
         ...prev,
         loading: false,
@@ -183,83 +178,89 @@ export default function NewMailEndpointPage() {
     }
   }
 
+  // Loại bỏ khoảng trắng thừa ở các trường quan trọng để kiểm tra điều kiện submit
+  const trimmedName = form.name.trim()
+  const trimmedHost = form.host.trim()
+  // Nút submit chỉ hoạt động khi Tên và Host đã được nhập và không trong trạng thái đang gửi request
+  const canSubmit = trimmedName !== '' && trimmedHost !== '' && !loading
+
   return (
-    <TooltipProvider>
-      <form className="space-y-5 pb-12" onSubmit={(event) => void submit(event)}>
-      {/* Tiêu đề trang và Nút điều khiển lưu / thử nghiệm */}
+    <div className="space-y-6 pb-12">
+      {/* 1. Page Header: Gồm Breadcrumb điều hướng và các nút hành động chính */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            {/* Nút quay lại trang danh sách chính */}
-            <Button asChild variant="outline" size="icon" className="size-10 rounded-xl border-border/80 bg-card shadow-sm">
-              <Link to="/mail" hash="endpoints" aria-label="Back to Mail endpoints"><ChevronLeft className="size-5" /></Link>
-            </Button>
-            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-foreground">Add Mail Endpoint</h1>
-            <span className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary shadow-sm">
-              <Send className="size-5" />
-            </span>
+        <div className="space-y-4">
+          <nav className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+            <Link to="/mail" hash="endpoints" className="text-primary hover:underline">
+              Mail
+            </Link>
+            <span>/</span>
+            <span>Add SMTP-Compatible Endpoint</span>
+          </nav>
+          <div className="space-y-2">
+            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-foreground md:text-4xl">
+              Add SMTP-Compatible Endpoint
+            </h1>
+            <p className="text-sm text-muted-foreground md:text-base">
+              Create an admin-managed SMTP-compatible mail endpoint for delivery routing.
+            </p>
           </div>
-          <p className="ml-13 text-sm text-muted-foreground">Create an admin-managed SMTP endpoint for delivery routing.</p>
         </div>
-        <div className="flex gap-3">
-          {/* Nút kiểm tra thử kết nối SMTP */}
-          <Button type="button" variant="outline" className="h-10 rounded-xl px-4 font-medium shadow-sm" onClick={() => void tryConnect()} disabled={loading}>
-            <Send className="size-4" />
+
+        {/* Cụm Action Buttons trên Header */}
+        <div className="flex items-center gap-3 lg:pt-10">
+          {/* Nút kiểm tra kết nối SMTP tạm thời */}
+          <Button type="button" variant="outline" className="h-12 rounded-lg px-6 text-sm font-semibold cursor-pointer" onClick={() => void tryConnect()} disabled={loading}>
+            <Send className="size-4 mr-2" />
             Try Connect
           </Button>
-          {/* Nút lưu chính thức */}
-          <Button type="submit" className="h-10 rounded-xl bg-linear-to-r from-[#3b82f6] to-[#5b5df7] px-4 font-medium shadow-[0_14px_34px_rgba(59,130,246,0.28)]" disabled={loading}>
-            <WandSparkles className="size-4" />
-            {loading ? 'Saving...' : 'Create Endpoint'}
+          {/* Nút hủy bỏ, quay về trang danh sách */}
+          <Button asChild variant="outline" className="h-12 rounded-lg px-6 text-sm font-semibold">
+            <Link to="/mail" hash="endpoints">Cancel</Link>
+          </Button>
+          {/* Nút kích hoạt submit form tạo mới chính thức */}
+          <Button
+            type="submit"
+            onClick={() => {
+              const f = document.getElementById('new-endpoint-form') as HTMLFormElement | null
+              if (f) f.requestSubmit()
+            }}
+            className="h-12 rounded-lg px-8 text-sm font-semibold shadow-sm cursor-pointer"
+            disabled={!canSubmit}
+          >
+            {loading ? 'Creating...' : 'Create Endpoint'}
           </Button>
         </div>
       </div>
 
-      {/* Hiển thị lỗi tổng hợp */}
-      {error && <div className="rounded-xl border border-destructive/20 bg-destructive/10 p-3 text-sm font-semibold text-destructive">{error}</div>}
-
-      {/* 1. Phần cấu hình thông tin kết nối và xác thực cơ bản */}
-      <SectionCard icon={<Server className="size-4" />} title="Basic Configuration">
-        <div className="grid gap-6 lg:grid-cols-3">
-          <Field label="Name" required><IconInput icon={<Tags className="size-4" />} value={form.name} onChange={(value) => update('name', value)} placeholder="Enter endpoint name" required /></Field>
-          <Field label="Host" required><IconInput icon={<Server className="size-4" />} value={form.host} onChange={(value) => update('host', value)} placeholder="mail.example.com" required /></Field>
-          <Field label="Port" required><IconInput icon={<Vault className="size-4" />} type="number" value={form.port} onChange={(value) => update('port', value)} required /></Field>
-          <Field label="Username" required><IconInput icon={<User className="size-4" />} value={form.username} onChange={(value) => update('username', value)} placeholder="Enter username" /></Field>
-          <Field label="Password"><IconInput icon={<LockKeyhole className="size-4" />} type="password" value={form.password} onChange={(value) => update('password', value)} placeholder="Enter password" /></Field>
-          <Field label="Secret Reference" hint="Optional metadata reference stored with this endpoint. Aurora Mail still requires the direct password for authenticated Mail connections.">
-            <>
-              <IconInput icon={<KeyRound className="size-4" />} value={form.secret_ref} onChange={(value) => update('secret_ref', value)} placeholder="External secret ID" />
-              {form.secret_ref.trim() !== '' && form.username.trim() !== '' && form.password.trim() === '' ? (
-                <p className="text-xs font-medium text-amber-600">Secret references are stored for future integrations only. Enter the Mail password directly to authenticate this endpoint.</p>
-              ) : null}
-            </>
-          </Field>
-          <Field label="TLS Mode" required><IconSelect icon={<ShieldCheck className="size-4" />} value={form.tls_mode} onValueChange={(value) => update('tls_mode', value)} options={tlsModeOptions} /></Field>
-          <Field label="Status" required><IconSelect icon={<span className="size-3 rounded-full bg-emerald-500" />} value={form.status} onValueChange={(value) => update('status', value)} options={statusOptions} /></Field>
-          <Field label="Warmup State" hint="Endpoints in 'warming' mode may have different rate limits as they age to build reputation."><IconSelect icon={<Zap className="size-4 text-orange-500" />} value={form.warmup_state} onValueChange={(value) => update('warmup_state', value)} options={warmupOptions} /></Field>
-          <Field label="Priority" hint="Lower values have higher priority. The system will use highest priority endpoints first."><IconInput icon={<Star className="size-4" />} type="number" value={form.priority} onChange={(value) => update('priority', value)} /></Field>
-          <Field label="Weight" hint="Relative weight for load balancing. Higher weight means this endpoint handles more traffic."><IconInput icon={<Scale className="size-4" />} type="number" value={form.weight} onChange={(value) => update('weight', value)} /></Field>
-          <Field label="Max Connections" hint="The maximum number of concurrent connections allowed to this SMTP server."><IconInput icon={<Zap className="size-4" />} type="number" value={form.max_connections} onChange={(value) => update('max_connections', value)} /></Field>
+      {/* 2. Alert Box: Hiển thị lỗi phát sinh trong quá trình xử lý nếu có */}
+      {error && (
+        <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
+          {error}
         </div>
-      </SectionCard>
-
-      {/* 2. Phần cấu hình chứng chỉ bảo mật (chỉ hiển thị khi TLS khác None) */}
-      {form.tls_mode !== 'none' && (
-        <SectionCard icon={<LockKeyhole className="size-4" />} title="Security & Certificates" description="Configure SSL/TLS certificates for secure communication.">
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Field label="CA Cert PEM"><IconTextarea icon={<BadgeInfo className="size-4" />} value={form.ca_cert_pem} onChange={(value) => update('ca_cert_pem', value)} placeholder={'-----BEGIN CERTIFICATE-----\n...'} /></Field>
-            {form.tls_mode === 'mtls' && (
-              <>
-                <Field label="Client Cert PEM"><IconTextarea icon={<BadgeInfo className="size-4" />} value={form.client_cert_pem} onChange={(value) => update('client_cert_pem', value)} placeholder={'-----BEGIN CERTIFICATE-----\n...'} /></Field>
-                <Field label="Client Key PEM"><IconTextarea icon={<KeyRound className="size-4" />} value={form.client_key_pem} onChange={(value) => update('client_key_pem', value)} placeholder={'-----BEGIN PRIVATE KEY-----\n...'} /></Field>
-              </>
-            )}
-          </div>
-        </SectionCard>
       )}
 
-      {/* Dialog overlay hiển thị kết quả kiểm tra kết nối thử SMTP */}
-      <TestConnectionDialog 
+      {/* 3. Main Grid Layout: Phân bổ Form cấu hình và Live Preview Card */}
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
+        {/* Form cấu hình bên trái */}
+        <form id="new-endpoint-form" className="space-y-6" onSubmit={(event) => void submit(event)}>
+          <EndpointFormFields form={form} update={update} />
+        </form>
+
+        {/* Live Preview hiển thị bên phải, bám dính (sticky) khi cuộn chuột */}
+        <EndpointPreviewCard
+          name={form.name}
+          host={form.host}
+          port={form.port}
+          tlsMode={form.tls_mode}
+          priority={form.priority}
+          weight={form.weight}
+          maxConnections={form.max_connections}
+          username={form.username}
+        />
+      </div>
+
+      {/* 4. Modal Test Connection Dialog: Hiển thị logs/kết quả bắt tay SMTP */}
+      <TestConnectionDialog
         isOpen={testState.isOpen}
         onOpenChange={(open) => setTestState(prev => ({ ...prev, isOpen: open }))}
         loading={testState.loading}
@@ -267,101 +268,36 @@ export default function NewMailEndpointPage() {
         message={testState.message}
         endpointName={form.name || 'New Endpoint'}
       />
-    </form>
-    </TooltipProvider>
-  )
-}
-
-// Bố cục khung Card bao bọc từng nhóm cài đặt cấu hình
-function SectionCard({ children, description, icon, title }: { children: ReactNode; description?: string; icon: ReactNode; title: string }) {
-  return (
-    <section className="rounded-2xl border border-border/80 bg-card p-7 shadow-[0_18px_70px_rgba(15,23,42,0.06)] backdrop-blur-xl">
-      <div className="mb-6 flex items-start gap-3">
-        <span className="mt-0.5 text-primary">{icon}</span>
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground">{title}</h2>
-          {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
-        </div>
-      </div>
-      {children}
-    </section>
-  )
-}
-
-// Component trường nhập liệu tiêu chuẩn có nhãn và tooltip gợi ý
-function Field({ children, hint, label, required }: { children: ReactNode; hint?: string; label: string; required?: boolean }) {
-  return (
-    <label className="space-y-2 text-sm font-semibold text-foreground block">
-      <span className="flex items-center gap-1.5">
-        {label}
-        {required ? <span className="text-destructive">*</span> : null}
-        {hint ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <BadgeInfo className="size-3.5 cursor-help text-muted-foreground inline" />
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-50 text-xs font-normal">
-              {hint}
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
-      </span>
-      {children}
-    </label>
-  )
-}
-
-// Input có tích hợp sẵn Icon sang trọng ở lề trái
-function IconInput({ icon, onChange, value, ...props }: { icon: ReactNode; onChange: (value: string) => void; value: number | string } & Omit<React.ComponentProps<typeof Input>, 'onChange' | 'value'>) {
-  return (
-    <div className="relative">
-      <span className="absolute inset-y-0 left-0 flex w-11 items-center justify-center rounded-l-xl border-r border-border/70 bg-muted/35 text-muted-foreground">{icon}</span>
-      <Input className="h-12 rounded-xl border-border/80 bg-background/70 pl-14 text-sm font-medium shadow-sm" value={value} onChange={(event) => onChange(event.target.value)} {...props} />
     </div>
   )
 }
 
-// Select có tích hợp Icon sang trọng ở lề trái
-function IconSelect({ icon, onValueChange, options, value }: { icon: ReactNode; onValueChange: (value: string) => void; options: Array<{ label: string; value: string }>; value: string }) {
-  return (
-    <div className="relative">
-      <span className="absolute inset-y-0 left-0 z-10 flex w-11 items-center justify-center rounded-l-xl border-r border-border/70 bg-muted/35 text-muted-foreground">{icon}</span>
-      <Select value={value} onValueChange={onValueChange}>
-        <SelectTrigger className="h-12 w-full rounded-xl border-border/80 bg-background/70 pl-14 text-sm font-medium shadow-sm"><SelectValue /></SelectTrigger>
-        <SelectContent>{options.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-      </Select>
-    </div>
-  )
-}
-
-// Textarea nhập văn bản lớn có tích hợp Icon ở lề trái
-function IconTextarea({ icon, onChange, value, ...props }: { icon: ReactNode; onChange: (value: string) => void; value: string } & Omit<React.ComponentProps<typeof Textarea>, 'onChange' | 'value'>) {
-  return (
-    <div className="relative">
-      <span className="absolute bottom-0 left-0 top-0 flex w-11 items-start justify-center rounded-l-xl border-r border-border/70 bg-muted/35 pt-4 text-muted-foreground">{icon}</span>
-      <Textarea className="min-h-20 rounded-xl border-border/80 bg-background/70 pl-14 font-mono text-sm shadow-sm" value={value} onChange={(event) => onChange(event.target.value)} {...props} />
-    </div>
-  )
-}
-
-// Mảng chứa danh sách các keys cần được tự động parse số
+// Tập hợp các trường dữ liệu cần được parse sang dạng Số trước khi chuyển đổi payload gửi API
 const numericKeys = new Set<keyof EndpointForm>(['port', 'priority', 'weight', 'max_connections'])
 
-// Chuẩn bị payload gửi lên API loại bỏ các chuỗi trống để API nhận diện chính xác
+/**
+ * Chuẩn hóa cấu trúc dữ liệu form (FormState) thành Payload DTO gửi lên API.
+ * Chuyển đổi các chuỗi chứng chỉ PEM trống thành `undefined` thay vì gửi chuỗi rỗng
+ * để hệ thống Backend Go nhận diện chính xác giá trị rỗng/không thiết lập.
+ */
 function endpointPayload(form: EndpointForm) {
   return {
     ...form,
     ca_cert_pem: form.ca_cert_pem || undefined,
     client_cert_pem: form.client_cert_pem || undefined,
     client_key_pem: form.client_key_pem || undefined,
-    secret_ref: form.secret_ref || undefined,
   }
 }
 
-// Hàm kiểm tra lỗi logic đầu vào biểu mẫu ở client-side
+/**
+ * Hàm kiểm tra tính hợp lý của dữ liệu biểu mẫu trên Client-side.
+ * Giúp phát hiện sớm các cấu hình lỗi trước khi gửi request mạng:
+ * - Ngăn chặn giá trị số lượng kết nối tối đa (Max Connections) bị âm.
+ * - Yêu cầu đầy đủ chứng chỉ client PEM và private key PEM khi chọn chế độ mTLS.
+ */
 function getEndpointFormValidationError(form: EndpointForm): string | null {
-  if (form.secret_ref.trim() !== '' && form.username.trim() !== '' && form.password.trim() === '') {
-    return 'Secret references cannot replace the SMTP password yet. Enter the password directly for authenticated endpoints.'
+  if (form.max_connections < 0) {
+    return 'Max Connections cannot be negative.'
   }
   if (form.tls_mode === 'mtls' && form.client_cert_pem.trim() === '') {
     return 'mTLS endpoints require a client certificate PEM.'
@@ -372,7 +308,11 @@ function getEndpointFormValidationError(form: EndpointForm): string | null {
   return null
 }
 
-// Đọc thông điệp lỗi hoặc thông báo thành công trả về từ API phản hồi
+/**
+ * Đọc và phân giải chi tiết thông báo lỗi trả về từ API Control Plane.
+ * Ưu tiên trích xuất trường `message` hoặc `error` tùy thuộc vào định dạng JSON
+ * của response lỗi từ Backend Go.
+ */
 async function readAPIMessage(resp: Response, fallback: string): Promise<string> {
   const body = (await resp.json().catch(() => null)) as APIResponse | null
   const message = body?.message?.trim()

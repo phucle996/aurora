@@ -79,7 +79,7 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
    */
   const activeZoneLabel = useMemo(() => {
     if (!activeZone) return 'Global'
-    return zones.find(z => z.id === activeZone)?.name || activeZone
+    return zones.find(z => z.code === activeZone)?.name || activeZone
   }, [activeZone, zones])
 
   /**
@@ -165,7 +165,7 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
               {zones.map((zone) => (
                 <DropdownMenuItem
                   key={zone.id}
-                  onClick={() => setActiveZone(zone.id)}
+                  onClick={() => setActiveZone(zone.code)}
                   className="cursor-pointer"
                 >
                   {zone.name}

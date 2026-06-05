@@ -3,16 +3,17 @@ import { Fetch } from '@/lib/fetch'
 
 export type Zone = {
   id: string
+  code: string
   name: string
 }
 
 type ZoneState = {
   zones: Zone[]
-  activeZone: string | null // null đại diện cho Global - All Zones
+  activeZone: string | null // null = Global - All Zones; string = zone CODE (e.g. "vn-hanoi-1")
   loading: boolean
   error: string
   fetchZones: () => Promise<void>
-  setActiveZone: (zoneID: string | null) => void
+  setActiveZone: (zoneCode: string | null) => void
 }
 
 // Promise cache để tránh duplicate concurrent API calls (Race Condition)
@@ -61,8 +62,9 @@ export const useZoneStore = create<ZoneState>((set, get) => ({
 
     return activeFetchPromise
   },
-  setActiveZone: (zoneID: string | null) => {
-    set({ activeZone: zoneID })
+  // zoneCode: null = Global, string = e.g. "vn-hanoi-1"
+  setActiveZone: (zoneCode: string | null) => {
+    set({ activeZone: zoneCode })
   },
 }))
 

@@ -2,8 +2,8 @@ package repo_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
+	"time"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
@@ -25,39 +25,37 @@ func TestEndpointRepoPostgres(t *testing.T) {
 	zoneID := uuid.New()
 	endpointID := uuid.New()
 
-	// 1. Create a secure connection configuration.
-	connConfig := map[string]interface{}{
-		"host":     "smtp.sendgrid.net",
-		"port":     float64(587),
-		"username": "apikey",
-		"password": "super-secret-sendgrid-password-123",
-	}
-
-	jsonBytes, err := json.Marshal(connConfig)
-	if err != nil {
-		t.Fatalf("failed to marshal config: %v", err)
-	}
-
-	encryptedPayload, err := security.EncryptSecret(string(jsonBytes))
+	encPassword, err := security.EncryptSecret("super-secret-sendgrid-password-123")
 	if err != nil {
 		t.Fatalf("failed to encrypt secret: %v", err)
 	}
 
+	now := time.Now().UTC()
 	endpoint := &mailEntity.Endpoint{
-		ID:       endpointID,
-		ZoneID:   zoneID,
-		Name:     "Main SendGrid Endpoint",
-		Provider: mailEntity.SendGrid,
-		IsActive: true,
+		ID:             endpointID,
+		ZoneID:         zoneID,
+		Name:           "Main SendGrid Endpoint",
+		Host:           "smtp.sendgrid.net",
+		Port:           587,
+		Username:       "apikey",
+		Password:       encPassword,
+		TLSMode:        "starttls",
+		Status:         "active",
+		MaxConnections: 10,
+		Priority:       100,
+		Weight:         1,
+		IsActive:       true,
+		CreatedAt:      &now,
+		UpdatedAt:      &now,
 	}
 
 	// Persist
-	if err := repo.Create(ctx, endpoint, []byte(encryptedPayload)); err != nil {
+	if err := repo.Create(ctx, endpoint); err != nil {
 		t.Fatalf("create endpoint failed: %v", err)
 	}
 
-	// 2. Retrieve the endpoint and verify we get the encrypted payload.
-	retrieved, encConfig, err := repo.GetByID(ctx, zoneID, endpointID)
+	// 2. Retrieve the endpoint.
+	retrieved, err := repo.GetByID(ctx, zoneID, endpointID)
 	if err != nil {
 		t.Fatalf("get endpoint failed: %v", err)
 	}
@@ -68,61 +66,43 @@ func TestEndpointRepoPostgres(t *testing.T) {
 	if retrieved.Name != "Main SendGrid Endpoint" {
 		t.Errorf("expected name, got %q", retrieved.Name)
 	}
-	if retrieved.Provider != mailEntity.SendGrid {
-		t.Errorf("expected provider, got %v", retrieved.Provider)
-	}
 
 	// Verify decryption manually.
-	decryptedPayload, err := security.DecryptSecret(string(encConfig))
+	decryptedPassword, err := security.DecryptSecret(retrieved.Password)
 	if err != nil {
 		t.Fatalf("failed to decrypt: %v", err)
 	}
 
-	var plainConfig map[string]interface{}
-	if err := json.Unmarshal([]byte(decryptedPayload), &plainConfig); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
+	if retrieved.Host != "smtp.sendgrid.net" {
+		t.Errorf("expected host 'smtp.sendgrid.net', got %q", retrieved.Host)
 	}
-
-	retrievedHost, _ := plainConfig["host"].(string)
-	retrievedPassword, _ := plainConfig["password"].(string)
-	if retrievedHost != "smtp.sendgrid.net" {
-		t.Errorf("expected host 'smtp.sendgrid.net', got %q", retrievedHost)
-	}
-	if retrievedPassword != "super-secret-sendgrid-password-123" {
-		t.Errorf("expected decrypted password to match, got %q", retrievedPassword)
+	if decryptedPassword != "super-secret-sendgrid-password-123" {
+		t.Errorf("expected decrypted password to match, got %q", decryptedPassword)
 	}
 
 	// 3. List endpoints within the zone.
-	list, encConfigs, err := repo.List(ctx, zoneID)
+	list, err := repo.List(ctx, zoneID)
 	if err != nil {
 		t.Fatalf("list endpoints failed: %v", err)
 	}
 	if len(list) != 1 {
 		t.Errorf("expected list length 1, got %d", len(list))
 	}
-	if len(encConfigs) != 1 {
-		t.Errorf("expected 1 encrypted config, got %d", len(encConfigs))
-	}
 
 	// 4. Update the endpoint credentials.
-	connConfig["password"] = "new-rotated-password-456"
-	endpoint.Name = "Updated SendGrid Endpoint"
-
-	jsonBytesNew, err := json.Marshal(connConfig)
-	if err != nil {
-		t.Fatalf("failed to marshal updated config: %v", err)
-	}
-	encryptedPayloadNew, err := security.EncryptSecret(string(jsonBytesNew))
+	encPasswordNew, err := security.EncryptSecret("new-rotated-password-456")
 	if err != nil {
 		t.Fatalf("failed to encrypt updated secret: %v", err)
 	}
+	endpoint.Password = encPasswordNew
+	endpoint.Name = "Updated SendGrid Endpoint"
 
-	if err := repo.Update(ctx, endpoint, []byte(encryptedPayloadNew)); err != nil {
+	if err := repo.Update(ctx, endpoint); err != nil {
 		t.Fatalf("update endpoint failed: %v", err)
 	}
 
 	// Retrieve again and verify changes.
-	retrievedUpdated, encConfigUpdated, err := repo.GetByID(ctx, zoneID, endpointID)
+	retrievedUpdated, err := repo.GetByID(ctx, zoneID, endpointID)
 	if err != nil {
 		t.Fatalf("get updated endpoint failed: %v", err)
 	}
@@ -130,19 +110,13 @@ func TestEndpointRepoPostgres(t *testing.T) {
 		t.Errorf("expected name to be updated, got %q", retrievedUpdated.Name)
 	}
 
-	decryptedPayloadNew, err := security.DecryptSecret(string(encConfigUpdated))
+	decryptedPasswordNew, err := security.DecryptSecret(retrievedUpdated.Password)
 	if err != nil {
 		t.Fatalf("failed to decrypt updated secret: %v", err)
 	}
 
-	var plainConfigNew map[string]interface{}
-	if err := json.Unmarshal([]byte(decryptedPayloadNew), &plainConfigNew); err != nil {
-		t.Fatalf("failed to unmarshal updated secret: %v", err)
-	}
-
-	updatedPassword, _ := plainConfigNew["password"].(string)
-	if updatedPassword != "new-rotated-password-456" {
-		t.Errorf("expected updated password, got %q", updatedPassword)
+	if decryptedPasswordNew != "new-rotated-password-456" {
+		t.Errorf("expected updated password, got %q", decryptedPasswordNew)
 	}
 
 	// 5. Delete the endpoint.
@@ -151,7 +125,7 @@ func TestEndpointRepoPostgres(t *testing.T) {
 	}
 
 	// Verify it's gone.
-	_, _, err = repo.GetByID(ctx, zoneID, endpointID)
+	_, err = repo.GetByID(ctx, zoneID, endpointID)
 	if err == nil {
 		t.Errorf("expected get after delete to return error, but got nil")
 	}

@@ -8,9 +8,9 @@ import (
 )
 
 type EndpointRepository interface {
-	Create(ctx context.Context, e *mailEntity.Endpoint, encryptedConfig []byte) error
-	GetByID(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) (*mailEntity.Endpoint, []byte, error)
-	List(ctx context.Context, zoneID uuid.UUID) ([]*mailEntity.Endpoint, [][]byte, error)
-	Update(ctx context.Context, e *mailEntity.Endpoint, encryptedConfig []byte) error
+	Create(ctx context.Context, e *mailEntity.Endpoint) error
+	GetByID(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) (*mailEntity.Endpoint, error)
+	List(ctx context.Context, zoneID uuid.UUID) ([]*mailEntity.Endpoint, error)
+	Update(ctx context.Context, e *mailEntity.Endpoint) error
 	Delete(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) error
 }

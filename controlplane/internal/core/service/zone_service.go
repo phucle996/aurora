@@ -125,6 +125,46 @@ func (s *ZoneService) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntit
 	return zone, nil
 }
 
+// GetZoneByCode lấy thông tin chi tiết của một Zone bằng mã zone code.
+func (s *ZoneService) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
+	code = strings.ToLower(strings.TrimSpace(code))
+	if code == "" {
+		return nil, coreErrorx.ErrZoneNotFound
+	}
+	if s.cache != nil {
+		if z, ok := s.cache.GetByCode(code); ok {
+			return &z, nil
+		}
+	}
+	// Fallback to query database with singleflight coalescing to avoid thundering herd
+	v, err, _ := s.sfg.Do("zone:code:"+code, func() (any, error) {
+		// Re-check cache inside singleflight block in case a concurrent request already populated it
+		if s.cache != nil {
+			if z, ok := s.cache.GetByCode(code); ok {
+				return &z, nil
+			}
+		}
+
+		zones, err := s.repo.ListZones(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, z := range zones {
+			if strings.ToLower(z.Code) == code {
+				if s.cache != nil {
+					s.cache.PatchZone(ctx, z)
+				}
+				return &z, nil
+			}
+		}
+		return nil, coreErrorx.ErrZoneNotFound
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*coreEntity.Zone), nil
+}
+
 // UpdateZoneStatus chuyển trạng thái zone theo state machine.
 func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
 	zone, err := s.repo.GetZoneByID(ctx, zoneID)

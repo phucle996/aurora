@@ -33,6 +33,9 @@ func (s *zoneServiceStub) GetZoneCatalog(ctx context.Context) ([]coreEntity.Zone
 func (s *zoneServiceStub) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
 	return &coreEntity.Zone{}, nil
 }
+func (s *zoneServiceStub) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
+	return &coreEntity.Zone{}, nil
+}
 
 func (s *zoneServiceStub) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
 	return nil
