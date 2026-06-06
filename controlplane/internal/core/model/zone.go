@@ -3,10 +3,12 @@ package coreModel
 import (
 	coreEntity "controlplane/internal/core/domain/entity"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Zone struct {
-	ID          string     `db:"id"`
+	ID          uuid.UUID  `db:"id"`
 	Code        string     `db:"code"`
 	Name        string     `db:"name"`
 	Location    string     `db:"location"`
@@ -17,8 +19,8 @@ type Zone struct {
 }
 
 type ZoneService struct {
-	ID          string    `db:"id"`
-	ZoneID      string    `db:"zone_id"`
+	ID          uuid.UUID `db:"id"`
+	ZoneID      uuid.UUID `db:"zone_id"`
 	ServiceType string    `db:"service_type"`
 	Enabled     bool      `db:"enabled"`
 	CreatedAt   time.Time `db:"created_at"`

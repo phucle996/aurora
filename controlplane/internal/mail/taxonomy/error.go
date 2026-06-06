@@ -13,4 +13,5 @@ var (
 	ErrEnvelopeDecryptFailed = errors.New("mail: envelope decryption failed")
 	ErrJobPublishFailed      = errors.New("mail: job publish failed")
 	ErrTenantAccessDenied    = errors.New("mail: tenant access denied")
+	ErrInternal              = errors.New("mail: internal error")
 )

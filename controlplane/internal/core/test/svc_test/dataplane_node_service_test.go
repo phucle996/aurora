@@ -123,6 +123,15 @@ func (m *mockZoneRepoForService) GetZoneByID(ctx context.Context, id uuid.UUID) 
 	}
 	return nil, nil
 }
+func (m *mockZoneRepoForService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+	if z, ok := m.zones[id]; ok {
+		return &coreEntity.ZoneDetail{
+			Zone:     z,
+			Services: m.services[id],
+		}, nil
+	}
+	return nil, nil
+}
 func (m *mockZoneRepoForService) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
 	return nil
 }

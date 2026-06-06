@@ -1,6 +1,10 @@
 package coreEntity
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type ZoneStatus string
 
@@ -13,7 +17,7 @@ const (
 )
 
 type Zone struct {
-	ID          string
+	ID          uuid.UUID
 	Code        string
 	Name        string
 	Location    string
@@ -23,10 +27,16 @@ type Zone struct {
 	UpdatedAt   *time.Time
 }
 
+type ZoneDetail struct {
+	Zone     Zone
+	Services []ZoneService
+}
+
 type ZoneCatalog struct {
-	ID   string
-	Code string
-	Name string
+	ID        string
+	Code      string
+	Name      string
+	UpdatedAt *time.Time
 }
 
 type ZoneServiceType string
@@ -41,8 +51,8 @@ const (
 )
 
 type ZoneService struct {
-	ID          string
-	ZoneID      string
+	ID          uuid.UUID
+	ZoneID      uuid.UUID
 	ServiceType ZoneServiceType
 	Enabled     bool
 	CreatedAt   time.Time
@@ -57,6 +67,7 @@ type CreateZoneInput struct {
 	EnableHypervisor bool
 	EnableStorage    bool
 	EnableMail       bool
-	EnableK8s        bool
+	EnableKubernetes bool
 	EnableAI         bool
+	EnableDatabase   bool
 }

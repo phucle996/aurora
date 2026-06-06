@@ -79,7 +79,7 @@ func (s *zoneSnapshot) rebuildCatalog() {
 	var catalog []coreEntity.ZoneCatalog
 	for _, z := range s.byID {
 		if z.Status == coreEntity.ZoneStatusActive {
-			catalog = append(catalog, coreEntity.ZoneCatalog{ID: z.ID, Code: z.Code, Name: z.Name})
+			catalog = append(catalog, coreEntity.ZoneCatalog{ID: z.ID.String(), Code: z.Code, Name: z.Name, UpdatedAt: z.UpdatedAt})
 		}
 	}
 	sort.Slice(catalog, func(i, j int) bool { return catalog[i].Code < catalog[j].Code })
@@ -168,8 +168,10 @@ func (c *ZoneFanoutCache) GetVersion(ctx context.Context) int64 {
 // ── WRITE PATH (COW + Redis Fanout) ────────────────────────────────────────
 
 // PatchZone cập nhật local cache và phát tín hiệu update (upsert) sang các replica.
-func (c *ZoneFanoutCache) PatchZone(ctx context.Context, zone coreEntity.Zone) {
-	version := c.nextVersion(ctx)
+func (c *ZoneFanoutCache) PatchZone(ctx context.Context, zone coreEntity.Zone, version int64) {
+	if version == 0 {
+		version = c.nextVersion(ctx)
+	}
 
 	// 1. Cập nhật local RAM cache lập tức
 	c.ApplyUpsert(zone, version)
@@ -177,7 +179,7 @@ func (c *ZoneFanoutCache) PatchZone(ctx context.Context, zone coreEntity.Zone) {
 	// 2. Publish ra các replica khác
 	if c.fanout != nil {
 		if err := c.fanout.Publish(ctx, FanoutOpUpsert, zone, version); err != nil {
-			logger.SysWarnFields("zone_cache", "failed to publish zone upsert fanout", err, logger.Fields{"zone_id": zone.ID, "version": version})
+			logger.SysWarnFields("zone_cache", "failed to publish zone upsert fanout", err, logger.Fields{"zone_id": zone.ID.String(), "version": version})
 		}
 	}
 }
@@ -214,7 +216,7 @@ func (c *ZoneFanoutCache) ApplyUpsert(zone coreEntity.Zone, version int64) {
 	}
 
 	next := current.clone()
-	next.byID["zone:id:"+zone.ID] = zone
+	next.byID["zone:id:"+zone.ID.String()] = zone
 	next.byCode["zone:code:"+zone.Code] = zone
 	next.expiresAt = time.Now().Add(c.ttl)
 	next.version = version

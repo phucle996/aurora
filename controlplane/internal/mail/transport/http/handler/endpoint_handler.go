@@ -344,9 +344,9 @@ func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 	ctx, cancel := h.requestContext(c, 10*time.Second)
 	defer cancel()
 
-	var req mailReq.CreateEndpointRequest
+	var req mailReq.TestConnectionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.HandlerWarn(c, op, err, "binding CreateEndpointRequest for raw test failed")
+		logger.HandlerWarn(c, op, err, "binding TestConnectionRequest for raw test failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
@@ -363,19 +363,15 @@ func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 	}
 
 	params := mailEntity.CreateEndpointParams{
-		Name:           strings.TrimSpace(req.Name),
-		Host:           strings.TrimSpace(req.Host),
-		Port:           req.Port,
-		Username:       strings.TrimSpace(req.Username),
-		Password:       req.Password,
-		TLSMode:        strings.TrimSpace(req.TLSMode),
-		Status:         strings.TrimSpace(req.Status),
-		MaxConnections: req.MaxConnections,
-		Priority:       req.Priority,
-		Weight:         req.Weight,
-		CACertPEM:      caCert,
-		ClientCertPEM:  clientCert,
-		ClientKeyPEM:   clientKey,
+		ZoneID:        req.ZoneID,
+		Host:          strings.TrimSpace(req.Host),
+		Port:          req.Port,
+		Username:      strings.TrimSpace(req.Username),
+		Password:      req.Password,
+		TLSMode:       strings.TrimSpace(req.TLSMode),
+		CACertPEM:     caCert,
+		ClientCertPEM: clientCert,
+		ClientKeyPEM:  clientKey,
 	}
 
 	err := h.svc.TestConnectionRaw(ctx, params)

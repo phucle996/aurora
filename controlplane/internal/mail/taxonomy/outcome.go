@@ -9,6 +9,8 @@ const (
 	OutcomeCryptoError        = "crypto_error"
 	OutcomeDatabaseError      = "database_error"
 	OutcomeSerializationError = "serialization_error"
+	OutcomeTimeout            = "timeout"
+	OutcomeInternalError      = "internal_error"
 )
 
 const (

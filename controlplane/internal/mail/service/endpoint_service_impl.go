@@ -7,6 +7,7 @@ package mailSvcImpl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,8 +21,10 @@ import (
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 type zoneCodeCtxKey struct{}
@@ -33,15 +36,29 @@ func WithZoneCode(ctx context.Context, code string) context.Context {
 type endpointServiceImpl struct {
 	cfg          *config.Config
 	endpointRepo mailRepoInterface.EndpointRepository
+	outboxRepo   mailRepoInterface.MailOutboxRepository
+	rdsJob       *redis.Client
 	zoneSvc      coreSvcInterface.ZoneService
 }
 
-func NewEndpointService(cfg *config.Config, endpointRepo mailRepoInterface.EndpointRepository, zoneSvc coreSvcInterface.ZoneService) mailSvcInterface.EndpointService {
+func NewEndpointService(
+	cfg *config.Config,
+	endpointRepo mailRepoInterface.EndpointRepository,
+	outboxRepo mailRepoInterface.MailOutboxRepository,
+	rdsJob *redis.Client,
+	zoneSvc coreSvcInterface.ZoneService,
+) mailSvcInterface.EndpointService {
 	if cfg == nil {
 		panic("mail service: config cannot be nil")
 	}
 	if endpointRepo == nil {
 		panic("mail service: repo cannot be nil")
+	}
+	if outboxRepo == nil {
+		panic("mail service: outboxRepo cannot be nil")
+	}
+	if rdsJob == nil {
+		panic("mail service: rdsJob cannot be nil")
 	}
 	if zoneSvc == nil {
 		panic("mail service: zoneSvc cannot be nil")
@@ -49,6 +66,8 @@ func NewEndpointService(cfg *config.Config, endpointRepo mailRepoInterface.Endpo
 	return &endpointServiceImpl{
 		cfg:          cfg,
 		endpointRepo: endpointRepo,
+		outboxRepo:   outboxRepo,
+		rdsJob:       rdsJob,
 		zoneSvc:      zoneSvc,
 	}
 }
@@ -64,11 +83,7 @@ func (s *endpointServiceImpl) resolveZone(ctx context.Context) (uuid.UUID, error
 		return uuid.Nil, fmt.Errorf("mail service: zone '%s' not found: %w", code, err)
 	}
 
-	zoneUUID, err := uuid.Parse(zone.ID)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("mail service: invalid zone ID for code '%s': %w", code, err)
-	}
-	return zoneUUID, nil
+	return zone.ID, nil
 }
 
 func (s *endpointServiceImpl) CreateEndpoint(
@@ -388,6 +403,17 @@ func (s *endpointServiceImpl) TestConnection(ctx context.Context, zoneID uuid.UU
 	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: connection test is not implemented"), mailTaxonomy.OutcomeDatabaseError)
 }
 
+type SmtpTestConfig struct {
+	Host          string  `json:"host"`
+	Port          int     `json:"port"`
+	Username      string  `json:"username"`
+	Password      string  `json:"password"`
+	TLSMode       string  `json:"tls_mode"`
+	CACertPEM     *string `json:"ca_cert_pem,omitempty"`
+	ClientCertPEM *string `json:"client_cert_pem,omitempty"`
+	ClientKeyPEM  *string `json:"client_key_pem,omitempty"`
+}
+
 func (s *endpointServiceImpl) TestConnectionRaw(
 	ctx context.Context,
 	params mailEntity.CreateEndpointParams,
@@ -407,5 +433,90 @@ func (s *endpointServiceImpl) TestConnectionRaw(
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
-	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: raw connection test is not implemented"), mailTaxonomy.OutcomeDatabaseError)
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return apperr.Wrap(mailTaxonomy.ErrInternal, err, mailTaxonomy.OutcomeDatabaseError)
+	}
+
+	// Build payload_json
+	var caPtr, certPtr, keyPtr *string
+	if params.CACertPEM != "" {
+		caPtr = &params.CACertPEM
+	}
+	if params.ClientCertPEM != "" {
+		certPtr = &params.ClientCertPEM
+	}
+	if params.ClientKeyPEM != "" {
+		keyPtr = &params.ClientKeyPEM
+	}
+
+	smtpConfig := SmtpTestConfig{
+		Host:          params.Host,
+		Port:          params.Port,
+		Username:      params.Username,
+		Password:      params.Password,
+		TLSMode:       params.TLSMode,
+		CACertPEM:     caPtr,
+		ClientCertPEM: certPtr,
+		ClientKeyPEM:  keyPtr,
+	}
+
+	payloadBytes, err := json.Marshal(smtpConfig)
+	if err != nil {
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
+	}
+
+	// Write to outbox_records
+	record := &mailEntity.MailOutboxRecord{
+		EventID:     eventID.String(),
+		ZoneID:      params.ZoneID,
+		JobTopic:    "mail.test_connection",
+		PayloadJSON: string(payloadBytes),
+		Status:      mailEntity.OutboxStatusPending,
+	}
+
+	if err := s.outboxRepo.Save(ctx, record); err != nil {
+		return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("failed to save outbox event: %w", err), mailTaxonomy.OutcomeDatabaseError)
+	}
+
+	// Publish trigger event on rdsJob
+	if err := s.rdsJob.Publish(ctx, "mail:outbox:trigger", "1").Err(); err != nil {
+		logger.SysWarn("mail.outbox", fmt.Sprintf("Failed to publish outbox trigger notification: %v", err))
+	}
+
+	// Subscribe to result on rdsJob
+	resultChannel := fmt.Sprintf("job_results:%s", eventID.String())
+	pubsub := s.rdsJob.Subscribe(ctx, resultChannel)
+	defer pubsub.Close()
+
+	// Wait with timeout
+	select {
+	case <-ctx.Done():
+		return apperr.Wrap(mailTaxonomy.ErrInternal, ctx.Err(), mailTaxonomy.OutcomeTimeout)
+	case msg, ok := <-pubsub.Channel():
+		if !ok || msg == nil {
+			return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("result channel closed"), mailTaxonomy.OutcomeInternalError)
+		}
+		
+		// Decode job execution result
+		var result struct {
+			Status       string `json:"status"` // SUCCEEDED, FAILED
+			ErrorCode    string `json:"error_code"`
+			ErrorMessage string `json:"error_message"`
+		}
+		if err := json.Unmarshal([]byte(msg.Payload), &result); err != nil {
+			// fallback check if payload is plain text
+			if msg.Payload == "SUCCEEDED" {
+				return nil
+			}
+			return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("connection test failed: %s", msg.Payload), mailTaxonomy.OutcomeDatabaseError)
+		}
+
+		if result.Status == "SUCCEEDED" {
+			return nil
+		}
+		return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("connection test failed: %s (code: %s)", result.ErrorMessage, result.ErrorCode), mailTaxonomy.OutcomeDatabaseError)
+	case <-time.After(8 * time.Second):
+		return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("timeout waiting for connection test result from dataplane"), mailTaxonomy.OutcomeTimeout)
+	}
 }

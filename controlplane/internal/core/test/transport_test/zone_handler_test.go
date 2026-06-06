@@ -33,6 +33,12 @@ func (s *zoneServiceStub) GetZoneCatalog(ctx context.Context) ([]coreEntity.Zone
 func (s *zoneServiceStub) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
 	return &coreEntity.Zone{}, nil
 }
+func (s *zoneServiceStub) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+	return &coreEntity.ZoneDetail{
+		Zone:     coreEntity.Zone{},
+		Services: []coreEntity.ZoneService{},
+	}, nil
+}
 func (s *zoneServiceStub) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
 	return &coreEntity.Zone{}, nil
 }

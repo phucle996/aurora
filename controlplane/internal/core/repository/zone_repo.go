@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
@@ -47,6 +48,7 @@ type ZoneRepoImpl struct {
 	getZoneCatalogQuery      string
 	createZoneQuery          string
 	getZoneByIDQuery         string
+	getZoneDetailByIDQuery   string
 	updateZoneStatusQuery    string
 	deleteZoneQuery          string
 	hasDataplaneNodesQuery   string
@@ -67,7 +69,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			ORDER BY created_at DESC
 		`, schema),
 		getZoneCatalogQuery: fmt.Sprintf(`
-			SELECT id, code, name 
+			SELECT id, code, name, updated_at 
 			FROM %s.zones 
 			WHERE status IN ('active') 
 			ORDER BY code ASC
@@ -81,6 +83,14 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			FROM %s.zones 
 			WHERE id=$1 LIMIT 1
 		`, schema),
+		getZoneDetailByIDQuery: fmt.Sprintf(`
+			SELECT 
+				z.id, z.code, z.name, z.location, z.description, z.status, z.created_at, z.updated_at,
+				s.id, s.zone_id, s.service_type, s.enabled, s.created_at, s.updated_at
+			FROM %s.zones z
+			LEFT JOIN %s.zone_services s ON z.id = s.zone_id
+			WHERE z.id = $1
+		`, schema, schema),
 		updateZoneStatusQuery: fmt.Sprintf(`
 			UPDATE %s.zones 
 			SET status=$2, updated_at=now() 
@@ -142,7 +152,7 @@ func (r *ZoneRepoImpl) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCat
 	out := make([]coreEntity.ZoneCatalog, 0)
 	for rows.Next() {
 		var item coreEntity.ZoneCatalog
-		if err := rows.Scan(&item.ID, &item.Code, &item.Name); err != nil {
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -191,6 +201,60 @@ func (r *ZoneRepoImpl) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEnti
 	zone := coreModel.ZoneModelToEntity(value)
 	return &zone, nil
 }
+
+// GetZoneDetailByID lấy thông tin chi tiết một Zone kèm theo tất cả các dịch vụ (aggregated flow).
+func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+	rows, err := r.db.Query(ctx, r.getZoneDetailByIDQuery, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var detail *coreEntity.ZoneDetail
+	for rows.Next() {
+		var zVal coreModel.Zone
+		var sID, sZoneID *uuid.UUID
+		var sType *string
+		var sEnabled *bool
+		var sCreatedAt, sUpdatedAt *time.Time
+		if err := rows.Scan(
+			&zVal.ID, &zVal.Code, &zVal.Name, &zVal.Location, &zVal.Description, &zVal.Status, &zVal.CreatedAt, &zVal.UpdatedAt,
+			&sID, &sZoneID, &sType, &sEnabled, &sCreatedAt, &sUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		if detail == nil {
+			zoneEnt := coreModel.ZoneModelToEntity(zVal)
+			detail = &coreEntity.ZoneDetail{
+				Zone:     zoneEnt,
+				Services: []coreEntity.ZoneService{},
+			}
+		}
+
+		if sID != nil && sZoneID != nil && sType != nil && sEnabled != nil {
+			detail.Services = append(detail.Services, coreEntity.ZoneService{
+				ID:          *sID,
+				ZoneID:      *sZoneID,
+				ServiceType: coreEntity.ZoneServiceType(*sType),
+				Enabled:     *sEnabled,
+				CreatedAt:   *sCreatedAt,
+				UpdatedAt:   *sUpdatedAt,
+			})
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if detail == nil {
+		return nil, nil // Not found
+	}
+
+	return detail, nil
+}
+
 
 // UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
 func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {

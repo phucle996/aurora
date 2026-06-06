@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
-import { Pause, Play, Plus, Trash2, Search, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react'
+import { Pause, Play, Plus, Trash2, Search, ChevronLeft, ChevronRight, ChevronDown, RefreshCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Fetch } from '@/lib/fetch'
@@ -307,38 +307,51 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
 
   return (
     <div className="space-y-6">
-      {/* Tiêu đề & Nút Thêm mới theo style Zone Management */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <h2 className="text-2xl font-semibold tracking-[-0.02em] text-foreground">
-            Mail Endpoints
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Manage physical mail delivery providers, SMTP configurations, and credential status.
-          </p>
+      {/* Tiêu đề theo style Zone Management */}
+      <div className="space-y-1">
+        <h2 className="text-2xl font-semibold tracking-[-0.02em] text-foreground">
+          Mail Endpoints
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Manage physical mail delivery providers, SMTP configurations, and credential status.
+        </p>
+      </div>
+
+      {/* Thanh công cụ: Tìm kiếm + Refresh bên trái, Add Endpoint bên phải */}
+      <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex w-full flex-col gap-3 sm:flex-row md:max-w-140 md:justify-start flex-1">
+          {/* Ô nhập từ khóa tìm kiếm */}
+          <div className="relative flex-1 max-w-96">
+            <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value)
+                setCurrentPage(1)
+              }}
+              placeholder="Search endpoints..."
+              className="h-12 rounded-lg border-border bg-background pl-11 text-sm shadow-none"
+            />
+          </div>
+          {/* Nút trigger tải lại dữ liệu thủ công */}
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setRefreshKey((value) => value + 1)}
+            disabled={state.loading}
+            className="h-12 rounded-lg px-4 text-sm font-semibold cursor-pointer shrink-0"
+          >
+            <RefreshCcw className={cn('size-4 mr-2', state.loading && 'animate-spin')} />
+            Refresh
+          </Button>
         </div>
-        <Button asChild className="h-11 rounded-lg px-5 text-sm font-semibold shadow-sm shrink-0 cursor-pointer">
+
+        <Button asChild className="h-12 rounded-lg px-6 text-sm font-semibold shadow-sm shrink-0 cursor-pointer">
           <Link to="/mail/endpoints/new">
             <Plus className="size-4 mr-2" />
             Add Endpoint
           </Link>
         </Button>
-      </div>
-
-      {/* Tìm kiếm & Filters */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative w-full sm:max-w-96">
-          <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value)
-              setCurrentPage(1)
-            }}
-            placeholder="Search endpoints..."
-            className="h-11 rounded-lg border-border bg-background pl-11 text-sm shadow-none"
-          />
-        </div>
       </div>
 
       {/* Khối lỗi nếu có */}
@@ -397,8 +410,10 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
                   <TableCell className="py-3.5">
                     <StatusBadge status={item.status || 'disabled'} />
                   </TableCell>
-                  <TableCell className="py-3.5 text-sm font-semibold text-foreground">
-                    {item.name}
+                  <TableCell className="py-3.5 text-sm font-medium text-foreground">
+                    <Link to="/mail/endpoints/$id/edit" params={{ id: item.id }} className="text-sm font-semibold text-primary hover:underline">
+                      {item.name}
+                    </Link>
                   </TableCell>
                   <TableCell className="py-3.5 text-sm text-muted-foreground">
                     {item.host}:{item.port}

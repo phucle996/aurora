@@ -257,7 +257,7 @@ export default function ZoneDetailPage() {
       // Seed draft state so inline-edit fields start with current values
       setDraftName(normalizedDetail.zone.name)
       setDraftDescription(normalizedDetail.zone.description)
-      setDraftServices(normalizedDetail.enabled_services.map((service) => service.key))
+      setDraftServices(normalizedDetail.enabled_services.filter((service) => service.status === 'healthy').map((service) => service.key))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Cannot load zone detail')
       setDetail(null)
@@ -298,9 +298,10 @@ export default function ZoneDetailPage() {
 
   const hypervisorMetric = detail.resource_inventory.find((item) => item.key === 'hypervisors')
 
+  const activeEnabledServices = detail.enabled_services.filter((s) => s.status === 'healthy')
   const deleteBlockers = [
     detail.workspaces.total > 0 ? `${detail.workspaces.total} workspace${detail.workspaces.total === 1 ? '' : 's'}` : '',
-    detail.enabled_services.length > 0 ? `${detail.enabled_services.length} enabled service${detail.enabled_services.length === 1 ? '' : 's'}` : '',
+    activeEnabledServices.length > 0 ? `${activeEnabledServices.length} enabled service${activeEnabledServices.length === 1 ? '' : 's'}` : '',
     ...detail.resource_inventory
       .filter((metric) => Number(metric.value) > 0)
       .map((metric) => `${metric.value} ${metric.label}`),
@@ -358,7 +359,7 @@ export default function ZoneDetailPage() {
   // Fire PUT for each service whose enabled state changed; reload on success
   const applyServices = () => {
     setServiceDrawerOpen(false)
-    const currentEnabled = detail.enabled_services.map((s) => s.key)
+    const currentEnabled = detail.enabled_services.filter((s) => s.status === 'healthy').map((s) => s.key)
 
     const promises = serviceCatalog.map((service) => {
       const isCurrentlyEnabled = currentEnabled.includes(service.key)
@@ -546,7 +547,7 @@ export default function ZoneDetailPage() {
 
           <div className="space-y-6">
             <ZoneServicesPanel
-              enabledServices={detail.enabled_services}
+              enabledServices={detail.enabled_services.filter((s) => s.status === 'healthy')}
             />
 
             <ZoneInventoryPanel

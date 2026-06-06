@@ -168,7 +168,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ gửi mail Mail
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	mailModule, err := mail.NewModule(cfg, db, rdsCore, rateLimiter, coreModule)
+	mailModule, err := mail.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, coreModule)
 	if err != nil {
 		logger.SysError("graceful.degradation.mail", fmt.Sprintf("Failed to initialize mail module: %v. Running in degraded mode.", err))
 		mailModule = mail.NewDegradedModule(err)

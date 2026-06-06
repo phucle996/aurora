@@ -77,7 +77,7 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 		EnableHypervisor: boolValue(request.EnableHypervisor),
 		EnableStorage:    boolValue(request.EnableStorage),
 		EnableMail:       boolValue(request.EnableMail),
-		EnableK8s:        boolValue(request.EnableK8s),
+		EnableKubernetes: boolValue(request.EnableKubernetes),
 		EnableAI:         boolValue(request.EnableAI),
 	})
 	if err != nil {
@@ -193,15 +193,14 @@ func (h *ZoneHandler) GetZone(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	zoneIDStr := strings.TrimSpace(c.Param("zone_id"))
-	zoneID, err := uuid.Parse(zoneIDStr)
+	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
 	if err != nil {
 		logger.HandlerWarn(c, op, err, "get zone invalid zone_id format")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
 
-	zone, err := h.zoneSvc.GetZoneByID(ctx, zoneID)
+	detail, err := h.zoneSvc.GetZoneDetailByID(ctx, zoneID)
 	if err != nil {
 		if errors.Is(err, coreErrorx.ErrZoneNotFound) {
 			apires.RespondNotFound(c, "zone not found")
@@ -212,21 +211,26 @@ func (h *ZoneHandler) GetZone(c *gin.Context) {
 		return
 	}
 
-	services, err := h.zoneSvc.ListZoneServices(ctx, zoneID)
-	if err != nil {
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-
 	var enabledCount int
-	serviceRows := make([]gin.H, 0, len(services))
-	for _, s := range services {
-		status := "inactive"
-		if s.Enabled {
-			status = "healthy"
-			enabledCount++
+	serviceRows := make([]gin.H, 0)
+	for _, s := range detail.Services {
+		if !s.Enabled {
+			continue
 		}
+		switch s.ServiceType {
+		case coreEntity.ZoneServiceTypeHypervisor,
+			coreEntity.ZoneServiceTypeStorage,
+			coreEntity.ZoneServiceTypeMail,
+			coreEntity.ZoneServiceTypeKubernetes,
+			coreEntity.ZoneServiceTypeAI,
+			coreEntity.ZoneServiceTypeDatabase:
+			// Valid
+		default:
+			continue
+		}
+		status := "healthy"
+		enabledCount++
+
 		key := string(s.ServiceType)
 		label := string(s.ServiceType)
 		switch key {
@@ -240,34 +244,33 @@ func (h *ZoneHandler) GetZone(c *gin.Context) {
 			label = "Kubernetes"
 		case "ai":
 			label = "AI"
+		case "database":
+			label = "Database"
 		}
 
 		serviceRows = append(serviceRows, gin.H{
-			"key":     key,
-			"label":   label,
-			"status":  status,
-			"latency": "12ms",
-			"uptime":  "99.9%",
+			"key":    key,
+			"label":  label,
+			"status": status,
 		})
 	}
 
 	apires.RespondSuccess(c, gin.H{
 		"zone": gin.H{
-			"id":          zone.ID,
-			"code":        zone.Code,
-			"name":        zone.Name,
-			"location":    zone.Location,
-			"description": zone.Description,
-			"status":      string(zone.Status),
-			"created_at":  zone.CreatedAt,
-			"updated_at":  zone.UpdatedAt,
+			"id":          detail.Zone.ID,
+			"code":        detail.Zone.Code,
+			"name":        detail.Zone.Name,
+			"location":    detail.Zone.Location,
+			"description": detail.Zone.Description,
+			"status":      string(detail.Zone.Status),
+			"created_at":  detail.Zone.CreatedAt,
+			"updated_at":  detail.Zone.UpdatedAt,
 		},
 		"summary": gin.H{
 			"workspaces":       0,
 			"enabled_services": enabledCount,
 		},
-		"enabled_services":   serviceRows,
-		"resource_inventory": []interface{}{},
+		"enabled_services": serviceRows,
 		"workspaces": gin.H{
 			"items":  []interface{}{},
 			"total":  0,
@@ -415,8 +418,19 @@ func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
 		}
 		return
 	}
-	rows := make([]gin.H, 0, len(items))
+	rows := make([]gin.H, 0)
 	for _, item := range items {
+		switch item.ServiceType {
+		case coreEntity.ZoneServiceTypeHypervisor,
+			coreEntity.ZoneServiceTypeStorage,
+			coreEntity.ZoneServiceTypeMail,
+			coreEntity.ZoneServiceTypeKubernetes,
+			coreEntity.ZoneServiceTypeAI,
+			coreEntity.ZoneServiceTypeDatabase:
+			// Valid
+		default:
+			continue
+		}
 		rows = append(rows, gin.H{
 			"id":           item.ID,
 			"zone_id":      item.ZoneID,

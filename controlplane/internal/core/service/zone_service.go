@@ -51,29 +51,33 @@ func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) 
 
 // GetZoneCatalog hot-path: L2 RAM cache O(1), singleflight coalesces DB misses.
 func (s *ZoneService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	if s.cache != nil {
-		if catalog, ok := s.cache.GetCatalog(); ok {
-			return catalog, nil
-		}
+	if catalog, ok := s.cache.GetCatalog(); ok {
+		return catalog, nil
+	}
 
-		// Cache miss: singleflight gom tất cả concurrent req thành 1 DB call
-		v, err, _ := s.sfg.Do("zone:catalog", func() (any, error) {
-			catalog, err := s.repo.GetZoneCatalog(ctx)
-			if err != nil {
-				return nil, err
-			}
-			// Đọc version hiện tại từ Redis qua cache interface
-			version := s.cache.GetVersion(ctx)
-			return &catalogWithVersion{catalog: catalog, version: version}, nil
-		})
+	// Cache miss: singleflight gom tất cả concurrent req thành 1 DB call
+	v, err, _ := s.sfg.Do("zone:catalog", func() (any, error) {
+		catalog, err := s.repo.GetZoneCatalog(ctx)
 		if err != nil {
 			return nil, err
 		}
-		result := v.(*catalogWithVersion)
-		s.cache.SetCatalog(result.catalog, result.version)
-		return result.catalog, nil
+		var maxVersion int64
+		for _, item := range catalog {
+			if item.UpdatedAt != nil {
+				unixNano := item.UpdatedAt.UnixNano()
+				if unixNano > maxVersion {
+					maxVersion = unixNano
+				}
+			}
+		}
+		return &catalogWithVersion{catalog: catalog, version: maxVersion}, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return s.repo.GetZoneCatalog(ctx)
+	result := v.(*catalogWithVersion)
+	s.cache.SetCatalog(result.catalog, result.version)
+	return result.catalog, nil
 }
 
 // CreateZone tạo zone mới + cập nhật cache (tự động đồng bộ các replica).
@@ -81,14 +85,14 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	now := time.Now().UTC()
 	zoneID, err := uuid.NewV7()
 	if err != nil {
-		zoneID = uuid.New()
+		return err
 	}
 	zone := coreEntity.Zone{
-		ID:          zoneID.String(),
-		Code:        strings.ToLower(strings.TrimSpace(input.Code)),
-		Name:        strings.TrimSpace(input.Name),
-		Location:    strings.TrimSpace(input.Location),
-		Description: strings.TrimSpace(input.Description),
+		ID:          zoneID,
+		Code:        input.Code,
+		Name:        input.Name,
+		Location:    input.Location,
+		Description: input.Description,
 		Status:      coreEntity.ZoneStatusPlanned,
 		CreatedAt:   &now,
 		UpdatedAt:   &now,
@@ -97,19 +101,17 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		coreEntity.ZoneServiceTypeHypervisor: input.EnableHypervisor,
 		coreEntity.ZoneServiceTypeStorage:    input.EnableStorage,
 		coreEntity.ZoneServiceTypeMail:       input.EnableMail,
-		coreEntity.ZoneServiceTypeKubernetes: input.EnableK8s,
+		coreEntity.ZoneServiceTypeKubernetes: input.EnableKubernetes,
 		coreEntity.ZoneServiceTypeAI:         input.EnableAI,
-		coreEntity.ZoneServiceTypeDatabase:   false,
+		coreEntity.ZoneServiceTypeDatabase:   input.EnableDatabase,
 	}
 
 	if err := s.repo.CreateZone(ctx, zone, svcs); err != nil {
 		return err
 	}
 
-	// Đồng bộ qua cache
-	if s.cache != nil {
-		s.cache.PatchZone(ctx, zone)
-	}
+	s.cache.PatchZone(ctx, zone, zone.UpdatedAt.Unix())
+
 	return nil
 }
 
@@ -124,6 +126,19 @@ func (s *ZoneService) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntit
 	}
 	return zone, nil
 }
+
+// GetZoneDetailByID lấy thông tin chi tiết của một Zone kèm theo tất cả các dịch vụ của nó.
+func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+	detail, err := s.repo.GetZoneDetailByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if detail == nil {
+		return nil, coreErrorx.ErrZoneNotFound
+	}
+	return detail, nil
+}
+
 
 // GetZoneByCode lấy thông tin chi tiết của một Zone bằng mã zone code.
 func (s *ZoneService) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
@@ -152,7 +167,11 @@ func (s *ZoneService) GetZoneByCode(ctx context.Context, code string) (*coreEnti
 		for _, z := range zones {
 			if strings.ToLower(z.Code) == code {
 				if s.cache != nil {
-					s.cache.PatchZone(ctx, z)
+					var v int64
+					if z.UpdatedAt != nil {
+						v = z.UpdatedAt.UnixNano()
+					}
+					s.cache.PatchZone(ctx, z, v)
 				}
 				return &z, nil
 			}
@@ -205,7 +224,11 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	}
 
 	if updated != nil && s.cache != nil {
-		s.cache.PatchZone(ctx, *updated)
+		var v int64
+		if updated.UpdatedAt != nil {
+			v = updated.UpdatedAt.UnixNano()
+		}
+		s.cache.PatchZone(ctx, *updated, v)
 	}
 	return updated, nil
 }
@@ -242,7 +265,7 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	}
 
 	if s.cache != nil {
-		s.cache.EvictZone(ctx, zone.ID, zone.Code)
+		s.cache.EvictZone(ctx, zone.ID.String(), zone.Code)
 	}
 	return nil
 }
@@ -279,7 +302,7 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 
 	// Zone entity không thay đổi fields nhưng catalog cần refresh
 	if s.cache != nil {
-		s.cache.PatchZone(ctx, *zone)
+		s.cache.PatchZone(ctx, *zone, svc.UpdatedAt.UnixNano())
 	}
 	return svc, nil
 }

@@ -11,7 +11,9 @@ import (
 	mailSvcImpl "controlplane/internal/mail/service"
 	"controlplane/internal/mail/test/testutil"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 type zoneServiceMock struct {
@@ -21,7 +23,7 @@ type zoneServiceMock struct {
 
 func (m *zoneServiceMock) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
 	return &coreEntity.Zone{
-		ID:   m.zoneID.String(),
+		ID:   m.zoneID,
 		Code: code,
 	}, nil
 }
@@ -32,11 +34,16 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	testutil.PrepareMailSchema(t, cfg, db)
 	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 
+	redisServer := miniredis.RunT(t)
+	rdsClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = rdsClient.Close() })
+
 	zoneID := uuid.New()
 	zoneSvc := &zoneServiceMock{zoneID: zoneID}
 
 	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
-	service := mailSvcImpl.NewEndpointService(cfg, repo, zoneSvc)
+	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
+	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, zoneSvc)
 	ctx := context.Background()
 	ctx = mailSvcImpl.WithZoneCode(ctx, "test-zone")
 

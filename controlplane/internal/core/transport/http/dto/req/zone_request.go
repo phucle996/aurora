@@ -35,7 +35,7 @@ type CreateZoneRequest struct {
 	// EnableMail xác định xem dịch vụ SMTP và delivery workers có được kích hoạt khi cài đặt hay không.
 	EnableMail *bool `json:"enable_mail"`
 	// EnableK8s xác định xem dịch vụ managed Kubernetes clusters có được kích hoạt khi cài đặt hay không.
-	EnableK8s *bool `json:"enable_k8s"`
+	EnableKubernetes *bool `json:"enable_kubernetes"`
 	// EnableAI xác định xem dịch vụ compute hiệu năng cao GPU/AI clusters có được kích hoạt khi cài đặt hay không.
 	EnableAI *bool `json:"enable_ai"`
 }

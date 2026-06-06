@@ -37,3 +37,16 @@ type UpdateEndpointRequest struct {
 	ClientKeyPEM   *string `json:"client_key_pem"`
 	IsActive       bool    `json:"is_active"`
 }
+
+// TestConnectionRequest định nghĩa cấu trúc yêu cầu kiểm tra kết nối SMTP (chỉ chứa các trường cần thiết).
+type TestConnectionRequest struct {
+	ZoneID        uuid.UUID `json:"zone_id" binding:"required"`
+	Host          string    `json:"host" binding:"required"`
+	Port          int       `json:"port" binding:"required"`
+	Username      string    `json:"username" binding:"required"`
+	Password      string    `json:"password" binding:"required"`
+	TLSMode       string    `json:"tls_mode" binding:"required"`
+	CACertPEM     *string   `json:"ca_cert_pem"`
+	ClientCertPEM *string   `json:"client_cert_pem"`
+	ClientKeyPEM  *string   `json:"client_key_pem"`
+}

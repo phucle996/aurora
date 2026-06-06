@@ -12,6 +12,7 @@ type ZoneRepository interface {
 	GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error)
 	CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error
 	GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error)
+	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)
 	UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error
 	DeleteZone(ctx context.Context, id uuid.UUID) error
 	HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error)

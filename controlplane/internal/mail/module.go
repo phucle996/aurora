@@ -75,12 +75,14 @@ type Module struct {
 	TemplateRepo mailRepoInterface.TemplateRepository
 	GatewayRepo  mailRepoInterface.GatewayRepository
 	EndpointRepo mailRepoInterface.EndpointRepository
+	OutboxRepo   mailRepoInterface.MailOutboxRepository
 
 	// 2) Services
 	ConsumerService mailSvcInterface.ConsumerService
 	TemplateService mailSvcInterface.TemplateService
 	GatewayService  mailSvcInterface.GatewayService
 	EndpointService mailSvcInterface.EndpointService
+	OutboxPoller    *mailSvcImpl.MailOutboxPoller
 
 	// 3) Handlers
 	ConsumerHandler *mailHandler.ConsumerHandler
@@ -94,6 +96,9 @@ type Module struct {
 
 	// 5) Security
 	RateLimiter *ratelimit.Bucket
+
+	// 6) Lifecycle Control
+	pollerCancel context.CancelFunc
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -120,7 +125,7 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the Dependency Graph for the Mail Module.
 // coreModule is required to resolve cross-module dependencies (e.g. ZoneService for endpoint zone resolution).
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket, coreModule *core.Module) (*Module, error) {
+func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rdsJob *goredis.Client, rateLimiter *ratelimit.Bucket, coreModule *core.Module) (*Module, error) {
 	if coreModule == nil {
 		return nil, errors.New("mail module: core module is required for cross-module zone resolution")
 	}
@@ -146,13 +151,17 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if endpointRepo == nil {
 		return nil, errors.New("mail module: failed to construct endpoint repository")
 	}
+	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
+	if outboxRepo == nil {
+		return nil, errors.New("mail module: failed to construct outbox repository")
+	}
 
 	// Initialize Cache & Publisher
-	mCache := mailCache.NewMailCache(rds, cfg)
+	mCache := mailCache.NewMailCache(rdsCore, cfg)
 	if mCache == nil {
 		return nil, errors.New("mail module: failed to initialize mail cache")
 	}
-	publisher := mailCache.NewJobPublisher(rds, cfg)
+	publisher := mailCache.NewJobPublisher(rdsJob, cfg)
 	if publisher == nil {
 		return nil, errors.New("mail module: failed to initialize job publisher")
 	}
@@ -174,9 +183,13 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if gatewaySvc == nil {
 		return nil, errors.New("mail module: failed to construct gateway service")
 	}
-	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, coreModule.ZoneService)
+	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, outboxRepo, rdsJob, coreModule.ZoneService)
 	if endpointSvc == nil {
 		return nil, errors.New("mail module: failed to construct endpoint service")
+	}
+	outboxPoller := mailSvcImpl.NewMailOutboxPoller(cfg, outboxRepo, rdsJob)
+	if outboxPoller == nil {
+		return nil, errors.New("mail module: failed to construct outbox poller")
 	}
 
 	// ------------------------------------------------------------------------
@@ -208,10 +221,12 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		TemplateRepo:    templateRepo,
 		GatewayRepo:     gatewayRepo,
 		EndpointRepo:    endpointRepo,
+		OutboxRepo:      outboxRepo,
 		ConsumerService: consumerSvc,
 		TemplateService: templateSvc,
 		GatewayService:  gatewaySvc,
 		EndpointService: endpointSvc,
+		OutboxPoller:    outboxPoller,
 		ConsumerHandler: consumerHandler,
 		TemplateHandler: templateHandler,
 		GatewayHandler:  gatewayHandler,
@@ -227,7 +242,11 @@ func (m *Module) Start(ctx context.Context) error {
 	if !m.IsEnabled() {
 		return nil
 	}
-	// Skeletons for start routine (if background async processes are introduced later)
+	if m.OutboxPoller != nil && m.pollerCancel == nil {
+		pollerCtx, cancel := context.WithCancel(ctx)
+		m.pollerCancel = cancel
+		go m.OutboxPoller.Start(pollerCtx)
+	}
 	return nil
 }
 
@@ -236,6 +255,9 @@ func (m *Module) Stop(ctx context.Context) error {
 	if !m.IsEnabled() {
 		return nil
 	}
-	// Skeletons for graceful shutdown
+	if m.pollerCancel != nil {
+		m.pollerCancel()
+		m.pollerCancel = nil
+	}
 	return nil
 }

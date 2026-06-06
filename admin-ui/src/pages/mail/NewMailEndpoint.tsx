@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, useEffect, type FormEvent } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Send } from 'lucide-react'
 import { toast } from 'sonner'
@@ -12,6 +12,7 @@ import { EndpointPreviewCard } from './sections/EndpointPreviewCard'
 import { Button } from '@/components/ui/button'
 import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
+import { PageContent } from '@/components/layout/layout'
 
 /**
  * Khai báo giá trị khởi tạo mặc định cho biểu mẫu cấu hình SMTP Endpoint.
@@ -22,6 +23,7 @@ import { usePageMeta } from '@/lib/page-meta'
  * - Số lượng kết nối song song tối đa (max_connections) mặc định là 10.
  */
 const initialForm: EndpointForm = {
+  zone_id: '',
   name: '',
   host: '',
   port: 587,
@@ -59,6 +61,8 @@ export default function NewMailEndpointPage() {
 
   // State quản lý toàn bộ dữ liệu biểu mẫu SMTP Endpoint
   const [form, setForm] = useState<EndpointForm>(initialForm)
+  // State quản lý danh sách các Zone lấy từ API
+  const [zones, setZones] = useState<{ id: string; name: string }[]>([])
   // State quản lý trạng thái submit form lên server (để hiển thị loading/disable nút bấm)
   const [loading, setLoading] = useState(false)
   // State lưu trữ và hiển thị thông điệp lỗi hệ thống/lỗi API
@@ -76,6 +80,30 @@ export default function NewMailEndpointPage() {
     success: null,
     message: '',
   })
+
+  // Gọi API lấy danh sách các Zone khi component được mount
+  useEffect(() => {
+    let active = true
+    async function loadZones() {
+      try {
+        const resp = await Fetch('/admin/core/zones')
+        if (resp.ok) {
+          const body = await resp.json()
+          if (active && body.data?.items) {
+            const list = body.data.items.map((z: any) => ({ id: z.id, name: z.name }))
+            setZones(list)
+            if (list.length > 0) {
+              setForm(prev => ({ ...prev, zone_id: prev.zone_id || list[0].id }))
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Cannot load zones', err)
+      }
+    }
+    void loadZones()
+    return () => { active = false }
+  }, [])
 
   /**
    * Cập nhật động giá trị của một trường dữ liệu trong form state.
@@ -181,11 +209,11 @@ export default function NewMailEndpointPage() {
   // Loại bỏ khoảng trắng thừa ở các trường quan trọng để kiểm tra điều kiện submit
   const trimmedName = form.name.trim()
   const trimmedHost = form.host.trim()
-  // Nút submit chỉ hoạt động khi Tên và Host đã được nhập và không trong trạng thái đang gửi request
-  const canSubmit = trimmedName !== '' && trimmedHost !== '' && !loading
+  // Nút submit chỉ hoạt động khi Tên, Host và Zone đã được chọn/nhập và không trong trạng thái đang gửi request
+  const canSubmit = trimmedName !== '' && trimmedHost !== '' && form.zone_id.trim() !== '' && !loading
 
   return (
-    <div className="space-y-6 pb-12">
+    <PageContent className="pb-0">
       {/* 1. Page Header: Gồm Breadcrumb điều hướng và các nút hành động chính */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-4">
@@ -209,12 +237,12 @@ export default function NewMailEndpointPage() {
         {/* Cụm Action Buttons trên Header */}
         <div className="flex items-center gap-3 lg:pt-10">
           {/* Nút kiểm tra kết nối SMTP tạm thời */}
-          <Button type="button" variant="outline" className="h-12 rounded-lg px-6 text-sm font-semibold cursor-pointer" onClick={() => void tryConnect()} disabled={loading}>
+          <Button type="button" variant="outline" className="h-12 rounded-lg px-8 text-sm font-semibold cursor-pointer" onClick={() => void tryConnect()} disabled={loading}>
             <Send className="size-4 mr-2" />
             Try Connect
           </Button>
           {/* Nút hủy bỏ, quay về trang danh sách */}
-          <Button asChild variant="outline" className="h-12 rounded-lg px-6 text-sm font-semibold">
+          <Button asChild variant="outline" className="h-12 rounded-lg px-8 text-sm font-semibold">
             <Link to="/mail" hash="endpoints">Cancel</Link>
           </Button>
           {/* Nút kích hoạt submit form tạo mới chính thức */}
@@ -243,7 +271,7 @@ export default function NewMailEndpointPage() {
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
         {/* Form cấu hình bên trái */}
         <form id="new-endpoint-form" className="space-y-6" onSubmit={(event) => void submit(event)}>
-          <EndpointFormFields form={form} update={update} />
+          <EndpointFormFields form={form} update={update} zones={zones} />
         </form>
 
         {/* Live Preview hiển thị bên phải, bám dính (sticky) khi cuộn chuột */}
@@ -268,7 +296,7 @@ export default function NewMailEndpointPage() {
         message={testState.message}
         endpointName={form.name || 'New Endpoint'}
       />
-    </div>
+    </PageContent>
   )
 }
 
@@ -296,6 +324,9 @@ function endpointPayload(form: EndpointForm) {
  * - Yêu cầu đầy đủ chứng chỉ client PEM và private key PEM khi chọn chế độ mTLS.
  */
 function getEndpointFormValidationError(form: EndpointForm): string | null {
+  if (form.zone_id.trim() === '') {
+    return 'Please select an infrastructure zone.'
+  }
   if (form.max_connections < 0) {
     return 'Max Connections cannot be negative.'
   }
