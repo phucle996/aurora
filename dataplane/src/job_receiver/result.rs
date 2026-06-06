@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đóng gói kết quả đầu ra sau khi Executor thực thi xong một Job nghiệp vụ.
-///   - Cung cấp hai cơ chế báo cáo linh hoạt: Qua Redis Stream kết quả hoặc gửi gRPC trực tiếp lên Controlplane.
+///   - Cung cấp các cơ chế báo cáo linh hoạt: Qua Redis Stream, Redis Pub/Sub, hoặc gửi gRPC trực tiếp lên Controlplane.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
 ///   - Trạng thái kết quả cuối cùng (Final outcome status) được quyết định bởi luồng thực thi của Executor.
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 ///   - TUYỆT ĐỐI KHÔNG chứa dữ liệu Tenant ID hay thông tin cá nhân khách hàng.
 ///
 /// 🔄 CALLSITE FLOW:
-///   - Được gọi bởi các Executor sau khi hoàn tất xử lý nghiệp vụ vật lý.
+///   - Được gọi bởi Worker sau khi hoàn tất xử lý nghiệp vụ vật lý để đẩy báo cáo lên các kênh.
 ///
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
 ///   - Khi gửi qua gRPC, cần áp dụng thuật toán **Exponential Backoff với Jitter**
@@ -46,14 +46,28 @@ pub struct JobExecutionResult {
 pub struct JobResultReporter;
 
 impl JobResultReporter {
-    /// Đăng ký báo cáo kết quả thông qua luồng Redis kết quả.
-    ///
-    /// # Luồng xử lý kỹ thuật:
-    ///   - Gọi hàm XADD đẩy gói kết quả vào Redis kết quả Stream.
+    /// Phát hành kết quả công việc lên kênh Redis Pub/Sub chuyên biệt để UI/API đón đầu phản hồi.
+    pub async fn report_via_redis_pubsub(
+        redis_client: &redis::Client,
+        channel: &str,
+        result: &JobExecutionResult,
+    ) -> Result<(), String> {
+        let payload_str = serde_json::to_string(result)
+            .map_err(|e| format!("Failed to serialize job result to JSON: {}", e))?;
+
+        crate::infra::redis::query::publish_pubsub(redis_client, channel, &payload_str)
+            .await
+            .map_err(|e| format!("Failed to publish via Redis Pub/Sub: {}", e))?;
+
+        crate::observability::logger::Logger::sys_info(
+            "job.result",
+            &format!("Job Result Reporter: Successfully published outcome to Redis Pub/Sub channel: {}", channel),
+        );
+        Ok(())
+    }
+
+    /// Đăng ký báo cáo kết quả thông qua luồng Redis kết quả (Stream XADD).
     pub async fn report_via_redis_stream(_result: &JobExecutionResult) -> Result<(), String> {
-        // Trên môi trường Production:
-        //   - Sử dụng connection pool để lấy kết nối Redis.
-        //   - Thực thi câu lệnh XADD đẩy bản ghi kết quả JSON.
         crate::observability::logger::Logger::sys_info(
             "job.result",
             "Job Result Reporter: Successfully published outcome to Redis stream",
@@ -62,11 +76,23 @@ impl JobResultReporter {
     }
 
     /// Đăng ký báo cáo trực tiếp thông qua gRPC lên Controlplane.
-    ///
-    /// # Luồng xử lý kỹ thuật:
-    ///   - Khởi tạo gRPC client kết nối lên Controlplane và gọi `ReportJobCompletion` RPC.
     pub async fn report_via_grpc(_result: &JobExecutionResult) -> Result<(), String> {
-        // Thực hiện cuộc gọi thông qua Client gửi gRPC đã được cấu hình mTLS bảo mật
         crate::rpc::client::client::ExternalRpcSenderClient::send_to_controlplane(_result).await
     }
+
+    /// Hợp nhất tất cả các phương thức báo cáo (Redis Pub/Sub & gRPC) thành một cuộc gọi duy nhất.
+    /// Giúp Worker giải phóng kết quả sạch sẽ mà không phân mảnh code.
+    pub async fn report_outcome(
+        redis_client: &redis::Client,
+        pubsub_channel: &str,
+        result: &JobExecutionResult,
+    ) -> Result<(), String> {
+        // 1. Gửi lên kênh Redis Pub/Sub để báo tin tức thời cho client/UI đang chờ
+        let _ = Self::report_via_redis_pubsub(redis_client, pubsub_channel, result).await;
+
+        // 2. Gửi gRPC lên Controlplane cập nhật trạng thái bền vững (SoT DB)
+        let _ = Self::report_via_grpc(result).await;
+
+        Ok(())
+  }
 }

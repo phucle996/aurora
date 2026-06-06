@@ -39,6 +39,7 @@ impl JobConsumer {
         redis_internal_zone: Arc<RedisClientManager>,
         worker_id: usize,
         cancel_token: CancellationToken,
+        worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
     ) {
         let stream_key = format!("jobs:{}", config.zone_id);
         Logger::sys_info(
@@ -180,11 +181,14 @@ impl JobConsumer {
                 let redis_job_clone = redis_job.clone();
                 let redis_internal_zone_clone = redis_internal_zone.clone();
                 let stream_key_clone = stream_key.clone();
+                let worker_pool_clone = worker_pool.clone();
 
                 // 8. Spawn task xử lý độc lập bọc trong Early Timeout (9/10 idle)
                 tokio::spawn(async move {
                     let timeout_duration = Duration::from_secs((idle_secs as u64 * 9) / 10);
-                    
+                    let job_id = payload.job_id.clone();
+                    let result_channel = format!("job_results:{}", job_id);
+
                     Logger::sys_info(
                         "job.ingestion",
                         &format!(
@@ -193,58 +197,132 @@ impl JobConsumer {
                         )
                     );
 
-                    match tokio::time::timeout(timeout_duration, Self::dispatch_workload(payload.clone())).await {
-                        Ok(_) => {
-                            // Xử lý thành công -> Commit: Gọi XACK giải phóng Job
+                    // Giai đoạn 1: Gửi tác vụ dispatch routing cho Worker Pool vật lý chạy ngầm
+                    let payload_dispatch = payload.clone();
+                    let worker_pool_dispatch = worker_pool_clone.clone();
+
+                    let exec_res = tokio::time::timeout(
+                        timeout_duration,
+                        worker_pool_clone.spawn(move || async move {
+                            Self::dispatch_workload(payload_dispatch, worker_pool_dispatch).await
+                        })
+                    )
+                    .await;
+
+                    // Phân loại kết quả thực thi để báo cáo
+                    let report = match exec_res {
+                        Ok(Ok(Ok(res))) => {
                             Logger::job_log(
                                 &payload.job_id,
                                 &payload.job_topic,
                                 payload.attempt,
                                 "job.success",
-                                "Workload executed successfully within timeout limits"
+                                &format!("Workload executed successfully: {}", res.message),
                             );
 
-                            let ack_id = payload.redis_msg_id.as_deref().unwrap_or(&payload.job_id);
-                            let _ = crate::infra::redis::query::acknowledge_message(redis_job_clone.client(), &stream_key_clone, "dataplane-group", ack_id)
-                                .await;
-
-                            // Báo cáo kết quả thành công lên Controlplane
-                            let report = JobExecutionResult {
-                                job_id: payload.job_id.clone(),
+                            JobExecutionResult {
+                                job_id: job_id.clone(),
                                 job_version: payload.job_version,
                                 attempt: payload.attempt,
                                 result_status: "SUCCEEDED".to_string(),
                                 error_code: None,
-                                message: "Workload completed successfully".to_string(),
+                                message: res.message,
+                            }
+                        }
+                        Ok(Ok(Err(e))) => {
+                            let (code, msg) = match e {
+                                crate::executor::ExecutorError::IdempotencyViolation(m) => {
+                                    (Some("IDEMPOTENCY_VIOLATION".to_string()), m)
+                                }
+                                crate::executor::ExecutorError::DeadlineExceeded(m) => {
+                                    (Some("DEADLINE_EXCEEDED".to_string()), m)
+                                }
+                                crate::executor::ExecutorError::ExecutionFailed(m) => {
+                                    (Some("EXECUTION_FAILED".to_string()), m)
+                                }
                             };
-                            let _ = JobResultReporter::report_via_grpc(&report).await;
+
+                            Logger::sys_error(
+                                "job.ingestion",
+                                &format!("Workload execution failed for job {}: {}", job_id, msg),
+                                code.as_deref().unwrap_or("UNKNOWN_EXECUTION_ERROR"),
+                            );
+
+                            JobExecutionResult {
+                                job_id: job_id.clone(),
+                                job_version: payload.job_version,
+                                attempt: payload.attempt,
+                                result_status: "FAILED".to_string(),
+                                error_code: code,
+                                message: msg,
+                            }
+                        }
+                        Ok(Err(pool_err)) => {
+                            Logger::sys_error(
+                                "job.ingestion",
+                                &format!("WorkerPool failed for job {}: {}", job_id, pool_err),
+                                "WORKER_POOL_ERROR",
+                            );
+
+                            JobExecutionResult {
+                                job_id: job_id.clone(),
+                                job_version: payload.job_version,
+                                attempt: payload.attempt,
+                                result_status: "FAILED".to_string(),
+                                error_code: Some("WORKER_POOL_ERROR".to_string()),
+                                message: format!("Worker pool failed to process task: {}", pool_err),
+                            }
                         }
                         Err(_) => {
-                            // Lỗi Early Timeout -> Hủy bỏ cục bộ, không gọi XACK để nhường cho chu kỳ phục hồi
                             Logger::sys_error(
                                 "job.ingestion",
                                 &format!(
                                     "CRITICAL: Early Timeout expired for Job {} ({:?}). Local task terminated.",
-                                    payload.job_id, timeout_duration
+                                    job_id, timeout_duration
                                 ),
                                 "EARLY_TIMEOUT"
                             );
 
-                            // Báo cáo lỗi thất bại lên Controlplane để cập nhật giao diện
-                            let report = JobExecutionResult {
-                                job_id: payload.job_id.clone(),
+                            JobExecutionResult {
+                                job_id: job_id.clone(),
                                 job_version: payload.job_version,
                                 attempt: payload.attempt,
                                 result_status: "FAILED".to_string(),
                                 error_code: Some("EARLY_TIMEOUT".to_string()),
-                                message: format!("Workload execution exceeded 9/10 limit of idle time ({:?})", timeout_duration),
-                            };
-                            let _ = JobResultReporter::report_via_grpc(&report).await;
+                                message: format!(
+                                    "Workload execution exceeded 9/10 limit of idle time ({:?})",
+                                    timeout_duration
+                                ),
+                            }
                         }
+                    };
+
+                    // Báo cáo kết quả đồng thời qua Redis Pub/Sub và gRPC
+                    let _ = JobResultReporter::report_outcome(
+                        redis_job_clone.client(),
+                        &result_channel,
+                        &report,
+                    )
+                    .await;
+
+                    // Xác nhận giải phóng tin nhắn (XACK) trên Stream nếu xử lý thành công
+                    if report.result_status == "SUCCEEDED" {
+                        let ack_id = payload.redis_msg_id.as_deref().unwrap_or(&payload.job_id);
+                        let _ = crate::infra::redis::query::acknowledge_message(
+                            redis_job_clone.client(),
+                            &stream_key_clone,
+                            "dataplane-group",
+                            ack_id,
+                        )
+                        .await;
                     }
 
                     // Giải phóng khóa Lease Lock trên redis_internal_zone
-                    let _ = crate::infra::redis::query::release_lease_lock(redis_internal_zone_clone.client(), &lock_key).await;
+                    let _ = crate::infra::redis::query::release_lease_lock(
+                        redis_internal_zone_clone.client(),
+                        &lock_key,
+                    )
+                    .await;
 
                     // Giảm số lượng job đang xử lý khi hoàn tất
                     active_jobs_clone.fetch_sub(1, Ordering::SeqCst);
@@ -254,28 +332,41 @@ impl JobConsumer {
     }
 
     /// Định tuyến động nghiệp vụ (Dynamic Workload Routing) dựa vào Topic.
-    pub async fn dispatch_workload(payload: JobPayload) {
+    pub async fn dispatch_workload(
+        payload: JobPayload,
+        worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
+    ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
         Logger::sys_info(
             "job.ingestion",
-            &format!("Dispatching job {} (topic: {}) to dedicated executor...", payload.job_id, payload.job_topic)
+            &format!(
+                "Dispatching job {} (topic: {}) to dedicated executor...",
+                payload.job_id, payload.job_topic
+            ),
         );
-        
-        match payload.job_topic.as_str() {
-            "vps.create" | "vps.resize" => {
-                // Khởi gọi xử lý Hypervisor VPS
-                sleep(Duration::from_millis(200)).await; // Giả lập thời gian chạy tác vụ
+
+        let topic = payload.job_topic.clone();
+        let parts: Vec<&str> = topic.split('.').collect();
+        if parts.len() != 2 {
+            return Err(crate::executor::ExecutorError::ExecutionFailed(format!(
+                "Invalid job topic format: {}",
+                topic
+            )));
+        }
+
+        let workload = parts[0].to_string();
+        let action = parts[1].to_string();
+
+        match workload.as_str() {
+            "mail" => {
+                crate::executor::mail::dispatch_mail_job(&action, payload, worker_pool).await
             }
-            "mail.send" => {
-                // Khởi gọi xử lý Mail
-                sleep(Duration::from_millis(100)).await; // Giả lập thời gian chạy tác vụ
+            "vps" => {
+                crate::executor::hypervisor::dispatch_vps_job(&action, payload).await
             }
-            _ => {
-                Logger::sys_error(
-                    "job.ingestion",
-                    &format!("Unsupported job topic received: {}", payload.job_topic),
-                    "DISPATCH_ERROR"
-                );
-            }
+            _ => Err(crate::executor::ExecutorError::ExecutionFailed(format!(
+                "Unsupported workload type: {}",
+                workload
+            ))),
         }
     }
 }

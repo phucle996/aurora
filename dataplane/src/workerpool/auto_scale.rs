@@ -1,7 +1,7 @@
 /// ============================================================================
 /// 📂 MODULE: workerpool/auto_scale.rs - Trình Điều Phối Co Giãn Số Lượng Worker
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Tính toán và đưa ra quyết định thay đổi số lượng worker hoạt động tại runtime.
 ///   - Đảm bảo giới hạn trên của worker không vượt quá định mức quy định bởi chính sách `max_workers` của Policy Engine.

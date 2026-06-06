@@ -235,3 +235,15 @@ pub async fn send_liveness_heartbeat(client: &redis::Client, zone_id: &str, host
     Ok(())
 }
 
+/// Phát hành thông tin/kết quả công việc vào một kênh Pub/Sub.
+pub async fn publish_pubsub(client: &redis::Client, channel: &str, message: &str) -> Result<(), String> {
+    let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
+    let _: () = redis::cmd("PUBLISH")
+        .arg(channel)
+        .arg(message)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+

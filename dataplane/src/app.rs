@@ -239,13 +239,9 @@ impl AppContainer {
         });
 
         // 1. Khởi chạy luồng giám sát sự cố/hoạt động của Worker Pool
-        let worker_pool_clone = self.worker_pool.clone();
         tokio::spawn(async move {
             while let Some(signal) = worker_signal_rx.recv().await {
                 match signal {
-                    WorkerSignal::Shutdown => {
-                        worker_pool_clone.shutdown();
-                    }
                     WorkerSignal::RestartWorker(id) => {
                         Logger::sys_warn(
                             "workerpool.lifecycle",
@@ -296,11 +292,11 @@ impl AppContainer {
     }
 
     /// Dừng an toàn (Graceful Shutdown) toàn bộ các luồng công việc đang thực thi.
-    pub fn stop(&self) {
+    pub async fn stop(&self) {
         Logger::sys_info(
             "system.shutdown",
             "Stopping application container gracefully...",
         );
-        self.worker_pool.shutdown();
+        self.worker_pool.shutdown().await;
     }
 }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// ============================================================================
 /// 📂 MODULE: job-receiver/message.rs - Đặc Tả Cấu Trúc Message & Phân Tích Dữ Liệu
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Khai báo cấu trúc dữ liệu `JobPayload` đại diện cho các Job nghiệp vụ được đẩy vào Dataplane.
 ///   - Cung cấp hàm giải mã JSON (Deserializer) thô lấy từ Redis Stream.
