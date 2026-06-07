@@ -7,6 +7,8 @@ import bgLogin from '../../assets/image.png'
 import bgLoginDark from '../../assets/login-dark.png'
 import LanguageSwitcher from '@/components/layout/language-switcher'
 import ThemeSwitcher from '@/components/layout/theme-switcher'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useZoneStore } from '@/hooks/useZoneStore'
 
 interface AuthLayoutProps {
   children: ReactNode
@@ -14,6 +16,12 @@ interface AuthLayoutProps {
 
 export default function AuthLayout({ children }: AuthLayoutProps) {
   const { t, i18n: i18nInstance } = useTranslation('auth')
+  const { zones, activeZone, setActiveZone, fetchZones } = useZoneStore()
+
+  useEffect(() => {
+    fetchZones()
+  }, [fetchZones])
+
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof document !== 'undefined') {
       return document.documentElement.classList.contains('dark') ? 'dark' : 'light'
@@ -74,9 +82,33 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
             </p>
           </div>
 
-          <div className="inline-flex items-center gap-2 rounded-full border border-[#d7e1f0] bg-white/90 px-4 py-2 text-sm font-semibold text-[#5f6e86] shadow-sm backdrop-blur dark:border-slate-700/30 dark:bg-[#0f172a]/70 dark:text-[#CBD5E1] dark:shadow-[0_8px_24px_rgba(0,0,0,0.22)]">
-            <ShieldCheck className="h-4 w-4 text-[#5f6e86] dark:text-[#CBD5E1]" />
-            {t('socInfo')}
+          <div className="flex items-center gap-3">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#d7e1f0] bg-white/90 px-4 py-2 text-sm font-semibold text-[#5f6e86] shadow-sm backdrop-blur dark:border-slate-700/30 dark:bg-[#0f172a]/70 dark:text-[#CBD5E1] dark:shadow-[0_8px_24px_rgba(0,0,0,0.22)]">
+              <ShieldCheck className="h-4 w-4 text-[#5f6e86] dark:text-[#CBD5E1]" />
+              {t('socInfo')}
+            </div>
+
+            {/* SRE HA Note: Dropdown chọn Zone tại Header, dùng chung trạng thái từ useZoneStore */}
+            <div className="w-40 sm:w-48">
+              <Select
+                value={activeZone || 'global'}
+                onValueChange={(val) => setActiveZone(val === 'global' ? null : val)}
+              >
+                <SelectTrigger className="h-10 w-full rounded-full border border-[#d7e1f0] bg-white/90 px-4 text-xs font-bold text-[#5f6e86] shadow-sm backdrop-blur dark:border-slate-700/30 dark:bg-[#0f172a]/70 dark:text-[#CBD5E1] dark:shadow-[0_8px_24px_rgba(0,0,0,0.22)] focus-visible:ring-0">
+                  <SelectValue placeholder="Chọn Zone" />
+                </SelectTrigger>
+                <SelectContent className="dark:bg-[#0f172a] dark:border-slate-800">
+                  <SelectItem value="global" className="text-xs dark:text-slate-200">
+                    🌐 Global Portal
+                  </SelectItem>
+                  {zones.map((zone) => (
+                    <SelectItem key={zone.id} value={zone.code} className="text-xs dark:text-slate-200">
+                      📍 {zone.name} ({zone.code})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </header>
 

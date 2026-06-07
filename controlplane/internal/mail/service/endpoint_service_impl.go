@@ -78,12 +78,12 @@ func (s *endpointServiceImpl) resolveZone(ctx context.Context) (uuid.UUID, error
 		return uuid.Nil, nil
 	}
 
-	zone, err := s.zoneSvc.GetZoneByCode(ctx, code)
+	zoneID, err := s.zoneSvc.GetZoneIDByCode(ctx, code)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("mail service: zone '%s' not found: %w", code, err)
 	}
 
-	return zone.ID, nil
+	return zoneID, nil
 }
 
 func (s *endpointServiceImpl) CreateEndpoint(

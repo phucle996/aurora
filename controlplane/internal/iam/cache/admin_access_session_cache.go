@@ -123,15 +123,6 @@ func NewAdminAccessSessionCache(rdb *goredis.Client) AdminAccessSessionCache {
 
 // SetAccessSession lưu thông tin phiên làm việc của Admin vào Redis.
 func (c *adminAccessSessionCache) SetAccessSession(ctx context.Context, session AdminAccessSession, ttl time.Duration) error {
-	// --- BƯỚC 1: Kiểm tra tính khả dụng của Redis Client (Fail-Fast) ---
-	if c == nil || c.rdb == nil {
-		return fmt.Errorf("iam cache: redis client is required")
-	}
-
-	// --- BƯỚC 2: Kiểm tra giá trị thời gian sống (TTL) đầu vào ---
-	if ttl <= 0 {
-		return fmt.Errorf("iam cache: ttl must be positive")
-	}
 
 	// --- BƯỚC 3: Loại bỏ khoảng trắng dư thừa trong dữ liệu thô ---
 	session.AccessKey = strings.TrimSpace(session.AccessKey)
@@ -178,10 +169,6 @@ func (c *adminAccessSessionCache) SetAccessSession(ctx context.Context, session 
 
 // VerifyAccessSecret thực hiện xác thực mã bí mật thô (rawAccessSecret).
 func (c *adminAccessSessionCache) VerifyAccessSecret(ctx context.Context, accessKey string, rawAccessSecret string) (bool, error) {
-	// --- BƯỚC 1: Kiểm tra tính khả dụng của Redis Client ---
-	if c == nil || c.rdb == nil {
-		return false, fmt.Errorf("iam cache: redis client is required")
-	}
 
 	// --- BƯỚC 2: Tải thông tin phiên làm việc hiện tại từ Redis ---
 	record, err := c.GetAccessSession(ctx, accessKey)
@@ -203,18 +190,8 @@ func (c *adminAccessSessionCache) VerifyAccessSecret(ctx context.Context, access
 
 // GetAccessSession tải thông tin phiên làm việc của Admin dựa trên Access Key.
 func (c *adminAccessSessionCache) GetAccessSession(ctx context.Context, accessKey string) (*AdminAccessSession, error) {
-	// --- BƯỚC 1: Kiểm tra tính khả dụng của Redis Client (Fail-Fast) ---
-	if c == nil || c.rdb == nil {
-		return nil, fmt.Errorf("iam cache: redis client is required")
-	}
-
-	trimmedKey := strings.TrimSpace(accessKey)
-	if trimmedKey == "" {
-		return nil, fmt.Errorf("iam cache: access key must not be empty")
-	}
-
 	// --- BƯỚC 2: Gọi lệnh GET để lấy dữ liệu thô từ Redis ---
-	raw, err := c.rdb.Get(ctx, c.key(trimmedKey)).Result()
+	raw, err := c.rdb.Get(ctx, c.key(accessKey)).Result()
 
 	// --- BƯỚC 3: Xử lý trường hợp không tìm thấy dữ liệu (Cache Miss) ---
 	if err == goredis.Nil {
@@ -303,26 +280,8 @@ func (c *adminAccessSessionCache) TouchAccessSession(ctx context.Context, access
 // CompareAndTouchAccessSession thực thi LUA Script nguyên tử (Atomic Compare-And-Swap) trên Redis
 // đồng bộ gia hạn thời gian sống cho cả session chính và chỉ mục ZSET index.
 func (c *adminAccessSessionCache) CompareAndTouchAccessSession(ctx context.Context, accessKey string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
-	// --- BƯỚC 1: Kiểm tra tính khả dụng của Redis Client ---
-	if c == nil || c.rdb == nil {
-		return false, fmt.Errorf("iam cache: redis client is required")
-	}
-
-	// --- BƯỚC 2: Validate các tham số ràng buộc thời gian và phiên bản ---
-	if ttl <= 0 {
-		return false, fmt.Errorf("iam cache: ttl must be positive")
-	}
-	if expectedVersion <= 0 {
-		return false, fmt.Errorf("iam cache: expected version must be positive")
-	}
-
-	trimmedKey := strings.TrimSpace(accessKey)
-	if trimmedKey == "" {
-		return false, fmt.Errorf("iam cache: access key must not be empty")
-	}
-
 	// --- BƯỚC 3: Chuẩn hóa các giá trị tùy chọn (IP, User Agent) ---
-	key := c.key(trimmedKey)
+	key := c.key(accessKey)
 	ipValue := ""
 	if ip != nil {
 		ipValue = strings.TrimSpace(*ip)
@@ -366,7 +325,7 @@ return 1
 
 	// --- BƯỚC 5: Thực thi Eval LUA Script và nhận kết quả nguyên tử ---
 	expireAt := time.Now().UTC().Add(ttl).Unix()
-	result, err := c.rdb.Eval(ctx, lua, []string{key, c.indexKey()}, expectedVersion, int(ttl.Seconds()), time.Now().UTC().Unix(), ipValue, uaValue, expireAt, trimmedKey).Int()
+	result, err := c.rdb.Eval(ctx, lua, []string{key, c.indexKey()}, expectedVersion, int(ttl.Seconds()), time.Now().UTC().Unix(), ipValue, uaValue, expireAt, accessKey).Int()
 	if err != nil {
 		return false, err
 	}
@@ -377,15 +336,6 @@ return 1
 
 // ScanAccessSessions thực hiện cào danh sách các phiên làm việc đang hoạt động trong Redis.
 func (c *adminAccessSessionCache) ScanAccessSessions(ctx context.Context, limit int) ([]AdminAccessSession, error) {
-	// --- BƯỚC 1: Kiểm tra tính khả dụng của Redis Client ---
-	if c == nil || c.rdb == nil {
-		return nil, fmt.Errorf("iam cache: redis client is required")
-	}
-
-	// --- BƯỚC 2: Yêu cầu giới hạn cào dữ liệu phải dương, TUYỆT ĐỐI không tự động gán mặc định ---
-	if limit <= 0 {
-		return nil, fmt.Errorf("iam cache: limit must be positive")
-	}
 
 	// --- BƯỚC 3: Dọn dẹp các session đã hết hạn trong ZSET index trước khi quét ---
 	// Giúp index luôn sạch sẽ và tối ưu dung lượng bộ nhớ.

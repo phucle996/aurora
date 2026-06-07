@@ -32,6 +32,7 @@ import (
 	"context"
 	"fmt"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
@@ -74,7 +75,14 @@ type Module struct {
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket) (*Module, error) {
+func NewModule(
+	cfg *config.Config,
+	db *pgxpool.Pool,
+	rds *goredis.Client,
+	rateLimiter *ratelimit.Bucket,
+	l1Registry *cacheengine.CacheRegistry,
+	l1Fanout *cacheengine.RedisFanout,
+) (*Module, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("core module: config is required")
 	}
@@ -97,7 +105,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
 	}
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, zoneCache)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, zoneCache, l1Registry, l1Fanout)
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
 	if zoneHandler == nil {
 		return nil, fmt.Errorf("core module: zone handler is nil")

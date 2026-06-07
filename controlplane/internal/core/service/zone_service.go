@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
@@ -28,56 +29,59 @@ import (
 )
 
 type ZoneService struct {
-	repo  coreRepoInterface.ZoneRepository
-	cache *coreCache.ZoneFanoutCache // L2 RAM cache — COW, lock-free reads, versioned
-	sfg   singleflight.Group
-}
-
-type catalogWithVersion struct {
-	catalog []coreEntity.ZoneCatalog
-	version int64
+	repo       coreRepoInterface.ZoneRepository
+	cache      *coreCache.ZoneFanoutCache // L2 RAM cache — COW, lock-free reads, versioned
+	l1Registry *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine
+	l1Fanout   *cacheengine.RedisFanout   // Tích hợp RedisFanout độc lập
+	sfg        singleflight.Group
 }
 
 func NewZoneService(
 	repo coreRepoInterface.ZoneRepository,
 	cache *coreCache.ZoneFanoutCache,
+	l1Registry *cacheengine.CacheRegistry,
+	l1Fanout *cacheengine.RedisFanout,
 ) coreSvcInterface.ZoneService {
-	return &ZoneService{repo: repo, cache: cache}
+	return &ZoneService{
+		repo:       repo,
+		cache:      cache,
+		l1Registry: l1Registry,
+		l1Fanout:   l1Fanout,
+	}
 }
 
 func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
 	return s.repo.ListZones(ctx)
 }
 
-// GetZoneCatalog hot-path: L2 RAM cache O(1), singleflight coalesces DB misses.
+// GetZoneCatalog hot-path: L1 RAM cache O(1) Zero-Serialization & COW.
+// Phương thức này đọc trực tiếp từ l1Registry thông qua key "zone_catalog".
+// Nếu cache miss, registry sẽ tự động kích hoạt loader đã được đăng ký tĩnh để nạp dữ liệu.
+// Ngoài ra, để đảm bảo tính sẵn sàng cao (High Availability), phương thức hỗ trợ cơ chế
+// fail-safe fallback: nếu có lỗi trích xuất hoặc ép kiểu cache, hệ thống sẽ tự động gọi
+// trực tiếp database repository để tránh làm sập luồng API của người dùng.
 func (s *ZoneService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	if catalog, ok := s.cache.GetCatalog(); ok {
-		return catalog, nil
+	if s.l1Registry == nil {
+		// SRE Warning: Nếu registry chưa được cấu hình (ví dụ trong môi trường test),
+		// thực hiện fallback gọi trực tiếp repo từ DB.
+		return s.repo.GetZoneCatalog(ctx)
 	}
 
-	// Cache miss: singleflight gom tất cả concurrent req thành 1 DB call
-	v, err, _ := s.sfg.Do("zone:catalog", func() (any, error) {
-		catalog, err := s.repo.GetZoneCatalog(ctx)
-		if err != nil {
-			return nil, err
-		}
-		var maxVersion int64
-		for _, item := range catalog {
-			if item.UpdatedAt != nil {
-				unixNano := item.UpdatedAt.UnixNano()
-				if unixNano > maxVersion {
-					maxVersion = unixNano
-				}
-			}
-		}
-		return &catalogWithVersion{catalog: catalog, version: maxVersion}, nil
-	})
+	val, err := s.l1Registry.GetOrLoad(ctx, "zone_catalog", "")
 	if err != nil {
 		return nil, err
 	}
-	result := v.(*catalogWithVersion)
-	s.cache.SetCatalog(result.catalog, result.version)
-	return result.catalog, nil
+
+	// Ép kiểu trực tiếp (Type Assertion) từ raw interface{} nhận được từ CacheRegistry.
+	// Cơ chế này giúp đạt hiệu năng O(1) và Zero-Allocation trên RAM (không tốn CPU parse JSON).
+	catalog, ok := val.([]coreEntity.ZoneCatalog)
+	if !ok {
+		// SRE HA Warning: Dữ liệu trong cache bị lỗi kiểu cấu trúc (type mismatch),
+		// thực hiện fallback về database để đảm bảo hệ thống không bị lỗi panic/crash.
+		return s.repo.GetZoneCatalog(ctx)
+	}
+
+	return catalog, nil
 }
 
 // CreateZone tạo zone mới + cập nhật cache (tự động đồng bộ các replica).
@@ -112,19 +116,14 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 
 	s.cache.PatchZone(ctx, zone, zone.UpdatedAt.Unix())
 
-	return nil
-}
+	if s.l1Registry != nil {
+		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
+	}
+	if s.l1Fanout != nil {
+		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
+	}
 
-// GetZoneByID lấy thông tin chi tiết của một Zone.
-func (s *ZoneService) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
-	zone, err := s.repo.GetZoneByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if zone == nil {
-		return nil, coreErrorx.ErrZoneNotFound
-	}
-	return zone, nil
+	return nil
 }
 
 // GetZoneDetailByID lấy thông tin chi tiết của một Zone kèm theo tất cả các dịch vụ của nó.
@@ -139,16 +138,15 @@ func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*cor
 	return detail, nil
 }
 
-
-// GetZoneByCode lấy thông tin chi tiết của một Zone bằng mã zone code.
-func (s *ZoneService) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
+// GetZoneIDByCode lấy zone ID từ zone code. Hàm này dùng để nạp cache.
+func (s *ZoneService) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
 	code = strings.ToLower(strings.TrimSpace(code))
 	if code == "" {
-		return nil, coreErrorx.ErrZoneNotFound
+		return uuid.Nil, coreErrorx.ErrZoneNotFound
 	}
 	if s.cache != nil {
 		if z, ok := s.cache.GetByCode(code); ok {
-			return &z, nil
+			return z.ID, nil
 		}
 	}
 	// Fallback to query database with singleflight coalescing to avoid thundering herd
@@ -156,13 +154,13 @@ func (s *ZoneService) GetZoneByCode(ctx context.Context, code string) (*coreEnti
 		// Re-check cache inside singleflight block in case a concurrent request already populated it
 		if s.cache != nil {
 			if z, ok := s.cache.GetByCode(code); ok {
-				return &z, nil
+				return z.ID, nil
 			}
 		}
 
 		zones, err := s.repo.ListZones(ctx)
 		if err != nil {
-			return nil, err
+			return uuid.Nil, err
 		}
 		for _, z := range zones {
 			if strings.ToLower(z.Code) == code {
@@ -173,15 +171,15 @@ func (s *ZoneService) GetZoneByCode(ctx context.Context, code string) (*coreEnti
 					}
 					s.cache.PatchZone(ctx, z, v)
 				}
-				return &z, nil
+				return z.ID, nil
 			}
 		}
-		return nil, coreErrorx.ErrZoneNotFound
+		return uuid.Nil, coreErrorx.ErrZoneNotFound
 	})
 	if err != nil {
-		return nil, err
+		return uuid.Nil, err
 	}
-	return v.(*coreEntity.Zone), nil
+	return v.(uuid.UUID), nil
 }
 
 // UpdateZoneStatus chuyển trạng thái zone theo state machine.
@@ -230,6 +228,14 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		}
 		s.cache.PatchZone(ctx, *updated, v)
 	}
+
+	if s.l1Registry != nil {
+		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
+	}
+	if s.l1Fanout != nil {
+		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
+	}
+
 	return updated, nil
 }
 
@@ -267,6 +273,14 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	if s.cache != nil {
 		s.cache.EvictZone(ctx, zone.ID.String(), zone.Code)
 	}
+
+	if s.l1Registry != nil {
+		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
+	}
+	if s.l1Fanout != nil {
+		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
+	}
+
 	return nil
 }
 
@@ -304,5 +318,13 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 	if s.cache != nil {
 		s.cache.PatchZone(ctx, *zone, svc.UpdatedAt.UnixNano())
 	}
+
+	if s.l1Registry != nil {
+		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
+	}
+	if s.l1Fanout != nil {
+		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
+	}
+
 	return svc, nil
 }

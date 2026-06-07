@@ -33,15 +33,23 @@ type AdminLoginRequest struct {
 	HostnameHint    string
 	HostnameAlias   string
 	ClientDeviceID  string
+	// ZoneCode là code của phân vùng (ví dụ: "global", "vn-hn-1")
+	ZoneCode string
 }
 
 type AdminLoginResult struct {
-	AdminAPIToken            string
-	AccessKey                string
-	AccessSecret             string
-	ClientDeviceID           string
+	// AdminAPIToken là JWT token ngắn hạn (Mảnh 1 của cơ chế Fragment Token), chứa các claims và được lưu ở cookie admin_api_token
+	AdminAPIToken string
+	// AccessKey là mã định danh phiên làm việc (Mảnh 2), dùng làm khóa truy vấn phiên trong Redis cache (cookie access_key)
+	AccessKey string
+	// AccessSecret là mã bí mật của phiên (Mảnh 3), được băm SHA256 khi lưu tại Redis cache và lưu thô tại cookie access_secret
+	AccessSecret string
+	// ClientDeviceID là mã định danh duy nhất của thiết bị được liên kết cố định với phiên quản trị (Device Binding)
+	ClientDeviceID string
+	// ClientDeviceIDProvenance mô tả nguồn gốc xuất xứ của Client Device ID (ví dụ: từ cookie hoặc thiết bị mới) phục vụ audit log
 	ClientDeviceIDProvenance string
-	ExpiresAt                time.Time
+	// ExpiresAt là mốc thời gian Unix khi phiên làm việc của Admin chính thức hết hạn
+	ExpiresAt time.Time
 }
 
 type Admin2FASettings struct {

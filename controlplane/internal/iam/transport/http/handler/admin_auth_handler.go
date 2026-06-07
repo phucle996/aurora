@@ -3,6 +3,7 @@ package iamHandler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,8 +62,27 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	// SRE HA & Security Warning: Chuẩn hóa và xác thực zone_code truyền lên từ client.
+	// Hỗ trợ lấy từ Query Parameter (?zone_code=...) hoặc từ JSON Request Body.
+	// Nếu cả hai đều trống hoặc chỉ toàn khoảng trắng, từ chối request ngay lập tức để thực thi Fail-Closed.
+	zoneCode := strings.TrimSpace(c.Query("zone_code"))
+	if zoneCode == "" {
+		zoneCode = strings.TrimSpace(request.ZoneCode)
+	}
+	if zoneCode == "" {
+		logger.HandlerWarn(c, op, nil, "admin login zone_code is empty")
+		apires.RespondBadRequest(c, "zone_code is required")
+		return
+	}
+
+	// Thu thập các dấu vết thiết bị (Device Fingerprint) để phục vụ chính sách bảo mật Zero-Trust:
+	// - hostnameHint & hostnameAlias: Nhận dạng tên thiết bị chạy ứng dụng client (vd: phucle-macbook-pro)
+
 	hostnameHint := c.GetHeader(deviceHint.HeaderDeviceHostname)
 	hostnameAlias := c.GetHeader(deviceHint.HeaderDeviceNameAlt)
+
+	// - clientDeviceIDHint: Đọc mã định danh duy nhất của thiết bị từ Custom Header,
+	//   nếu không có thì fallback tìm trong Cookie của Web Browser để ràng buộc thiết bị vật lý với Admin Session.
 	clientDeviceIDHint := c.GetHeader(deviceHint.HeaderClientDeviceID)
 	if clientDeviceIDHint == "" {
 		if cookieValue, _ := c.Cookie(cookie.ClientDeviceIDName); cookieValue != "" {
@@ -76,6 +96,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		MFAMethod:       iamEntity.MFAType(strings.TrimSpace(strings.ToLower(request.MFAMethod))),
 		MFACode:         strings.TrimSpace(request.MFACode),
 		DevicePublicKey: strings.TrimSpace(request.DevicePublicKey),
+		ZoneCode:        zoneCode,
 		HostnameHint:    hostnameHint,
 		HostnameAlias:   hostnameAlias,
 		ClientDeviceID:  clientDeviceIDHint,
@@ -133,6 +154,17 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		Expires:  result.ExpiresAt,
 		MaxAge:   int(time.Until(result.ExpiresAt).Seconds()),
 	})
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     cookie.ZoneCodeName,
+		Value:    zoneCode,
+		Path:     "/admin",
+		Domain:   domain,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  result.ExpiresAt,
+		MaxAge:   int(time.Until(result.ExpiresAt).Seconds()),
+	})
 	cdidExpires := time.Now().UTC().Add(365 * 24 * time.Hour)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.ClientDeviceIDName,
@@ -181,7 +213,15 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	accessKey, _ := c.Cookie(cookie.AccessKeyName)
+	zoneCode := strings.TrimSpace(c.Query("zone_code"))
+	if zoneCode == "" {
+		logger.HandlerWarn(c, op, fmt.Errorf("missing zone_code query parameter"), "admin refresh rejected")
+		apires.RespondBadRequest(c, "zone_code query parameter is required")
+		return
+	}
+
+	logger.HandlerInfo(c, op, fmt.Sprintf("admin refresh session initiated for zone: %s", zoneCode))
+
 	var requestIP *string
 	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
 		requestIP = &ip
@@ -190,12 +230,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
 		userAgent = &ua
 	}
-	if value, ok := c.Get(constant.ContextKeyAdminAccessKey); ok {
-		if accessKeyCtx, castOK := value.(string); castOK {
-			accessKey = accessKeyCtx
-		}
-	}
-	result, err := h.svc.RefreshAdminSession(ctx, strings.TrimSpace(accessKey), requestIP, userAgent)
+	result, err := h.svc.RefreshAdminSession(ctx, zoneCode, requestIP, userAgent)
 	if err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
@@ -237,6 +272,16 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	http.SetCookie(c.Writer,
 		&http.Cookie{Name: cookie.AccessSecretName,
 			Value:    result.AccessSecret,
+			Path:     "/admin",
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  result.ExpiresAt,
+			MaxAge:   maxAge})
+	http.SetCookie(c.Writer,
+		&http.Cookie{Name: cookie.ZoneCodeName,
+			Value:    zoneCode,
 			Path:     "/admin",
 			Domain:   domain,
 			HttpOnly: true,
@@ -286,6 +331,8 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	}
 	trimmedAccessKey := strings.TrimSpace(accessKey)
 	if trimmedAccessKey == "" {
+		// Nhánh 1: Client không có session key (chưa đăng nhập hoặc cookie đã mất).
+		// Không cần gọi backend thu hồi, chỉ cần xóa sạch cookie phía Client để đồng bộ trạng thái và trả về 204.
 		secure := c.Request.TLS != nil
 		domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 		exp := time.Unix(0, 0)
@@ -322,6 +369,17 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 			Expires:  exp,
 			MaxAge:   -1,
 		})
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     cookie.ZoneCodeName,
+			Value:    "",
+			Path:     "/admin",
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  exp,
+			MaxAge:   -1,
+		})
 		c.Status(http.StatusNoContent)
 		return
 	}
@@ -339,6 +397,8 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 		return
 	}
 
+	// Nhánh 2: Gọi backend thu hồi session thành công.
+	// Tiến hành xóa cookie phía Client để hoàn tất quá trình đăng xuất.
 	secure := c.Request.TLS != nil
 	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 	exp := time.Unix(0, 0)
@@ -366,6 +426,17 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessSecretName,
+		Value:    "",
+		Path:     "/admin",
+		Domain:   domain,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  exp,
+		MaxAge:   -1,
+	})
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     cookie.ZoneCodeName,
 		Value:    "",
 		Path:     "/admin",
 		Domain:   domain,

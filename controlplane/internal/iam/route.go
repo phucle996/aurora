@@ -146,7 +146,9 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		middleware.AdminAPIKeyAuth(
 			middleware.WithInjectAccessKey(),
 			middleware.WithInjectAccessSecret(),
+			middleware.WithInjectZoneID(),
 		),
+		middleware.AdminZoneAuth(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/refresh"),
 		module.AdminAuthHandler.Refresh,
 	)

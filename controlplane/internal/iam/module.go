@@ -67,6 +67,7 @@ import (
 	"context"
 	infraredis "controlplane/infra/redis"
 	"controlplane/infra/telegram"
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamCache "controlplane/internal/iam/cache"
 	coreSvc "controlplane/internal/iam/domain/service"
@@ -88,6 +89,7 @@ type IAMModule struct {
 	rds            *goredis.Client
 	rateLimiter    *ratelimit.Bucket
 	secretProvider security.SecretProvider
+	L1Registry     *cacheengine.CacheRegistry
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler         *iamHandler.AuthHandler
@@ -115,6 +117,7 @@ func NewModule(
 	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	secretProvider security.SecretProvider,
+	l1Registry *cacheengine.CacheRegistry,
 ) (*IAMModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -141,6 +144,9 @@ func NewModule(
 	}
 	if secretProvider == nil {
 		return nil, errors.New("iam module: envelope encryption secret provider (secretProvider) is nil (check KMS/Vault key)")
+	}
+	if l1Registry == nil {
+		return nil, errors.New("iam module: L1 cache registry (l1Registry) is nil")
 	}
 
 	// ------------------------------------------------------------------------
@@ -285,7 +291,7 @@ func NewModule(
 	// SRE Admin API Key Service (Nơi điều khiển xoay khóa khẩn cấp và Pub/Sub Invalidation)
 	adminSvc := iamSvcImpl.NewAdminAPIKeyService(
 		cfg, adminRepo, tgClient, secretProvider,
-		adminAccessSession, adminAPIKeyCache, adminRotateTrigger,
+		adminAccessSession, adminAPIKeyCache, l1Registry, adminRotateTrigger,
 	)
 	if adminSvc == nil {
 		return nil, errors.New("iam module: failed to construct SRE admin API key management service")
@@ -347,6 +353,7 @@ func NewModule(
 		rds:                 rds,
 		rateLimiter:         rateLimiter,
 		secretProvider:      secretProvider,
+		L1Registry:          l1Registry,
 		AuthHandler:         authHandler,
 		authSvcImpl:         authSvcImpl,
 		LogoutHandler:       logoutHandler,

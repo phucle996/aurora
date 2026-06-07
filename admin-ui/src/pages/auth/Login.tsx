@@ -23,6 +23,7 @@ type AdminLoginState = {
 type MFAMethod = 'totp' | 'recovery_code'
 
 import { getOrCreateDeviceKeys } from '@/lib/crypto'
+import { useZoneStore } from '@/hooks/useZoneStore'
 
 async function extractBackendError(resp: Response): Promise<string> {
   try {
@@ -62,6 +63,7 @@ export default function AdminAPIKeyLoginPage() {
   const [apiKey, setAPIKey] = useState('')
   const [twoFactorCode, setTwoFactorCode] = useState('')
   const [mfaMethod, setMFAMethod] = useState<MFAMethod>('totp')
+  const { activeZone } = useZoneStore()
   const [state, setState] = useState<AdminLoginState>({
     loading: false,
     error: '',
@@ -87,6 +89,7 @@ export default function AdminAPIKeyLoginPage() {
     try {
       const deviceKeys = await getOrCreateDeviceKeys()
 
+      // SRE HA & Security Note: Truyền thêm thuộc tính zone_code xác định phân vùng muốn kết nối.
       const resp = await Fetch('/admin/auth/login', {
         method: 'POST',
         headers: {
@@ -97,6 +100,7 @@ export default function AdminAPIKeyLoginPage() {
           mfa_method: mfaMethod,
           mfa_code: trimmedMFACode,
           device_public_key: deviceKeys.publicKey,
+          zone_code: activeZone || 'global',
         }),
       })
 

@@ -8,6 +8,7 @@ const (
 	ContextKeyAdminAccessKey    = "admin.access_key"
 	ContextKeyAdminAccessSecret = "admin.access_secret"
 	ContextKeyAdminTokenJTI     = "admin.token_jti"
+	ContextKeyAdminZoneID       = "admin.zone_id"
 
 	ContextKeyJWTClaims        = "jwt_claims"
 	ContextKeyUserID           = "user_id"

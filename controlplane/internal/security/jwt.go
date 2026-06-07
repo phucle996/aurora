@@ -49,6 +49,7 @@ type Claims struct {
 	Role     string `json:"role,omitempty"`
 	Level    int    `json:"lvl"` // security level: 0=highest, higher=lower
 	TenantID string `json:"tenant_id,omitempty"`
+	ZoneID   string `json:"zone_id,omitempty"`
 	// AccessKey is the runtime session fragment ID carried by cookie access_key.
 	// It is not the persistent physical device ID.
 	AccessKey string `json:"access_key,omitempty"`
@@ -208,6 +209,8 @@ func ExtractBearerToken(header string) (string, bool) {
 func normalizeClaims(claims Claims) Claims {
 	claims.Subject = strings.TrimSpace(claims.Subject)
 	claims.Role = strings.TrimSpace(claims.Role)
+	claims.TenantID = strings.TrimSpace(claims.TenantID)
+	claims.ZoneID = strings.TrimSpace(claims.ZoneID)
 	claims.AccessKey = strings.TrimSpace(claims.AccessKey)
 	claims.TokenID = strings.TrimSpace(claims.TokenID)
 	claims.Issuer = strings.TrimSpace(claims.Issuer)

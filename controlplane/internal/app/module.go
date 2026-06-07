@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/core"
 	coreSvcImpl "controlplane/internal/core/service"
@@ -74,6 +75,10 @@ type Modules struct {
 	Mail *mail.Module
 	// PolicyEngine là runtime hot-reload module cho policies.
 	PolicyEngine *policyengine.Engine
+	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
+	L1Registry *cacheengine.CacheRegistry
+	// L1Fanout là bộ phát tán cache invalidation đa instance qua Redis.
+	L1Fanout *cacheengine.RedisFanout
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
 	probeCancel context.CancelFunc
 }
@@ -123,23 +128,34 @@ func NewGlobalModules(cfg *config.Config,
 	// GIAI ĐOẠN 2: KHỞI TẠO CÁC PHÂN HỆ TIER-0 (CRITICAL) - SAI LÀ FAIL-FAST
 	// ------------------------------------------------------------------------
 
+	// Build in-memory L1 cache registry
+	l1Registry := InitL1CacheRegistry()
+	if l1Registry == nil {
+		return nil, errors.New("app: init L1 cache registry: registry is nil")
+	}
+	// Build RedisFanout bus early
+	l1Fanout := cacheengine.NewRedisFanout(rdsCore, "cacheengine:l1:fanout", l1Registry)
+	if l1Fanout == nil {
+		return nil, errors.New("app: init RedisFanout bus: fanout is nil")
+	}
+
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter)
+	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter, l1Registry, l1Fanout)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
 	if coreModule == nil {
 		return nil, errors.New("app: init critical core module: core module is nil")
 	}
-	if coreModule.RuntimeSecretProvider == nil {
-		return nil, errors.New("app: init critical core module: runtime secret provider is required")
-	}
 
 	// 4) Adapter runtime provider -> security provider để cấp cho IAM/middlewares.
 	securityProvider := coreSvcImpl.NewSecuritySecretProvider(coreModule.RuntimeSecretProvider)
+	if securityProvider == nil {
+		return nil, errors.New("app: init critical core module: security provider is required")
+	}
 
-	// 5) IAM module bootstrap phụ thuộc security provider từ core runtime.
-	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, securityProvider)
+	// 5) IAM module bootstrap phụ thuộc security provider từ core runtime và l1 cache registry.
+	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, securityProvider, l1Registry)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -179,7 +195,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 7) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rdsCore, policyEngineModule); err != nil {
+	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rdsCore, policyEngineModule, l1Registry); err != nil {
 		return nil, err
 	}
 
@@ -187,18 +203,25 @@ func NewGlobalModules(cfg *config.Config,
 	health.MarkReady()
 	keepProbeRunning = true
 
-	return &Modules{
+	modules := &Modules{
 		Health:       health,
 		Core:         coreModule,
 		IAM:          iamModule,
 		Hypervisor:   hypervisorModule,
 		Mail:         mailModule,
 		PolicyEngine: policyEngineModule,
+		L1Registry:   l1Registry,
+		L1Fanout:     l1Fanout,
 		probeCancel:  probeCancel,
-	}, nil
+	}
+
+	// Đăng ký toàn bộ các loader tĩnh sau khi toàn bộ modules đã khởi tạo thành công
+	RegisterL1Loaders(l1Registry, modules, l1Fanout)
+
+	return modules, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client, policyModule *policyengine.Engine) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client, policyModule *policyengine.Engine, l1Registry *cacheengine.CacheRegistry) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}
@@ -222,10 +245,10 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	middleware.InitAdminCIDR(policySnapshot.Runtime.AdminCIDR.Allowlist)
 	middleware.InitRateLimitPolicy(policySnapshot.Runtime.RateLimit)
 
-	// Đăng ký hook để tự động recompile và swap cấu hình rate limit ở runtime
 	policyModule.EngineService.RegisterRateLimitHook(func(policy *policyRateLimit.CompiledPolicy) {
 		middleware.InitRateLimitPolicy(*policy)
 	})
+	middleware.InitZoneAuth(l1Registry)
 	middleware.InitAccess(
 		securityProvider,
 		rds,
@@ -297,6 +320,9 @@ func (m *Modules) Stop() {
 	}
 	if m.PolicyEngine != nil {
 		m.PolicyEngine.Stop()
+	}
+	if m.L1Registry != nil {
+		m.L1Registry.Close()
 	}
 }
 

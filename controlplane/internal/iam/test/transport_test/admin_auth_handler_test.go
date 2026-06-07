@@ -24,7 +24,7 @@ import (
 
 type adminAuthServiceStub struct {
 	loginFn   func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error)
-	refreshFn func(ctx context.Context, accessKey string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
+	refreshFn func(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
 	logoutFn  func(ctx context.Context, accessKey string, ip *string, userAgent *string) error
 	rotateFn  func(ctx context.Context) error
 }
@@ -44,9 +44,9 @@ func (s *adminAuthServiceStub) AdminLogout(ctx context.Context, accessKey string
 	}
 	return nil
 }
-func (s *adminAuthServiceStub) RefreshAdminSession(ctx context.Context, accessKey string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+func (s *adminAuthServiceStub) RefreshAdminSession(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	if s.refreshFn != nil {
-		return s.refreshFn(ctx, accessKey, ip, userAgent)
+		return s.refreshFn(ctx, zoneCode, ip, userAgent)
 	}
 	return iamEntity.AdminLoginResult{}, nil
 }
@@ -87,6 +87,7 @@ func TestAdminAuthHandlerLoginSuccessSetsThreeCookies(t *testing.T) {
 		"mfa_method":        "totp",
 		"mfa_code":          "123456",
 		"device_public_key": "public-key-raw-12345678",
+		"zone_code":         "global",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -125,6 +126,7 @@ func TestAdminAuthHandlerLoginUnauthorized(t *testing.T) {
 		"mfa_method":        "totp",
 		"mfa_code":          "123456",
 		"device_public_key": "public-key-raw-12345678",
+		"zone_code":         "global",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -149,6 +151,7 @@ func TestAdminAuthHandlerLoginUnauthorizedWithAppError(t *testing.T) {
 		"mfa_method":        "totp",
 		"mfa_code":          "123456",
 		"device_public_key": "public-key-raw-12345678",
+		"zone_code":         "global",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -179,6 +182,7 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 		"mfa_method":        "totp",
 		"mfa_code":          "123456",
 		"device_public_key": "public-key-raw-12345678",
+		"zone_code":         "global",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -295,5 +299,54 @@ func TestAdminAuthHandlerSessionAuthenticated(t *testing.T) {
 	}
 	if !payload.Data.Authenticated {
 		t.Fatalf("expected authenticated=true")
+	}
+}
+
+func TestAdminAuthHandlerRefreshMissingZoneCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := newAdminAuthHandler(&adminAuthServiceStub{})
+	r.POST("/admin/auth/refresh", h.Refresh)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/auth/refresh", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "zone_code query parameter is required") {
+		t.Fatalf("expected missing parameter error message, got: %s", w.Body.String())
+	}
+}
+
+func TestAdminAuthHandlerRefreshSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	refreshCalled := false
+	h := newAdminAuthHandler(&adminAuthServiceStub{refreshFn: func(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+		refreshCalled = true
+		if zoneCode != "vn-hn-1" {
+			t.Fatalf("expected zoneCode propagated, got %s", zoneCode)
+		}
+		return iamEntity.AdminLoginResult{
+			AdminAPIToken: "new-token",
+			AccessKey:     "new-device-1",
+			AccessSecret:  "new-secret-1",
+			ExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
+		}, nil
+	}})
+	r.POST("/admin/auth/refresh", h.Refresh)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/auth/refresh?zone_code=vn-hn-1", nil)
+	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-1"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d", w.Code)
+	}
+	if !refreshCalled {
+		t.Fatalf("expected service refresh function to be called")
 	}
 }

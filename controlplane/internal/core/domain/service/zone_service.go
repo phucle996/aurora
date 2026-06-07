@@ -10,11 +10,13 @@ import (
 type ZoneService interface {
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error)
-	GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error)
 
 	// get zone detail for admin ui
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)
-	GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error)
+
+	// GetZoneIDByCode resolves a zone's UUID from its unique code.
+	// This function is intended to load L1/L2 caches and should not be abused on API hotpaths.
+	GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error)
 	CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error
 	UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, status coreEntity.ZoneStatus) (*coreEntity.Zone, error)
 	DeleteZone(ctx context.Context, zoneID uuid.UUID) error

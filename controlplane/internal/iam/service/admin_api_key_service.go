@@ -73,6 +73,7 @@ import (
 	"time"
 
 	"controlplane/infra/telegram"
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamCache "controlplane/internal/iam/cache"
 	deviceHint "controlplane/internal/iam/devicehint"
@@ -83,6 +84,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/constant"
 	"errors"
 
 	"github.com/google/uuid"
@@ -105,6 +107,7 @@ type AdminAPIKeyService struct {
 	secrets         security.SecretProvider
 	sessionCache    iamCache.AdminAccessSessionCache
 	apiKeyCache     iamCache.AdminAPIKeyCache
+	l1Registry      *cacheengine.CacheRegistry
 	rotationTrigger iamCache.AdminKeyRotationTriggerCache
 }
 
@@ -117,6 +120,7 @@ func NewAdminAPIKeyService(
 	secrets security.SecretProvider,
 	sessionCache iamCache.AdminAccessSessionCache,
 	apiKeyCache iamCache.AdminAPIKeyCache,
+	l1Registry *cacheengine.CacheRegistry,
 	rotationTrigger ...iamCache.AdminKeyRotationTriggerCache,
 ) iamSvcInterface.AdminAPIKeyService {
 	var trigger iamCache.AdminKeyRotationTriggerCache
@@ -130,6 +134,7 @@ func NewAdminAPIKeyService(
 		secrets:         secrets,
 		sessionCache:    sessionCache,
 		apiKeyCache:     apiKeyCache,
+		l1Registry:      l1Registry,
 		rotationTrigger: trigger,
 	}
 	if apiKeyCache != nil {
@@ -522,6 +527,38 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, nil, iamTaxonomy.AdminLoginOutcomeInvalidCredential)
 	}
 
+	// --- BƯỚC 4.5: PHÂN GIẢI ZONE CODE SANG ZONE ID (ZONE CODE RESOLUTION) ---
+	// SRE HA Warning: Thực hiện phân giải zone_code nhận được từ client để lấy zone_id (UUID).
+	// Nếu zone_code là "global" thì gán rỗng (cho phép truy cập toàn cục). Ngược lại, tra cứu
+	// thông qua L1 Cache Registry để tránh gây quá tải DB trong môi trường HA Cloud Native.
+	var zoneIDStr string
+	zoneCode := strings.TrimSpace(req.ZoneCode)
+	if zoneCode == "" {
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidArgument
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, fmt.Errorf("zone_code is empty"), iamTaxonomy.AdminLoginOutcomeInvalidArgument)
+	}
+
+	if !strings.EqualFold(zoneCode, "global") {
+		// Gọi L1 cache registry để dịch zone_code thành zone_id
+		val, err := s.l1Registry.GetOrLoad(ctx, "zone_by_code", zoneCode)
+		if err != nil {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidArgument
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, fmt.Errorf("failed to resolve zone code: %w", err), iamTaxonomy.AdminLoginOutcomeInvalidArgument)
+		}
+		resolvedZoneID, ok := val.(string)
+		if !ok || resolvedZoneID == "" {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidArgument
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid zone code resolved"), iamTaxonomy.AdminLoginOutcomeInvalidArgument)
+		}
+
+		// Đảm bảo resolvedZoneID là dạng UUID hợp lệ
+		if _, parseErr := uuid.Parse(resolvedZoneID); parseErr != nil {
+			loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, fmt.Errorf("resolved invalid uuid zone: %w", parseErr), iamTaxonomy.AdminLoginOutcomeSystemError)
+		}
+		zoneIDStr = resolvedZoneID
+	}
+
 	// --- BƯỚC 5: TẠO CẶP ĐỊNH DANH PHIÊN CHẠY (RUNTIME SESSION CONFIGURATION) ---
 	// Sinh mã UUIDv7 ngẫu nhiên cho Access Key để định danh phiên làm việc hiện tại (mapped vào DeviceID trong API contract).
 	accessKeyUUID, uuidErr := uuid.NewV7()
@@ -590,6 +627,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 
 	// Thực hiện ký số tạo JWT chứa các claims bảo mật để phân quyền cho Admin.
 	// LƯU Ý QUAN TRỌNG: TokenUse đã được cập nhật chính xác từ "admin_api_token" sang "admin_api" theo đặc tả thiết kế mới.
+	// Thêm claims.ZoneID để ràng buộc phạm vi truy cập phân vùng của JWT Token.
 	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
 		Subject:   "admin",
 		AccessKey: accessKey,
@@ -597,6 +635,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		TokenUse:  "admin_api",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
+		ZoneID:    zoneIDStr,
 	})
 	if signErr != nil {
 		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
@@ -646,7 +685,8 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 //   - Không sinh device_id mới; reuse device_id của runtime hiện tại.
 //   - Mọi lỗi cache/sign quy về ErrAuthenticationUnavailable hoặc
 //     ErrAdminLoginTokenIssueFailed để handler map HTTP nhất quán.
-func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+	// --- KHỞI TẠO ĐO LƯỜNG TELEMETRY & METRICS ---
 	startedAt := time.Now()
 	refreshOutcome := iamTaxonomy.OutcomeSuccess
 	defer func() {
@@ -658,11 +698,35 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 		iamMetrics.ObserveAdminRefreshLatency(time.Since(startedAt), observeErr)
 	}()
 
-	trimmedAccessKey := strings.TrimSpace(accessKey)
-	if trimmedAccessKey == "" {
+	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY TỪ GO CONTEXT ---
+	// Trích xuất accessKey trực tiếp từ Go standard context thay vì nhận qua tham số
+	accessKeyVal := ctx.Value(constant.ContextKeyAdminAccessKey)
+	accessKey, ok := accessKeyVal.(string)
+	if !ok || strings.TrimSpace(accessKey) == "" {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeInvalidArgument
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, iamTaxonomy.AdminRefreshOutcomeInvalidArgument)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
 	}
+	trimmedAccessKey := strings.TrimSpace(accessKey)
+
+	// --- BƯỚC 2: PHÂN GIẢI MÃ PHÂN VÙNG THÀNH UUID QUA L1 CACHE REGISTRY ---
+	trimmedZoneCode := strings.TrimSpace(zoneCode)
+	var resolvedZoneID string
+	if !strings.EqualFold(trimmedZoneCode, "global") {
+		// Gọi L1 cache để phân giải zone_code -> zone_id (UUID)
+		val, err := s.l1Registry.GetOrLoad(ctx, "zone_by_code", trimmedZoneCode)
+		if err != nil {
+			refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "zone_resolution_failed")
+		}
+		zoneIDStr, ok := val.(string)
+		if !ok || zoneIDStr == "" {
+			refreshOutcome = iamTaxonomy.AdminRefreshOutcomeInvalidArgument
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid zone ID resolved from code: %s", trimmedZoneCode), "zone_resolution_failed")
+		}
+		resolvedZoneID = zoneIDStr
+	}
+
+	// --- BƯỚC 3: TRUY VẤN VÀ KIỂM TRA PHIÊN LÀM VIỆC HIỆN TẠI TRONG REDIS ---
 	runtimeRecord, runtimeErr := s.sessionCache.GetAccessSession(ctx, trimmedAccessKey)
 	if runtimeErr != nil {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
@@ -672,7 +736,11 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeInvalidSession
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
 	}
-	casOK, casErr := s.sessionCache.CompareAndTouchAccessSession(ctx, trimmedAccessKey, runtimeRecord.Version, s.cfg.Security.AdminSessionTTL, ip, userAgent)
+
+	// --- BƯỚC 4: THỰC THI SO SÁNH & GIA HẠN PHIÊN (COMPARE-AND-SWAP / Touch) ---
+	// Atomic CAS LUA Script trên Redis để kiểm chứng version và thiết lập trực tiếp TTL của phiên cũ về 10 giây.
+	// Việc thiết lập trực tiếp 10 giây ở đây giúp tối ưu hóa hiệu năng, loại bỏ hoàn toàn 1 lần ghi/RTT dư thừa xuống Redis ở cuối luồng.
+	casOK, casErr := s.sessionCache.CompareAndTouchAccessSession(ctx, trimmedAccessKey, runtimeRecord.Version, 10*time.Second, ip, userAgent)
 	if casErr != nil {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, casErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
@@ -684,6 +752,7 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 
 	now := time.Now().UTC()
 
+	// --- BƯỚC 5: SINH MỚI BỘ BA TRINITY CREDENTIALS (ACCESS KEY, SECRET, JTI) ---
 	// Sinh mới access key (UUID v7)
 	accessKeyNewUUID, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
@@ -692,7 +761,7 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 	}
 	accessKeyNew := accessKeyNewUUID.String()
 
-	// Sinh mới access secret
+	// Sinh mới access secret thô (48 bytes)
 	accessSecretNew, genErr := security.GenerateToken(48)
 	if genErr != nil {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
@@ -705,15 +774,14 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, uuidErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
-	tokenJTINew := tokenJTINewUUID.String()
 
-	// Thiết lập session mới trong Redis cache
+	// --- BƯỚC 7: THIẾT LẬP PHIÊN LÀM VIỆC MỚI VÀO REDIS CACHE ---
 	if err := s.sessionCache.SetAccessSession(ctx, iamCache.AdminAccessSession{
 		AccessKey:         accessKeyNew,
 		AccessSecretHash:  security.HashTokenSHA256(accessSecretNew),
 		TrackedDeviceID:   runtimeRecord.TrackedDeviceID,
 		DevicePublicKey:   runtimeRecord.DevicePublicKey,
-		TokenJTI:          tokenJTINew,
+		TokenJTI:          tokenJTINewUUID.String(),
 		Version:           1,
 		LastSeenAt:        now.UTC().Unix(),
 		LastSeenIP:        runtimeRecord.LastSeenIP,
@@ -723,12 +791,13 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, err, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 
-	// Ký JWT mới với JTI mới và access key mới
-	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
+	// --- BƯỚC 8: KÝ LẠI TOKEN JWT MỚI VỚI ZONEID MỤC TIÊU ---
+	adminAPITokenNew, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
 		Subject:   "admin",
 		AccessKey: accessKeyNew,
-		TokenID:   tokenJTINew,
+		TokenID:   tokenJTINewUUID.String(),
 		TokenUse:  "admin_api",
+		ZoneID:    resolvedZoneID,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
 	})
@@ -740,11 +809,12 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, accessKey 
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 
-	// Đặt TTL của session cũ về 10 giây để các request song song đang bay hoàn tất êm đẹp, sau đó tự hủy
-	_ = s.sessionCache.TouchAccessSession(ctx, trimmedAccessKey, 10*time.Second)
+	// SRE Note: Ở thiết kế cũ, bước này cần gọi TouchAccessSession để giảm TTL về 10 giây.
+	// Hiện tại, bước này đã được thực thi tối ưu nguyên tử trực tiếp từ Bước 4 (CAS LUA Script)
+	// nên không cần gửi thêm lệnh RTT nào xuống Redis nữa.
 
 	return iamEntity.AdminLoginResult{
-		AdminAPIToken:  adminAPIToken,
+		AdminAPIToken:  adminAPITokenNew,
 		AccessKey:      accessKeyNew,
 		AccessSecret:   accessSecretNew,
 		ClientDeviceID: runtimeRecord.TrackedDeviceID,

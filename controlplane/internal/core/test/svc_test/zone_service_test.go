@@ -77,7 +77,7 @@ var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
 
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusActive}}
-	svc := coreSvcImpl.NewZoneService(repo, nil)
+	svc := coreSvcImpl.NewZoneService(repo, nil, nil, nil)
 	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "mail", true)
 	if !errors.Is(err, coreErrorx.ErrZoneServiceStateConflict) {
 		t.Fatalf("expected ErrZoneServiceStateConflict, got %v", err)
@@ -92,7 +92,7 @@ func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 
 func TestZoneServiceUpsertInvalidType(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusMaintenance}}
-	svc := coreSvcImpl.NewZoneService(repo, nil)
+	svc := coreSvcImpl.NewZoneService(repo, nil, nil, nil)
 	// Service layer does NOT validate service type — that is the handler/transport layer's responsibility.
 	// Invalid type strings pass through to the repository; this test validates service-layer behavior only.
 	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "bad-type", true)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	coreEntity "controlplane/internal/core/domain/entity"
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
@@ -21,11 +20,8 @@ type zoneServiceMock struct {
 	zoneID uuid.UUID
 }
 
-func (m *zoneServiceMock) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
-	return &coreEntity.Zone{
-		ID:   m.zoneID,
-		Code: code,
-	}, nil
+func (m *zoneServiceMock) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
+	return m.zoneID, nil
 }
 
 func TestEndpointServiceCRUD(t *testing.T) {

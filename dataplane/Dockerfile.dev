@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:latest AS dev
+FROM rust:bookworm AS dev
 ARG LOCAL_USER=phucle
 ARG LOCAL_UID=1000
 ARG LOCAL_GID=1000

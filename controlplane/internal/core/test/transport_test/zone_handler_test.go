@@ -30,17 +30,14 @@ func (s *zoneServiceStub) ListZones(ctx context.Context) ([]coreEntity.Zone, err
 func (s *zoneServiceStub) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
 	return []coreEntity.ZoneCatalog{}, nil
 }
-func (s *zoneServiceStub) GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error) {
-	return &coreEntity.Zone{}, nil
-}
 func (s *zoneServiceStub) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
 	return &coreEntity.ZoneDetail{
 		Zone:     coreEntity.Zone{},
 		Services: []coreEntity.ZoneService{},
 	}, nil
 }
-func (s *zoneServiceStub) GetZoneByCode(ctx context.Context, code string) (*coreEntity.Zone, error) {
-	return &coreEntity.Zone{}, nil
+func (s *zoneServiceStub) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
+	return uuid.Nil, nil
 }
 
 func (s *zoneServiceStub) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {

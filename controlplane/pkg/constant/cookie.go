@@ -11,4 +11,5 @@ const (
 	AccessKeyName      = "access_key"
 	AccessSecretName   = "access_secret"
 	ClientDeviceIDName = "client_device_id"
+	ZoneCodeName       = "zone_code"
 )

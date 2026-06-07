@@ -1,5 +1,6 @@
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
 use crate::job_receiver::message::JobPayload;
+use crate::observability::logger::Logger;
 use std::sync::Arc;
 
 /// ============================================================================
@@ -8,15 +9,15 @@ use std::sync::Arc;
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đóng vai trò là công tắc định tuyến và cổng kiểm soát (Gatekeeper) ở cấp Workload Mail.
-///   - Chịu trách nhiệm yêu cầu worker từ `WorkerLifecycleManager` để chạy tác vụ nặng.
-///   - Nếu không xin được worker, lập tức trả về lỗi để đẩy trạng thái thất bại lên Redis.
+///   - Nhận yêu cầu định tuyến của các hành động (Action) cụ thể thuộc Mail Workload.
+///   - Gửi yêu cầu xin Worker từ Worker Pool cho các hành động nặng (ví dụ: test_connection).
 ///
 pub async fn dispatch_mail_job(
     action: &str,
     payload: JobPayload,
     worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
 ) -> Result<ExecutionResult, ExecutorError> {
-    crate::observability::logger::Logger::sys_info(
+    Logger::sys_info(
         "executor.mail.router",
         &format!(
             "Mail Workload Router: Routing action '{}' for job_id={}",
@@ -25,15 +26,14 @@ pub async fn dispatch_mail_job(
     );
 
     match action {
-        // Gửi email giao dịch thông thường
+        // Gửi email giao dịch thông thường (chạy trực tiếp)
         "send" => {
             let exec = super::send::MailExecutor;
             exec.execute(payload).await
         }
-        // Kiểm tra kết nối SMTP server (handshake + credentials validation)
+        // Kiểm tra kết nối SMTP server (yêu cầu worker từ WorkerLifecycleManager)
         "test_connection" => {
             let exec = super::test_connection::SmtpTestExecutor;
-            // workload mail sẽ tự lấy worker từ worker pool để thực thi action với payload (Giai đoạn 2)
             worker_pool
                 .spawn(move || async move { exec.execute(payload).await })
                 .await

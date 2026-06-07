@@ -3,7 +3,7 @@
 # ============================================================================
 # Stage 1: Builder - biên dịch binary release của aurora-dataplane
 # ============================================================================
-FROM rust:latest AS builder
+FROM rust:bookworm AS builder
 WORKDIR /src
 
 # 1. Pre-warm dependency cache: chỉ copy manifest, build dummy để cache layer deps.

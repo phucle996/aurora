@@ -92,6 +92,24 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
    *    khối `finally` vẫn đảm bảo thực thi `clearSession()` để xóa sạch tokens/state trên Client (IndexedDB/LocalStorage),
    *    tránh tình trạng người dùng bị kẹt không thể đăng xuất cục bộ.
    */
+  /**
+   * Xử lý chuyển đổi Zone an toàn (Zone-Aware Switch Flow).
+   * Gửi request POST tới `/admin/auth/refresh?zone_code=...` để backend thực hiện chuyển vùng,
+   * ký lại bộ token mới và ghi nhận cookie/phân vùng mới cho Admin.
+   */
+  const handleZoneChange = async (zoneCode: string | null) => {
+    try {
+      const target = zoneCode || 'global'
+      const resp = await Fetch(`/admin/auth/refresh?zone_code=${encodeURIComponent(target)}`, { method: 'POST' })
+      if (!resp.ok) {
+        throw new Error('Failed to refresh session for the selected zone')
+      }
+      setActiveZone(zoneCode)
+    } catch (err) {
+      console.error('Failed to switch zone:', err)
+    }
+  }
+
   const handleLogout = async () => {
     try {
       await Fetch('/admin/auth/logout', { method: 'POST' })
@@ -158,14 +176,14 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
               {/* Option Global: Không giới hạn vùng hiển thị (hiển thị tổng hợp) */}
-              <DropdownMenuItem onClick={() => setActiveZone(null)} className="cursor-pointer">
+              <DropdownMenuItem onClick={() => handleZoneChange(null)} className="cursor-pointer">
                 Global (All Zones)
               </DropdownMenuItem>
               {/* Render danh sách các Zone lấy về từ API */}
               {zones.map((zone) => (
                 <DropdownMenuItem
                   key={zone.id}
-                  onClick={() => setActiveZone(zone.code)}
+                  onClick={() => handleZoneChange(zone.code)}
                   className="cursor-pointer"
                 >
                   {zone.name}

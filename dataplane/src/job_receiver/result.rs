@@ -43,6 +43,59 @@ pub struct JobExecutionResult {
     pub message: String,
 }
 
+impl JobExecutionResult {
+    /// Dịch kết quả thô của luồng thực thi (gồm cả Timeout) thành cấu trúc kết quả nghiệp vụ.
+    pub fn from_outcome(
+        job_id: String,
+        job_version: u32,
+        attempt: u32,
+        outcome: Result<
+            Result<crate::executor::ExecutionResult, crate::executor::ExecutorError>,
+            tokio::time::error::Elapsed,
+        >,
+    ) -> Self {
+        match outcome {
+            Ok(Ok(res)) => Self {
+                job_id,
+                job_version,
+                attempt,
+                result_status: "SUCCEEDED".to_string(),
+                error_code: None,
+                message: res.message,
+            },
+            Ok(Err(e)) => {
+                let (code, msg) = match e {
+                    crate::executor::ExecutorError::IdempotencyViolation(m) => {
+                        (Some("IDEMPOTENCY_VIOLATION".to_string()), m)
+                    }
+                    crate::executor::ExecutorError::DeadlineExceeded(m) => {
+                        (Some("DEADLINE_EXCEEDED".to_string()), m)
+                    }
+                    crate::executor::ExecutorError::ExecutionFailed(m) => {
+                        (Some("EXECUTION_FAILED".to_string()), m)
+                    }
+                };
+                Self {
+                    job_id,
+                    job_version,
+                    attempt,
+                    result_status: "FAILED".to_string(),
+                    error_code: code,
+                    message: msg,
+                }
+            }
+            Err(_) => Self {
+                job_id,
+                job_version,
+                attempt,
+                result_status: "FAILED".to_string(),
+                error_code: Some("EARLY_TIMEOUT".to_string()),
+                message: "Workload execution exceeded limit of idle time".to_string(),
+            },
+        }
+    }
+}
+
 pub struct JobResultReporter;
 
 impl JobResultReporter {
@@ -61,16 +114,10 @@ impl JobResultReporter {
 
         crate::observability::logger::Logger::sys_info(
             "job.result",
-            &format!("Job Result Reporter: Successfully published outcome to Redis Pub/Sub channel: {}", channel),
-        );
-        Ok(())
-    }
-
-    /// Đăng ký báo cáo kết quả thông qua luồng Redis kết quả (Stream XADD).
-    pub async fn report_via_redis_stream(_result: &JobExecutionResult) -> Result<(), String> {
-        crate::observability::logger::Logger::sys_info(
-            "job.result",
-            "Job Result Reporter: Successfully published outcome to Redis stream",
+            &format!(
+                "Job Result Reporter: Successfully published outcome to Redis Pub/Sub channel: {}",
+                channel
+            ),
         );
         Ok(())
     }
@@ -94,5 +141,5 @@ impl JobResultReporter {
         let _ = Self::report_via_grpc(result).await;
 
         Ok(())
-  }
+    }
 }
