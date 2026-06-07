@@ -21,6 +21,8 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/internal/cacheengine"
+	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 
@@ -44,7 +46,7 @@ type AuthService struct {
 	deviceRuntime    iamCache.UserDeviceRuntimeCache
 	capLock          iamCache.UserDeviceCapLock
 	presence         iamCache.RegisterPresenceCache
-	secrets          security.SecretProvider
+	registry         *cacheengine.CacheRegistry
 	ott              iamSvcInterface.OneTimeTokenService
 	streamPublisher  infraredis.StreamPublisher
 	cfg              *config.Config
@@ -57,7 +59,7 @@ func NewAuthService(cfg *config.Config,
 	deviceRuntime iamCache.UserDeviceRuntimeCache,
 	capLock iamCache.UserDeviceCapLock,
 	presence iamCache.RegisterPresenceCache,
-	secrets security.SecretProvider,
+	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	streamPublisher infraredis.StreamPublisher,
 ) iamSvcInterface.AuthService {
@@ -68,7 +70,7 @@ func NewAuthService(cfg *config.Config,
 		deviceRuntime:    deviceRuntime,
 		capLock:          capLock,
 		presence:         presence,
-		secrets:          secrets,
+		registry:         registry,
 		ott:              ott,
 		streamPublisher:  streamPublisher,
 		cfg:              cfg,
@@ -107,8 +109,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		exists, checkErr := s.repo.CheckUserExist(ctx, user.Username, user.Email)
 		iamMetrics.ObserveRegisterDB("exist_check", time.Since(dbCheckStartedAt), checkErr)
 		if checkErr != nil {
-			result = iamTaxonomy.RegisterOutcomeExistCheckError
-			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, checkErr, iamTaxonomy.RegisterOutcomeExistCheckError)
+			result = iamTaxonomy.OutcomeFailure
+			return fmt.Errorf("%w: user check exist failed: %v", iamTaxonomy.ErrAuthenticationUnavailable, checkErr)
 		}
 		if exists {
 			result = iamTaxonomy.RegisterOutcomeAlreadyExists
@@ -122,15 +124,15 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	// Input đã validate ở callsite; từ đây là dependency operations.
 	passwordHash, hashErr := security.HashPassword(password)
 	if hashErr != nil {
-		result = iamTaxonomy.RegisterOutcomeHashPasswordErr
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, hashErr, iamTaxonomy.RegisterOutcomeHashPasswordErr)
+		result = iamTaxonomy.OutcomeFailure
+		return fmt.Errorf("%w: failed to hash password: %v", iamTaxonomy.ErrAuthenticationUnavailable, hashErr)
 	}
 
 	now := time.Now().UTC()
 	userID, idErr := uuid.NewV7()
 	if idErr != nil {
-		result = iamTaxonomy.RegisterOutcomeIDGenerateErr
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.RegisterOutcomeIDGenerateErr)
+		result = iamTaxonomy.OutcomeFailure
+		return fmt.Errorf("%w: failed to generate user ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, idErr)
 	}
 
 	user.ID = userID
@@ -175,8 +177,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 			iamMetrics.ObserveRegisterRedis("presence_mark_duplicate", time.Since(markStartedAt), markErr)
 			return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, insertErr, iamTaxonomy.RegisterOutcomeAlreadyExists)
 		}
-		result = iamTaxonomy.RegisterOutcomeInsertError
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, insertErr, iamTaxonomy.RegisterOutcomeInsertError)
+		result = iamTaxonomy.OutcomeFailure
+		return fmt.Errorf("%w: failed to create registered user: %v", iamTaxonomy.ErrAuthenticationUnavailable, insertErr)
 	}
 
 	markStartedAt := time.Now()
@@ -221,8 +223,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
 			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, loadErr, iamTaxonomy.LoginOutcomeInvalidCredentials)
 		}
-		loginOutcome = iamTaxonomy.LoginOutcomeLoadUserError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, loadErr, iamTaxonomy.LoginOutcomeLoadUserError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to get login user: %v", iamTaxonomy.ErrAuthenticationUnavailable, loadErr)
 	}
 	if user == nil {
 		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
@@ -249,8 +251,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		requestedAt := time.Now().UTC()
 		verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", user.ID.String())
 		if issueErr != nil {
-			loginOutcome = iamTaxonomy.LoginOutcomeVerificationIssue
-			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, issueErr, iamTaxonomy.LoginOutcomeVerificationIssue)
+			loginOutcome = iamTaxonomy.OutcomeFailure
+			return nil, fmt.Errorf("%w: failed to issue verification token: %v", iamTaxonomy.ErrAuthenticationUnavailable, issueErr)
 		}
 		requestID := uuid.Must(uuid.NewV7()).String()
 		idempotencyKey := fmt.Sprintf("%s:%s:%s", "account_verify", user.ID.String(), requestID)
@@ -289,8 +291,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			span.RecordError(publishErr)
 			span.SetStatus(codes.Error, publishErr.Error())
 			span.End()
-			loginOutcome = iamTaxonomy.LoginOutcomeVerificationPublish
-			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, publishErr, iamTaxonomy.LoginOutcomeVerificationPublish)
+			loginOutcome = iamTaxonomy.OutcomeFailure
+			return nil, fmt.Errorf("%w: failed to publish verification mail job: %v", iamTaxonomy.ErrAuthenticationUnavailable, publishErr)
 		}
 		span.End()
 		loginOutcome = iamTaxonomy.LoginOutcomeVerificationReq
@@ -302,13 +304,13 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 
 	// Service dependency guard ở callsite để trả reason chính xác sớm.
-	if s.secrets == nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.LoginOutcomeIssueAccessError)
+	if s.registry == nil {
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: cache registry is required", iamTaxonomy.ErrAuthenticationUnavailable)
 	}
 	if s.deviceRepo == nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.LoginOutcomeIssueAccessError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: device repository is required", iamTaxonomy.ErrAuthenticationUnavailable)
 	}
 
 	now := time.Now().UTC()
@@ -348,8 +350,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	trackedDevice, deviceErr := s.deviceRepo.UpsertLoginDevice(ctx, buildLoginDevice(user.ID, canonicalDevicePublicKey, req.IP, req.UserAgent, now, deviceName, clientDeviceID))
 	iamMetrics.ObserveLoginLastSeenFlush(flushLabel)
 	if deviceErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, deviceErr, iamTaxonomy.LoginOutcomeIssueAccessError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
 	}
 	if trackedDevice == nil || strings.TrimSpace(trackedDevice.ID) == "" || trackedDevice.Status == iamEntity.DeviceStatusRevoked {
 		loginOutcome = iamTaxonomy.LoginOutcomeInvalidCredentials
@@ -357,25 +359,36 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 	trackedDeviceID, trackedErr := uuid.Parse(strings.TrimSpace(trackedDevice.ID))
 	if trackedErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, trackedErr, iamTaxonomy.LoginOutcomeIssueAccessError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to parse tracked device ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, trackedErr)
 	}
 
 	// Runtime fragment generation: lỗi ở đây là auth dependency error (fail-close).
 	accessKey := uuid.NewString()
 	accessSecret, secretErr := security.GenerateToken(32)
 	if secretErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamTaxonomy.LoginOutcomeIssueAccessError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to generate access secret: %v", iamTaxonomy.ErrAuthenticationUnavailable, secretErr)
 	}
 	accessJTI, idErr := uuid.NewV7()
 	if idErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.LoginOutcomeIssueAccessError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to generate access JTI: %v", iamTaxonomy.ErrAuthenticationUnavailable, idErr)
 	}
 	accessExp := now.Add(accessTTL)
+	val, err := s.registry.GetOrLoad(ctx, "access_secret", "")
+	if err != nil {
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to get access secret from registry: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
+	}
+	secrets, ok := val.(*coreEntity.RuntimeSecrets)
+	if !ok || secrets == nil {
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: invalid runtime secrets type", iamTaxonomy.ErrAuthenticationUnavailable)
+	}
+
 	// Access token chứa accessKey + jti để middleware verify với runtime cache.
-	accessToken, accessErr := security.Sign(ctx, s.secrets, security.SecretFamilyAccess, security.Claims{
+	accessToken, accessErr := security.SignWithSecret(security.Claims{
 		Subject:   user.ID.String(),
 		Role:      "",
 		Level:     0,
@@ -384,26 +397,26 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: accessExp.Unix(),
-	})
+	}, secrets.Active.Secret)
 	if accessErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.LoginOutcomeIssueAccessError)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to sign access token: %v", iamTaxonomy.ErrAuthenticationUnavailable, accessErr)
 	}
 
 	rawRefresh, refreshErr := security.GenerateToken(43)
 	if refreshErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshErr, iamTaxonomy.LoginOutcomeGenerateRefreshErr)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to generate refresh token: %v", iamTaxonomy.ErrAuthenticationUnavailable, refreshErr)
 	}
 	refreshID, refreshIDErr := uuid.NewV7()
 	if refreshIDErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshIDErr, iamTaxonomy.LoginOutcomeGenerateRefreshErr)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to generate refresh ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, refreshIDErr)
 	}
 	familyID, familyErr := uuid.NewV7()
 	if familyErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomeGenerateRefreshErr
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, familyErr, iamTaxonomy.LoginOutcomeGenerateRefreshErr)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to generate family ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, familyErr)
 	}
 	refreshExp := now.Add(refreshTTL)
 
@@ -419,8 +432,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		ExpiresAt:     refreshExp,
 	}
 	if persistErr := s.repo.CreateRefreshTokenSession(ctx, *rt); persistErr != nil {
-		loginOutcome = iamTaxonomy.LoginOutcomePersistRefreshErr
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, persistErr, iamTaxonomy.LoginOutcomePersistRefreshErr)
+		loginOutcome = iamTaxonomy.OutcomeFailure
+		return nil, fmt.Errorf("%w: failed to persist refresh session: %v", iamTaxonomy.ErrAuthenticationUnavailable, persistErr)
 	}
 
 	if s.deviceRuntime != nil {
@@ -448,8 +461,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			if s.refreshTokenRepo != nil {
 				_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
 			}
-			loginOutcome = iamTaxonomy.LoginOutcomeIssueAccessError
-			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamTaxonomy.LoginOutcomeIssueAccessError)
+			loginOutcome = iamTaxonomy.OutcomeFailure
+			return nil, fmt.Errorf("%w: failed to set device runtime: %v", iamTaxonomy.ErrAuthenticationUnavailable, setErr)
 		}
 	}
 
@@ -524,7 +537,7 @@ func (s *AuthService) Logout(ctx context.Context, userID string, accessKey strin
 	// Validate input ở callsite trước khi thao tác runtime/revoke.
 	uid, err := uuid.Parse(strings.TrimSpace(userID))
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
+		return fmt.Errorf("%w: %v", iamTaxonomy.ErrInvalidArgument, err)
 	}
 	accessKey = strings.TrimSpace(accessKey)
 	var trackedDeviceRef string
@@ -637,7 +650,7 @@ func NewAuthServiceImpl(cfg *config.Config,
 	deviceRuntime iamCache.UserDeviceRuntimeCache,
 	capLock iamCache.UserDeviceCapLock,
 	presence iamCache.RegisterPresenceCache,
-	secrets security.SecretProvider,
+	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	streamPublisher infraredis.StreamPublisher,
 ) *AuthService {
@@ -648,7 +661,7 @@ func NewAuthServiceImpl(cfg *config.Config,
 		deviceRuntime:    deviceRuntime,
 		capLock:          capLock,
 		presence:         presence,
-		secrets:          secrets,
+		registry:         registry,
 		ott:              ott,
 		streamPublisher:  streamPublisher,
 		cfg:              cfg,

@@ -33,6 +33,8 @@ import (
 	"sync"
 	"time"
 
+	"controlplane/internal/cacheengine"
+	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/security"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
@@ -49,7 +51,7 @@ const adminAPIKeyRotationTriggerTTL = 10 * time.Minute
 // adminAPIKeyAuthState giữ dependency runtime cho admin API-key middleware.
 var adminAPIKeyAuthState = struct {
 	mu                  sync.RWMutex
-	secrets             security.SecretProvider
+	registry            *cacheengine.CacheRegistry
 	verifyAccessSecret  func(ctx context.Context, accessKey string, accessSecret string) (bool, error)
 	setRotationRequired func(ctx context.Context, ttl time.Duration) error
 }{}
@@ -67,12 +69,12 @@ type AdminAuthOption func(*adminAuthOptions)
 
 // InitAdminAPIKeyAuth khởi tạo dependency cho AdminAPIKeyAuth.
 func InitAdminAPIKeyAuth(
-	sp security.SecretProvider,
+	registry *cacheengine.CacheRegistry,
 	verifyAccessSecret func(ctx context.Context, accessKey string, accessSecret string) (bool, error),
 	setRotationRequired func(ctx context.Context, ttl time.Duration) error,
 ) error {
-	if sp == nil {
-		return errors.New("admin api key auth: secret provider is required")
+	if registry == nil {
+		return errors.New("admin api key auth: cache registry is required")
 	}
 	if verifyAccessSecret == nil {
 		return errors.New("admin api key auth: verify access secret is required")
@@ -82,7 +84,7 @@ func InitAdminAPIKeyAuth(
 	}
 
 	adminAPIKeyAuthState.mu.Lock()
-	adminAPIKeyAuthState.secrets = sp
+	adminAPIKeyAuthState.registry = registry
 	adminAPIKeyAuthState.verifyAccessSecret = verifyAccessSecret
 	adminAPIKeyAuthState.setRotationRequired = setRotationRequired
 	adminAPIKeyAuthState.mu.Unlock()
@@ -160,11 +162,11 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		//   Nếu chưa init, trả lỗi 503 Service Unavailable để tự bảo vệ (Fail-Closed).
 		// --------------------------------------------------------------------
 		adminAPIKeyAuthState.mu.RLock()
-		secrets := adminAPIKeyAuthState.secrets
+		registry := adminAPIKeyAuthState.registry
 		verifyAccessSecret := adminAPIKeyAuthState.verifyAccessSecret
 		setRotationRequired := adminAPIKeyAuthState.setRotationRequired
 		adminAPIKeyAuthState.mu.RUnlock()
-		if secrets == nil || verifyAccessSecret == nil || setRotationRequired == nil {
+		if registry == nil || verifyAccessSecret == nil || setRotationRequired == nil {
 			abortAdminAuthUnavailable(c)
 			return
 		}
@@ -172,17 +174,23 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		// 🔄 Parse JWT bằng danh sách các candidates để hỗ trợ rotation.
 		// --------------------------------------------------------------------
-		candidates, err := secrets.GetCandidates(c.Request.Context(), security.SecretFamilyAdminAPIKey)
-		if err != nil || len(candidates) == 0 {
+		val, err := registry.GetOrLoad(c.Request.Context(), "admin_api_key", "")
+		if err != nil {
+			abortAdminAuthUnavailable(c)
+			return
+		}
+		secrets, ok := val.(*coreEntity.RuntimeSecrets)
+		if !ok || secrets == nil {
 			abortAdminAuthUnavailable(c)
 			return
 		}
 
+		candidates := []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby}
 		var claims security.Claims
 		parsed := false
 		expired := false
 		for _, candidate := range candidates {
-			parsedClaims, parseErr := security.Parse(token, candidate.Value)
+			parsedClaims, parseErr := security.Parse(token, candidate.Secret)
 			if parseErr == nil {
 				claims = parsedClaims
 				parsed = true

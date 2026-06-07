@@ -43,7 +43,6 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/core"
-	coreSvcImpl "controlplane/internal/core/service"
 	healthhandler "controlplane/internal/http/handler"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/hypervisor"
@@ -54,7 +53,6 @@ import (
 	"controlplane/internal/mail"
 	"controlplane/internal/policyengine"
 	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
-	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
 
@@ -148,14 +146,8 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, errors.New("app: init critical core module: core module is nil")
 	}
 
-	// 4) Adapter runtime provider -> security provider để cấp cho IAM/middlewares.
-	securityProvider := coreSvcImpl.NewSecuritySecretProvider(coreModule.RuntimeSecretProvider)
-	if securityProvider == nil {
-		return nil, errors.New("app: init critical core module: security provider is required")
-	}
-
-	// 5) IAM module bootstrap phụ thuộc security provider từ core runtime và l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, securityProvider, l1Registry)
+	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
+	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, l1Registry)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -195,7 +187,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 7) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, securityProvider, rdsCore, policyEngineModule, l1Registry); err != nil {
+	if err := initMiddlewares(cfg, db, coreModule, rdsCore, policyEngineModule, l1Registry); err != nil {
 		return nil, err
 	}
 
@@ -221,18 +213,15 @@ func NewGlobalModules(cfg *config.Config,
 	return modules, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, securityProvider security.SecretProvider, rds *goredis.Client, policyModule *policyengine.Engine, l1Registry *cacheengine.CacheRegistry) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, rds *goredis.Client, policyModule *policyengine.Engine, l1Registry *cacheengine.CacheRegistry) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}
 	if db == nil {
 		return errors.New("app: init middleware: database is required")
 	}
-	if coreModule == nil || coreModule.RuntimeSecretProvider == nil {
-		return errors.New("app: init middleware: core runtime secret provider is required")
-	}
-	if securityProvider == nil {
-		return errors.New("app: init middleware: security provider is required")
+	if coreModule == nil {
+		return errors.New("app: init middleware: core module is required")
 	}
 	if rds == nil {
 		return errors.New("app: init middleware: redis client is required")
@@ -250,7 +239,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	})
 	middleware.InitZoneAuth(l1Registry)
 	middleware.InitAccess(
-		securityProvider,
+		l1Registry,
 		rds,
 		iamCache.NewUserDeviceRuntimeCache(rds),
 		10*time.Second,
@@ -258,7 +247,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	adminAccessSession := iamCache.NewAdminAccessSessionCache(rds)
 	adminRotateTrigger := iamCache.NewAdminKeyRotationTriggerCache(rds)
 	if err := middleware.InitAdminAPIKeyAuth(
-		securityProvider,
+		l1Registry,
 		adminAccessSession.VerifyAccessSecret,
 		adminRotateTrigger.SetRotationRequired,
 	); err != nil {

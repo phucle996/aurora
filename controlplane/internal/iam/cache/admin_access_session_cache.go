@@ -4,7 +4,7 @@
 // 🎯 SOURCE OF TRUTH (SoT):
 //   - Trạng thái phiên của Admin là tập hợp dữ liệu động được lưu trữ duy nhất trong Redis Cache.
 //   - Phiên Admin áp dụng mô hình bảo mật **Fragment Token (3 Mảnh)** thay vì Access Token đơn lẻ:
-//   - Mảnh 1: JWT Access Token ngắn hạn (Ký stateless bằng Secret Family `SecretFamilyAdminAPIKey`).
+//   - Mảnh 1: JWT Access Token ngắn hạn (Ký stateless bằng loại secret `admin_api_key`).
 //   - Mảnh 2: `access_key` - Định danh phiên làm việc, dùng làm key lưu trong Redis.
 //   - Mảnh 3: `access_secret` - Mã bí mật phiên, chỉ được băm SHA256 trước khi lưu trong Redis.
 //   - Middleware xác thực bắt buộc cả 3 mảnh phải trùng khớp toàn vẹn mới coi phiên là hợp lệ.

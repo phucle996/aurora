@@ -99,7 +99,10 @@ func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param s
 	}
 
 	// Tạo cache key độc nhất kết hợp giữa namespace và tham số
-	cacheKey := fmt.Sprintf("%s:%s", namespace, param)
+	cacheKey := namespace
+	if param != "" {
+		cacheKey = fmt.Sprintf("%s:%s", namespace, param)
+	}
 
 	envelopeVal, err := r.cache.GetOrLoad(cacheKey, loader.TTL, func() (interface{}, error) {
 		// Gọi loader của caller để nạp dữ liệu gốc từ DB/Service

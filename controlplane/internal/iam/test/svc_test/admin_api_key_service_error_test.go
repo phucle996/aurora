@@ -58,7 +58,7 @@ func (m *adminAccessSessionCacheMock) DeleteAccessSession(ctx context.Context, a
 }
 
 func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil)
 
 	_, err := svc.AdminLogin(context.Background(), iamEntity.AdminLoginRequest{})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -74,7 +74,7 @@ func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
 }
 
 func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil)
 
 	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, " ")
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
@@ -95,7 +95,7 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	sessionCache := &adminAccessSessionCacheMock{getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
 		return nil, raw
 	}}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, sessionCache, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
 
 	err := svc.AdminLogout(context.Background(), "device-1", nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -118,7 +118,7 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	sessionCache := &adminAccessSessionCacheMock{getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
 		return nil, raw
 	}}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, sessionCache, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
 
 	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, "device-1")
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
@@ -153,7 +153,7 @@ func TestAdminLogoutSkipsDBFlushWhenLastSeenNotDirty(t *testing.T) {
 			return nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, sessionCache, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
 
 	if err := svc.AdminLogout(context.Background(), "device-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -183,7 +183,7 @@ func TestAdminLogoutFlushesDBWhenLastSeenDirty(t *testing.T) {
 			return &iamCache.AdminAccessSession{AccessKey: accessKey, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenIP: "10.0.0.1", LastSeenUserAgent: "ua-1", LastSeenDirty: true}, nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, sessionCache, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
 
 	if err := svc.AdminLogout(context.Background(), "device-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)

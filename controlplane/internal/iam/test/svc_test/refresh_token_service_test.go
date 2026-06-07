@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -106,15 +107,15 @@ func (m *refreshTokenRepoMock) RotateRefreshToken(ctx context.Context, current i
 	return nil
 }
 
-func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, secrets security.SecretProvider) iamSvcInterface.RefreshTokenService {
+func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.RefreshTokenService {
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
-	return iamSvcImpl.NewRefreshTokenService(cfg, repo, nil, secrets)
+	return iamSvcImpl.NewRefreshTokenService(cfg, repo, nil, registry)
 }
 
 func TestRefreshTokenServiceInvalidSessionWhenTokenEmpty(t *testing.T) {
-	svc := newRefreshTokenService(&refreshTokenRepoMock{}, &secretProviderMock{})
+	svc := newRefreshTokenService(&refreshTokenRepoMock{}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -124,7 +125,7 @@ func TestRefreshTokenServiceInvalidSessionWhenTokenEmpty(t *testing.T) {
 func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, nil
-	}}, &secretProviderMock{})
+	}}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -134,7 +135,7 @@ func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, pgx.ErrNoRows
-	}}, &secretProviderMock{})
+	}}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -154,7 +155,7 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 func TestRefreshTokenServiceInvalidSessionWhenExpired(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
-	}}, &secretProviderMock{})
+	}}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -171,7 +172,7 @@ func TestRefreshTokenServiceInvalidSessionWhenUserStatusBlocked(t *testing.T) {
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusDisabled}, nil
 		},
-	}, &secretProviderMock{})
+	}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -188,7 +189,7 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return nil, pgx.ErrNoRows
 		},
-	}, &secretProviderMock{})
+	}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -242,9 +243,7 @@ func TestRefreshTokenServiceRotateError(t *testing.T) {
 		rotateFn: func(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
 			return raw
 		},
-	}, &secretProviderMock{getPrimaryFn: func(ctx context.Context, family string) (security.SecretCandidate, error) {
-		return security.SecretCandidate{Family: family, Value: "secret-key", IsPrimary: true}, nil
-	}})
+	}, makeTestRegistry("secret-key"))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
@@ -289,9 +288,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 			}
 			return nil
 		},
-	}, &secretProviderMock{getPrimaryFn: func(ctx context.Context, family string) (security.SecretCandidate, error) {
-		return security.SecretCandidate{Family: family, Value: "secret-key", IsPrimary: true}, nil
-	}})
+	}, makeTestRegistry("secret-key"))
 
 	result, err := svc.Refresh(context.Background(), "raw-refresh")
 	if err != nil {
@@ -306,7 +303,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 	if result.RuntimeDeviceID == "" || result.TrackedDeviceID != deviceID.String() {
 		t.Fatalf("expected runtime and tracked device ids, got %#v", result)
 	}
-	claims, err := security.Parse(result.AccessToken, "secret-key")
+	claims, err := security.Parse(result.AccessToken, []byte("secret-key"))
 	if err != nil {
 		t.Fatalf("expected parsable access token, got %v", err)
 	}

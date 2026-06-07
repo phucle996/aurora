@@ -74,7 +74,6 @@ import (
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
-	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 	"errors"
 	"time"
@@ -88,7 +87,6 @@ type IAMModule struct {
 	db             *pgxpool.Pool
 	rds            *goredis.Client
 	rateLimiter    *ratelimit.Bucket
-	secretProvider security.SecretProvider
 	L1Registry     *cacheengine.CacheRegistry
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
@@ -116,7 +114,6 @@ func NewModule(
 	rds *goredis.Client,
 	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
-	secretProvider security.SecretProvider,
 	l1Registry *cacheengine.CacheRegistry,
 ) (*IAMModule, error) {
 
@@ -142,9 +139,7 @@ func NewModule(
 	if rateLimiter == nil {
 		return nil, errors.New("iam module: global rate limiter bucket (rateLimiter) is nil")
 	}
-	if secretProvider == nil {
-		return nil, errors.New("iam module: envelope encryption secret provider (secretProvider) is nil (check KMS/Vault key)")
-	}
+
 	if l1Registry == nil {
 		return nil, errors.New("iam module: L1 cache registry (l1Registry) is nil")
 	}
@@ -214,7 +209,7 @@ func NewModule(
 	authSvcImpl := iamSvcImpl.NewAuthServiceImpl(
 		cfg, authRepo, refreshTokenRepo, deviceRepo,
 		userDeviceRuntime, capLock, regPresenceCache,
-		secretProvider, oneTimeTokenSvc, streamPublisher,
+		l1Registry, oneTimeTokenSvc, streamPublisher,
 	)
 	if authSvcImpl == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
@@ -236,7 +231,7 @@ func NewModule(
 	}
 
 	// Refresh Token Service
-	refreshTokenSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshTokenRepo, userDeviceRuntime, secretProvider)
+	refreshTokenSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshTokenRepo, userDeviceRuntime, l1Registry)
 	if refreshTokenSvc == nil {
 		return nil, errors.New("iam module: failed to construct refresh token service")
 	}
@@ -290,7 +285,7 @@ func NewModule(
 
 	// SRE Admin API Key Service (Nơi điều khiển xoay khóa khẩn cấp và Pub/Sub Invalidation)
 	adminSvc := iamSvcImpl.NewAdminAPIKeyService(
-		cfg, adminRepo, tgClient, secretProvider,
+		cfg, adminRepo, tgClient,
 		adminAccessSession, adminAPIKeyCache, l1Registry, adminRotateTrigger,
 	)
 	if adminSvc == nil {
@@ -352,7 +347,6 @@ func NewModule(
 		db:                  db,
 		rds:                 rds,
 		rateLimiter:         rateLimiter,
-		secretProvider:      secretProvider,
 		L1Registry:          l1Registry,
 		AuthHandler:         authHandler,
 		authSvcImpl:         authSvcImpl,

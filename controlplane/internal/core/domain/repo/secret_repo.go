@@ -2,7 +2,6 @@ package coreRepoInterface
 
 import (
 	"context"
-	"time"
 
 	coreEntity "controlplane/internal/core/domain/entity"
 )
@@ -16,14 +15,13 @@ type SecretRotationLock interface {
 }
 
 type SecretRepository interface {
-	AcquireFamilyBootstrapLock(ctx context.Context, familyCode string) (SecretBootstrapLock, error)
-	AcquireFamilyRotationLock(ctx context.Context, familyCode string) (SecretRotationLock, error)
-	GetFamilyByCode(ctx context.Context, code string) (*coreEntity.SecretFamily, error)
-	EnsureFamily(ctx context.Context, family coreEntity.SecretFamily) (*coreEntity.SecretFamily, error)
-	ListVersionsByFamilyID(ctx context.Context, familyID string) ([]coreEntity.SecretVersion, error)
-	CreateSecretVersion(ctx context.Context, version coreEntity.SecretVersion) error
-	ReplacePrimaryVersion(ctx context.Context, familyID string, nextVersionID string, previousVersionID string, now time.Time) error
-	RetireVersion(ctx context.Context, versionID string, retiredAt time.Time) error
-	DeleteVersion(ctx context.Context, versionID string) error
-	RotateFamilyVersions(ctx context.Context, familyID string, nextVersion coreEntity.SecretVersion, previousPrimaryID string, oldestVersionID string, retirePreviousNow bool, now time.Time) error
+	AcquireSecretTypeBootstrapLock(ctx context.Context, secretType string) (SecretBootstrapLock, error)
+	AcquireSecretTypeRotationLock(ctx context.Context, secretType string) (SecretRotationLock, error)
+	GetSecretsByType(ctx context.Context, secretType string) (*coreEntity.RuntimeSecrets, error)
+	SaveSecrets(ctx context.Context, row coreEntity.CoreSecretRow) error
+	UpdateSecrets(ctx context.Context, secretType string, activeSecret, activeFingerprint string, standbySecret, standbyFingerprint string) error
+	GetAccessSecret(ctx context.Context) (*coreEntity.RuntimeSecrets, error)
+	GetRefreshSecret(ctx context.Context) (*coreEntity.RuntimeSecrets, error)
+	GetAdminAPIKey(ctx context.Context) (*coreEntity.RuntimeSecrets, error)
+	GetOneTimeTokenSecret(ctx context.Context) (*coreEntity.RuntimeSecrets, error)
 }

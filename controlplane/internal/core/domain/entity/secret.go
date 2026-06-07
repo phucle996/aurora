@@ -2,65 +2,44 @@ package coreEntity
 
 import "time"
 
-type SecretStatus string
-
-const (
-	SecretStatusPending SecretStatus = "pending"
-	SecretStatusActive  SecretStatus = "active"
-	SecretStatusRetired SecretStatus = "retired"
-	SecretStatusRevoked SecretStatus = "revoked"
-)
-
-type SecretFamily struct {
-	ID          string
-	Code        string
-	Name        string
-	Description string
+type RuntimeSecret struct {
+	Secret      []byte
+	Fingerprint string
 	CreatedAt   time.Time
 }
 
-type SecretVersion struct {
-	ID                string
-	FamilyID          string
-	Version           int
-	SecretCiphertext  string
-	SecretFingerprint string
-	Status            SecretStatus
-	IsPrimary         bool
-	NotBefore         time.Time
-	NotAfter          *time.Time
-	ActivatedAt       *time.Time
-	RetiredAt         *time.Time
-	RevokedAt         *time.Time
-	RotationReason    string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+type RuntimeSecrets struct {
+	SecretType string
+	Active     RuntimeSecret
+	Standby    RuntimeSecret
+	LoadedAt   time.Time
 }
 
-type RotationPlan struct {
-	Family           SecretFamily
-	CurrentVersions  []SecretVersion
-	RotationTTL      time.Duration
-	RotationInterval time.Duration
-	RotateAt         time.Time
+func (s *RuntimeSecrets) Zero() {
+	if s == nil {
+		return
+	}
+	if len(s.Active.Secret) > 0 {
+		for i := range s.Active.Secret {
+			s.Active.Secret[i] = 0
+		}
+		s.Active.Secret = nil
+	}
+	if len(s.Standby.Secret) > 0 {
+		for i := range s.Standby.Secret {
+			s.Standby.Secret[i] = 0
+		}
+		s.Standby.Secret = nil
+	}
 }
 
-type BootstrapSecretFamily struct {
-	Code        string
-	Name        string
-	Description string
-}
-
-type EnsureInitialSecretResult struct {
-	Family      SecretFamily
-	Version     SecretVersion
-	Created     bool
-	PlainSecret string
-}
-
-type RotateSecretFamilyInput struct {
-	FamilyCode        string
-	TTL               time.Duration
-	NewVersion        *SecretVersion
-	RetirePreviousNow bool
+type CoreSecretRow struct {
+	SecretType         string
+	ActiveSecret       string
+	ActiveFingerprint  string
+	ActiveCreatedAt    time.Time
+	StandbySecret      string
+	StandbyFingerprint string
+	StandbyCreatedAt   time.Time
+	UpdatedAt          time.Time
 }

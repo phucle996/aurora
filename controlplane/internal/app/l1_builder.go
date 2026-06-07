@@ -42,4 +42,20 @@ func RegisterL1Loaders(
 		return modules.Core.ZoneRepository.GetZoneCatalog(ctx)
 	})
 
+	// 5. Đăng ký tĩnh loader cho các secret types phục vụ JWT và API key auth
+	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return modules.Core.SecretRepository.GetAccessSecret(ctx)
+	})
+
+	cacheengine.Register(registry, "refresh_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return modules.Core.SecretRepository.GetRefreshSecret(ctx)
+	})
+
+	cacheengine.Register(registry, "admin_api_key", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return modules.Core.SecretRepository.GetAdminAPIKey(ctx)
+	})
+
+	cacheengine.Register(registry, "one_time_token", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return modules.Core.SecretRepository.GetOneTimeTokenSecret(ctx)
+	})
 }

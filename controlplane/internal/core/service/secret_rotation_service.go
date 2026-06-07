@@ -5,425 +5,235 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"sort"
+	"errors"
 	"strings"
+	"sync"
 	"time"
 
-	coreCache "controlplane/internal/core/cache"
+	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
-	coreerrorx "controlplane/internal/core/taxonomy"
-	coreMetric "controlplane/internal/core/metrics"
 	"controlplane/internal/security"
 	"controlplane/pkg/logger"
-
-	"github.com/google/uuid"
 )
 
 const (
-	rotationReasonBootstrapInitialSecret = "bootstrap_initial_secret"
-	invalidateReasonBootstrap            = "bootstrap"
-	invalidateReasonRotate               = "rotate"
-	minRotationInterval                  = 24 * time.Hour
-	rotationIntervalMultiplier           = 2
-	bootstrapSecretBytes                 = 32
-	bootstrapInitialVersion              = 1
+	// Kích thước của secret thô (entropy) trước khi encode Base64.
+	bootstrapSecretBytes = 32
 )
 
+// SecretRotationService chịu trách nhiệm khởi tạo và xoay vòng các loại secret dùng cho hệ thống
+// theo cơ chế Active-Standby hai luồng song song, tránh downtime khi verify token.
 type SecretRotationService struct {
-	repo     coreRepoInterface.SecretRepository
-	notifier coreCache.SecretInvalidationNotifier
-	now      func() time.Time
+	repo         coreRepoInterface.SecretRepository
+	l1Registry   *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine để xử lý cache L1 cục bộ
+	l1Fanout     *cacheengine.RedisFanout   // Tích hợp RedisFanout để phát tin nhắn xóa cache trên toàn cụm (Pub/Sub)
+	Now          func() time.Time
+	isRotatingMu sync.Mutex
+	isRotating   map[string]time.Time // Quản lý thời gian xoay vòng tránh spam yêu cầu xoay vòng liên tục
 }
 
-type noopInvalidationNotifier struct{}
-
-func (noopInvalidationNotifier) InvalidateFamily(ctx context.Context, familyCode string, reason string) error {
-	return nil
-}
-
-// CONTRACT (module-level):
-// - DB/repository là SoT cho secret families + versions.
-// - Mọi mutate flow phải đi qua lock tương ứng (bootstrap/rotation lock).
-// - Invariant version-set: tối đa 2 bản active/pending trong overlap window.
-// - Invalidation notifier chỉ là best-effort side effect sau mutate thành công.
-//
-// BOUNDARY:
-// - Service này quản business rule của lifecycle secret (plan/bootstrap/rotate).
-// - Service không quyết định shutdown policy hay fallback policy toàn app.
-// - Mapping lỗi sang transport/status code là trách nhiệm caller layer trên.
-//
-// NOTES:
-// - `now` được inject để test deterministic.
-// - Metrics/logging phục vụ observability, không thay đổi outcome nghiệp vụ.
-
-// NewSecretRotationService trả interface rotation service để caller phụ thuộc
-// theo contract domain thay vì concrete implementation.
-//
-// CONTRACT:
-// - Service này không fallback dependency ngầm.
-// - Validation input/fail-fast được quyết định tại callsite bootstrap/use-case.
-// - Constructor luôn trả non-nil theo wiring path hợp lệ.
+// NewSecretRotationService tạo mới một instance điều phối xoay vòng secret
 func NewSecretRotationService(
 	repo coreRepoInterface.SecretRepository,
-	notifier coreCache.SecretInvalidationNotifier,
+	l1Registry *cacheengine.CacheRegistry,
+	l1Fanout *cacheengine.RedisFanout,
 ) coreSvcInterface.SecretRotationService {
-	// Policy by callsite:
-	// - Bootstrap path có thể truyền notifier=nil (single-node init, không bắt buộc fan-out invalidate).
-	// - Rotate worker/scheduler path phải truyền notifier!=nil để publish invalidation
-	//   cho các node khác sau khi rotate thành công.
-	if notifier == nil {
-		notifier = noopInvalidationNotifier{}
-	}
 	return &SecretRotationService{
-		repo:     repo,
-		notifier: notifier,
-		now:      time.Now,
+		repo:       repo,
+		l1Registry: l1Registry,
+		l1Fanout:   l1Fanout,
+		Now:        time.Now,
+		isRotating: make(map[string]time.Time),
 	}
 }
 
-// PlanRotation:
-// CONTRACT:
-// - TTL phải > 0.
-// - Family phải tồn tại và version-set hợp lệ.
-// - Read-only: không mutate DB/cache state.
-//
-// BOUNDARY:
-// - Chỉ trả kế hoạch rotate để caller quyết định trigger rotate thật hay không.
-//
-// NOTES:
-// - `RotateAt` = primaryReferenceTime + ComputeRotationInterval(ttl).
-func (s *SecretRotationService) PlanRotation(ctx context.Context, familyCode string, ttl time.Duration) (*coreEntity.RotationPlan, error) {
-	startedAt := time.Now().UTC()
-	if ttl <= 0 {
-		err := coreerrorx.ErrInvalidTTL
-		coreMetric.ObserveSecretLifecycle("plan_rotation", strings.TrimSpace(familyCode), "error", startedAt)
-		return nil, err
+// EnsureInitialSecrets đảm bảo rằng loại secret được yêu cầu đã tồn tại trong DB khi khởi tạo hệ thống.
+// Hàm này sử dụng PostgreSQL Advisory Lock để đảm bảo chỉ có duy nhất một instance trong cụm thực thi việc khởi tạo.
+func (s *SecretRotationService) EnsureInitialSecrets(ctx context.Context, secretType string) (*coreEntity.RuntimeSecrets, error) {
+	secretType = strings.TrimSpace(secretType)
+	if secretType == "" {
+		return nil, errors.New("empty secret type")
 	}
-	family, versions, err := s.loadFamilyState(ctx, familyCode)
+
+	// 1. Acquire khóa PostgreSQL Advisory Lock độc quyền theo loại secret để tránh race condition giữa các replica
+	lock, err := s.repo.AcquireSecretTypeBootstrapLock(ctx, secretType)
 	if err != nil {
-		coreMetric.ObserveSecretLifecycle("plan_rotation", strings.TrimSpace(familyCode), "error", startedAt)
 		return nil, err
 	}
-	interval := ComputeRotationInterval(ttl)
-	coreMetric.ObserveSecretLifecycle("plan_rotation", strings.TrimSpace(familyCode), "ok", startedAt)
-	return &coreEntity.RotationPlan{
-		Family:           *family,
-		CurrentVersions:  versions,
-		RotationTTL:      ttl,
-		RotationInterval: interval,
-		RotateAt:         primaryReferenceTime(versions).Add(interval),
+	defer lock.Release(context.Background())
+
+	// 2. Kiểm tra xem secret đã được khởi tạo bởi replica khác trước đó chưa
+	secrets, err := s.repo.GetSecretsByType(ctx, secretType)
+	if err != nil {
+		return nil, err
+	}
+	if secrets != nil {
+		return secrets, nil
+	}
+
+	// 3. Nếu chưa có, tiến hành sinh ngẫu nhiên 2 cặp secret độc lập cho cả Active và Standby
+	plainActive, cipherActive, fingerActive, err := generateSecretMaterial()
+	if err != nil {
+		return nil, err
+	}
+	plainStandby, cipherStandby, fingerStandby, err := generateSecretMaterial()
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.Now().UTC()
+	row := coreEntity.CoreSecretRow{
+		SecretType:         secretType,
+		ActiveSecret:       cipherActive,
+		ActiveFingerprint:  fingerActive,
+		ActiveCreatedAt:    now,
+		StandbySecret:      cipherStandby,
+		StandbyFingerprint: fingerStandby,
+		StandbyCreatedAt:   now,
+		UpdatedAt:          now,
+	}
+
+	// 4. Lưu cặp secret vừa tạo vào Database
+	if err := s.repo.SaveSecrets(ctx, row); err != nil {
+		return nil, err
+	}
+
+	// 5. Đồng bộ hóa Cache L1: Invalidate bản ghi local trong registry
+	s.l1Registry.InvalidateLocal(ctx, secretType)
+
+	// 6. Phát tín hiệu xóa cache tới tất cả các replica khác trong cụm thông qua Redis Fanout Bus
+	if _, err := s.l1Fanout.Publish(ctx, secretType, nil); err != nil {
+		logger.SysWarnFields("core.secret.invalidate", "failed to publish fanout invalidation", err, logger.Fields{"secret_type": secretType})
+	}
+
+	// 7. Trả về thông tin Plaintext cho runtime sử dụng ngay lập tức
+	return &coreEntity.RuntimeSecrets{
+		SecretType: secretType,
+		Active: coreEntity.RuntimeSecret{
+			Secret:      plainActive,
+			Fingerprint: fingerActive,
+			CreatedAt:   now,
+		},
+		Standby: coreEntity.RuntimeSecret{
+			Secret:      plainStandby,
+			Fingerprint: fingerStandby,
+			CreatedAt:   now,
+		},
+		LoadedAt: now,
 	}, nil
 }
 
-// EnsureInitialSecretVersion:
-// CONTRACT:
-// - Idempotent bootstrap theo family.
-// - Nếu đã có usable version -> noop (Created=false).
-// - Nếu chưa có usable version -> tạo v1 active + primary.
-// - Luôn chạy dưới bootstrap lock của family.
-//
-// BOUNDARY:
-// - Chỉ xử lý bootstrap lifecycle cho 1 family, không mở rộng policy app-level.
-//
-// NOTES:
-// - `PlainSecret` chỉ trả khi created=true.
-// - Cache invalidation sau mutate là best-effort.
-func (s *SecretRotationService) EnsureInitialSecretVersion(ctx context.Context, family coreEntity.BootstrapSecretFamily) (*coreEntity.EnsureInitialSecretResult, error) {
-	startedAt := time.Now().UTC()
-	logger.SysInfoFields("core.secret.bootstrap", "ensuring initial secret version", logger.Fields{"family": strings.TrimSpace(family.Code)})
-	if strings.TrimSpace(family.Code) == "" || strings.TrimSpace(family.Name) == "" {
-		err := coreerrorx.ErrSecretBootstrapFamily
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		return nil, err
+// RotateSecret thực hiện xoay vòng khóa nguyên tử theo cơ chế Active-Standby:
+// - Khóa Active hiện tại sẽ được đẩy xuống làm khóa Standby.
+// - Một khóa Active hoàn toàn mới sẽ được sinh ra để ký mới các token tiếp theo.
+// Quá trình này giúp hệ thống luôn chấp nhận cả token cũ ký bằng Standby và token mới ký bằng Active, loại bỏ downtime.
+func (s *SecretRotationService) RotateSecret(ctx context.Context, secretType string) (*coreEntity.RuntimeSecrets, error) {
+	secretType = strings.TrimSpace(secretType)
+	if secretType == "" {
+		return nil, errors.New("empty secret type")
 	}
-	lock, err := s.repo.AcquireFamilyBootstrapLock(ctx, family.Code)
+
+	// 1. Rate Limiting ở RAM local (Khóa 30 giây): Ngăn chặn việc spam API xoay vòng liên tục gây quá tải Redis/Database
+	s.isRotatingMu.Lock()
+	lastRotateTime, rotating := s.isRotating[secretType]
+	if rotating && s.Now().Sub(lastRotateTime) < 30*time.Second {
+		s.isRotatingMu.Unlock()
+		return s.repo.GetSecretsByType(ctx, secretType)
+	}
+	s.isRotating[secretType] = s.Now()
+	s.isRotatingMu.Unlock()
+
+	// 2. Acquire khóa PostgreSQL Advisory Lock độc quyền phục vụ việc xoay vòng khóa
+	lock, err := s.repo.AcquireSecretTypeRotationLock(ctx, secretType)
 	if err != nil {
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		logger.SysWarnFields("core.secret.bootstrap", "failed to acquire bootstrap lock", err, logger.Fields{"family": family.Code})
 		return nil, err
 	}
 	defer lock.Release(context.Background())
 
-	dbFamily, err := s.repo.GetFamilyByCode(ctx, family.Code)
+	// 3. Lấy thông tin secret hiện tại đang lưu trong DB
+	current, err := s.repo.GetSecretsByType(ctx, secretType)
 	if err != nil {
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
 		return nil, err
 	}
-	if dbFamily == nil {
-		// Family registry row is created once and reused on future bootstrap calls.
-		now := s.now().UTC()
-		familyID, idErr := uuid.NewV7()
-		if idErr != nil {
-			familyID = uuid.New()
-		}
-		createdFamily, err := s.repo.EnsureFamily(ctx, coreEntity.SecretFamily{
-			ID:          familyID.String(),
-			Code:        strings.TrimSpace(family.Code),
-			Name:        strings.TrimSpace(family.Name),
-			Description: strings.TrimSpace(family.Description),
+	// Nếu chưa từng có, tiến hành bootstrap
+	if current == nil {
+		return s.EnsureInitialSecrets(ctx, secretType)
+	}
+
+	// Chống xoay vòng kép (Double Rotation) từ các replica khác nhau trong cụm
+	if s.Now().Sub(current.Active.CreatedAt) < 30*time.Second {
+		return current, nil
+	}
+
+	// 4. Tạo secret mới làm Active mới
+	plainNew, cipherNew, fingerNew, err := generateSecretMaterial()
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Mã hóa lại khóa Active hiện tại bằng Master Key để lưu trữ an toàn dưới vai trò Standby mới
+	cipherActiveCurrent, err := security.EncryptSecretBytes(current.Active.Secret)
+	if err != nil {
+		return nil, err
+	}
+
+	// 6. Thực hiện update nguyên tử xuống DB: Active mới ghi đè Active cũ; Active cũ chuyển thành Standby mới
+	err = s.repo.UpdateSecrets(ctx,
+		secretType,
+		cipherNew,
+		fingerNew,
+		cipherActiveCurrent,
+		current.Active.Fingerprint,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 7. Đồng bộ hóa xóa cache local
+	s.l1Registry.InvalidateLocal(ctx, secretType)
+
+	// 8. Phát tin nhắn xóa cache cho các replica khác thông qua Redis Pub/Sub
+	if _, err := s.l1Fanout.Publish(ctx, secretType, nil); err != nil {
+		logger.SysWarnFields("core.secret.invalidate", "failed to publish fanout invalidation", err, logger.Fields{"secret_type": secretType})
+	}
+
+	now := s.Now().UTC()
+	return &coreEntity.RuntimeSecrets{
+		SecretType: secretType,
+		Active: coreEntity.RuntimeSecret{
+			Secret:      plainNew,
+			Fingerprint: fingerNew,
 			CreatedAt:   now,
-		})
-		if err != nil {
-			coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-			return nil, err
-		}
-		dbFamily = createdFamily
-	}
-
-	versions, err := s.repo.ListVersionsByFamilyID(ctx, dbFamily.ID)
-	if err != nil {
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		return nil, err
-	}
-	if len(versions) > 2 {
-		err := coreerrorx.ErrInvalidVersionSet
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		return nil, err
-	}
-	usable := activeVersions(versions)
-	if len(usable) > 2 {
-		err := coreerrorx.ErrInvalidVersionSet
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		return nil, err
-	}
-	if len(usable) >= 1 {
-		// Bootstrap is idempotent: if usable versions already exist, do not create new one.
-		primary := usable[0]
-		for _, item := range usable {
-			if item.IsPrimary {
-				primary = item
-				break
-			}
-		}
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "noop", startedAt)
-		logger.SysInfoFields("core.secret.bootstrap", "secret family already has usable version", logger.Fields{"family": family.Code, "version_id": primary.ID})
-		return &coreEntity.EnsureInitialSecretResult{Family: *dbFamily, Version: primary, Created: false}, nil
-	}
-
-	now := s.now().UTC()
-	// Generate plain secret -> encrypt for storage -> derive deterministic fingerprint.
-	plain, cipherText, fingerprint, err := generateBootstrapSecretMaterial()
-	if err != nil {
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		return nil, err
-	}
-	versionID, versionIDErr := uuid.NewV7()
-	if versionIDErr != nil {
-		versionID = uuid.New()
-	}
-	version := coreEntity.SecretVersion{
-		ID:                versionID.String(),
-		FamilyID:          dbFamily.ID,
-		Version:           bootstrapInitialVersion,
-		SecretCiphertext:  cipherText,
-		SecretFingerprint: fingerprint,
-		Status:            coreEntity.SecretStatusActive,
-		IsPrimary:         true,
-		NotBefore:         now,
-		ActivatedAt:       &now,
-		RotationReason:    rotationReasonBootstrapInitialSecret,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-	}
-	if err := s.repo.CreateSecretVersion(ctx, version); err != nil {
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		logger.SysWarnFields("core.secret.bootstrap", "failed to create initial secret version", err, logger.Fields{"family": family.Code, "version_id": version.ID})
-		return nil, err
-	}
-	if err := s.repo.ReplacePrimaryVersion(ctx, dbFamily.ID, version.ID, "", now); err != nil {
-		coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "error", startedAt)
-		logger.SysWarnFields("core.secret.bootstrap", "failed to promote initial secret version", err, logger.Fields{"family": family.Code, "version_id": version.ID})
-		return nil, err
-	}
-	// Bootstrap mutate thành công -> invalidate best-effort.
-	// Nếu notifier là noop (bootstrap local) thì call này no-op theo policy constructor.
-	if notifyErr := s.notifier.InvalidateFamily(ctx, dbFamily.Code, invalidateReasonBootstrap); notifyErr != nil {
-		logger.SysWarnFields("core.secret.bootstrap", "failed to invalidate runtime cache after bootstrap", notifyErr, logger.Fields{"family": dbFamily.Code, "reason": invalidateReasonBootstrap})
-	}
-	coreMetric.ObserveSecretLifecycle("bootstrap", strings.TrimSpace(family.Code), "created", startedAt)
-	logger.SysInfoFields("core.secret.bootstrap", "created initial secret version", logger.Fields{"family": family.Code, "version_id": version.ID})
-	return &coreEntity.EnsureInitialSecretResult{Family: *dbFamily, Version: version, Created: true, PlainSecret: plain}, nil
+		},
+		Standby: coreEntity.RuntimeSecret{
+			Secret:      current.Active.Secret,
+			Fingerprint: current.Active.Fingerprint,
+			CreatedAt:   current.Active.CreatedAt,
+		},
+		LoadedAt: now,
+	}, nil
 }
 
-// RotateSecretFamily:
-// CONTRACT:
-// - TTL phải hợp lệ, NewVersion payload phải đầy đủ.
-// - Rotate chạy dưới family rotation lock.
-// - Duy trì invariant tối đa 2 active/pending versions.
-// - New version trở thành primary; previous/oldest retire theo input policy.
-//
-// BOUNDARY:
-// - Không retry lock conflict ở layer này.
-// - Không fallback âm thầm khi dependency mutate lỗi.
-//
-// NOTES:
-// - Nếu đang có 2 version, drop oldest trước khi append version mới.
-// - Invalidation notifier gọi best-effort sau rotate thành công.
-func (s *SecretRotationService) RotateSecretFamily(ctx context.Context, input coreEntity.RotateSecretFamilyInput) (*coreEntity.SecretVersion, error) {
-	startedAt := time.Now().UTC()
-	logger.SysInfoFields("core.secret.rotate", "rotating secret family", logger.Fields{"family": strings.TrimSpace(input.FamilyCode)})
-	if input.TTL <= 0 {
-		err := coreerrorx.ErrInvalidTTL
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		return nil, err
-	}
-	lock, err := s.repo.AcquireFamilyRotationLock(ctx, input.FamilyCode)
-	if err != nil {
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		logger.SysWarnFields("core.secret.rotate", "failed to acquire rotation lock", err, logger.Fields{"family": input.FamilyCode})
-		return nil, err
-	}
-	defer lock.Release(context.Background())
-
-	family, versions, err := s.loadFamilyState(ctx, input.FamilyCode)
-	if err != nil {
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		return nil, err
-	}
-	if input.NewVersion == nil {
-		err := coreerrorx.ErrNewVersionRequired
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		return nil, err
-	}
-
-	now := s.now().UTC()
-	currentActiveVersions := activeVersions(versions)
-	if len(currentActiveVersions) < 1 || len(currentActiveVersions) > 2 {
-		err := coreerrorx.ErrInvalidVersionSet
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		return nil, err
-	}
-
-	nextVersion := *input.NewVersion
-	// Service owns operational fields; caller only provides payload material.
-	nextVersion.FamilyID = family.ID
-	nextVersion.Status = coreEntity.SecretStatusActive
-	nextVersion.IsPrimary = true
-	nextVersion.NotBefore = now
-	nextVersion.ActivatedAt = &now
-	nextVersion.CreatedAt = now
-	nextVersion.UpdatedAt = now
-	if strings.TrimSpace(nextVersion.ID) == "" || strings.TrimSpace(nextVersion.SecretCiphertext) == "" || strings.TrimSpace(nextVersion.SecretFingerprint) == "" {
-		err := coreerrorx.ErrNewVersionRequired
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		return nil, err
-	}
-
-	oldestVersionID := ""
-	if len(currentActiveVersions) == 2 {
-		// When already in overlap window (2 versions), drop oldest before appending next.
-		oldestVersionID = currentActiveVersions[len(currentActiveVersions)-1].ID
-		filtered := make([]coreEntity.SecretVersion, 0, len(versions))
-		for _, item := range versions {
-			if item.ID == oldestVersionID {
-				continue
-			}
-			filtered = append(filtered, item)
-		}
-		versions = filtered
-		currentActiveVersions = activeVersions(versions)
-	}
-
-	previousPrimaryID := ""
-	for _, item := range currentActiveVersions {
-		if item.IsPrimary {
-			previousPrimaryID = item.ID
-			break
-		}
-	}
-
-	if err := s.repo.RotateFamilyVersions(ctx, family.ID, nextVersion, previousPrimaryID, oldestVersionID, input.RetirePreviousNow, now); err != nil {
-		coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "error", startedAt)
-		logger.SysWarnFields("core.secret.rotate", "failed to rotate secret family", err, logger.Fields{"family": family.Code, "next_version_id": nextVersion.ID})
-		return nil, err
-	}
-	// Rotate mutate thành công -> invalidate best-effort.
-	// Rotate worker phải cấp notifier bus thật để fan-out invalidate đa node.
-	if notifyErr := s.notifier.InvalidateFamily(ctx, family.Code, invalidateReasonRotate); notifyErr != nil {
-		logger.SysWarnFields("core.secret.rotate", "failed to invalidate runtime cache after rotate", notifyErr, logger.Fields{"family": family.Code, "reason": invalidateReasonRotate})
-	}
-	coreMetric.ObserveSecretLifecycle("rotate", strings.TrimSpace(input.FamilyCode), "ok", startedAt)
-	logger.SysInfoFields("core.secret.rotate", "rotated secret family", logger.Fields{
-		"family":              family.Code,
-		"next_version_id":     nextVersion.ID,
-		"previous_primary_id": previousPrimaryID,
-		"dropped_oldest_id":   oldestVersionID,
-	})
-	return &nextVersion, nil
-}
-
-// loadFamilyState loads family and version list, then validates bounded set size.
-func (s *SecretRotationService) loadFamilyState(ctx context.Context, familyCode string) (*coreEntity.SecretFamily, []coreEntity.SecretVersion, error) {
-	family, err := s.repo.GetFamilyByCode(ctx, strings.TrimSpace(familyCode))
-	if err != nil {
-		return nil, nil, err
-	}
-	if family == nil {
-		return nil, nil, coreerrorx.ErrFamilyNotFound
-	}
-	versions, err := s.repo.ListVersionsByFamilyID(ctx, family.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(versions) < 1 || len(versions) > 2 {
-		return nil, nil, coreerrorx.ErrInvalidVersionSet
-	}
-	sort.SliceStable(versions, func(i, j int) bool { return versions[i].Version > versions[j].Version })
-	return family, versions, nil
-}
-
-// activeVersions keeps only active/pending versions and sorts by descending version number.
-func activeVersions(versions []coreEntity.SecretVersion) []coreEntity.SecretVersion {
-	result := make([]coreEntity.SecretVersion, 0, len(versions))
-	for _, item := range versions {
-		if item.Status == coreEntity.SecretStatusActive || item.Status == coreEntity.SecretStatusPending {
-			result = append(result, item)
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool { return result[i].Version > result[j].Version })
-	return result
-}
-
-// primaryReferenceTime chooses the primary version reference time for planning.
-// ActivatedAt is preferred; fallback is CreatedAt.
-func primaryReferenceTime(versions []coreEntity.SecretVersion) time.Time {
-	for _, item := range versions {
-		if item.IsPrimary {
-			if item.ActivatedAt != nil {
-				return item.ActivatedAt.UTC()
-			}
-			return item.CreatedAt.UTC()
-		}
-	}
-	return versions[0].CreatedAt.UTC()
-}
-
-// ComputeRotationInterval derives rotation interval from TTL policy.
-// Policy rationale:
-// - giữ floor 24h để tránh tần suất rotate quá dày khi TTL nhỏ bất thường.
-// - khi TTL đủ lớn, interval = TTL * 2 để duy trì overlap window tối đa 2 version.
-func ComputeRotationInterval(ttl time.Duration) time.Duration {
-	if ttl < minRotationInterval {
-		return minRotationInterval
-	}
-	return ttl * rotationIntervalMultiplier
-}
-
-// generateBootstrapSecretMaterial creates random secret material for bootstrap,
-// encrypts it for persistence, and computes a deterministic fingerprint.
-func generateBootstrapSecretMaterial() (plain string, cipherText string, fingerprint string, err error) {
+// generateSecretMaterial sinh ngẫu nhiên entropy thô từ crypto/rand, mã hóa AES-GCM qua security package
+// và tính toán SHA-256 fingerprint phục vụ định danh và check trùng lặp secret.
+func generateSecretMaterial() (plain []byte, cipherText string, fingerprint string, err error) {
 	raw := make([]byte, bootstrapSecretBytes)
 	if _, err = cryptorand.Read(raw); err != nil {
-		return "", "", "", err
+		return nil, "", "", err
 	}
-	plain = base64.RawURLEncoding.EncodeToString(raw)
-	cipherText, err = security.EncryptSecret(plain)
+	// Dùng Base64 Raw URL Encoding để đảm bảo an toàn khi truyền tải/sử dụng
+	plain = []byte(base64.RawURLEncoding.EncodeToString(raw))
+
+	// Mã hóa đối xứng AES-GCM thông qua Master Key cấu hình của runtime
+	cipherText, err = security.EncryptSecretBytes(plain)
 	if err != nil {
-		return "", "", "", err
+		return nil, "", "", err
 	}
-	sum := sha256.Sum256([]byte(plain))
+
+	// Sinh fingerprint (SHA-256 hash của plaintext) để hỗ trợ so sánh và truy vết vận hành không nhạy cảm
+	sum := sha256.Sum256(plain)
 	fingerprint = base64.RawURLEncoding.EncodeToString(sum[:])
 	return plain, cipherText, fingerprint, nil
 }

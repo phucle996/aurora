@@ -60,6 +60,7 @@ func NewRedisFanout(rdb *redis.Client, channel string, registry *CacheRegistry) 
 // Publish thực thi Lua script để tự động tăng version theo key và phát sự kiện đồng bộ.
 // Trả về số phiên bản mới sinh ra và lỗi (nếu có).
 func (f *RedisFanout) Publish(ctx context.Context, key string, payload []byte) (int64, error) {
+
 	// Xây dựng version key độc lập cho từng key cụ thể (Đồng bộ thuật ngữ key-level)
 	versionKey := fmt.Sprintf("cacheengine:version:%s", key)
 

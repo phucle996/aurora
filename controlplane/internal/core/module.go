@@ -35,7 +35,6 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	coreCache "controlplane/internal/core/cache"
-	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreRepoImpl "controlplane/internal/core/repository"
@@ -55,8 +54,6 @@ type Module struct {
 	cfg                          *config.Config
 	SecretRepository             coreRepoInterface.SecretRepository
 	SecretRotationService        coreSvcInterface.SecretRotationService
-	SecretReadService            coreSvcInterface.SecretReadService
-	RuntimeSecretProvider        coreSvcInterface.RuntimeSecretProvider
 	ZoneRepository               coreRepoInterface.ZoneRepository
 	ZoneService                  coreSvcInterface.ZoneService
 	ZoneHandler                  *coreHandler.ZoneHandler
@@ -64,7 +61,6 @@ type Module struct {
 	DataplaneNodeService         coreSvcInterface.DataplaneNodeService
 	DataplaneOrchestrator        *coreSvcImpl.DataplaneOrchestrator
 	DataplaneHeartbeatSubscriber *coreSvcImpl.DataplaneHeartbeatSubscriber
-	invalidationBus              *coreCache.RedisSecretInvalidationBus
 	listenCancel                 context.CancelFunc
 	orchestratorCancel           context.CancelFunc
 	subscriberCancel             context.CancelFunc
@@ -90,12 +86,8 @@ func NewModule(
 
 	// 1) SoT data access for secret lifecycle.
 	repo := coreRepoImpl.NewSecretRepository(cfg, db)
-	readService := coreSvcImpl.NewSecretReadService(repo)
-	// 2) Runtime provider for low-latency reads with cache-aside policy.
-	provider := coreCache.NewCacheAsideSecretProviderWithTTL(readService, cfg.Security.SecretCacheTTL)
-	// 3) Rotation + cache invalidation orchestration.
-	bus := coreCache.NewRedisSecretInvalidationBus(rds, provider, cfg.App.AppName)
-	rotationService := coreSvcImpl.NewSecretRotationService(repo, bus)
+	// 3) Rotation orchestration.
+	rotationService := coreSvcImpl.NewSecretRotationService(repo, l1Registry, l1Fanout)
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
@@ -132,8 +124,6 @@ func NewModule(
 		cfg:                          cfg,
 		SecretRepository:             repo,
 		SecretRotationService:        rotationService,
-		SecretReadService:            readService,
-		RuntimeSecretProvider:        provider,
 		ZoneRepository:               zoneRepo,
 		ZoneService:                  zoneService,
 		ZoneHandler:                  zoneHandler,
@@ -141,7 +131,6 @@ func NewModule(
 		DataplaneNodeService:         dataplaneNodeService,
 		DataplaneOrchestrator:        dataplaneOrchestrator,
 		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
-		invalidationBus:              bus,
 		rateLimiter:                  rateLimiter,
 		L1Registry:                   l1Registry,
 	}
@@ -164,15 +153,6 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 	if m == nil || m.SecretRotationService == nil {
 		return nil
 	}
-	if m.invalidationBus != nil && m.listenCancel == nil {
-		listenCtx, cancel := context.WithCancel(ctx)
-		m.listenCancel = cancel
-		go func() {
-			if err := m.invalidationBus.Listen(listenCtx); err != nil && err != context.Canceled {
-				logger.SysWarn("core", err.Error())
-			}
-		}()
-	}
 	if m.DataplaneOrchestrator != nil && m.orchestratorCancel == nil {
 		orchCtx, cancel := context.WithCancel(ctx)
 		m.orchestratorCancel = cancel
@@ -184,14 +164,14 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 		go m.DataplaneHeartbeatSubscriber.Start(subCtx)
 	}
 
-	families := []coreEntity.BootstrapSecretFamily{
-		{Code: "access_token", Name: "Access Token", Description: "Primary signing secret for user access tokens."},
-		{Code: "refresh_token", Name: "Refresh Token", Description: "Primary signing secret for refresh token flows."},
-		{Code: "admin_api_key", Name: "Admin API Key", Description: "Primary secret family for admin API key related flows."},
-		{Code: "one_time_token", Name: "One Time Token", Description: "Primary secret family for one-time token issuance and verification."},
+	types := []string{
+		"access_secret",
+		"refresh_secret",
+		"admin_api_key",
+		"one_time_token",
 	}
-	for _, family := range families {
-		if _, err := m.SecretRotationService.EnsureInitialSecretVersion(ctx, family); err != nil {
+	for _, secretType := range types {
+		if _, err := m.SecretRotationService.EnsureInitialSecrets(ctx, secretType); err != nil {
 			return err
 		}
 	}

@@ -1,11 +1,5 @@
-DROP INDEX IF EXISTS ux_core_secret_versions_one_primary;
 DROP INDEX IF EXISTS ix_dataplane_nodes_status_zone_id;
 DROP INDEX IF EXISTS ix_dataplane_nodes_zone_id;
 DROP INDEX IF EXISTS ix_zone_services_zone_enabled;
 DROP INDEX IF EXISTS ix_zones_status;
 DROP INDEX IF EXISTS ux_zones_code;
-DROP INDEX IF EXISTS ix_core_secret_versions_family_created_at_desc;
-DROP INDEX IF EXISTS ix_core_secret_versions_family_status;
-DROP INDEX IF EXISTS ux_core_secret_versions_secret_fingerprint;
-DROP INDEX IF EXISTS ux_core_secret_versions_family_version;
-DROP INDEX IF EXISTS ux_core_secret_families_code;

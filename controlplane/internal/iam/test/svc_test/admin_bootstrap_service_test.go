@@ -54,7 +54,7 @@ func TestAdminBootstrapLockFailed(t *testing.T) {
 	repo := &adminBootstrapRepoMock{
 		acquireFn: func(ctx context.Context) (iamRepoInterface.BootstrapLock, error) { return nil, errors.New("lock") },
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
 	err := svc.Bootstrap(context.Background(), "tester")
 	if !errors.Is(err, iamTaxonomy.ErrAdminBootstrapLockFailed) {
 		t.Fatalf("expected ErrAdminBootstrapLockFailed, got %v", err)
@@ -68,7 +68,7 @@ func TestAdminBootstrapNotAllowedWhenActiveKeyExists(t *testing.T) {
 			return &iamEntity.AdminAPIKey{KeyHash: "x", ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
 	err := svc.Bootstrap(context.Background(), "tester")
 	if !errors.Is(err, iamTaxonomy.ErrAdminBootstrapNotAllowed) {
 		t.Fatalf("expected ErrAdminBootstrapNotAllowed, got %v", err)
@@ -94,7 +94,7 @@ func TestAdminBootstrapSuccess(t *testing.T) {
 		},
 		rollbackFn: func(ctx context.Context, payload iamEntity.AdminBootstrapPayload) error { return nil },
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(cfg, repo, telegram.NewTelegramClient("", ""), nil, nil, nil, nil)
+	svc := iamSvcImpl.NewAdminAPIKeyService(cfg, repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
 	err := svc.Bootstrap(context.Background(), "tester")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

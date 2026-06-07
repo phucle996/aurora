@@ -1,7 +1,6 @@
 package security
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -71,25 +70,11 @@ type jwtHeader struct {
 
 var jwtEncoding = base64.RawURLEncoding
 
-// Sign creates a compact JWT using HMAC-SHA256 with the current primary secret
-// from the requested secret family.
-func Sign(ctx context.Context, provider SecretProvider, family string, claims Claims) (string, error) {
-	if provider == nil {
-		return "", ErrEmptySecret
-	}
-
-	secret, err := provider.GetPrimary(ctx, family)
-	if err != nil {
-		return "", err
-	}
-
-	return SignWithSecret(claims, secret.Value)
-}
 
 // SignWithSecret creates a compact JWT using HMAC-SHA256 with an explicit raw
 // secret value. This is the low-level helper used after runtime secret lookup.
-func SignWithSecret(claims Claims, secret string) (string, error) {
-	if strings.TrimSpace(secret) == "" {
+func SignWithSecret(claims Claims, secret []byte) (string, error) {
+	if len(secret) == 0 {
 		return "", ErrEmptySecret
 	}
 
@@ -115,7 +100,7 @@ func SignWithSecret(claims Claims, secret string) (string, error) {
 	payloadPart := jwtEncoding.EncodeToString(payloadJSON)
 	signingInput := headerPart + "." + payloadPart
 
-	mac := hmac.New(sha256.New, []byte(secret))
+	mac := hmac.New(sha256.New, secret)
 	if _, err := mac.Write([]byte(signingInput)); err != nil {
 		return "", fmt.Errorf("security: sign jwt: %w", err)
 	}
@@ -125,8 +110,8 @@ func SignWithSecret(claims Claims, secret string) (string, error) {
 }
 
 // Parse verifies a compact JWT signed with HMAC-SHA256.
-func Parse(token, secret string) (Claims, error) {
-	if strings.TrimSpace(secret) == "" {
+func Parse(token string, secret []byte) (Claims, error) {
+	if len(secret) == 0 {
 		return Claims{}, ErrEmptySecret
 	}
 
@@ -258,8 +243,8 @@ func validateClaimsForParse(claims Claims, now time.Time) error {
 	return nil
 }
 
-func signInput(signingInput, secret string) ([]byte, error) {
-	mac := hmac.New(sha256.New, []byte(secret))
+func signInput(signingInput string, secret []byte) ([]byte, error) {
+	mac := hmac.New(sha256.New, secret)
 	if _, err := mac.Write([]byte(signingInput)); err != nil {
 		return nil, fmt.Errorf("security: sign jwt: %w", err)
 	}

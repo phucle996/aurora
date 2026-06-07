@@ -17,59 +17,26 @@
 -- ======================================================================================================
 
 
-CREATE TABLE IF NOT EXISTS core_secret_families (
-    id UUID PRIMARY KEY,
-    code TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS core_secrets (
+    secret_type VARCHAR(100) PRIMARY KEY,
+    active_secret TEXT NOT NULL,
+    active_fingerprint VARCHAR(256) NOT NULL,
+    active_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    standby_secret TEXT NOT NULL,
+    standby_fingerprint VARCHAR(256) NOT NULL,
+    standby_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE core_secret_families IS 'Registry of shared secret families used by the controlplane. Each family rotates independently and is resolved by a stable code.';
-COMMENT ON COLUMN core_secret_families.id IS 'Primary key of the secret family. Must be generated as UUIDv7 by application/service layer.';
-COMMENT ON COLUMN core_secret_families.code IS 'Stable secret family lookup code used by runtime secret provider, for example access_token or one_time_token.';
-COMMENT ON COLUMN core_secret_families.name IS 'Human-readable display name of the secret family.';
-COMMENT ON COLUMN core_secret_families.description IS 'Optional description of the secret family purpose and operational meaning.';
-COMMENT ON COLUMN core_secret_families.created_at IS 'Timestamp when the secret family registry row was created.';
-
-CREATE TABLE IF NOT EXISTS core_secret_versions (
-    id UUID PRIMARY KEY,
-    family_id UUID NOT NULL REFERENCES core_secret_families(id) ON DELETE CASCADE,
-    version INT NOT NULL,
-    secret_ciphertext TEXT NOT NULL,
-    secret_fingerprint TEXT NOT NULL,
-    status core_secret_status NOT NULL DEFAULT 'pending',
-    is_primary BOOLEAN NOT NULL DEFAULT false,
-    not_before TIMESTAMPTZ NOT NULL DEFAULT now(),
-    not_after TIMESTAMPTZ NULL,
-    activated_at TIMESTAMPTZ NULL,
-    retired_at TIMESTAMPTZ NULL,
-    revoked_at TIMESTAMPTZ NULL,
-    rotation_reason TEXT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_core_secret_versions_revoked_at
-        CHECK ((status = 'revoked' AND revoked_at IS NOT NULL) OR status <> 'revoked'),
-    CONSTRAINT ck_core_secret_versions_primary_status
-        CHECK (NOT (is_primary = true AND status IN ('retired', 'revoked')))
-);
-
-COMMENT ON TABLE core_secret_versions IS 'Versioned shared secret storage for safe rotation. One family may have many versions, with one primary signer and optional active overlap versions.';
-COMMENT ON COLUMN core_secret_versions.id IS 'Primary key of the secret version row. Must be generated as UUIDv7 by application/service layer.';
-COMMENT ON COLUMN core_secret_versions.family_id IS 'Foreign key to the UUIDv7 secret family that owns this version.';
-COMMENT ON COLUMN core_secret_versions.version IS 'Monotonic version number inside one secret family.';
-COMMENT ON COLUMN core_secret_versions.secret_ciphertext IS 'Encrypted secret material. Raw plaintext secret must never be stored in the database.';
-COMMENT ON COLUMN core_secret_versions.secret_fingerprint IS 'Deterministic non-sensitive fingerprint used for duplicate detection and operational reference.';
-COMMENT ON COLUMN core_secret_versions.status IS 'Lifecycle status of the secret version: pending, active, retired, or revoked.';
-COMMENT ON COLUMN core_secret_versions.is_primary IS 'Whether this version is the primary version used for new sign or issue operations.';
-COMMENT ON COLUMN core_secret_versions.not_before IS 'Earliest timestamp when this secret version may be treated as usable.';
-COMMENT ON COLUMN core_secret_versions.not_after IS 'Latest timestamp when this secret version may still be considered valid for verification if runtime respects expiry boundaries.';
-COMMENT ON COLUMN core_secret_versions.activated_at IS 'Timestamp when this secret version became operationally active.';
-COMMENT ON COLUMN core_secret_versions.retired_at IS 'Timestamp when this secret version was retired from active serving.';
-COMMENT ON COLUMN core_secret_versions.revoked_at IS 'Timestamp when this secret version was explicitly revoked.';
-COMMENT ON COLUMN core_secret_versions.rotation_reason IS 'Optional short human-readable explanation for why this version was created or rotated.';
-COMMENT ON COLUMN core_secret_versions.created_at IS 'Timestamp when this secret version row was created.';
-COMMENT ON COLUMN core_secret_versions.updated_at IS 'Timestamp when this secret version row was last updated.';
+COMMENT ON TABLE core_secrets IS 'Lưu trữ các cặp secret active-standby cho từng loại token/chữ ký, phục vụ rotation và verification liên tục.';
+COMMENT ON COLUMN core_secrets.secret_type IS 'Unique identifier type code of the secret, for example access_secret, refresh_secret, admin_api_key, one_time_token.';
+COMMENT ON COLUMN core_secrets.active_secret IS 'Encrypted active secret material.';
+COMMENT ON COLUMN core_secrets.active_fingerprint IS 'Deterministic non-sensitive fingerprint of the active secret.';
+COMMENT ON COLUMN core_secrets.active_created_at IS 'Timestamp when the active secret was created.';
+COMMENT ON COLUMN core_secrets.standby_secret IS 'Encrypted standby secret material.';
+COMMENT ON COLUMN core_secrets.standby_fingerprint IS 'Deterministic non-sensitive fingerprint of the standby secret.';
+COMMENT ON COLUMN core_secrets.standby_created_at IS 'Timestamp when the standby secret was created.';
+COMMENT ON COLUMN core_secrets.updated_at IS 'Timestamp when this row was last updated.';
 
 CREATE TABLE IF NOT EXISTS zones (
     id UUID PRIMARY KEY,

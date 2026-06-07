@@ -9,6 +9,11 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
+// Zeroable định nghĩa interface cho các đối tượng nhạy cảm cần được ghi đè bằng 0 khi xoá/xoay vòng cache.
+type Zeroable interface {
+	Zero()
+}
+
 // Cache định nghĩa interface cho L1 Cache Engine nâng cấp các tính năng SRE
 type Cache interface {
 	Get(key string) (interface{}, bool)
@@ -110,6 +115,13 @@ func (c *shardedCache) startActiveSweeper(interval time.Duration) {
 				shard.mu.Lock()
 				for k, item := range shard.items {
 					if !item.expiresAt.IsZero() && now.After(item.expiresAt) {
+						if item.val != nil {
+							if env, ok := item.val.(*CacheEnvelope); ok {
+								if zeroable, ok := env.Value.(Zeroable); ok {
+									zeroable.Zero()
+								}
+							}
+						}
 						delete(shard.items, k)
 					}
 				}
@@ -124,6 +136,15 @@ func (c *shardedCache) Flush() {
 	for i := 0; i < len(c.shards); i++ {
 		shard := c.shards[i]
 		shard.mu.Lock()
+		for _, item := range shard.items {
+			if item != nil && item.val != nil {
+				if env, ok := item.val.(*CacheEnvelope); ok {
+					if zeroable, ok := env.Value.(Zeroable); ok {
+						zeroable.Zero()
+					}
+				}
+			}
+		}
 		shard.items = make(map[string]*cacheItem)
 		shard.deletions = make(map[string]time.Time)
 		shard.activeLoads = make(map[string]int)
@@ -220,7 +241,14 @@ func (c *shardedCache) Delete(key string) bool {
 	}
 	shard.sf.Forget(key)
 
-	if _, exists := shard.items[key]; exists {
+	if item, exists := shard.items[key]; exists {
+		if item != nil && item.val != nil {
+			if env, ok := item.val.(*CacheEnvelope); ok {
+				if zeroable, ok := env.Value.(Zeroable); ok {
+					zeroable.Zero()
+				}
+			}
+		}
 		delete(shard.items, key)
 		return true
 	}

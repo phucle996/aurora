@@ -19,7 +19,7 @@
 //        * Không đi qua bất kỳ tầng RBAC nào. Quyền truy cập là nhị phân: có Admin key hợp lệ thì
 //          toàn quyền điều hành hạ tầng, không có thì từ chối tuyệt đối.
 //        * Phiên Admin (Admin Session) được quản lý qua cặp `access_key`/`access_secret` lưu trong
-//          Redis, được ký thành JWT ngắn hạn với family `SecretFamilyAdminAPIKey`.
+//          Redis, được ký thành JWT ngắn hạn với loại secret `admin_api_key`.
 //
 //     2) MẶT PHẲNG NGHIỆP VỤ NGƯỜI DÙNG VÀ NỀN TẢNG (USER & PLATFORM PLANE):
 //        * Do `AuthService` (xem auth_service.go) quản lý. Dành cho Customer và các tài khoản nền
@@ -29,7 +29,7 @@
 //   - Khóa API Key và thiết lập TOTP Secret được lưu trữ mã hóa và xác thực duy nhất trong
 //     Postgres Database.
 //   - Phiên Admin dùng mô hình **Fragment Token** (3 mảnh) thay vì 1 access token đơn thông thường:
-//     Mảnh 1 — JWT access token ngắn hạn (stateless, ký bằng `SecretFamilyAdminAPIKey`).
+//     Mảnh 1 — JWT access token ngắn hạn (stateless, ký bằng `admin_api_key`).
 //     Mảnh 2 — `access_key`: định danh phiên, lưu trong Redis (`AdminAccessSessionCache`).
 //     Mảnh 3 — `access_secret`: bí mật phiên, chỉ lưu dạng hash trong Redis.
 //     Middleware phải xác thực cả 3 mảnh khớp nhau thì phiên mới được coi là hợp lệ.
@@ -53,7 +53,7 @@
 //
 // 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
 //   - Master Secrets (`security.SecretProvider`) phải sẵn sàng và được phân giải chính xác để ký mã hóa
-//     token với family `SecretFamilyAdminAPIKey`.
+//     token với loại secret `admin_api_key`.
 //   - Mọi hoạt động cập nhật Last Seen của thiết bị (`TouchAdminDeviceLastSeen`) chỉ được thực hiện
 //     khi có cờ `LastSeenDirty = true` để tối ưu hóa hiệu năng và tránh ghi đè Database liên tục trên
 //     mỗi Request (Lazy Flush).
@@ -82,6 +82,7 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
@@ -104,7 +105,6 @@ type AdminAPIKeyService struct {
 	cfg             *config.Config
 	repo            iamRepoInterface.AdminAPIKeyRepository
 	telegram        *telegram.TelegramClient
-	secrets         security.SecretProvider
 	sessionCache    iamCache.AdminAccessSessionCache
 	apiKeyCache     iamCache.AdminAPIKeyCache
 	l1Registry      *cacheengine.CacheRegistry
@@ -117,7 +117,6 @@ func NewAdminAPIKeyService(
 	cfg *config.Config,
 	repo iamRepoInterface.AdminAPIKeyRepository,
 	telegram *telegram.TelegramClient,
-	secrets security.SecretProvider,
 	sessionCache iamCache.AdminAccessSessionCache,
 	apiKeyCache iamCache.AdminAPIKeyCache,
 	l1Registry *cacheengine.CacheRegistry,
@@ -131,18 +130,12 @@ func NewAdminAPIKeyService(
 		cfg:             cfg,
 		repo:            repo,
 		telegram:        telegram,
-		secrets:         secrets,
 		sessionCache:    sessionCache,
 		apiKeyCache:     apiKeyCache,
 		l1Registry:      l1Registry,
 		rotationTrigger: trigger,
 	}
-	if apiKeyCache != nil {
-		// Đăng ký nhận sự kiện đồng bộ xóa RAM cache từ các Pod HA khác
-		apiKeyCache.SubscribeInvalidation(context.Background(), func() {
-			apiKeyCache.InvalidateActiveAPIKey()
-		})
-	}
+
 	return svc
 }
 
@@ -167,10 +160,10 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already held") {
 			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateLockBusy)
-			return apperr.Wrap(iamTaxonomy.ErrAdminRotationLockBusy, err, iamTaxonomy.AdminRotateLockBusy)
+			return apperr.Wrap(iamTaxonomy.ErrAdminRotationLockBusy, err)
 		}
 		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err)
 	}
 	defer lock.Release(ctx)
 
@@ -178,7 +171,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
 		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err)
 	}
 	expiresAt := time.Now().UTC().Add(s.cfg.Security.AdminAPITokenTTL)
 
@@ -187,14 +180,14 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	msg := fmt.Sprintf("<b>ADMIN ROTATION SUCCESS</b>\nAPI Key: <code>%s</code>\nExpires: <code>%s</code>", plainKey, expiresAt.Format(time.RFC3339))
 	if sendErr := s.telegram.SendMessage(msg); sendErr != nil {
 		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateDeliveryFail)
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationDelivery, sendErr, iamTaxonomy.AdminRotateDeliveryFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationDelivery, sendErr)
 	}
 
 	// Bước 4: Tạo thực thể AdminAPIKey và lưu vào cơ sở dữ liệu ở trạng thái active kế tiếp
 	newID, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
 		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, uuidErr, iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, uuidErr)
 	}
 
 	actor := "admin-emergency-rotate"
@@ -208,13 +201,10 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 
 	if err := s.repo.PrepareNextAdminAPIKey(ctx, apiKeyEntity); err != nil {
 		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
+		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err)
 	}
 
-	// Bước 5: Vô hiệu hóa RAM cache active key hiện tại để buộc các phiên sau load key mới từ DB,
-	// đồng thời xóa cờ chỉ định xoay vòng khóa khẩn cấp (nếu có) và phát tin hiệu Pub/Sub cho cụm HA.
-	s.apiKeyCache.InvalidateActiveAPIKey()
-	_ = s.apiKeyCache.PublishInvalidation(ctx)
+	// Bước 5: Xóa cờ chỉ định xoay vòng khóa khẩn cấp (nếu có).
 	_ = s.rotationTrigger.ClearRotationRequired(ctx)
 
 	// Ghi nhận thành công thực tế của việc xoay vòng khóa
@@ -234,7 +224,7 @@ func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Conte
 	}
 	required, err := s.rotationTrigger.HasRotationRequired(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("failed to check rotation required: %w", err)
 	}
 	if !required {
 		return nil
@@ -262,18 +252,18 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 	// Bước 1: Lock bootstrap toàn cục để đảm bảo chạy đơn chiếc duy nhất trên toàn cụm HA
 	lock, err := s.repo.AcquireBootstrapLock(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapLockFailed, err, iamTaxonomy.AdminRotateLockBusy)
+		return fmt.Errorf("%w: failed to acquire bootstrap lock: %v", iamTaxonomy.ErrAdminBootstrapLockFailed, err)
 	}
 	defer lock.Release(ctx)
 
 	// Bước 2: Kiểm tra tiền đề điều kiện (Precondition) - hệ thống phải chưa có active key nào
 	now := time.Now().UTC()
-	active, err := s.loadActiveAdminAPIKey(ctx)
+	active, err := s.repo.GetActiveAdminAPIKey(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPreconditionFailed, err, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("%w: failed to load active admin API key: %v", iamTaxonomy.ErrAdminBootstrapPreconditionFailed, err)
 	}
 	if active != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapNotAllowed, nil, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("%w: admin API key already bootstrapped", iamTaxonomy.ErrAdminBootstrapNotAllowed)
 	}
 
 	expiresAt := now.Add(s.cfg.Security.AdminAPITokenTTL)
@@ -281,18 +271,18 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 	// Bước 3: Tạo ngẫu nhiên Admin API key nguyên bản (plaintext) và mã hóa SHA256 để lưu DB
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("%w: failed to generate admin API key: %v", iamTaxonomy.ErrAdminBootstrapPersistFailed, err)
 	}
 	keyHash := security.HashTokenSHA256(plainKey)
 
 	// Bước 4: Tạo cấu hình TOTP 2FA (MFA) mặc định và mã hóa khóa bí mật (secret key)
 	totpResult, err := security.GenerateTOTP("controlplane-admin", "admin@system")
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("%w: failed to generate TOTP: %v", iamTaxonomy.ErrAdminBootstrapPersistFailed, err)
 	}
 	secretCipher, err := security.EncryptSecret(totpResult.Secret)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("%w: failed to encrypt TOTP secret: %v", iamTaxonomy.ErrAdminBootstrapPersistFailed, err)
 	}
 
 	// Bước 5: Sinh 8 mã khôi phục khẩn cấp (One-time Recovery Codes) dùng để backup khi mất 2FA
@@ -301,7 +291,7 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 	for i := 0; i < 8; i++ {
 		code, genErr := security.GenerateRecoveryCode(24)
 		if genErr != nil {
-			return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, genErr, iamTaxonomy.AdminRotateFail)
+			return fmt.Errorf("%w: failed to generate recovery code: %v", iamTaxonomy.ErrAdminBootstrapPersistFailed, genErr)
 		}
 		recoveryPlains = append(recoveryPlains, code)
 		recoveryHashes = append(recoveryHashes, security.HashRecoveryCode(code))
@@ -318,7 +308,7 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 	}
 	_, err = s.repo.Bootstrap(ctx, payload)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapPersistFailed, err, iamTaxonomy.AdminRotateFail)
+		return fmt.Errorf("%w: failed to bootstrap admin API key repository: %v", iamTaxonomy.ErrAdminBootstrapPersistFailed, err)
 	}
 
 	// Bước 7: Thông báo toàn bộ thông tin bảo mật nguyên bản (API Key, TOTP, Recovery Codes) qua Telegram của SRE.
@@ -362,9 +352,9 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context, actor string) error 
 	// Bước 8: Giao dịch có điều kiện hoàn trả (Rollback)
 	// Nếu SRE không nhận được tin nhắn bảo mật đầu tiên, buộc phải xóa bỏ toàn bộ dữ liệu vừa bootstrap ở DB.
 	if rbErr := s.repo.RollbackBootstrap(ctx, payload); rbErr != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapRollbackFailed, rbErr, iamTaxonomy.AdminRotateDeliveryFail)
+		return fmt.Errorf("%w: failed to rollback bootstrap after notification failure: %v (rollback error: %v)", iamTaxonomy.ErrAdminBootstrapRollbackFailed, notifyErr, rbErr)
 	}
-	return apperr.Wrap(iamTaxonomy.ErrAdminBootstrapNotifyFailed, notifyErr, iamTaxonomy.AdminRotateDeliveryFail)
+	return fmt.Errorf("%w: failed to notify bootstrap via Telegram: %v", iamTaxonomy.ErrAdminBootstrapNotifyFailed, notifyErr)
 }
 
 // AdminLogin xác thực admin credentials và cấp runtime fragments cho `/admin`.
@@ -417,7 +407,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 
 	// --- BƯỚC 3: XÁC THỰC API KEY ADMIN (API KEY VERIFICATION) ---
 	// Nạp API Key đang hoạt động của Admin từ bộ nhớ đệm 2 lớp (Cache-aside pattern: RAM/Redis hoặc DB).
-	active, err := s.loadActiveAdminAPIKey(ctx)
+	active, err := s.repo.GetActiveAdminAPIKey(ctx)
 	if err != nil {
 		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.AdminLoginOutcomeSystemError)
@@ -625,10 +615,19 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 	tokenJTI := adminJTI.String()
 
-	// Thực hiện ký số tạo JWT chứa các claims bảo mật để phân quyền cho Admin.
-	// LƯU Ý QUAN TRỌNG: TokenUse đã được cập nhật chính xác từ "admin_api_token" sang "admin_api" theo đặc tả thiết kế mới.
-	// Thêm claims.ZoneID để ràng buộc phạm vi truy cập phân vùng của JWT Token.
-	adminAPIToken, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
+	// Ký admin_api token sử dụng CacheRegistry và coreEntity.RuntimeSecrets
+	val, err := s.l1Registry.GetOrLoad(ctx, "admin_api_key", "")
+	if err != nil {
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.AdminLoginOutcomeSystemError)
+	}
+	secrets, ok := val.(*coreEntity.RuntimeSecrets)
+	if !ok || secrets == nil {
+		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, errors.New("invalid runtime secrets type"), iamTaxonomy.AdminLoginOutcomeSystemError)
+	}
+
+	adminAPIToken, signErr := security.SignWithSecret(security.Claims{
 		Subject:   "admin",
 		AccessKey: accessKey,
 		TokenID:   tokenJTI,
@@ -636,12 +635,9 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
 		ZoneID:    zoneIDStr,
-	})
+	}, secrets.Active.Secret)
 	if signErr != nil {
 		loginOutcome = iamTaxonomy.AdminLoginOutcomeSystemError
-		if errors.Is(signErr, security.ErrEmptySecret) {
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, signErr, iamTaxonomy.AdminLoginOutcomeSystemError)
-		}
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminLoginOutcomeSystemError)
 	}
 
@@ -792,7 +788,18 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 	}
 
 	// --- BƯỚC 8: KÝ LẠI TOKEN JWT MỚI VỚI ZONEID MỤC TIÊU ---
-	adminAPITokenNew, signErr := security.Sign(ctx, s.secrets, security.SecretFamilyAdminAPIKey, security.Claims{
+	valNew, errNew := s.l1Registry.GetOrLoad(ctx, "admin_api_key", "")
+	if errNew != nil {
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errNew, iamTaxonomy.AdminRefreshOutcomeSystemError)
+	}
+	secretsNew, okNew := valNew.(*coreEntity.RuntimeSecrets)
+	if !okNew || secretsNew == nil {
+		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, errors.New("invalid runtime secrets type"), iamTaxonomy.AdminRefreshOutcomeSystemError)
+	}
+
+	adminAPITokenNew, signErr := security.SignWithSecret(security.Claims{
 		Subject:   "admin",
 		AccessKey: accessKeyNew,
 		TokenID:   tokenJTINewUUID.String(),
@@ -800,12 +807,9 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		ZoneID:    resolvedZoneID,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
-	})
+	}, secretsNew.Active.Secret)
 	if signErr != nil {
 		refreshOutcome = iamTaxonomy.AdminRefreshOutcomeSystemError
-		if errors.Is(signErr, security.ErrEmptySecret) {
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, signErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
-		}
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginTokenIssueFailed, signErr, iamTaxonomy.AdminRefreshOutcomeSystemError)
 	}
 
@@ -893,7 +897,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inactiveBefore time.Time, limit int) error {
 	records, err := s.sessionCache.ScanAccessSessions(ctx, limit)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.AdminFinalizeOutcomeSystemError)
+		return err
 	}
 	threshold := inactiveBefore.UTC().Unix()
 	for _, record := range records {
@@ -910,41 +914,6 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 	return nil
 }
 
-// loadActiveAdminAPIKey đọc key active với chiến lược RAM cache + fallback DB.
-//
-// Chính sách cache:
-// - TTL mặc định 5 phút,
-// - nếu key hết hạn sớm hơn 5 phút thì TTL co lại theo expires_at,
-// - không trả key đã expired.
-func (s *AdminAPIKeyService) loadActiveAdminAPIKey(ctx context.Context) (*iamEntity.AdminAPIKey, error) {
-	now := time.Now().UTC()
-
-	if s.apiKeyCache != nil {
-		if cached, ok := s.apiKeyCache.GetActiveAPIKey(now); ok {
-			item := cached
-			return &item, nil
-		}
-	}
-
-	item, err := s.repo.GetActiveAdminAPIKey(ctx)
-	if err != nil || item == nil {
-		return item, err
-	}
-
-	ttl := 5 * time.Minute
-	if item.ExpiresAt.Before(now.Add(ttl)) {
-		ttl = item.ExpiresAt.Sub(now)
-	}
-	if ttl <= 0 {
-		return item, nil
-	}
-
-	if s.apiKeyCache != nil {
-		s.apiKeyCache.SetActiveAPIKey(*item, ttl)
-	}
-
-	return item, nil
-}
 
 // optionalStringPointer trả *string khi raw có nội dung sau trim, ngược lại
 // trả nil để repo phân biệt "không cập nhật" vs "set rỗng".

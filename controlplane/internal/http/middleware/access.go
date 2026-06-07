@@ -34,6 +34,8 @@ import (
 	"sync"
 	"time"
 
+	"controlplane/internal/cacheengine"
+	coreEntity "controlplane/internal/core/domain/entity"
 	iamCache "controlplane/internal/iam/cache"
 	"controlplane/internal/security"
 	"controlplane/pkg/apires"
@@ -65,10 +67,10 @@ var accessMiddleware = struct {
 }{}
 
 // InitAccess khởi tạo dependencies cho middleware Access.
-func InitAccess(sp security.SecretProvider, rdb *redis.Client,
+func InitAccess(registry *cacheengine.CacheRegistry, rdb *redis.Client,
 	runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) {
 	accessMiddleware.mu.Lock()
-	accessMiddleware.handler = buildAccessHandler(sp, rdb, runtimeCache, graceWindow)
+	accessMiddleware.handler = buildAccessHandler(registry, rdb, runtimeCache, graceWindow)
 	accessMiddleware.mu.Unlock()
 }
 
@@ -87,7 +89,7 @@ func Access() gin.HandlerFunc {
 }
 
 // buildAccessHandler xây dựng hàm xác thực JWT, so khớp cookie và inject context.
-func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) gin.HandlerFunc {
+func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) gin.HandlerFunc {
 	if graceWindow <= 0 {
 		graceWindow = 10 * time.Second
 	}
@@ -107,9 +109,9 @@ func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCa
 		}
 
 		// --------------------------------------------------------------------
-		// 🔄 Kiểm tra xem SecretProvider đã được khởi tạo thành công chưa.
+		// 🔄 Kiểm tra xem CacheRegistry đã được khởi tạo thành công chưa.
 		// --------------------------------------------------------------------
-		if sp == nil {
+		if registry == nil {
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
@@ -118,8 +120,14 @@ func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCa
 		// --------------------------------------------------------------------
 		// 🔄 Lấy danh sách candidate secrets để giải mã token hỗ trợ rotation.
 		// --------------------------------------------------------------------
-		candidates, err := sp.GetCandidates(c.Request.Context(), security.SecretFamilyAccess)
-		if err != nil || len(candidates) == 0 {
+		val, err := registry.GetOrLoad(c.Request.Context(), "access_secret", "")
+		if err != nil {
+			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
+			c.Abort()
+			return
+		}
+		secrets, ok := val.(*coreEntity.RuntimeSecrets)
+		if !ok || secrets == nil {
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
@@ -133,10 +141,11 @@ func buildAccessHandler(sp security.SecretProvider, rdb *redis.Client, runtimeCa
 		)
 		
 		// --------------------------------------------------------------------
-		// 🔄 Parse JWT sử dụng lần lượt từng candidate secret.
+		// 🔄 Parse JWT sử dụng lần lượt các candidate secrets.
 		// --------------------------------------------------------------------
+		candidates := []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby}
 		for _, candidate := range candidates {
-			claims, parseErr = security.Parse(token, candidate.Value)
+			claims, parseErr = security.Parse(token, candidate.Secret)
 			if parseErr == nil {
 				parsed = true
 				break

@@ -12,6 +12,8 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	"controlplane/internal/iam/taxonomy"
+	"controlplane/internal/cacheengine"
+	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 
@@ -22,7 +24,7 @@ import (
 type RefreshTokenService struct {
 	repo          iamRepoInterface.RefreshTokenRepository
 	deviceRuntime iamCache.UserDeviceRuntimeCache
-	secrets       security.SecretProvider
+	registry      *cacheengine.CacheRegistry
 	cfg           *config.Config
 }
 
@@ -30,12 +32,12 @@ func NewRefreshTokenService(
 	cfg *config.Config,
 	repo iamRepoInterface.RefreshTokenRepository,
 	deviceRuntime iamCache.UserDeviceRuntimeCache,
-	secrets security.SecretProvider,
+	registry *cacheengine.CacheRegistry,
 ) iamSvcInterface.RefreshTokenService {
 	return &RefreshTokenService{
 		repo:          repo,
 		deviceRuntime: deviceRuntime,
-		secrets:       secrets,
+		registry:      registry,
 		cfg:           cfg,
 	}
 }
@@ -88,7 +90,7 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		refreshOutcome = iamTaxonomy.RefreshOutcomeInvalidSession
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.RefreshOutcomeInvalidSession)
 	}
-	if s.secrets == nil {
+	if s.registry == nil {
 		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
@@ -107,7 +109,18 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
 	accessExpiresAt := now.Add(s.cfg.Security.AccessSecretTTL)
-	accessToken, accessErr := security.Sign(ctx, s.secrets, security.SecretFamilyAccess, security.Claims{
+	val, err := s.registry.GetOrLoad(ctx, "access_secret", "")
+	if err != nil {
+		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RefreshOutcomeIssueAccessError)
+	}
+	secrets, ok := val.(*coreEntity.RuntimeSecrets)
+	if !ok || secrets == nil {
+		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("invalid runtime secrets type"), refreshOutcome)
+	}
+
+	accessToken, accessErr := security.SignWithSecret(security.Claims{
 		Subject:   user.ID.String(),
 		Role:      "",
 		Level:     0,
@@ -116,12 +129,9 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: accessExpiresAt.Unix(),
-	})
+	}, secrets.Active.Secret)
 	if accessErr != nil {
 		refreshOutcome = iamTaxonomy.RefreshOutcomeIssueAccessError
-		if errors.Is(accessErr, security.ErrEmptySecret) {
-			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
-		}
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.RefreshOutcomeIssueAccessError)
 	}
 

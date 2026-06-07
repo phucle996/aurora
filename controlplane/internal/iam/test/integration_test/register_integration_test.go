@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"controlplane/internal/cacheengine"
+	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/iam/cache"
 	"controlplane/internal/iam/domain/entity"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	testutil "controlplane/internal/iam/test/testutil"
-	"controlplane/internal/security"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -183,7 +185,7 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceRepo, nil, nil, presence, &integrationSecretProvider{}, nil, nil)
+	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceRepo, nil, nil, presence, makeIntegrationRegistry(), nil, nil)
 	result, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
@@ -212,7 +214,7 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 
 	presence := iamCache.NewRegisterPresenceCache(rdb)
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, nil, nil, presence, &integrationSecretProvider{}, nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, nil, nil, presence, makeIntegrationRegistry(), nil, nil)
 	username, email := testutil.UniqueIdentity("login_pending")
 	if err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -230,14 +232,34 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 	}
 }
 
-type integrationSecretProvider struct{}
-
-func (integrationSecretProvider) GetPrimary(ctx context.Context, family string) (security.SecretCandidate, error) {
-	return security.SecretCandidate{Family: family, Value: family + "-secret", IsPrimary: true}, nil
+func makeIntegrationRegistry() *cacheengine.CacheRegistry {
+	l1Cache := cacheengine.NewShardedCache()
+	registry := cacheengine.NewCacheRegistry(l1Cache)
+	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return &coreEntity.RuntimeSecrets{
+			SecretType: "access_secret",
+			Active: coreEntity.RuntimeSecret{
+				Secret:      []byte("access_token-secret"),
+				Fingerprint: "fp",
+			},
+			Standby: coreEntity.RuntimeSecret{
+				Secret:      []byte("access_token-secret"),
+				Fingerprint: "fp",
+			},
+		}, nil
+	})
+	cacheengine.Register(registry, "admin_api_key", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return &coreEntity.RuntimeSecrets{
+			SecretType: "admin_api_key",
+			Active: coreEntity.RuntimeSecret{
+				Secret:      []byte("admin_api_key-secret"),
+				Fingerprint: "fp",
+			},
+			Standby: coreEntity.RuntimeSecret{
+				Secret:      []byte("admin_api_key-secret"),
+				Fingerprint: "fp",
+			},
+		}, nil
+	})
+	return registry
 }
-func (integrationSecretProvider) GetCandidates(ctx context.Context, family string) ([]security.SecretCandidate, error) {
-	candidate, _ := integrationSecretProvider{}.GetPrimary(ctx, family)
-	return []security.SecretCandidate{candidate}, nil
-}
-func (integrationSecretProvider) Warm(ctx context.Context, family string) error { return nil }
-func (integrationSecretProvider) Invalidate(family string)                      {}
