@@ -33,10 +33,8 @@ type ZoneDetail struct {
 }
 
 type ZoneCatalog struct {
-	ID        string
-	Code      string
-	Name      string
-	UpdatedAt *time.Time
+	Code string
+	Name string
 }
 
 type ZoneServiceType string

@@ -52,7 +52,7 @@ import (
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
-	coreErrorx "controlplane/internal/core/errorx"
+	coreErrorx "controlplane/internal/core/taxonomy"
 	"controlplane/pkg/logger"
 	"sync"
 

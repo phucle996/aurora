@@ -11,7 +11,7 @@ import (
 	"time"
 
 	coreEntity "controlplane/internal/core/domain/entity"
-	coreErrorx "controlplane/internal/core/errorx"
+	coreErrorx "controlplane/internal/core/taxonomy"
 	requestdto "controlplane/internal/core/transport/http/dto/req"
 	coreHandler "controlplane/internal/core/transport/http/handler"
 
@@ -36,10 +36,6 @@ func (s *zoneServiceStub) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (
 		Services: []coreEntity.ZoneService{},
 	}, nil
 }
-func (s *zoneServiceStub) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
-	return uuid.Nil, nil
-}
-
 func (s *zoneServiceStub) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
 	return nil
 }

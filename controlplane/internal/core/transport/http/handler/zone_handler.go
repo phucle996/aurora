@@ -27,7 +27,7 @@ import (
 
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreSvcInterface "controlplane/internal/core/domain/service"
-	coreErrorx "controlplane/internal/core/errorx"
+	coreTaxonomy "controlplane/internal/core/taxonomy"
 	requestdto "controlplane/internal/core/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/logger"
@@ -70,7 +70,7 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 	}
 
 	err := h.zoneSvc.CreateZone(ctx, coreEntity.CreateZoneInput{
-		Code:             request.Code,
+		Code:             strings.ToLower(strings.TrimSpace(request.Code)),
 		Name:             request.Name,
 		Location:         request.Location,
 		Description:      request.Description,
@@ -82,13 +82,13 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, coreErrorx.ErrZoneInvalidInput):
+		case errors.Is(err, coreTaxonomy.ErrZoneInvalidInput):
 			logger.HandlerWarn(c, op, err, "create zone invalid input")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, coreErrorx.ErrZoneCodeAlreadyExists):
+		case errors.Is(err, coreTaxonomy.ErrZoneCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create zone conflict")
 			apires.RespondConflict(c, "resource already exists")
-		case errors.Is(err, coreErrorx.ErrZoneServiceInvalidType):
+		case errors.Is(err, coreTaxonomy.ErrZoneServiceInvalidType):
 			logger.HandlerWarn(c, op, err, "create zone invalid service type")
 			apires.RespondBadRequest(c, "invalid request")
 		default:
@@ -127,7 +127,6 @@ func (h *ZoneHandler) GetZoneCatalog(c *gin.Context) {
 	rows := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, gin.H{
-			"id":   item.ID,
 			"code": item.Code,
 			"name": item.Name,
 		})
@@ -202,7 +201,7 @@ func (h *ZoneHandler) GetZone(c *gin.Context) {
 
 	detail, err := h.zoneSvc.GetZoneDetailByID(ctx, zoneID)
 	if err != nil {
-		if errors.Is(err, coreErrorx.ErrZoneNotFound) {
+		if errors.Is(err, coreTaxonomy.ErrZoneNotFound) {
 			apires.RespondNotFound(c, "zone not found")
 			return
 		}
@@ -319,10 +318,10 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 	zone, err := h.zoneSvc.UpdateZoneStatus(ctx, request.ZoneID, toStatus)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreErrorx.ErrZoneNotFound):
+		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
 			logger.HandlerWarn(c, op, err, "zone not found")
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, coreErrorx.ErrZoneInvalidTransition):
+		case errors.Is(err, coreTaxonomy.ErrZoneInvalidTransition):
 			logger.HandlerWarn(c, op, err, "zone invalid transition")
 			apires.RespondConflict(c, "state conflict")
 		default:
@@ -368,10 +367,10 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 	}
 	if err := h.zoneSvc.DeleteZone(ctx, parsedZoneID); err != nil {
 		switch {
-		case errors.Is(err, coreErrorx.ErrZoneNotFound):
+		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
 			logger.HandlerWarn(c, op, err, "zone not found")
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, coreErrorx.ErrZoneDeletePreconditionFailed):
+		case errors.Is(err, coreTaxonomy.ErrZoneDeletePreconditionFailed):
 			logger.HandlerWarn(c, op, err, "delete precondition failed")
 			apires.RespondConflict(c, "zone delete precondition failed")
 		default:
@@ -410,7 +409,7 @@ func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
 	items, err := h.zoneSvc.ListZoneServices(ctx, parsedZoneID)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreErrorx.ErrZoneServiceZoneNotFound):
+		case errors.Is(err, coreTaxonomy.ErrZoneServiceZoneNotFound):
 			apires.RespondNotFound(c, "resource not found")
 		default:
 			logger.HandlerError(c, op, err)
@@ -485,9 +484,9 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 	item, err := h.zoneSvc.UpsertZoneService(ctx, parsedZoneID, serviceType, *request.Enabled)
 	if err != nil {
 		switch {
-		case errors.Is(err, coreErrorx.ErrZoneServiceZoneNotFound):
+		case errors.Is(err, coreTaxonomy.ErrZoneServiceZoneNotFound):
 			apires.RespondNotFound(c, "resource not found")
-		case errors.Is(err, coreErrorx.ErrZoneServiceStateConflict):
+		case errors.Is(err, coreTaxonomy.ErrZoneServiceStateConflict):
 			apires.RespondConflict(c, "state conflict")
 		default:
 			logger.HandlerError(c, op, err)

@@ -8,7 +8,7 @@ import (
 
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreSvcInterface "controlplane/internal/core/domain/service"
-	coreerrorx "controlplane/internal/core/errorx"
+	coreerrorx "controlplane/internal/core/taxonomy"
 	coreMetric "controlplane/internal/core/metrics"
 	"controlplane/pkg/logger"
 )

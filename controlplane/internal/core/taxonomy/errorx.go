@@ -1,4 +1,4 @@
-package coreErrorx
+package coreTaxonomy
 
 import "errors"
 

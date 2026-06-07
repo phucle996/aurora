@@ -14,9 +14,6 @@ type ZoneService interface {
 	// get zone detail for admin ui
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)
 
-	// GetZoneIDByCode resolves a zone's UUID from its unique code.
-	// This function is intended to load L1/L2 caches and should not be abused on API hotpaths.
-	GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error)
 	CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error
 	UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, status coreEntity.ZoneStatus) (*coreEntity.Zone, error)
 	DeleteZone(ctx context.Context, zoneID uuid.UUID) error

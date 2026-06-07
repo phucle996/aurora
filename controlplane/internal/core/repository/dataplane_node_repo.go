@@ -49,8 +49,8 @@ import (
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
-	coreErrorx "controlplane/internal/core/errorx"
 	coreModel "controlplane/internal/core/model"
+	coreTaxonomy "controlplane/internal/core/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -127,7 +127,7 @@ func (r *DataplaneNodeRepoImpl) UpdateClusterStatus(ctx context.Context, id uuid
 
 	// Step 2: Kiểm tra xem có dòng nào bị ảnh hưởng không. Nếu không, trả lỗi không tìm thấy.
 	if result.RowsAffected() == 0 {
-		return coreErrorx.ErrZoneNotFound
+		return coreTaxonomy.ErrZoneNotFound
 	}
 	return nil
 }

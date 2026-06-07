@@ -90,7 +90,8 @@ func AdminZoneAuth() gin.HandlerFunc {
 		}
 
 		// Với zone code cụ thể, phân giải thông qua L1 Registry
-		val, err := registry.GetOrLoad(c.Request.Context(), "zone_by_code", zoneCode)
+		normalizedZoneCode := strings.ToLower(strings.TrimSpace(zoneCode))
+		val, err := registry.GetOrLoad(c.Request.Context(), "zone_by_code", normalizedZoneCode)
 		if err != nil {
 			logger.HandlerWarn(c, op, err, fmt.Sprintf("failed to resolve zone ID for code: %s", zoneCode))
 			apires.RespondBadRequest(c, "invalid zone code")
@@ -174,7 +175,8 @@ func UserZoneAuth() gin.HandlerFunc {
 		}
 
 		// Phân giải zone code
-		val, err := registry.GetOrLoad(c.Request.Context(), "zone_by_code", zoneCode)
+		normalizedZoneCode := strings.ToLower(strings.TrimSpace(zoneCode))
+		val, err := registry.GetOrLoad(c.Request.Context(), "zone_by_code", normalizedZoneCode)
 		if err != nil {
 			logger.HandlerWarn(c, op, err, fmt.Sprintf("failed to resolve zone ID for user code: %s", zoneCode))
 			apires.RespondBadRequest(c, "invalid zone code")

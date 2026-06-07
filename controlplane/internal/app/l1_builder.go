@@ -32,11 +32,8 @@ func RegisterL1Loaders(
 
 	// 3. Đăng ký tĩnh loader cho "zone_by_code" sử dụng generic function
 	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
-		zoneID, err := modules.Core.ZoneService.GetZoneIDByCode(ctx, param)
-		if err != nil {
-			return "", err
-		}
-		return zoneID.String(), nil
+		zoneID, err := modules.Core.ZoneRepository.GetZoneIDByCode(ctx, param)
+		return zoneID.String(), err
 	})
 
 	// 4. Đăng ký tĩnh loader cho danh sách "zone_catalog" phục vụ dropdown/select UI

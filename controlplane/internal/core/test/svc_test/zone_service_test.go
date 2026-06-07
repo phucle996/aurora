@@ -6,12 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
+	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
-	coreErrorx "controlplane/internal/core/errorx"
 	coreSvcImpl "controlplane/internal/core/service"
+	coreErrorx "controlplane/internal/core/taxonomy"
+
+	"github.com/google/uuid"
 )
 
 type fakeZoneRepo struct {
@@ -34,11 +35,34 @@ func (f *fakeZoneRepo) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCat
 func (f *fakeZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
 	return nil
 }
-func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
-	return nil
+func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+	if f.zone != nil && f.zone.ID == id {
+		// Verify that the current status is allowed before updating
+		allowed := false
+		for _, s := range allowedOld {
+			if f.zone.Status == s {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil, coreErrorx.ErrZoneInvalidTransition
+		}
+		f.zone.Status = status
+		return f.zone, nil
+	}
+	return nil, coreErrorx.ErrZoneNotFound
 }
-func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) error {
-	return nil
+func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
+	if f.zone != nil && f.zone.ID == id {
+		if f.zone.Status != coreEntity.ZoneStatusDisabled {
+			return "", coreErrorx.ErrZoneDeletePreconditionFailed
+		}
+		code := f.zone.Code
+		f.zone = nil
+		return code, nil
+	}
+	return "", coreErrorx.ErrZoneNotFound
 }
 func (f *fakeZoneRepo) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
 	return false, nil
@@ -61,23 +85,44 @@ func (f *fakeZoneRepo) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 		Services: []coreEntity.ZoneService{},
 	}, nil
 }
+func (f *fakeZoneRepo) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
+	if f.zoneErr != nil {
+		return uuid.Nil, f.zoneErr
+	}
+	if f.zone != nil && f.zone.Code == code {
+		return f.zone.ID, nil
+	}
+	return uuid.Nil, coreErrorx.ErrZoneNotFound
+}
 func (f *fakeZoneRepo) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
 	return []coreEntity.ZoneService{}, nil
 }
-func (f *fakeZoneRepo) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
+func (f *fakeZoneRepo) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
+	if f.zoneErr != nil {
+		return nil, "", f.zoneErr
+	}
+	if f.zone == nil || f.zone.ID != zoneID {
+		return nil, "", coreErrorx.ErrZoneServiceZoneNotFound
+	}
+	if f.zone.Status != coreEntity.ZoneStatusMaintenance {
+		return nil, "", coreErrorx.ErrZoneServiceStateConflict
+	}
 	if f.upsertErr != nil {
-		return nil, f.upsertErr
+		return nil, "", f.upsertErr
 	}
+
+	code := f.zone.Code
 	if f.upsertRes != nil {
-		return f.upsertRes, nil
+		return f.upsertRes, code, nil
 	}
-	return &coreEntity.ZoneService{ID: uuid.Must(uuid.NewV7()), ZoneID: zoneID, ServiceType: serviceType, Enabled: enabled, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, nil
+	return &coreEntity.ZoneService{ID: uuid.Must(uuid.NewV7()), ZoneID: zoneID, ServiceType: serviceType, Enabled: enabled, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, code, nil
 }
 var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
-
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusActive}}
-	svc := coreSvcImpl.NewZoneService(repo, nil, nil, nil)
+	l1Cache := cacheengine.NewShardedCache()
+	registry := cacheengine.NewCacheRegistry(l1Cache)
+	svc := coreSvcImpl.NewZoneService(repo, registry, nil)
 	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "mail", true)
 	if !errors.Is(err, coreErrorx.ErrZoneServiceStateConflict) {
 		t.Fatalf("expected ErrZoneServiceStateConflict, got %v", err)
@@ -92,7 +137,9 @@ func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 
 func TestZoneServiceUpsertInvalidType(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusMaintenance}}
-	svc := coreSvcImpl.NewZoneService(repo, nil, nil, nil)
+	l1Cache := cacheengine.NewShardedCache()
+	registry := cacheengine.NewCacheRegistry(l1Cache)
+	svc := coreSvcImpl.NewZoneService(repo, registry, nil)
 	// Service layer does NOT validate service type — that is the handler/transport layer's responsibility.
 	// Invalid type strings pass through to the repository; this test validates service-layer behavior only.
 	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "bad-type", true)

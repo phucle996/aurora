@@ -3,8 +3,9 @@ package svc_test
 import (
 	"context"
 	"testing"
+	"time"
 
-	coreSvcInterface "controlplane/internal/core/domain/service"
+	"controlplane/internal/cacheengine"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
@@ -14,15 +15,6 @@ import (
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
-
-type zoneServiceMock struct {
-	coreSvcInterface.ZoneService
-	zoneID uuid.UUID
-}
-
-func (m *zoneServiceMock) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
-	return m.zoneID, nil
-}
 
 func TestEndpointServiceCRUD(t *testing.T) {
 	cfg := testutil.NewMailTestConfig(testutil.UniqueSchema("mail_endpoint_svc"))
@@ -35,11 +27,15 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	t.Cleanup(func() { _ = rdsClient.Close() })
 
 	zoneID := uuid.New()
-	zoneSvc := &zoneServiceMock{zoneID: zoneID}
+	l1Cache := cacheengine.NewShardedCache()
+	registry := cacheengine.NewCacheRegistry(l1Cache)
+	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
+		return zoneID.String(), nil
+	})
 
 	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
-	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, zoneSvc)
+	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, registry)
 	ctx := context.Background()
 	ctx = mailSvcImpl.WithZoneCode(ctx, "test-zone")
 

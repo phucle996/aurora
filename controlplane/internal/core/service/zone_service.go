@@ -14,37 +14,33 @@ package coreSvcImpl
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"time"
 
 	"controlplane/internal/cacheengine"
-	coreCache "controlplane/internal/core/cache"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
-	coreErrorx "controlplane/internal/core/errorx"
+	coreMetric "controlplane/internal/core/metrics"
+	coreTaxonomy "controlplane/internal/core/taxonomy"
+	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
-	"golang.org/x/sync/singleflight"
 )
 
 type ZoneService struct {
 	repo       coreRepoInterface.ZoneRepository
-	cache      *coreCache.ZoneFanoutCache // L2 RAM cache — COW, lock-free reads, versioned
 	l1Registry *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine
 	l1Fanout   *cacheengine.RedisFanout   // Tích hợp RedisFanout độc lập
-	sfg        singleflight.Group
 }
 
 func NewZoneService(
 	repo coreRepoInterface.ZoneRepository,
-	cache *coreCache.ZoneFanoutCache,
 	l1Registry *cacheengine.CacheRegistry,
 	l1Fanout *cacheengine.RedisFanout,
 ) coreSvcInterface.ZoneService {
 	return &ZoneService{
 		repo:       repo,
-		cache:      cache,
 		l1Registry: l1Registry,
 		l1Fanout:   l1Fanout,
 	}
@@ -61,12 +57,6 @@ func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) 
 // fail-safe fallback: nếu có lỗi trích xuất hoặc ép kiểu cache, hệ thống sẽ tự động gọi
 // trực tiếp database repository để tránh làm sập luồng API của người dùng.
 func (s *ZoneService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	if s.l1Registry == nil {
-		// SRE Warning: Nếu registry chưa được cấu hình (ví dụ trong môi trường test),
-		// thực hiện fallback gọi trực tiếp repo từ DB.
-		return s.repo.GetZoneCatalog(ctx)
-	}
-
 	val, err := s.l1Registry.GetOrLoad(ctx, "zone_catalog", "")
 	if err != nil {
 		return nil, err
@@ -76,9 +66,7 @@ func (s *ZoneService) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCata
 	// Cơ chế này giúp đạt hiệu năng O(1) và Zero-Allocation trên RAM (không tốn CPU parse JSON).
 	catalog, ok := val.([]coreEntity.ZoneCatalog)
 	if !ok {
-		// SRE HA Warning: Dữ liệu trong cache bị lỗi kiểu cấu trúc (type mismatch),
-		// thực hiện fallback về database để đảm bảo hệ thống không bị lỗi panic/crash.
-		return s.repo.GetZoneCatalog(ctx)
+		return nil, errors.New("invalid cache Type Assertion")
 	}
 
 	return catalog, nil
@@ -89,7 +77,7 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	now := time.Now().UTC()
 	zoneID, err := uuid.NewV7()
 	if err != nil {
-		return err
+		return apperr.Wrap(coreTaxonomy.ErrZoneInvalidInput, err)
 	}
 	zone := coreEntity.Zone{
 		ID:          zoneID,
@@ -114,14 +102,32 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		return err
 	}
 
-	s.cache.PatchZone(ctx, zone, zone.UpdatedAt.Unix())
+	// invalidate cache để lazy load khi có request tiếp theo
+	s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
+	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
-	if s.l1Registry != nil {
-		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
-	}
-	if s.l1Fanout != nil {
-		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
-	}
+	// nếu đã có code từ trước thì phải invalid zone_by_code trước rồi tạo lại để clean cache
+	// tránh tạo magic record trong cache
+	s.l1Registry.InvalidateLocal(ctx, "zone_by_code:"+zone.Code)
+	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+
+	// Publish cả hai event: một cho catalog, một cho zone_by_code
+	// Dù có lỗi publish thì vẫn tiếp tục vì là best-effort
+	detachedCtx := context.WithoutCancel(ctx)
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		}
+	}()
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_by_code:"+zone.Code, nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		}
+	}()
 
 	return nil
 }
@@ -132,66 +138,11 @@ func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*cor
 	if err != nil {
 		return nil, err
 	}
-	if detail == nil {
-		return nil, coreErrorx.ErrZoneNotFound
-	}
 	return detail, nil
 }
 
-// GetZoneIDByCode lấy zone ID từ zone code. Hàm này dùng để nạp cache.
-func (s *ZoneService) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
-	code = strings.ToLower(strings.TrimSpace(code))
-	if code == "" {
-		return uuid.Nil, coreErrorx.ErrZoneNotFound
-	}
-	if s.cache != nil {
-		if z, ok := s.cache.GetByCode(code); ok {
-			return z.ID, nil
-		}
-	}
-	// Fallback to query database with singleflight coalescing to avoid thundering herd
-	v, err, _ := s.sfg.Do("zone:code:"+code, func() (any, error) {
-		// Re-check cache inside singleflight block in case a concurrent request already populated it
-		if s.cache != nil {
-			if z, ok := s.cache.GetByCode(code); ok {
-				return z.ID, nil
-			}
-		}
-
-		zones, err := s.repo.ListZones(ctx)
-		if err != nil {
-			return uuid.Nil, err
-		}
-		for _, z := range zones {
-			if strings.ToLower(z.Code) == code {
-				if s.cache != nil {
-					var v int64
-					if z.UpdatedAt != nil {
-						v = z.UpdatedAt.UnixNano()
-					}
-					s.cache.PatchZone(ctx, z, v)
-				}
-				return z.ID, nil
-			}
-		}
-		return uuid.Nil, coreErrorx.ErrZoneNotFound
-	})
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return v.(uuid.UUID), nil
-}
-
-// UpdateZoneStatus chuyển trạng thái zone theo state machine.
+// UpdateZoneStatus chuyển trạng thái zone.
 func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
-	zone, err := s.repo.GetZoneByID(ctx, zoneID)
-	if err != nil {
-		return nil, err
-	}
-	if zone == nil {
-		return nil, coreErrorx.ErrZoneNotFound
-	}
-
 	allowed := map[coreEntity.ZoneStatus][]coreEntity.ZoneStatus{
 		coreEntity.ZoneStatusPlanned:     {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
 		coreEntity.ZoneStatusActive:      {coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
@@ -199,132 +150,111 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		coreEntity.ZoneStatusMaintenance: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
 		coreEntity.ZoneStatusDisabled:    {coreEntity.ZoneStatusActive},
 	}
-	canTransit := zone.Status == toStatus
-	if !canTransit {
-		for _, s := range allowed[zone.Status] {
-			if s == toStatus {
-				canTransit = true
-				break
-			}
-		}
-	}
-	if !canTransit {
-		return nil, coreErrorx.ErrZoneInvalidTransition
-	}
 
-	if err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus); err != nil {
-		return nil, err
-	}
-
-	updated, err := s.repo.GetZoneByID(ctx, zoneID)
+	allowedOld := append(allowed[toStatus], toStatus)
+	updatedZone, err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
 	if err != nil {
 		return nil, err
 	}
 
-	if updated != nil && s.cache != nil {
-		var v int64
-		if updated.UpdatedAt != nil {
-			v = updated.UpdatedAt.UnixNano()
+	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_catalog:"); ok {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	} else {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
+	}
+
+	detachedCtx := context.WithoutCancel(ctx)
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
 		}
-		s.cache.PatchZone(ctx, *updated, v)
-	}
+	}()
 
-	if s.l1Registry != nil {
-		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
-	}
-	if s.l1Fanout != nil {
-		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
-	}
-
-	return updated, nil
+	return updatedZone, nil
 }
 
-// DeleteZone xóa mềm zone khi đủ 3 preconditions.
+// DeleteZone xóa zone khi đủ 3 preconditions.
 func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
-	zone, err := s.repo.GetZoneByID(ctx, zoneID)
+	code, err := s.repo.DeleteZone(ctx, zoneID)
 	if err != nil {
 		return err
 	}
-	if zone == nil {
-		return coreErrorx.ErrZoneNotFound
+
+	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_catalog:"); ok {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	} else {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
 	}
-	if zone.Status != coreEntity.ZoneStatusDisabled {
-		return coreErrorx.ErrZoneDeletePreconditionFailed
-	}
-	hasNodes, err := s.repo.HasDataplaneNodesByZone(ctx, zoneID)
-	if err != nil {
-		return err
-	}
-	if hasNodes {
-		return coreErrorx.ErrZoneDeletePreconditionFailed
-	}
-	hasEnabledSvc, err := s.repo.HasEnabledZoneServicesByZone(ctx, zoneID)
-	if err != nil {
-		return err
-	}
-	if hasEnabledSvc {
-		return coreErrorx.ErrZoneDeletePreconditionFailed
+	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_by_code:"+code); ok {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	} else {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
 	}
 
-	if err := s.repo.DeleteZone(ctx, zoneID); err != nil {
-		return err
-	}
-
-	if s.cache != nil {
-		s.cache.EvictZone(ctx, zone.ID.String(), zone.Code)
-	}
-
-	if s.l1Registry != nil {
-		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
-	}
-	if s.l1Fanout != nil {
-		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
-	}
+	detachedCtx := context.WithoutCancel(ctx)
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		}
+	}()
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_by_code:"+code, nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		}
+	}()
 
 	return nil
 }
 
 // ListZoneServices trả danh sách tất cả zone services của một zone.
 func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
-	zone, err := s.repo.GetZoneByID(ctx, zoneID)
+
+	svcs, err := s.repo.ListZoneServicesByZoneID(ctx, zoneID)
 	if err != nil {
 		return nil, err
 	}
-	if zone == nil {
-		return nil, coreErrorx.ErrZoneServiceZoneNotFound
-	}
-	return s.repo.ListZoneServicesByZoneID(ctx, zoneID)
+	return svcs, nil
 }
 
 // UpsertZoneService cập nhật enabled/disabled của một service trong zone.
 func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
-	zone, err := s.repo.GetZoneByID(ctx, zoneID)
-	if err != nil {
-		return nil, err
-	}
-	if zone == nil {
-		return nil, coreErrorx.ErrZoneServiceZoneNotFound
-	}
-	if zone.Status != coreEntity.ZoneStatusMaintenance {
-		return nil, coreErrorx.ErrZoneServiceStateConflict
-	}
-
-	svc, err := s.repo.UpsertZoneServiceByZoneAndType(ctx, zoneID, serviceType, enabled)
+	svc, zoneCode, err := s.repo.UpsertZoneServiceByZoneAndType(ctx, zoneID, serviceType, enabled)
 	if err != nil {
 		return nil, err
 	}
 
-	// Zone entity không thay đổi fields nhưng catalog cần refresh
-	if s.cache != nil {
-		s.cache.PatchZone(ctx, *zone, svc.UpdatedAt.UnixNano())
+	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_catalog:"); ok {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	} else {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
+	}
+	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_by_code:"+zoneCode); ok {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	} else {
+		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
 	}
 
-	if s.l1Registry != nil {
-		s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
-	}
-	if s.l1Fanout != nil {
-		_, _ = s.l1Fanout.Publish(ctx, "zone_catalog:", nil)
-	}
+	detachedCtx := context.WithoutCancel(ctx)
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		}
+	}()
+	go func() {
+		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_by_code:"+zoneCode, nil); err != nil {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+		} else {
+			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		}
+	}()
 
 	return svc, nil
 }

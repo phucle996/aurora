@@ -532,7 +532,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// Nếu zone_code là "global" thì gán rỗng (cho phép truy cập toàn cục). Ngược lại, tra cứu
 	// thông qua L1 Cache Registry để tránh gây quá tải DB trong môi trường HA Cloud Native.
 	var zoneIDStr string
-	zoneCode := strings.TrimSpace(req.ZoneCode)
+	zoneCode := strings.ToLower(strings.TrimSpace(req.ZoneCode))
 	if zoneCode == "" {
 		loginOutcome = iamTaxonomy.AdminLoginOutcomeInvalidArgument
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, fmt.Errorf("zone_code is empty"), iamTaxonomy.AdminLoginOutcomeInvalidArgument)
@@ -709,7 +709,7 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 	trimmedAccessKey := strings.TrimSpace(accessKey)
 
 	// --- BƯỚC 2: PHÂN GIẢI MÃ PHÂN VÙNG THÀNH UUID QUA L1 CACHE REGISTRY ---
-	trimmedZoneCode := strings.TrimSpace(zoneCode)
+	trimmedZoneCode := strings.ToLower(strings.TrimSpace(zoneCode))
 	var resolvedZoneID string
 	if !strings.EqualFold(trimmedZoneCode, "global") {
 		// Gọi L1 cache để phân giải zone_code -> zone_id (UUID)

@@ -183,7 +183,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 	if gatewaySvc == nil {
 		return nil, errors.New("mail module: failed to construct gateway service")
 	}
-	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, outboxRepo, rdsJob, coreModule.ZoneService)
+	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, outboxRepo, rdsJob, coreModule.L1Registry)
 	if endpointSvc == nil {
 		return nil, errors.New("mail module: failed to construct endpoint service")
 	}

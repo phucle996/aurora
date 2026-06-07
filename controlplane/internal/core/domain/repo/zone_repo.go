@@ -13,10 +13,11 @@ type ZoneRepository interface {
 	CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error
 	GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error)
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)
-	UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error
-	DeleteZone(ctx context.Context, id uuid.UUID) error
+	GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error)
+	UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (*coreEntity.Zone, error)
+	DeleteZone(ctx context.Context, id uuid.UUID) (string, error)
 	HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error)
 	HasEnabledZoneServicesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error)
 	ListZoneServicesByZoneID(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error)
-	UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error)
+	UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error)
 }

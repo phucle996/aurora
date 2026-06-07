@@ -132,11 +132,19 @@ func (m *mockZoneRepoForService) GetZoneDetailByID(ctx context.Context, id uuid.
 	}
 	return nil, nil
 }
-func (m *mockZoneRepoForService) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
-	return nil
+func (m *mockZoneRepoForService) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
+	for _, z := range m.zones {
+		if z.Code == code {
+			return z.ID, nil
+		}
+	}
+	return uuid.Nil, nil
 }
-func (m *mockZoneRepoForService) DeleteZone(ctx context.Context, id uuid.UUID) error {
-	return nil
+func (m *mockZoneRepoForService) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+	return nil, nil
+}
+func (m *mockZoneRepoForService) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
+	return "", nil
 }
 func (m *mockZoneRepoForService) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
 	return false, nil
@@ -147,8 +155,8 @@ func (m *mockZoneRepoForService) HasEnabledZoneServicesByZone(ctx context.Contex
 func (m *mockZoneRepoForService) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
 	return m.services[zoneID], nil
 }
-func (m *mockZoneRepoForService) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
-	return nil, nil
+func (m *mockZoneRepoForService) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
+	return nil, "", nil
 }
 
 var _ coreRepoInterface.ZoneRepository = (*mockZoneRepoForService)(nil)

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreSvcInterface "controlplane/internal/core/domain/service"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -38,7 +38,7 @@ type endpointServiceImpl struct {
 	endpointRepo mailRepoInterface.EndpointRepository
 	outboxRepo   mailRepoInterface.MailOutboxRepository
 	rdsJob       *redis.Client
-	zoneSvc      coreSvcInterface.ZoneService
+	l1Registry   *cacheengine.CacheRegistry
 }
 
 func NewEndpointService(
@@ -46,29 +46,15 @@ func NewEndpointService(
 	endpointRepo mailRepoInterface.EndpointRepository,
 	outboxRepo mailRepoInterface.MailOutboxRepository,
 	rdsJob *redis.Client,
-	zoneSvc coreSvcInterface.ZoneService,
+	l1Registry *cacheengine.CacheRegistry,
 ) mailSvcInterface.EndpointService {
-	if cfg == nil {
-		panic("mail service: config cannot be nil")
-	}
-	if endpointRepo == nil {
-		panic("mail service: repo cannot be nil")
-	}
-	if outboxRepo == nil {
-		panic("mail service: outboxRepo cannot be nil")
-	}
-	if rdsJob == nil {
-		panic("mail service: rdsJob cannot be nil")
-	}
-	if zoneSvc == nil {
-		panic("mail service: zoneSvc cannot be nil")
-	}
+
 	return &endpointServiceImpl{
 		cfg:          cfg,
 		endpointRepo: endpointRepo,
 		outboxRepo:   outboxRepo,
 		rdsJob:       rdsJob,
-		zoneSvc:      zoneSvc,
+		l1Registry:   l1Registry,
 	}
 }
 
@@ -78,9 +64,20 @@ func (s *endpointServiceImpl) resolveZone(ctx context.Context) (uuid.UUID, error
 		return uuid.Nil, nil
 	}
 
-	zoneID, err := s.zoneSvc.GetZoneIDByCode(ctx, code)
+	normalizedCode := strings.ToLower(strings.TrimSpace(code))
+	val, err := s.l1Registry.GetOrLoad(ctx, "zone_by_code", normalizedCode)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("mail service: zone '%s' not found: %w", code, err)
+		return uuid.Nil, fmt.Errorf("mail service: zone '%s' not found: %w", normalizedCode, err)
+	}
+
+	zoneIDStr, ok := val.(string)
+	if !ok || zoneIDStr == "" {
+		return uuid.Nil, fmt.Errorf("mail service: zone '%s' resolved empty or invalid type", code)
+	}
+
+	zoneID, err := uuid.Parse(zoneIDStr)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("mail service: zone '%s' has invalid uuid representation: %w", code, err)
 	}
 
 	return zoneID, nil
@@ -497,7 +494,7 @@ func (s *endpointServiceImpl) TestConnectionRaw(
 		if !ok || msg == nil {
 			return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("result channel closed"), mailTaxonomy.OutcomeInternalError)
 		}
-		
+
 		// Decode job execution result
 		var result struct {
 			Status       string `json:"status"` // SUCCEEDED, FAILED

@@ -65,13 +65,11 @@ type Module struct {
 	DataplaneOrchestrator        *coreSvcImpl.DataplaneOrchestrator
 	DataplaneHeartbeatSubscriber *coreSvcImpl.DataplaneHeartbeatSubscriber
 	invalidationBus              *coreCache.RedisSecretInvalidationBus
-	zoneCache                    *coreCache.ZoneFanoutCache
-	zoneFanout                   *coreCache.RedisFanoutBus
 	listenCancel                 context.CancelFunc
 	orchestratorCancel           context.CancelFunc
 	subscriberCancel             context.CancelFunc
-	zoneCacheCancel              context.CancelFunc
 	rateLimiter                  *ratelimit.Bucket
+	L1Registry                   *cacheengine.CacheRegistry
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
@@ -98,14 +96,11 @@ func NewModule(
 	// 3) Rotation + cache invalidation orchestration.
 	bus := coreCache.NewRedisSecretInvalidationBus(rds, provider, cfg.App.AppName)
 	rotationService := coreSvcImpl.NewSecretRotationService(repo, bus)
-	// 5) Zone L2 cache + fanout bus
-	zoneFanout := coreCache.NewRedisFanoutBus(rds, "core:zone:fanout")
-	zoneCache := coreCache.NewZoneFanoutCache(zoneFanout)
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
 	}
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, zoneCache, l1Registry, l1Fanout)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, l1Registry, l1Fanout)
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
 	if zoneHandler == nil {
 		return nil, fmt.Errorf("core module: zone handler is nil")
@@ -147,9 +142,8 @@ func NewModule(
 		DataplaneOrchestrator:        dataplaneOrchestrator,
 		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
 		invalidationBus:              bus,
-		zoneCache:                    zoneCache,
-		zoneFanout:                   zoneFanout,
 		rateLimiter:                  rateLimiter,
+		L1Registry:                   l1Registry,
 	}
 
 	return m, nil
@@ -189,16 +183,6 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 		m.subscriberCancel = cancel
 		go m.DataplaneHeartbeatSubscriber.Start(subCtx)
 	}
-	// Zone L2 cache fanout subscriber: lắng nghe từ Redis Pub/Sub và apply local cache thông qua HandleFanout
-	if m.zoneFanout != nil && m.zoneCache != nil && m.zoneCacheCancel == nil {
-		zoneCacheCtx, cancel := context.WithCancel(ctx)
-		m.zoneCacheCancel = cancel
-		go func() {
-			if err := m.zoneFanout.Subscribe(zoneCacheCtx, m.zoneCache.HandleFanout); err != nil && err != context.Canceled {
-				logger.SysWarn("core", "zone cache fanout subscriber stopped: "+err.Error())
-			}
-		}()
-	}
 
 	families := []coreEntity.BootstrapSecretFamily{
 		{Code: "access_token", Name: "Access Token", Description: "Primary signing secret for user access tokens."},
@@ -230,9 +214,5 @@ func (m *Module) Stop() {
 	if m.subscriberCancel != nil {
 		m.subscriberCancel()
 		m.subscriberCancel = nil
-	}
-	if m.zoneCacheCancel != nil {
-		m.zoneCacheCancel()
-		m.zoneCacheCancel = nil
 	}
 }

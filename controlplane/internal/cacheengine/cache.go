@@ -29,9 +29,11 @@ func (item *cacheItem) isExpired() bool {
 }
 
 type cacheShard struct {
-	mu    sync.RWMutex
-	items map[string]*cacheItem
-	sf    singleflight.Group
+	mu          sync.RWMutex
+	items       map[string]*cacheItem
+	deletions   map[string]time.Time
+	activeLoads map[string]int
+	sf          singleflight.Group
 }
 
 type shardedCache struct {
@@ -75,7 +77,9 @@ func NewShardedCache(opts ...Option) Cache {
 	shards := make([]*cacheShard, shardCount)
 	for i := 0; i < shardCount; i++ {
 		shards[i] = &cacheShard{
-			items: make(map[string]*cacheItem),
+			items:       make(map[string]*cacheItem),
+			deletions:   make(map[string]time.Time),
+			activeLoads: make(map[string]int),
 		}
 	}
 	c.shards = shards
@@ -121,6 +125,8 @@ func (c *shardedCache) Flush() {
 		shard := c.shards[i]
 		shard.mu.Lock()
 		shard.items = make(map[string]*cacheItem)
+		shard.deletions = make(map[string]time.Time)
+		shard.activeLoads = make(map[string]int)
 		shard.mu.Unlock()
 	}
 }
@@ -208,6 +214,12 @@ func (c *shardedCache) Delete(key string) bool {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	
+	// Chỉ lưu vết deletion tombstone nếu đang có DB load in-flight cho key này
+	if activeCount := shard.activeLoads[key]; activeCount > 0 {
+		shard.deletions[key] = time.Now()
+	}
+	shard.sf.Forget(key)
+
 	if _, exists := shard.items[key]; exists {
 		delete(shard.items, key)
 		return true
@@ -225,9 +237,26 @@ func (c *shardedCache) GetOrLoad(key string, ttl time.Duration, loadFn func() (i
 	// 2. Cache miss -> Định tuyến shard và thực thi qua singleflight
 	idx := c.getShardIndex(key)
 	shard := c.shards[idx]
+	startTime := time.Now()
 
 	// Dùng singleflight để đảm bảo chỉ có tối đa 1 goroutine thực thi loadFn cho key này tại một thời điểm
 	val, err, _ := shard.sf.Do(key, func() (interface{}, error) {
+		// Đánh dấu bắt đầu load DB
+		shard.mu.Lock()
+		shard.activeLoads[key]++
+		shard.mu.Unlock()
+
+		// Đảm bảo tự động giảm activeLoads và dọn dẹp tombstone khi hoàn tất
+		defer func() {
+			shard.mu.Lock()
+			shard.activeLoads[key]--
+			if shard.activeLoads[key] <= 0 {
+				delete(shard.activeLoads, key)
+				delete(shard.deletions, key) // Tự động xóa tombstone ngay lập tức để giải phóng RAM!
+			}
+			shard.mu.Unlock()
+		}()
+
 		// Double check cache dưới read lock đề phòng goroutine khác vừa nạp thành công
 		shard.mu.RLock()
 		item, ok := shard.items[key]
@@ -245,13 +274,20 @@ func (c *shardedCache) GetOrLoad(key string, ttl time.Duration, loadFn func() (i
 		// Tính toán TTL ngẫu nhiên lệch pha
 		jitteredTTL := c.applyJitter(ttl)
 
-		// Ghi đè vào cache
+		// Ghi đè vào cache nếu không bị delete/invalidate trong quá trình load
 		shard.mu.Lock()
+		defer shard.mu.Unlock()
+
+		if deletedAt, exists := shard.deletions[key]; exists && deletedAt.After(startTime) {
+			// SRE Warning: Phát hiện có lệnh Delete/Invalidate xảy ra TRONG KHI đang load DB.
+			// Bỏ qua không ghi đè vào cache để tránh stale write (magic/stale cache record).
+			return res, nil
+		}
+
 		shard.items[key] = &cacheItem{
 			val:       res,
 			expiresAt: time.Now().Add(jitteredTTL),
 		}
-		shard.mu.Unlock()
 
 		return res, nil
 	})

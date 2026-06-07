@@ -32,8 +32,8 @@ import (
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
-	coreErrorx "controlplane/internal/core/errorx"
 	coreModel "controlplane/internal/core/model"
+	coreTaxonomy "controlplane/internal/core/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -49,12 +49,14 @@ type ZoneRepoImpl struct {
 	createZoneQuery          string
 	getZoneByIDQuery         string
 	getZoneDetailByIDQuery   string
+	getZoneIDByCodeQuery     string
 	updateZoneStatusQuery    string
 	deleteZoneQuery          string
 	hasDataplaneNodesQuery   string
 	hasEnabledZoneSvcQuery   string
 	listZoneSvcByZoneIDQuery string
 	upsertZoneServiceQuery   string
+	upsertZoneServiceByZoneAndTypeQuery string
 }
 
 // NewZoneRepoImpl khởi tạo một thực thể Repository mới cho Zone và biên dịch sẵn các câu lệnh SQL.
@@ -69,7 +71,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			ORDER BY created_at DESC
 		`, schema),
 		getZoneCatalogQuery: fmt.Sprintf(`
-			SELECT id, code, name, updated_at 
+			SELECT code, name 
 			FROM %s.zones 
 			WHERE status IN ('active') 
 			ORDER BY code ASC
@@ -91,15 +93,50 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			LEFT JOIN %s.zone_services s ON z.id = s.zone_id
 			WHERE z.id = $1
 		`, schema, schema),
+		getZoneIDByCodeQuery: fmt.Sprintf(`
+			SELECT id 
+			FROM %s.zones 
+			WHERE LOWER(code) = LOWER($1) LIMIT 1
+		`, schema),
 		updateZoneStatusQuery: fmt.Sprintf(`
-			UPDATE %s.zones 
-			SET status=$2, updated_at=now() 
-			WHERE id=$1
-		`, schema),
+			WITH target AS (
+				SELECT code, name, status, created_at, updated_at FROM %s.zones WHERE id = $1
+			), updated AS (
+				UPDATE %s.zones
+				SET status = $2, updated_at = now()
+				WHERE id = $1 AND status = ANY($3)
+				RETURNING code, name, created_at, updated_at
+			)
+			SELECT 
+				(SELECT COUNT(*) FROM target) AS exists,
+				(SELECT COUNT(*) FROM updated) AS updated,
+				COALESCE((SELECT code FROM target), '') AS code,
+				COALESCE((SELECT name FROM target), '') AS name,
+				COALESCE((SELECT created_at FROM target), now()) AS created_at,
+				COALESCE((SELECT updated_at FROM updated), now()) AS updated_at
+		`, schema, schema),
 		deleteZoneQuery: fmt.Sprintf(`
-			DELETE FROM %s.zones 
-			WHERE id=$1
-		`, schema),
+			WITH target AS (
+				SELECT status FROM %s.zones WHERE id = $1
+			), nodes_exist AS (
+				SELECT EXISTS(SELECT 1 FROM %s.dataplane_nodes WHERE zone_id = $1) AS val
+			), svcs_exist AS (
+				SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND enabled = true) AS val
+			), deleted AS (
+				DELETE FROM %s.zones
+				WHERE id = $1 
+				  AND status = 'disabled'
+				  AND NOT EXISTS (SELECT 1 FROM %s.dataplane_nodes WHERE zone_id = $1)
+				  AND NOT EXISTS (SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND enabled = true)
+				RETURNING code
+			)
+			SELECT 
+				(SELECT COUNT(*) FROM target) AS exists,
+				COALESCE((SELECT status FROM target), '') AS status,
+				(SELECT val FROM nodes_exist) AS has_nodes,
+				(SELECT val FROM svcs_exist) AS has_svcs,
+				COALESCE((SELECT code FROM deleted), '') AS deleted_code
+		`, schema, schema, schema, schema, schema, schema),
 		hasDataplaneNodesQuery: fmt.Sprintf(`
 			SELECT EXISTS(SELECT 1 FROM %s.dataplane_nodes WHERE zone_id=$1)
 		`, schema),
@@ -119,6 +156,27 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now() 
 			RETURNING id, zone_id, service_type, enabled, created_at, updated_at
 		`, schema),
+		upsertZoneServiceByZoneAndTypeQuery: fmt.Sprintf(`
+			WITH target_zone AS (
+				SELECT code, status FROM %s.zones WHERE id = $2
+			), upserted AS (
+				INSERT INTO %s.zone_services (id, zone_id, service_type, enabled, created_at, updated_at)
+				SELECT $1, id, $3, $4, now(), now()
+				FROM %s.zones
+				WHERE id = $2 AND status = 'maintenance'
+				ON CONFLICT (zone_id, service_type)
+				DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
+				RETURNING id, zone_id, service_type, enabled, created_at, updated_at
+			)
+			SELECT 
+				(SELECT COUNT(*) FROM target_zone) AS zone_exists,
+				COALESCE((SELECT status FROM target_zone), '') AS zone_status,
+				COALESCE((SELECT code FROM target_zone), '') AS zone_code,
+				(SELECT COUNT(*) FROM upserted) AS upsert_success,
+				COALESCE((SELECT id FROM upserted), '00000000-0000-0000-0000-000000000000'::uuid) AS svc_id,
+				COALESCE((SELECT created_at FROM upserted), now()) AS svc_created,
+				COALESCE((SELECT updated_at FROM upserted), now()) AS svc_updated
+		`, schema, schema, schema),
 	}
 }
 
@@ -152,7 +210,7 @@ func (r *ZoneRepoImpl) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCat
 	out := make([]coreEntity.ZoneCatalog, 0)
 	for rows.Next() {
 		var item coreEntity.ZoneCatalog
-		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.Code, &item.Name); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -173,7 +231,7 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return coreErrorx.ErrZoneCodeAlreadyExists
+			return coreTaxonomy.ErrZoneCodeAlreadyExists
 		}
 		return err
 	}
@@ -249,35 +307,80 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 	}
 
 	if detail == nil {
-		return nil, nil // Not found
+		return nil, coreTaxonomy.ErrZoneNotFound // Not found
 	}
 
 	return detail, nil
 }
 
+// GetZoneIDByCode truy vấn ID của một Zone dựa trên mã code.
+func (r *ZoneRepoImpl) GetZoneIDByCode(ctx context.Context, code string) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := r.db.QueryRow(ctx, r.getZoneIDByCodeQuery, code).Scan(&id)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, coreTaxonomy.ErrZoneNotFound
+		}
+		return uuid.Nil, err
+	}
+	return id, nil
+}
 
 // UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
-func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus) error {
-	result, err := r.db.Exec(ctx, r.updateZoneStatusQuery, id, string(status))
+func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+	statusStrings := make([]string, len(allowedOld))
+	for i, s := range allowedOld {
+		statusStrings[i] = string(s)
+	}
+
+	var exists int
+	var updated int
+	var code string
+	var name string
+	var createdAt time.Time
+	var updatedAt time.Time
+	err := r.db.QueryRow(ctx, r.updateZoneStatusQuery, id, string(status), statusStrings).Scan(
+		&exists, &updated, &code, &name, &createdAt, &updatedAt,
+	)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if result.RowsAffected() == 0 {
-		return coreErrorx.ErrZoneNotFound
+	if exists == 0 {
+		return nil, coreTaxonomy.ErrZoneNotFound
 	}
-	return nil
+	if updated == 0 {
+		return nil, coreTaxonomy.ErrZoneInvalidTransition
+	}
+	return &coreEntity.Zone{
+		ID:        id,
+		Code:      code,
+		Name:      name,
+		Status:    status,
+		CreatedAt: &createdAt,
+		UpdatedAt: &updatedAt,
+	}, nil
 }
 
 // DeleteZone xóa Zone khỏi cơ sở dữ liệu (hard delete).
-func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) error {
-	result, err := r.db.Exec(ctx, r.deleteZoneQuery, id)
+func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
+	var exists int
+	var status string
+	var hasNodes bool
+	var hasSvcs bool
+	var deletedCode string
+
+	err := r.db.QueryRow(ctx, r.deleteZoneQuery, id).Scan(&exists, &status, &hasNodes, &hasSvcs, &deletedCode)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if result.RowsAffected() == 0 {
-		return coreErrorx.ErrZoneNotFound
+
+	if exists == 0 {
+		return "", coreTaxonomy.ErrZoneNotFound
 	}
-	return nil
+	if status != "disabled" || hasNodes || hasSvcs {
+		return "", coreTaxonomy.ErrZoneDeletePreconditionFailed
+	}
+	return deletedCode, nil
 }
 
 // HasDataplaneNodesByZone kiểm tra xem Zone hiện tại có Dataplane Nodes nào neo vào không.
@@ -318,15 +421,36 @@ func (r *ZoneRepoImpl) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid
 }
 
 // UpsertZoneServiceByZoneAndType cập nhật/upsert cấu hình dịch vụ của Zone.
-func (r *ZoneRepoImpl) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
+func (r *ZoneRepoImpl) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
 	newID, _ := uuid.NewV7()
+	var zoneExists int
+	var zoneStatus string
+	var zoneCode string
+	var upsertSuccess int
 	var value coreModel.ZoneService
-	err := r.db.QueryRow(ctx, r.upsertZoneServiceQuery, newID, zoneID, string(serviceType), enabled).Scan(
-		&value.ID, &value.ZoneID, &value.ServiceType, &value.Enabled, &value.CreatedAt, &value.UpdatedAt,
+
+	err := r.db.QueryRow(ctx, r.upsertZoneServiceByZoneAndTypeQuery, newID, zoneID, string(serviceType), enabled).Scan(
+		&zoneExists, &zoneStatus, &zoneCode, &upsertSuccess,
+		&value.ID, &value.CreatedAt, &value.UpdatedAt,
 	)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+
+	if zoneExists == 0 {
+		return nil, "", coreTaxonomy.ErrZoneServiceZoneNotFound
+	}
+	if zoneStatus != "maintenance" {
+		return nil, "", coreTaxonomy.ErrZoneServiceStateConflict
+	}
+	if upsertSuccess == 0 {
+		return nil, "", coreTaxonomy.ErrZoneServiceInvalidInput
+	}
+
+	value.ZoneID = zoneID
+	value.ServiceType = string(serviceType)
+	value.Enabled = enabled
+
 	ent := coreModel.ZoneServiceModelToEntity(value)
-	return &ent, nil
+	return &ent, zoneCode, nil
 }

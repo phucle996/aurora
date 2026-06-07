@@ -8,7 +8,7 @@ import (
 	coreEntity "controlplane/internal/core/domain/entity"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
-	coreerrorx "controlplane/internal/core/errorx"
+	coreerrorx "controlplane/internal/core/taxonomy"
 	coreMetric "controlplane/internal/core/metrics"
 	"controlplane/internal/security"
 	"controlplane/pkg/logger"
