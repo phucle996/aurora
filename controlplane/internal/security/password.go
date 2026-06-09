@@ -27,10 +27,6 @@ var (
 
 // HashPassword hashes a password using Argon2id.
 func HashPassword(password string) (string, error) {
-	if strings.TrimSpace(password) == "" {
-		return "", ErrInvalidClaims
-	}
-
 	salt := make([]byte, passwordSaltLength)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("security: read password salt: %w", err)

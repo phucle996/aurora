@@ -2,26 +2,26 @@ package iamRepoImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
-	"controlplane/internal/iam/domain/repo"
+	iamRepoInterface "controlplane/internal/iam/domain/repo"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-var _ iamRepoInterface.RbacRepository = (*RbacRepository)(nil)
 
 type RbacRepository struct {
 	cfg *config.Config
 	db  *pgxpool.Pool
 }
 
-func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) *RbacRepository {
+func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.RbacRepository {
 	return &RbacRepository{cfg: cfg, db: db}
 }
 
@@ -140,23 +140,22 @@ func (r *RbacRepository) UpdateRole(ctx context.Context, role *iamEntity.Role) e
 	return nil
 }
 
-func (r *RbacRepository) DeleteRole(ctx context.Context, id string) error {
-	uid, err := uuid.Parse(strings.TrimSpace(id))
-	if err != nil {
-		return err
+func (r *RbacRepository) DeleteRole(ctx context.Context, id uuid.UUID) error {
+	if id == uuid.Nil {
+		return fmt.Errorf("iam rbac repo: invalid role id")
 	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1`, uid); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1`, id); err != nil {
 		return fmt.Errorf("iam rbac repo: delete role permissions: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM user_role_assignments WHERE role_id=$1`, uid); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM user_role_assignments WHERE role_id=$1`, id); err != nil {
 		return fmt.Errorf("iam rbac repo: delete user roles: %w", err)
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM roles WHERE id=$1`, uid)
+	tag, err := tx.Exec(ctx, `DELETE FROM roles WHERE id=$1`, id)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: delete role: %w", err)
 	}
@@ -207,51 +206,25 @@ func (r *RbacRepository) GetPermissionByCode(ctx context.Context, code string) (
 	return &p, nil
 }
 
-func (r *RbacRepository) CreatePermission(ctx context.Context, perm *iamEntity.Permission) error {
-	if perm == nil {
-		return fmt.Errorf("iam rbac repo: nil permission")
-	}
-	if perm.ID == uuid.Nil {
-		perm.ID = uuid.New()
-	}
-	_, err := r.db.Exec(ctx, `INSERT INTO permissions (id, code, name, description, resource, action, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW(),NOW())`, perm.ID, strings.ToLower(strings.TrimSpace(perm.Code)), strings.TrimSpace(perm.Name), perm.Description, strings.TrimSpace(perm.Resource), strings.TrimSpace(perm.Action))
+func (r *RbacRepository) AssignPermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id, created_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`, roleID, permissionID)
 	if err != nil {
-		return fmt.Errorf("iam rbac repo: create permission: %w", err)
-	}
-	return nil
-}
-
-func (r *RbacRepository) AssignPermission(ctx context.Context, roleID, permissionID string) error {
-	rid, err := uuid.Parse(strings.TrimSpace(roleID))
-	if err != nil {
-		return err
-	}
-	pid, err := uuid.Parse(strings.TrimSpace(permissionID))
-	if err != nil {
-		return err
-	}
-	_, err = r.db.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id, created_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`, rid, pid)
-	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign key violation
+			return pgx.ErrNoRows
+		}
 		return fmt.Errorf("iam rbac repo: assign permission: %w", err)
 	}
 	return nil
 }
 
-func (r *RbacRepository) RevokePermission(ctx context.Context, roleID, permissionID string) error {
-	rid, err := uuid.Parse(strings.TrimSpace(roleID))
-	if err != nil {
-		return err
-	}
-	pid, err := uuid.Parse(strings.TrimSpace(permissionID))
-	if err != nil {
-		return err
-	}
-	tag, err := r.db.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1 AND permission_id=$2`, rid, pid)
+func (r *RbacRepository) RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1 AND permission_id=$2`, roleID, permissionID)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: revoke permission: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("iam rbac repo: revoke permission: %w", pgx.ErrNoRows)
+		return pgx.ErrNoRows
 	}
 	return nil
 }

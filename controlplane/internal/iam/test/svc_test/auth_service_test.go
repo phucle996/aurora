@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
+	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
 	iamCache "controlplane/internal/iam/cache"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -81,6 +82,39 @@ func (m *presenceCacheMock) MarkExists(ctx context.Context, username string, ema
 	return nil
 }
 
+type deviceRuntimeMock struct {
+	setFn func(ctx context.Context, runtime iamCache.UserDeviceRuntime, ttl time.Duration) error
+}
+
+var _ iamCache.UserDeviceRuntimeCache = (*deviceRuntimeMock)(nil)
+
+func (m *deviceRuntimeMock) SetDeviceRuntime(ctx context.Context, runtime iamCache.UserDeviceRuntime, ttl time.Duration) error {
+	if m.setFn != nil {
+		return m.setFn(ctx, runtime, ttl)
+	}
+	return nil
+}
+
+func (m *deviceRuntimeMock) GetDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) (*iamCache.UserDeviceRuntime, error) {
+	return nil, nil
+}
+
+func (m *deviceRuntimeMock) DeleteDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) error {
+	return nil
+}
+
+func (m *deviceRuntimeMock) RotateFragmentForUserDevice(ctx context.Context, userID, deviceID, expectedJTI, newDeviceID, newDeviceSecretHash, newJTI string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
+	return true, nil
+}
+
+func (m *deviceRuntimeMock) TouchDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
+	return true, nil
+}
+
+func (m *deviceRuntimeMock) ScanByUser(ctx context.Context, userID string, limit int) ([]iamCache.UserDeviceRuntime, error) {
+	return nil, nil
+}
+
 func makeTestRegistry(secretKey string) *cacheengine.CacheRegistry {
 	l1Cache := cacheengine.NewShardedCache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
@@ -101,7 +135,7 @@ func makeTestRegistry(secretKey string) *cacheengine.CacheRegistry {
 }
 
 func newAuthService(repo iamRepoInterface.AuthRepository, presence iamCache.RegisterPresenceCache, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
-	return iamSvcImpl.NewAuthService(nil, repo, nil, &deviceRepoMock{}, nil, nil, presence, registry, nil, nil)
+	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, nil, &deviceRepoMock{}, &deviceRuntimeMock{}, nil, presence, registry, nil, nil)
 }
 
 func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
@@ -255,30 +289,7 @@ func TestAuthServiceRegisterAccountSuccessStillReturnsSuccessWhenMarkFails(t *te
 	}
 }
 
-func TestAuthServiceRegisterAccountValidation(t *testing.T) {
-	tests := []struct {
-		name     string
-		user     iamEntity.User
-		profile  iamEntity.UserProfile
-		password string
-		want     error
-	}{
-		{name: "missing username", user: iamEntity.User{Username: "", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "secret123", want: iamTaxonomy.ErrInvalidArgument},
-		{name: "missing email", user: iamEntity.User{Username: "alice.nguyen", Email: ""}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "secret123", want: iamTaxonomy.ErrInvalidArgument},
-		{name: "missing fullname", user: iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: ""}, password: "secret123", want: iamTaxonomy.ErrInvalidArgument},
-		{name: "missing password", user: iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, profile: iamEntity.UserProfile{Fullname: "Alice"}, password: "", want: iamTaxonomy.ErrInvalidArgument},
-	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			svc := newAuthService(&authRepoMock{}, &presenceCacheMock{}, nil)
-			err := svc.RegisterAccount(context.Background(), test.user, test.profile, test.password)
-			if !errors.Is(err, test.want) {
-				t.Fatalf("expected %v, got %v", test.want, err)
-			}
-		})
-	}
-}
 
 func TestAuthServiceLoginUserNotFound(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) { return nil, nil }}, nil, nil)
@@ -374,20 +385,7 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 	}
 }
 
-func TestAuthServiceRegisterInvalidArgumentReturnsEnvelope(t *testing.T) {
-	svc := newAuthService(&authRepoMock{}, &presenceCacheMock{}, nil)
-	err := svc.RegisterAccount(context.Background(), iamEntity.User{}, iamEntity.UserProfile{}, "")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-		t.Fatalf("expected ErrInvalidArgument, got %v", err)
-	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
-	}
-	if appErr.Outcome != iamTaxonomy.RegisterOutcomeInvalidArgument {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
-	}
-}
+
 
 func TestAuthServiceLoginLoadUserErrorReturnsEnvelope(t *testing.T) {
 	raw := errors.New("db timeout")

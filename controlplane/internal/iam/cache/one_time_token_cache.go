@@ -2,26 +2,27 @@ package iamCache
 
 import (
 	"context"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 type OneTimeTokenCache interface {
-	SetHashedToken(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error
-	ConsumeHashedToken(ctx context.Context, purpose string, userID string, tokenHash string) (bool, error)
+	SetHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string, ttl time.Duration) error
+	ConsumeHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string) (bool, error)
 }
 
 type noopOneTimeTokenCache struct{}
 
-func (noopOneTimeTokenCache) SetHashedToken(context.Context, string, string, string, time.Duration) error {
+func (noopOneTimeTokenCache) SetHashedToken(context.Context, string, uuid.UUID, string, time.Duration) error {
 	return iamTaxonomy.ErrOneTimeTokenCacheUnavailable
 }
 
-func (noopOneTimeTokenCache) ConsumeHashedToken(context.Context, string, string, string) (bool, error) {
+func (noopOneTimeTokenCache) ConsumeHashedToken(context.Context, string, uuid.UUID, string) (bool, error) {
 	return false, iamTaxonomy.ErrOneTimeTokenCacheUnavailable
 }
 
@@ -30,17 +31,14 @@ type redisOneTimeTokenCache struct {
 }
 
 func NewOneTimeTokenCache(rdb *goredis.Client) OneTimeTokenCache {
-	if rdb == nil {
-		return noopOneTimeTokenCache{}
-	}
 	return &redisOneTimeTokenCache{rdb: rdb}
 }
 
-func oneTimeTokenKey(purpose string, userID string) string {
-	return fmt.Sprintf("iam:ott:%s:%s", strings.TrimSpace(purpose), strings.TrimSpace(userID))
+func oneTimeTokenKey(purpose string, userID uuid.UUID) string {
+	return fmt.Sprintf("iam:ott:%s:%s", strings.TrimSpace(purpose), strings.TrimSpace(userID.String()))
 }
 
-func (c *redisOneTimeTokenCache) SetHashedToken(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
+func (c *redisOneTimeTokenCache) SetHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string, ttl time.Duration) error {
 	key := oneTimeTokenKey(purpose, userID)
 	return c.rdb.Set(ctx, key, strings.TrimSpace(tokenHash), ttl).Err()
 }
@@ -58,7 +56,7 @@ end
 return redis.call("DEL", key)
 `)
 
-func (c *redisOneTimeTokenCache) ConsumeHashedToken(ctx context.Context, purpose string, userID string, tokenHash string) (bool, error) {
+func (c *redisOneTimeTokenCache) ConsumeHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string) (bool, error) {
 	key := oneTimeTokenKey(purpose, userID)
 	result, err := consumeOneTimeTokenScript.Run(ctx, c.rdb, []string{key}, strings.TrimSpace(tokenHash)).Int64()
 	if err != nil {

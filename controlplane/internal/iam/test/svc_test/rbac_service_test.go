@@ -46,7 +46,7 @@ func (m *rbacRepoMock) GetRoleByID(ctx context.Context, id string) (*iamEntity.R
 }
 func (m *rbacRepoMock) CreateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
 func (m *rbacRepoMock) UpdateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
-func (m *rbacRepoMock) DeleteRole(ctx context.Context, id string) error            { return nil }
+func (m *rbacRepoMock) DeleteRole(ctx context.Context, id uuid.UUID) error            { return nil }
 func (m *rbacRepoMock) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
 	return nil, nil
 }
@@ -59,10 +59,10 @@ func (m *rbacRepoMock) GetPermissionByCode(ctx context.Context, code string) (*i
 func (m *rbacRepoMock) CreatePermission(ctx context.Context, perm *iamEntity.Permission) error {
 	return nil
 }
-func (m *rbacRepoMock) AssignPermission(ctx context.Context, roleID, permissionID string) error {
+func (m *rbacRepoMock) AssignPermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
 	return nil
 }
-func (m *rbacRepoMock) RevokePermission(ctx context.Context, roleID, permissionID string) error {
+func (m *rbacRepoMock) RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
 	return nil
 }
 func (m *rbacRepoMock) AssignUserRole(ctx context.Context, userID, roleID string) error { return nil }
@@ -78,12 +78,9 @@ func TestRbacServiceGetRoleInvalidUUIDMapsInvalidArgument(t *testing.T) {
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
-	}
-	if appErr.Outcome != "invalid_argument" {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
+	_, ok := apperr.As(err)
+	if ok {
+		t.Fatalf("expected raw error, not wrapped app error envelope")
 	}
 }
 
@@ -96,12 +93,9 @@ func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 	if !errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
 		t.Fatalf("expected ErrRoleNotFound, got %v", err)
 	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
-	}
-	if appErr.Outcome != "role_not_found" {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
+	_, ok := apperr.As(err)
+	if ok {
+		t.Fatalf("expected raw error, not wrapped app error envelope")
 	}
 }
 
@@ -119,7 +113,7 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != "dependency_error" {
+	if appErr.Outcome != iamTaxonomy.RbacOutcomeDependencyError {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {

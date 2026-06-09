@@ -63,7 +63,7 @@ func (pgxQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.T
 	traceCtx.span.End()
 
 	if prom := CurrentPrometheus(); prom != nil {
-		prom.ObserveDB(traceCtx.operation, duration, data.Err)
+		prom.ObserveDependency("db", traceCtx.operation, duration, data.Err)
 	}
 }
 

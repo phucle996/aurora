@@ -14,6 +14,7 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // LogoutHandler handles POST /api/v1/auth/logout.
@@ -45,19 +46,31 @@ func (h *LogoutHandler) Logout(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	userID := strings.TrimSpace(middleware.GetUserID(c))
-	runtimeDeviceID := strings.TrimSpace(middleware.GetRuntimeAccessKey(c))
-
-	// Cho phép logout dù thiếu runtime_device_id (best-effort) miễn là user_id còn hợp lệ.
-	if userID == "" {
+	userIDStr := strings.TrimSpace(middleware.GetUserID(c))
+	if userIDStr == "" {
+		clearAuthCookies(c, h.cfg)
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+	userID, parseErr := uuid.Parse(userIDStr)
+	if parseErr != nil {
 		clearAuthCookies(c, h.cfg)
 		apires.RespondUnauthorized(c, "unauthorized")
 		return
 	}
 
-	if err := h.authSvc.Logout(ctx, userID, runtimeDeviceID); err != nil {
+	accessKey := strings.TrimSpace(middleware.GetRuntimeAccessKey(c))
+	accessSecret := strings.TrimSpace(middleware.GetRuntimeAccessSecret(c))
+
+	// Cho phép logout dù thiếu accessKey/secret (best-effort clear cookies).
+	if accessKey == "" {
+		clearAuthCookies(c, h.cfg)
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	if err := h.authSvc.Logout(ctx, userID, accessKey, accessSecret); err != nil {
 		logger.HandlerError(c, op, err)
-		// Vẫn clear cookies để session phía client không kẹt.
 		clearAuthCookies(c, h.cfg)
 		apires.RespondInternalError(c, "internal_error")
 		return

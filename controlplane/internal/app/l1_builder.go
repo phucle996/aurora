@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
+	iamSvcInterface "controlplane/internal/iam/domain/service"
 	"controlplane/pkg/logger"
 )
 
@@ -57,5 +58,14 @@ func RegisterL1Loaders(
 
 	cacheengine.Register(registry, "one_time_token", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
 		return modules.Core.SecretRepository.GetOneTimeTokenSecret(ctx)
+	})
+
+	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC
+	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (iamSvcInterface.RoleEntry, error) {
+		rp, err := modules.IAM.RbacRepository.GetRoleByCode(ctx, param)
+		if err != nil {
+			return iamSvcInterface.RoleEntry{}, err
+		}
+		return iamSvcInterface.RoleEntry{Permissions: rp.Permissions}, nil
 	})
 }

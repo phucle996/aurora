@@ -45,7 +45,7 @@ func NewRefreshTokenService(
 func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken string) (result *iamEntity.RefreshTokenResult, err error) {
 	refreshOutcome := iamTaxonomy.OutcomeSuccess
 	defer func() {
-		iamMetrics.ObserveRefreshTokenOutcome(refreshOutcome)
+		iamMetrics.ObserveServiceCall("refresh_token", refreshOutcome, "n/a")
 	}()
 
 	if rawRefreshToken == "" {

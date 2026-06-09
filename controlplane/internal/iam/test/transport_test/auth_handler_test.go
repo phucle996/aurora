@@ -20,6 +20,7 @@ import (
 	constant "controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type authServiceStub struct {
@@ -34,7 +35,7 @@ func (s *authServiceStub) RegisterAccount(ctx context.Context, user iamEntity.Us
 	return s.err
 }
 
-func (s *authServiceStub) Logout(ctx context.Context, userID string, runtimeDeviceID string) error {
+func (s *authServiceStub) Logout(ctx context.Context, userID uuid.UUID, accessKey string, accessSecret string) error {
 	return nil
 }
 

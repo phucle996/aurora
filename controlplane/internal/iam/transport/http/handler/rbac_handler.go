@@ -9,16 +9,19 @@ import (
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // RbacHandler xử lý các HTTP endpoints cho IAM RBAC.
-type RbacHandler struct{ rbacSvc iamSvcInterface.RbacService }
+type RbacHandler struct {
+	rbacSvc iamSvcInterface.RbacService
+}
 
 // NewRbacHandler tạo HTTP handler cho RBAC endpoints.
 func NewRbacHandler(rbacSvc iamSvcInterface.RbacService) *RbacHandler {
@@ -174,7 +177,14 @@ func (h *RbacHandler) DeleteRole(c *gin.Context) {
 	const op = "iam.rbac.delete_role"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	if err := h.rbacSvc.DeleteRole(ctx, strings.TrimSpace(c.Param("id"))); err != nil {
+	idStr := strings.TrimSpace(c.Param("id"))
+	id, err := uuid.Parse(idStr)
+	if err != nil || id == uuid.Nil {
+		logger.HandlerWarn(c, op, err, "invalid role id")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+	if err := h.rbacSvc.DeleteRole(ctx, id); err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")

@@ -15,6 +15,7 @@ import (
 	handler "controlplane/internal/iam/transport/http/handler"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type rbacServiceStub struct {
@@ -29,7 +30,6 @@ func (s *rbacServiceStub) Authorize(ctx context.Context, roleCode, permission st
 func (s *rbacServiceStub) LoadRole(ctx context.Context, role string) (iamSvcInterface.RoleEntry, error) {
 	return iamSvcInterface.RoleEntry{}, nil
 }
-func (s *rbacServiceStub) InvalidateRole(ctx context.Context, role string) {}
 func (s *rbacServiceStub) InvalidateAll(ctx context.Context)               {}
 func (s *rbacServiceStub) WarmUp(ctx context.Context) error                { return nil }
 func (s *rbacServiceStub) ListRoles(ctx context.Context) ([]*iamEntity.Role, error) {
@@ -45,12 +45,9 @@ func (s *rbacServiceStub) CreateRole(ctx context.Context, role *iamEntity.Role) 
 	return nil
 }
 func (s *rbacServiceStub) UpdateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
-func (s *rbacServiceStub) DeleteRole(ctx context.Context, id string) error            { return nil }
+func (s *rbacServiceStub) DeleteRole(ctx context.Context, id uuid.UUID) error        { return nil }
 func (s *rbacServiceStub) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
 	return nil, nil
-}
-func (s *rbacServiceStub) CreatePermission(ctx context.Context, perm *iamEntity.Permission) error {
-	return nil
 }
 func (s *rbacServiceStub) AssignPermission(ctx context.Context, roleID, permID string) error {
 	return nil

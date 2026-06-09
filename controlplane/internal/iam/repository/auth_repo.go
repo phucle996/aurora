@@ -2,14 +2,18 @@ package iamRepoImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamModel "controlplane/internal/iam/model"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -114,6 +118,13 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 		userModel.CreatedAt,
 		userModel.UpdatedAt,
 	); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			constraint := strings.ToLower(pgErr.ConstraintName)
+			if strings.Contains(constraint, "users_email_lower_uidx") || strings.Contains(constraint, "users_username_lower_uidx") {
+				return fmt.Errorf("%w: %v", iamTaxonomy.ErrUserAlreadyExist, err)
+			}
+		}
 		return fmt.Errorf("iam repo: insert user: %w", err)
 	}
 

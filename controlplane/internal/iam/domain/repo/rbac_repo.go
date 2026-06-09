@@ -4,6 +4,8 @@ import (
 	"context"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
+
+	"github.com/google/uuid"
 )
 
 type RbacRepository interface {
@@ -14,14 +16,13 @@ type RbacRepository interface {
 	GetRoleByID(ctx context.Context, id string) (*iamEntity.Role, error)
 	CreateRole(ctx context.Context, role *iamEntity.Role) error
 	UpdateRole(ctx context.Context, role *iamEntity.Role) error
-	DeleteRole(ctx context.Context, id string) error
+	DeleteRole(ctx context.Context, id uuid.UUID) error
 
 	ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error)
 	GetPermissionByID(ctx context.Context, id string) (*iamEntity.Permission, error)
 	GetPermissionByCode(ctx context.Context, code string) (*iamEntity.Permission, error)
-	CreatePermission(ctx context.Context, perm *iamEntity.Permission) error
-	AssignPermission(ctx context.Context, roleID, permissionID string) error
-	RevokePermission(ctx context.Context, roleID, permissionID string) error
+	AssignPermission(ctx context.Context, roleID, permissionID uuid.UUID) error
+	RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error
 
 	// AssignUserRole V1 hiện chỉ bind platform scope.
 	// Tenant/workspace scoped assignment được triển khai ở phase tiếp theo.

@@ -49,7 +49,7 @@ func (h redisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		span.End()
 
 		if prom := CurrentPrometheus(); prom != nil {
-			prom.ObserveRedis(operation, time.Since(startedAt), metricErr)
+			prom.ObserveDependency("redis", operation, time.Since(startedAt), metricErr)
 		}
 
 		return err
@@ -79,7 +79,7 @@ func (h redisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 		span.End()
 
 		if prom := CurrentPrometheus(); prom != nil {
-			prom.ObserveRedis("PIPELINE", time.Since(startedAt), metricErr)
+			prom.ObserveDependency("redis", "PIPELINE", time.Since(startedAt), metricErr)
 		}
 
 		return err

@@ -10,21 +10,23 @@ import (
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
+
+	"github.com/google/uuid"
 )
 
 type oneTimeTokenCacheMock struct {
-	setFn     func(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error
-	consumeFn func(ctx context.Context, purpose string, userID string, tokenHash string) (bool, error)
+	setFn     func(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string, ttl time.Duration) error
+	consumeFn func(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string) (bool, error)
 }
 
-func (m *oneTimeTokenCacheMock) SetHashedToken(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
+func (m *oneTimeTokenCacheMock) SetHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string, ttl time.Duration) error {
 	if m.setFn != nil {
 		return m.setFn(ctx, purpose, userID, tokenHash, ttl)
 	}
 	return nil
 }
 
-func (m *oneTimeTokenCacheMock) ConsumeHashedToken(ctx context.Context, purpose string, userID string, tokenHash string) (bool, error) {
+func (m *oneTimeTokenCacheMock) ConsumeHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string) (bool, error) {
 	if m.consumeFn != nil {
 		return m.consumeFn(ctx, purpose, userID, tokenHash)
 	}
@@ -35,11 +37,12 @@ func TestOneTimeTokenServiceIssueAndConsumeSuccess(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Security.OneTimeTokenTTL = 10 * time.Minute
 
+	userID := uuid.Must(uuid.NewV7())
 	var storedHash string
 	cacheMock := &oneTimeTokenCacheMock{
-		setFn: func(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
-			if purpose != "account_verify" || userID != "u1" {
-				t.Fatalf("unexpected purpose/user: %s/%s", purpose, userID)
+		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
+			if purpose != "account_verify" || uID != userID {
+				t.Fatalf("unexpected purpose/user: %s/%s", purpose, uID)
 			}
 			if ttl != cfg.Security.OneTimeTokenTTL {
 				t.Fatalf("unexpected ttl: %v", ttl)
@@ -47,13 +50,13 @@ func TestOneTimeTokenServiceIssueAndConsumeSuccess(t *testing.T) {
 			storedHash = tokenHash
 			return nil
 		},
-		consumeFn: func(ctx context.Context, purpose string, userID string, tokenHash string) (bool, error) {
+		consumeFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string) (bool, error) {
 			return tokenHash == storedHash, nil
 		},
 	}
 
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheMock)
-	token, expiresAt, err := svc.Issue(context.Background(), "account_verify", "u1")
+	token, expiresAt, err := svc.Issue(context.Background(), "account_verify", userID)
 	if err != nil {
 		t.Fatalf("issue failed: %v", err)
 	}
@@ -64,7 +67,7 @@ func TestOneTimeTokenServiceIssueAndConsumeSuccess(t *testing.T) {
 		t.Fatal("expected non-zero expiresAt")
 	}
 
-	consumed, err := svc.Consume(context.Background(), "account_verify", "u1", token)
+	consumed, err := svc.Consume(context.Background(), "account_verify", userID, token)
 	if err != nil {
 		t.Fatalf("consume failed: %v", err)
 	}
@@ -78,12 +81,13 @@ func TestOneTimeTokenServiceInvalidPurposeOrUser(t *testing.T) {
 	cfg.Security.OneTimeTokenTTL = time.Minute
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{})
 
-	_, _, err := svc.Issue(context.Background(), "", "u1")
+	userID := uuid.Must(uuid.NewV7())
+	_, _, err := svc.Issue(context.Background(), "", userID)
 	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
 	}
 
-	_, err = svc.Consume(context.Background(), "account_verify", "", "abc")
+	_, err = svc.Consume(context.Background(), "account_verify", uuid.Nil, "abc")
 	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
 	}
@@ -94,7 +98,8 @@ func TestOneTimeTokenServiceInvalidTTL(t *testing.T) {
 	cfg.Security.OneTimeTokenTTL = 0
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{})
 
-	_, _, err := svc.Issue(context.Background(), "account_verify", "u1")
+	userID := uuid.Must(uuid.NewV7())
+	_, _, err := svc.Issue(context.Background(), "account_verify", userID)
 	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenIssueFailed) {
 		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
 	}
@@ -104,14 +109,15 @@ func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Security.OneTimeTokenTTL = time.Minute
 
+	userID := uuid.Must(uuid.NewV7())
 	used := false
 	var storedHash string
 	cacheMock := &oneTimeTokenCacheMock{
-		setFn: func(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
+		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
 			storedHash = tokenHash
 			return nil
 		},
-		consumeFn: func(ctx context.Context, purpose string, userID string, tokenHash string) (bool, error) {
+		consumeFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string) (bool, error) {
 			if used {
 				return false, nil
 			}
@@ -124,17 +130,17 @@ func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 	}
 
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheMock)
-	token, _, err := svc.Issue(context.Background(), "account_verify", "u1")
+	token, _, err := svc.Issue(context.Background(), "account_verify", userID)
 	if err != nil {
 		t.Fatalf("issue failed: %v", err)
 	}
 
-	ok, err := svc.Consume(context.Background(), "account_verify", "u1", token)
+	ok, err := svc.Consume(context.Background(), "account_verify", userID, token)
 	if err != nil || !ok {
 		t.Fatalf("first consume expected success, got ok=%v err=%v", ok, err)
 	}
 
-	ok, err = svc.Consume(context.Background(), "account_verify", "u1", token)
+	ok, err = svc.Consume(context.Background(), "account_verify", userID, token)
 	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidOrExpired) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidOrExpired, got %v", err)
 	}
@@ -147,13 +153,14 @@ func TestOneTimeTokenServiceCacheError(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Security.OneTimeTokenTTL = time.Minute
 
+	userID := uuid.Must(uuid.NewV7())
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{
-		setFn: func(ctx context.Context, purpose string, userID string, tokenHash string, ttl time.Duration) error {
+		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
 			return iamTaxonomy.ErrOneTimeTokenCacheUnavailable
 		},
 	})
 
-	_, _, err := svc.Issue(context.Background(), "account_verify", "u1")
+	_, _, err := svc.Issue(context.Background(), "account_verify", userID)
 	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenIssueFailed) {
 		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
 	}

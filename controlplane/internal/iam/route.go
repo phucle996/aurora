@@ -175,25 +175,25 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// ========================================================================
 
 	// 15) Liệt kê danh sách vai trò
-	router.GET("/admin/rbac/roles",
-		middleware.AdminAPIKeyAuth(),
+	router.GET("/api/v1/rbac/roles",
+		middleware.Access(),
 		module.RbacHandler.ListRoles,
 	)
 
 	// 16) Tạo vai trò mới
-	router.POST("/admin/rbac/roles",
+	router.POST("/api/v1/rbac/roles",
 		middleware.AdminAPIKeyAuth(),
 		module.RbacHandler.CreateRole,
 	)
 
 	// 17) Cập nhật cấu hình vai trò
-	router.PUT("/admin/rbac/roles/:id",
+	router.PUT("/api/v1/rbac/roles/:id",
 		middleware.AdminAPIKeyAuth(),
 		module.RbacHandler.UpdateRole,
 	)
 
 	// 18) Xóa bỏ vai trò
-	router.DELETE("/admin/rbac/roles/:id",
+	router.DELETE("/api/v1/rbac/roles/:id",
 		middleware.AdminAPIKeyAuth(),
 		module.RbacHandler.DeleteRole,
 	)

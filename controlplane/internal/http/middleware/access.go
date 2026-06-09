@@ -40,25 +40,10 @@ import (
 	"controlplane/internal/security"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
-	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
-
-const (
-	blacklistKeyPrefix    = "iam:blacklist:"
-	blacklistCheckTimeout = 75 * time.Millisecond
-	revokedJTICacheTTL    = 5 * time.Minute
-)
-
-// revokedJTICache lưu trữ cục bộ các token đã bị thu hồi để giảm tải lượng truy vấn lớn tới Redis.
-var revokedJTICache = struct {
-	mu        sync.RWMutex
-	expiresAt map[string]time.Time
-}{
-	expiresAt: make(map[string]time.Time),
-}
 
 // accessMiddleware nắm giữ handler động cho middleware Access.
 var accessMiddleware = struct {
@@ -139,7 +124,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 			parseErr    error
 			emptySecret bool
 		)
-		
+
 		// --------------------------------------------------------------------
 		// 🔄 Parse JWT sử dụng lần lượt các candidate secrets.
 		// --------------------------------------------------------------------
@@ -168,24 +153,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 		}
 
 		// --------------------------------------------------------------------
-		// 🔄 Kiểm tra định danh Token (JTI) xem có bị nằm trong blacklist của Redis.
-		// --------------------------------------------------------------------
-		blacklisted, blacklistErr := IsBlacklisted(c.Request.Context(), rdb, claims.TokenID)
-		if blacklistErr != nil {
-			logger.HandlerWarn(c, "iam.access", blacklistErr, "redis blacklist check failed")
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			c.Abort()
-			return
-		}
-		if blacklisted {
-			logger.HandlerWarn(c, "iam.access", nil, "token is blacklisted")
-			c.Header("WWW-Authenticate", "Bearer")
-			apires.RespondUnauthorized(c, "token has been revoked")
-			c.Abort()
-			return
-		}
-
-		// --------------------------------------------------------------------
 		// 🔄 Xác minh ràng buộc phiên thiết bị của người dùng (Device Binding)
 		// --------------------------------------------------------------------
 		if runtimeCache != nil {
@@ -195,7 +162,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 			accessSecret := strings.TrimSpace(accessSecretValue)
 			accessKeyClaim := strings.TrimSpace(claims.AccessKey)
 			jti := strings.TrimSpace(claims.TokenID)
-			
+
 			// Đảm bảo có đầy đủ dữ liệu cấu thành phiên đăng nhập thiết bị:
 			if accessKeyCookieErr != nil || accessSecretErr != nil || accessKeyCookie == "" || accessSecret == "" || accessKeyClaim == "" || jti == "" || strings.TrimSpace(claims.Subject) == "" {
 				clearUserAccessCookies(c, cookieDomain, cookiePath)
@@ -203,7 +170,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 				c.Abort()
 				return
 			}
-			
+
 			// Key định danh từ cookie phải khớp với AccessKey được mã hóa trong token:
 			if accessKeyCookie != accessKeyClaim {
 				clearUserAccessCookies(c, cookieDomain, cookiePath)
@@ -214,7 +181,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
 			defer cancel()
-			
+
 			// Truy vấn bản ghi phiên runtime thực tế từ Redis:
 			record, err := runtimeCache.GetDeviceRuntimeByUserDevice(ctx, claims.Subject, accessKeyClaim)
 			if err != nil {
@@ -222,7 +189,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 				c.Abort()
 				return
 			}
-			
+
 			// Đánh giá khớp thông tin mật mã và thời gian đồng bộ graceWindow:
 			if record == nil || !iamCache.MatchRuntime(record, accessKeyCookie, accessSecret, jti, graceWindow) {
 				clearUserAccessCookies(c, cookieDomain, cookiePath)
@@ -233,6 +200,14 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 			if strings.TrimSpace(record.TrackedDeviceID) != "" {
 				c.Set(constant.ContextKeyTrackedDeviceID, strings.TrimSpace(record.TrackedDeviceID))
 			}
+			// Tiêm access_key + access_secret vào cả Gin context và standard Go context
+			// để service layer (logout, revoke) đọc qua ctx.Value() mà không cần truyền param.
+			c.Set(constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
+			c.Set(constant.ContextKeyRuntimeAccessSecret, accessSecret)
+			goCtx := c.Request.Context()
+			goCtx = context.WithValue(goCtx, constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
+			goCtx = context.WithValue(goCtx, constant.ContextKeyRuntimeAccessSecret, accessSecret)
+			c.Request = c.Request.WithContext(goCtx)
 		}
 
 		// --------------------------------------------------------------------
@@ -261,6 +236,10 @@ func GetTrackedDeviceID(c *gin.Context) string {
 
 func GetRuntimeAccessKey(c *gin.Context) string {
 	return getContextString(c, constant.ContextKeyRuntimeAccessKey)
+}
+
+func GetRuntimeAccessSecret(c *gin.Context) string {
+	return getContextString(c, constant.ContextKeyRuntimeAccessSecret)
 }
 
 func getContextString(c *gin.Context, key string) string {
@@ -301,52 +280,4 @@ func clearUserAccessCookies(c *gin.Context, cookieDomain, cookiePath string) {
 		MaxAge:   -1,
 		Expires:  exp,
 	})
-}
-
-// IsBlacklisted kiểm tra nhanh xem JTI (JWT ID) có đang bị vô hiệu hóa trên Redis hay không.
-func IsBlacklisted(ctx context.Context, rdb *redis.Client, jti string) (bool, error) {
-	jti = strings.TrimSpace(jti)
-	if jti == "" || rdb == nil {
-		return false, nil
-	}
-
-	// 1. Kiểm tra nhanh tại Local Cache:
-	now := time.Now().UTC()
-	revokedJTICache.mu.RLock()
-	cachedUntil, cachedRevoked := revokedJTICache.expiresAt[jti]
-	revokedJTICache.mu.RUnlock()
-	if cachedRevoked && now.Before(cachedUntil) {
-		return true, nil
-	}
-	
-	// Xóa bỏ cache đã quá hạn (eviction):
-	if cachedRevoked {
-		revokedJTICache.mu.Lock()
-		if revokedJTICache.expiresAt[jti].Equal(cachedUntil) {
-			delete(revokedJTICache.expiresAt, jti)
-		}
-		revokedJTICache.mu.Unlock()
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	// 2. Truy vấn trực tiếp từ Redis Blacklist:
-	checkCtx, cancel := context.WithTimeout(ctx, blacklistCheckTimeout)
-	defer cancel()
-
-	key := blacklistKeyPrefix + jti
-	exists, err := rdb.Exists(checkCtx, key).Result()
-	if err != nil {
-		return false, err
-	}
-	if exists <= 0 {
-		return false, nil
-	}
-
-	// 3. Ghi nhận JTI đã bị thu hồi vào local cache để tối ưu hóa truy cập tiếp theo:
-	revokedJTICache.mu.Lock()
-	revokedJTICache.expiresAt[jti] = now.Add(revokedJTICacheTTL)
-	revokedJTICache.mu.Unlock()
-	return true, nil
 }

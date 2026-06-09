@@ -159,10 +159,10 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	lock, err := s.repo.AcquireRotationLock(ctx)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already held") {
-			iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateLockBusy)
+			iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.AdminRotateLockBusy, "n/a")
 			return apperr.Wrap(iamTaxonomy.ErrAdminRotationLockBusy, err)
 		}
-		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.AdminRotateFail, "n/a")
 		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err)
 	}
 	defer lock.Release(ctx)
@@ -170,7 +170,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	// Bước 2: Sinh ngẫu nhiên API key mới (plaintext) + tính toán hash SHA256 và thời gian hết hạn
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
-		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.AdminRotateFail, "n/a")
 		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err)
 	}
 	expiresAt := time.Now().UTC().Add(s.cfg.Security.AdminAPITokenTTL)
@@ -179,14 +179,14 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	// Nếu bước này lỗi, bắt buộc hủy bỏ (abort) để tránh mồ côi khóa trong database.
 	msg := fmt.Sprintf("<b>ADMIN ROTATION SUCCESS</b>\nAPI Key: <code>%s</code>\nExpires: <code>%s</code>", plainKey, expiresAt.Format(time.RFC3339))
 	if sendErr := s.telegram.SendMessage(msg); sendErr != nil {
-		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateDeliveryFail)
+		iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.AdminRotateDeliveryFail, "n/a")
 		return apperr.Wrap(iamTaxonomy.ErrAdminRotationDelivery, sendErr)
 	}
 
 	// Bước 4: Tạo thực thể AdminAPIKey và lưu vào cơ sở dữ liệu ở trạng thái active kế tiếp
 	newID, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
-		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.AdminRotateFail, "n/a")
 		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, uuidErr)
 	}
 
@@ -200,7 +200,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	}
 
 	if err := s.repo.PrepareNextAdminAPIKey(ctx, apiKeyEntity); err != nil {
-		iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.AdminRotateFail)
+		iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.AdminRotateFail, "n/a")
 		return apperr.Wrap(iamTaxonomy.ErrAdminRotationFailed, err)
 	}
 
@@ -208,7 +208,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	_ = s.rotationTrigger.ClearRotationRequired(ctx)
 
 	// Ghi nhận thành công thực tế của việc xoay vòng khóa
-	iamMetrics.ObserveAdminKeyRotationOutcome(iamTaxonomy.OutcomeSuccess)
+	iamMetrics.ObserveServiceCall("admin_key_rotation", iamTaxonomy.OutcomeSuccess, "n/a")
 	return nil
 }
 
@@ -374,7 +374,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// Trạng thái này sẽ được cập nhật tương ứng nếu phát hiện lỗi ở các bước sau.
 	loginOutcome := iamTaxonomy.OutcomeSuccess
 	// Sử dụng defer để tự động ghi nhận chỉ số telemetry (metrics) kết quả đăng nhập của Admin khi hàm kết thúc.
-	defer func() { iamMetrics.ObserveAdminLoginOutcome(loginOutcome) }()
+	defer func() { iamMetrics.ObserveServiceCall("admin_login", loginOutcome, "n/a") }()
 
 	// --- BƯỚC 2: CHUẨN HÓA VÀ KIỂM TRA KHÓA CÔNG KHAI THIẾT BỊ (DEVICE PUBLIC KEY NORMALIZATION) ---
 	// Chuẩn hóa chuỗi khóa công khai Ed25519 nhận được từ Client sang định dạng chuẩn thống nhất.
@@ -690,8 +690,8 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		if refreshOutcome != iamTaxonomy.OutcomeSuccess {
 			observeErr = errors.New(refreshOutcome)
 		}
-		iamMetrics.ObserveAdminRefreshOutcome(refreshOutcome)
-		iamMetrics.ObserveAdminRefreshLatency(time.Since(startedAt), observeErr)
+		iamMetrics.ObserveServiceCall("admin_refresh", refreshOutcome, "n/a")
+		iamMetrics.ObserveDownstream("redis", "admin_refresh", time.Since(startedAt), observeErr)
 	}()
 
 	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY TỪ GO CONTEXT ---

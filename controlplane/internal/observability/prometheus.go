@@ -423,23 +423,14 @@ func (p *Prometheus) ObserveRequest(method, route, status string, duration time.
 	p.requestDuration.WithLabelValues(method, route, status).Observe(duration.Seconds())
 }
 
-// ObserveDB là wrapper thuận tiện để đo lường và theo dõi latency các truy vấn PostgreSQL Database.
-func (p *Prometheus) ObserveDB(operation string, duration time.Duration, err error) {
-	p.observeDependency("db", operation, duration, err)
-}
-
-// ObserveRedis là wrapper thuận tiện để đo lường và theo dõi latency các lệnh thao tác Redis.
-func (p *Prometheus) ObserveRedis(operation string, duration time.Duration, err error) {
-	p.observeDependency("redis", operation, duration, err)
-}
-
-// observeDependency ghi nhận độ trễ và phân loại kết quả (ok / error) của các phụ thuộc dịch vụ bên ngoài.
+// ObserveDependency ghi nhận độ trễ và phân loại kết quả (ok / error) của các phụ thuộc dịch vụ bên ngoài.
+// Là API chung cho mọi module gọi xuống: db, redis, và bất kỳ kind nào module tự định nghĩa.
 //
 // 🎯 LOGIC THỰC THI:
-//   - Tự động chuẩn hóa tên phụ thuộc và thao tác.
-//   - Phân loại trạng thái (`ok` hoặc `error`) dựa trên việc kiểm tra lỗi `err != nil`.
-//   - Ghi nhận latency dạng giây vào Histogram.
-func (p *Prometheus) observeDependency(kind, operation string, duration time.Duration, err error) {
+//   - Tự động chuẩn hóa tên kind và operation (trim, fallback về "unknown").
+//   - Phân loại status (`ok` hoặc `error`) dựa trên err != nil.
+//   - Ghi nhận latency dạng giây vào Histogram dependencyDur.
+func (p *Prometheus) ObserveDependency(kind, operation string, duration time.Duration, err error) {
 	if p == nil || p.dependencyDur == nil {
 		return
 	}

@@ -141,7 +141,7 @@ func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID
 	}
 	if s.streamPublisher == nil {
 		_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ObserveAuditPublish(event, "fallback_db")
+		iamMetrics.ObserveServiceCall("audit_publish", "fallback_db", "n/a")
 		return
 	}
 	now := time.Now().UTC()
@@ -167,8 +167,8 @@ func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID
 	}
 	if _, _, err := s.streamPublisher.Publish(ctx, msg, 30*time.Second); err != nil {
 		_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ObserveAuditPublish(event, "fallback_db")
+		iamMetrics.ObserveServiceCall("audit_publish", "fallback_db", "n/a")
 		return
 	}
-	iamMetrics.ObserveAuditPublish(event, "published")
+	iamMetrics.ObserveServiceCall("audit_publish", "published", "n/a")
 }

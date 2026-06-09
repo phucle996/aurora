@@ -11,6 +11,8 @@ const (
 	RegisterOutcomeExistCheckError = "exist_check_error"
 	RegisterOutcomeAlreadyExists   = "already_exists"
 	RegisterOutcomeHashPasswordErr = "hash_password_error"
+	// RegisterOutcomeArgon2HashFailed đánh dấu lỗi băm mật khẩu Argon2id ngốn nhiều CPU.
+	RegisterOutcomeArgon2HashFailed = "argon2_hash_failed"
 	RegisterOutcomeIDGenerateErr   = "id_generate_error"
 	RegisterOutcomeInsertError     = "insert_error"
 )
@@ -79,4 +81,9 @@ const (
 
 const (
 	AdminFinalizeOutcomeSystemError = "finalize_dependency_error"
+)
+
+const (
+	RbacOutcomeDependencyError = "rbac_dependency_error"
+	RbacOutcomeCacheError      = "rbac_cache_error"
 )

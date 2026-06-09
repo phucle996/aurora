@@ -185,7 +185,7 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceRepo, nil, nil, presence, makeIntegrationRegistry(), nil, nil)
+	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceRepo, iamCache.NewUserDeviceRuntimeCache(rdb), nil, presence, makeIntegrationRegistry(), nil, nil)
 	result, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
@@ -214,7 +214,7 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 
 	presence := iamCache.NewRegisterPresenceCache(rdb)
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, nil, nil, presence, makeIntegrationRegistry(), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, iamCache.NewUserDeviceRuntimeCache(rdb), nil, presence, makeIntegrationRegistry(), nil, nil)
 	username, email := testutil.UniqueIdentity("login_pending")
 	if err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)

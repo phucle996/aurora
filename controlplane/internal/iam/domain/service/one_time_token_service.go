@@ -3,9 +3,11 @@ package iamSvcInterface
 import (
 	"context"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type OneTimeTokenService interface {
-	Issue(ctx context.Context, purpose string, userID string) (plainToken string, expiresAt time.Time, err error)
-	Consume(ctx context.Context, purpose string, userID string, plainToken string) (consumed bool, err error)
+	Issue(ctx context.Context, purpose string, userID uuid.UUID) (plainToken string, expiresAt time.Time, err error)
+	Consume(ctx context.Context, purpose string, userID uuid.UUID, plainToken string) (consumed bool, err error)
 }

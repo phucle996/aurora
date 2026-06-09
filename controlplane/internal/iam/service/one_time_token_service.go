@@ -9,9 +9,11 @@ import (
 	"controlplane/internal/config"
 	iamCache "controlplane/internal/iam/cache"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+
+	"github.com/google/uuid"
 )
 
 type OneTimeTokenService struct {
@@ -23,10 +25,9 @@ func NewOneTimeTokenService(cfg *config.Config, cacheStore iamCache.OneTimeToken
 	return &OneTimeTokenService{cfg: cfg, cache: cacheStore}
 }
 
-func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID string) (string, time.Time, error) {
+func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID uuid.UUID) (string, time.Time, error) {
 	purpose = strings.TrimSpace(purpose)
-	userID = strings.TrimSpace(userID)
-	if purpose == "" || userID == "" {
+	if purpose == "" || userID == uuid.Nil {
 		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser, nil, "invalid_purpose_or_user")
 	}
 	if s.cfg == nil || s.cfg.Security.OneTimeTokenTTL <= 0 {
@@ -49,11 +50,10 @@ func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID 
 	return rawToken, expiresAt, nil
 }
 
-func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userID string, plainToken string) (bool, error) {
+func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userID uuid.UUID, plainToken string) (bool, error) {
 	purpose = strings.TrimSpace(purpose)
-	userID = strings.TrimSpace(userID)
 	plainToken = strings.TrimSpace(plainToken)
-	if purpose == "" || userID == "" {
+	if purpose == "" || userID == uuid.Nil {
 		return false, apperr.Wrap(iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser, nil, "invalid_purpose_or_user")
 	}
 	if plainToken == "" {

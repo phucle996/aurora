@@ -70,24 +70,25 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamCache "controlplane/internal/iam/cache"
+	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	coreSvc "controlplane/internal/iam/domain/service"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
 	"controlplane/internal/security/ratelimit"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 type IAMModule struct {
-	cfg            *config.Config
-	db             *pgxpool.Pool
-	rds            *goredis.Client
-	rateLimiter    *ratelimit.Bucket
-	L1Registry     *cacheengine.CacheRegistry
+	cfg         *config.Config
+	db          *pgxpool.Pool
+	rds         *goredis.Client
+	rateLimiter *ratelimit.Bucket
+	L1Registry  *cacheengine.CacheRegistry
+	L1Fanout    *cacheengine.RedisFanout
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler         *iamHandler.AuthHandler
@@ -98,9 +99,9 @@ type IAMModule struct {
 	RbacHandler         *iamHandler.RbacHandler
 
 	// Core Services & Sync Engines
+	RbacRepository     iamRepoInterface.RbacRepository
 	adminAPIKeyService coreSvc.AdminAPIKeyService
 	userDeviceRuntime  iamCache.UserDeviceRuntimeCache
-	rbacSync           *iamSvcImpl.RbacCacheSync
 	rotationCancel     context.CancelFunc
 	finalizeCancel     context.CancelFunc
 	deviceCapCancel    context.CancelFunc
@@ -115,6 +116,7 @@ func NewModule(
 	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	l1Registry *cacheengine.CacheRegistry,
+	l1Fanout *cacheengine.RedisFanout,
 ) (*IAMModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -307,29 +309,9 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct RBAC repository")
 	}
 
-	rbacRegistry := iamSvcImpl.NewRoleRegistry(15 * time.Minute)
-	if rbacRegistry == nil {
-		return nil, errors.New("iam module: failed to construct local memory RBAC registry")
-	}
-
-	rbacBus := iamCache.NewRedisRbacCacheBus(rds)
-	if rbacBus == nil {
-		return nil, errors.New("iam module: failed to initialize Redis RBAC cache sync bus")
-	}
-
-	rbacSvc := iamSvcImpl.NewRbacService(rbacRepo, rbacRegistry, rbacBus)
+	rbacSvc := iamSvcImpl.NewRbacService(rbacRepo, l1Registry, l1Fanout)
 	if rbacSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC engine service")
-	}
-
-	rbacSyncStore := iamCache.NewRedisRbacSyncStore(rds)
-	if rbacSyncStore == nil {
-		return nil, errors.New("iam module: failed to initialize RBAC cluster sync store")
-	}
-
-	rbacSync := iamSvcImpl.NewRbacCacheSync(rbacSyncStore, rbacRegistry)
-	if rbacSync == nil {
-		return nil, errors.New("iam module: failed to construct RBAC cluster cache synchronizer")
 	}
 
 	rbacHandler := iamHandler.NewRbacHandler(rbacSvc)
@@ -348,6 +330,7 @@ func NewModule(
 		rds:                 rds,
 		rateLimiter:         rateLimiter,
 		L1Registry:          l1Registry,
+		L1Fanout:            l1Fanout,
 		AuthHandler:         authHandler,
 		authSvcImpl:         authSvcImpl,
 		LogoutHandler:       logoutHandler,
@@ -355,8 +338,8 @@ func NewModule(
 		DeviceHandler:       deviceHandler,
 		AdminAuthHandler:    adminAuthHandler,
 		RbacHandler:         rbacHandler,
+		RbacRepository:      rbacRepo,
 		adminAPIKeyService:  adminSvc,
 		userDeviceRuntime:   userDeviceRuntime,
-		rbacSync:            rbacSync,
 	}, nil
 }

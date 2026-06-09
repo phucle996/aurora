@@ -76,9 +76,6 @@ func (m *IAMModule) Stop() {
 		m.deviceCapCancel()
 		m.deviceCapCancel = nil
 	}
-	if m.rbacSync != nil {
-		m.rbacSync.Stop()
-	}
 }
 
 func (m *IAMModule) runAdminSessionFinalizeScheduler(ctx context.Context) {
@@ -182,14 +179,14 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 			}
 			processed, err := m.authSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
-				iamMetrics.ObserveDeviceCapReconcile("error")
+				iamMetrics.ObserveServiceCall("device_cap_reconcile", "error", "n/a")
 				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})
 				continue
 			}
 			if processed > 0 {
 				logger.SysInfoFields(op, "reconcile fixed drift", logger.Fields{"processed_users": processed})
 			}
-			iamMetrics.ObserveDeviceCapReconcile("success")
+			iamMetrics.ObserveServiceCall("device_cap_reconcile", "success", "n/a")
 		}
 	}
 }
