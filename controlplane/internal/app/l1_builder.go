@@ -12,7 +12,7 @@ import (
 
 // InitL1CacheRegistry khởi tạo L1 Cache Registry trống ban đầu
 func InitL1CacheRegistry() *cacheengine.CacheRegistry {
-	l1Cache := cacheengine.NewShardedCache()
+	l1Cache := cacheengine.NewL1Cache()
 	return cacheengine.NewCacheRegistry(l1Cache)
 }
 
@@ -26,7 +26,7 @@ func RegisterL1Loaders(
 	// 2. Kích hoạt subscription loop chạy nền để xử lý tin nhắn đồng bộ từ các instance khác
 	go func() {
 		ctx := context.Background()
-		if err := fanoutBus.StartSubscribe(ctx); err != nil {
+		if err := registry.StartSubscribe(ctx); err != nil {
 			logger.SysWarn("cacheengine", "subscription loop terminated: "+err.Error())
 		}
 	}()

@@ -132,10 +132,11 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, errors.New("app: init L1 cache registry: registry is nil")
 	}
 	// Build RedisFanout bus early
-	l1Fanout := cacheengine.NewRedisFanout(rdsCore, "cacheengine:l1:fanout", l1Registry)
+	l1Fanout := cacheengine.NewRedisFanout(rdsCore, "cacheengine:l1:fanout")
 	if l1Fanout == nil {
 		return nil, errors.New("app: init RedisFanout bus: fanout is nil")
 	}
+	l1Registry.Fanout = l1Fanout
 
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
 	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter, l1Registry, l1Fanout)
@@ -310,8 +311,8 @@ func (m *Modules) Stop() {
 	if m.PolicyEngine != nil {
 		m.PolicyEngine.Stop()
 	}
-	if m.L1Registry != nil {
-		m.L1Registry.Close()
+	if m.L1Registry != nil && m.L1Registry.L1 != nil {
+		m.L1Registry.L1.Close()
 	}
 }
 

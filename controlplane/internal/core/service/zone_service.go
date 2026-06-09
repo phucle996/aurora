@@ -103,12 +103,12 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	}
 
 	// invalidate cache để lazy load khi có request tiếp theo
-	s.l1Registry.InvalidateLocal(ctx, "zone_catalog:")
+	s.l1Registry.L1.Delete("zone_catalog:")
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
 	// nếu đã có code từ trước thì phải invalid zone_by_code trước rồi tạo lại để clean cache
 	// tránh tạo magic record trong cache
-	s.l1Registry.InvalidateLocal(ctx, "zone_by_code:"+zone.Code)
+	s.l1Registry.L1.Delete("zone_by_code:" + zone.Code)
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
 	// Publish cả hai event: một cho catalog, một cho zone_by_code
@@ -157,7 +157,7 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		return nil, err
 	}
 
-	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_catalog:"); ok {
+	if ok := s.l1Registry.L1.Delete("zone_catalog:"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
@@ -182,12 +182,12 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 		return err
 	}
 
-	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_catalog:"); ok {
+	if ok := s.l1Registry.L1.Delete("zone_catalog:"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
 	}
-	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_by_code:"+code); ok {
+	if ok := s.l1Registry.L1.Delete("zone_by_code:" + code); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
@@ -229,12 +229,12 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 		return nil, err
 	}
 
-	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_catalog:"); ok {
+	if ok := s.l1Registry.L1.Delete("zone_catalog:"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
 	}
-	if ok := s.l1Registry.InvalidateLocal(ctx, "zone_by_code:"+zoneCode); ok {
+	if ok := s.l1Registry.L1.Delete("zone_by_code:" + zoneCode); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)

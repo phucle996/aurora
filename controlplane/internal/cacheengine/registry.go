@@ -2,9 +2,63 @@ package cacheengine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
+
+	"controlplane/internal/cacheengine/fanout_cache"
+	"controlplane/internal/cacheengine/l1_cache"
+	"controlplane/internal/cacheengine/l2_cache"
+	"controlplane/internal/cacheengine/l2_lua_executor"
+	"github.com/redis/go-redis/v9"
 )
+
+// ============================================================================
+// TYPE ALIASES (EXPOSE SUB-PACKAGE INTERFACES TO ROOT API SURFACE)
+// ============================================================================
+type Cache = l1_cache.Cache
+type L1Envelope = l1_cache.L1Envelope
+type RedisFanout = fanout_cache.RedisFanout
+type L2Cache = l2_cache.L2Cache
+type L2LuaExecutor = l2_lua_executor.L2LuaExecutor
+type L2Envelope = l2_cache.L2Envelope
+type Option = l1_cache.Option
+
+// ============================================================================
+// CONSTRUCTORS (MODULE PATTERN FOR ISOLATED CREATION)
+// ============================================================================
+
+// WithJitter thiết lập tỷ lệ skew ngẫu nhiên cho TTL
+func WithJitter(factor float64) Option {
+	return l1_cache.WithJitter(factor)
+}
+
+// NewL1Cache khởi tạo một in-memory L1 cache phân mảnh định dạng interface
+func NewL1Cache(opts ...Option) Cache {
+	return l1_cache.NewShardedCache(opts...)
+}
+
+// NewShardedCache khởi tạo một in-memory L1 cache phân mảnh định dạng interface (Alias tương thích ngược)
+func NewShardedCache(opts ...Option) Cache {
+	return NewL1Cache(opts...)
+}
+
+// NewL2Cache khởi tạo một Redis-based L2 cache định dạng interface
+func NewL2Cache(rdb *redis.Client) L2Cache {
+	return l2_cache.NewL2Cache(rdb)
+}
+
+// NewL2LuaExecutor khởi tạo một Lua script runner nguyên tử định dạng interface
+func NewL2LuaExecutor(rdb *redis.Client) L2LuaExecutor {
+	return l2_lua_executor.NewL2LuaExecutor(rdb)
+}
+
+// NewRedisFanout khởi tạo một Redis Pub/Sub bus đồng bộ định dạng struct cụ thể
+func NewRedisFanout(rdb *redis.Client, channel string) *RedisFanout {
+	return fanout_cache.NewRedisFanout(rdb, channel)
+}
 
 // LoaderFunc định nghĩa hàm nạp dữ liệu gốc tĩnh từ Database/Services
 type LoaderFunc func(ctx context.Context, param string) (interface{}, error)
@@ -18,22 +72,24 @@ type RegisteredLoader struct {
 	Factory   func() interface{}
 }
 
-// CacheRegistry quản lý tập trung các loader tĩnh và làm việc trực tiếp với L1 Cache
+// CacheRegistry quản lý tập trung các loader tĩnh và điều phối L1, L2, Fanout, Executor
 type CacheRegistry struct {
-	cache   Cache
+	L1      Cache
+	L2      L2Cache
+	Fanout  *RedisFanout
+	Exec    L2LuaExecutor
 	loaders map[string]*RegisteredLoader
 }
 
-// NewCacheRegistry khởi tạo một CacheRegistry mới
-func NewCacheRegistry(cache Cache) *CacheRegistry {
+// NewCacheRegistry khởi tạo một CacheRegistry mới với L1 Cache
+func NewCacheRegistry(l1 Cache) *CacheRegistry {
 	return &CacheRegistry{
-		cache:   cache,
+		L1:      l1,
 		loaders: make(map[string]*RegisteredLoader),
 	}
 }
 
 // Register sử dụng Go Generics để tự động lấy kiểu dữ liệu T của loadFn và sinh hàm Factory tương ứng.
-// Giúp lập trình viên chỉ cần truyền key, ttl, và loadFn mà không cần truyền hàm sinh struct trống thủ công.
 func Register[T any](
 	r *CacheRegistry,
 	namespace string,
@@ -53,58 +109,83 @@ func Register[T any](
 	}
 }
 
-// InvalidateLocal thực hiện xóa cache trực tiếp trên RAM L1 của instance hiện tại.
-// Hàm này hoàn toàn tách biệt với Redis Fanout (không tự kích hoạt publish).
-func (r *CacheRegistry) InvalidateLocal(ctx context.Context, key string) bool {
-	return r.cache.Delete(key)
-}
-
-// GetLocalRaw lấy dữ liệu envelope thô trực tiếp từ RAM, không chạy loader
-func (r *CacheRegistry) GetLocalRaw(key string) (interface{}, bool) {
-	return r.cache.Get(key)
-}
-
-// SetLocalRaw ghi đè trực tiếp dữ liệu thô vào RAM L1
-func (r *CacheRegistry) SetLocalRaw(key string, val interface{}, ttl time.Duration) {
-	r.cache.Set(key, val, ttl)
-}
-
 // GetLoader truy xuất thông tin loader đăng ký theo namespace
 func (r *CacheRegistry) GetLoader(namespace string) *RegisteredLoader {
 	return r.loaders[namespace]
 }
 
-// GetCache trả về instance Cache L1 bên dưới (phục vụ test hoặc liên kết ngoài)
-func (r *CacheRegistry) GetCache() Cache {
-	return r.cache
+// StartSubscribe kết nối loop đồng bộ với Fanout sub-package, tự động tiêm các callback xử lý
+func (r *CacheRegistry) StartSubscribe(ctx context.Context) error {
+	if r.Fanout == nil {
+		return fmt.Errorf("cacheengine: fanout bus is not configured")
+	}
+	r.Fanout.SetCallbacks(r.handleFanoutMessage, r.L1.Flush)
+	return r.Fanout.StartSubscribe(ctx)
 }
 
-// Flush xóa sạch toàn bộ L1 cache bên dưới
-func (r *CacheRegistry) Flush() {
-	r.cache.Flush()
-}
+// handleFanoutMessage xử lý tin nhắn đồng bộ từ Pub/Sub: dọn dẹp hoặc cập nhật L1 RAM an toàn
+func (r *CacheRegistry) handleFanoutMessage(key string, payload []byte, version int64) {
+	// 1. Trường hợp xóa cache (Delete Invalidation)
+	if len(payload) == 0 {
+		r.L1.Delete(key)
+		return
+	}
 
-// Close dừng dọn dẹp các tài nguyên chạy nền của Cache L1
-func (r *CacheRegistry) Close() {
-	r.cache.Close()
+	// 2. Trường hợp cập nhật cache (Update)
+	// SRE Warning: Tránh lỗi OOM bằng cách kiểm tra key có đang tồn tại trong RAM L1 cục bộ không.
+	val, exists := r.L1.Get(key)
+	if !exists {
+		return
+	}
+
+	// Kiểm tra phiên bản đơn điệu để tránh việc tin nhắn đến trễ đè lên dữ liệu mới hơn (stale write)
+	localEnv, ok := val.(*L1Envelope)
+	if !ok || version <= localEnv.Version {
+		return
+	}
+
+	// Tách chuỗi key để xác định namespace (ví dụ: "zone_catalog:dynamic" -> "zone_catalog")
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) == 0 {
+		return
+	}
+	namespace := parts[0]
+
+	loader := r.GetLoader(namespace)
+	if loader == nil || loader.Factory == nil {
+		return
+	}
+
+	// Tạo instance trống thông qua Factory tự động của registry
+	ptrTarget := loader.Factory()
+	if err := json.Unmarshal(payload, ptrTarget); err != nil {
+		return
+	}
+
+	// Giải tham chiếu con trỏ thô để lấy struct/slice nguyên bản
+	rawVal := reflect.ValueOf(ptrTarget).Elem().Interface()
+
+	// Cập nhật trực tiếp vào L1 Cache cục bộ
+	r.L1.Set(key, &L1Envelope{
+		Key:     key,
+		Version: version,
+		Value:   rawVal,
+	}, loader.TTL)
 }
 
 // GetOrLoad đọc dữ liệu cache từ namespace tương ứng thông qua tham số đầu vào.
-// Phương thức này tự động bọc (wrap) dữ liệu thô vào CacheEnvelope và sinh monotonic version dựa trên time.Now().UnixNano().
-// Sau đó, nó tự giải nén để trả về trực tiếp dữ liệu gốc (Value) cho caller, che giấu Envelope nội bộ.
 func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param string) (interface{}, error) {
 	loader, ok := r.loaders[namespace]
 	if !ok {
 		return nil, fmt.Errorf("cacheengine: namespace '%s' is not registered", namespace)
 	}
 
-	// Tạo cache key độc nhất kết hợp giữa namespace và tham số
 	cacheKey := namespace
 	if param != "" {
 		cacheKey = fmt.Sprintf("%s:%s", namespace, param)
 	}
 
-	envelopeVal, err := r.cache.GetOrLoad(cacheKey, loader.TTL, func() (interface{}, error) {
+	envelopeVal, err := r.L1.GetOrLoad(cacheKey, loader.TTL, func() (interface{}, error) {
 		// Gọi loader của caller để nạp dữ liệu gốc từ DB/Service
 		raw, err := loader.Load(ctx, param)
 		if err != nil {
@@ -114,8 +195,8 @@ func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param s
 		// Tự động sinh monotonic version dựa trên thời gian nạp thực tế
 		version := time.Now().UnixNano()
 
-		// Đóng gói thô trực tiếp vào CacheEnvelope (Zero-Serialization)
-		return &CacheEnvelope{
+		// Đóng gói thô trực tiếp vào L1Envelope (Zero-Serialization)
+		return &L1Envelope{
 			Key:     cacheKey,
 			Version: version,
 			Value:   raw,
@@ -125,8 +206,8 @@ func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param s
 		return nil, err
 	}
 
-	// Ép kiểu ngược lại từ CacheEnvelope để trả về dữ liệu Value gốc cho caller
-	envelope, ok := envelopeVal.(*CacheEnvelope)
+	// Ép kiểu ngược lại từ L1Envelope để trả về dữ liệu Value gốc cho caller
+	envelope, ok := envelopeVal.(*L1Envelope)
 	if !ok {
 		return nil, fmt.Errorf("cacheengine: internal error, invalid cache item type in registry")
 	}

@@ -2,40 +2,88 @@
 
 Status: Draft v1  
 Owner: Platform/Controlplane team  
-Scope: Subsystem Metrics Topology, Organization Patterns, and Observability Boundaries  
+Scope: Subsystem Metrics Topology, Naming Patterns, and Scraper Exposure Boundaries  
 
 ---
 
 ## Overview
 
-Tài liệu này đặc tả **Mẫu Tổ Chức Cây Đo Lường** (Metrics Graph Pattern) áp dụng thống nhất cho toàn bộ hệ thống Controlplane. Đây là hợp đồng thiết kế để định hướng cách tổ chức, phân cấp, và phân định trách nhiệm thu thập chỉ số (metrics) giữa các lớp kiến trúc.
+Tài liệu này đặc tả **Mẫu Tổ Chức Cây Đo Lường** (Metrics Graph Pattern) áp dụng thống nhất cho toàn bộ hệ thống Controlplane. Đây là hợp đồng thiết kế để định hướng cách đặt tên, tổ chức phân cấp, đăng ký, và xuất bản chỉ số (metrics) từ mã nguồn lên bộ cào dữ liệu Prometheus (Scraper).
 
 ---
 
-## 1. Metrics Hierarchy & Ownership Pattern (Phân Cấp Sở Hữu)
+## 1. Naming Pattern & Metrics Graph (Đặt Tên & Sơ Đồ Thu Thập)
 
-Hệ thống Controlplane tổ chức metrics theo mô hình phân cấp dạng cây (Tree Topology) để tránh xung đột tên và phân định rõ ràng trách nhiệm đo lường:
+### 1.1 Metrics Naming Pattern (Quy tắc đặt tên)
+
+Tất cả các metric được đăng ký trong hệ thống Controlplane phải tuân thủ nghiêm ngặt định dạng chuẩn sau:
+
+$$\text{format: } \langle\text{namespace}\rangle\_\langle\text{subsystem}\rangle\_\langle\text{metric\_name}\rangle\_[\text{unit}]$$
+
+Trong đó:
+
+- **`namespace`**: Định danh không gian tên toàn cầu của sản phẩm (e.g., `aurora_controlplane`). Do trung tâm observability quản lý và truyền xuống qua callback.
+- **`subsystem`**: Tên phân hệ/module cụ thể sinh ra metrics (e.g., `http`, `iam`, `core`, `mail`).
+- **`metric_name`**: Mô tả nghiệp vụ cốt lõi của metric dưới dạng `snake_case` (e.g., `service_calls`, `downstream_duration`).
+- **`unit` (Đơn vị tính):** Bắt buộc phải là:
+  - `_total`: Cho Counters (ví dụ: `http_requests_total`, `iam_service_calls_total`).
+  - `_seconds`: Cho Histograms hoặc Gauges đo lường thời gian (ví dụ: `http_request_duration_seconds`, `iam_downstream_duration_seconds`).
+
+---
+
+### 1.2 Metrics Collection & Scraper Flow (Sơ đồ luồng dữ liệu)
+
+Sơ đồ dưới đây minh họa toàn bộ vòng đời của metrics: từ thời điểm được đo lường tại các tầng nghiệp vụ, gom tụ tại Memory Registry, đến khi được Prometheus Scraper cào qua `/metrics` HTTP endpoint:
 
 ```mermaid
-graph TD
-    NS["[global_namespace]\n(Tên dịch vụ - e.g., aurora_controlplane)"]
+flowchart TD
+    %% Colors & Styles Definition
+    classDef nsStyle fill:#1F1F35,stroke:#7C4DFF,stroke-width:2px,color:#FFFFFF,font-weight:bold;
+    classDef metricStyle fill:#161625,stroke:#4CAF50,stroke-width:1px,color:#B2FF59;
+    classDef globalStyle fill:#161625,stroke:#FF9100,stroke-width:1px,color:#FFD180;
+    classDef engineStyle fill:#2E1B4E,stroke:#BA68C8,stroke-width:2px,color:#E1BEE7,font-weight:bold;
+    classDef extStyle fill:#003366,stroke:#33b5e5,stroke-width:2px,color:#E0F7FA,font-style:italic;
 
-    NS --> HTTP["http\n(Subsystem chung - Middleware Layer)"]
-    NS --> MOD["[module_name]\n(Subsystem nghiệp vụ - e.g., iam, core, tenant)"]
-    NS --> DEP["[dependency]\n(Subsystem hạ tầng - e.g., db, redis)"]
+    subgraph Src ["🛠️ Controlplane Process (In-Memory)"]
+        
+        %% Instrumentations
+        subgraph HttpLayer ["🔌 HTTP Layer (Subsystem: http)"]
+            H1["http_requests_total"]:::metricStyle
+            H2["http_request_duration_seconds"]:::metricStyle
+        end
 
-    HTTP --> H1["http_requests_total\n(Đo lưu lượng HTTP đầu vào)"]
-    HTTP --> H2["http_request_duration_seconds\n(Đo latency HTTP handler)"]
+        subgraph ServiceLayer ["💼 Business Service Layer (Subsystem: [module_name])"]
+            S1["[module_name]_service_calls_total"]:::metricStyle
+            S2["[module_name]_downstream_duration_seconds"]:::metricStyle
+        end
 
-    MOD --> M1["[module_name]_service_calls_total\n(Generic Counter: đếm số lần gọi service nghiệp vụ)"]
-    MOD --> M2["[module_name]_downstream_duration_seconds\n(Generic Histogram: đo latency các lệnh gọi downstream)"]
+        subgraph InfraLayer ["🗄️ Infrastructure Interceptors (Subsystem: dependency)"]
+            D1["dependency_duration_seconds"]:::globalStyle
+        end
 
-    DEP --> D1["dependency_duration_seconds\n(Global Histogram: đo latency DB/Redis thô toàn hệ thống)"]
+        %% Central Registry
+        Registry["📦 prometheus.Registry <br/> (Central Collector Room)"]:::nsStyle
+
+        %% HTTP Route
+        Endpoint["🌐 HTTP Route: GET /metrics <br/> (middleware.PrometheusMetricsEndpoint)"]:::engineStyle
+
+        %% In-Memory flow
+        H1 & H2 -->|"Register & Track"| Registry
+        S1 & S2 -->|"Register & Track"| Registry
+        D1 -->|"Register & Track"| Registry
+        Registry -->|"Serve Scraped Buffer"| Endpoint
+    end
+
+    %% External Scraper
+    PromScraper["🔥 Prometheus Server <br/> (External Scraper Engine)"]:::extStyle
+
+    %% Scrape pull requests
+    PromScraper ==>|"HTTP GET /metrics <br/> (default 15s interval)"| Endpoint
 ```
 
-### Nguyên tắc ranh giới (Observability Boundaries)
+### 1.3 Nguyên tắc ranh giới (Observability Boundaries)
 
-1. **Lớp Giao Tiếp (HTTP Layer):** Do Middleware tự động đo lường (HTTP status, route, latency). Module nghiệp vụ **tuyệt đối không** đo lường các chỉ số HTTP tại Service layer.
+1. **Lớp Giao Tiếp (HTTP Layer):** Do HTTP Middleware tự động đo lường (HTTP status, route, latency). Module nghiệp vụ **tuyệt đối không** đo lường các chỉ số HTTP tại Service layer.
 2. **Lớp Nghiệp Vụ (Service Layer):** Mỗi module tự định nghĩa và quản lý chỉ số nghiệp vụ của mình thông qua tối đa 2 metrics generic: 1 CounterVec và 1 HistogramVec.
 3. **Lớp Hạ Tầng (Infrastructure Layer):** Các driver (DB pgx tracer, Redis hook) tự động ghi nhận latency thô qua metric dependency toàn cục (`dependency_duration_seconds`).
 

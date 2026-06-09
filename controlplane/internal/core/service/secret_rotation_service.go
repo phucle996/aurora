@@ -101,7 +101,7 @@ func (s *SecretRotationService) EnsureInitialSecrets(ctx context.Context, secret
 	}
 
 	// 5. Đồng bộ hóa Cache L1: Invalidate bản ghi local trong registry
-	s.l1Registry.InvalidateLocal(ctx, secretType)
+	s.l1Registry.L1.Delete(secretType)
 
 	// 6. Phát tín hiệu xóa cache tới tất cả các replica khác trong cụm thông qua Redis Fanout Bus
 	if _, err := s.l1Fanout.Publish(ctx, secretType, nil); err != nil {
@@ -192,7 +192,7 @@ func (s *SecretRotationService) RotateSecret(ctx context.Context, secretType str
 	}
 
 	// 7. Đồng bộ hóa xóa cache local
-	s.l1Registry.InvalidateLocal(ctx, secretType)
+	s.l1Registry.L1.Delete(secretType)
 
 	// 8. Phát tin nhắn xóa cache cho các replica khác thông qua Redis Pub/Sub
 	if _, err := s.l1Fanout.Publish(ctx, secretType, nil); err != nil {

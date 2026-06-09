@@ -122,7 +122,8 @@ func (f *fakeSecretRepo) GetOneTimeTokenSecret(ctx context.Context) (*coreEntity
 func makeTestRegistryAndFanout() (*cacheengine.CacheRegistry, *cacheengine.RedisFanout) {
 	registry := cacheengine.NewCacheRegistry(cacheengine.NewShardedCache())
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:9999"})
-	fanout := cacheengine.NewRedisFanout(rdb, "test-channel", registry)
+	fanout := cacheengine.NewRedisFanout(rdb, "test-channel")
+	registry.Fanout = fanout
 	return registry, fanout
 }
 

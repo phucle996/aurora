@@ -1,4 +1,4 @@
-package cacheengine
+package l1_cache
 
 import (
 	"hash/fnv"
@@ -8,11 +8,6 @@ import (
 
 	"golang.org/x/sync/singleflight"
 )
-
-// Zeroable định nghĩa interface cho các đối tượng nhạy cảm cần được ghi đè bằng 0 khi xoá/xoay vòng cache.
-type Zeroable interface {
-	Zero()
-}
 
 // Cache định nghĩa interface cho L1 Cache Engine nâng cấp các tính năng SRE
 type Cache interface {
@@ -44,7 +39,7 @@ type cacheShard struct {
 type shardedCache struct {
 	shards         []*cacheShard
 	mask           uint32
-	jitterFactor   float64 // Tỷ lệ jitter tối đa (ví dụ: 0.1 đại diện cho ±10% skew)
+	jitterFactor   float64       // Tỷ lệ jitter tối đa (ví dụ: 0.1 đại diện cho ±10% skew)
 	stopSweeperSig chan struct{} // Tín hiệu dừng Active Sweeper
 	wg             sync.WaitGroup
 }
@@ -116,7 +111,7 @@ func (c *shardedCache) startActiveSweeper(interval time.Duration) {
 				for k, item := range shard.items {
 					if !item.expiresAt.IsZero() && now.After(item.expiresAt) {
 						if item.val != nil {
-							if env, ok := item.val.(*CacheEnvelope); ok {
+							if env, ok := item.val.(*L1Envelope); ok {
 								if zeroable, ok := env.Value.(Zeroable); ok {
 									zeroable.Zero()
 								}
@@ -138,7 +133,7 @@ func (c *shardedCache) Flush() {
 		shard.mu.Lock()
 		for _, item := range shard.items {
 			if item != nil && item.val != nil {
-				if env, ok := item.val.(*CacheEnvelope); ok {
+				if env, ok := item.val.(*L1Envelope); ok {
 					if zeroable, ok := env.Value.(Zeroable); ok {
 						zeroable.Zero()
 					}
@@ -234,7 +229,7 @@ func (c *shardedCache) Delete(key string) bool {
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	
+
 	// Chỉ lưu vết deletion tombstone nếu đang có DB load in-flight cho key này
 	if activeCount := shard.activeLoads[key]; activeCount > 0 {
 		shard.deletions[key] = time.Now()
@@ -243,7 +238,7 @@ func (c *shardedCache) Delete(key string) bool {
 
 	if item, exists := shard.items[key]; exists {
 		if item != nil && item.val != nil {
-			if env, ok := item.val.(*CacheEnvelope); ok {
+			if env, ok := item.val.(*L1Envelope); ok {
 				if zeroable, ok := env.Value.(Zeroable); ok {
 					zeroable.Zero()
 				}

@@ -101,12 +101,12 @@ func (s *RbacService) WarmUp(ctx context.Context) error {
 		}
 		if s.l1registry != nil {
 			cacheKey := fmt.Sprintf("rbac_role:%s", strings.TrimSpace(strings.ToLower(item.Role.Code)))
-			envelope := &cacheengine.CacheEnvelope{
+			envelope := &cacheengine.L1Envelope{
 				Key:     cacheKey,
 				Version: time.Now().UnixNano(),
 				Value:   iamSvcInterface.RoleEntry{Permissions: item.Permissions},
 			}
-			s.l1registry.SetLocalRaw(cacheKey, envelope, 15*time.Minute)
+			s.l1registry.L1.Set(cacheKey, envelope, 15*time.Minute)
 		}
 	}
 	return nil

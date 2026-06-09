@@ -1,10 +1,9 @@
-package cacheengine
+package fanout_cache
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
@@ -19,7 +18,6 @@ type FanoutMessage struct {
 	Version int64 `json:"version"`
 	// Payload là dữ liệu JSON serialized của cache item.
 	// Nếu rỗng (nil hoặc length = 0), đây là lệnh DELETE/INVALIDATE.
-	// Nếu có dữ liệu, đây là lệnh UPDATE.
 	Payload []byte `json:"payload,omitempty"`
 }
 
@@ -43,26 +41,41 @@ var fanoutPublishScript = redis.NewScript(`
 
 // RedisFanout quản lý việc truyền tải sự kiện đồng bộ cache giữa các instance bằng Redis Pub/Sub
 type RedisFanout struct {
-	rdb      *redis.Client
-	channel  string
-	registry *CacheRegistry
+	rdb                 *redis.Client
+	channel             string
+	onMessageCallback   func(key string, payload []byte, version int64)
+	onReconnectCallback func()
 }
 
-// NewRedisFanout khởi tạo một RedisFanout mới liên kết với CacheRegistry tương ứng
-func NewRedisFanout(rdb *redis.Client, channel string, registry *CacheRegistry) *RedisFanout {
+// NewRedisFanout khởi tạo một RedisFanout mới.
+func NewRedisFanout(rdb *redis.Client, channel string) *RedisFanout {
 	return &RedisFanout{
-		rdb:      rdb,
-		channel:  channel,
-		registry: registry,
+		rdb:     rdb,
+		channel: channel,
 	}
+}
+
+// SetCallbacks gán các hàm xử lý tin nhắn và tái kết nối động
+func (f *RedisFanout) SetCallbacks(onMessage func(key string, payload []byte, version int64), onReconnect func()) {
+	f.onMessageCallback = onMessage
+	f.onReconnectCallback = onReconnect
 }
 
 // Publish thực thi Lua script để tự động tăng version theo key và phát sự kiện đồng bộ.
 // Trả về số phiên bản mới sinh ra và lỗi (nếu có).
 func (f *RedisFanout) Publish(ctx context.Context, key string, payload []byte) (int64, error) {
+	if f == nil || f.rdb == nil {
+		return 0, nil
+	}
 
-	// Xây dựng version key độc lập cho từng key cụ thể (Đồng bộ thuật ngữ key-level)
-	versionKey := fmt.Sprintf("cacheengine:version:%s", key)
+	// Xây dựng version key độc lập cho từng key cụ thể theo định dạng {module_name}:version:{namespace}:{params}
+	var versionKey string
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) == 2 {
+		versionKey = fmt.Sprintf("%s:version:%s", parts[0], parts[1])
+	} else {
+		versionKey = fmt.Sprintf("cacheengine:version:%s", key)
+	}
 
 	// Đóng gói tin nhắn từ Go để tự động xử lý base64/JSON encoding an toàn cho Payload []byte
 	msg := FanoutMessage{
@@ -87,12 +100,11 @@ func (f *RedisFanout) Publish(ctx context.Context, key string, payload []byte) (
 	case int:
 		return int64(v), nil
 	default:
-		return 0, fmt.Errorf("cacheengine: unexpected version type returned from Lua script: %T", res)
+		return 0, fmt.Errorf("fanout_cache: unexpected version type returned from Lua script: %T", res)
 	}
 }
 
-// StartSubscribe bắt đầu loop nền lắng nghe sự kiện đồng bộ và áp dụng vào L1 CacheRegistry.
-// Hàm này giải nén JSON động, so khớp phiên bản (version check) và chống tràn bộ nhớ (OOM prevention).
+// StartSubscribe bắt đầu loop nền lắng nghe sự kiện đồng bộ và kích hoạt callback.
 func (f *RedisFanout) StartSubscribe(ctx context.Context) error {
 	pubsub := f.rdb.Subscribe(ctx, f.channel)
 	defer pubsub.Close()
@@ -112,8 +124,10 @@ func (f *RedisFanout) StartSubscribe(ctx context.Context) error {
 				if err != nil {
 					wasDisconnected = true
 				} else if wasDisconnected {
-					// Redis vừa phục hồi kết nối thành công -> Flush sạch RAM L1 để chống stale state
-					f.registry.Flush()
+					// Redis vừa phục hồi kết nối thành công -> gọi callback dọn dẹp L1 nếu có
+					if f.onReconnectCallback != nil {
+						f.onReconnectCallback()
+					}
 					wasDisconnected = false
 				}
 			}
@@ -135,53 +149,10 @@ func (f *RedisFanout) StartSubscribe(ctx context.Context) error {
 				continue // Bỏ qua tin nhắn lỗi định dạng
 			}
 
-			// 1. Trường hợp xóa cache (Delete)
-			if len(fMsg.Payload) == 0 {
-				f.registry.InvalidateLocal(ctx, fMsg.Key)
-				continue
+			// Gọi callback để xử lý tin nhắn nhận được nếu có
+			if f.onMessageCallback != nil {
+				f.onMessageCallback(fMsg.Key, fMsg.Payload, fMsg.Version)
 			}
-
-			// 2. Trường hợp cập nhật cache (Update)
-			// SRE Warning: Tránh lỗi OOM bằng cách kiểm tra key có đang tồn tại trong RAM L1 cục bộ không.
-			// Nếu instance hiện tại chưa từng query key này, ta bỏ qua không lưu để tiết kiệm bộ nhớ.
-			val, exists := f.registry.GetLocalRaw(fMsg.Key)
-			if !exists {
-				continue
-			}
-
-			// Kiểm tra phiên bản đơn điệu để tránh việc tin nhắn đến trễ đè lên dữ liệu mới hơn (stale write)
-			localEnv, ok := val.(*CacheEnvelope)
-			if !ok || fMsg.Version <= localEnv.Version {
-				continue
-			}
-
-			// Tách chuỗi key để xác định namespace (ví dụ: "zone_catalog:" -> "zone_catalog")
-			parts := strings.SplitN(fMsg.Key, ":", 2)
-			if len(parts) == 0 {
-				continue
-			}
-			namespace := parts[0]
-
-			loader := f.registry.GetLoader(namespace)
-			if loader == nil || loader.Factory == nil {
-				continue
-			}
-
-			// Tạo instance trống thông qua Factory tự động của registry
-			ptrTarget := loader.Factory()
-			if err := json.Unmarshal(fMsg.Payload, ptrTarget); err != nil {
-				continue
-			}
-
-			// Giải tham chiếu con trỏ thô để lấy struct/slice nguyên bản
-			rawVal := reflect.ValueOf(ptrTarget).Elem().Interface()
-
-			// Cập nhật trực tiếp vào L1 Cache cục bộ (COW)
-			f.registry.SetLocalRaw(fMsg.Key, &CacheEnvelope{
-				Key:     fMsg.Key,
-				Version: fMsg.Version,
-				Value:   rawVal,
-			}, loader.TTL)
 		}
 	}
 }
