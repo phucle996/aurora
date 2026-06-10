@@ -129,9 +129,6 @@ func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
 // ServiceCall ghi nhận một lần gọi service IAM vào serviceCallsCounter.
 // Callsite tự truyền đầy đủ 3 label, giữ tính generic cho mọi IAM flow.
 func ServiceCall(flow, result, cachePath string) {
-	if serviceCallsCounter == nil {
-		return
-	}
 	serviceCallsCounter.WithLabelValues(flow, result, cachePath).Inc()
 }
 
@@ -142,8 +139,6 @@ func Downstream(kind, workflow, destination, result string, duration time.Durati
 	if err != nil {
 		status = "error"
 	}
-	if downstreamDuration == nil {
-		return
-	}
+
 	downstreamDuration.WithLabelValues(kind, workflow, destination, result, status).Observe(duration.Seconds())
 }

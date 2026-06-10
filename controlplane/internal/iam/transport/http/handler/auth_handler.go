@@ -319,3 +319,74 @@ func (h *AuthHandler) Session(c *gin.Context) {
 
 	apires.RespondSuccess(c, gin.H{"authenticated": true}, "ok")
 }
+
+// Logout godoc
+// @Summary User logout
+// @Description Xoá runtime device, revoke refresh token và clear cookie session.
+// @Tags auth
+// @Produce json
+// @Success 204 {string} string "No Content"
+// @Failure 401 {object} map[string]interface{} "unauthorized"
+// @Failure 500 {object} map[string]interface{} "internal_error"
+// @Router /api/v1/auth/logout [post]
+func (h *AuthHandler) Logout(c *gin.Context) {
+	const op = "iam.auth.logout"
+
+	// Clear cookies inline immediately so that the client's session is cleared in all execution paths
+	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
+	secure := c.Request.TLS != nil
+	exp := time.Unix(0, 0)
+	for _, cookieDef := range []struct {
+		name     string
+		httpOnly bool
+	}{
+		{cookie.AccessTokenName, true},
+		{cookie.RefreshTokenName, true},
+		{cookie.AccessKeyName, false},
+		{cookie.AccessSecretName, true},
+	} {
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     cookieDef.name,
+			Value:    "",
+			Path:     "/",
+			Domain:   domain,
+			HttpOnly: cookieDef.httpOnly,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   -1,
+			Expires:  exp,
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	userIDStr := strings.TrimSpace(middleware.GetUserID(c))
+	if userIDStr == "" {
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+	userID, parseErr := uuid.Parse(userIDStr)
+	if parseErr != nil {
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
+	accessKey := strings.TrimSpace(middleware.GetRuntimeAccessKey(c))
+	accessSecret := strings.TrimSpace(middleware.GetRuntimeAccessSecret(c))
+
+	// Cho phép logout dù thiếu accessKey/secret (best-effort clear cookies đã xong ở đầu).
+	if accessKey == "" {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	if err := h.authSvc.Logout(ctx, userID, accessKey, accessSecret); err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	logger.HandlerInfo(c, op, "user logout successful")
+	c.Status(http.StatusNoContent)
+}

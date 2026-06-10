@@ -75,6 +75,7 @@ func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheReg
 		}
 	}
 	registry.L2 = cacheengine.NewL2Cache(rdb)
+	registry.Exec = cacheengine.NewL2LuaExecutor(rdb)
 	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
 		return &coreEntity.RuntimeSecrets{
 			SecretType: "access_secret",

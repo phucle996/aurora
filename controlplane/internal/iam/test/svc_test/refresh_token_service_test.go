@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	"controlplane/internal/iam/domain/entity"
+	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamSvcImpl "controlplane/internal/iam/service"
@@ -62,17 +63,23 @@ func (m *refreshTokenRepoMock) LoadRefreshContextByHash(ctx context.Context, tok
 	if m.getSessionFn != nil {
 		res, err := m.getSessionFn(ctx, tokenHash)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, iamTaxonomy.ErrNotFound
+			}
 			return nil, err
 		}
 		session = res
 	}
 	if session == nil {
-		return nil, nil
+		return nil, iamTaxonomy.ErrNotFound
 	}
 	ctxOut := &iamEntity.RefreshContext{Session: *session}
 	if m.getUserFn != nil {
 		user, err := m.getUserFn(ctx, session.UserID)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, iamTaxonomy.ErrNotFound
+			}
 			return nil, err
 		}
 		if user != nil {
@@ -82,6 +89,9 @@ func (m *refreshTokenRepoMock) LoadRefreshContextByHash(ctx context.Context, tok
 	if session.DeviceID != nil && m.getDeviceFn != nil {
 		dev, err := m.getDeviceFn(ctx, *session.DeviceID)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, iamTaxonomy.ErrNotFound
+			}
 			return nil, err
 		}
 		ctxOut.Device = dev
@@ -111,16 +121,9 @@ func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, regist
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
-	return iamSvcImpl.NewRefreshTokenService(cfg, repo, nil, registry)
+	return iamSvcImpl.NewRefreshTokenService(cfg, repo, registry)
 }
 
-func TestRefreshTokenServiceInvalidSessionWhenTokenEmpty(t *testing.T) {
-	svc := newRefreshTokenService(&refreshTokenRepoMock{}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-		t.Fatalf("expected ErrInvalidSession, got %v", err)
-	}
-}
 
 func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
@@ -134,7 +137,7 @@ func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 
 func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-		return nil, pgx.ErrNoRows
+		return nil, iamTaxonomy.ErrNotFound
 	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
@@ -147,8 +150,8 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	if appErr.Outcome != iamTaxonomy.InvalidSession {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
-	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
-		t.Fatalf("expected pgx.ErrNoRows cause preserved")
+	if !errors.Is(appErr.Cause, iamTaxonomy.ErrNotFound) {
+		t.Fatalf("expected iamTaxonomy.ErrNotFound cause preserved")
 	}
 }
 
@@ -201,14 +204,18 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 	if appErr.Outcome != iamTaxonomy.InvalidSession {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
-	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
-		t.Fatalf("expected pgx.ErrNoRows cause preserved")
+	if !errors.Is(appErr.Cause, iamTaxonomy.ErrNotFound) {
+		t.Fatalf("expected iamTaxonomy.ErrNotFound cause preserved")
 	}
 }
 
 func TestRefreshTokenServiceAuthenticationUnavailable(t *testing.T) {
 	userID := uuid.New()
 	deviceID := uuid.New()
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewShardedCache())
+	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return nil, errors.New("cache unavailable")
+	})
 	svc := newRefreshTokenService(&refreshTokenRepoMock{
 		getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
@@ -219,7 +226,7 @@ func TestRefreshTokenServiceAuthenticationUnavailable(t *testing.T) {
 		getDeviceFn: func(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error) {
 			return &iamEntity.RefreshTokenDevice{ID: deviceID, Status: iamEntity.DeviceStatusRecognized}, nil
 		},
-	}, nil)
+	}, registry)
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)

@@ -41,7 +41,7 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 		m.finalizeCancel = cancel
 		go m.runAdminSessionFinalizeScheduler(workerCtx)
 	}
-	if m.deviceCapCancel == nil && m.authSvcImpl != nil {
+	if m.deviceCapCancel == nil && m.deviceSvcImpl != nil {
 		workerCtx, cancel := context.WithCancel(context.Background())
 		m.deviceCapCancel = cancel
 		go m.runDeviceCapReconciler(workerCtx)
@@ -167,10 +167,10 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if m == nil || m.authSvcImpl == nil {
+			if m == nil || m.deviceSvcImpl == nil {
 				continue
 			}
-			processed, err := m.authSvcImpl.ReconcileDeviceCap(ctx, 100)
+			processed, err := m.deviceSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
 				iamMetrics.ServiceCall("device_cap_reconcile", "error", "n/a")
 				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})

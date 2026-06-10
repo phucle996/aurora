@@ -7,6 +7,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
+	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	"controlplane/internal/security"
 
@@ -104,5 +105,17 @@ func RegisterL1Loaders(
 			return "", err
 		}
 		return decrypted, nil
+	})
+
+	// 8. Đăng ký tĩnh loader cho "admin_api_key_active"
+	cacheengine.Register(registry, "admin_api_key_active", 10*time.Second, func(ctx context.Context, param string) (*iamEntity.AdminAPIKey, error) {
+		active, err := modules.IAM.AdminAPIKeyRepository.GetActiveAdminAPIKey(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if active == nil {
+			return nil, fmt.Errorf("active admin api key not found")
+		}
+		return active, nil
 	})
 }

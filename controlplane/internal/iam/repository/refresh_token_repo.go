@@ -2,11 +2,13 @@ package iamRepoImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -191,7 +193,7 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		FROM %s.refresh_tokens r
 		LEFT JOIN %s.users u ON u.id = r.user_id
 		LEFT JOIN %s.devices d ON d.id = r.device_id
-		WHERE r.token_hash = $1
+		WHERE r.token_hash = $1 AND r.device_id IS NOT NULL
 		LIMIT 1
 	`, r.schema, r.schema, r.schema)
 	var (
@@ -211,6 +213,9 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		&deviceID,
 		&deviceSts,
 	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, iamTaxonomy.ErrNotFound
+		}
 		return nil, fmt.Errorf("iam repo: load refresh context: %w", err)
 	}
 	if deviceID != nil && deviceSts != nil {

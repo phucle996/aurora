@@ -6,31 +6,29 @@ import (
 	"testing"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
+	redis "github.com/redis/go-redis/v9"
 )
 
-type oneTimeTokenCacheMock struct {
-	setFn     func(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string, ttl time.Duration) error
-	consumeFn func(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string) (bool, error)
-}
-
-func (m *oneTimeTokenCacheMock) SetHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string, ttl time.Duration) error {
-	if m.setFn != nil {
-		return m.setFn(ctx, purpose, userID, tokenHash, ttl)
+func setupTestRegistry(t *testing.T) *cacheengine.CacheRegistry {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
 	}
-	return nil
-}
-
-func (m *oneTimeTokenCacheMock) ConsumeHashedToken(ctx context.Context, purpose string, userID uuid.UUID, tokenHash string) (bool, error) {
-	if m.consumeFn != nil {
-		return m.consumeFn(ctx, purpose, userID, tokenHash)
-	}
-	return false, nil
+	t.Cleanup(mr.Close)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	l1 := cacheengine.NewL1Cache()
+	reg := cacheengine.NewCacheRegistry(l1)
+	reg.L2 = cacheengine.NewL2Cache(rdb)
+	reg.Exec = cacheengine.NewL2LuaExecutor(rdb)
+	return reg
 }
 
 func TestOneTimeTokenServiceIssueAndConsumeSuccess(t *testing.T) {
@@ -38,24 +36,9 @@ func TestOneTimeTokenServiceIssueAndConsumeSuccess(t *testing.T) {
 	cfg.Security.OneTimeTokenTTL = 10 * time.Minute
 
 	userID := uuid.Must(uuid.NewV7())
-	var storedHash string
-	cacheMock := &oneTimeTokenCacheMock{
-		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
-			if purpose != "account_verify" || uID != userID {
-				t.Fatalf("unexpected purpose/user: %s/%s", purpose, uID)
-			}
-			if ttl != cfg.Security.OneTimeTokenTTL {
-				t.Fatalf("unexpected ttl: %v", ttl)
-			}
-			storedHash = tokenHash
-			return nil
-		},
-		consumeFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string) (bool, error) {
-			return tokenHash == storedHash, nil
-		},
-	}
+	registry := setupTestRegistry(t)
 
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheMock)
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, registry)
 	token, expiresAt, err := svc.Issue(context.Background(), "account_verify", userID)
 	if err != nil {
 		t.Fatalf("issue failed: %v", err)
@@ -79,57 +62,41 @@ func TestOneTimeTokenServiceIssueAndConsumeSuccess(t *testing.T) {
 func TestOneTimeTokenServiceInvalidPurposeOrUser(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Security.OneTimeTokenTTL = time.Minute
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{})
+	registry := setupTestRegistry(t)
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, registry)
 
 	userID := uuid.Must(uuid.NewV7())
 	_, _, err := svc.Issue(context.Background(), "", userID)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 
 	_, err = svc.Consume(context.Background(), "account_verify", uuid.Nil, "abc")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
+		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 }
 
 func TestOneTimeTokenServiceInvalidTTL(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Security.OneTimeTokenTTL = 0
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{})
+	registry := setupTestRegistry(t)
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, registry)
 
 	userID := uuid.Must(uuid.NewV7())
 	_, _, err := svc.Issue(context.Background(), "account_verify", userID)
 	if !errors.Is(err, iamTaxonomy.ErrTokenIssueFailed) {
-		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
+		t.Fatalf("expected ErrTokenIssueFailed, got %v", err)
 	}
 }
 
 func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Security.OneTimeTokenTTL = time.Minute
+	registry := setupTestRegistry(t)
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, registry)
 
 	userID := uuid.Must(uuid.NewV7())
-	used := false
-	var storedHash string
-	cacheMock := &oneTimeTokenCacheMock{
-		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
-			storedHash = tokenHash
-			return nil
-		},
-		consumeFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string) (bool, error) {
-			if used {
-				return false, nil
-			}
-			if tokenHash == storedHash {
-				used = true
-				return true, nil
-			}
-			return false, nil
-		},
-	}
-
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheMock)
 	token, _, err := svc.Issue(context.Background(), "account_verify", userID)
 	if err != nil {
 		t.Fatalf("issue failed: %v", err)
@@ -142,7 +109,7 @@ func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 
 	ok, err = svc.Consume(context.Background(), "account_verify", userID, token)
 	if !errors.Is(err, iamTaxonomy.ErrTokenRefreshExpired) {
-		t.Fatalf("expected ErrOneTimeTokenInvalidOrExpired, got %v", err)
+		t.Fatalf("expected ErrTokenRefreshExpired, got %v", err)
 	}
 	if ok {
 		t.Fatal("second consume must be false")
@@ -154,15 +121,14 @@ func TestOneTimeTokenServiceCacheError(t *testing.T) {
 	cfg.Security.OneTimeTokenTTL = time.Minute
 
 	userID := uuid.Must(uuid.NewV7())
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{
-		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
-			return iamTaxonomy.ErrGetL1CacheFailed
-		},
-	})
+	registry := setupTestRegistry(t)
+	registry.L2.Client().Close()
+
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, registry)
 
 	_, _, err := svc.Issue(context.Background(), "account_verify", userID)
 	if !errors.Is(err, iamTaxonomy.ErrTokenIssueFailed) {
-		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
+		t.Fatalf("expected ErrTokenIssueFailed, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {

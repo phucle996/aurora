@@ -3,11 +3,12 @@ package iamSvcImpl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	iamCache "controlplane/internal/iam/cache"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
@@ -17,12 +18,16 @@ import (
 )
 
 type OneTimeTokenService struct {
-	cfg   *config.Config
-	cache iamCache.OneTimeTokenCache
+	cfg         *config.Config
+	cacheEngine *cacheengine.CacheRegistry
 }
 
-func NewOneTimeTokenService(cfg *config.Config, cacheStore iamCache.OneTimeTokenCache) iamSvcInterface.OneTimeTokenService {
-	return &OneTimeTokenService{cfg: cfg, cache: cacheStore}
+func NewOneTimeTokenService(cfg *config.Config, cacheEngine *cacheengine.CacheRegistry) iamSvcInterface.OneTimeTokenService {
+	return &OneTimeTokenService{cfg: cfg, cacheEngine: cacheEngine}
+}
+
+func oneTimeTokenKey(purpose string, userID uuid.UUID) string {
+	return fmt.Sprintf("iam:ott:%s:%s", strings.TrimSpace(purpose), strings.TrimSpace(userID.String()))
 }
 
 func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID uuid.UUID) (string, time.Time, error) {
@@ -33,22 +38,37 @@ func (s *OneTimeTokenService) Issue(ctx context.Context, purpose string, userID 
 	if s.cfg == nil || s.cfg.Security.OneTimeTokenTTL <= 0 {
 		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, nil, "config_error")
 	}
+	if s.cacheEngine == nil {
+		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, errors.New("cache engine unavailable"), "cache_unavailable")
+	}
 
 	rawToken, err := security.GenerateToken(43)
 	if err != nil {
 		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, err, "dependency_error")
 	}
 	tokenHash := security.HashTokenSHA256(rawToken)
-	if err := s.cache.SetHashedToken(ctx, purpose, userID, tokenHash, s.cfg.Security.OneTimeTokenTTL); err != nil {
-		if errors.Is(err, iamTaxonomy.ErrGetL1CacheFailed) {
-			return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, err, "cache_unavailable")
-		}
-		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, err, "cache_error")
+	key := oneTimeTokenKey(purpose, userID)
+
+	if err := s.cacheEngine.L2.Client().Set(ctx, key, tokenHash, s.cfg.Security.OneTimeTokenTTL).Err(); err != nil {
+		return "", time.Time{}, apperr.Wrap(iamTaxonomy.ErrTokenIssueFailed, err, "cache_unavailable")
 	}
 
 	expiresAt := time.Now().UTC().Add(s.cfg.Security.OneTimeTokenTTL)
 	return rawToken, expiresAt, nil
 }
+
+var consumeOneTimeTokenScript = `
+local key = KEYS[1]
+local expected = ARGV[1]
+local current = redis.call("GET", key)
+if not current then
+  return 0
+end
+if current ~= expected then
+  return 0
+end
+return redis.call("DEL", key)
+`
 
 func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userID uuid.UUID, plainToken string) (bool, error) {
 	purpose = strings.TrimSpace(purpose)
@@ -59,16 +79,20 @@ func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userI
 	if plainToken == "" {
 		return false, apperr.Wrap(iamTaxonomy.ErrTokenRefreshExpired, nil, "invalid_or_expired")
 	}
+	if s.cacheEngine == nil {
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenUpdateFailed, errors.New("cache engine unavailable"), "cache_unavailable")
+	}
 
 	tokenHash := security.HashTokenSHA256(plainToken)
-	consumed, err := s.cache.ConsumeHashedToken(ctx, purpose, userID, tokenHash)
+	key := oneTimeTokenKey(purpose, userID)
+
+	resVal, err := s.cacheEngine.Exec.Execute(ctx, consumeOneTimeTokenScript, []string{key}, tokenHash)
 	if err != nil {
-		if errors.Is(err, iamTaxonomy.ErrGetL1CacheFailed) {
-			return false, apperr.Wrap(iamTaxonomy.ErrTokenUpdateFailed, err, "cache_unavailable")
-		}
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenUpdateFailed, err, "cache_error")
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenUpdateFailed, err, "cache_unavailable")
 	}
-	if !consumed {
+
+	result, _ := resVal.(int64)
+	if result != 1 {
 		return false, apperr.Wrap(iamTaxonomy.ErrTokenRefreshExpired, nil, "invalid_or_expired")
 	}
 	return true, nil

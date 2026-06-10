@@ -115,14 +115,12 @@ func NewAdminAPIKeyService(
 	telegram *telegram.TelegramClient,
 	cacheEngine *cacheengine.CacheRegistry,
 ) iamSvcInterface.AdminAPIKeyService {
-	svc := &AdminAPIKeyService{
+	return &AdminAPIKeyService{
 		cfg:         cfg,
 		repo:        repo,
 		telegram:    telegram,
 		cacheEngine: cacheEngine,
 	}
-
-	return svc
 }
 
 // RotateAdminAPIKeyEmergency thực thi quy trình xoay vòng Admin API Key khẩn cấp.
@@ -490,6 +488,44 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	defer func() { iamMetrics.ServiceCall(workflow, loginOutcome, "n/a") }()
 
 	// ========================================================
+	//  BƯỚC 0: PHÒNG CHỐNG TRANH CHẤP ĐỒNG THỜI (CONCURRENCY LOCKING)
+	// ========================================================
+	var lockKey string
+	if req.ClientDeviceID != uuid.Nil {
+		lockKey = "iam:admin_login_lock:device:" + req.ClientDeviceID.String()
+	} else {
+		lockKey = "iam:admin_login_lock:apikey:" + security.HashTokenSHA256(req.RawAPIKey)
+	}
+
+	ownerToken := uuid.New().String()
+	lockScript := `
+		if redis.call("set", KEYS[1], ARGV[1], "NX", "PX", ARGV[2]) then
+			return 1
+		else
+			return 0
+		end
+	`
+	res, err := s.cacheEngine.Exec.Execute(ctx, lockScript, []string{lockKey}, ownerToken, int64(5000))
+	if err != nil {
+		loginOutcome = iamTaxonomy.Failure
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+	}
+	if valInt, ok := res.(int64); !ok || valInt != 1 {
+		loginOutcome = iamTaxonomy.LockBusy
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("login lock already held for this device/key"), iamTaxonomy.LockBusy)
+	}
+	defer func() {
+		unlockScript := `
+			if redis.call("get", KEYS[1]) == ARGV[1] then
+				return redis.call("del", KEYS[1])
+			else
+				return 0
+			end
+		`
+		_, _ = s.cacheEngine.Exec.Execute(context.Background(), unlockScript, []string{lockKey}, ownerToken)
+	}()
+
+	// ========================================================
 	//  BƯỚC 1: CHUẨN HÓA VÀ KIỂM TRA KHÓA CÔNG KHAI THIẾT BỊ (DEVICE PUBLIC KEY NORMALIZATION)
 	// ========================================================
 	// Chuẩn hóa chuỗi khóa công khai Ed25519 nhận được từ Client sang định dạng chuẩn thống nhất.
@@ -513,7 +549,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 
 	if keyErr != nil {
-		return iamEntity.AdminLoginResult{}, keyErr
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, keyErr, iamTaxonomy.InvalidArgument)
 	}
 
 	/// ========================================================
@@ -521,18 +557,15 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// ========================================================
 
 	now := time.Now()
-	active, err := s.repo.GetActiveAdminAPIKey(ctx)
+	val, err := s.cacheEngine.GetOrLoad(ctx, "admin_api_key_active", "")
 	if err != nil {
-		// nếu repo lỗi => trả về lỗi và ghi metrics downstream thất bại
-		iamMetrics.Downstream("repo", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Failure, time.Since(now), err)
+		iamMetrics.Downstream("cacheEngine", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Failure, time.Since(now), err)
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
-	// nếu repo thành công => ghi metrics
-	iamMetrics.Downstream("repo", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Success, time.Since(now), nil)
+	iamMetrics.Downstream("cacheEngine", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Success, time.Since(now), nil)
 
-	// Nếu không tồn tại API Key nào đang hoạt động trong hệ thống, từ chối đăng nhập.
-	if active == nil {
-		iamMetrics.Downstream("repo", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Failure, time.Since(now), nil)
+	active, ok := val.(*iamEntity.AdminAPIKey)
+	if !ok || active == nil {
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("api key not found"), iamTaxonomy.InvalidCredential)
 	}
 	// Thực hiện băm SHA256 API Key của Client gửi lên và đối khớp trực tiếp với KeyHash được cấu hình bảo mật.
@@ -541,11 +574,20 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("hash api key not match"), iamTaxonomy.InvalidCredential)
 	}
 
-	// ========================================================
-	// BƯỚC 3: XÁC THỰC THIẾT BỊ SỬ DỤNG (DEVICE VERIFICATION)
-	// ========================================================
-
-	// TODO: implement device verification
+	if req.ClientDeviceID != uuid.Nil {
+		existingPubKey, err := s.repo.GetPublicKeyByDeviceID(ctx, req.ClientDeviceID.String())
+		if err == nil {
+			// Device ID đã tồn tại, kiểm tra sự trùng khớp của khóa công khai để tránh Device Hijacking
+			if existingPubKey != canonicalPublicKey {
+				loginOutcome = iamTaxonomy.Failure
+				return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrDeviceBindingFailed, fmt.Errorf("device public key mismatch"), iamTaxonomy.Failure)
+			}
+		} else if !errors.Is(err, iamTaxonomy.ErrNotFound) {
+			// Lỗi database thực sự chứ không phải không tìm thấy dòng nào
+			loginOutcome = iamTaxonomy.Failure
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		}
+	}
 
 	// ======================================================
 	// BƯỚC 4: XÁC THỰC ĐA YẾU TỐ (MFA VALIDATION)
@@ -580,6 +622,19 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		if !okTOTP {
 			loginOutcome = iamTaxonomy.Failure
 			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp passcode mismatch"), iamTaxonomy.Failure)
+		}
+
+		// Chống Replay TOTP bằng cơ chế Blacklist/Consume ngắn hạn trong Redis
+		totpKey := "iam:admin_totp_consumed:" + strings.TrimSpace(req.MFACode)
+		rdb := s.cacheEngine.L2.Client()
+		setOk, setErr := rdb.SetNX(ctx, totpKey, "1", 90*time.Second).Result()
+		if setErr != nil {
+			loginOutcome = iamTaxonomy.Failure
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamTaxonomy.Failure)
+		}
+		if !setOk {
+			loginOutcome = iamTaxonomy.Failure
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp passcode already consumed"), iamTaxonomy.Failure)
 		}
 
 		// nếu là mã khôi phục => thực hiện xác thực mã khôi phục
@@ -727,7 +782,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 
 	// Ký admin_api token sử dụng CacheRegistry và coreEntity.RuntimeSecrets
-	val, err := s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
+	val, err = s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
 	if err != nil {
 		loginOutcome = iamTaxonomy.GetL1CacheFail
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.GetL1CacheFail)

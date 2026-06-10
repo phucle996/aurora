@@ -69,7 +69,6 @@ import (
 	"controlplane/infra/telegram"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	iamCache "controlplane/internal/iam/cache"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	coreSvc "controlplane/internal/iam/domain/service"
 	iamRepoImpl "controlplane/internal/iam/repository"
@@ -91,7 +90,6 @@ type IAMModule struct {
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler         *iamHandler.AuthHandler
-	LogoutHandler       *iamHandler.LogoutHandler
 	RefreshTokenHandler *iamHandler.RefreshTokenHandler
 	DeviceHandler       *iamHandler.DeviceHandler
 	AdminAuthHandler    *iamHandler.AdminAuthHandler
@@ -101,11 +99,10 @@ type IAMModule struct {
 	RbacRepository        iamRepoInterface.RbacRepository
 	AdminAPIKeyRepository iamRepoInterface.AdminAPIKeyRepository
 	AdminAPIKeyService    coreSvc.AdminAPIKeyService
-	userDeviceRuntime  iamCache.UserDeviceRuntimeCache
-	rotationCancel     context.CancelFunc
-	finalizeCancel     context.CancelFunc
-	deviceCapCancel    context.CancelFunc
-	authSvcImpl        *iamSvcImpl.AuthService
+	rotationCancel        context.CancelFunc
+	finalizeCancel        context.CancelFunc
+	deviceCapCancel       context.CancelFunc
+	deviceSvcImpl         *iamSvcImpl.DeviceService
 }
 
 // NewModule khởi tạo phân hệ IAM. Thiết lập cơ chế Fail-Fast chặt chẽ ở cấp độ biên khởi chạy.
@@ -162,24 +159,14 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct device repository")
 	}
 
-	// User Device Runtime (Redis Cache) - Kiểm soát phiên đăng nhập phiên thiết bị phân tán
-	userDeviceRuntime := iamCache.NewUserDeviceRuntimeCache(rds)
-	if userDeviceRuntime == nil {
-		return nil, errors.New("iam module: failed to initialize user device runtime cache (redis client is offline)")
-	}
-
 	// Refresh Token Storage (PostgreSQL)
 	refreshTokenRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
 	if refreshTokenRepo == nil {
 		return nil, errors.New("iam module: failed to construct refresh token repository")
 	}
 
-	// One Time Token Cache & Service (Redis-backed OTP/Password-less verification)
-	otTokenCache := iamCache.NewOneTimeTokenCache(rds)
-	if otTokenCache == nil {
-		return nil, errors.New("iam module: failed to initialize one time token cache")
-	}
-	oneTimeTokenSvc := iamSvcImpl.NewOneTimeTokenService(cfg, otTokenCache)
+	// One Time Token Service
+	oneTimeTokenSvc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheEngine)
 	if oneTimeTokenSvc == nil {
 		return nil, errors.New("iam module: failed to construct one time token service")
 	}
@@ -190,48 +177,24 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize redis stream event publisher")
 	}
 
-	// Distributed Locks (Chống brute-force và kiểm soát dung lượng thiết bị tối đa)
-	capLock := iamCache.NewUserDeviceCapLock(rds)
-	if capLock == nil {
-		return nil, errors.New("iam module: failed to initialize user device capacity distributed lock")
-	}
-
-	// Register Presence Cache (Chống Race Condition khi đăng ký tài khoản trùng lặp)
-	regPresenceCache := iamCache.NewRegisterPresenceCache(rds)
-	if regPresenceCache == nil {
-		return nil, errors.New("iam module: failed to initialize registration presence cache")
-	}
-
 	// ------------------------------------------------------------------------
 	// 💼 GIAI ĐOẠN 3: SERVICE LAYER INITIALIZATION
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
 
-	authSvcImpl := iamSvcImpl.NewAuthServiceImpl(
-		cfg, authRepo, refreshTokenRepo, deviceRepo,
-		cacheEngine, oneTimeTokenSvc, streamPublisher,
-	)
-	if authSvcImpl == nil {
-		return nil, errors.New("iam module: failed to construct core auth service implementation")
+	// Device Management Service
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, cacheEngine, streamPublisher)
+	if deviceSvc == nil {
+		return nil, errors.New("iam module: failed to construct user device management service")
 	}
-
-	authSvc := iamSvcImpl.WrapAuthService(authSvcImpl)
-	if authSvc == nil {
-		return nil, errors.New("iam module: failed to wrap auth service")
-	}
-
-	authHandler := iamHandler.NewAuthHandler(cfg, authSvc)
-	if authHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
-	}
-
-	logoutHandler := iamHandler.NewLogoutHandler(cfg, authSvc)
-	if logoutHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP logout handler")
+	deviceSvcImpl, _ := deviceSvc.(*iamSvcImpl.DeviceService)
+	deviceHandler := iamHandler.NewDeviceHandler(deviceSvc)
+	if deviceHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP device handler")
 	}
 
 	// Refresh Token Service
-	refreshTokenSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshTokenRepo, userDeviceRuntime, cacheEngine)
+	refreshTokenSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshTokenRepo, cacheEngine)
 	if refreshTokenSvc == nil {
 		return nil, errors.New("iam module: failed to construct refresh token service")
 	}
@@ -240,14 +203,17 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP refresh token handler")
 	}
 
-	// Device Management Service
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, userDeviceRuntime, streamPublisher)
-	if deviceSvc == nil {
-		return nil, errors.New("iam module: failed to construct user device management service")
+	authSvc := iamSvcImpl.NewAuthService(
+		cfg, authRepo, refreshTokenSvc, deviceSvc,
+		cacheEngine, oneTimeTokenSvc, streamPublisher,
+	)
+	if authSvc == nil {
+		return nil, errors.New("iam module: failed to construct core auth service implementation")
 	}
-	deviceHandler := iamHandler.NewDeviceHandler(deviceSvc)
-	if deviceHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP device handler")
+
+	authHandler := iamHandler.NewAuthHandler(cfg, authSvc)
+	if authHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
 	}
 
 	// ------------------------------------------------------------------------
@@ -305,21 +271,19 @@ func NewModule(
 	// Trả về container chứa toàn bộ các dependency hoàn toàn hợp lệ, an toàn và sẵn sàng hoạt động.
 
 	return &IAMModule{
-		cfg:                 cfg,
-		db:                  db,
-		rds:                 rds,
-		rateLimiter:         rateLimiter,
-		L1Registry:          cacheEngine,
-		AuthHandler:         authHandler,
-		authSvcImpl:         authSvcImpl,
-		LogoutHandler:       logoutHandler,
-		RefreshTokenHandler: refreshTokenHandler,
-		DeviceHandler:       deviceHandler,
-		AdminAuthHandler:    adminAuthHandler,
-		RbacHandler:         rbacHandler,
+		cfg:                   cfg,
+		db:                    db,
+		rds:                   rds,
+		rateLimiter:           rateLimiter,
+		L1Registry:            cacheEngine,
+		AuthHandler:           authHandler,
+		deviceSvcImpl:         deviceSvcImpl,
+		RefreshTokenHandler:   refreshTokenHandler,
+		DeviceHandler:         deviceHandler,
+		AdminAuthHandler:      adminAuthHandler,
+		RbacHandler:           rbacHandler,
 		RbacRepository:        rbacRepo,
 		AdminAPIKeyRepository: adminRepo,
 		AdminAPIKeyService:    adminSvc,
-		userDeviceRuntime:     userDeviceRuntime,
 	}, nil
 }

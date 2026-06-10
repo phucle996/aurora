@@ -40,7 +40,7 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, makeIntegrationRegistry(rdb))
 	refreshResult, err := refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)
@@ -97,7 +97,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("deactivate user: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, makeIntegrationRegistry(rdb))
 	_, err = refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected invalid session for blocked user, got %v", err)
@@ -137,7 +137,7 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, makeIntegrationRegistry(rdb))
 	refreshResult, err := refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)

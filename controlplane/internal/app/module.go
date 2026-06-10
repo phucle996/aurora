@@ -49,7 +49,6 @@ import (
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
-	iamCache "controlplane/internal/iam/cache"
 	"controlplane/internal/mail"
 	"controlplane/internal/policyengine"
 	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
@@ -225,7 +224,6 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	middleware.InitAccess(
 		cacheEngine,
 		rds,
-		iamCache.NewUserDeviceRuntimeCache(rds),
 		10*time.Second,
 	)
 	if err := middleware.InitAdminAPIKeyAuth(

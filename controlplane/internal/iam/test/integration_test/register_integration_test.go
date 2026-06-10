@@ -10,8 +10,9 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
-	"controlplane/internal/iam/cache"
 	"controlplane/internal/iam/domain/entity"
+	"controlplane/internal/security"
+	"controlplane/pkg/id"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
@@ -34,7 +35,7 @@ func TestRegisterAccountIntegrationSuccessWithRealPostgresRedis(t *testing.T) {
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
 
-	presence := iamCache.NewRegisterPresenceCache(rdb)
+	presence := &testRegisterPresenceCache{rdb: rdb}
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
 	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
 
@@ -90,7 +91,7 @@ func TestRegisterAccountIntegrationBitmapFalsePositiveStillCreatesUser(t *testin
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
 
-	presence := iamCache.NewRegisterPresenceCache(rdb)
+	presence := &testRegisterPresenceCache{rdb: rdb}
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
 	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
 
@@ -139,7 +140,7 @@ func TestRegisterAccountIntegrationDuplicateMarksBitmapAfterDBConflict(t *testin
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
 
-	presence := iamCache.NewRegisterPresenceCache(rdb)
+	presence := &testRegisterPresenceCache{rdb: rdb}
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
 	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
 
@@ -233,6 +234,7 @@ func makeIntegrationRegistry(rdb *goredis.Client) *cacheengine.CacheRegistry {
 	registry := cacheengine.NewCacheRegistry(l1Cache)
 	if rdb != nil {
 		registry.L2 = cacheengine.NewL2Cache(rdb)
+		registry.Exec = cacheengine.NewL2LuaExecutor(rdb)
 	}
 	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
 		return &coreEntity.RuntimeSecrets{
@@ -261,4 +263,44 @@ func makeIntegrationRegistry(rdb *goredis.Client) *cacheengine.CacheRegistry {
 		}, nil
 	})
 	return registry
+}
+
+type testRegisterPresenceCache struct {
+	rdb *goredis.Client
+}
+
+func (c *testRegisterPresenceCache) Check(ctx context.Context, username string, email string) (bool, bool, error) {
+	usernameDigest, err := security.PresenceHMACSHA256Hex("iam.register.username", username)
+	if err != nil {
+		return false, false, err
+	}
+	emailDigest, err := security.PresenceHMACSHA256Hex("iam.register.email", email)
+	if err != nil {
+		return false, false, err
+	}
+	usernameHit, err := c.rdb.GetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
+	if err != nil {
+		return false, false, err
+	}
+	emailHit, err := c.rdb.GetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
+	if err != nil {
+		return false, false, err
+	}
+	return usernameHit == 1, emailHit == 1, nil
+}
+
+func (c *testRegisterPresenceCache) MarkExists(ctx context.Context, username string, email string) error {
+	usernameDigest, err := security.PresenceHMACSHA256Hex("iam.register.username", username)
+	if err != nil {
+		return err
+	}
+	emailDigest, err := security.PresenceHMACSHA256Hex("iam.register.email", email)
+	if err != nil {
+		return err
+	}
+	pipe := c.rdb.Pipeline()
+	pipe.SetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
+	pipe.SetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+	_, err = pipe.Exec(ctx)
+	return err
 }

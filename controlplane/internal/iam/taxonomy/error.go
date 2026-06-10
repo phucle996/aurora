@@ -4,6 +4,7 @@ import "errors"
 
 // Generic errors for workflow results and core logic
 var (
+	ErrNotFound              = errors.New("iam: not found")
 	ErrPreconditionFailed    = errors.New("iam: precondition failed")
 	ErrActionNotAllowed      = errors.New("iam: action not allowed")
 	ErrGenTOTPFailed         = errors.New("iam: generate totp failed")
@@ -51,7 +52,7 @@ var (
 	ErrVerificationRequired      = errors.New("iam: verification required")
 	ErrAuthenticationUnavailable = errors.New("iam: authentication unavailable")
 	ErrInvalidSession            = errors.New("iam: invalid session")
-	ErrUserDeviceRuntimeInvalid  = errors.New("iam cache: invalid user device runtime")
+	ErrUserAccessSessionInvalid  = errors.New("iam cache: invalid user access session")
 
 	ErrRoleNotFound       = errors.New("iam: role not found")
 	ErrPermissionNotFound = errors.New("iam: permission not found")

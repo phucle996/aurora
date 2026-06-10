@@ -445,6 +445,9 @@ func (r *AdminAPIKeyRepository) GetPublicKeyByDeviceID(ctx context.Context, devi
 	var publicKey string
 	err := r.db.QueryRow(ctx, r.getPublicKeyByDeviceIDQuery, deviceID).Scan(&publicKey)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", iamTaxonomy.ErrNotFound
+		}
 		return "", err
 	}
 	return publicKey, nil

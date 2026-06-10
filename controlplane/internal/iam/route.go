@@ -84,7 +84,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.POST("/api/v1/auth/logout",
 		userAccessGuard,
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/logout"),
-		module.LogoutHandler.Logout,
+		module.AuthHandler.Logout,
 	)
 
 	// 6) Quản lý thiết bị cá nhân
@@ -121,6 +121,8 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 10) Đăng nhập Admin
 	router.POST("/admin/auth/login",
+		middleware.AdminCIDR(),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/login"),
 		module.AdminAuthHandler.Login,
 	)
 

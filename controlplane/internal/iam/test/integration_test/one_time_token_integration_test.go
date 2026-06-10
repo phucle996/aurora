@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	iamCache "controlplane/internal/iam/cache"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamtestutil "controlplane/internal/iam/test/testutil"
@@ -22,7 +21,7 @@ func TestOneTimeTokenIntegrationConsumeOnce(t *testing.T) {
 	iamtestutil.PrepareIAMSchema(t, cfg, db)
 	rdb := iamtestutil.OpenRedis(t, cfg)
 
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, iamCache.NewOneTimeTokenCache(rdb))
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, makeIntegrationRegistry(rdb))
 
 	userID, err := uuid.NewV7()
 	if err != nil {
@@ -55,7 +54,7 @@ func TestOneTimeTokenIntegrationOverwriteOldToken(t *testing.T) {
 	iamtestutil.PrepareIAMSchema(t, cfg, db)
 	rdb := iamtestutil.OpenRedis(t, cfg)
 
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, iamCache.NewOneTimeTokenCache(rdb))
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, makeIntegrationRegistry(rdb))
 
 	userID, err := uuid.NewV7()
 	if err != nil {
@@ -93,7 +92,7 @@ func TestOneTimeTokenIntegrationTTLExpire(t *testing.T) {
 	iamtestutil.PrepareIAMSchema(t, cfg, db)
 	rdb := iamtestutil.OpenRedis(t, cfg)
 
-	svc := iamSvcImpl.NewOneTimeTokenService(cfg, iamCache.NewOneTimeTokenCache(rdb))
+	svc := iamSvcImpl.NewOneTimeTokenService(cfg, makeIntegrationRegistry(rdb))
 
 	userID, err := uuid.NewV7()
 	if err != nil {

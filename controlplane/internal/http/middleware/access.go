@@ -28,6 +28,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -36,7 +37,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
-	iamCache "controlplane/internal/iam/cache"
 	"controlplane/internal/security"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
@@ -52,10 +52,9 @@ var accessMiddleware = struct {
 }{}
 
 // InitAccess khởi tạo dependencies cho middleware Access.
-func InitAccess(registry *cacheengine.CacheRegistry, rdb *redis.Client,
-	runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) {
+func InitAccess(registry *cacheengine.CacheRegistry, rdb *redis.Client, graceWindow time.Duration) {
 	accessMiddleware.mu.Lock()
-	accessMiddleware.handler = buildAccessHandler(registry, rdb, runtimeCache, graceWindow)
+	accessMiddleware.handler = buildAccessHandler(registry, rdb, graceWindow)
 	accessMiddleware.mu.Unlock()
 }
 
@@ -74,7 +73,7 @@ func Access() gin.HandlerFunc {
 }
 
 // buildAccessHandler xây dựng hàm xác thực JWT, so khớp cookie và inject context.
-func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, runtimeCache iamCache.UserDeviceRuntimeCache, graceWindow time.Duration) gin.HandlerFunc {
+func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, graceWindow time.Duration) gin.HandlerFunc {
 	if graceWindow <= 0 {
 		graceWindow = 10 * time.Second
 	}
@@ -155,7 +154,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 		// --------------------------------------------------------------------
 		// 🔄 Xác minh ràng buộc phiên thiết bị của người dùng (Device Binding)
 		// --------------------------------------------------------------------
-		if runtimeCache != nil {
+		if rdb != nil {
 			accessKeyCookieValue, accessKeyCookieErr := c.Cookie(constant.AccessKeyName)
 			accessSecretValue, accessSecretErr := c.Cookie(constant.AccessSecretName)
 			accessKeyCookie := strings.TrimSpace(accessKeyCookieValue)
@@ -182,16 +181,47 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 			ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
 			defer cancel()
 
+			type localUserAccessSession struct {
+				AccessKey        string `json:"access_key"`
+				AccessSecretHash string `json:"access_secret_hash"`
+				CurrentJTI       string `json:"current_jti"`
+				PreviousJTI      string `json:"previous_jti,omitempty"`
+				PreviousIssuedAt int64  `json:"previous_issued_at,omitempty"`
+				CurrentIssuedAt  int64  `json:"current_issued_at,omitempty"`
+				TrackedDeviceID  string `json:"tracked_device_id"`
+				UserID           string `json:"user_id"`
+				Status           string `json:"status,omitempty"`
+			}
+
 			// Truy vấn bản ghi phiên runtime thực tế từ Redis:
-			record, err := runtimeCache.GetDeviceRuntimeByUserDevice(ctx, claims.Subject, accessKeyClaim)
-			if err != nil {
+			key := "iam:user_access_session:" + strings.TrimSpace(claims.Subject) + ":" + strings.TrimSpace(accessKeyClaim)
+			raw, err := rdb.Get(ctx, key).Result()
+			var record *localUserAccessSession
+			if err == nil {
+				record = &localUserAccessSession{}
+				if err := json.Unmarshal([]byte(raw), record); err != nil {
+					record = nil
+				}
+			} else if err != redis.Nil {
 				apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 				c.Abort()
 				return
 			}
 
 			// Đánh giá khớp thông tin mật mã và thời gian đồng bộ graceWindow:
-			if record == nil || !iamCache.MatchRuntime(record, accessKeyCookie, accessSecret, jti, graceWindow) {
+			match := false
+			if record != nil && record.Status != "revoked" && record.AccessKey == accessKeyCookie && record.AccessSecretHash == security.HashTokenSHA256(accessSecret) {
+				if record.CurrentJTI == jti {
+					match = true
+				} else if graceWindow > 0 && record.PreviousJTI != "" && record.PreviousJTI == jti {
+					issuedAt := record.PreviousIssuedAt
+					if issuedAt > 0 && time.Since(time.Unix(issuedAt, 0)) <= graceWindow {
+						match = true
+					}
+				}
+			}
+
+			if !match {
 				clearUserAccessCookies(c, cookieDomain, cookiePath)
 				apires.RespondUnauthorized(c, "unauthorized")
 				c.Abort()

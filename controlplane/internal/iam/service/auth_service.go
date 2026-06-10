@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
-	iamCache "controlplane/internal/iam/cache"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -39,31 +37,31 @@ const (
 )
 
 type AuthService struct {
-	repo             iamRepoInterface.AuthRepository
-	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
-	deviceRepo       iamRepoInterface.DeviceRepository
-	registry         *cacheengine.CacheRegistry
-	ott              iamSvcInterface.OneTimeTokenService
-	streamPublisher  infraredis.StreamPublisher
-	cfg              *config.Config
+	repo            iamRepoInterface.AuthRepository
+	refreshSvc      iamSvcInterface.RefreshTokenService
+	deviceSvc       iamSvcInterface.DeviceService
+	registry        *cacheengine.CacheRegistry
+	ott             iamSvcInterface.OneTimeTokenService
+	streamPublisher infraredis.StreamPublisher
+	cfg             *config.Config
 }
 
 func NewAuthService(cfg *config.Config,
 	repo iamRepoInterface.AuthRepository,
-	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
-	deviceRepo iamRepoInterface.DeviceRepository,
+	refreshSvc iamSvcInterface.RefreshTokenService,
+	deviceSvc iamSvcInterface.DeviceService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	streamPublisher infraredis.StreamPublisher,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
-		repo:             repo,
-		refreshTokenRepo: refreshTokenRepo,
-		deviceRepo:       deviceRepo,
-		registry:         registry,
-		ott:              ott,
-		streamPublisher:  streamPublisher,
-		cfg:              cfg,
+		repo:            repo,
+		refreshSvc:      refreshSvc,
+		deviceSvc:       deviceSvc,
+		registry:        registry,
+		ott:             ott,
+		streamPublisher: streamPublisher,
+		cfg:             cfg,
 	}
 }
 
@@ -305,13 +303,13 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	flushLabel := "db"
 	rdb := s.registry.L2.Client()
 	userIDStr := user.ID.String()
-	indexKey := "iam:user:device:index:" + userIDStr
-	var runtimeCandidates []iamCache.UserDeviceRuntime
+	indexKey := "iam:user_access_index:" + userIDStr
+	var runtimeCandidates []iamEntity.UserAccessSession
 	if scanned, _, scanErr := rdb.SScan(ctx, indexKey, 0, "*", 1).Result(); scanErr == nil && len(scanned) > 0 {
-		keys := []string{"iam:user:device:runtime:" + userIDStr + ":" + scanned[0]}
+		keys := []string{"iam:user_access_session:" + userIDStr + ":" + scanned[0]}
 		if values, mgetErr := rdb.MGet(ctx, keys...).Result(); mgetErr == nil && len(values) > 0 && values[0] != nil {
 			if rawStr, ok := values[0].(string); ok {
-				var record iamCache.UserDeviceRuntime
+				var record iamEntity.UserAccessSession
 				if json.Unmarshal([]byte(rawStr), &record) == nil && record.UserID == userIDStr {
 					runtimeCandidates = append(runtimeCandidates, record)
 				}
@@ -331,8 +329,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 	}
 
-	// UpsertLoginDevice là DB SoT để lấy tracked device persistent.
-	trackedDevice, deviceErr := s.deviceRepo.UpsertLoginDevice(ctx, buildLoginDevice(user.ID, req.DevicePublicKey, req.IP, req.UserAgent, now, req.DeviceName, clientDeviceID))
+	// RegisterLoginDevice qua DeviceService là DB SoT để lấy tracked device persistent.
+	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, buildLoginDevice(user.ID, req.DevicePublicKey, req.IP, req.UserAgent, now, req.DeviceName, clientDeviceID))
 	iamMetrics.ServiceCall("login_last_seen_flush", flushLabel, "n/a")
 	if deviceErr != nil {
 		loginOutcome = iamTaxonomy.Failure
@@ -428,7 +426,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 
 	// Runtime write lỗi: rollback theo callsite policy bằng revoke refresh token.
 	// Không fallback chạy tiếp vì sẽ tạo access token không verify được runtime.
-	runtime := iamCache.UserDeviceRuntime{
+	sessionRecord := iamEntity.UserAccessSession{
 		AccessKey:        accessKey,
 		AccessSecretHash: security.HashTokenSHA256(accessSecret),
 		CurrentJTI:       accessJTI.String(),
@@ -440,36 +438,32 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		CurrentIssuedAt:  now.Unix(),
 	}
 	if req.IP != nil {
-		runtime.LastSeenIP = strings.TrimSpace(*req.IP)
+		sessionRecord.LastSeenIP = strings.TrimSpace(*req.IP)
 	}
 	if req.UserAgent != nil {
-		runtime.LastSeenUserAgent = strings.TrimSpace(*req.UserAgent)
-	}
-	ttl := s.cfg.Security.AccessSecretTTL
-	if ttl <= 0 {
-		ttl = 15 * time.Minute
+		sessionRecord.LastSeenUserAgent = strings.TrimSpace(*req.UserAgent)
 	}
 	var setErr error
-	if payload, marshalErr := json.Marshal(runtime); marshalErr != nil {
+	if payload, marshalErr := json.Marshal(sessionRecord); marshalErr != nil {
 		setErr = marshalErr
 	} else {
-		key := "iam:user:device:runtime:" + runtime.UserID + ":" + runtime.AccessKey
+		key := "iam:user_access_session:" + sessionRecord.UserID + ":" + sessionRecord.AccessKey
 		pipe := rdb.TxPipeline()
-		pipe.Set(ctx, key, payload, ttl)
-		pipe.SAdd(ctx, indexKey, runtime.AccessKey)
-		pipe.Expire(ctx, indexKey, ttl+24*time.Hour)
+		pipe.Set(ctx, key, payload, s.cfg.Security.AccessSecretTTL)
+		pipe.SAdd(ctx, indexKey, sessionRecord.AccessKey)
+		pipe.Expire(ctx, indexKey, s.cfg.Security.AccessSecretTTL+24*time.Hour)
 		_, setErr = pipe.Exec(ctx)
 	}
 	if setErr != nil {
-		if s.refreshTokenRepo != nil {
-			_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
+		if s.refreshSvc != nil {
+			_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
 		}
 		loginOutcome = iamTaxonomy.Failure
 		return nil, fmt.Errorf("%w: failed to set device runtime: %v", iamTaxonomy.ErrAuthenticationUnavailable, setErr)
 	}
 
 	// Best-effort cap reconcile sau login. Không làm fail request thành công.
-	s.evictExcessDevicesIfNeeded(ctx, user.ID, req.IP, req.UserAgent)
+	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID, req.IP, req.UserAgent)
 
 	return &iamEntity.LoginResult{
 		AccessToken:              accessToken,
@@ -545,10 +539,10 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 	userIDStr := userID.String()
 
 	// 1. Đọc runtime record để lấy trackedDeviceID + dirty state trước khi xoá.
-	var runtimeRecord *iamCache.UserDeviceRuntime
-	key := "iam:user:device:runtime:" + userIDStr + ":" + accessKey
+	var runtimeRecord *iamEntity.UserAccessSession
+	key := "iam:user_access_session:" + userIDStr + ":" + accessKey
 	if raw, getErr := rdb.Get(ctx, key).Result(); getErr == nil {
-		var record iamCache.UserDeviceRuntime
+		var record iamEntity.UserAccessSession
 		if json.Unmarshal([]byte(raw), &record) == nil && record.UserID == userIDStr {
 			runtimeRecord = &record
 		}
@@ -556,7 +550,7 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 
 	// 2. PHẾ BỎ PHIÊN LÀM VIỆC NGAY LẬP TỨC (SECURITY CRITICAL)
 	// Xoá runtime key khỏi Redis → access middleware check tiếp theo sẽ miss → 401 tức thì.
-	indexKey := "iam:user:device:index:" + userIDStr
+	indexKey := "iam:user_access_index:" + userIDStr
 	pipe := rdb.TxPipeline()
 	pipe.Del(ctx, key)
 	pipe.SRem(ctx, indexKey, accessKey)
@@ -567,230 +561,29 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 		bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		// Revoke refresh tokens theo device scope nếu có, fallback revoke toàn user.
-		if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
-			if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
-				_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(bgCtx, userID, deviceUUID)
+		if s.refreshSvc != nil {
+			if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
+				if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
+					_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(bgCtx, userID, deviceUUID)
+				}
+			} else {
+				_ = s.refreshSvc.RevokeRefreshTokensByUserID(bgCtx, userID, nil)
 			}
-		} else {
-			_, _ = s.refreshTokenRepo.RevokeRefreshTokensByUserID(bgCtx, userID, nil)
 		}
 
 		// Flush last_seen xuống DB nếu runtime có dirty state (giống AdminLogout).
 		if runtimeRecord != nil && runtimeRecord.LastSeenDirty && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
-			if s.deviceRepo != nil {
+			if s.deviceSvc != nil {
 				if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
 					ip := optionalStringPointer(runtimeRecord.LastSeenIP)
 					ua := optionalStringPointer(runtimeRecord.LastSeenUserAgent)
-					_ = s.deviceRepo.TouchDeviceLastSeen(bgCtx, deviceUUID, ip, ua)
+					_ = s.deviceSvc.TouchDeviceLastSeen(bgCtx, deviceUUID, ip, ua)
 				}
 			}
 		}
 	}()
 
 	return nil
-}
-
-const userDeviceCap = 50
-
-func (s *AuthService) evictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {
-	// Best-effort maintenance path: mọi lỗi ở đây không được làm fail login.
-	if s == nil || s.deviceRepo == nil {
-		return
-	}
-
-	rdb := s.registry.L2.Client()
-	userIDStr := userID.String()
-	lockKey := "iam:user:device:cap_lock:" + userIDStr
-	ownerToken := uuid.NewString()
-
-	lockToken := ""
-	ok, lockErr := rdb.SetNX(ctx, lockKey, ownerToken, 2*time.Second).Result()
-	if lockErr != nil {
-		// Fallback policy ở callsite: lock backend lỗi thì degrade về best-effort
-		// (chạy evict không lock) thay vì fail cứng login flow.
-		iamMetrics.ServiceCall("device_cap_lock", "skip", "n/a")
-	} else if !ok {
-		// Lock contention: worker khác đang xử lý cap flow cho user này.
-		iamMetrics.ServiceCall("device_cap_lock", "skip", "n/a")
-		return
-	} else {
-		lockToken = ownerToken
-		defer func() {
-			lua := `
-local v = redis.call('GET', KEYS[1])
-if not v then
-  return 0
-end
-if v ~= ARGV[1] then
-  return 0
-end
-redis.call('DEL', KEYS[1])
-return 1
-`
-			_, _ = rdb.Eval(ctx, lua, []string{lockKey}, lockToken).Int()
-		}()
-	}
-
-	evicted, err := s.deviceRepo.EvictExcessDevices(ctx, userID, userDeviceCap)
-	if err != nil || len(evicted) == 0 {
-		return
-	}
-	deviceIDs := make([]uuid.UUID, 0, len(evicted))
-	for _, item := range evicted {
-		deviceIDs = append(deviceIDs, item.DeviceID)
-	}
-	if s.refreshTokenRepo != nil {
-		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
-	}
-
-	// Runtime cleanup là side-effect best-effort sau DB evict thành công.
-	indexKey := "iam:user:device:index:" + userIDStr
-	var runtimes []iamCache.UserDeviceRuntime
-	var cursor uint64
-	for len(runtimes) < 200 {
-		scanned, nextCursor, scanErr := rdb.SScan(ctx, indexKey, cursor, "*", 200).Result()
-		if scanErr != nil {
-			break
-		}
-		keys := make([]string, 0, len(scanned))
-		for _, devID := range scanned {
-			keys = append(keys, "iam:user:device:runtime:"+userIDStr+":"+devID)
-		}
-		if len(keys) > 0 {
-			if values, mgetErr := rdb.MGet(ctx, keys...).Result(); mgetErr == nil {
-				for _, raw := range values {
-					if raw == nil {
-						continue
-					}
-					if rawStr, ok := raw.(string); ok {
-						var record iamCache.UserDeviceRuntime
-						if json.Unmarshal([]byte(rawStr), &record) == nil && record.UserID == userIDStr {
-							runtimes = append(runtimes, record)
-						}
-					}
-				}
-			}
-		}
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
-	}
-
-	evictedRefs := make(map[string]struct{}, len(evicted))
-	for _, item := range evicted {
-		evictedRefs[strings.TrimSpace(item.DeviceID.String())] = struct{}{}
-	}
-	for _, rt := range runtimes {
-		if _, found := evictedRefs[strings.TrimSpace(rt.TrackedDeviceID)]; found {
-			delKey := "iam:user:device:runtime:" + rt.UserID + ":" + rt.AccessKey
-			delIndexKey := "iam:user:device:index:" + rt.UserID
-			pipe := rdb.TxPipeline()
-			pipe.Del(ctx, delKey)
-			pipe.SRem(ctx, delIndexKey, rt.AccessKey)
-			_, _ = pipe.Exec(ctx)
-		}
-	}
-
-	iamMetrics.ServiceCall("device_cap_evict", "evicted", "n/a")
-	extras := map[string]string{
-		"reason":        "cap_exceeded",
-		"evicted_count": strconv.Itoa(len(evicted)),
-	}
-	s.publishDeviceAuditAsync(ctx, userID, "device.evicted_capacity", "warning", ip, userAgent, extras)
-}
-
-// ReconcileDeviceCap được gọi định kỳ bởi background worker để vá drift do
-// lock skip ở login flow. Idempotent: rerun trên user đã đúng cap không gây
-// side effect (CTE OFFSET trả 0 row).
-func (s *AuthService) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
-	if s == nil || s.deviceRepo == nil {
-		return 0, nil
-	}
-	if batch <= 0 {
-		batch = 100
-	}
-	users, err := s.deviceRepo.ListUsersExceedingDeviceCap(ctx, userDeviceCap, batch)
-	if err != nil {
-		return 0, err
-	}
-	processed := 0
-	for _, uid := range users {
-		s.evictExcessDevicesIfNeeded(ctx, uid, nil, nil)
-		processed++
-	}
-	return processed, nil
-}
-
-// NewAuthServiceImpl trả pointer impl cho phép module gọi method ngoài interface
-// (ví dụ ReconcileDeviceCap chạy ở background scheduler).
-func NewAuthServiceImpl(cfg *config.Config,
-	repo iamRepoInterface.AuthRepository,
-	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
-	deviceRepo iamRepoInterface.DeviceRepository,
-	registry *cacheengine.CacheRegistry,
-	ott iamSvcInterface.OneTimeTokenService,
-	streamPublisher infraredis.StreamPublisher,
-) *AuthService {
-	return &AuthService{
-		repo:             repo,
-		refreshTokenRepo: refreshTokenRepo,
-		deviceRepo:       deviceRepo,
-		registry:         registry,
-		ott:              ott,
-		streamPublisher:  streamPublisher,
-		cfg:              cfg,
-	}
-}
-
-// WrapAuthService trả interface AuthService gói pointer impl.
-func WrapAuthService(impl *AuthService) iamSvcInterface.AuthService { return impl }
-
-// publishDeviceAuditAsync publish audit event vào Redis stream `iam:audit:device`.
-// Fallback: nếu publish lỗi hoặc publisher chưa có, ghi DB qua deviceRepo.InsertAuditEvent.
-// Idempotency dùng userID:event:nano để tránh duplicate khi retry.
-func (s *AuthService) publishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
-	if s == nil {
-		return
-	}
-	if s.streamPublisher == nil {
-		if s.deviceRepo != nil {
-			_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-			iamMetrics.ServiceCall("audit_publish", "fallback_db", "n/a")
-		}
-		return
-	}
-	now := time.Now().UTC()
-	payload := map[string]string{
-		"event":        event,
-		"severity":     severity,
-		"user_id":      userID.String(),
-		"published_at": now.Format(time.RFC3339Nano),
-	}
-	if ip != nil {
-		payload["ip"] = strings.TrimSpace(*ip)
-	}
-	if userAgent != nil {
-		payload["user_agent"] = strings.TrimSpace(*userAgent)
-	}
-	for k, v := range extras {
-		payload[k] = v
-	}
-	msg := infraredis.StreamMessage{
-		Stream:         "iam:audit:device",
-		IdempotencyKey: userID.String() + ":" + event,
-		Payload:        payload,
-	}
-	_, _, err := s.streamPublisher.Publish(ctx, msg, 30*time.Second)
-	if err != nil {
-		if s.deviceRepo != nil {
-			_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		}
-		iamMetrics.ServiceCall("audit_publish", "fallback_db", "n/a")
-		return
-	}
-	iamMetrics.ServiceCall("audit_publish", "published", "n/a")
 }
 
 func cleanString(value *string) string {
