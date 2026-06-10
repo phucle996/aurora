@@ -66,51 +66,49 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 3) Làm mới Token (Refresh): Yêu cầu định danh qua Access Guard & Rate Limit
 	router.POST("/api/v1/auth/refresh",
 		middleware.Access(),
+		middleware.UserZoneAuth(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/refresh"),
 		module.RefreshTokenHandler.Refresh,
 	)
 
-	// Guard dùng chung cho các API yêu cầu định danh User thông thường
-	userAccessGuard := middleware.Access()
-
 	// 4) Lấy thông tin phiên làm việc hiện tại
 	router.GET("/api/v1/auth/session",
-		userAccessGuard,
+		middleware.Access(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/session"),
 		module.AuthHandler.Session,
 	)
 
 	// 5) Đăng xuất tài khoản
 	router.POST("/api/v1/auth/logout",
-		userAccessGuard,
+		middleware.Access(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/logout"),
 		module.AuthHandler.Logout,
 	)
 
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",
-		userAccessGuard,
+		middleware.Access(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices"),
 		module.DeviceHandler.ListMyDevices,
 	)
 
 	// 7) Thu hồi quyền truy cập của một thiết bị cụ thể
 	router.POST("/api/v1/me/devices/:device_id/revoke",
-		userAccessGuard,
+		middleware.Access(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/:device_id/revoke"),
 		module.DeviceHandler.RevokeMyDevice,
 	)
 
 	// 8) Đăng xuất khỏi toàn bộ thiết bị khác ngoại trừ thiết bị hiện tại
 	router.POST("/api/v1/me/devices/logout-others",
-		userAccessGuard,
+		middleware.Access(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/logout-others"),
 		module.DeviceHandler.LogoutOtherDevices,
 	)
 
 	// 9) Đăng xuất hoàn toàn trên toàn bộ thiết bị
 	router.POST("/api/v1/me/devices/logout-all",
-		userAccessGuard,
+		middleware.Access(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/logout-all"),
 		module.DeviceHandler.LogoutAllDevices,
 	)
@@ -179,24 +177,28 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 15) Liệt kê danh sách vai trò
 	router.GET("/api/v1/rbac/roles",
 		middleware.Access(),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles"),
 		module.RbacHandler.ListRoles,
 	)
 
 	// 16) Tạo vai trò mới
 	router.POST("/api/v1/rbac/roles",
 		middleware.AdminAPIKeyAuth(),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles"),
 		module.RbacHandler.CreateRole,
 	)
 
 	// 17) Cập nhật cấu hình vai trò
 	router.PUT("/api/v1/rbac/roles/:id",
 		middleware.AdminAPIKeyAuth(),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles/:id"),
 		module.RbacHandler.UpdateRole,
 	)
 
 	// 18) Xóa bỏ vai trò
 	router.DELETE("/api/v1/rbac/roles/:id",
 		middleware.AdminAPIKeyAuth(),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles/:id"),
 		module.RbacHandler.DeleteRole,
 	)
 }

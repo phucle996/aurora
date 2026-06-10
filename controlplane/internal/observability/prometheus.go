@@ -451,8 +451,7 @@ func (p *Prometheus) ObserveDependency(kind, operation string, duration time.Dur
 
 // ObserveAdminAction tăng bộ đếm Counter khi có các thao tác quản trị (Admin/Audit actions) trong hệ thống.
 func (p *Prometheus) ObserveAdminAction(resource, action, result string) {
-	if p == nil || p.requestTotal == nil {
-		return
-	}
+
 	p.requestTotal.WithLabelValues("admin", resource+"."+action, result).Inc()
+	return
 }

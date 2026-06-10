@@ -54,8 +54,24 @@ func (m *l2CacheMock) GetOrLoad(ctx context.Context, key string, target interfac
 	return 0, nil
 }
 
+type execMock struct {
+	executeFn func(ctx context.Context, script string, keys []string, args ...interface{}) (interface{}, error)
+}
+
+func (m *execMock) Execute(ctx context.Context, script string, keys []string, args ...interface{}) (interface{}, error) {
+	if m.executeFn != nil {
+		return m.executeFn(ctx, script, keys, args...)
+	}
+	return nil, nil
+}
+
 func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
-	registry := &cacheengine.CacheRegistry{}
+	exec := &execMock{executeFn: func(ctx context.Context, script string, keys []string, args ...interface{}) (interface{}, error) {
+		return int64(1), nil
+	}}
+	registry := &cacheengine.CacheRegistry{
+		Exec: exec,
+	}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
 	_, err := svc.AdminLogin(context.Background(), iamEntity.AdminLoginRequest{})

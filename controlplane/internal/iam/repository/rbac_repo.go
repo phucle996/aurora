@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -17,50 +18,207 @@ import (
 )
 
 type RbacRepository struct {
-	cfg *config.Config
-	db  *pgxpool.Pool
+	cfg                               *config.Config
+	db                                *pgxpool.Pool
+	schema                            string
+	getRoleByCodeQuery                string
+	listRolesQuery                    string
+	getRoleByIDQuery                  string
+	createRoleQuery                   string
+	updateRoleQuery                   string
+	deleteRolePermissionsQuery        string
+	deleteUserRoleAssignsQuery        string
+	deleteRoleQuery                   string
+	listPermissionsQuery              string
+	getPermissionByIDQuery            string
+	getPermissionByCodeQuery          string
+	assignPermissionQuery             string
+	revokePermissionQuery             string
+	assignUserRoleQuery               string
+	revokeUserRoleQuery               string
+	permissionCodesForRoleQuery       string
+	getUserMaxRoleLevelQuery          string
+	getPermissionCodesByRoleCodeQuery string
+	listSystemRoleEntriesQuery        string
 }
 
 func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.RbacRepository {
-	return &RbacRepository{cfg: cfg, db: db}
+	schema := cfg.SchemaSQL.IAM
+	return &RbacRepository{
+		cfg:    cfg,
+		db:     db,
+		schema: schema,
+		getRoleByCodeQuery: fmt.Sprintf(
+			`SELECT id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at FROM %s.roles WHERE code = $1`,
+			schema,
+		),
+		listRolesQuery: fmt.Sprintf(
+			`SELECT id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at FROM %s.roles ORDER BY code ASC`,
+			schema,
+		),
+		getRoleByIDQuery: fmt.Sprintf(
+			`SELECT id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at FROM %s.roles WHERE id = $1`,
+			schema,
+		),
+		createRoleQuery: fmt.Sprintf(
+			`INSERT INTO %s.roles (id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())`,
+			schema,
+		),
+		updateRoleQuery: fmt.Sprintf(
+			`UPDATE %s.roles SET code=$2, name=$3, description=$4, scope_type=$5, role_level=$6, is_system=$7, is_protected=$8, is_assignable=$9, owner_tenant_id=$10, updated_at=NOW() WHERE id=$1`,
+			schema,
+		),
+		deleteRolePermissionsQuery: fmt.Sprintf(
+			`DELETE FROM %s.role_permissions WHERE role_id=$1`,
+			schema,
+		),
+		deleteUserRoleAssignsQuery: fmt.Sprintf(
+			`DELETE FROM %s.user_role_assignments WHERE role_id=$1`,
+			schema,
+		),
+		deleteRoleQuery: fmt.Sprintf(
+			`DELETE FROM %s.roles WHERE id=$1`,
+			schema,
+		),
+		listPermissionsQuery: fmt.Sprintf(
+			`SELECT id, code, name, description, resource, action, created_at, updated_at FROM %s.permissions ORDER BY code ASC`,
+			schema,
+		),
+		getPermissionByIDQuery: fmt.Sprintf(
+			`SELECT id, code, name, description, resource, action, created_at, updated_at FROM %s.permissions WHERE id=$1`,
+			schema,
+		),
+		getPermissionByCodeQuery: fmt.Sprintf(
+			`SELECT id, code, name, description, resource, action, created_at, updated_at FROM %s.permissions WHERE code=$1`,
+			schema,
+		),
+		assignPermissionQuery: fmt.Sprintf(
+			`INSERT INTO %s.role_permissions (role_id, permission_id, created_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`,
+			schema,
+		),
+		revokePermissionQuery: fmt.Sprintf(
+			`DELETE FROM %s.role_permissions WHERE role_id=$1 AND permission_id=$2`,
+			schema,
+		),
+		assignUserRoleQuery: fmt.Sprintf(
+			`INSERT INTO %s.user_role_assignments (id, user_id, role_id, scope_type, tenant_id, workspace_id, expires_at, assigned_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT DO NOTHING`,
+			schema,
+		),
+		revokeUserRoleQuery: fmt.Sprintf(
+			`UPDATE %s.user_role_assignments SET revoked_at = NOW() WHERE user_id=$1 AND role_id=$2 AND revoked_at IS NULL`,
+			schema,
+		),
+		permissionCodesForRoleQuery: fmt.Sprintf(
+			`SELECT p.code FROM %s.permissions p JOIN %s.role_permissions rp ON rp.permission_id = p.id WHERE rp.role_id=$1 ORDER BY p.code ASC`,
+			schema,
+			schema,
+		),
+		getUserMaxRoleLevelQuery: fmt.Sprintf(
+			`SELECT COALESCE(MIN(r.role_level), 999999) FROM %s.user_role_assignments ura JOIN %s.roles r ON ura.role_id = r.id WHERE ura.user_id = $1 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) AND ura.revoked_at IS NULL`,
+			schema,
+			schema,
+		),
+		// Query only permission codes for a role code to minimize overhead (for lazy load fallback)
+		getPermissionCodesByRoleCodeQuery: fmt.Sprintf(
+			`SELECT p.code FROM %s.permissions p JOIN %s.role_permissions rp ON rp.permission_id = p.id JOIN %s.roles r ON rp.role_id = r.id WHERE r.code = $1 ORDER BY p.code ASC`,
+			schema,
+			schema,
+			schema,
+		),
+		// Preload/Warm up all system and protected roles & their permissions in a single joint query
+		listSystemRoleEntriesQuery: fmt.Sprintf(
+			`SELECT r.id, r.code, r.name, r.description, r.scope_type, r.role_level, r.is_system, r.is_protected, r.is_assignable, r.owner_tenant_id, r.created_at, r.updated_at, p.code FROM %s.roles r LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id LEFT JOIN %s.permissions p ON rp.permission_id = p.id WHERE r.is_system = true OR r.is_protected = true ORDER BY r.code ASC`,
+			schema,
+			schema,
+			schema,
+		),
+	}
 }
 
 func (r *RbacRepository) GetRoleByCode(ctx context.Context, code string) (*iamEntity.RoleWithPermissions, error) {
 	roleCode := strings.TrimSpace(strings.ToLower(code))
 	var role iamEntity.Role
-	err := r.db.QueryRow(ctx, `SELECT id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at FROM roles WHERE code = $1`, roleCode).
+	err := r.db.QueryRow(ctx, r.getRoleByCodeQuery, roleCode).
 		Scan(&role.ID, &role.Code, &role.Name, &role.Description, &role.ScopeType, &role.RoleLevel, &role.IsSystem, &role.IsProtected, &role.IsAssignable, &role.OwnerTenantID, &role.CreatedAt, &role.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: get role by code: %w", err)
 	}
-	perms, err := r.permissionCodesForRole(ctx, role.ID.String())
+	perms, err := r.permissionCodesForRole(ctx, role.ID)
 	if err != nil {
 		return nil, err
 	}
 	return &iamEntity.RoleWithPermissions{Role: &role, Permissions: perms}, nil
 }
 
-func (r *RbacRepository) ListRoleEntries(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error) {
-	roles, err := r.ListRoles(ctx)
+func (r *RbacRepository) GetPermissionCodesByRoleCode(ctx context.Context, roleCode string) ([]string, error) {
+	// Query only permission codes for a role code to minimize data parsed from DB.
+	code := strings.TrimSpace(strings.ToLower(roleCode))
+	rows, err := r.db.Query(ctx, r.getPermissionCodesByRoleCodeQuery, code)
 	if err != nil {
+		return nil, fmt.Errorf("iam rbac repo: get permission codes by role code: %w", err)
+	}
+	defer rows.Close()
+
+	var perms []string
+	for rows.Next() {
+		var perm string
+		if err := rows.Scan(&perm); err != nil {
+			return nil, fmt.Errorf("iam rbac repo: scan permission code: %w", err)
+		}
+		perms = append(perms, perm)
+	}
+	return perms, rows.Err()
+}
+
+func (r *RbacRepository) ListSystemRoleEntries(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error) {
+	// Query all system and protected roles & their permissions in a single joint query.
+	rows, err := r.db.Query(ctx, r.listSystemRoleEntriesQuery)
+	if err != nil {
+		return nil, fmt.Errorf("iam rbac repo: list system role entries: %w", err)
+	}
+	defer rows.Close()
+
+	roleMap := make(map[uuid.UUID]*iamEntity.RoleWithPermissions)
+	var roleOrder []uuid.UUID
+
+	for rows.Next() {
+		var role iamEntity.Role
+		var permCode *string // Use pointer in case the role has no permissions (NULL from LEFT JOIN)
+		if err := rows.Scan(
+			&role.ID, &role.Code, &role.Name, &role.Description, &role.ScopeType,
+			&role.RoleLevel, &role.IsSystem, &role.IsProtected, &role.IsAssignable,
+			&role.OwnerTenantID, &role.CreatedAt, &role.UpdatedAt, &permCode,
+		); err != nil {
+			return nil, fmt.Errorf("iam rbac repo: scan system role entry: %w", err)
+		}
+
+		entry, exists := roleMap[role.ID]
+		if !exists {
+			entry = &iamEntity.RoleWithPermissions{
+				Role:        &role,
+				Permissions: []string{},
+			}
+			roleMap[role.ID] = entry
+			roleOrder = append(roleOrder, role.ID)
+		}
+		if permCode != nil && *permCode != "" {
+			entry.Permissions = append(entry.Permissions, *permCode)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]*iamEntity.RoleWithPermissions, 0, len(roles))
-	for _, role := range roles {
-		if role == nil {
-			continue
-		}
-		perms, perr := r.permissionCodesForRole(ctx, role.ID.String())
-		if perr != nil {
-			return nil, perr
-		}
-		out = append(out, &iamEntity.RoleWithPermissions{Role: role, Permissions: perms})
+
+	out := make([]*iamEntity.RoleWithPermissions, 0, len(roleOrder))
+	for _, id := range roleOrder {
+		out = append(out, roleMap[id])
 	}
 	return out, nil
 }
 
 func (r *RbacRepository) ListRoles(ctx context.Context) ([]*iamEntity.Role, error) {
-	rows, err := r.db.Query(ctx, `SELECT id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at FROM roles ORDER BY code ASC`)
+	rows, err := r.db.Query(ctx, r.listRolesQuery)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: list roles: %w", err)
 	}
@@ -76,13 +234,9 @@ func (r *RbacRepository) ListRoles(ctx context.Context) ([]*iamEntity.Role, erro
 	return out, rows.Err()
 }
 
-func (r *RbacRepository) GetRoleByID(ctx context.Context, id string) (*iamEntity.Role, error) {
-	uid, err := uuid.Parse(strings.TrimSpace(id))
-	if err != nil {
-		return nil, err
-	}
+func (r *RbacRepository) GetRoleByID(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error) {
 	var role iamEntity.Role
-	err = r.db.QueryRow(ctx, `SELECT id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at FROM roles WHERE id = $1`, uid).
+	err := r.db.QueryRow(ctx, r.getRoleByIDQuery, id).
 		Scan(&role.ID, &role.Code, &role.Name, &role.Description, &role.ScopeType, &role.RoleLevel, &role.IsSystem, &role.IsProtected, &role.IsAssignable, &role.OwnerTenantID, &role.CreatedAt, &role.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: get role: %w", err)
@@ -97,7 +251,7 @@ func (r *RbacRepository) CreateRole(ctx context.Context, role *iamEntity.Role) e
 	if role.ID == uuid.Nil {
 		role.ID = uuid.New()
 	}
-	_, err := r.db.Exec(ctx, `INSERT INTO roles (id, code, name, description, scope_type, role_level, is_system, is_protected, is_assignable, owner_tenant_id, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())`,
+	_, err := r.db.Exec(ctx, r.createRoleQuery,
 		role.ID,
 		strings.ToLower(strings.TrimSpace(role.Code)),
 		strings.TrimSpace(role.Name),
@@ -119,7 +273,7 @@ func (r *RbacRepository) UpdateRole(ctx context.Context, role *iamEntity.Role) e
 	if role == nil || role.ID == uuid.Nil {
 		return fmt.Errorf("iam rbac repo: invalid role payload")
 	}
-	tag, err := r.db.Exec(ctx, `UPDATE roles SET code=$2, name=$3, description=$4, scope_type=$5, role_level=$6, is_system=$7, is_protected=$8, is_assignable=$9, owner_tenant_id=$10, updated_at=NOW() WHERE id=$1`,
+	tag, err := r.db.Exec(ctx, r.updateRoleQuery,
 		role.ID,
 		strings.ToLower(strings.TrimSpace(role.Code)),
 		strings.TrimSpace(role.Name),
@@ -149,13 +303,13 @@ func (r *RbacRepository) DeleteRole(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("iam rbac repo: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1`, id); err != nil {
+	if _, err := tx.Exec(ctx, r.deleteRolePermissionsQuery, id); err != nil {
 		return fmt.Errorf("iam rbac repo: delete role permissions: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM user_role_assignments WHERE role_id=$1`, id); err != nil {
+	if _, err := tx.Exec(ctx, r.deleteUserRoleAssignsQuery, id); err != nil {
 		return fmt.Errorf("iam rbac repo: delete user roles: %w", err)
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM roles WHERE id=$1`, id)
+	tag, err := tx.Exec(ctx, r.deleteRoleQuery, id)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: delete role: %w", err)
 	}
@@ -166,7 +320,7 @@ func (r *RbacRepository) DeleteRole(ctx context.Context, id uuid.UUID) error {
 }
 
 func (r *RbacRepository) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
-	rows, err := r.db.Query(ctx, `SELECT id, code, name, description, resource, action, created_at, updated_at FROM permissions ORDER BY code ASC`)
+	rows, err := r.db.Query(ctx, r.listPermissionsQuery)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: list permissions: %w", err)
 	}
@@ -182,13 +336,9 @@ func (r *RbacRepository) ListPermissions(ctx context.Context) ([]*iamEntity.Perm
 	return out, rows.Err()
 }
 
-func (r *RbacRepository) GetPermissionByID(ctx context.Context, id string) (*iamEntity.Permission, error) {
-	uid, err := uuid.Parse(strings.TrimSpace(id))
-	if err != nil {
-		return nil, err
-	}
+func (r *RbacRepository) GetPermissionByID(ctx context.Context, id uuid.UUID) (*iamEntity.Permission, error) {
 	var p iamEntity.Permission
-	err = r.db.QueryRow(ctx, `SELECT id, code, name, description, resource, action, created_at, updated_at FROM permissions WHERE id=$1`, uid).
+	err := r.db.QueryRow(ctx, r.getPermissionByIDQuery, id).
 		Scan(&p.ID, &p.Code, &p.Name, &p.Description, &p.Resource, &p.Action, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: get permission by id: %w", err)
@@ -198,7 +348,7 @@ func (r *RbacRepository) GetPermissionByID(ctx context.Context, id string) (*iam
 
 func (r *RbacRepository) GetPermissionByCode(ctx context.Context, code string) (*iamEntity.Permission, error) {
 	var p iamEntity.Permission
-	err := r.db.QueryRow(ctx, `SELECT id, code, name, description, resource, action, created_at, updated_at FROM permissions WHERE code=$1`, strings.ToLower(strings.TrimSpace(code))).
+	err := r.db.QueryRow(ctx, r.getPermissionByCodeQuery, strings.ToLower(strings.TrimSpace(code))).
 		Scan(&p.ID, &p.Code, &p.Name, &p.Description, &p.Resource, &p.Action, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: get permission by code: %w", err)
@@ -207,7 +357,7 @@ func (r *RbacRepository) GetPermissionByCode(ctx context.Context, code string) (
 }
 
 func (r *RbacRepository) AssignPermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id, created_at) VALUES ($1,$2,NOW()) ON CONFLICT DO NOTHING`, roleID, permissionID)
+	_, err := r.db.Exec(ctx, r.assignPermissionQuery, roleID, permissionID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign key violation
@@ -219,7 +369,7 @@ func (r *RbacRepository) AssignPermission(ctx context.Context, roleID, permissio
 }
 
 func (r *RbacRepository) RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM role_permissions WHERE role_id=$1 AND permission_id=$2`, roleID, permissionID)
+	tag, err := r.db.Exec(ctx, r.revokePermissionQuery, roleID, permissionID)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: revoke permission: %w", err)
 	}
@@ -229,46 +379,24 @@ func (r *RbacRepository) RevokePermission(ctx context.Context, roleID, permissio
 	return nil
 }
 
-func (r *RbacRepository) AssignUserRole(ctx context.Context, userID, roleID string) error {
-	uid, err := uuid.Parse(strings.TrimSpace(userID))
-	if err != nil {
-		return err
-	}
-	rid, err := uuid.Parse(strings.TrimSpace(roleID))
-	if err != nil {
-		return err
-	}
-	// V1 rollout: chỉ ghi assignment platform scope.
-	// Tenant/workspace scoped assignment sẽ bổ sung ở phase sau cùng validation invariant theo spec.
-	_, err = r.db.Exec(ctx, `INSERT INTO user_role_assignments (id, user_id, role_id, scope_type, assigned_at) VALUES ($1,$2,$3,'platform',NOW()) ON CONFLICT DO NOTHING`, uuid.New(), uid, rid)
+func (r *RbacRepository) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error {
+	_, err := r.db.Exec(ctx, r.assignUserRoleQuery, uuid.New(), userID, roleID, scopeType, tenantID, workspaceID, expiresAt)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: assign user role: %w", err)
 	}
 	return nil
 }
 
-func (r *RbacRepository) RevokeUserRole(ctx context.Context, userID, roleID string) error {
-	uid, err := uuid.Parse(strings.TrimSpace(userID))
-	if err != nil {
-		return err
-	}
-	rid, err := uuid.Parse(strings.TrimSpace(roleID))
-	if err != nil {
-		return err
-	}
-	_, err = r.db.Exec(ctx, `UPDATE user_roles SET revoked_at = NOW() WHERE user_id=$1 AND role_id=$2 AND revoked_at IS NULL`, uid, rid)
+func (r *RbacRepository) RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, r.revokeUserRoleQuery, userID, roleID)
 	if err != nil {
 		return fmt.Errorf("iam rbac repo: revoke user role: %w", err)
 	}
 	return nil
 }
 
-func (r *RbacRepository) permissionCodesForRole(ctx context.Context, roleID string) ([]string, error) {
-	rid, err := uuid.Parse(strings.TrimSpace(roleID))
-	if err != nil {
-		return nil, err
-	}
-	rows, err := r.db.Query(ctx, `SELECT p.code FROM permissions p JOIN role_permissions rp ON rp.permission_id = p.id WHERE rp.role_id=$1 ORDER BY p.code ASC`, rid)
+func (r *RbacRepository) permissionCodesForRole(ctx context.Context, roleID uuid.UUID) ([]string, error) {
+	rows, err := r.db.Query(ctx, r.permissionCodesForRoleQuery, roleID)
 	if err != nil {
 		return nil, fmt.Errorf("iam rbac repo: query perms for role: %w", err)
 	}
@@ -282,4 +410,13 @@ func (r *RbacRepository) permissionCodesForRole(ctx context.Context, roleID stri
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+func (r *RbacRepository) GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error) {
+	var level int
+	err := r.db.QueryRow(ctx, r.getUserMaxRoleLevelQuery, userID).Scan(&level)
+	if err != nil {
+		return 999999, fmt.Errorf("iam rbac repo: get user max role level: %w", err)
+	}
+	return level, nil
 }

@@ -4,21 +4,25 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
 type rbacRepoMock struct {
-	getRoleByIDFn   func(ctx context.Context, id string) (*iamEntity.Role, error)
-	getRoleByCodeFn func(ctx context.Context, code string) (*iamEntity.RoleWithPermissions, error)
-	listRolesFn     func(ctx context.Context) ([]*iamEntity.Role, error)
+	getRoleByIDFn                  func(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error)
+	getRoleByCodeFn                func(ctx context.Context, code string) (*iamEntity.RoleWithPermissions, error)
+	listRolesFn                    func(ctx context.Context) ([]*iamEntity.Role, error)
+	getPermissionCodesByRoleCodeFn func(ctx context.Context, roleCode string) ([]string, error)
+	listSystemRoleEntriesFn        func(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error)
 }
 
 var _ iamRepoInterface.RbacRepository = (*rbacRepoMock)(nil)
@@ -29,7 +33,16 @@ func (m *rbacRepoMock) GetRoleByCode(ctx context.Context, code string) (*iamEnti
 	}
 	return nil, nil
 }
-func (m *rbacRepoMock) ListRoleEntries(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error) {
+func (m *rbacRepoMock) GetPermissionCodesByRoleCode(ctx context.Context, roleCode string) ([]string, error) {
+	if m.getPermissionCodesByRoleCodeFn != nil {
+		return m.getPermissionCodesByRoleCodeFn(ctx, roleCode)
+	}
+	return nil, nil
+}
+func (m *rbacRepoMock) ListSystemRoleEntries(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error) {
+	if m.listSystemRoleEntriesFn != nil {
+		return m.listSystemRoleEntriesFn(ctx)
+	}
 	return nil, nil
 }
 func (m *rbacRepoMock) ListRoles(ctx context.Context) ([]*iamEntity.Role, error) {
@@ -38,7 +51,7 @@ func (m *rbacRepoMock) ListRoles(ctx context.Context) ([]*iamEntity.Role, error)
 	}
 	return nil, nil
 }
-func (m *rbacRepoMock) GetRoleByID(ctx context.Context, id string) (*iamEntity.Role, error) {
+func (m *rbacRepoMock) GetRoleByID(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error) {
 	if m.getRoleByIDFn != nil {
 		return m.getRoleByIDFn(ctx, id)
 	}
@@ -46,11 +59,11 @@ func (m *rbacRepoMock) GetRoleByID(ctx context.Context, id string) (*iamEntity.R
 }
 func (m *rbacRepoMock) CreateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
 func (m *rbacRepoMock) UpdateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
-func (m *rbacRepoMock) DeleteRole(ctx context.Context, id uuid.UUID) error            { return nil }
+func (m *rbacRepoMock) DeleteRole(ctx context.Context, id uuid.UUID) error        { return nil }
 func (m *rbacRepoMock) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
 	return nil, nil
 }
-func (m *rbacRepoMock) GetPermissionByID(ctx context.Context, id string) (*iamEntity.Permission, error) {
+func (m *rbacRepoMock) GetPermissionByID(ctx context.Context, id uuid.UUID) (*iamEntity.Permission, error) {
 	return nil, nil
 }
 func (m *rbacRepoMock) GetPermissionByCode(ctx context.Context, code string) (*iamEntity.Permission, error) {
@@ -65,31 +78,26 @@ func (m *rbacRepoMock) AssignPermission(ctx context.Context, roleID, permissionI
 func (m *rbacRepoMock) RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
 	return nil
 }
-func (m *rbacRepoMock) AssignUserRole(ctx context.Context, userID, roleID string) error { return nil }
-func (m *rbacRepoMock) RevokeUserRole(ctx context.Context, userID, roleID string) error { return nil }
-
-func TestRbacServiceGetRoleInvalidUUIDMapsInvalidArgument(t *testing.T) {
-	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{getRoleByIDFn: func(ctx context.Context, id string) (*iamEntity.Role, error) {
-		_, err := uuid.Parse("not-a-uuid")
-		return nil, err
-	}}, nil)
-
-	_, err := svc.GetRole(context.Background(), "bad-id")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-		t.Fatalf("expected ErrInvalidArgument, got %v", err)
-	}
-	_, ok := apperr.As(err)
-	if ok {
-		t.Fatalf("expected raw error, not wrapped app error envelope")
-	}
+func (m *rbacRepoMock) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error {
+	return nil
+}
+func (m *rbacRepoMock) RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error {
+	return nil
+}
+func (m *rbacRepoMock) GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error) {
+	return 999999, nil
 }
 
 func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
-	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{getRoleByIDFn: func(ctx context.Context, id string) (*iamEntity.Role, error) {
-		return nil, pgx.ErrNoRows
-	}}, nil)
+	roleID := uuid.New()
+	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{
+		getRoleByIDFn: func(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error) {
+			return nil, pgx.ErrNoRows
+		},
+	}, nil)
 
-	_, err := svc.GetRole(context.Background(), uuid.NewString())
+	ctx := context.WithValue(context.Background(), constant.ContextKeyLevel, 0)
+	_, err := svc.GetRole(ctx, roleID)
 	if !errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
 		t.Fatalf("expected ErrRoleNotFound, got %v", err)
 	}
@@ -101,11 +109,14 @@ func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 
 func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 	raw := errors.New("db down")
-	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{listRolesFn: func(ctx context.Context) ([]*iamEntity.Role, error) {
-		return nil, raw
-	}}, nil)
+	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{
+		listRolesFn: func(ctx context.Context) ([]*iamEntity.Role, error) {
+			return nil, raw
+		},
+	}, nil)
 
-	_, err := svc.ListRoles(context.Background())
+	ctx := context.WithValue(context.Background(), constant.ContextKeyLevel, 0)
+	_, err := svc.ListRoles(ctx)
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}

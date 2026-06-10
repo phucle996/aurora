@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -60,6 +61,15 @@ func userID(c *gin.Context) string {
 	return s
 }
 
+func traceID(c *gin.Context) string {
+
+	spanCtx := trace.SpanContextFromContext(c.Request.Context())
+	if spanCtx.IsValid() {
+		return spanCtx.TraceID().String()
+	}
+	return ""
+}
+
 func AccessLog(c *gin.Context, op, errorCode, method, route string, statusCode int, latencyMs float64, clientIP string) {
 	fields := logrus.Fields{
 		"log_type":    LogTypeAccess,
@@ -69,6 +79,9 @@ func AccessLog(c *gin.Context, op, errorCode, method, route string, statusCode i
 		"status_code": statusCode,
 		"latency_ms":  latencyMs,
 		"client_ip":   clientIP,
+	}
+	if tID := traceID(c); tID != "" {
+		fields["trace_id"] = tID
 	}
 	if code := strings.TrimSpace(errorCode); code != "" {
 		fields["error_code"] = code
@@ -80,12 +93,16 @@ func AccessLog(c *gin.Context, op, errorCode, method, route string, statusCode i
 }
 
 func HandlerInfo(c *gin.Context, op, message string) {
-	L().WithFields(logrus.Fields{
+	fields := logrus.Fields{
 		"log_type":   LogTypeHandler,
 		"request_id": requestID(c),
 		"user_id":    userID(c),
 		"op":         op,
-	}).Info(message)
+	}
+	if tID := traceID(c); tID != "" {
+		fields["trace_id"] = tID
+	}
+	L().WithFields(fields).Info(message)
 }
 
 func HandlerWarn(c *gin.Context, op string, err error, message string) {
@@ -94,6 +111,9 @@ func HandlerWarn(c *gin.Context, op string, err error, message string) {
 		"request_id": requestID(c),
 		"user_id":    userID(c),
 		"op":         op,
+	}
+	if tID := traceID(c); tID != "" {
+		fields["trace_id"] = tID
 	}
 	appendAppErrorFields(fields, err)
 	if err != nil {
@@ -108,6 +128,9 @@ func HandlerWarnWithFields(c *gin.Context, op string, err error, message string,
 		"request_id": requestID(c),
 		"user_id":    userID(c),
 		"op":         op,
+	}
+	if tID := traceID(c); tID != "" {
+		fields["trace_id"] = tID
 	}
 	appendAppErrorFields(fields, err)
 	for key, value := range extra {
@@ -125,6 +148,9 @@ func HandlerError(c *gin.Context, op string, err error) {
 		"request_id": requestID(c),
 		"user_id":    userID(c),
 		"op":         op,
+	}
+	if tID := traceID(c); tID != "" {
+		fields["trace_id"] = tID
 	}
 	appendAppErrorFields(fields, err)
 	if err != nil {
@@ -146,6 +172,9 @@ func HandlerErrorWithFields(c *gin.Context, op string, err error, extra Fields) 
 		"request_id": requestID(c),
 		"user_id":    userID(c),
 		"op":         op,
+	}
+	if tID := traceID(c); tID != "" {
+		fields["trace_id"] = tID
 	}
 	appendAppErrorFields(fields, err)
 	for key, value := range extra {

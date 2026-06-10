@@ -2,9 +2,11 @@ package iam
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"time"
 
+	"controlplane/internal/http/middleware"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/logger"
@@ -21,6 +23,12 @@ import (
 // - Business logic rotate nằm ở service/repo.
 // - Bootstrap chỉ orchestration, không chứa persistence logic.
 func (m *IAMModule) Bootstrap(ctx context.Context) error {
+	// Khởi động warm-up toàn bộ System Roles vào L1 Cache lúc boot
+	if err := m.WarmUpSystemRoles(ctx); err != nil {
+		logger.SysError("iam.rbac.warmup.failed", err.Error())
+		return fmt.Errorf("iam rbac warm up: %w", err)
+	}
+
 	if err := m.AdminAPIKeyService.Bootstrap(ctx); err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			// Bootstrap already completed in a previous run.
@@ -182,4 +190,36 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 			iamMetrics.ServiceCall("device_cap_reconcile", "success", "n/a")
 		}
 	}
+}
+
+// WarmUpSystemRoles nạp sẵn toàn bộ System Roles vào L1 Cache lúc ứng dụng boot.
+func (m *IAMModule) WarmUpSystemRoles(ctx context.Context) error {
+	const op = "iam.rbac.warmup"
+	logger.SysInfoFields(op, "warming up system roles", logger.Fields{})
+
+	if m.L1Registry == nil || m.RbacRepository == nil {
+		return fmt.Errorf("iam rbac warmup: dependencies not fully initialized")
+	}
+
+	entries, err := m.RbacRepository.ListSystemRoleEntries(ctx)
+	if err != nil {
+		return fmt.Errorf("warm up system roles: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry == nil || entry.Role == nil {
+			continue
+		}
+		roleCode := entry.Role.Code
+		// Gọi GetOrLoad để nạp và kích hoạt cache L1 cho role hệ thống
+		_, err := m.L1Registry.GetOrLoad(ctx, "rbac_role", roleCode)
+		if err != nil {
+			logger.SysError(op, fmt.Sprintf("failed to warm up system role %q: %v", roleCode, err))
+			return err
+		}
+		// Đăng ký vào middleware.GlobalSystemRoleRegistry để phân định L1/L2
+		middleware.RegisterSystemRole(roleCode)
+	}
+	logger.SysInfoFields(op, fmt.Sprintf("successfully warmed up %d system roles", len(entries)), logger.Fields{})
+	return nil
 }

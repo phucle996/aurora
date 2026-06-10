@@ -221,11 +221,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		middleware.InitRateLimitPolicy(*policy)
 	})
 	middleware.InitZoneAuth(cacheEngine)
-	middleware.InitAccess(
-		cacheEngine,
-		rds,
-		10*time.Second,
-	)
+	middleware.InitAccess(cacheEngine, 10*time.Second)
 	if err := middleware.InitAdminAPIKeyAuth(
 		cacheEngine,
 		func(ctx context.Context, accessKey string, accessSecret string) (bool, error) {
@@ -237,12 +233,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}
-	if err := middleware.InitAdminCriticalSignature(
-		cacheEngine,
-		rds,
-		time.Minute,
-		2*time.Minute,
-	); err != nil {
+	if err := middleware.InitAdminCriticalSignature(cacheEngine, time.Minute, 2*time.Minute); err != nil {
 		return fmt.Errorf("app: init admin critical signature middleware: %w", err)
 	}
 	if err := middleware.InitAdminCriticalStepUp2FA(cacheEngine); err != nil {

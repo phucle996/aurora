@@ -34,6 +34,11 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 		_, _ = conn.Exec(ctx, "ROLLBACK")
 	}()
 
+	// Acquire a transaction-level advisory lock to serialize concurrent migrations across HA nodes
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_xact_lock(1103)"); err != nil {
+		return fmt.Errorf("mail migration: acquire advisory lock: %w", err)
+	}
+
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
 	}

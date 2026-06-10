@@ -92,8 +92,44 @@ func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheReg
 	return registry
 }
 
+type deviceServiceStub struct {
+	registerLoginDeviceFn func(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
+}
+
+var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
+
+func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID string, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+	return nil, nil
+}
+func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, userID string, deviceID string, ip *string, userAgent *string) error {
+	return nil
+}
+func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, userID string, currentTrackedDeviceID string, ip *string, userAgent *string) (int64, error) {
+	return 0, nil
+}
+func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, userID string, ip *string, userAgent *string) (int64, error) {
+	return 0, nil
+}
+func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
+	if s.registerLoginDeviceFn != nil {
+		return s.registerLoginDeviceFn(ctx, device)
+	}
+	device.ID = uuid.NewString()
+	return &device, nil
+}
+func (s *deviceServiceStub) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+	return nil
+}
+func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {
+}
+func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
+	return 0, nil
+}
+func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
+}
+
 func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
-	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, nil, &deviceRepoMock{}, registry, nil, nil)
+	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, nil, &deviceServiceStub{}, registry, nil, nil)
 }
 
 func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {

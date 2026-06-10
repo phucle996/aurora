@@ -121,7 +121,13 @@ func (h *RbacHandler) UpdateRole(c *gin.Context) {
 	const op = "iam.rbac.update_role"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	id := strings.TrimSpace(c.Param("id"))
+	idStr := strings.TrimSpace(c.Param("id"))
+	id, err := uuid.Parse(idStr)
+	if err != nil || id == uuid.Nil {
+		logger.HandlerWarn(c, op, err, "invalid role id")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
 	var req iamReq.UpdateRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		logger.HandlerWarn(c, op, err, "bind failed")

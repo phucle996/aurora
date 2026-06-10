@@ -3,26 +3,30 @@
 // ============================================================================
 //
 // 🤝 1. SYSTEM CONTRACT
-//   - Token Extraction: Trích xuất Bearer token từ Authorization header. Không chấp nhận fallback
-//     sang cookie để duy trì tính nhất quán cho luồng API xác thực.
-//   - Device Binding: Khi bật runtimeCache, xác thực sự khớp nhau giữa claims trong JWT và cặp cookie
-//     (access_key, access_secret) so với bản ghi lưu trữ trên Redis thông qua graceWindow.
-//   - Fail-Closed: Khi thiếu các runtime dependencies hoặc xảy ra lỗi kết nối Redis, hệ thống sẽ trả
-//     về lỗi 503 Service Unavailable để tránh bỏ lọt request lỗi.
+//   - Token Extraction: Trích xuất Bearer token từ Authorization header.
+//     Nếu không có, fallback sang cookie `access_token` để hỗ trợ browser-based flow.
+//   - Session Binding: Sau khi parse JWT lấy ra access_key, tra bản ghi phiên trong
+//     Redis thông qua CacheEngine L2 (không dùng rdb trực tiếp) để xác thực
+//     access_key + access_secret_hash có khớp hay không.
+//   - Fail-Closed: Khi thiếu dependencies hoặc lỗi kết nối Redis → 503 Service Unavailable.
 //
 // 📖 2. SOURCE OF TRUTH
-//   - Danh sách Candidate Secrets thu nhận từ SecretProvider để thực hiện giải mã token.
-//   - Trạng thái thu hồi session (blacklist) được kiểm tra trực tiếp qua Redis.
+//   - Signing secret: lấy từ CacheRegistry (L1 cache → loader → DB).
+//   - Session state: lưu tại Redis dưới key `iam:user_access_session:<userID>:<accessKey>`.
+//     Được truy vấn qua CacheEngine L2 để giữ abstraction nhất quán.
 //
 // 🚧 3. SYSTEM BOUNDARY
-//   - Đóng vai trò là cửa ngõ kiểm soát danh tính (Authentication Gate) của tầng HTTP.
-//   - Chỉ thực hiện trích xuất, xác thực và tiêm các thông tin cơ bản vào context để các service nghiệp
-//     vụ và handler phía sau tiêu thụ.
+//   - Đóng vai trò Authentication Gate của tầng HTTP.
+//   - Chỉ xác thực danh tính và tiêm thông tin định danh vào context.
+//     Không thực hiện authorization hoặc RBAC ở đây.
 //
-// 💡 4. OPERATIONAL NOTES
-//   - Hiệu năng (Local Blacklist Cache): Sử dụng bộ nhớ trong `revokedJTICache` để lưu tạm các token đã bị
-//     thu hồi (revoked = true) trong 5 phút. Không cache token hợp lệ để đảm bảo thao tác đăng xuất/thu hồi
-//     session lập tức có hiệu lực trên toàn cụm.
+// 💡 4. LUỒNG XỬ LÝ
+//   1. Lấy access token từ Authorization header hoặc cookie.
+//   2. GetOrLoad access_secret từ CacheRegistry → parse JWT → lấy claims.AccessKey.
+//   3. Lấy access_secret từ cookie.
+//   4. Tra bản ghi phiên từ Redis L2 theo key = userID + accessKey từ claims.
+//   5. So khớp access_key cookie với claims, hash access_secret, graceWindow JTI.
+//   6. Tiêm claims + định danh phiên vào Gin context + Go context.
 
 package middleware
 
@@ -42,7 +46,6 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
 // accessMiddleware nắm giữ handler động cho middleware Access.
@@ -51,14 +54,15 @@ var accessMiddleware = struct {
 	handler gin.HandlerFunc
 }{}
 
-// InitAccess khởi tạo dependencies cho middleware Access.
-func InitAccess(registry *cacheengine.CacheRegistry, rdb *redis.Client, graceWindow time.Duration) {
+// InitAccess khởi tạo middleware Access với CacheRegistry duy nhất.
+// Không nhận raw redis.Client — tất cả I/O Redis đi qua registry.L2.
+func InitAccess(registry *cacheengine.CacheRegistry, graceWindow time.Duration) {
 	accessMiddleware.mu.Lock()
-	accessMiddleware.handler = buildAccessHandler(registry, rdb, graceWindow)
+	accessMiddleware.handler = buildAccessHandler(registry, graceWindow)
 	accessMiddleware.mu.Unlock()
 }
 
-// Access định tuyến yêu cầu xác thực sang handler đang hoạt động.
+// Access trả về gin.HandlerFunc đang hoạt động.
 func Access() gin.HandlerFunc {
 	accessMiddleware.mu.RLock()
 	handler := accessMiddleware.handler
@@ -72,20 +76,39 @@ func Access() gin.HandlerFunc {
 	return handler
 }
 
-// buildAccessHandler xây dựng hàm xác thực JWT, so khớp cookie và inject context.
-func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, graceWindow time.Duration) gin.HandlerFunc {
+// userAccessSession là struct nội bộ ánh xạ bản ghi phiên lưu trong Redis.
+type userAccessSession struct {
+	AccessKey        string `json:"access_key"`
+	AccessSecretHash string `json:"access_secret_hash"`
+	CurrentJTI       string `json:"current_jti"`
+	PreviousJTI      string `json:"previous_jti,omitempty"`
+	PreviousIssuedAt int64  `json:"previous_issued_at,omitempty"`
+	CurrentIssuedAt  int64  `json:"current_issued_at,omitempty"`
+	TrackedDeviceID  string `json:"tracked_device_id"`
+	UserID           string `json:"user_id"`
+	Status           string `json:"status,omitempty"`
+}
+
+// buildAccessHandler xây dựng hàm xác thực JWT, tra phiên Redis, và inject context.
+func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Duration) gin.HandlerFunc {
 	if graceWindow <= 0 {
 		graceWindow = 10 * time.Second
 	}
-	cookiePath := "/"
-	cookieDomain := ""
+	const cookiePath = "/"
+	const cookieDomain = ""
 
 	return func(c *gin.Context) {
 		// --------------------------------------------------------------------
-		// 🔄 Trích xuất Bearer token từ Authorization header.
+		// BƯỚC 1: LẤY ACCESS TOKEN TỪ HEADER HOẶC COOKIE
+		// Ưu tiên Authorization header (Bearer <token>), fallback sang cookie.
 		// --------------------------------------------------------------------
-		token, ok := security.ExtractBearerToken(c.GetHeader("Authorization"))
-		if !ok {
+		var rawToken string
+		if bearer, ok := security.ExtractBearerToken(c.GetHeader("Authorization")); ok {
+			rawToken = bearer
+		} else if cookieToken, err := c.Cookie(constant.AccessTokenName); err == nil {
+			rawToken = strings.TrimSpace(cookieToken)
+		}
+		if rawToken == "" {
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -93,43 +116,31 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 		}
 
 		// --------------------------------------------------------------------
-		// 🔄 Kiểm tra xem CacheRegistry đã được khởi tạo thành công chưa.
+		// BƯỚC 2: LẤY SIGNING SECRET TỪ CACHE REGISTRY → PARSE JWT
+		// GetOrLoad đi qua L1 in-memory trước, miss thì load từ DB.
 		// --------------------------------------------------------------------
-		if registry == nil {
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			c.Abort()
-			return
-		}
-
-		// --------------------------------------------------------------------
-		// 🔄 Lấy danh sách candidate secrets để giải mã token hỗ trợ rotation.
-		// --------------------------------------------------------------------
-		val, err := registry.GetOrLoad(c.Request.Context(), "access_secret", "")
+		secretVal, err := registry.GetOrLoad(c.Request.Context(), "access_secret", "")
 		if err != nil {
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
 		}
-		secrets, ok := val.(*coreEntity.RuntimeSecrets)
+		secrets, ok := secretVal.(*coreEntity.RuntimeSecrets)
 		if !ok || secrets == nil {
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
 		}
 
+		// Parse JWT lần lượt qua Active rồi Standby secret để hỗ trợ rotation.
 		var (
 			claims      security.Claims
 			parsed      bool
 			parseErr    error
 			emptySecret bool
 		)
-
-		// --------------------------------------------------------------------
-		// 🔄 Parse JWT sử dụng lần lượt các candidate secrets.
-		// --------------------------------------------------------------------
-		candidates := []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby}
-		for _, candidate := range candidates {
-			claims, parseErr = security.Parse(token, candidate.Secret)
+		for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
+			claims, parseErr = security.Parse(rawToken, candidate.Secret)
 			if parseErr == nil {
 				parsed = true
 				break
@@ -139,7 +150,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 			}
 		}
 		if !parsed {
-			// Lỗi cấu hình secret rỗng là lỗi hệ thống (503), lỗi parse sai là unauthorized (401).
 			if emptySecret {
 				apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 				c.Abort()
@@ -152,109 +162,122 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, rdb *redis.Client, 
 		}
 
 		// --------------------------------------------------------------------
-		// 🔄 Xác minh ràng buộc phiên thiết bị của người dùng (Device Binding)
+		// BƯỚC 3: XÁC THỰC PHIÊN QUA REDIS L2 (SESSION BINDING)
+		// access_key lấy từ claims JWT; access_secret lấy từ cookie.
 		// --------------------------------------------------------------------
-		if rdb != nil {
-			accessKeyCookieValue, accessKeyCookieErr := c.Cookie(constant.AccessKeyName)
-			accessSecretValue, accessSecretErr := c.Cookie(constant.AccessSecretName)
-			accessKeyCookie := strings.TrimSpace(accessKeyCookieValue)
-			accessSecret := strings.TrimSpace(accessSecretValue)
-			accessKeyClaim := strings.TrimSpace(claims.AccessKey)
-			jti := strings.TrimSpace(claims.TokenID)
+		accessKeyClaim := strings.TrimSpace(claims.AccessKey)
+		userIDClaim := strings.TrimSpace(claims.Subject)
+		jti := strings.TrimSpace(claims.TokenID)
 
-			// Đảm bảo có đầy đủ dữ liệu cấu thành phiên đăng nhập thiết bị:
-			if accessKeyCookieErr != nil || accessSecretErr != nil || accessKeyCookie == "" || accessSecret == "" || accessKeyClaim == "" || jti == "" || strings.TrimSpace(claims.Subject) == "" {
-				clearUserAccessCookies(c, cookieDomain, cookiePath)
-				apires.RespondUnauthorized(c, "unauthorized")
-				c.Abort()
-				return
-			}
+		if accessKeyClaim == "" || userIDClaim == "" || jti == "" {
+			c.Header("WWW-Authenticate", "Bearer")
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
 
-			// Key định danh từ cookie phải khớp với AccessKey được mã hóa trong token:
-			if accessKeyCookie != accessKeyClaim {
-				clearUserAccessCookies(c, cookieDomain, cookiePath)
-				apires.RespondUnauthorized(c, "unauthorized")
-				c.Abort()
-				return
-			}
+		// Lấy access_secret từ cookie để đối chiếu với hash trong Redis.
+		accessSecretCookie, secretCookieErr := c.Cookie(constant.AccessSecretName)
+		accessKeyCookie, keyCookieErr := c.Cookie(constant.AccessKeyName)
+		accessSecret := strings.TrimSpace(accessSecretCookie)
+		accessKeyFromCookie := strings.TrimSpace(accessKeyCookie)
 
-			ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
-			defer cancel()
+		if secretCookieErr != nil || keyCookieErr != nil || accessSecret == "" || accessKeyFromCookie == "" {
+			clearUserAccessCookies(c, cookieDomain, cookiePath)
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
 
-			type localUserAccessSession struct {
-				AccessKey        string `json:"access_key"`
-				AccessSecretHash string `json:"access_secret_hash"`
-				CurrentJTI       string `json:"current_jti"`
-				PreviousJTI      string `json:"previous_jti,omitempty"`
-				PreviousIssuedAt int64  `json:"previous_issued_at,omitempty"`
-				CurrentIssuedAt  int64  `json:"current_issued_at,omitempty"`
-				TrackedDeviceID  string `json:"tracked_device_id"`
-				UserID           string `json:"user_id"`
-				Status           string `json:"status,omitempty"`
-			}
+		// Cookie access_key phải khớp chính xác với access_key trong claims JWT.
+		if accessKeyFromCookie != accessKeyClaim {
+			clearUserAccessCookies(c, cookieDomain, cookiePath)
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
 
-			// Truy vấn bản ghi phiên runtime thực tế từ Redis:
-			key := "iam:user_access_session:" + strings.TrimSpace(claims.Subject) + ":" + strings.TrimSpace(accessKeyClaim)
-			raw, err := rdb.Get(ctx, key).Result()
-			var record *localUserAccessSession
-			if err == nil {
-				record = &localUserAccessSession{}
-				if err := json.Unmarshal([]byte(raw), record); err != nil {
-					record = nil
-				}
-			} else if err != redis.Nil {
-				apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-				c.Abort()
-				return
-			}
+		// Tra bản ghi phiên từ Redis thông qua CacheEngine L2.
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
+		defer cancel()
 
-			// Đánh giá khớp thông tin mật mã và thời gian đồng bộ graceWindow:
-			match := false
-			if record != nil && record.Status != "revoked" && record.AccessKey == accessKeyCookie && record.AccessSecretHash == security.HashTokenSHA256(accessSecret) {
-				if record.CurrentJTI == jti {
-					match = true
-				} else if graceWindow > 0 && record.PreviousJTI != "" && record.PreviousJTI == jti {
-					issuedAt := record.PreviousIssuedAt
-					if issuedAt > 0 && time.Since(time.Unix(issuedAt, 0)) <= graceWindow {
-						match = true
-					}
-				}
-			}
+		sessionKey := "iam:user_access_session:" + userIDClaim + ":" + accessKeyClaim
+		rawPayload, _, exists, l2Err := registry.L2.Get(ctx, sessionKey)
+		if l2Err != nil {
+			// Lỗi kết nối Redis → fail-closed (503).
+			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
+			c.Abort()
+			return
+		}
+		if !exists {
+			// Key không tồn tại → phiên đã hết hạn hoặc bị thu hồi.
+			clearUserAccessCookies(c, cookieDomain, cookiePath)
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
 
-			if !match {
-				clearUserAccessCookies(c, cookieDomain, cookiePath)
-				apires.RespondUnauthorized(c, "unauthorized")
-				c.Abort()
-				return
-			}
-			if strings.TrimSpace(record.TrackedDeviceID) != "" {
-				c.Set(constant.ContextKeyTrackedDeviceID, strings.TrimSpace(record.TrackedDeviceID))
-			}
-			// Tiêm access_key + access_secret vào cả Gin context và standard Go context
-			// để service layer (logout, revoke) đọc qua ctx.Value() mà không cần truyền param.
-			c.Set(constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
-			c.Set(constant.ContextKeyRuntimeAccessSecret, accessSecret)
-			goCtx := c.Request.Context()
-			goCtx = context.WithValue(goCtx, constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
-			goCtx = context.WithValue(goCtx, constant.ContextKeyRuntimeAccessSecret, accessSecret)
-			c.Request = c.Request.WithContext(goCtx)
+		var record userAccessSession
+		if jsonErr := json.Unmarshal(rawPayload, &record); jsonErr != nil {
+			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
+			c.Abort()
+			return
+		}
+
+		// Kiểm tra trạng thái thu hồi + so khớp access_key + hash access_secret.
+		if record.Status == "revoked" ||
+			record.AccessKey != accessKeyClaim ||
+			record.AccessSecretHash != security.HashTokenSHA256(accessSecret) {
+			clearUserAccessCookies(c, cookieDomain, cookiePath)
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
+
+		// Kiểm tra JTI (cho phép graceWindow để tránh race giữa refresh và request kế tiếp).
+		jtiMatch := record.CurrentJTI == jti
+		if !jtiMatch && graceWindow > 0 && record.PreviousJTI == jti && record.PreviousIssuedAt > 0 {
+			jtiMatch = time.Since(time.Unix(record.PreviousIssuedAt, 0)) <= graceWindow
+		}
+		if !jtiMatch {
+			clearUserAccessCookies(c, cookieDomain, cookiePath)
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
 		}
 
 		// --------------------------------------------------------------------
-		// 🔄 Tiêm toàn bộ claims và các trường định danh phẳng vào Gin Context.
-		// --------------------------------------------------------------------
+		// Tiêm vào Go standard context để service layer đọc qua ctx.Value().
+		goCtx := context.WithValue(c.Request.Context(), constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyRuntimeAccessSecret, accessSecret)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyUserID, claims.Subject)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyRole, claims.Role)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyJTI, claims.TokenID)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyLevel, claims.Level)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyTenant, claims.TenantID)
+		if trackedDevice := strings.TrimSpace(record.TrackedDeviceID); trackedDevice != "" {
+			goCtx = context.WithValue(goCtx, constant.ContextKeyTrackedDeviceID, trackedDevice)
+			c.Set(constant.ContextKeyTrackedDeviceID, trackedDevice)
+		}
+		c.Request = c.Request.WithContext(goCtx)
+
+		// Tiêm toàn bộ claims JWT vào Gin context.
 		c.Set(constant.ContextKeyJWTClaims, claims)
 		c.Set(constant.ContextKeyUserID, claims.Subject)
 		c.Set(constant.ContextKeyRole, claims.Role)
 		c.Set(constant.ContextKeyJTI, claims.TokenID)
-		c.Set(constant.ContextKeyRuntimeAccessKey, claims.AccessKey)
 		c.Set(constant.ContextKeyLevel, claims.Level)
 		c.Set(constant.ContextKeyTenant, claims.TenantID)
+		c.Set(constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
+		c.Set(constant.ContextKeyRuntimeAccessSecret, accessSecret)
 
-		// Xác thực hoàn tất -> chuyển tiếp sang handler nghiệp vụ
 		c.Next()
 	}
 }
+
+// ============================================================================
+// Context Accessor Helpers
+// ============================================================================
 
 func GetUserID(c *gin.Context) string {
 	return getContextString(c, constant.ContextKeyUserID)
@@ -284,7 +307,7 @@ func getContextString(c *gin.Context, key string) string {
 	return s
 }
 
-// clearUserAccessCookies xóa bỏ triệt để các session cookies của Admin/User khi phiên đăng nhập không hợp lệ.
+// clearUserAccessCookies xóa tất cả session cookies khi phiên không hợp lệ.
 func clearUserAccessCookies(c *gin.Context, cookieDomain, cookiePath string) {
 	secure := c.Request.TLS != nil
 	exp := time.Unix(0, 0)

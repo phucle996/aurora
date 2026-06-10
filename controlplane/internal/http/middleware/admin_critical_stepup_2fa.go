@@ -36,11 +36,6 @@ func AdminCriticalStepUp2FA() gin.HandlerFunc {
 		stepUpState.mu.RLock()
 		cacheEngine := stepUpState.cacheEngine
 		stepUpState.mu.RUnlock()
-		if cacheEngine == nil {
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			c.Abort()
-			return
-		}
 
 		code := strings.TrimSpace(c.GetHeader(constant.HeaderAdminStepUpCode))
 		if code == "" {

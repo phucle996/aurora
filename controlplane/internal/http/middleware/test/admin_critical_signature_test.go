@@ -41,6 +41,8 @@ func TestAdminCriticalSignature(t *testing.T) {
 	t.Cleanup(func() { _ = rds.Close() })
 
 	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	registry.L2 = cacheengine.NewL2Cache(rds)
+	registry.Exec = cacheengine.NewL2LuaExecutor(rds)
 	cacheengine.Register(registry, "admin_public_key", time.Hour, func(ctx context.Context, gotDeviceID string) (string, error) {
 		if gotDeviceID != deviceID {
 			return "", fmt.Errorf("device id = %q, want %q", gotDeviceID, deviceID)
@@ -48,12 +50,7 @@ func TestAdminCriticalSignature(t *testing.T) {
 		return pubKeyEncoded, nil
 	})
 
-	if err := middleware.InitAdminCriticalSignature(
-		registry,
-		rds,
-		time.Minute,
-		time.Minute,
-	); err != nil {
+	if err := middleware.InitAdminCriticalSignature(registry, time.Minute, time.Minute); err != nil {
 		t.Fatalf("init signature guard: %v", err)
 	}
 

@@ -7,13 +7,14 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"controlplane/internal/iam/domain/entity"
+	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type deviceServiceStub struct {
@@ -40,6 +41,17 @@ func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, userID strin
 func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, userID string, ip *string, userAgent *string) (int64, error) {
 	return s.logoutAllN, s.logoutAllErr
 }
+func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
+	return nil, nil
+}
+func (s *deviceServiceStub) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+	return nil
+}
+func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {}
+func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
+	return 0, nil
+}
+func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {}
 
 var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 

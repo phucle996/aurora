@@ -46,6 +46,7 @@ func NewRefreshTokenHandler(
 func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 	const op = "iam.refresh_token.refresh"
 
+	secure := isSecureRequest(c)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -57,7 +58,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			Path:     "/",
 			Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 			HttpOnly: true,
-			Secure:   c.Request.TLS != nil,
+			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
@@ -68,7 +69,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			Path:     "/",
 			Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 			HttpOnly: true,
-			Secure:   c.Request.TLS != nil,
+			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
@@ -79,7 +80,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			Path:     "/",
 			Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 			HttpOnly: false,
-			Secure:   c.Request.TLS != nil,
+			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
@@ -90,7 +91,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 			Path:     "/",
 			Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 			HttpOnly: true,
-			Secure:   c.Request.TLS != nil,
+			Secure:   secure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),
@@ -110,7 +111,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 				Path:     "/",
 				Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 				HttpOnly: true,
-				Secure:   c.Request.TLS != nil,
+				Secure:   secure,
 				SameSite: http.SameSiteLaxMode,
 				MaxAge:   -1,
 				Expires:  time.Unix(0, 0),
@@ -121,7 +122,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 				Path:     "/",
 				Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 				HttpOnly: true,
-				Secure:   c.Request.TLS != nil,
+				Secure:   secure,
 				SameSite: http.SameSiteLaxMode,
 				MaxAge:   -1,
 				Expires:  time.Unix(0, 0),
@@ -132,7 +133,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 				Path:     "/",
 				Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 				HttpOnly: false,
-				Secure:   c.Request.TLS != nil,
+				Secure:   secure,
 				SameSite: http.SameSiteLaxMode,
 				MaxAge:   -1,
 				Expires:  time.Unix(0, 0),
@@ -143,7 +144,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 				Path:     "/",
 				Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 				HttpOnly: true,
-				Secure:   c.Request.TLS != nil,
+				Secure:   secure,
 				SameSite: http.SameSiteLaxMode,
 				MaxAge:   -1,
 				Expires:  time.Unix(0, 0),
@@ -162,7 +163,6 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 		}
 	}
 
-	secure := c.Request.TLS != nil
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessTokenName,
 		Value:    result.AccessToken,

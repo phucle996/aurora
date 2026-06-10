@@ -236,7 +236,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		}
 	}
 
-	secure := c.Request.TLS != nil
+	secure := isSecureRequest(c)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessTokenName,
 		Value:    result.AccessToken,
@@ -334,7 +334,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 	// Clear cookies inline immediately so that the client's session is cleared in all execution paths
 	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-	secure := c.Request.TLS != nil
+	secure := isSecureRequest(c)
 	exp := time.Unix(0, 0)
 	for _, cookieDef := range []struct {
 		name     string

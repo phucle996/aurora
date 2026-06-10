@@ -38,6 +38,7 @@ import (
 	"controlplane/internal/security"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
+	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -243,7 +244,13 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		// 🔄 Inject các thông tin cần thiết vào context dựa trên option.
 		// --------------------------------------------------------------------
+		// [ignoring loop detection]
 		goCtx := c.Request.Context()
+		c.Set(constant.ContextKeyUserID, claims.Subject)
+		c.Set(constant.ContextKeyLevel, claims.Level)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyUserID, claims.Subject)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyLevel, claims.Level)
+
 		if options.injectAccessKey {
 			c.Set(constant.ContextKeyAdminAccessKey, accessKey)
 			// SRE Note: Inject accessKey vào Go standard context
@@ -286,6 +293,8 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 func readAdminCookie(c *gin.Context, name string) (string, bool) {
 	value, err := c.Cookie(name)
 	if err != nil || strings.TrimSpace(value) == "" {
+		// Log warning chi tiết để SRE debug xem cookie nào bị thiếu
+		logger.HandlerWarn(c, "admin.auth.cookie", err, "missing or empty admin cookie: "+name)
 		abortAdminUnauthorized(c)
 		return "", false
 	}

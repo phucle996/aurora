@@ -129,16 +129,19 @@ func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
 // ServiceCall ghi nhận một lần gọi service IAM vào serviceCallsCounter.
 // Callsite tự truyền đầy đủ 3 label, giữ tính generic cho mọi IAM flow.
 func ServiceCall(flow, result, cachePath string) {
-	serviceCallsCounter.WithLabelValues(flow, result, cachePath).Inc()
+	if serviceCallsCounter != nil {
+		serviceCallsCounter.WithLabelValues(flow, result, cachePath).Inc()
+	}
 }
 
 // Downstream ghi nhận latency của một tác vụ downstream IAM vào downstreamDuration.
 // Callsite tự truyền đầy đủ các label để giữ tính generic.
 func Downstream(kind, workflow, destination, result string, duration time.Duration, err error) {
-	status := "ok"
-	if err != nil {
-		status = "error"
+	if downstreamDuration != nil {
+		status := "ok"
+		if err != nil {
+			status = "error"
+		}
+		downstreamDuration.WithLabelValues(kind, workflow, destination, result, status).Observe(duration.Seconds())
 	}
-
-	downstreamDuration.WithLabelValues(kind, workflow, destination, result, status).Observe(duration.Seconds())
 }

@@ -9,13 +9,14 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	"controlplane/internal/iam/domain/entity"
+	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
 	cookie "controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type refreshTokenServiceStub struct {
@@ -27,6 +28,14 @@ var _ iamSvcInterface.RefreshTokenService = (*refreshTokenServiceStub)(nil)
 
 func (s *refreshTokenServiceStub) Refresh(ctx context.Context, rawRefreshToken string) (*iamEntity.RefreshTokenResult, error) {
 	return s.result, s.err
+}
+
+func (s *refreshTokenServiceStub) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error {
+	return nil
+}
+
+func (s *refreshTokenServiceStub) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error {
+	return nil
 }
 
 func newRefreshTokenHandler(service iamSvcInterface.RefreshTokenService) *handler.RefreshTokenHandler {

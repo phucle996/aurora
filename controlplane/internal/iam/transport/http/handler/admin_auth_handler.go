@@ -116,7 +116,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		}
 	}
 
-	secure := c.Request.TLS != nil
+	secure := isSecureRequest(c)
 	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AdminAPITokenName,
@@ -241,7 +241,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 		}
 	}
 
-	secure := c.Request.TLS != nil
+	secure := isSecureRequest(c)
 	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 	maxAge := int(time.Until(result.ExpiresAt).Seconds())
 	http.SetCookie(c.Writer,
@@ -330,7 +330,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	if trimmedAccessKey == "" {
 		// Nhánh 1: Client không có session key (chưa đăng nhập hoặc cookie đã mất).
 		// Không cần gọi backend thu hồi, chỉ cần xóa sạch cookie phía Client để đồng bộ trạng thái và trả về 204.
-		secure := c.Request.TLS != nil
+		secure := isSecureRequest(c)
 		domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 		exp := time.Unix(0, 0)
 		http.SetCookie(c.Writer, &http.Cookie{
@@ -396,7 +396,7 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 
 	// Nhánh 2: Gọi backend thu hồi session thành công.
 	// Tiến hành xóa cookie phía Client để hoàn tất quá trình đăng xuất.
-	secure := c.Request.TLS != nil
+	secure := isSecureRequest(c)
 	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 	exp := time.Unix(0, 0)
 	http.SetCookie(c.Writer, &http.Cookie{
@@ -509,4 +509,16 @@ func resolveDeviceName(hostnameHeader, hostnameAlias string) string {
 		return name
 	}
 	return "unknown device"
+}
+
+// isSecureRequest checks if the request is secure (HTTPS) either directly or via reverse proxy.
+func isSecureRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	if c.Request.TLS != nil {
+		return true
+	}
+	proto := strings.ToLower(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")))
+	return proto == "https"
 }

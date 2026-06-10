@@ -81,13 +81,13 @@ func RegisterL1Loaders(
 		return modules.Core.SecretRepository.GetOneTimeTokenSecret(ctx)
 	})
 
-	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC
+	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC (sử dụng GetPermissionCodesByRoleCode tối ưu hơn)
 	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (iamSvcInterface.RoleEntry, error) {
-		rp, err := modules.IAM.RbacRepository.GetRoleByCode(ctx, param)
+		perms, err := modules.IAM.RbacRepository.GetPermissionCodesByRoleCode(ctx, param)
 		if err != nil {
 			return iamSvcInterface.RoleEntry{}, err
 		}
-		return iamSvcInterface.RoleEntry{Permissions: rp.Permissions}, nil
+		return iamSvcInterface.RoleEntry{Permissions: perms}, nil
 	})
 
 	// 7. Đăng ký tĩnh loader cho "admin_2fa_secret"

@@ -52,6 +52,11 @@ func ApplyMigrations(ctx context.Context, conn *pgxpool.Conn, cfg *config.Config
 		_, _ = conn.Exec(ctx, "ROLLBACK")
 	}()
 
+	// Acquire a transaction-level advisory lock to serialize concurrent migrations across HA nodes
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_xact_lock(1102)"); err != nil {
+		return fmt.Errorf("core migration: acquire advisory lock: %w", err)
+	}
+
 	// B3: Đảm bảo database schema đích được khởi tạo và tồn tại.
 	if err := ensureMigrationSchema(ctx, conn, schema); err != nil {
 		return err
