@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	infraredis "controlplane/infra/redis"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -92,8 +94,14 @@ func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Con
 var _ iamRepoInterface.DeviceRepository = (*deviceRepoMock)(nil)
 var _ iamRepoInterface.RefreshTokenRepository = (*refreshRepoMock)(nil)
 
+type mockStreamPublisher struct{}
+
+func (m *mockStreamPublisher) Publish(ctx context.Context, msg infraredis.StreamMessage, idempotencyTTL time.Duration) (string, bool, error) {
+	return "msg-id", true, nil
+}
+
 func newDeviceService(d iamRepoInterface.DeviceRepository, r iamRepoInterface.RefreshTokenRepository) iamSvcInterface.DeviceService {
-	return iamSvcImpl.NewDeviceService(d, r, nil, nil)
+	return iamSvcImpl.NewDeviceService(d, r, nil, &mockStreamPublisher{})
 }
 
 func TestDeviceServiceListMyDevicesInvalidUserID(t *testing.T) {

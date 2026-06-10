@@ -69,13 +69,13 @@ type Module struct {
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
+// Ở đây chúng ta chỉ nhận duy nhất thực thể cacheEngine để truyền vào các service nội bộ.
 func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
-	l1Registry *cacheengine.CacheRegistry,
-	l1Fanout *cacheengine.RedisFanout,
+	cacheEngine *cacheengine.CacheRegistry,
 ) (*Module, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("core module: config is required")
@@ -86,13 +86,14 @@ func NewModule(
 
 	// 1) SoT data access for secret lifecycle.
 	repo := coreRepoImpl.NewSecretRepository(cfg, db)
-	// 3) Rotation orchestration.
-	rotationService := coreSvcImpl.NewSecretRotationService(repo, l1Registry, l1Fanout)
+	// 3) Rotation orchestration - Chỉ truyền một đối tượng cacheEngine duy nhất
+	rotationService := coreSvcImpl.NewSecretRotationService(repo, cacheEngine)
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
 	}
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, l1Registry, l1Fanout)
+	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, cacheEngine)
 	zoneHandler := coreHandler.NewZoneHandler(zoneService)
 	if zoneHandler == nil {
 		return nil, fmt.Errorf("core module: zone handler is nil")
@@ -132,7 +133,7 @@ func NewModule(
 		DataplaneOrchestrator:        dataplaneOrchestrator,
 		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
 		rateLimiter:                  rateLimiter,
-		L1Registry:                   l1Registry,
+		L1Registry:                   cacheEngine,
 	}
 
 	return m, nil

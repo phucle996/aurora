@@ -174,8 +174,8 @@ func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
 	h := newAuthHandler(&authServiceStub{loginResult: &iamEntity.LoginResult{
 		AccessToken:              "access-token",
 		RefreshToken:             "refresh-token",
-		RuntimeDeviceID:          "runtime-device-1",
-		DeviceSecret:             "secret-1",
+		AccessKey:                "runtime-device-1",
+		AccessSecret:             "secret-1",
 		TrackedDeviceID:          "177682fc-3e96-4a5a-84eb-b5e9c71af721",
 		ClientDeviceID:           "cdid-bootstrap-1",
 		ClientDeviceIDProvenance: "server-bootstrap",

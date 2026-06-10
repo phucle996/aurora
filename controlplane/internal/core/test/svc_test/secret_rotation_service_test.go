@@ -132,8 +132,8 @@ func TestEnsureInitialSecretsCreatesNewSecrets(t *testing.T) {
 	defer security.SetRuntimeMasterKey(nil)
 
 	repo := &fakeSecretRepo{secrets: make(map[string]*coreEntity.CoreSecretRow)}
-	registry, fanout := makeTestRegistryAndFanout()
-	svc := coreSvcImpl.NewSecretRotationService(repo, registry, fanout)
+	registry, _ := makeTestRegistryAndFanout()
+	svc := coreSvcImpl.NewSecretRotationService(repo, registry)
 
 	res, err := svc.EnsureInitialSecrets(context.Background(), "access_secret")
 	if err != nil {
@@ -168,8 +168,8 @@ func TestRotateSecretPromotesActiveToStandbyAndGeneratesNewActive(t *testing.T) 
 	defer security.SetRuntimeMasterKey(nil)
 
 	repo := &fakeSecretRepo{secrets: make(map[string]*coreEntity.CoreSecretRow)}
-	registry, fanout := makeTestRegistryAndFanout()
-	svc := coreSvcImpl.NewSecretRotationService(repo, registry, fanout)
+	registry, _ := makeTestRegistryAndFanout()
+	svc := coreSvcImpl.NewSecretRotationService(repo, registry)
 
 	// Override clock to allow immediate rotation after bootstrap
 	svcImpl := svc.(*coreSvcImpl.SecretRotationService)
@@ -212,8 +212,8 @@ func TestRotateSecretCooldown(t *testing.T) {
 
 	repo := &fakeSecretRepo{secrets: make(map[string]*coreEntity.CoreSecretRow)}
 	
-	registry, fanout := makeTestRegistryAndFanout()
-	svc := coreSvcImpl.NewSecretRotationService(repo, registry, fanout)
+	registry, _ := makeTestRegistryAndFanout()
+	svc := coreSvcImpl.NewSecretRotationService(repo, registry)
 	
 	svcImpl := svc.(*coreSvcImpl.SecretRotationService)
 	nowTime := time.Now().UTC()

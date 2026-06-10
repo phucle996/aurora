@@ -2,63 +2,61 @@ package svc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"controlplane/infra/telegram"
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	iamCache "controlplane/internal/iam/cache"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
+
+	"github.com/redis/go-redis/v9"
 )
 
-type adminAccessSessionCacheMock struct {
-	getFn     func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error)
-	compareFn func(ctx context.Context, accessKey string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error)
-	scanFn    func(ctx context.Context, limit int) ([]iamCache.AdminAccessSession, error)
-	deleteFn  func(ctx context.Context, accessKey string) error
+type l2CacheMock struct {
+	getFn    func(ctx context.Context, key string) (payload []byte, version int64, exists bool, err error)
+	setFn    func(ctx context.Context, key string, data interface{}, version int64, ttl time.Duration) error
+	deleteFn func(ctx context.Context, key string) error
 }
 
-func (m *adminAccessSessionCacheMock) SetAccessSession(ctx context.Context, session iamCache.AdminAccessSession, ttl time.Duration) error {
-	return nil
-}
-func (m *adminAccessSessionCacheMock) VerifyAccessSecret(ctx context.Context, accessKey string, rawAccessSecret string) (bool, error) {
-	return false, nil
-}
-func (m *adminAccessSessionCacheMock) GetAccessSession(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
+func (m *l2CacheMock) Get(ctx context.Context, key string) (payload []byte, version int64, exists bool, err error) {
 	if m.getFn != nil {
-		return m.getFn(ctx, accessKey)
+		return m.getFn(ctx, key)
 	}
-	return nil, nil
+	return nil, 0, false, nil
 }
-func (m *adminAccessSessionCacheMock) TouchAccessSession(ctx context.Context, accessKey string, ttl time.Duration) error {
+
+func (m *l2CacheMock) Set(ctx context.Context, key string, data interface{}, version int64, ttl time.Duration) error {
+	if m.setFn != nil {
+		return m.setFn(ctx, key, data, version, ttl)
+	}
 	return nil
 }
-func (m *adminAccessSessionCacheMock) CompareAndTouchAccessSession(ctx context.Context, accessKey string, expectedVersion int64, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
-	if m.compareFn != nil {
-		return m.compareFn(ctx, accessKey, expectedVersion, ttl, ip, userAgent)
-	}
-	return false, nil
-}
-func (m *adminAccessSessionCacheMock) ScanAccessSessions(ctx context.Context, limit int) ([]iamCache.AdminAccessSession, error) {
-	if m.scanFn != nil {
-		return m.scanFn(ctx, limit)
-	}
-	return nil, nil
-}
-func (m *adminAccessSessionCacheMock) DeleteAccessSession(ctx context.Context, accessKey string) error {
+
+func (m *l2CacheMock) Delete(ctx context.Context, key string) error {
 	if m.deleteFn != nil {
-		return m.deleteFn(ctx, accessKey)
+		return m.deleteFn(ctx, key)
 	}
 	return nil
+}
+
+func (m *l2CacheMock) Client() *redis.Client {
+	return nil
+}
+
+func (m *l2CacheMock) GetOrLoad(ctx context.Context, key string, target interface{}, ttl time.Duration, loadFn func() (interface{}, error)) (version int64, err error) {
+	return 0, nil
 }
 
 func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil)
+	registry := &cacheengine.CacheRegistry{}
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
 	_, err := svc.AdminLogin(context.Background(), iamEntity.AdminLoginRequest{})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -68,13 +66,14 @@ func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.AdminLoginOutcomeInvalidArgument {
+	if appErr.Outcome != iamTaxonomy.InvalidArgument {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
 func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), nil, nil, nil)
+	registry := &cacheengine.CacheRegistry{}
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
 	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, " ")
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
@@ -85,17 +84,18 @@ func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.AdminRefreshOutcomeInvalidArgument {
+	if appErr.Outcome != iamTaxonomy.InvalidArgument {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
 
 func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	raw := errors.New("redis down")
-	sessionCache := &adminAccessSessionCacheMock{getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
-		return nil, raw
+	l2Mock := &l2CacheMock{getFn: func(ctx context.Context, key string) ([]byte, int64, bool, error) {
+		return nil, 0, false, raw
 	}}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
+	registry := &cacheengine.CacheRegistry{L2: l2Mock}
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
 	err := svc.AdminLogout(context.Background(), "device-1", nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -105,7 +105,7 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.AdminLogoutOutcomeSystemError {
+	if appErr.Outcome != iamTaxonomy.FailureUnknown {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
@@ -115,21 +115,22 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 
 func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	raw := errors.New("redis timeout")
-	sessionCache := &adminAccessSessionCacheMock{getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
-		return nil, raw
+	l2Mock := &l2CacheMock{getFn: func(ctx context.Context, key string) ([]byte, int64, bool, error) {
+		return nil, 0, false, raw
 	}}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
+	registry := &cacheengine.CacheRegistry{L2: l2Mock}
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
 	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, "device-1")
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
-	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
-		t.Fatalf("expected authentication unavailable kind, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrGetL2CacheFailed) {
+		t.Fatalf("expected ErrGetL2CacheFailed, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.AdminRefreshOutcomeSystemError {
+	if appErr.Outcome != iamTaxonomy.GetL2CacheFail {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
@@ -144,16 +145,29 @@ func TestAdminLogoutSkipsDBFlushWhenLastSeenNotDirty(t *testing.T) {
 		return nil
 	}}
 	deleteCalls := 0
-	sessionCache := &adminAccessSessionCacheMock{
-		getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
-			return &iamCache.AdminAccessSession{AccessKey: accessKey, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenDirty: false}, nil
+	l2Mock := &l2CacheMock{
+		getFn: func(ctx context.Context, key string) ([]byte, int64, bool, error) {
+			record := struct {
+				AccessKey       string `json:"access_key"`
+				TrackedDeviceID string `json:"tracked_device_id"`
+				LastSeenAt      int64  `json:"last_seen_at"`
+				LastSeenDirty   bool   `json:"last_seen_dirty"`
+			}{
+				AccessKey:       "device-1",
+				TrackedDeviceID: "tracked-1",
+				LastSeenAt:      time.Now().UTC().Unix(),
+				LastSeenDirty:   false,
+			}
+			payload, _ := json.Marshal(record)
+			return payload, 1, true, nil
 		},
-		deleteFn: func(ctx context.Context, accessKey string) error {
+		deleteFn: func(ctx context.Context, key string) error {
 			deleteCalls++
 			return nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
+	registry := &cacheengine.CacheRegistry{L2: l2Mock}
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), registry)
 
 	if err := svc.AdminLogout(context.Background(), "device-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -178,12 +192,29 @@ func TestAdminLogoutFlushesDBWhenLastSeenDirty(t *testing.T) {
 		}
 		return nil
 	}}
-	sessionCache := &adminAccessSessionCacheMock{
-		getFn: func(ctx context.Context, accessKey string) (*iamCache.AdminAccessSession, error) {
-			return &iamCache.AdminAccessSession{AccessKey: accessKey, TrackedDeviceID: "tracked-1", LastSeenAt: time.Now().UTC().Unix(), LastSeenIP: "10.0.0.1", LastSeenUserAgent: "ua-1", LastSeenDirty: true}, nil
+	l2Mock := &l2CacheMock{
+		getFn: func(ctx context.Context, key string) ([]byte, int64, bool, error) {
+			record := struct {
+				AccessKey         string `json:"access_key"`
+				TrackedDeviceID   string `json:"tracked_device_id"`
+				LastSeenAt        int64  `json:"last_seen_at"`
+				LastSeenIP        string `json:"last_seen_ip"`
+				LastSeenUserAgent string `json:"last_seen_user_agent"`
+				LastSeenDirty     bool   `json:"last_seen_dirty"`
+			}{
+				AccessKey:         "device-1",
+				TrackedDeviceID:   "tracked-1",
+				LastSeenAt:        time.Now().UTC().Unix(),
+				LastSeenIP:        "10.0.0.1",
+				LastSeenUserAgent: "ua-1",
+				LastSeenDirty:     true,
+			}
+			payload, _ := json.Marshal(record)
+			return payload, 1, true, nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), sessionCache, nil, nil)
+	registry := &cacheengine.CacheRegistry{L2: l2Mock}
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), registry)
 
 	if err := svc.AdminLogout(context.Background(), "device-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -10,7 +10,6 @@ import (
 
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
-	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
@@ -20,6 +19,7 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 var (
@@ -190,22 +190,29 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
 		userAgent = &ua
 	}
-	hostnameHint := c.GetHeader(deviceHint.HeaderDeviceHostname)
-	hostnameAlias := c.GetHeader(deviceHint.HeaderDeviceNameAlt)
-	clientDeviceIDHint := c.GetHeader(deviceHint.HeaderClientDeviceID)
-	if clientDeviceIDHint == "" {
+
+	hostnameHint := c.GetHeader("X-Device-Hostname")
+	hostnameAlias := c.GetHeader("X-Device-Name")
+	deviceName := resolveDeviceName(hostnameHint, hostnameAlias)
+
+	clientDeviceIDHintStr := c.GetHeader("X-Client-Device-Id")
+	if clientDeviceIDHintStr == "" {
 		if cookieValue, _ := c.Cookie(cookie.ClientDeviceIDName); cookieValue != "" {
-			clientDeviceIDHint = cookieValue
+			clientDeviceIDHintStr = cookieValue
 		}
 	}
+	clientDeviceIDHint, err := uuid.Parse(clientDeviceIDHintStr)
+	if err != nil {
+		clientDeviceIDHint = uuid.Nil
+	}
+
 	result, err := h.authSvc.Login(ctx, iamEntity.LoginRequest{
 		Username:        username,
 		Password:        password,
 		DevicePublicKey: devicePublicKey,
 		IP:              requestIP,
 		UserAgent:       userAgent,
-		HostnameHint:    hostnameHint,
-		HostnameAlias:   hostnameAlias,
+		DeviceName:      deviceName,
 		ClientDeviceID:  clientDeviceIDHint,
 	})
 	if err != nil {
@@ -254,7 +261,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessKeyName,
-		Value:    result.RuntimeDeviceID,
+		Value:    result.AccessKey,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 		HttpOnly: false,
@@ -265,7 +272,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessSecretName,
-		Value:    result.DeviceSecret,
+		Value:    result.AccessSecret,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 		HttpOnly: true,
@@ -286,7 +293,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Expires:  cdidExpires,
 		MaxAge:   int(time.Until(cdidExpires).Seconds()),
 	})
-	c.Header(deviceHint.HeaderClientDeviceID, result.ClientDeviceID)
+	c.Header("X-Client-Device-Id", result.ClientDeviceID)
 
 	logger.HandlerInfo(c, op, "login successful")
 	apires.RespondSuccess(c, nil, "login successful")

@@ -115,7 +115,7 @@ func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, regist
 }
 
 func TestRefreshTokenServiceInvalidSessionWhenTokenEmpty(t *testing.T) {
-	svc := newRefreshTokenService(&refreshTokenRepoMock{}, makeTestRegistry("secret-key"))
+	svc := newRefreshTokenService(&refreshTokenRepoMock{}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -125,7 +125,7 @@ func TestRefreshTokenServiceInvalidSessionWhenTokenEmpty(t *testing.T) {
 func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, nil
-	}}, makeTestRegistry("secret-key"))
+	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -135,7 +135,7 @@ func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, pgx.ErrNoRows
-	}}, makeTestRegistry("secret-key"))
+	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -144,7 +144,7 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.RefreshOutcomeInvalidSession {
+	if appErr.Outcome != iamTaxonomy.InvalidSession {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
@@ -155,7 +155,7 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 func TestRefreshTokenServiceInvalidSessionWhenExpired(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
-	}}, makeTestRegistry("secret-key"))
+	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -172,7 +172,7 @@ func TestRefreshTokenServiceInvalidSessionWhenUserStatusBlocked(t *testing.T) {
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusDisabled}, nil
 		},
-	}, makeTestRegistry("secret-key"))
+	}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -189,7 +189,7 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return nil, pgx.ErrNoRows
 		},
-	}, makeTestRegistry("secret-key"))
+	}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
@@ -198,7 +198,7 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.RefreshOutcomeInvalidSession {
+	if appErr.Outcome != iamTaxonomy.InvalidSession {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
@@ -243,7 +243,7 @@ func TestRefreshTokenServiceRotateError(t *testing.T) {
 		rotateFn: func(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
 			return raw
 		},
-	}, makeTestRegistry("secret-key"))
+	}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Refresh(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
@@ -252,7 +252,7 @@ func TestRefreshTokenServiceRotateError(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.RefreshOutcomeRotateRefreshErr {
+	if appErr.Outcome != iamTaxonomy.Failure {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
@@ -288,7 +288,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 			}
 			return nil
 		},
-	}, makeTestRegistry("secret-key"))
+	}, makeTestRegistry("secret-key", nil))
 
 	result, err := svc.Refresh(context.Background(), "raw-refresh")
 	if err != nil {
@@ -300,14 +300,14 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 	if result == nil || result.AccessToken == "" || result.RefreshToken == "" {
 		t.Fatalf("expected refresh token result, got %#v", result)
 	}
-	if result.RuntimeDeviceID == "" || result.TrackedDeviceID != deviceID.String() {
+	if result.AccessKey == "" || result.TrackedDeviceID != deviceID.String() {
 		t.Fatalf("expected runtime and tracked device ids, got %#v", result)
 	}
 	claims, err := security.Parse(result.AccessToken, []byte("secret-key"))
 	if err != nil {
 		t.Fatalf("expected parsable access token, got %v", err)
 	}
-	if claims.AccessKey != result.RuntimeDeviceID {
+	if claims.AccessKey != result.AccessKey {
 		t.Fatalf("unexpected device claims: %#v", claims)
 	}
 }

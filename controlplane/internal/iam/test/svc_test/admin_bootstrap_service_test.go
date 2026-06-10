@@ -24,11 +24,11 @@ type adminBootstrapRepoMock struct {
 	activeFn          func(ctx context.Context) (*iamEntity.AdminAPIKey, error)
 	bootstrapFn       func(ctx context.Context, payload iamEntity.AdminBootstrapPayload) (time.Time, error)
 	rollbackFn        func(ctx context.Context, payload iamEntity.AdminBootstrapPayload) error
-	get2FAFn          func(ctx context.Context) (*iamEntity.Admin2FASettings, error)
-	consumeRecoveryFn func(ctx context.Context, codeHash string, now time.Time) (bool, error)
-	upsertDeviceFn    func(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error)
-	getDeviceByIDFn   func(ctx context.Context, deviceID string) (*iamEntity.AdminDevice, error)
-	touchLastSeenFn   func(ctx context.Context, deviceID string, ip *string, userAgent *string, seenAt time.Time) error
+	get2FAFn          func(ctx context.Context) (string, time.Time, error)
+	consumeRecoveryFn func(ctx context.Context, codeHash string, now time.Time) error
+	upsertDeviceFn         func(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error)
+	getPublicKeyByDeviceIDFn func(ctx context.Context, deviceID string) (string, error)
+	touchLastSeenFn       func(ctx context.Context, deviceID string, ip *string, userAgent *string, seenAt time.Time) error
 }
 
 func (m *adminBootstrapRepoMock) AcquireBootstrapLock(ctx context.Context) (iamRepoInterface.BootstrapLock, error) {
@@ -54,9 +54,9 @@ func TestAdminBootstrapLockFailed(t *testing.T) {
 	repo := &adminBootstrapRepoMock{
 		acquireFn: func(ctx context.Context) (iamRepoInterface.BootstrapLock, error) { return nil, errors.New("lock") },
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
-	err := svc.Bootstrap(context.Background(), "tester")
-	if !errors.Is(err, iamTaxonomy.ErrAdminBootstrapLockFailed) {
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil)
+	err := svc.Bootstrap(context.Background())
+	if !errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {
 		t.Fatalf("expected ErrAdminBootstrapLockFailed, got %v", err)
 	}
 }
@@ -68,9 +68,9 @@ func TestAdminBootstrapNotAllowedWhenActiveKeyExists(t *testing.T) {
 			return &iamEntity.AdminAPIKey{KeyHash: "x", ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 		},
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
-	err := svc.Bootstrap(context.Background(), "tester")
-	if !errors.Is(err, iamTaxonomy.ErrAdminBootstrapNotAllowed) {
+	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil)
+	err := svc.Bootstrap(context.Background())
+	if !errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 		t.Fatalf("expected ErrAdminBootstrapNotAllowed, got %v", err)
 	}
 }
@@ -94,26 +94,26 @@ func TestAdminBootstrapSuccess(t *testing.T) {
 		},
 		rollbackFn: func(ctx context.Context, payload iamEntity.AdminBootstrapPayload) error { return nil },
 	}
-	svc := iamSvcImpl.NewAdminAPIKeyService(cfg, repo, telegram.NewTelegramClient("", ""), nil, nil, nil)
-	err := svc.Bootstrap(context.Background(), "tester")
+	svc := iamSvcImpl.NewAdminAPIKeyService(cfg, repo, telegram.NewTelegramClient("", ""), nil)
+	err := svc.Bootstrap(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 }
 
-func (m *adminBootstrapRepoMock) GetAdmin2FASettings(ctx context.Context) (*iamEntity.Admin2FASettings, error) {
+func (m *adminBootstrapRepoMock) GetAdmin2FASecret(ctx context.Context) (string, time.Time, error) {
 	if m.get2FAFn != nil {
 		return m.get2FAFn(ctx)
 	}
-	return nil, nil
+	return "", time.Time{}, nil
 }
 
-func (m *adminBootstrapRepoMock) ConsumeRecoveryCode(ctx context.Context, codeHash string, now time.Time) (bool, error) {
+func (m *adminBootstrapRepoMock) ConsumeRecoveryCode(ctx context.Context, codeHash string, now time.Time) error {
 	if m.consumeRecoveryFn != nil {
 		return m.consumeRecoveryFn(ctx, codeHash, now)
 	}
-	return false, nil
+	return nil
 }
 
 func (m *adminBootstrapRepoMock) UpsertAdminDeviceBinding(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error) {
@@ -123,11 +123,11 @@ func (m *adminBootstrapRepoMock) UpsertAdminDeviceBinding(ctx context.Context, i
 	return &iamEntity.AdminDevice{}, nil
 }
 
-func (m *adminBootstrapRepoMock) GetAdminDeviceByID(ctx context.Context, deviceID string) (*iamEntity.AdminDevice, error) {
-	if m.getDeviceByIDFn != nil {
-		return m.getDeviceByIDFn(ctx, deviceID)
+func (m *adminBootstrapRepoMock) GetPublicKeyByDeviceID(ctx context.Context, deviceID string) (string, error) {
+	if m.getPublicKeyByDeviceIDFn != nil {
+		return m.getPublicKeyByDeviceIDFn(ctx, deviceID)
 	}
-	return nil, nil
+	return "", nil
 }
 
 func (m *adminBootstrapRepoMock) TouchAdminDeviceLastSeen(ctx context.Context, deviceID string, ip *string, userAgent *string, seenAt time.Time) error {

@@ -6,5 +6,5 @@ type AdminLoginRequest struct {
 	MFACode         string `json:"mfa_code" binding:"required,min=6"`
 	DevicePublicKey string `json:"device_public_key" binding:"required,min=16"`
 	// ZoneCode đại diện cho phân vùng mà Admin muốn đăng nhập vào (ví dụ: "global", "vn-hn-1")
-	ZoneCode        string `json:"zone_code"`
+	ZoneCode string `json:"zone_code" binding:"required,min=3"`
 }

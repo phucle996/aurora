@@ -29,7 +29,9 @@ package l2_cache
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -39,8 +41,14 @@ type L2Cache interface {
 	// Get lấy dữ liệu payload thô và số phiên bản của khóa.
 	// Trả về exists = false nếu khóa không tồn tại, không trả về lỗi redis.Nil.
 	Get(ctx context.Context, key string) (payload []byte, version int64, exists bool, err error)
+	// Set lưu trữ dữ liệu (sẽ được tự động Marshal sang JSON) và số phiên bản của khóa với TTL xác định.
+	Set(ctx context.Context, key string, data interface{}, version int64, ttl time.Duration) error
 	// Delete xóa hoàn toàn khóa dữ liệu và phiên bản trên L2.
 	Delete(ctx context.Context, key string) error
+	// Client trả về redis client bên dưới để thực thi các lệnh đặc thù.
+	Client() *redis.Client
+	// GetOrLoad đọc dữ liệu từ cache L2, nếu không tồn tại sẽ gọi loadFn để tải lại và lưu vào L2.
+	GetOrLoad(ctx context.Context, key string, target interface{}, ttl time.Duration, loadFn func() (interface{}, error)) (version int64, err error)
 }
 
 // redisL2Cache triển khai L2Cache sử dụng go-redis client.
@@ -51,6 +59,11 @@ type redisL2Cache struct {
 // NewL2Cache khởi tạo một L2 cache Redis mới.
 func NewL2Cache(rdb *redis.Client) L2Cache {
 	return &redisL2Cache{rdb: rdb}
+}
+
+// Client trả về redis client bên dưới.
+func (c *redisL2Cache) Client() *redis.Client {
+	return c.rdb
 }
 
 // Get thực hiện truy vấn đồng thời data và version của khóa qua Redis Pipeline.
@@ -98,6 +111,24 @@ func (c *redisL2Cache) Get(ctx context.Context, key string) (payload []byte, ver
 	return []byte(dataVal), v, true, nil
 }
 
+// Set thực hiện ghi đồng thời data và version của khóa qua Redis Pipeline với TTL.
+func (c *redisL2Cache) Set(ctx context.Context, key string, data interface{}, version int64, ttl time.Duration) error {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	dataKey := "{" + key + "}:data"
+	versionKey := "{" + key + "}:version"
+
+	pipe := c.rdb.Pipeline()
+	pipe.Set(ctx, dataKey, payload, ttl)
+	pipe.Set(ctx, versionKey, strconv.FormatInt(version, 10), ttl)
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
 // Delete thực hiện xóa đồng thời cả data key và version key trên Redis.
 func (c *redisL2Cache) Delete(ctx context.Context, key string) error {
 	dataKey := "{" + key + "}:data"
@@ -107,3 +138,45 @@ func (c *redisL2Cache) Delete(ctx context.Context, key string) error {
 	_, err := c.rdb.Del(ctx, dataKey, versionKey).Result()
 	return err
 }
+
+// GetOrLoad thực hiện đọc dữ liệu từ cache L2 Redis. Nếu cache miss, gọi loadFn để nạp và lưu vào Redis.
+func (c *redisL2Cache) GetOrLoad(ctx context.Context, key string, target interface{}, ttl time.Duration, loadFn func() (interface{}, error)) (version int64, err error) {
+	// 1. Kiểm tra cache L2 trước
+	payload, v, exists, err := c.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	if exists {
+		// Unmarshal payload vào target
+		if err := json.Unmarshal(payload, target); err != nil {
+			return 0, err
+		}
+		return v, nil
+	}
+
+	// 2. Cache miss -> Nạp dữ liệu gốc qua loadFn
+	val, err := loadFn()
+	if err != nil {
+		return 0, err
+	}
+
+	// Tự động sinh monotonic version dựa trên thời gian nạp thực tế
+	newVersion := time.Now().UnixNano()
+
+	// 3. Ghi đè vào L2 Cache
+	if err := c.Set(ctx, key, val, newVersion, ttl); err != nil {
+		return 0, err
+	}
+
+	// 4. Đồng bộ dữ liệu mới nạp vào target để trả về caller
+	payloadVal, err := json.Marshal(val)
+	if err != nil {
+		return 0, err
+	}
+	if err := json.Unmarshal(payloadVal, target); err != nil {
+		return 0, err
+	}
+
+	return newVersion, nil
+}
+

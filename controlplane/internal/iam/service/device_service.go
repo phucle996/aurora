@@ -12,7 +12,7 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
@@ -26,8 +26,14 @@ type DeviceService struct {
 	streamPublisher  infraredis.StreamPublisher
 }
 
-func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository, refreshTokenRepo iamRepoInterface.RefreshTokenRepository, deviceRuntime iamCache.UserDeviceRuntimeCache, streamPublisher infraredis.StreamPublisher) iamSvcInterface.DeviceService {
-	return &DeviceService{deviceRepo: deviceRepo, refreshTokenRepo: refreshTokenRepo, deviceRuntime: deviceRuntime, streamPublisher: streamPublisher}
+func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
+	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
+	deviceRuntime iamCache.UserDeviceRuntimeCache,
+	streamPublisher infraredis.StreamPublisher) iamSvcInterface.DeviceService {
+	return &DeviceService{deviceRepo: deviceRepo,
+		refreshTokenRepo: refreshTokenRepo,
+		deviceRuntime:    deviceRuntime,
+		streamPublisher:  streamPublisher}
 }
 
 func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
@@ -136,14 +142,9 @@ func (s *DeviceService) LogoutAllDevices(ctx context.Context, userID string, ip 
 
 // publishDeviceAudit publish device audit qua Redis stream với fallback DB.
 func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
-	if s == nil || s.deviceRepo == nil {
-		return
-	}
-	if s.streamPublisher == nil {
-		_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ObserveServiceCall("audit_publish", "fallback_db", "n/a")
-		return
-	}
+
+	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
+	iamMetrics.ServiceCall("audit_publish", "fallback_db", "n/a")
 	now := time.Now().UTC()
 	payload := map[string]string{
 		"event":        event,
@@ -167,8 +168,8 @@ func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID
 	}
 	if _, _, err := s.streamPublisher.Publish(ctx, msg, 30*time.Second); err != nil {
 		_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ObserveServiceCall("audit_publish", "fallback_db", "n/a")
+		iamMetrics.ServiceCall("audit_publish", "fallback_db", "n/a")
 		return
 	}
-	iamMetrics.ObserveServiceCall("audit_publish", "published", "n/a")
+	iamMetrics.ServiceCall("audit_publish", "published", "n/a")
 }

@@ -30,19 +30,16 @@ import (
 
 type ZoneService struct {
 	repo       coreRepoInterface.ZoneRepository
-	l1Registry *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine
-	l1Fanout   *cacheengine.RedisFanout   // Tích hợp RedisFanout độc lập
+	l1Registry *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine chứa toàn bộ L1, L2, Fanout, Exec
 }
 
 func NewZoneService(
 	repo coreRepoInterface.ZoneRepository,
 	l1Registry *cacheengine.CacheRegistry,
-	l1Fanout *cacheengine.RedisFanout,
 ) coreSvcInterface.ZoneService {
 	return &ZoneService{
 		repo:       repo,
 		l1Registry: l1Registry,
-		l1Fanout:   l1Fanout,
 	}
 }
 
@@ -115,17 +112,21 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	// Dù có lỗi publish thì vẫn tiếp tục vì là best-effort
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_by_code:"+zone.Code, nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_by_code:"+zone.Code, nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 
@@ -165,10 +166,12 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 
@@ -195,17 +198,21 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_by_code:"+code, nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_by_code:"+code, nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 
@@ -242,17 +249,21 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 	go func() {
-		if _, err := s.l1Fanout.Publish(detachedCtx, "zone_by_code:"+zoneCode, nil); err != nil {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
-		} else {
-			coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_by_code:"+zoneCode, nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
 		}
 	}()
 

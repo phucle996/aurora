@@ -14,9 +14,11 @@ type BootstrapLock interface {
 type AdminAPIKeyRepository interface {
 	AcquireBootstrapLock(ctx context.Context) (BootstrapLock, error)
 	GetActiveAdminAPIKey(ctx context.Context) (*iamEntity.AdminAPIKey, error)
-	GetAdmin2FASettings(ctx context.Context) (*iamEntity.Admin2FASettings, error)
-	ConsumeRecoveryCode(ctx context.Context, codeHash string, now time.Time) (bool, error)
-	GetAdminDeviceByID(ctx context.Context, deviceID string) (*iamEntity.AdminDevice, error)
+	GetAdmin2FASecret(ctx context.Context) (secretCiphertext string, updatedAt time.Time, err error)
+
+	// sau khi gọi consume recovery code thành công, ta cần đảm bảo rằng mã khôi phục này sẽ không được sử dụng lại, và nếu gọi lại lần nữa thì sẽ thất bại
+	ConsumeRecoveryCode(ctx context.Context, codeHash string, now time.Time) error
+	GetPublicKeyByDeviceID(ctx context.Context, deviceID string) (string, error)
 	UpsertAdminDeviceBinding(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error)
 	TouchAdminDeviceLastSeen(ctx context.Context, deviceID string, ip *string, userAgent *string, seenAt time.Time) error
 	Bootstrap(ctx context.Context, payload iamEntity.AdminBootstrapPayload) (bootstrappedAt time.Time, err error)

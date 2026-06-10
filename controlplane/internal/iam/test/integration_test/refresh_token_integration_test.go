@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"controlplane/internal/iam/cache"
 	"controlplane/internal/iam/domain/entity"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
@@ -23,12 +22,10 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
 
-	presence := iamCache.NewRegisterPresenceCache(rdb)
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	deviceRuntime := iamCache.NewUserDeviceRuntimeCache(rdb)
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, deviceRuntime, nil, presence, nil, nil, nil)
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -37,13 +34,13 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, deviceRuntime, nil, presence, makeIntegrationRegistry(), nil, nil)
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, makeIntegrationRegistry(rdb), nil, nil)
 	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry())
+	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
 	refreshResult, err := refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)
@@ -79,12 +76,10 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
 
-	presence := iamCache.NewRegisterPresenceCache(rdb)
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	deviceRuntime := iamCache.NewUserDeviceRuntimeCache(rdb)
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, deviceRuntime, nil, presence, nil, nil, nil)
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_pending")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -93,7 +88,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, deviceRuntime, nil, presence, makeIntegrationRegistry(), nil, nil)
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, makeIntegrationRegistry(rdb), nil, nil)
 	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
@@ -102,7 +97,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("deactivate user: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry())
+	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
 	_, err = refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected invalid session for blocked user, got %v", err)
@@ -124,12 +119,10 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
 
-	presence := iamCache.NewRegisterPresenceCache(rdb)
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	deviceRuntime := iamCache.NewUserDeviceRuntimeCache(rdb)
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, deviceRuntime, nil, presence, nil, nil, nil)
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_claims")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Claims User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -138,13 +131,13 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, deviceRuntime, nil, presence, makeIntegrationRegistry(), nil, nil)
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceRepo, makeIntegrationRegistry(rdb), nil, nil)
 	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry())
+	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
 	refreshResult, err := refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
 	"controlplane/pkg/constant"
 
@@ -32,19 +33,23 @@ func TestAdminCriticalSignature(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
+	deviceID := "admin-device-1"
+	pubKeyEncoded := base64.StdEncoding.EncodeToString(pubKey)
+
 	redisServer := miniredis.RunT(t)
 	rds := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
 	t.Cleanup(func() { _ = rds.Close() })
 
-	deviceID := "admin-device-1"
-	pubKeyEncoded := base64.StdEncoding.EncodeToString(pubKey)
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	cacheengine.Register(registry, "admin_public_key", time.Hour, func(ctx context.Context, gotDeviceID string) (string, error) {
+		if gotDeviceID != deviceID {
+			return "", fmt.Errorf("device id = %q, want %q", gotDeviceID, deviceID)
+		}
+		return pubKeyEncoded, nil
+	})
+
 	if err := middleware.InitAdminCriticalSignature(
-		func(_ context.Context, gotDeviceID string) (string, error) {
-			if gotDeviceID != deviceID {
-				t.Fatalf("device id = %q, want %q", gotDeviceID, deviceID)
-			}
-			return pubKeyEncoded, nil
-		},
+		registry,
 		rds,
 		time.Minute,
 		time.Minute,

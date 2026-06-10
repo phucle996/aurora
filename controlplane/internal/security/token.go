@@ -51,6 +51,7 @@ func HashToken(token, secret string) (string, error) {
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
+// deterministic trong memory -> luôn không fail
 func HashTokenSHA256(token string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	return tokenEncoding.EncodeToString(sum[:])

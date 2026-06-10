@@ -14,10 +14,10 @@ import (
 )
 
 // UserDeviceRuntimeCache là SoT runtime cho presence và device-binding của user
-// session. Runtime key chính theo cặp (user_id, runtime_device_id).
+// session. Runtime key chính theo cặp (user_id, access_key).
 //
 // CONTRACT:
-// - Key chính: `iam:user:device:runtime:<user_id>:<runtime_device_id>`.
+// - Key chính: `iam:user:device:runtime:<user_id>:<access_key>`.
 // - Auth-path verify runtime phải lookup O(1) theo key chính, không scan list.
 // - `tracked_device_id` trong record là định danh bridge sang DB device.
 // - Rotate runtime phải atomic để tránh drift current/previous jti và key move.
@@ -32,31 +32,31 @@ import (
 //     verification trên hot auth-path.
 type UserDeviceRuntimeCache interface {
 	SetDeviceRuntime(ctx context.Context, runtime UserDeviceRuntime, ttl time.Duration) error
-	GetDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) (*UserDeviceRuntime, error)
-	DeleteDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) error
-	RotateFragmentForUserDevice(ctx context.Context, userID, deviceID, expectedJTI, newDeviceID, newDeviceSecretHash, newJTI string, ttl time.Duration, ip *string, userAgent *string) (bool, error)
-	TouchDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string, ttl time.Duration, ip *string, userAgent *string) (bool, error)
+	GetDeviceRuntimeByUserDevice(ctx context.Context, userID, accessKey string) (*UserDeviceRuntime, error)
+	DeleteDeviceRuntimeByUserDevice(ctx context.Context, userID, accessKey string) error
+	RotateFragmentForUserDevice(ctx context.Context, userID, accessKey, expectedJTI, newAccessKey, newAccessSecretHash, newJTI string, ttl time.Duration, ip *string, userAgent *string) (bool, error)
+	TouchDeviceRuntimeByUserDevice(ctx context.Context, userID, accessKey string, ttl time.Duration, ip *string, userAgent *string) (bool, error)
 	ScanByUser(ctx context.Context, userID string, limit int) ([]UserDeviceRuntime, error)
 }
 
 // UserDeviceRuntime là payload runtime stored ở Redis.
 //
 // FIELD CONTRACT (trace nhanh theo flow):
-//   - Nhóm identity runtime: UserID + DeviceID
-//     -> xác định duy nhất runtime key `iam:user:device:runtime:<user_id>:<device_id>`.
-//   - Nhóm auth-fragment: DeviceSecretHash + CurrentJTI (+ PreviousJTI/PreviousIssuedAt)
+//   - Nhóm identity runtime: UserID + AccessKey
+//     -> xác định duy nhất runtime key `iam:user:device:runtime:<user_id>:<access_key>`.
+//   - Nhóm auth-fragment: AccessSecretHash + CurrentJTI (+ PreviousJTI/PreviousIssuedAt)
 //     -> dùng để verify request hiện tại và grace-window ngay sau rotate.
 //   - Nhóm bridge DB: TrackedDeviceID
 //     -> liên kết runtime session với thiết bị persistent trong DB.
 //   - Nhóm presence/ops: Status, LastSeen*, Version
 //     -> phục vụ online state, telemetry, và quan sát thay đổi runtime.
 type UserDeviceRuntime struct {
-	// DeviceID là runtime_device_id ngắn hạn (fragment ID) nằm trong JWT claim
-	// và cookie device_id. Đây là phần "device" trong key runtime Redis.
-	DeviceID string `json:"device_id"`
-	// DeviceSecretHash là SHA-256 của cookie device_secret (không lưu raw secret).
+	// AccessKey là access_key ngắn hạn (fragment ID) nằm trong JWT claim
+	// và cookie access_key. Đây là phần "device" trong key runtime Redis.
+	AccessKey string `json:"access_key"`
+	// AccessSecretHash là SHA-256 của cookie access_secret (không lưu raw secret).
 	// Access verify dùng field này để so khớp fragment secret an toàn.
-	DeviceSecretHash string `json:"device_secret_hash"`
+	AccessSecretHash string `json:"access_secret_hash"`
 	// CurrentJTI là jti của access token hiện hành đang có hiệu lực cho runtime.
 	// Mismatch CurrentJTI (ngoài grace) sẽ bị reject.
 	CurrentJTI string `json:"current_jti"`
@@ -70,7 +70,7 @@ type UserDeviceRuntime struct {
 	// TrackedDeviceID là device id persistent trong DB (`iam.devices.id`).
 	// Dùng cho list/revoke/logout-others theo thực thể thiết bị lâu dài.
 	TrackedDeviceID string `json:"tracked_device_id"`
-	// UserID là chủ sở hữu session runtime; kết hợp với DeviceID tạo identity key.
+	// UserID là chủ sở hữu session runtime; kết hợp với AccessKey tạo identity key.
 	UserID string `json:"user_id"`
 	// Status phản ánh trạng thái runtime phục vụ presence (online/revoked...).
 	// Access match hiện reject khi status == revoked.
@@ -96,7 +96,7 @@ func NewUserDeviceRuntimeCache(rdb *goredis.Client) UserDeviceRuntimeCache {
 	return &userDeviceRuntimeCache{rdb: rdb}
 }
 
-// SetDeviceRuntime upsert runtime record + đồng bộ user index device_id.
+// SetDeviceRuntime upsert runtime record + đồng bộ user index access_key.
 // Redis primitive: SET + SADD + EXPIRE (pipeline).
 // Callsite chính: login/refresh/auth services khi ghi runtime session.
 // Tác dụng: đảm bảo runtime SoT và index liệt kê theo user luôn cùng trạng thái.
@@ -107,12 +107,12 @@ func (c *userDeviceRuntimeCache) SetDeviceRuntime(ctx context.Context, runtime U
 	if ttl <= 0 {
 		return fmt.Errorf("iam cache: ttl must be positive")
 	}
-	runtime.DeviceID = strings.TrimSpace(runtime.DeviceID)
-	runtime.DeviceSecretHash = strings.TrimSpace(runtime.DeviceSecretHash)
+	runtime.AccessKey = strings.TrimSpace(runtime.AccessKey)
+	runtime.AccessSecretHash = strings.TrimSpace(runtime.AccessSecretHash)
 	runtime.CurrentJTI = strings.TrimSpace(runtime.CurrentJTI)
 	runtime.UserID = strings.TrimSpace(runtime.UserID)
 	runtime.TrackedDeviceID = strings.TrimSpace(runtime.TrackedDeviceID)
-	if runtime.DeviceID == "" || runtime.DeviceSecretHash == "" ||
+	if runtime.AccessKey == "" || runtime.AccessSecretHash == "" ||
 		runtime.CurrentJTI == "" || runtime.UserID == "" || runtime.TrackedDeviceID == "" {
 		return iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
@@ -133,8 +133,8 @@ func (c *userDeviceRuntimeCache) SetDeviceRuntime(ctx context.Context, runtime U
 		return err
 	}
 	pipe := c.rdb.TxPipeline()
-	pipe.Set(ctx, c.userDeviceKey(runtime.UserID, runtime.DeviceID), payload, ttl)
-	pipe.SAdd(ctx, c.userDeviceIndexKey(runtime.UserID), runtime.DeviceID)
+	pipe.Set(ctx, c.userDeviceKey(runtime.UserID, runtime.AccessKey), payload, ttl)
+	pipe.SAdd(ctx, c.userDeviceIndexKey(runtime.UserID), runtime.AccessKey)
 	pipe.Expire(ctx, c.userDeviceIndexKey(runtime.UserID), ttl+24*time.Hour)
 	if _, execErr := pipe.Exec(ctx); execErr != nil {
 		return execErr
@@ -143,22 +143,18 @@ func (c *userDeviceRuntimeCache) SetDeviceRuntime(ctx context.Context, runtime U
 }
 
 // GetDeviceRuntimeByUserDevice đọc runtime theo key chính
-// `iam:user:device:runtime:<user_id>:<device_id>`.
+// `iam:user:device:runtime:<user_id>:<access_key>`.
 // Redis primitive: GET + JSON unmarshal.
-// Callsite chính:
-// - Access middleware runtime verify (hot path auth)
-// - logout/revoke flows cần đọc trạng thái runtime hiện tại
-// Tác dụng: cung cấp SoT runtime để so khớp fragment secret + jti.
-func (c *userDeviceRuntimeCache) GetDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) (*UserDeviceRuntime, error) {
+func (c *userDeviceRuntimeCache) GetDeviceRuntimeByUserDevice(ctx context.Context, userID, accessKey string) (*UserDeviceRuntime, error) {
 	if c == nil || c.rdb == nil {
 		return nil, fmt.Errorf("iam cache: redis client is required")
 	}
 	userID = strings.TrimSpace(userID)
-	deviceID = strings.TrimSpace(deviceID)
-	if userID == "" || deviceID == "" {
+	accessKey = strings.TrimSpace(accessKey)
+	if userID == "" || accessKey == "" {
 		return nil, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
-	raw, err := c.rdb.Get(ctx, c.userDeviceKey(userID, deviceID)).Result()
+	raw, err := c.rdb.Get(ctx, c.userDeviceKey(userID, accessKey)).Result()
 	if err == goredis.Nil {
 		return nil, nil
 	}
@@ -169,7 +165,7 @@ func (c *userDeviceRuntimeCache) GetDeviceRuntimeByUserDevice(ctx context.Contex
 	if jsonErr := json.Unmarshal([]byte(raw), &record); jsonErr != nil {
 		return nil, fmt.Errorf("iam cache: invalid user device runtime payload: %w", jsonErr)
 	}
-	if strings.TrimSpace(record.DeviceSecretHash) == "" || strings.TrimSpace(record.DeviceID) == "" {
+	if strings.TrimSpace(record.AccessSecretHash) == "" || strings.TrimSpace(record.AccessKey) == "" {
 		return nil, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	return &record, nil
@@ -177,11 +173,7 @@ func (c *userDeviceRuntimeCache) GetDeviceRuntimeByUserDevice(ctx context.Contex
 
 // RotateFragmentForUserDevice rotate atomically fragment + jti cho 1 runtime.
 // Redis primitive: EVAL Lua (GET old -> mutate -> SET new -> SADD/SREM index -> DEL old).
-// Callsite chính:
-// - refresh/login rotate access fragment trong IAM auth services
-// Tác dụng: giữ tính nhất quán runtime khi đổi runtime_device_id/jti,
-// đồng thời bảo toàn previous_jti cho grace-window.
-func (c *userDeviceRuntimeCache) RotateFragmentForUserDevice(ctx context.Context, userID, deviceID, expectedJTI, newDeviceID, newDeviceSecretHash, newJTI string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
+func (c *userDeviceRuntimeCache) RotateFragmentForUserDevice(ctx context.Context, userID, accessKey, expectedJTI, newAccessKey, newAccessSecretHash, newJTI string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
 	if c == nil || c.rdb == nil {
 		return false, fmt.Errorf("iam cache: redis client is required")
 	}
@@ -189,11 +181,11 @@ func (c *userDeviceRuntimeCache) RotateFragmentForUserDevice(ctx context.Context
 		return false, fmt.Errorf("iam cache: ttl must be positive")
 	}
 	userID = strings.TrimSpace(userID)
-	deviceID = strings.TrimSpace(deviceID)
-	newDeviceID = strings.TrimSpace(newDeviceID)
-	newDeviceSecretHash = strings.TrimSpace(newDeviceSecretHash)
+	accessKey = strings.TrimSpace(accessKey)
+	newAccessKey = strings.TrimSpace(newAccessKey)
+	newAccessSecretHash = strings.TrimSpace(newAccessSecretHash)
 	newJTI = strings.TrimSpace(newJTI)
-	if userID == "" || deviceID == "" || newDeviceID == "" || newDeviceSecretHash == "" || newJTI == "" {
+	if userID == "" || accessKey == "" || newAccessKey == "" || newAccessSecretHash == "" || newJTI == "" {
 		return false, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	lua := `
@@ -211,8 +203,8 @@ obj.previous_issued_at = tonumber(obj.current_issued_at or obj.last_seen_at or 0
 obj.current_jti = ARGV[2]
 obj.current_issued_at = tonumber(ARGV[5])
 obj.last_seen_at = tonumber(ARGV[5])
-obj.device_id = ARGV[3]
-obj.device_secret_hash = ARGV[4]
+obj.access_key = ARGV[3]
+obj.access_secret_hash = ARGV[4]
 obj.version = tonumber(obj.version or 0) + 1
 local payload = cjson.encode(obj)
 redis.call('SET', KEYS[2], payload, 'EX', tonumber(ARGV[6]))
@@ -226,15 +218,15 @@ return 1
 `
 	now := time.Now().UTC().Unix()
 	indexTTL := int((ttl + 24*time.Hour).Seconds())
-	result, err := c.rdb.Eval(ctx, lua, []string{c.userDeviceKey(userID, deviceID), c.userDeviceKey(userID, newDeviceID), c.userDeviceIndexKey(userID)},
+	result, err := c.rdb.Eval(ctx, lua, []string{c.userDeviceKey(userID, accessKey), c.userDeviceKey(userID, newAccessKey), c.userDeviceIndexKey(userID)},
 		strings.TrimSpace(expectedJTI),
 		newJTI,
-		newDeviceID,
-		newDeviceSecretHash,
+		newAccessKey,
+		newAccessSecretHash,
 		now,
 		int(ttl.Seconds()),
 		indexTTL,
-		deviceID,
+		accessKey,
 	).Int()
 	if err != nil {
 		return false, err
@@ -244,10 +236,7 @@ return 1
 
 // TouchDeviceRuntimeByUserDevice cập nhật last_seen* + TTL theo cách atomic.
 // Redis primitive: EVAL Lua (GET -> update last_seen/ip/ua -> SET EX).
-// Callsite chính:
-// - các luồng cần heartbeat/presence update runtime user device
-// Tác dụng: refresh runtime alive state với 1 round-trip và giảm race.
-func (c *userDeviceRuntimeCache) TouchDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
+func (c *userDeviceRuntimeCache) TouchDeviceRuntimeByUserDevice(ctx context.Context, userID, accessKey string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
 	if c == nil || c.rdb == nil {
 		return false, fmt.Errorf("iam cache: redis client is required")
 	}
@@ -255,8 +244,8 @@ func (c *userDeviceRuntimeCache) TouchDeviceRuntimeByUserDevice(ctx context.Cont
 		return false, fmt.Errorf("iam cache: ttl must be positive")
 	}
 	userID = strings.TrimSpace(userID)
-	deviceID = strings.TrimSpace(deviceID)
-	if userID == "" || deviceID == "" {
+	accessKey = strings.TrimSpace(accessKey)
+	if userID == "" || accessKey == "" {
 		return false, iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	ipValue := ""
@@ -288,7 +277,7 @@ local payload = cjson.encode(obj)
 redis.call('SET', KEYS[1], payload, 'EX', tonumber(ARGV[4]))
 return 1
 `
-	result, err := c.rdb.Eval(ctx, lua, []string{c.userDeviceKey(userID, deviceID)},
+	result, err := c.rdb.Eval(ctx, lua, []string{c.userDeviceKey(userID, accessKey)},
 		time.Now().UTC().Unix(),
 		ipValue,
 		uaValue,
@@ -300,35 +289,26 @@ return 1
 	return result == 1, nil
 }
 
-// DeleteDeviceRuntimeByUserDevice xóa runtime key và gỡ device khỏi user index.
+// DeleteDeviceRuntimeByUserDevice xóa runtime key và gỡ access_key khỏi user index.
 // Redis primitive: DEL + SREM (pipeline).
-// Callsite chính:
-// - logout/revoke device/session
-// - access reject path khi runtime mismatch nghi ngờ session stale
-// Tác dụng: invalidate runtime session theo đúng cặp user+runtime_device.
-func (c *userDeviceRuntimeCache) DeleteDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) error {
+func (c *userDeviceRuntimeCache) DeleteDeviceRuntimeByUserDevice(ctx context.Context, userID, accessKey string) error {
 	if c == nil || c.rdb == nil {
 		return fmt.Errorf("iam cache: redis client is required")
 	}
 	userID = strings.TrimSpace(userID)
-	deviceID = strings.TrimSpace(deviceID)
-	if userID == "" || deviceID == "" {
+	accessKey = strings.TrimSpace(accessKey)
+	if userID == "" || accessKey == "" {
 		return iamTaxonomy.ErrUserDeviceRuntimeInvalid
 	}
 	pipe := c.rdb.TxPipeline()
-	pipe.Del(ctx, c.userDeviceKey(userID, deviceID))
-	pipe.SRem(ctx, c.userDeviceIndexKey(userID), deviceID)
+	pipe.Del(ctx, c.userDeviceKey(userID, accessKey))
+	pipe.SRem(ctx, c.userDeviceIndexKey(userID), accessKey)
 	_, execErr := pipe.Exec(ctx)
 	return execErr
 }
 
-// ScanByUser liệt kê runtime records của 1 user thông qua secondary index
-// `iam:user:device:index:<user_id>` (set các runtime device_id).
+// ScanByUser liệt kê runtime records của 1 user thông qua secondary index.
 // Redis primitive: SSCAN index -> MGET runtime keys.
-// Callsite chính:
-// - DeviceService.ListMyDevices để enrich presence (online/last seen/ip/ua)
-// - các flow quan sát runtime theo user ở service layer
-// Tác dụng: đọc theo user mà không scan toàn bộ Redis keyspace.
 func (c *userDeviceRuntimeCache) ScanByUser(ctx context.Context, userID string, limit int) ([]UserDeviceRuntime, error) {
 	if c == nil || c.rdb == nil {
 		return nil, fmt.Errorf("iam cache: redis client is required")
@@ -347,8 +327,8 @@ func (c *userDeviceRuntimeCache) ScanByUser(ctx context.Context, userID string, 
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		for _, deviceID := range scanned {
-			keys = append(keys, c.userDeviceKey(userID, deviceID))
+		for _, accessKey := range scanned {
+			keys = append(keys, c.userDeviceKey(userID, accessKey))
 			if len(keys) >= limit {
 				break
 			}
@@ -386,28 +366,28 @@ func (c *userDeviceRuntimeCache) ScanByUser(ctx context.Context, userID string, 
 	return out, nil
 }
 
-func (c *userDeviceRuntimeCache) userDeviceKey(userID, deviceID string) string {
-	return "iam:user:device:runtime:" + strings.TrimSpace(userID) + ":" + strings.TrimSpace(deviceID)
+func (c *userDeviceRuntimeCache) userDeviceKey(userID, accessKey string) string {
+	return "iam:user:device:runtime:" + strings.TrimSpace(userID) + ":" + strings.TrimSpace(accessKey)
 }
 
 func (c *userDeviceRuntimeCache) userDeviceIndexKey(userID string) string {
 	return "iam:user:device:index:" + strings.TrimSpace(userID)
 }
 
-func MatchRuntime(record *UserDeviceRuntime, deviceID, rawDeviceSecret, jti string, graceWindow time.Duration) bool {
+func MatchRuntime(record *UserDeviceRuntime, accessKey, rawAccessSecret, jti string, graceWindow time.Duration) bool {
 	if record == nil {
 		return false
 	}
-	if strings.TrimSpace(deviceID) == "" || strings.TrimSpace(rawDeviceSecret) == "" || strings.TrimSpace(jti) == "" {
+	if strings.TrimSpace(accessKey) == "" || strings.TrimSpace(rawAccessSecret) == "" || strings.TrimSpace(jti) == "" {
 		return false
 	}
 	if record.Status == "revoked" {
 		return false
 	}
-	if record.DeviceID != deviceID {
+	if record.AccessKey != accessKey {
 		return false
 	}
-	if record.DeviceSecretHash != security.HashTokenSHA256(rawDeviceSecret) {
+	if record.AccessSecretHash != security.HashTokenSHA256(rawAccessSecret) {
 		return false
 	}
 	if record.CurrentJTI == jti {

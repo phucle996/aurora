@@ -27,8 +27,7 @@ const (
 // theo cơ chế Active-Standby hai luồng song song, tránh downtime khi verify token.
 type SecretRotationService struct {
 	repo         coreRepoInterface.SecretRepository
-	l1Registry   *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine để xử lý cache L1 cục bộ
-	l1Fanout     *cacheengine.RedisFanout   // Tích hợp RedisFanout để phát tin nhắn xóa cache trên toàn cụm (Pub/Sub)
+	l1Registry   *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine chứa toàn bộ L1, L2, Fanout, Exec
 	Now          func() time.Time
 	isRotatingMu sync.Mutex
 	isRotating   map[string]time.Time // Quản lý thời gian xoay vòng tránh spam yêu cầu xoay vòng liên tục
@@ -38,12 +37,10 @@ type SecretRotationService struct {
 func NewSecretRotationService(
 	repo coreRepoInterface.SecretRepository,
 	l1Registry *cacheengine.CacheRegistry,
-	l1Fanout *cacheengine.RedisFanout,
 ) coreSvcInterface.SecretRotationService {
 	return &SecretRotationService{
 		repo:       repo,
 		l1Registry: l1Registry,
-		l1Fanout:   l1Fanout,
 		Now:        time.Now,
 		isRotating: make(map[string]time.Time),
 	}
@@ -104,8 +101,10 @@ func (s *SecretRotationService) EnsureInitialSecrets(ctx context.Context, secret
 	s.l1Registry.L1.Delete(secretType)
 
 	// 6. Phát tín hiệu xóa cache tới tất cả các replica khác trong cụm thông qua Redis Fanout Bus
-	if _, err := s.l1Fanout.Publish(ctx, secretType, nil); err != nil {
-		logger.SysWarnFields("core.secret.invalidate", "failed to publish fanout invalidation", err, logger.Fields{"secret_type": secretType})
+	if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+		if _, err := s.l1Registry.Fanout.Publish(ctx, secretType, nil); err != nil {
+			logger.SysWarnFields("core.secret.invalidate", "failed to publish fanout invalidation", err, logger.Fields{"secret_type": secretType})
+		}
 	}
 
 	// 7. Trả về thông tin Plaintext cho runtime sử dụng ngay lập tức
@@ -195,8 +194,10 @@ func (s *SecretRotationService) RotateSecret(ctx context.Context, secretType str
 	s.l1Registry.L1.Delete(secretType)
 
 	// 8. Phát tin nhắn xóa cache cho các replica khác thông qua Redis Pub/Sub
-	if _, err := s.l1Fanout.Publish(ctx, secretType, nil); err != nil {
-		logger.SysWarnFields("core.secret.invalidate", "failed to publish fanout invalidation", err, logger.Fields{"secret_type": secretType})
+	if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+		if _, err := s.l1Registry.Fanout.Publish(ctx, secretType, nil); err != nil {
+			logger.SysWarnFields("core.secret.invalidate", "failed to publish fanout invalidation", err, logger.Fields{"secret_type": secretType})
+		}
 	}
 
 	now := s.Now().UTC()

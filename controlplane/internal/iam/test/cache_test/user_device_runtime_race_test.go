@@ -26,8 +26,8 @@ func newRaceFixture(t *testing.T) (iamCache.UserDeviceRuntimeCache, func()) {
 func seed(t *testing.T, cache iamCache.UserDeviceRuntimeCache, deviceID, jti, secret, userID, trackedRef string) {
 	t.Helper()
 	if err := cache.SetDeviceRuntime(context.Background(), iamCache.UserDeviceRuntime{
-		DeviceID:         deviceID,
-		DeviceSecretHash: security.HashTokenSHA256(secret),
+		AccessKey:        deviceID,
+		AccessSecretHash: security.HashTokenSHA256(secret),
 		CurrentJTI:       jti,
 		TrackedDeviceID:  trackedRef,
 		UserID:           userID,
@@ -139,7 +139,7 @@ func TestScanByUserExcludesDeletedTracking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if len(got) != 1 || got[0].DeviceID != "dev-B" {
+	if len(got) != 1 || got[0].AccessKey != "dev-B" {
 		t.Fatalf("expected only dev-B, got %#v", got)
 	}
 }

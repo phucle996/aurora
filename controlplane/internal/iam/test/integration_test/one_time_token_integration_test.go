@@ -40,7 +40,7 @@ func TestOneTimeTokenIntegrationConsumeOnce(t *testing.T) {
 	}
 
 	ok, err = svc.Consume(context.Background(), "account_verify", userID, token)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidOrExpired) {
+	if !errors.Is(err, iamTaxonomy.ErrTokenRefreshExpired) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidOrExpired, got %v", err)
 	}
 	if ok {
@@ -72,7 +72,7 @@ func TestOneTimeTokenIntegrationOverwriteOldToken(t *testing.T) {
 	}
 
 	ok, err := svc.Consume(context.Background(), "account_verify", userID, oldToken)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidOrExpired) {
+	if !errors.Is(err, iamTaxonomy.ErrTokenRefreshExpired) {
 		t.Fatalf("old token must be invalid after overwrite, got %v", err)
 	}
 	if ok {
@@ -107,7 +107,7 @@ func TestOneTimeTokenIntegrationTTLExpire(t *testing.T) {
 	time.Sleep(1300 * time.Millisecond)
 
 	ok, err := svc.Consume(context.Background(), "account_verify", userID, token)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidOrExpired) {
+	if !errors.Is(err, iamTaxonomy.ErrTokenRefreshExpired) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidOrExpired after ttl, got %v", err)
 	}
 	if ok {

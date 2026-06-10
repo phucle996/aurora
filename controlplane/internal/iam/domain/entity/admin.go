@@ -9,7 +9,7 @@ import (
 type AdminAPIKey struct {
 	ID        uuid.UUID
 	KeyHash   string
-	CreatedBy *string
+	CreatedBy string
 	CreatedAt time.Time
 	ExpiresAt time.Time
 }
@@ -30,9 +30,8 @@ type AdminLoginRequest struct {
 	MFAMethod       MFAType
 	MFACode         string
 	DevicePublicKey string
-	HostnameHint    string
-	HostnameAlias   string
-	ClientDeviceID  string
+	DeviceName      string
+	ClientDeviceID  uuid.UUID
 	// ZoneCode là code của phân vùng (ví dụ: "global", "vn-hn-1")
 	ZoneCode string
 }
@@ -45,7 +44,7 @@ type AdminLoginResult struct {
 	// AccessSecret là mã bí mật của phiên (Mảnh 3), được băm SHA256 khi lưu tại Redis cache và lưu thô tại cookie access_secret
 	AccessSecret string
 	// ClientDeviceID là mã định danh duy nhất của thiết bị được liên kết cố định với phiên quản trị (Device Binding)
-	ClientDeviceID string
+	ClientDeviceID uuid.UUID
 	// ClientDeviceIDProvenance mô tả nguồn gốc xuất xứ của Client Device ID (ví dụ: từ cookie hoặc thiết bị mới) phục vụ audit log
 	ClientDeviceIDProvenance string
 	// ExpiresAt là mốc thời gian Unix khi phiên làm việc của Admin chính thức hết hạn

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/security"
 	"controlplane/pkg/constant"
@@ -20,9 +21,12 @@ func TestAdminCriticalStepUp2FA(t *testing.T) {
 	restoreRuntimeMasterKey(t)
 
 	totpSecret := newEncryptedTOTPSecret(t)
-	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
-		return totpSecret.ciphertext, totpSecret.updatedAt, nil
-	})); err != nil {
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	cacheengine.Register(registry, "admin_2fa_secret", time.Hour, func(ctx context.Context, param string) (string, error) {
+		return totpSecret.plain, nil
+	})
+
+	if err := middleware.InitAdminCriticalStepUp2FA(registry); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -51,9 +55,12 @@ func TestAdminCriticalStepUp2FAMissingSecretUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	restoreRuntimeMasterKey(t)
 
-	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
-		return "", time.Time{}, nil
-	})); err != nil {
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	cacheengine.Register(registry, "admin_2fa_secret", time.Hour, func(ctx context.Context, param string) (string, error) {
+		return "", nil
+	})
+
+	if err := middleware.InitAdminCriticalStepUp2FA(registry); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -79,10 +86,13 @@ func TestAdminCriticalStepUp2FARejectsInvalidCodeBeforeLoadingSecret(t *testing.
 	restoreRuntimeMasterKey(t)
 
 	loadCalls := 0
-	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	cacheengine.Register(registry, "admin_2fa_secret", time.Hour, func(ctx context.Context, param string) (string, error) {
 		loadCalls++
-		return "should-not-load", time.Now().UTC(), nil
-	})); err != nil {
+		return "should-not-load", nil
+	})
+
+	if err := middleware.InitAdminCriticalStepUp2FA(registry); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -106,17 +116,19 @@ func TestAdminCriticalStepUp2FARejectsInvalidCodeBeforeLoadingSecret(t *testing.
 	}
 }
 
-func TestLoadStepUpTOTPSecretDoesNotUseStaleCacheWhenCiphertextChanges(t *testing.T) {
+func TestLoadStepUpTOTPSecretDoesNotUseStaleCacheWhenDeleted(t *testing.T) {
 	restoreRuntimeMasterKey(t)
 
 	first := newEncryptedTOTPSecret(t)
 	second := newEncryptedTOTPSecret(t)
-	updatedAt := time.Now().UTC()
 
-	currentCiphertext := first.ciphertext
-	if err := middleware.InitAdminCriticalStepUp2FA(middleware.AdminStepUp2FASecretLoaderFunc(func(context.Context) (string, time.Time, error) {
-		return currentCiphertext, updatedAt, nil
-	})); err != nil {
+	currentSecret := first.plain
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	cacheengine.Register(registry, "admin_2fa_secret", time.Hour, func(ctx context.Context, param string) (string, error) {
+		return currentSecret, nil
+	})
+
+	if err := middleware.InitAdminCriticalStepUp2FA(registry); err != nil {
 		t.Fatalf("init step-up guard: %v", err)
 	}
 
@@ -140,7 +152,10 @@ func TestLoadStepUpTOTPSecretDoesNotUseStaleCacheWhenCiphertextChanges(t *testin
 		t.Fatalf("first code status = %d, want %d", firstRec.Code, http.StatusNoContent)
 	}
 
-	currentCiphertext = second.ciphertext
+	// Change secret, invalidate/delete from L1 cache
+	currentSecret = second.plain
+	registry.L1.Delete("admin_2fa_secret")
+
 	secondCode, err := totp.GenerateCode(second.plain, time.Now())
 	if err != nil {
 		t.Fatalf("generate second code: %v", err)

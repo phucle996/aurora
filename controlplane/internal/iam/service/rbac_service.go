@@ -21,36 +21,34 @@ import (
 
 type RbacService struct {
 	repo       iamRepoInterface.RbacRepository
-	l1registry *cacheengine.CacheRegistry
-	l1fanout   *cacheengine.RedisFanout
+	l1registry *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine chứa toàn bộ L1, L2, Fanout, Exec
 }
 
 func NewRbacService(
 	repo iamRepoInterface.RbacRepository,
 	l1registry *cacheengine.CacheRegistry,
-	l1fanout *cacheengine.RedisFanout) iamSvcInterface.RbacService {
+) iamSvcInterface.RbacService {
 	return &RbacService{
 		repo:       repo,
 		l1registry: l1registry,
-		l1fanout:   l1fanout,
 	}
 }
 
 func (s *RbacService) Authorize(ctx context.Context, roleCode, permission string) (iamSvcInterface.AuthorizeResult, error) {
 	entry, err := s.LoadRole(ctx, roleCode)
 	if err != nil {
-		iamMetrics.ObserveServiceCall("rbac_authorize", "error", "n/a")
+		iamMetrics.ServiceCall("rbac_authorize", "error", "n/a")
 		return iamSvcInterface.AuthorizeError, err
 	}
 	perm := strings.ToLower(strings.TrimSpace(permission))
 	for _, p := range entry.Permissions {
 		if strings.EqualFold(strings.TrimSpace(p), perm) {
-			iamMetrics.ObserveServiceCall("rbac_authorize", "allow", "n/a")
+			iamMetrics.ServiceCall("rbac_authorize", "allow", "n/a")
 			return iamSvcInterface.AuthorizeAllow, nil
 		}
 	}
-	iamMetrics.ObserveServiceCall("rbac_authorize", "deny", "n/a")
-	iamMetrics.ObserveServiceCall("rbac_authorize", "permission_missing", "n/a")
+	iamMetrics.ServiceCall("rbac_authorize", "deny", "n/a")
+	iamMetrics.ServiceCall("rbac_authorize", "permission_missing", "n/a")
 	return iamSvcInterface.AuthorizeDeny, nil
 }
 
@@ -65,7 +63,7 @@ func (s *RbacService) LoadRole(ctx context.Context, role string) (iamSvcInterfac
 			if errors.Is(err, iamTaxonomy.ErrRoleNotFound) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) || errors.Is(err, pgx.ErrNoRows) {
 				return iamSvcInterface.RoleEntry{}, iamTaxonomy.ErrRoleNotFound
 			}
-			return iamSvcInterface.RoleEntry{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+			return iamSvcInterface.RoleEntry{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 		}
 		return iamSvcInterface.RoleEntry{Permissions: rp.Permissions}, nil
 	}
@@ -78,7 +76,7 @@ func (s *RbacService) LoadRole(ctx context.Context, role string) (iamSvcInterfac
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			return iamSvcInterface.RoleEntry{}, iamTaxonomy.ErrInvalidArgument
 		}
-		return iamSvcInterface.RoleEntry{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeCacheError)
+		return iamSvcInterface.RoleEntry{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 
 	if entry, ok := val.(iamSvcInterface.RoleEntry); ok {
@@ -87,13 +85,13 @@ func (s *RbacService) LoadRole(ctx context.Context, role string) (iamSvcInterfac
 	if pEntry, ok := val.(*iamSvcInterface.RoleEntry); ok && pEntry != nil {
 		return *pEntry, nil
 	}
-	return iamSvcInterface.RoleEntry{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.RbacOutcomeCacheError)
+	return iamSvcInterface.RoleEntry{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamTaxonomy.Failure)
 }
 
 func (s *RbacService) WarmUp(ctx context.Context) error {
 	entries, err := s.repo.ListRoleEntries(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	for _, item := range entries {
 		if item == nil || item.Role == nil {
@@ -115,7 +113,7 @@ func (s *RbacService) WarmUp(ctx context.Context) error {
 func (s *RbacService) ListRoles(ctx context.Context) ([]*iamEntity.Role, error) {
 	roles, err := s.repo.ListRoles(ctx)
 	if err != nil {
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return roles, nil
 }
@@ -135,7 +133,7 @@ func (s *RbacService) GetRole(ctx context.Context, id string) (*iamEntity.RoleWi
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			return nil, iamTaxonomy.ErrInvalidArgument
 		}
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	roleWithPerms, getErr := s.repo.GetRoleByCode(ctx, role.Code)
 	if getErr != nil {
@@ -145,7 +143,7 @@ func (s *RbacService) GetRole(ctx context.Context, id string) (*iamEntity.RoleWi
 		if errors.Is(getErr, iamTaxonomy.ErrInvalidArgument) {
 			return nil, iamTaxonomy.ErrInvalidArgument
 		}
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, getErr, iamTaxonomy.RbacOutcomeDependencyError)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, getErr, iamTaxonomy.Failure)
 	}
 	return roleWithPerms, nil
 }
@@ -158,7 +156,7 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) erro
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			return iamTaxonomy.ErrInvalidArgument
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }
@@ -171,7 +169,7 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) erro
 		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }
@@ -184,7 +182,7 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) error {
 		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }
@@ -192,7 +190,7 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) error {
 func (s *RbacService) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
 	permissions, err := s.repo.ListPermissions(ctx)
 	if err != nil {
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return permissions, nil
 }
@@ -215,7 +213,7 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID strin
 		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			return iamTaxonomy.ErrPermissionNotFound
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }
@@ -238,7 +236,7 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID strin
 		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) || errors.Is(err, pgx.ErrNoRows) {
 			return iamTaxonomy.ErrPermissionNotFound
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }
@@ -260,7 +258,7 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID string)
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			return iamTaxonomy.ErrInvalidArgument
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }
@@ -282,7 +280,7 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID string)
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			return iamTaxonomy.ErrInvalidArgument
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.RbacOutcomeDependencyError)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
 	}
 	return nil
 }

@@ -153,7 +153,7 @@ sequenceDiagram
 ### Chính sách xử lý lỗi (Observability Policies Engine Decision Matrix)
 
 | Scenario | Severity | Policy Action | Mô tả chi tiết |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Central Namespace Rỗng hoặc Bị Lỗi Định Dạng Nặng | High | **FAIL-CLOSE** | Gây crash/stop tiến trình bootstrap ứng dụng ngay lập tức. Không cho phép cluster HA chạy ở trạng thái thiếu namespace hoặc sai namespace (ảnh hưởng đến hệ thống định tuyến logs/metrics tập trung). |
 | Trùng lặp / Lỗi khởi tạo metrics lớp giao tiếp (HTTP/Core) | High | **FAIL-CLOSE** | Lớp HTTP và Core DB/Redis metrics là Tier-0. Lỗi đăng ký metrics này sẽ block deployment để nhà vận hành xử lý cấu hình sai. |
 | Lỗi đăng ký metrics ở các module phụ trợ hoặc non-critical (Tier-1) | Low | **FAIL-OPEN** | Ghi log cảnh báo mức độ WARN/ERROR, chặn lỗi không cho lan rộng (suppress), khởi tạo thực thể mock/dummy no-op để luồng chính tiếp tục hoạt động, duy trì tính HA của dịch vụ. |

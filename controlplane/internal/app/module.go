@@ -35,9 +35,11 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"controlplane/internal/cacheengine"
@@ -48,8 +50,6 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	iamCache "controlplane/internal/iam/cache"
-	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	iamRepoImpl "controlplane/internal/iam/repository"
 	"controlplane/internal/mail"
 	"controlplane/internal/policyengine"
 	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
@@ -75,8 +75,6 @@ type Modules struct {
 	PolicyEngine *policyengine.Engine
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
 	L1Registry *cacheengine.CacheRegistry
-	// L1Fanout là bộ phát tán cache invalidation đa instance qua Redis.
-	L1Fanout *cacheengine.RedisFanout
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
 	probeCancel context.CancelFunc
 }
@@ -89,6 +87,7 @@ func NewGlobalModules(cfg *config.Config,
 	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	policyEngineModule *policyengine.Engine,
+	l1Registry *cacheengine.CacheRegistry,
 ) (*Modules, error) {
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 1: KHỞI TẠO HỆ THỐNG GIÁM SÁT & OBSERVABILITY
@@ -126,20 +125,8 @@ func NewGlobalModules(cfg *config.Config,
 	// GIAI ĐOẠN 2: KHỞI TẠO CÁC PHÂN HỆ TIER-0 (CRITICAL) - SAI LÀ FAIL-FAST
 	// ------------------------------------------------------------------------
 
-	// Build in-memory L1 cache registry
-	l1Registry := InitL1CacheRegistry()
-	if l1Registry == nil {
-		return nil, errors.New("app: init L1 cache registry: registry is nil")
-	}
-	// Build RedisFanout bus early
-	l1Fanout := cacheengine.NewRedisFanout(rdsCore, "cacheengine:l1:fanout")
-	if l1Fanout == nil {
-		return nil, errors.New("app: init RedisFanout bus: fanout is nil")
-	}
-	l1Registry.Fanout = l1Fanout
-
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter, l1Registry, l1Fanout)
+	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter, l1Registry)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
@@ -148,7 +135,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, l1Registry, l1Fanout)
+	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, l1Registry)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -204,17 +191,13 @@ func NewGlobalModules(cfg *config.Config,
 		Mail:         mailModule,
 		PolicyEngine: policyEngineModule,
 		L1Registry:   l1Registry,
-		L1Fanout:     l1Fanout,
 		probeCancel:  probeCancel,
 	}
-
-	// Đăng ký toàn bộ các loader tĩnh sau khi toàn bộ modules đã khởi tạo thành công
-	RegisterL1Loaders(l1Registry, modules, l1Fanout)
 
 	return modules, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, rds *goredis.Client, policyModule *policyengine.Engine, l1Registry *cacheengine.CacheRegistry) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, rds *goredis.Client, policyModule *policyengine.Engine, cacheEngine *cacheengine.CacheRegistry) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}
@@ -238,41 +221,33 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	policyModule.EngineService.RegisterRateLimitHook(func(policy *policyRateLimit.CompiledPolicy) {
 		middleware.InitRateLimitPolicy(*policy)
 	})
-	middleware.InitZoneAuth(l1Registry)
+	middleware.InitZoneAuth(cacheEngine)
 	middleware.InitAccess(
-		l1Registry,
+		cacheEngine,
 		rds,
 		iamCache.NewUserDeviceRuntimeCache(rds),
 		10*time.Second,
 	)
-	adminAccessSession := iamCache.NewAdminAccessSessionCache(rds)
-	adminRotateTrigger := iamCache.NewAdminKeyRotationTriggerCache(rds)
 	if err := middleware.InitAdminAPIKeyAuth(
-		l1Registry,
-		adminAccessSession.VerifyAccessSecret,
-		adminRotateTrigger.SetRotationRequired,
+		cacheEngine,
+		func(ctx context.Context, accessKey string, accessSecret string) (bool, error) {
+			return verifyAdminAccessSecret(ctx, cacheEngine.L2, accessKey, accessSecret)
+		},
+		func(ctx context.Context, ttl time.Duration) error {
+			return setAdminRotationRequired(ctx, cacheEngine.L2, ttl)
+		},
 	); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}
-	adminRepo := iamRepoImpl.NewAdminAPIKeyRepository(cfg, db)
 	if err := middleware.InitAdminCriticalSignature(
-		buildAdminPublicKeyResolver(adminAccessSession, adminRepo),
+		cacheEngine,
 		rds,
 		time.Minute,
 		2*time.Minute,
 	); err != nil {
 		return fmt.Errorf("app: init admin critical signature middleware: %w", err)
 	}
-	stepUpLoader := iamCache.AdminStepUp2FASecretLoaderFunc(func(ctx context.Context) (string, time.Time, error) {
-		return iamCache.LoadAdminStepUp2FASettings(ctx, rds, func(ctx context.Context) (string, time.Time, error) {
-			settings, err := adminRepo.GetAdmin2FASettings(ctx)
-			if err != nil || settings == nil {
-				return "", time.Time{}, err
-			}
-			return settings.SecretCiphertext, settings.UpdatedAt, nil
-		})
-	})
-	if err := middleware.InitAdminCriticalStepUp2FA(stepUpLoader); err != nil {
+	if err := middleware.InitAdminCriticalStepUp2FA(cacheEngine); err != nil {
 		return fmt.Errorf("app: init admin critical step-up middleware: %w", err)
 	}
 	return nil
@@ -316,26 +291,27 @@ func (m *Modules) Stop() {
 	}
 }
 
-func buildAdminPublicKeyResolver(adminAccessSession iamCache.AdminAccessSessionCache, adminRepo iamRepoInterface.AdminAPIKeyRepository) func(ctx context.Context, accessKey string) (string, error) {
-	return func(ctx context.Context, accessKey string) (string, error) {
-		runtimeRecord, err := adminAccessSession.GetAccessSession(ctx, accessKey)
-		if err != nil {
-			return "", err
-		}
-		if runtimeRecord == nil {
-			return "", nil
-		}
-		if pubKey := strings.TrimSpace(runtimeRecord.DevicePublicKey); pubKey != "" {
-			return pubKey, nil
-		}
-		trackedDeviceID := strings.TrimSpace(runtimeRecord.TrackedDeviceID)
-		if trackedDeviceID == "" {
-			return "", nil
-		}
-		device, err := adminRepo.GetAdminDeviceByID(ctx, trackedDeviceID)
-		if err != nil || device == nil {
-			return "", err
-		}
-		return device.PublicKey, nil
+func verifyAdminAccessSecret(ctx context.Context, l2 cacheengine.L2Cache, accessKey string, accessSecret string) (bool, error) {
+	payload, _, exists, err := l2.Get(ctx, "admin_access_session:"+accessKey)
+	if err != nil {
+		return false, err
 	}
+	if !exists {
+		return false, nil
+	}
+
+	var session struct {
+		AccessSecretHash string `json:"access_secret_hash"`
+	}
+	if err := json.Unmarshal(payload, &session); err != nil {
+		return false, err
+	}
+
+	h := sha256.Sum256([]byte(accessSecret))
+	incomingHash := hex.EncodeToString(h[:])
+	return session.AccessSecretHash == incomingHash, nil
+}
+
+func setAdminRotationRequired(ctx context.Context, l2 cacheengine.L2Cache, ttl time.Duration) error {
+	return l2.Set(ctx, "iam:admin_key_rotation:required", "1", 1, ttl)
 }

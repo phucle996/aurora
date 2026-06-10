@@ -19,11 +19,11 @@ type OneTimeTokenCache interface {
 type noopOneTimeTokenCache struct{}
 
 func (noopOneTimeTokenCache) SetHashedToken(context.Context, string, uuid.UUID, string, time.Duration) error {
-	return iamTaxonomy.ErrOneTimeTokenCacheUnavailable
+	return iamTaxonomy.ErrGetL1CacheFailed
 }
 
 func (noopOneTimeTokenCache) ConsumeHashedToken(context.Context, string, uuid.UUID, string) (bool, error) {
-	return false, iamTaxonomy.ErrOneTimeTokenCacheUnavailable
+	return false, iamTaxonomy.ErrGetL1CacheFailed
 }
 
 type redisOneTimeTokenCache struct {

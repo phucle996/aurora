@@ -39,7 +39,7 @@ flowchart TD
 
 | Layer | Định Dạng Key | Ví Dụ Minh Họa | Giải Thích Chi Tiết |
 | :--- | :--- | :--- | :--- |
-| **L1 RAM Cache** | `{module_name}:{namespace}:{params}` | `iam:rbac_role:admin`<br/>`core:zone_by_code:us` | Key định danh độc nhất dùng để lưu trữ đối tượng gốc trên RAM (Zero-Serialization). Nếu không có params, định dạng là `{module_name}:{namespace}` (ví dụ: `core:zone_catalog`). |
+| **L1 RAM Cache** | `{module_name}:{namespace}:{params}` | `iam:rbac_role:admin`, `core:zone_by_code:us` | Key định danh độc nhất dùng để lưu trữ đối tượng gốc trên RAM (Zero-Serialization). Nếu không có params, định dạng là `{module_name}:{namespace}` (ví dụ: `core:zone_catalog`). |
 | **L1 Invalidation Bus (Fanout)** | `{module_name}:{namespace}:{params}` | `iam:rbac_role:admin` | Payload truyền qua Redis Pub/Sub mang chính xác Key của L1 để các node replica xác định vùng cache cần dọn dẹp hoặc cập nhật tức thì. |
 | **L2 Redis Cache** | `{module_name}:{namespace}:{params}` | `iam:rbac_role:admin` | Vùng lưu trữ thô đã được serialize (JSON/MsgPack) trực tiếp trên Redis để phục vụ truy xuất phân tán. |
 | **L2 Version Control** | `{module_name}:version:{namespace}:{params}` | `iam:version:rbac_role:admin` | Khóa siêu dữ liệu (Metadata Key) trên Redis theo dõi phiên bản đơn điệu (`UnixNano` timestamp), dùng để lọc và chống ghi đè dữ liệu cũ (Stale Writes) trong môi trường HA. |

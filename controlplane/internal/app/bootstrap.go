@@ -21,6 +21,15 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 		return nil
 	}
 
+	// ------------------------------------------------------------------------
+	// [BOOTSTRAP CACHE loaders] Đăng ký các loader tĩnh trước khi các module
+	// bootstrap để sẵn sàng cung cấp dữ liệu qua L1 cache.
+	// ------------------------------------------------------------------------
+	if modules.L1Registry != nil {
+		RegisterL1Loaders(modules.L1Registry, modules)
+		RegisterL2Loaders(modules.L1Registry, modules)
+	}
+
 	if modules.Core != nil {
 		if err := modules.Core.Bootstrap(ctx); err != nil {
 			return fmt.Errorf("app bootstrap: core module: %w", err)

@@ -2,34 +2,54 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
-	"controlplane/pkg/logger"
+	"controlplane/internal/security"
+
+	goredis "github.com/redis/go-redis/v9"
 )
 
-// InitL1CacheRegistry khởi tạo L1 Cache Registry trống ban đầu
-func InitL1CacheRegistry() *cacheengine.CacheRegistry {
+// InitCacheEngine khởi tạo toàn bộ hạ tầng Cache Engine (L1, L2, Fanout, Exec) tập trung.
+// Trả về thực thể CacheRegistry hợp nhất và lỗi (nếu có) phục vụ chiến lược Fail-Close.
+func InitCacheEngine(rdb *goredis.Client, channel string) (*cacheengine.CacheRegistry, error) {
+	if rdb == nil {
+		return nil, fmt.Errorf("cacheengine: redis client is required")
+	}
+
+	// 1. Khởi tạo L1 Cache (In-memory sharded cache)
 	l1Cache := cacheengine.NewL1Cache()
-	return cacheengine.NewCacheRegistry(l1Cache)
+	if l1Cache == nil {
+		return nil, fmt.Errorf("cacheengine: failed to initialize L1 cache")
+	}
+
+	// 2. Khởi tạo Facade Registry quản lý các sub-packages
+	registry := cacheengine.NewCacheRegistry(l1Cache)
+	if registry == nil {
+		return nil, fmt.Errorf("cacheengine: failed to initialize cache registry")
+	}
+
+	// 3. Khởi tạo L2 Cache (Redis KV Cache)
+	registry.L2 = cacheengine.NewL2Cache(rdb)
+
+	// 4. Khởi tạo Fanout Invalidation Bus (Pub/Sub Sync)
+	registry.Fanout = cacheengine.NewRedisFanout(rdb, channel)
+
+	// 5. Khởi tạo Lua Executor (Atomic Redis Runner)
+	registry.Exec = cacheengine.NewL2LuaExecutor(rdb)
+
+	return registry, nil
 }
 
-// RegisterL1Loaders đăng ký toàn bộ các cache loaders sử dụng đồ thị phụ thuộc Modules hoàn chỉnh,
-// và chạy goroutine lắng nghe sự kiện đồng bộ từ fanoutBus.
+// RegisterL1Loaders đăng ký toàn bộ các cache loaders tĩnh sử dụng các module nghiệp vụ đã wire hoàn chỉnh.
+// Chú ý: Việc start subscription loop được trì hoãn và thực hiện độc lập tại app.go sau khi HTTP/gRPC sẵn sàng.
 func RegisterL1Loaders(
 	registry *cacheengine.CacheRegistry,
 	modules *Modules,
-	fanoutBus *cacheengine.RedisFanout,
 ) {
-	// 2. Kích hoạt subscription loop chạy nền để xử lý tin nhắn đồng bộ từ các instance khác
-	go func() {
-		ctx := context.Background()
-		if err := registry.StartSubscribe(ctx); err != nil {
-			logger.SysWarn("cacheengine", "subscription loop terminated: "+err.Error())
-		}
-	}()
 
 	// 3. Đăng ký tĩnh loader cho "zone_by_code" sử dụng generic function
 	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
@@ -67,5 +87,22 @@ func RegisterL1Loaders(
 			return iamSvcInterface.RoleEntry{}, err
 		}
 		return iamSvcInterface.RoleEntry{Permissions: rp.Permissions}, nil
+	})
+
+	// 7. Đăng ký tĩnh loader cho "admin_2fa_secret"
+	// giải mã sẵn admin 2fa secret và lưu vào l1 cache.
+	cacheengine.Register(registry, "admin_2fa_secret", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
+		ciphertext, _, err := modules.IAM.AdminAPIKeyRepository.GetAdmin2FASecret(ctx)
+		if err != nil {
+			return "", err
+		}
+		if ciphertext == "" {
+			return "", fmt.Errorf("admin 2fa secret not found")
+		}
+		decrypted, err := security.DecryptSecret(ciphertext)
+		if err != nil {
+			return "", err
+		}
+		return decrypted, nil
 	})
 }

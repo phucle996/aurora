@@ -172,7 +172,7 @@ func (s *endpointServiceImpl) CreateEndpoint(
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeSuccess).Inc()
+	mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.Success).Inc()
 	return nil
 }
 
@@ -216,7 +216,7 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, zoneID uuid.UUID,
 		ent.ClientKeyPEM = dec
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.OutcomeSuccess).Inc()
+	mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.Success).Inc()
 	return ent, nil
 }
 
@@ -255,7 +255,7 @@ func (s *endpointServiceImpl) ListEndpoints(ctx context.Context, zoneID uuid.UUI
 		}
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeSuccess).Inc()
+	mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.Success).Inc()
 	return list, nil
 }
 
@@ -357,7 +357,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 		}
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeSuccess).Inc()
+	mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.Success).Inc()
 	return existing, nil
 }
 
@@ -376,7 +376,7 @@ func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, zoneID uuid.UU
 		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("delete", zoneID.String(), mailTaxonomy.OutcomeSuccess).Inc()
+	mailMetrics.EndpointOperationsCounter.WithLabelValues("delete", zoneID.String(), mailTaxonomy.Success).Inc()
 	return nil
 }
 

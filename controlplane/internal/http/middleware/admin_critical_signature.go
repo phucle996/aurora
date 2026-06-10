@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"controlplane/internal/cacheengine"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
 
@@ -32,11 +33,10 @@ const sigNoncePrefix = "iam:admin:critical:nonce:"
 
 // sigRuntime chứa các tài nguyên và hàm callback được cấu hình động cho việc xác thực chữ ký.
 type sigRuntime struct {
-	// loadPubKey là callback dùng để lấy khóa công khai Ed25519 (Public Key) tương ứng với Access Key
-	loadPubKey func(ctx context.Context, accessKey string) (string, error)
-	rds        *goredis.Client // Redis client phục vụ ghi nhận Nonce chống replay
-	nonceTTL   time.Duration   // Thời gian tồn tại của Nonce trong Redis (ví dụ: 5 phút)
-	skew       time.Duration   // Độ lệch thời gian cho phép của timestamp so với clock của server
+	cacheEngine *cacheengine.CacheRegistry
+	rds         *goredis.Client // Redis client phục vụ ghi nhận Nonce chống replay
+	nonceTTL    time.Duration   // Thời gian tồn tại của Nonce trong Redis (ví dụ: 5 phút)
+	skew        time.Duration   // Độ lệch thời gian cho phép của timestamp so với clock của server
 }
 
 // sigProof đóng gói các thông tin bằng chứng chữ ký được gửi lên từ các Header HTTP.
@@ -57,14 +57,14 @@ var sigState = struct {
 // InitAdminCriticalSignature khởi tạo runtime cấu hình cho critical signature guard.
 // Được gọi một lần duy nhất tại bootstrap để wire các dependency (Loader, Redis, TTL, Skew).
 func InitAdminCriticalSignature(
-	loadPubKey func(ctx context.Context, accessKey string) (string, error),
+	cacheEngine *cacheengine.CacheRegistry,
 	rds *goredis.Client,
 	nonceTTL time.Duration,
 	skew time.Duration,
 ) error {
 	// Kiểm tra tính hợp lệ của các đầu vào bắt buộc:
-	if loadPubKey == nil {
-		return errors.New("admin critical signature: load access public key is required")
+	if cacheEngine == nil {
+		return errors.New("admin critical signature: cache engine is required")
 	}
 	if rds == nil {
 		return errors.New("admin critical signature: redis client is required")
@@ -78,10 +78,10 @@ func InitAdminCriticalSignature(
 
 	sigState.mu.Lock()
 	sigState.runtime = sigRuntime{
-		loadPubKey: loadPubKey,
-		rds:        rds,
-		nonceTTL:   nonceTTL,
-		skew:       skew,
+		cacheEngine: cacheEngine,
+		rds:         rds,
+		nonceTTL:    nonceTTL,
+		skew:        skew,
 	}
 	sigState.mu.Unlock()
 	return nil
@@ -100,7 +100,7 @@ func AdminCriticalSignature() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		runtime := getSigRuntime()
 		// Kiểm tra hệ thống đã được cấu hình runtime đầy đủ chưa:
-		if runtime.loadPubKey == nil || runtime.rds == nil {
+		if runtime.cacheEngine == nil || runtime.rds == nil {
 			sigUnavailable(c)
 			return
 		}
@@ -136,13 +136,24 @@ func AdminCriticalSignature() gin.HandlerFunc {
 
 		// --------------------------------------------------------------------
 		// 🔄 Gọi loader lấy khóa công khai Ed25519 của thiết bị Admin 
-		//   tương ứng với accessKey.
+		//   tương ứng với accessKey qua cacheEngine.
 		// --------------------------------------------------------------------
-		pubKey, ok := loadSigKey(c.Request.Context(), runtime.loadPubKey, accessKey)
+		pubKeyVal, err := runtime.cacheEngine.GetOrLoad(c.Request.Context(), "admin_public_key", accessKey)
+		if err != nil || pubKeyVal == nil {
+			denySig(c)
+			return
+		}
+		pubKeyRaw, ok := pubKeyVal.(string)
 		if !ok {
 			denySig(c)
 			return
 		}
+		pubKeyBytes, ok := decodeSigB64(strings.TrimSpace(pubKeyRaw), ed25519.PublicKeySize)
+		if !ok {
+			denySig(c)
+			return
+		}
+		pubKey := ed25519.PublicKey(pubKeyBytes)
 
 		// --------------------------------------------------------------------
 		// 🔄 Xây dựng payload ký chuẩn hóa (Canonical Payload) 
@@ -254,24 +265,7 @@ func readSigBody(c *gin.Context) ([sha256.Size]byte, bool) {
 	return sha256.Sum256(bodyRaw), true
 }
 
-// loadSigKey gọi hàm tải khóa công khai và giải mã từ định dạng Base64 sang đối tượng ed25519.PublicKey.
-func loadSigKey(
-	ctx context.Context,
-	loadPubKey func(ctx context.Context, accessKey string) (string, error),
-	accessKey string,
-) (ed25519.PublicKey, bool) {
-	pubKeyRaw, err := loadPubKey(ctx, accessKey)
-	if err != nil {
-		return nil, false
-	}
-	
-	// Giải mã Base64 sang mảng byte thô và kiểm tra kích thước chuẩn của khóa Ed25519 (32 bytes):
-	pubKey, ok := decodeSigB64(strings.TrimSpace(pubKeyRaw), ed25519.PublicKeySize)
-	if !ok {
-		return nil, false
-	}
-	return ed25519.PublicKey(pubKey), true
-}
+
 
 // buildSigPayload xây dựng chuỗi Payload chuẩn hóa (Canonical String) để thực hiện xác thực chữ ký số.
 // Định dạng chuỗi payload:

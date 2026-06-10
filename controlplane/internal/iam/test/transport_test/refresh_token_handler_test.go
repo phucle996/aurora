@@ -108,7 +108,8 @@ func TestRefreshTokenHandlerSuccessSetsCookies(t *testing.T) {
 	h := newRefreshTokenHandler(&refreshTokenServiceStub{result: &iamEntity.RefreshTokenResult{
 		AccessToken:      "access-token",
 		RefreshToken:     "refresh-token-next",
-		RuntimeDeviceID:  "runtime-device-next",
+		AccessKey:        "runtime-device-next",
+		AccessSecret:     "secret-next",
 		TrackedDeviceID:  "177682fc-3e96-4a5a-84eb-b5e9c71af721",
 		AccessExpiresAt:  now.Add(15 * time.Minute),
 		RefreshExpiresAt: now.Add(24 * time.Hour),

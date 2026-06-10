@@ -76,6 +76,9 @@ func (r *AuthRepository) GetLoginUserByUsername(ctx context.Context, username st
 		&loginUser.PasswordHash,
 		&loginUser.Status,
 	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, iamTaxonomy.ErrUserNotFound
+		}
 		return nil, fmt.Errorf("iam repo: get login user by username: %w", err)
 	}
 	return &loginUser, nil

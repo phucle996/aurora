@@ -31,7 +31,7 @@ type adminAuthServiceStub struct {
 
 var _ iamSvc.AdminAPIKeyService = (*adminAuthServiceStub)(nil)
 
-func (s *adminAuthServiceStub) Bootstrap(ctx context.Context, actor string) error { return nil }
+func (s *adminAuthServiceStub) Bootstrap(ctx context.Context) error { return nil }
 func (s *adminAuthServiceStub) AdminLogin(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
 	if s.loginFn != nil {
 		return s.loginFn(ctx, req)
@@ -61,6 +61,9 @@ func (s *adminAuthServiceStub) TryProcessAdminKeyRotationTrigger(ctx context.Con
 }
 func (s *adminAuthServiceStub) FinalizeInactiveSessions(ctx context.Context, inactiveBefore time.Time, limit int) error {
 	return nil
+}
+func (s *adminAuthServiceStub) GetPublicKeyFromSession(ctx context.Context, accessKey string) (string, error) {
+	return "", nil
 }
 
 func newAdminAuthHandler(svc iamSvc.AdminAPIKeyService) *handler.AdminAuthHandler {
@@ -117,7 +120,7 @@ func TestAdminAuthHandlerLoginUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, iamTaxonomy.ErrAdminLoginMFAInvalid
+		return iamEntity.AdminLoginResult{}, iamTaxonomy.ErrMFAInvalid
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -142,7 +145,7 @@ func TestAdminAuthHandlerLoginUnauthorizedWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAdminLoginMFAInvalid, errors.New("totp mismatch"), iamTaxonomy.AdminLoginOutcomeInvalidCredential)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp mismatch"), iamTaxonomy.InvalidCredential)
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -173,7 +176,7 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), iamTaxonomy.AdminLoginOutcomeSystemError)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), iamTaxonomy.Failure)
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -262,7 +265,7 @@ func TestAdminAuthHandlerRotateKeyLockBusyUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{rotateFn: func(ctx context.Context) error {
-		return iamTaxonomy.ErrAdminRotationLockBusy
+		return iamTaxonomy.ErrPreconditionFailed
 	}})
 	r.POST("/admin/auth/rotate-key", h.RotateKey)
 

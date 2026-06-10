@@ -70,7 +70,7 @@ flowchart TD
 Tất cả log xuất ra dạng JSON đều được chia làm 3 kiểu loại thông qua trường bắt buộc `"log_type"`:
 
 | Log Type | Source of Truth API (pkg/logger) | Trạng thái / Fields bắt buộc | Ví dụ ứng dụng |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `"access"` | `AccessLog(...)` | `"request_id"`, `"method"`, `"route"`, `"status_code"`, `"latency_ms"`, `"client_ip"` | Ghi nhận lưu lượng và hiệu năng HTTP đầu vào của hệ thống. |
 | `"handler"` | `HandlerInfo`, `HandlerWarn`, `HandlerError` | `"request_id"`, `"user_id"`, `"op"`, `"error"`, và các fields từ `apperr.LogFields` | Ghi nhận hoạt động nghiệp vụ của client hoặc các lỗi/cảnh báo xảy ra trong API handlers. |
 | `"system"` | `SysInfo`, `SysWarn`, `SysError`, `SysFatal` | `"op"`, `"error"`, các trường tự định nghĩa tùy ngữ cảnh (`Fields`) | Ghi nhận quá trình khởi chạy app (bootstrap), dọn dẹp bộ nhớ (eviction), hoặc key rotation scheduler. |

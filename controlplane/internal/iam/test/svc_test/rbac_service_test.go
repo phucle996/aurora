@@ -72,7 +72,7 @@ func TestRbacServiceGetRoleInvalidUUIDMapsInvalidArgument(t *testing.T) {
 	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{getRoleByIDFn: func(ctx context.Context, id string) (*iamEntity.Role, error) {
 		_, err := uuid.Parse("not-a-uuid")
 		return nil, err
-	}}, nil, nil)
+	}}, nil)
 
 	_, err := svc.GetRole(context.Background(), "bad-id")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -87,7 +87,7 @@ func TestRbacServiceGetRoleInvalidUUIDMapsInvalidArgument(t *testing.T) {
 func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{getRoleByIDFn: func(ctx context.Context, id string) (*iamEntity.Role, error) {
 		return nil, pgx.ErrNoRows
-	}}, nil, nil)
+	}}, nil)
 
 	_, err := svc.GetRole(context.Background(), uuid.NewString())
 	if !errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
@@ -103,7 +103,7 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 	raw := errors.New("db down")
 	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{listRolesFn: func(ctx context.Context) ([]*iamEntity.Role, error) {
 		return nil, raw
-	}}, nil, nil)
+	}}, nil)
 
 	_, err := svc.ListRoles(context.Background())
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
@@ -113,7 +113,7 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.RbacOutcomeDependencyError {
+	if appErr.Outcome != iamTaxonomy.Failure {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {

@@ -272,11 +272,21 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 
 	// --------------------------------------------------------------------
+	// [FAIL-CLOSE] Phase 1: Khởi tạo Cache Engine
+	// Cache Engine lỗi hoặc Redis mất kết nối -> abort lập tức (Fail-Close).
+	// --------------------------------------------------------------------
+	cacheEngine, err := InitCacheEngine(rds, "cacheengine:l1:fanout")
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: cache engine init failed [FAIL-CLOSE]: %w", err)
+	}
+
+	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Module Graph bootstrap: toàn bộ module khởi tạo và wiring.
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule)
+	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule, cacheEngine)
 	if err != nil {
 		app.Stop()
 		return nil, err
@@ -308,6 +318,18 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	// Register tất cả HTTP routes sau khi modules đã wire xong hoàn toàn.
 	NewGlobalRoutes(engine, modules)
+
+	// --------------------------------------------------------------------
+	// [FAIL-OPEN] Phase 2: Đăng ký cache loaders và khởi chạy subscription loop
+	// --------------------------------------------------------------------
+	RegisterL1Loaders(cacheEngine, modules)
+	RegisterL2Loaders(cacheEngine, modules)
+	go func() {
+		ctx := context.Background()
+		if err := cacheEngine.StartSubscribe(ctx); err != nil {
+			logger.SysWarn("cacheengine", "subscription loop terminated: "+err.Error())
+		}
+	}()
 
 	// HTTP server runtime configuration.
 	httpSrv := &http.Server{

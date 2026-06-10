@@ -48,16 +48,15 @@ type LoginRequest struct {
 	DevicePublicKey string
 	IP              *string
 	UserAgent       *string
-	HostnameHint    string
-	HostnameAlias   string
-	ClientDeviceID  string
+	DeviceName      string
+	ClientDeviceID  uuid.UUID
 }
 
 type LoginResult struct {
 	AccessToken              string
 	RefreshToken             string
-	RuntimeDeviceID          string
-	DeviceSecret             string
+	AccessKey                string
+	AccessSecret             string
 	TrackedDeviceID          string
 	ClientDeviceID           string
 	ClientDeviceIDProvenance string

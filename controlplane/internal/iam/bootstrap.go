@@ -21,15 +21,8 @@ import (
 // - Business logic rotate nằm ở service/repo.
 // - Bootstrap chỉ orchestration, không chứa persistence logic.
 func (m *IAMModule) Bootstrap(ctx context.Context) error {
-	if m == nil {
-		return nil
-	}
-	if m.adminAPIKeyService == nil {
-		return nil
-	}
-
-	if err := m.adminAPIKeyService.Bootstrap(ctx, "system-bootstrap"); err != nil {
-		if errors.Is(err, iamTaxonomy.ErrAdminBootstrapNotAllowed) {
+	if err := m.AdminAPIKeyService.Bootstrap(ctx); err != nil {
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			// Bootstrap already completed in a previous run.
 		} else {
 			return err
@@ -86,10 +79,10 @@ func (m *IAMModule) runAdminSessionFinalizeScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if m == nil || m.adminAPIKeyService == nil || m.cfg == nil {
+			if m == nil || m.AdminAPIKeyService == nil || m.cfg == nil {
 				continue
 			}
-			_ = m.adminAPIKeyService.FinalizeInactiveSessions(ctx, time.Now().UTC().Add(-m.cfg.Security.AdminSessionTTL), 200)
+			_ = m.AdminAPIKeyService.FinalizeInactiveSessions(ctx, time.Now().UTC().Add(-m.cfg.Security.AdminSessionTTL), 200)
 		}
 	}
 }
@@ -125,13 +118,13 @@ func (m *IAMModule) runAdminRotationScheduler(ctx context.Context) {
 		case <-time.After(wait):
 		}
 
-		err := m.adminAPIKeyService.TryProcessAdminKeyRotationTrigger(ctx)
+		err := m.AdminAPIKeyService.TryProcessAdminKeyRotationTrigger(ctx)
 		if err == nil {
 			attempt = 0
 			logger.SysDebugFields(op, "rotation scheduler tick completed", logger.Fields{"run_id": runID, "result": "success_or_noop", "reason": "none"})
 			continue
 		}
-		if errors.Is(err, iamTaxonomy.ErrAdminRotationLockBusy) {
+		if errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {
 			logger.SysInfoFields(op, "rotation scheduler lock contention", logger.Fields{"run_id": runID, "result": "noop", "reason": "lock_busy"})
 			continue
 		}
@@ -140,9 +133,9 @@ func (m *IAMModule) runAdminRotationScheduler(ctx context.Context) {
 			attempt++
 		}
 		retry := backoffSchedule[attempt]
-		reason := iamTaxonomy.AdminRotateFail
-		if errors.Is(err, iamTaxonomy.ErrAdminRotationDelivery) {
-			reason = iamTaxonomy.AdminRotateDeliveryFail
+		reason := "rotate_fail"
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			reason = "rotate_delivery_fail"
 		}
 		logger.SysWarnFields(op, "rotation scheduler tick failed", err, logger.Fields{"run_id": runID, "attempt": attempt + 1, "reason": reason, "result": "retry", "retry_in": retry.String()})
 		select {
@@ -179,14 +172,14 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 			}
 			processed, err := m.authSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
-				iamMetrics.ObserveServiceCall("device_cap_reconcile", "error", "n/a")
+				iamMetrics.ServiceCall("device_cap_reconcile", "error", "n/a")
 				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})
 				continue
 			}
 			if processed > 0 {
 				logger.SysInfoFields(op, "reconcile fixed drift", logger.Fields{"processed_users": processed})
 			}
-			iamMetrics.ObserveServiceCall("device_cap_reconcile", "success", "n/a")
+			iamMetrics.ServiceCall("device_cap_reconcile", "success", "n/a")
 		}
 	}
 }

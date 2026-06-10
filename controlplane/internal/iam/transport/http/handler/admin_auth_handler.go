@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	deviceHint "controlplane/internal/iam/devicehint"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
@@ -21,6 +20,7 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type AdminAuthHandler struct {
@@ -62,32 +62,30 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// SRE HA & Security Warning: Chuẩn hóa và xác thực zone_code truyền lên từ client.
-	// Hỗ trợ lấy từ Query Parameter (?zone_code=...) hoặc từ JSON Request Body.
-	// Nếu cả hai đều trống hoặc chỉ toàn khoảng trắng, từ chối request ngay lập tức để thực thi Fail-Closed.
-	zoneCode := strings.TrimSpace(c.Query("zone_code"))
-	if zoneCode == "" {
-		zoneCode = strings.TrimSpace(request.ZoneCode)
-	}
-	if zoneCode == "" {
-		logger.HandlerWarn(c, op, nil, "admin login zone_code is empty")
-		apires.RespondBadRequest(c, "zone_code is required")
-		return
-	}
-
 	// Thu thập các dấu vết thiết bị (Device Fingerprint) để phục vụ chính sách bảo mật Zero-Trust:
 	// - hostnameHint & hostnameAlias: Nhận dạng tên thiết bị chạy ứng dụng client (vd: phucle-macbook-pro)
 
-	hostnameHint := c.GetHeader(deviceHint.HeaderDeviceHostname)
-	hostnameAlias := c.GetHeader(deviceHint.HeaderDeviceNameAlt)
+	const (
+		headerDeviceHostname = "X-Device-Hostname"
+		headerDeviceNameAlt  = "X-Device-Name"
+		headerClientDeviceID = "X-Client-Device-Id"
+	)
+
+	hostnameHint := c.GetHeader(headerDeviceHostname)
+	hostnameAlias := c.GetHeader(headerDeviceNameAlt)
+	deviceName := resolveDeviceName(hostnameHint, hostnameAlias)
 
 	// - clientDeviceIDHint: Đọc mã định danh duy nhất của thiết bị từ Custom Header,
 	//   nếu không có thì fallback tìm trong Cookie của Web Browser để ràng buộc thiết bị vật lý với Admin Session.
-	clientDeviceIDHint := c.GetHeader(deviceHint.HeaderClientDeviceID)
-	if clientDeviceIDHint == "" {
+	clientDeviceIDHintStr := c.GetHeader(headerClientDeviceID)
+	if clientDeviceIDHintStr == "" {
 		if cookieValue, _ := c.Cookie(cookie.ClientDeviceIDName); cookieValue != "" {
-			clientDeviceIDHint = cookieValue
+			clientDeviceIDHintStr = cookieValue
 		}
+	}
+	clientDeviceIDHint, err := uuid.Parse(clientDeviceIDHintStr)
+	if err != nil {
+		clientDeviceIDHint = uuid.Nil
 	}
 
 	// call to service
@@ -96,19 +94,18 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 		MFAMethod:       iamEntity.MFAType(strings.TrimSpace(strings.ToLower(request.MFAMethod))),
 		MFACode:         strings.TrimSpace(request.MFACode),
 		DevicePublicKey: strings.TrimSpace(request.DevicePublicKey),
-		ZoneCode:        zoneCode,
-		HostnameHint:    hostnameHint,
-		HostnameAlias:   hostnameAlias,
+		ZoneCode:        strings.TrimSpace(request.ZoneCode),
+		DeviceName:      deviceName,
 		ClientDeviceID:  clientDeviceIDHint,
 	})
 	if err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument),
-			errors.Is(err, iamTaxonomy.ErrAdminLoginInvalidCredential),
-			errors.Is(err, iamTaxonomy.ErrAdminLoginMFAInvalid),
-			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceRevoked),
-			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceQuarantined),
-			errors.Is(err, iamTaxonomy.ErrAdminLoginDeviceBindingFailed):
+			errors.Is(err, iamTaxonomy.ErrInvalidCredential),
+			errors.Is(err, iamTaxonomy.ErrMFAInvalid),
+			errors.Is(err, iamTaxonomy.ErrDeviceRevoked),
+			errors.Is(err, iamTaxonomy.ErrDeviceQuarantined),
+			errors.Is(err, iamTaxonomy.ErrDeviceBindingFailed):
 			logger.HandlerWarn(c, op, err, "admin login unauthorized")
 			apires.RespondUnauthorized(c, "unauthorized")
 			return
@@ -156,7 +153,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.ZoneCodeName,
-		Value:    zoneCode,
+		Value:    strings.TrimSpace(request.ZoneCode),
 		Path:     "/admin",
 		Domain:   domain,
 		HttpOnly: true,
@@ -168,7 +165,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	cdidExpires := time.Now().UTC().Add(365 * 24 * time.Hour)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.ClientDeviceIDName,
-		Value:    result.ClientDeviceID,
+		Value:    result.ClientDeviceID.String(),
 		Path:     "/admin",
 		Domain:   domain,
 		HttpOnly: true,
@@ -181,7 +178,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	logger.HandlerInfo(c, op, "admin login successful")
 
 	// set client device id header for device tracking
-	c.Header(deviceHint.HeaderClientDeviceID, result.ClientDeviceID)
+	c.Header("X-Client-Device-Id", result.ClientDeviceID.String())
 
 	apires.RespondSuccess(c, map[string]any{"ok": true}, "ok")
 }
@@ -294,7 +291,7 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	cdidExpires := time.Now().UTC().Add(365 * 24 * time.Hour)
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.ClientDeviceIDName,
-		Value:    result.ClientDeviceID,
+		Value:    result.ClientDeviceID.String(),
 		Path:     "/admin",
 		Domain:   domain,
 		HttpOnly: true,
@@ -465,7 +462,7 @@ func (h *AdminAuthHandler) RotateKey(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 	if err := h.svc.RotateAdminAPIKeyEmergency(ctx); err != nil {
-		if errors.Is(err, iamTaxonomy.ErrAdminRotationLockBusy) {
+		if errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {
 			logger.HandlerWarn(c, op, err, "rotation lock busy")
 			apires.RespondUnauthorized(c, "unauthorized")
 			return
@@ -475,4 +472,41 @@ func (h *AdminAuthHandler) RotateKey(c *gin.Context) {
 		return
 	}
 	apires.RespondSuccess(c, nil, "ok")
+}
+
+func sanitizeHostname(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	if cleaned == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.Grow(len(cleaned))
+	for _, r := range cleaned {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			builder.WriteRune(r)
+		default:
+		}
+	}
+	candidate := builder.String()
+	if len(candidate) > 64 {
+		candidate = candidate[:64]
+	}
+	if len(candidate) < 2 {
+		return ""
+	}
+	return candidate
+}
+
+func resolveDeviceName(hostnameHeader, hostnameAlias string) string {
+	if name := sanitizeHostname(hostnameHeader); name != "" {
+		return name
+	}
+	if name := sanitizeHostname(hostnameAlias); name != "" {
+		return name
+	}
+	return "unknown device"
 }

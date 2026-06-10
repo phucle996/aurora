@@ -11,7 +11,7 @@ import (
 type AdminAPIKey struct {
 	ID        uuid.UUID `db:"id"`
 	KeyHash   string    `db:"key_hash"`
-	CreatedBy *string   `db:"created_by"`
+	CreatedBy string    `db:"created_by"`
 	CreatedAt time.Time `db:"created_at"`
 	ExpiresAt time.Time `db:"expires_at"`
 }

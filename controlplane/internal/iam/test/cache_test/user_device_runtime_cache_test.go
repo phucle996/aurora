@@ -27,8 +27,8 @@ func TestUserDeviceRuntimeSetGet(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		DeviceID:         "dev-1",
-		DeviceSecretHash: security.HashTokenSHA256("secret-1"),
+		AccessKey:        "dev-1",
+		AccessSecretHash: security.HashTokenSHA256("secret-1"),
 		CurrentJTI:       "jti-1",
 		TrackedDeviceID:  "tracked-1",
 		UserID:           "user-1",
@@ -38,11 +38,11 @@ func TestUserDeviceRuntimeSetGet(t *testing.T) {
 		t.Fatalf("set runtime: %v", err)
 	}
 
-	stored, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID)
+	stored, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.AccessKey)
 	if err != nil || stored == nil {
 		t.Fatalf("get runtime: %v %v", stored, err)
 	}
-	if stored.DeviceID != runtime.DeviceID || stored.CurrentJTI != runtime.CurrentJTI {
+	if stored.AccessKey != runtime.AccessKey || stored.CurrentJTI != runtime.CurrentJTI {
 		t.Fatalf("unexpected stored runtime: %#v", stored)
 	}
 }
@@ -53,8 +53,8 @@ func TestUserDeviceRuntimeVerifyMismatch(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		DeviceID:         "dev-2",
-		DeviceSecretHash: security.HashTokenSHA256("secret-2"),
+		AccessKey:        "dev-2",
+		AccessSecretHash: security.HashTokenSHA256("secret-2"),
 		CurrentJTI:       "jti-2",
 		TrackedDeviceID:  "tracked-2",
 		UserID:           "user-2",
@@ -65,7 +65,7 @@ func TestUserDeviceRuntimeVerifyMismatch(t *testing.T) {
 
 	cases := []struct {
 		name        string
-		deviceID    string
+		accessKey   string
 		secret      string
 		jti         string
 		expectMatch bool
@@ -77,11 +77,11 @@ func TestUserDeviceRuntimeVerifyMismatch(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			record, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID)
+			record, err := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.AccessKey)
 			if err != nil {
 				t.Fatalf("get runtime err: %v", err)
 			}
-			ok := iamCache.MatchRuntime(record, tc.deviceID, tc.secret, tc.jti, 0)
+			ok := iamCache.MatchRuntime(record, tc.accessKey, tc.secret, tc.jti, 0)
 			if ok != tc.expectMatch {
 				t.Fatalf("verify ok=%v want=%v", ok, tc.expectMatch)
 			}
@@ -95,8 +95,8 @@ func TestUserDeviceRuntimeRotateAndGrace(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		DeviceID:         "dev-old",
-		DeviceSecretHash: security.HashTokenSHA256("secret-old"),
+		AccessKey:        "dev-old",
+		AccessSecretHash: security.HashTokenSHA256("secret-old"),
 		CurrentJTI:       "jti-old",
 		TrackedDeviceID:  "tracked-3",
 		UserID:           "user-3",
@@ -105,7 +105,7 @@ func TestUserDeviceRuntimeRotateAndGrace(t *testing.T) {
 		t.Fatalf("set runtime: %v", err)
 	}
 
-	ok, err := cache.RotateFragmentForUserDevice(ctx, runtime.UserID, runtime.DeviceID, "jti-old", "dev-new", security.HashTokenSHA256("secret-new"), "jti-new", time.Minute, nil, nil)
+	ok, err := cache.RotateFragmentForUserDevice(ctx, runtime.UserID, runtime.AccessKey, "jti-old", "dev-new", security.HashTokenSHA256("secret-new"), "jti-new", time.Minute, nil, nil)
 	if err != nil || !ok {
 		t.Fatalf("rotate failed: ok=%v err=%v", ok, err)
 	}
@@ -132,8 +132,8 @@ func TestUserDeviceRuntimeDelete(t *testing.T) {
 	ctx := context.Background()
 
 	runtime := iamCache.UserDeviceRuntime{
-		DeviceID:         "dev-4",
-		DeviceSecretHash: security.HashTokenSHA256("secret-4"),
+		AccessKey:        "dev-4",
+		AccessSecretHash: security.HashTokenSHA256("secret-4"),
 		CurrentJTI:       "jti-4",
 		TrackedDeviceID:  "tracked-4",
 		UserID:           "user-4",
@@ -141,10 +141,10 @@ func TestUserDeviceRuntimeDelete(t *testing.T) {
 	if err := cache.SetDeviceRuntime(ctx, runtime, time.Minute); err != nil {
 		t.Fatalf("set runtime: %v", err)
 	}
-	if err := cache.DeleteDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID); err != nil {
+	if err := cache.DeleteDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.AccessKey); err != nil {
 		t.Fatalf("delete runtime: %v", err)
 	}
-	stored, _ := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.DeviceID)
+	stored, _ := cache.GetDeviceRuntimeByUserDevice(ctx, runtime.UserID, runtime.AccessKey)
 	if stored != nil {
 		t.Fatalf("expected nil after delete, got %#v", stored)
 	}

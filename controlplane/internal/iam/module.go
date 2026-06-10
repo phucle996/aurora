@@ -88,7 +88,6 @@ type IAMModule struct {
 	rds         *goredis.Client
 	rateLimiter *ratelimit.Bucket
 	L1Registry  *cacheengine.CacheRegistry
-	L1Fanout    *cacheengine.RedisFanout
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler         *iamHandler.AuthHandler
@@ -99,8 +98,9 @@ type IAMModule struct {
 	RbacHandler         *iamHandler.RbacHandler
 
 	// Core Services & Sync Engines
-	RbacRepository     iamRepoInterface.RbacRepository
-	adminAPIKeyService coreSvc.AdminAPIKeyService
+	RbacRepository        iamRepoInterface.RbacRepository
+	AdminAPIKeyRepository iamRepoInterface.AdminAPIKeyRepository
+	AdminAPIKeyService    coreSvc.AdminAPIKeyService
 	userDeviceRuntime  iamCache.UserDeviceRuntimeCache
 	rotationCancel     context.CancelFunc
 	finalizeCancel     context.CancelFunc
@@ -115,8 +115,7 @@ func NewModule(
 	rds *goredis.Client,
 	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
-	l1Registry *cacheengine.CacheRegistry,
-	l1Fanout *cacheengine.RedisFanout,
+	cacheEngine *cacheengine.CacheRegistry,
 ) (*IAMModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -142,8 +141,8 @@ func NewModule(
 		return nil, errors.New("iam module: global rate limiter bucket (rateLimiter) is nil")
 	}
 
-	if l1Registry == nil {
-		return nil, errors.New("iam module: L1 cache registry (l1Registry) is nil")
+	if cacheEngine == nil {
+		return nil, errors.New("iam module: cache engine is nil")
 	}
 
 	// ------------------------------------------------------------------------
@@ -210,8 +209,7 @@ func NewModule(
 
 	authSvcImpl := iamSvcImpl.NewAuthServiceImpl(
 		cfg, authRepo, refreshTokenRepo, deviceRepo,
-		userDeviceRuntime, capLock, regPresenceCache,
-		l1Registry, oneTimeTokenSvc, streamPublisher,
+		cacheEngine, oneTimeTokenSvc, streamPublisher,
 	)
 	if authSvcImpl == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
@@ -233,7 +231,7 @@ func NewModule(
 	}
 
 	// Refresh Token Service
-	refreshTokenSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshTokenRepo, userDeviceRuntime, l1Registry)
+	refreshTokenSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshTokenRepo, userDeviceRuntime, cacheEngine)
 	if refreshTokenSvc == nil {
 		return nil, errors.New("iam module: failed to construct refresh token service")
 	}
@@ -262,23 +260,6 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct SRE admin key repository")
 	}
 
-	adminAccessSession := iamCache.NewAdminAccessSessionCache(rds)
-	if adminAccessSession == nil {
-		return nil, errors.New("iam module: failed to construct SRE admin session cache")
-	}
-
-	// Local RAM Cache với Redis Pub/Sub Sync
-	adminAPIKeyCache := iamCache.NewAdminAPIKeyCache(rds)
-	if adminAPIKeyCache == nil {
-		return nil, errors.New("iam module: failed to initialize SRE admin local RAM cache layer")
-	}
-
-	// Emergency Key Rotation Trigger Cache
-	adminRotateTrigger := iamCache.NewAdminKeyRotationTriggerCache(rds)
-	if adminRotateTrigger == nil {
-		return nil, errors.New("iam module: failed to initialize emergency rotation trigger cache")
-	}
-
 	// Telegram Alert Channel (SRE Incident Response Alerting)
 	tgClient := telegram.NewTelegramClient(cfg.Telegram.BotToken, cfg.Telegram.ChatID)
 	if tgClient == nil {
@@ -287,8 +268,7 @@ func NewModule(
 
 	// SRE Admin API Key Service (Nơi điều khiển xoay khóa khẩn cấp và Pub/Sub Invalidation)
 	adminSvc := iamSvcImpl.NewAdminAPIKeyService(
-		cfg, adminRepo, tgClient,
-		adminAccessSession, adminAPIKeyCache, l1Registry, adminRotateTrigger,
+		cfg, adminRepo, tgClient, cacheEngine,
 	)
 	if adminSvc == nil {
 		return nil, errors.New("iam module: failed to construct SRE admin API key management service")
@@ -309,7 +289,7 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct RBAC repository")
 	}
 
-	rbacSvc := iamSvcImpl.NewRbacService(rbacRepo, l1Registry, l1Fanout)
+	rbacSvc := iamSvcImpl.NewRbacService(rbacRepo, cacheEngine)
 	if rbacSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC engine service")
 	}
@@ -329,8 +309,7 @@ func NewModule(
 		db:                  db,
 		rds:                 rds,
 		rateLimiter:         rateLimiter,
-		L1Registry:          l1Registry,
-		L1Fanout:            l1Fanout,
+		L1Registry:          cacheEngine,
 		AuthHandler:         authHandler,
 		authSvcImpl:         authSvcImpl,
 		LogoutHandler:       logoutHandler,
@@ -338,8 +317,9 @@ func NewModule(
 		DeviceHandler:       deviceHandler,
 		AdminAuthHandler:    adminAuthHandler,
 		RbacHandler:         rbacHandler,
-		RbacRepository:      rbacRepo,
-		adminAPIKeyService:  adminSvc,
-		userDeviceRuntime:   userDeviceRuntime,
+		RbacRepository:        rbacRepo,
+		AdminAPIKeyRepository: adminRepo,
+		AdminAPIKeyService:    adminSvc,
+		userDeviceRuntime:     userDeviceRuntime,
 	}, nil
 }

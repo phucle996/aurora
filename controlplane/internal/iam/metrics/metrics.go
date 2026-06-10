@@ -19,9 +19,10 @@
 //             Đo latency (giây) của các tác vụ downstream IAM gọi xuống.
 //             Callsite tự truyền giá trị label — metric này là generic cho mọi downstream call.
 //             Labels:
-//               kind      = loại downstream ("db", "redis", "crypto")
-//               operation = tên thao tác cụ thể ("presence_check", "hash_password", ...)
-//               status    = "ok" | "error"
+//               kind     = loại downstream ("db", "redis", "crypto")
+//               workflow = tên luồng IAM ("register", "login", "admin_rotation", ...)
+//               result   = outcome code tại bước đó ("success", "delivery_fail", ...)
+//               status   = "ok" | "error"
 //
 // ❌ PHẠM VI KHÔNG BAO GỒM (đo đạc ở nơi khác):
 //   • HTTP-level metrics (request_total, request_duration_seconds, in_flight):
@@ -109,9 +110,9 @@ func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
 		Namespace: namespace,
 		Subsystem: "iam",
 		Name:      "downstream_duration_seconds",
-		Help:      "Latency in seconds of IAM downstream calls (db, redis, crypto), partitioned by kind, operation and status.",
+		Help:      "Latency in seconds of IAM downstream calls (db, redis, crypto), partitioned by kind, workflow, destination, result and status.",
 		Buckets:   []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5},
-	}, []string{"kind", "operation", "status"})
+	}, []string{"kind", "workflow", "destination", "result", "status"})
 
 	for _, c := range []prometheus.Collector{serviceCallsCounter, downstreamDuration} {
 		if err := registry.Register(c); err != nil {
@@ -125,33 +126,24 @@ func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
 // PUBLIC API — 2 hàm generic cho mọi callsite trong module IAM
 // ──────────────────────────────────────────────────────────────────────────────
 
-// ObserveServiceCall ghi nhận một lần gọi service IAM vào serviceCallsCounter.
+// ServiceCall ghi nhận một lần gọi service IAM vào serviceCallsCounter.
 // Callsite tự truyền đầy đủ 3 label, giữ tính generic cho mọi IAM flow.
-//
-//	flow       = tên luồng nghiệp vụ, ví dụ: "register", "login", "refresh_token"
-//	result     = outcome code từ iamTaxonomy, ví dụ: "success", "already_exists"
-//	cache_path = trạng thái cache, ví dụ: "cache_miss", "n/a" (nếu flow không dùng cache)
-func ObserveServiceCall(flow, result, cachePath string) {
+func ServiceCall(flow, result, cachePath string) {
 	if serviceCallsCounter == nil {
 		return
 	}
 	serviceCallsCounter.WithLabelValues(flow, result, cachePath).Inc()
 }
 
-// ObserveDownstream ghi nhận latency của một tác vụ downstream IAM vào downstreamDuration.
-// Callsite tự truyền đầy đủ kind và operation label để giữ tính generic.
-//
-//	kind      = loại downstream: "db", "redis", "crypto"
-//	operation = tên thao tác: "presence_check", "hash_password", "insert_user", ...
-//	duration  = thời gian thực thi (dùng time.Since(start))
-//	err       = nil → status="ok", non-nil → status="error"
-func ObserveDownstream(kind, operation string, duration time.Duration, err error) {
-	if downstreamDuration == nil {
-		return
-	}
+// Downstream ghi nhận latency của một tác vụ downstream IAM vào downstreamDuration.
+// Callsite tự truyền đầy đủ các label để giữ tính generic.
+func Downstream(kind, workflow, destination, result string, duration time.Duration, err error) {
 	status := "ok"
 	if err != nil {
 		status = "error"
 	}
-	downstreamDuration.WithLabelValues(kind, operation, status).Observe(duration.Seconds())
+	if downstreamDuration == nil {
+		return
+	}
+	downstreamDuration.WithLabelValues(kind, workflow, destination, result, status).Observe(duration.Seconds())
 }

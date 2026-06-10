@@ -20,66 +20,25 @@ func assertOutcomeSet(t *testing.T, name string, values []string) {
 	}
 }
 
-func TestOutcomeCatalogRegisterAndLogin(t *testing.T) {
-	assertOutcomeSet(t, "register_outcomes", []string{
-		iamTaxonomy.OutcomeSuccess,
-		iamTaxonomy.RegisterOutcomeInvalidArgument,
-		iamTaxonomy.RegisterOutcomeExistCheckError,
-		iamTaxonomy.RegisterOutcomeAlreadyExists,
-		iamTaxonomy.RegisterOutcomeHashPasswordErr,
-		iamTaxonomy.RegisterOutcomeIDGenerateErr,
-		iamTaxonomy.RegisterOutcomeInsertError,
-	})
-	assertOutcomeSet(t, "register_cache_paths", []string{
-		iamTaxonomy.RegisterCachePathMiss,
-		iamTaxonomy.RegisterCachePathNotChecked,
-		iamTaxonomy.RegisterCachePathFallback,
-		iamTaxonomy.RegisterCachePathHitDBCheck,
-	})
-	assertOutcomeSet(t, "login_outcomes", []string{
-		iamTaxonomy.OutcomeSuccess,
-		iamTaxonomy.LoginOutcomeInvalidCredentials,
-		iamTaxonomy.LoginOutcomeLoadUserError,
-		iamTaxonomy.LoginOutcomeVerificationReq,
-		iamTaxonomy.LoginOutcomeVerificationIssue,
-		iamTaxonomy.LoginOutcomeVerificationPublish,
-		iamTaxonomy.LoginOutcomeIssueAccessError,
-		iamTaxonomy.LoginOutcomeGenerateRefreshErr,
-		iamTaxonomy.LoginOutcomePersistRefreshErr,
-		iamTaxonomy.LoginOutcomeVerifyMailPublishAttempt,
-		iamTaxonomy.LoginOutcomeVerifyMailPublishError,
-		iamTaxonomy.LoginOutcomeVerifyMailPublishSuccess,
-		iamTaxonomy.LoginOutcomeVerifyMailPublishDuplicate,
-	})
-}
-
-func TestOutcomeCatalogRefreshAndAdmin(t *testing.T) {
-	assertOutcomeSet(t, "refresh_token_outcomes", []string{
-		iamTaxonomy.OutcomeSuccess,
-		iamTaxonomy.RefreshOutcomeInvalidSession,
-		iamTaxonomy.RefreshOutcomeLoadSessionError,
-		iamTaxonomy.RefreshOutcomeLoadUserError,
-		iamTaxonomy.RefreshOutcomeIssueAccessError,
-		iamTaxonomy.RefreshOutcomeGenerateRefreshErr,
-		iamTaxonomy.RefreshOutcomeRotateRefreshErr,
-	})
-	assertOutcomeSet(t, "admin_login_outcomes", []string{
-		iamTaxonomy.OutcomeSuccess,
-		iamTaxonomy.AdminLoginOutcomeInvalidArgument,
-		iamTaxonomy.AdminLoginOutcomeInvalidDevicePublicKey,
-		iamTaxonomy.AdminLoginOutcomeInvalidCredential,
-		iamTaxonomy.AdminLoginOutcomeSystemError,
-	})
-	assertOutcomeSet(t, "admin_refresh_outcomes", []string{
-		iamTaxonomy.OutcomeSuccess,
-		iamTaxonomy.AdminRefreshOutcomeInvalidArgument,
-		iamTaxonomy.AdminRefreshOutcomeInvalidSession,
-		iamTaxonomy.AdminRefreshOutcomeSystemError,
-	})
-	assertOutcomeSet(t, "admin_rotation_outcomes", []string{
-		iamTaxonomy.OutcomeSuccess,
-		iamTaxonomy.AdminRotateLockBusy,
-		iamTaxonomy.AdminRotateDeliveryFail,
-		iamTaxonomy.AdminRotateFail,
+func TestOutcomeCatalog(t *testing.T) {
+	assertOutcomeSet(t, "core_outcomes", []string{
+		iamTaxonomy.Success,
+		iamTaxonomy.Failure,
+		iamTaxonomy.FailureUnknown,
+		iamTaxonomy.InvalidArgument,
+		iamTaxonomy.InvalidCredential,
+		iamTaxonomy.InvalidSession,
+		iamTaxonomy.PreConditionFailed,
+		iamTaxonomy.PreConditionSuccess,
+		iamTaxonomy.LockBusy,
+		iamTaxonomy.LockUnknownError,
+		iamTaxonomy.TokenGenerateFail,
+		iamTaxonomy.TokenGenerateSuccess,
+		iamTaxonomy.TelegramSendFail,
+		iamTaxonomy.UuidGenerateFail,
+		iamTaxonomy.SetAccessSessionFail,
+		iamTaxonomy.ZoneUnavailable,
+		iamTaxonomy.GetL1CacheFail,
+		iamTaxonomy.GetL2CacheFail,
 	})
 }

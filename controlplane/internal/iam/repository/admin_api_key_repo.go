@@ -75,9 +75,9 @@ type AdminAPIKeyRepository struct {
 	rollbackDelete2FAQuery        string
 	rollbackDeleteKeyQuery        string
 	rollbackDeleteAuditQuery      string
-	getAdmin2FASettingsQuery      string
+	getAdmin2FASecretQuery        string
 	consumeRecoveryCodeQuery      string
-	getAdminDeviceByIDQuery       string
+	getPublicKeyByDeviceIDQuery   string
 	upsertAdminDeviceCheckQuery   string
 	upsertAdminDeviceBindingQuery string
 	touchAdminDeviceLastSeenQuery string
@@ -173,8 +173,8 @@ func NewAdminAPIKeyRepository(
 		rollbackDeleteAuditQuery: fmt.Sprintf(`
 			DELETE FROM %s.admin_action_audits
 			WHERE action = $1 AND created_at = $2 AND request_path = $3 AND request_method = $4`, schema),
-		getAdmin2FASettingsQuery: fmt.Sprintf(`
-			SELECT id, secret_ciphertext, created_at, updated_at
+		getAdmin2FASecretQuery: fmt.Sprintf(`
+			SELECT secret_ciphertext, updated_at
 			FROM %s.admin_2fa_settings
 			ORDER BY updated_at DESC
 			LIMIT 1`, schema),
@@ -182,11 +182,8 @@ func NewAdminAPIKeyRepository(
 			UPDATE %s.admin_recovery_codes
 			SET used_at = $2
 			WHERE code_hash = $1 AND used_at IS NULL`, schema),
-		getAdminDeviceByIDQuery: fmt.Sprintf(`
-			SELECT id, device_name, device_type, os_name, browser_name,
-				public_key, public_key_fingerprint,
-				quarantined_at, revoked_at, last_seen_ip, last_seen_user_agent,
-				last_seen_at, created_at, updated_at
+		getPublicKeyByDeviceIDQuery: fmt.Sprintf(`
+			SELECT public_key
 			FROM %s.admin_devices
 			WHERE id = $1
 			LIMIT 1`, schema),
@@ -230,14 +227,19 @@ func NewAdminAPIKeyRepository(
 // AcquireBootstrapLock giành quyền sở hữu advisory lock cho tác vụ bootstrap.
 // Đảm bảo loại trừ tương hỗ (mutual exclusion) tuyệt đối ở mức cụm phân tán.
 func (r *AdminAPIKeyRepository) AcquireBootstrapLock(ctx context.Context) (iamRepoInterface.BootstrapLock, error) {
+
+	// lấy 1 connection từ pool
 	conn, err := r.db.Acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// bắt đầu transaction
 	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
 		conn.Release()
 		return nil, err
 	}
+
+	// check xem có ai đang giữ lock không, lock này là advisory lock (có thể bị tranh chấp)
 	var ok bool
 	if err := conn.QueryRow(ctx,
 		`SELECT pg_try_advisory_xact_lock($1)`, adminBootstrapLockKey).Scan(&ok); err != nil {
@@ -245,12 +247,17 @@ func (r *AdminAPIKeyRepository) AcquireBootstrapLock(ctx context.Context) (iamRe
 		conn.Release()
 		return nil, err
 	}
+
+	// nếu đã có người giữ lock rồi thì rollback và trả lỗi
 	if !ok {
 		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
 		return nil, fmt.Errorf("iam repo: bootstrap lock already held")
 	}
-	return &bootstrapLock{conn: conn, key: adminBootstrapLockKey}, nil
+	// trả về bootstrap lock để có thể release lock sau này
+	return &bootstrapLock{conn: conn,
+			key: adminBootstrapLockKey},
+		nil
 }
 
 // AcquireRotationLock giành quyền sở hữu advisory lock cho tác vụ quay vòng khoá khẩn cấp.
@@ -272,14 +279,18 @@ func (r *AdminAPIKeyRepository) AcquireRotationLock(ctx context.Context) (iamRep
 	if !ok {
 		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
-		return nil, fmt.Errorf("iam repo: rotation lock already held")
+		return nil, iamTaxonomy.ErrBootstrapLockAlreadyHeld
 	}
 	return &bootstrapLock{conn: conn, key: adminRotationLockKey}, nil
 }
 
 // PrepareNextAdminAPIKey chuẩn bị sẵn sàng một khoá API Key tiếp theo trước khi tiến hành rotate thực tế.
 func (r *AdminAPIKeyRepository) PrepareNextAdminAPIKey(ctx context.Context, key iamEntity.AdminAPIKey) error {
+
+	// chuyển entity sang model để db xử lý
 	m := iamModel.AdminAPIKeyEntityToModel(key)
+
+	// db call query để insert admin key mới vào db
 	_, err := r.db.Exec(ctx,
 		r.prepareNextAdminAPIKeyQuery,
 		m.ID,
@@ -342,7 +353,7 @@ func (r *AdminAPIKeyRepository) Bootstrap(ctx context.Context, payload iamEntity
 	mKey := iamModel.AdminAPIKey{
 		ID:        uuid.New(),
 		KeyHash:   payload.KeyHash,
-		CreatedBy: &payload.Actor,
+		CreatedBy: payload.Actor,
 		CreatedAt: now,
 		ExpiresAt: payload.ExpiresAt.UTC(),
 	}
@@ -400,53 +411,45 @@ func (r *AdminAPIKeyRepository) RollbackBootstrap(ctx context.Context, payload i
 	return tx.Commit(ctx)
 }
 
-// GetAdmin2FASettings đọc thiết lập MFA hiện tại của tài khoản admin tối cao.
-func (r *AdminAPIKeyRepository) GetAdmin2FASettings(ctx context.Context) (*iamEntity.Admin2FASettings, error) {
-	var m iamModel.Admin2FASettings
-	if err := r.db.QueryRow(ctx, r.getAdmin2FASettingsQuery).Scan(&m.ID, &m.SecretCiphertext, &m.CreatedAt, &m.UpdatedAt); err != nil {
+// GetAdmin2FASecret đọc khóa bí mật MFA hiện tại của tài khoản admin tối cao.
+func (r *AdminAPIKeyRepository) GetAdmin2FASecret(ctx context.Context) (string, time.Time, error) {
+	var secretCiphertext string
+	var updatedAt time.Time
+	if err := r.db.QueryRow(ctx, r.getAdmin2FASecretQuery).Scan(&secretCiphertext, &updatedAt); err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, nil
+			return "", time.Time{}, nil
 		}
-		return nil, err
+		return "", time.Time{}, err
 	}
-	entity := iamModel.Admin2FASettingsModelToEntity(m)
-	return &entity, nil
+	return strings.TrimSpace(secretCiphertext), updatedAt, nil
 }
 
 // ConsumeRecoveryCode đánh dấu tiêu thụ một mã khôi phục khi login trong trường hợp khẩn cấp mất thiết bị MFA.
-func (r *AdminAPIKeyRepository) ConsumeRecoveryCode(ctx context.Context, codeHash string, now time.Time) (bool, error) {
+func (r *AdminAPIKeyRepository) ConsumeRecoveryCode(ctx context.Context, codeHash string, now time.Time) error {
+
+	// call db update
 	cmd, err := r.db.Exec(ctx, r.consumeRecoveryCodeQuery, codeHash, now.UTC())
 	if err != nil {
-		return false, err
+		return err
 	}
-	return cmd.RowsAffected() > 0, nil
+
+	// rows affected != 1 có nghĩa là mã khôi phục đã bị tiêu thụ hoặc không tồn tại
+	if cmd.RowsAffected() != 1 {
+		return iamTaxonomy.ErrRecoveryCodeInvalid
+	}
+	return nil
 }
 
-// GetAdminDeviceByID tìm kiếm thiết bị của SRE quản trị hệ thống dựa vào định danh UUID.
-func (r *AdminAPIKeyRepository) GetAdminDeviceByID(ctx context.Context, deviceID string) (*iamEntity.AdminDevice, error) {
-	var m iamModel.AdminDevice
-	err := r.db.QueryRow(ctx, r.getAdminDeviceByIDQuery, deviceID).Scan(
-		&m.ID,
-		&m.DeviceName,
-		&m.DeviceType,
-		&m.OSName,
-		&m.BrowserName,
-		&m.PublicKey,
-		&m.PublicKeyFingerprint,
-		&m.QuarantinedAt,
-		&m.RevokedAt,
-		&m.LastSeenIP,
-		&m.LastSeenUserAgent,
-		&m.LastSeenAt,
-		&m.CreatedAt,
-		&m.UpdatedAt,
-	)
+// GetPublicKeyByDeviceID truy vấn trực tiếp khóa công khai của thiết bị dựa vào UUID thiết bị.
+func (r *AdminAPIKeyRepository) GetPublicKeyByDeviceID(ctx context.Context, deviceID string) (string, error) {
+	var publicKey string
+	err := r.db.QueryRow(ctx, r.getPublicKeyByDeviceIDQuery, deviceID).Scan(&publicKey)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	entity := iamModel.AdminDeviceModelToEntity(m)
-	return &entity, nil
+	return publicKey, nil
 }
+
 
 // UpsertAdminDeviceBinding liên kết thiết bị vật lý an toàn của SRE, kiểm tra trạng thái quarantine/revoked để tránh token hijacking.
 func (r *AdminAPIKeyRepository) UpsertAdminDeviceBinding(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error) {
@@ -455,10 +458,10 @@ func (r *AdminAPIKeyRepository) UpsertAdminDeviceBinding(ctx context.Context, in
 	checkErr := r.db.QueryRow(ctx, r.upsertAdminDeviceCheckQuery, input.ID).Scan(&quarantinedAt, &revokedAt)
 	if checkErr == nil {
 		if revokedAt != nil {
-			return nil, iamTaxonomy.ErrAdminLoginDeviceRevoked
+			return nil, iamTaxonomy.ErrDeviceRevoked
 		}
 		if quarantinedAt != nil {
-			return nil, iamTaxonomy.ErrAdminLoginDeviceQuarantined
+			return nil, iamTaxonomy.ErrDeviceQuarantined
 		}
 	}
 
@@ -520,3 +523,4 @@ func (r *AdminAPIKeyRepository) TouchAdminDeviceLastSeen(ctx context.Context, de
 	_, err := r.db.Exec(ctx, r.touchAdminDeviceLastSeenQuery, strings.TrimSpace(deviceID), ip, userAgent, seenAt.UTC())
 	return err
 }
+

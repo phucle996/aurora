@@ -83,12 +83,12 @@ func TestOneTimeTokenServiceInvalidPurposeOrUser(t *testing.T) {
 
 	userID := uuid.Must(uuid.NewV7())
 	_, _, err := svc.Issue(context.Background(), "", userID)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
 	}
 
 	_, err = svc.Consume(context.Background(), "account_verify", uuid.Nil, "abc")
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidPurposeOrUser) {
+	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidPurposeOrUser, got %v", err)
 	}
 }
@@ -100,7 +100,7 @@ func TestOneTimeTokenServiceInvalidTTL(t *testing.T) {
 
 	userID := uuid.Must(uuid.NewV7())
 	_, _, err := svc.Issue(context.Background(), "account_verify", userID)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenIssueFailed) {
+	if !errors.Is(err, iamTaxonomy.ErrTokenIssueFailed) {
 		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 	}
 
 	ok, err = svc.Consume(context.Background(), "account_verify", userID, token)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenInvalidOrExpired) {
+	if !errors.Is(err, iamTaxonomy.ErrTokenRefreshExpired) {
 		t.Fatalf("expected ErrOneTimeTokenInvalidOrExpired, got %v", err)
 	}
 	if ok {
@@ -156,12 +156,12 @@ func TestOneTimeTokenServiceCacheError(t *testing.T) {
 	userID := uuid.Must(uuid.NewV7())
 	svc := iamSvcImpl.NewOneTimeTokenService(cfg, &oneTimeTokenCacheMock{
 		setFn: func(ctx context.Context, purpose string, uID uuid.UUID, tokenHash string, ttl time.Duration) error {
-			return iamTaxonomy.ErrOneTimeTokenCacheUnavailable
+			return iamTaxonomy.ErrGetL1CacheFailed
 		},
 	})
 
 	_, _, err := svc.Issue(context.Background(), "account_verify", userID)
-	if !errors.Is(err, iamTaxonomy.ErrOneTimeTokenIssueFailed) {
+	if !errors.Is(err, iamTaxonomy.ErrTokenIssueFailed) {
 		t.Fatalf("expected ErrOneTimeTokenIssueFailed, got %v", err)
 	}
 	appErr, ok := apperr.As(err)

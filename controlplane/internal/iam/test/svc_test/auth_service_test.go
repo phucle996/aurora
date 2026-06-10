@@ -11,7 +11,6 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
-	iamCache "controlplane/internal/iam/cache"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -19,9 +18,12 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/id"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/redis/go-redis/v9"
 )
 
 type authRepoMock struct {
@@ -61,63 +63,18 @@ func (m *authRepoMock) CreateRefreshTokenSession(ctx context.Context, token iamE
 	return nil
 }
 
-var _ iamCache.RegisterPresenceCache = (*presenceCacheMock)(nil)
-
-type presenceCacheMock struct {
-	checkFn func(ctx context.Context, username string, email string) (bool, bool, error)
-	markFn  func(ctx context.Context, username string, email string) error
-}
-
-func (m *presenceCacheMock) Check(ctx context.Context, username string, email string) (bool, bool, error) {
-	if m.checkFn != nil {
-		return m.checkFn(ctx, username, email)
-	}
-	return false, false, nil
-}
-
-func (m *presenceCacheMock) MarkExists(ctx context.Context, username string, email string) error {
-	if m.markFn != nil {
-		return m.markFn(ctx, username, email)
-	}
-	return nil
-}
-
-type deviceRuntimeMock struct {
-	setFn func(ctx context.Context, runtime iamCache.UserDeviceRuntime, ttl time.Duration) error
-}
-
-var _ iamCache.UserDeviceRuntimeCache = (*deviceRuntimeMock)(nil)
-
-func (m *deviceRuntimeMock) SetDeviceRuntime(ctx context.Context, runtime iamCache.UserDeviceRuntime, ttl time.Duration) error {
-	if m.setFn != nil {
-		return m.setFn(ctx, runtime, ttl)
-	}
-	return nil
-}
-
-func (m *deviceRuntimeMock) GetDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) (*iamCache.UserDeviceRuntime, error) {
-	return nil, nil
-}
-
-func (m *deviceRuntimeMock) DeleteDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string) error {
-	return nil
-}
-
-func (m *deviceRuntimeMock) RotateFragmentForUserDevice(ctx context.Context, userID, deviceID, expectedJTI, newDeviceID, newDeviceSecretHash, newJTI string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
-	return true, nil
-}
-
-func (m *deviceRuntimeMock) TouchDeviceRuntimeByUserDevice(ctx context.Context, userID, deviceID string, ttl time.Duration, ip *string, userAgent *string) (bool, error) {
-	return true, nil
-}
-
-func (m *deviceRuntimeMock) ScanByUser(ctx context.Context, userID string, limit int) ([]iamCache.UserDeviceRuntime, error) {
-	return nil, nil
-}
-
-func makeTestRegistry(secretKey string) *cacheengine.CacheRegistry {
+func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheRegistry {
+	security.SetRuntimeMasterKey(make([]byte, 32))
 	l1Cache := cacheengine.NewShardedCache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
+	if rdb == nil {
+		if mr, err := miniredis.Run(); err == nil {
+			rdb = redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		} else {
+			rdb = redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+		}
+	}
+	registry.L2 = cacheengine.NewL2Cache(rdb)
 	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
 		return &coreEntity.RuntimeSecrets{
 			SecretType: "access_secret",
@@ -134,12 +91,15 @@ func makeTestRegistry(secretKey string) *cacheengine.CacheRegistry {
 	return registry
 }
 
-func newAuthService(repo iamRepoInterface.AuthRepository, presence iamCache.RegisterPresenceCache, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
-	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, nil, &deviceRepoMock{}, &deviceRuntimeMock{}, nil, presence, registry, nil, nil)
+func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
+	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, nil, &deviceRepoMock{}, registry, nil, nil)
 }
 
 func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
-	marked := false
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	registry := makeTestRegistry("secret-key", rdb)
+
 	created := false
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 		created = true
@@ -150,10 +110,7 @@ func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
 			t.Fatalf("expected pending-active status, got %q", user.Status)
 		}
 		return nil
-	}}, &presenceCacheMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, false, nil },
-		markFn:  func(ctx context.Context, username string, email string) error { marked = true; return nil },
-	}, nil)
+	}}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if err != nil {
@@ -162,19 +119,25 @@ func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
 	if !created {
 		t.Fatal("expected repository create to be called")
 	}
-	if !marked {
-		t.Fatal("expected presence cache to be marked")
+
+	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
+	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
+	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
+	emailBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
+	if usernameBit != 1 || emailBit != 1 {
+		t.Fatal("expected presence cache bits to be set in Redis")
 	}
 }
 
 func TestAuthServiceRegisterAccountPresenceCheckErrorFallsBackToDB(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	registry := makeTestRegistry("secret-key", rdb)
+
 	created := false
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 		created = true
 		return nil
-	}}, &presenceCacheMock{checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) {
-		return false, false, fmt.Errorf("redis down")
-	}}, nil)
+	}}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if err != nil {
@@ -186,6 +149,13 @@ func TestAuthServiceRegisterAccountPresenceCheckErrorFallsBackToDB(t *testing.T)
 }
 
 func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	registry := makeTestRegistry("secret-key", rdb)
+
+	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
+	rdb.SetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
+
 	checked := false
 	created := false
 	svc := newAuthService(&authRepoMock{
@@ -197,7 +167,7 @@ func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
 			created = true
 			return nil
 		},
-	}, &presenceCacheMock{checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return true, false, nil }}, nil)
+	}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
@@ -212,9 +182,15 @@ func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
 }
 
 func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	registry := makeTestRegistry("secret-key", rdb)
+
+	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
+	rdb.SetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+
 	checked := false
 	created := false
-	marked := false
 	svc := newAuthService(&authRepoMock{
 		checkFn: func(ctx context.Context, username string, email string) (bool, error) {
 			checked = true
@@ -224,45 +200,53 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 			created = true
 			return nil
 		},
-	}, &presenceCacheMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, true, nil },
-		markFn:  func(ctx context.Context, username string, email string) error { marked = true; return nil },
-	}, nil)
+	}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if !checked || !created || !marked {
-		t.Fatalf("expected checked=%v created=%v marked=%v all true", checked, created, marked)
+	if !checked || !created {
+		t.Fatalf("expected checked=%v created=%v all true", checked, created)
+	}
+
+	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
+	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
+	if usernameBit != 1 {
+		t.Fatal("expected presence key for username to be set in Redis")
 	}
 }
 
 func TestAuthServiceRegisterAccountDuplicateFromRepoMarksCache(t *testing.T) {
-	marked := false
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	registry := makeTestRegistry("secret-key", rdb)
+
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 		return iamTaxonomy.ErrUserAlreadyExist
-	}}, &presenceCacheMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, false, nil },
-		markFn:  func(ctx context.Context, username string, email string) error { marked = true; return nil },
-	}, nil)
+	}}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist, got %v", err)
 	}
-	if !marked {
+
+	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
+	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
+	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
+	emailBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
+	if usernameBit != 1 || emailBit != 1 {
 		t.Fatal("expected presence cache to be marked on duplicate")
 	}
 }
 
 func TestAuthServiceRegisterAccountDuplicateStillReturnsDuplicateWhenMarkFails(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	registry := makeTestRegistry("secret-key", rdb)
+
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 		return iamTaxonomy.ErrUserAlreadyExist
-	}}, &presenceCacheMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, false, nil },
-		markFn:  func(ctx context.Context, username string, email string) error { return fmt.Errorf("redis down") },
-	}, nil)
+	}}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
@@ -271,14 +255,14 @@ func TestAuthServiceRegisterAccountDuplicateStillReturnsDuplicateWhenMarkFails(t
 }
 
 func TestAuthServiceRegisterAccountSuccessStillReturnsSuccessWhenMarkFails(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	registry := makeTestRegistry("secret-key", rdb)
+
 	created := false
 	svc := newAuthService(&authRepoMock{createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 		created = true
 		return nil
-	}}, &presenceCacheMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, bool, error) { return false, false, nil },
-		markFn:  func(ctx context.Context, username string, email string) error { return fmt.Errorf("redis down") },
-	}, nil)
+	}}, registry)
 
 	err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: "alice.nguyen", Email: "user@example.com"}, iamEntity.UserProfile{Fullname: "Alice Nguyen"}, "secret123")
 	if err != nil {
@@ -289,10 +273,10 @@ func TestAuthServiceRegisterAccountSuccessStillReturnsSuccessWhenMarkFails(t *te
 	}
 }
 
-
-
 func TestAuthServiceLoginUserNotFound(t *testing.T) {
-	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) { return nil, nil }}, nil, nil)
+	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+		return nil, iamTaxonomy.ErrInvalidCredentials
+	}}, nil)
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
@@ -301,8 +285,8 @@ func TestAuthServiceLoginUserNotFound(t *testing.T) {
 
 func TestAuthServiceLoginNoRowsErrorMapsInvalidCredentials(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
-		return nil, pgx.ErrNoRows
-	}}, nil, nil)
+		return nil, fmt.Errorf("%w: %w", iamTaxonomy.ErrInvalidCredentials, pgx.ErrNoRows)
+	}}, nil)
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
@@ -311,7 +295,7 @@ func TestAuthServiceLoginNoRowsErrorMapsInvalidCredentials(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.LoginOutcomeInvalidCredentials {
+	if appErr.Outcome != iamTaxonomy.InvalidCredential {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, pgx.ErrNoRows) {
@@ -323,7 +307,7 @@ func TestAuthServiceLoginWrongPassword(t *testing.T) {
 	hash, _ := security.HashPassword("secret123")
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return &iamEntity.LoginUser{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Username: username, PasswordHash: hash, Status: iamEntity.UserStatusActive}, nil
-	}}, nil, makeTestRegistry("secret-key"))
+	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "wrongpass", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
@@ -334,7 +318,7 @@ func TestAuthServiceLoginPendingActiveBlocked(t *testing.T) {
 	hash, _ := security.HashPassword("secret123")
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return &iamEntity.LoginUser{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Username: username, PasswordHash: hash, Status: iamEntity.UserStatusPendingActive}, nil
-	}}, nil, makeTestRegistry("secret-key"))
+	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 		t.Fatalf("expected ErrVerificationRequired, got %v", err)
@@ -358,7 +342,7 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 			}
 			return nil
 		},
-	}, nil, makeTestRegistry("secret-key"))
+	}, makeTestRegistry("secret-key", nil))
 
 	result, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if err != nil {
@@ -367,7 +351,7 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 	if result == nil || result.AccessToken == "" || result.RefreshToken == "" {
 		t.Fatalf("expected tokens in result, got %#v", result)
 	}
-	if result.RuntimeDeviceID == "" || result.TrackedDeviceID == "" {
+	if result.AccessKey == "" || result.TrackedDeviceID == "" {
 		t.Fatalf("expected runtime and tracked device ids, got %#v", result)
 	}
 	if persisted == false {
@@ -377,7 +361,7 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected parsable access token, got %v", err)
 	}
-	if claims.AccessKey != result.RuntimeDeviceID {
+	if claims.AccessKey != result.AccessKey {
 		t.Fatalf("unexpected device claims: %#v", claims)
 	}
 	if len(result.RefreshToken) == 0 || result.RefreshExpiresAt.Before(time.Now().UTC()) {
@@ -385,13 +369,11 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 	}
 }
 
-
-
 func TestAuthServiceLoginLoadUserErrorReturnsEnvelope(t *testing.T) {
 	raw := errors.New("db timeout")
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return nil, raw
-	}}, nil, makeTestRegistry("secret-key"))
+	}}, makeTestRegistry("secret-key", nil))
 	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)

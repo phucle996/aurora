@@ -1,8 +1,8 @@
 package mailTaxonomy
 
 const (
-	OutcomeSuccess            = "success"
-	OutcomeFailure            = "failure"
+	Success                   = "success"
+	Failure                   = "failure"
 	OutcomeUnknown            = "unknown"
 	OutcomeInvalidArgument    = "invalid_argument"
 	OutcomeNotFound           = "not_found"

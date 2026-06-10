@@ -187,7 +187,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessKeyName,
-		Value:    result.RuntimeDeviceID,
+		Value:    result.AccessKey,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 		HttpOnly: false,
@@ -198,7 +198,7 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 	})
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     cookie.AccessSecretName,
-		Value:    result.DeviceSecret,
+		Value:    result.AccessSecret,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
 		HttpOnly: true,
