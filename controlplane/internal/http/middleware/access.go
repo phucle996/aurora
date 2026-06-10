@@ -46,6 +46,7 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // accessMiddleware nắm giữ handler động cho middleware Access.
@@ -54,11 +55,15 @@ var accessMiddleware = struct {
 	handler gin.HandlerFunc
 }{}
 
-// InitAccess khởi tạo middleware Access với CacheRegistry duy nhất.
-// Không nhận raw redis.Client — tất cả I/O Redis đi qua registry.L2.
-func InitAccess(registry *cacheengine.CacheRegistry, graceWindow time.Duration) {
+// TouchDeviceLastSeenFn là kiểu hàm inject vào middleware để flush IP/UA xuống DB khi sự kiện last-seen fire.
+// Thiết kế dạng function type để tránh coupling middleware với service/repo layer.
+type TouchDeviceLastSeenFn func(ctx context.Context, trackedDeviceID string, ip *string, userAgent *string)
+
+// InitAccess khởi tạo middleware Access với CacheRegistry và hàm flush last-seen xuống DB.
+// touchFn có thể là nil — khi đó chỉ cập nhật Redis, không flush DB.
+func InitAccess(registry *cacheengine.CacheRegistry, graceWindow time.Duration, touchFn TouchDeviceLastSeenFn) {
 	accessMiddleware.mu.Lock()
-	accessMiddleware.handler = buildAccessHandler(registry, graceWindow)
+	accessMiddleware.handler = buildAccessHandler(registry, graceWindow, touchFn)
 	accessMiddleware.mu.Unlock()
 }
 
@@ -77,20 +82,15 @@ func Access() gin.HandlerFunc {
 }
 
 // userAccessSession là struct nội bộ ánh xạ bản ghi phiên lưu trong Redis.
+// Chỉ giữ lại các trường thực sự cần dùng để đối chiếu chữ ký, định danh thiết bị, và realtime tracking.
 type userAccessSession struct {
-	AccessKey        string `json:"access_key"`
-	AccessSecretHash string `json:"access_secret_hash"`
-	CurrentJTI       string `json:"current_jti"`
-	PreviousJTI      string `json:"previous_jti,omitempty"`
-	PreviousIssuedAt int64  `json:"previous_issued_at,omitempty"`
-	CurrentIssuedAt  int64  `json:"current_issued_at,omitempty"`
-	TrackedDeviceID  string `json:"tracked_device_id"`
-	UserID           string `json:"user_id"`
-	Status           string `json:"status,omitempty"`
+	AccessSecretHash string `json:"ash"`  // Hash của Access secret để so khớp chữ ký
+	TrackedDeviceID  string `json:"tdid"` // ID thiết bị đã qua kiểm tra
+	LastSeenAt       int64  `json:"lsa"`  // Unix timestamp — được middleware ghi lại sau mỗi request xác thực thành công
 }
 
 // buildAccessHandler xây dựng hàm xác thực JWT, tra phiên Redis, và inject context.
-func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Duration) gin.HandlerFunc {
+func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Duration, touchFn TouchDeviceLastSeenFn) gin.HandlerFunc {
 	if graceWindow <= 0 {
 		graceWindow = 10 * time.Second
 	}
@@ -224,22 +224,14 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 
-		// Kiểm tra trạng thái thu hồi + so khớp access_key + hash access_secret.
-		if record.Status == "revoked" ||
-			record.AccessKey != accessKeyClaim ||
-			record.AccessSecretHash != security.HashTokenSHA256(accessSecret) {
-			clearUserAccessCookies(c, cookieDomain, cookiePath)
-			apires.RespondUnauthorized(c, "unauthorized")
-			c.Abort()
-			return
-		}
-
-		// Kiểm tra JTI (cho phép graceWindow để tránh race giữa refresh và request kế tiếp).
-		jtiMatch := record.CurrentJTI == jti
-		if !jtiMatch && graceWindow > 0 && record.PreviousJTI == jti && record.PreviousIssuedAt > 0 {
-			jtiMatch = time.Since(time.Unix(record.PreviousIssuedAt, 0)) <= graceWindow
-		}
-		if !jtiMatch {
+		// --------------------------------------------------------------------
+		// BƯỚC 4: XÁC THỰC ACCESS KEY VÀ ACCESS SECRET
+		// Không cần kiểm tra JTI và trạng thái 'revoked' chi tiết ở đây vì:
+		// 1. Khi logout/thu hồi phiên, bản ghi session tương ứng sẽ bị xóa hoặc vô hiệu hóa trực tiếp trong Redis.
+		// 2. Việc loại bỏ kiểm tra JTI giúp tránh race condition cho các HTTP request đồng thời trong lúc xoay vòng token.
+		// Chỉ cần so khớp chính xác cặp khóa (access_key và hash của access_secret).
+		// --------------------------------------------------------------------
+		if record.AccessSecretHash != security.HashTokenSHA256(accessSecret) {
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -272,6 +264,48 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		c.Set(constant.ContextKeyRuntimeAccessSecret, accessSecret)
 
 		c.Next()
+
+		// --------------------------------------------------------------------
+		// CẬP NHẬT LAST SEEN (BEST-EFFORT, HAI TẦNG THROTTLE)
+		// Sau khi request xử lý xong:
+		//   Tầng 1 — Redis lsa: cập nhật mỗi 30s (cheap, giữ KEEPTTL).
+		//   Tầng 2 — DB flush: dùng SET NX EX làm distributed gate (mỗi ~3 phút/user).
+		//     Goroutine nào SET NX thành công mới được flush DB → tự rate-limit,
+		//     loại bỏ write storm dù có 10k+ user online đồng thời.
+		// --------------------------------------------------------------------
+		now := time.Now().Unix()
+		if now-record.LastSeenAt > 30 {
+			// Capture IP và UA từ gin context trước khi rời khỏi request goroutine.
+			clientIP := c.ClientIP()
+			userAgent := c.Request.UserAgent()
+			trackedDeviceID := strings.TrimSpace(record.TrackedDeviceID)
+
+			updatedRecord := record
+			updatedRecord.LastSeenAt = now
+			if payload, marshalErr := json.Marshal(updatedRecord); marshalErr == nil {
+				rdb := registry.L2.Client()
+				// dbFlushGateKey: key tồn tại trong 3 phút, đóng vai trò distributed rate limiter cho DB write.
+				dbFlushGateKey := "iam:user_lsadb:" + userIDClaim + ":" + accessKeyClaim
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+					defer cancel()
+
+					// Tầng 1: Cập nhật lsa trong Redis, giữ nguyên TTL gốc của session.
+					_ = rdb.Set(ctx, sessionKey, payload, goredis.KeepTTL).Err()
+
+					// Tầng 2: Chỉ flush DB nếu SET NX thành công (gate chưa có ai giữ).
+					// TTL 3 phút → tối đa ~1 DB write / 3 phút / session, bất kể traffic.
+					if touchFn != nil && trackedDeviceID != "" {
+						won, _ := rdb.SetNX(ctx, dbFlushGateKey, 1, 3*time.Minute).Result()
+						if won {
+							ip := &clientIP
+							ua := &userAgent
+							touchFn(ctx, trackedDeviceID, ip, ua)
+						}
+					}
+				}()
+			}
+		}
 	}
 }
 

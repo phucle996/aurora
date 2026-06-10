@@ -188,9 +188,10 @@ func NewAdminAPIKeyRepository(
 			WHERE id = $1
 			LIMIT 1`, schema),
 		upsertAdminDeviceCheckQuery: fmt.Sprintf(`
-			SELECT quarantined_at, revoked_at 
+			SELECT id, quarantined_at, revoked_at 
 			FROM %s.admin_devices 
-			WHERE id = $1`, schema),
+			WHERE id = $1 OR public_key_fingerprint = $2
+			LIMIT 1`, schema),
 		upsertAdminDeviceBindingQuery: fmt.Sprintf(`
 			INSERT INTO %s.admin_devices (
 				id, device_name, device_type, os_name, browser_name,
@@ -457,8 +458,9 @@ func (r *AdminAPIKeyRepository) GetPublicKeyByDeviceID(ctx context.Context, devi
 // UpsertAdminDeviceBinding liên kết thiết bị vật lý an toàn của SRE, kiểm tra trạng thái quarantine/revoked để tránh token hijacking.
 func (r *AdminAPIKeyRepository) UpsertAdminDeviceBinding(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error) {
 	// Kiểm tra xem thiết bị đã tồn tại và có bị thu hồi hay cách ly không
+	var existingID uuid.UUID
 	var quarantinedAt, revokedAt *time.Time
-	checkErr := r.db.QueryRow(ctx, r.upsertAdminDeviceCheckQuery, input.ID).Scan(&quarantinedAt, &revokedAt)
+	checkErr := r.db.QueryRow(ctx, r.upsertAdminDeviceCheckQuery, input.ID, input.PublicKeyFingerprint).Scan(&existingID, &quarantinedAt, &revokedAt)
 	if checkErr == nil {
 		if revokedAt != nil {
 			return nil, iamTaxonomy.ErrDeviceRevoked
@@ -466,6 +468,8 @@ func (r *AdminAPIKeyRepository) UpsertAdminDeviceBinding(ctx context.Context, in
 		if quarantinedAt != nil {
 			return nil, iamTaxonomy.ErrDeviceQuarantined
 		}
+		// Đồng bộ hóa ID của thiết bị để tránh vi phạm ràng buộc unique fingerprint
+		input.ID = existingID
 	}
 
 	now := input.Now.UTC()

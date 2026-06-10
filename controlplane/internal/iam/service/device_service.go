@@ -33,7 +33,8 @@ type DeviceService struct {
 func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
-	streamPublisher infraredis.StreamPublisher) iamSvcInterface.DeviceService {
+	streamPublisher infraredis.StreamPublisher,
+) iamSvcInterface.DeviceService {
 	return &DeviceService{deviceRepo: deviceRepo,
 		refreshTokenRepo: refreshTokenRepo,
 		registry:         registry,
@@ -72,16 +73,11 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 	for _, device := range items {
 		p := iamSvcInterface.DevicePresence{Device: device, IsOnline: false}
 		if rt, ok := presenceByTracked[strings.TrimSpace(device.ID)]; ok {
-			p.IsOnline = strings.TrimSpace(rt.Status) != "revoked"
+			p.IsOnline = true
+			// LastSeenAt từ Redis phản ánh lần cuối request xác thực thành công (realtime qua middleware).
 			if rt.LastSeenAt > 0 {
 				ts := time.Unix(rt.LastSeenAt, 0).UTC()
 				p.LastSeenAt = &ts
-			}
-			if v := strings.TrimSpace(rt.LastSeenIP); v != "" {
-				p.LastIP = &v
-			}
-			if v := strings.TrimSpace(rt.LastSeenUserAgent); v != "" {
-				p.LastUA = &v
 			}
 		}
 		out = append(out, p)
@@ -225,9 +221,6 @@ func (s *DeviceService) scanUserAccessSessions(ctx context.Context, rdb redis.Cm
 		if jsonErr := json.Unmarshal([]byte(rawStr), &record); jsonErr != nil {
 			return nil, fmt.Errorf("iam cache: invalid user access session payload: %w", jsonErr)
 		}
-		if record.UserID != userID {
-			return nil, iamTaxonomy.ErrUserAccessSessionInvalid
-		}
 		out = append(out, record)
 	}
 	return out, nil
@@ -291,8 +284,12 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 	}
 
 	// Runtime cleanup là side-effect best-effort sau DB evict thành công.
+	type sessionWithKey struct {
+		key    string
+		record iamEntity.UserAccessSession
+	}
 	indexKey := "iam:user_access_index:" + userIDStr
-	var runtimes []iamEntity.UserAccessSession
+	var runtimes []sessionWithKey
 	var cursor uint64
 	for len(runtimes) < 200 {
 		scanned, nextCursor, scanErr := rdb.SScan(ctx, indexKey, cursor, "*", 200).Result()
@@ -300,19 +297,22 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 			break
 		}
 		keys := make([]string, 0, len(scanned))
-		for _, devID := range scanned {
-			keys = append(keys, "iam:user_access_session:"+userIDStr+":"+devID)
+		for _, aKey := range scanned {
+			keys = append(keys, "iam:user_access_session:"+userIDStr+":"+aKey)
 		}
 		if len(keys) > 0 {
 			if values, mgetErr := rdb.MGet(ctx, keys...).Result(); mgetErr == nil {
-				for _, raw := range values {
+				for i, raw := range values {
 					if raw == nil {
 						continue
 					}
 					if rawStr, ok := raw.(string); ok {
 						var record iamEntity.UserAccessSession
-						if json.Unmarshal([]byte(rawStr), &record) == nil && record.UserID == userIDStr {
-							runtimes = append(runtimes, record)
+						if json.Unmarshal([]byte(rawStr), &record) == nil {
+							runtimes = append(runtimes, sessionWithKey{
+								key:    scanned[i],
+								record: record,
+							})
 						}
 					}
 				}
@@ -329,12 +329,12 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 		evictedRefs[strings.TrimSpace(item.DeviceID.String())] = struct{}{}
 	}
 	for _, rt := range runtimes {
-		if _, found := evictedRefs[strings.TrimSpace(rt.TrackedDeviceID)]; found {
-			delKey := "iam:user_access_session:" + rt.UserID + ":" + rt.AccessKey
-			delIndexKey := "iam:user_access_index:" + rt.UserID
+		if _, found := evictedRefs[strings.TrimSpace(rt.record.TrackedDeviceID)]; found {
+			delKey := "iam:user_access_session:" + userIDStr + ":" + rt.key
+			delIndexKey := "iam:user_access_index:" + userIDStr
 			pipe := rdb.TxPipeline()
 			pipe.Del(ctx, delKey)
-			pipe.SRem(ctx, delIndexKey, rt.AccessKey)
+			pipe.SRem(ctx, delIndexKey, rt.key)
 			_, _ = pipe.Exec(ctx)
 		}
 	}

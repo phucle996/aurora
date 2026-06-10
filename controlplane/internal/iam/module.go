@@ -65,18 +65,22 @@ package iam
 
 import (
 	"context"
+	"strings"
+
 	infraredis "controlplane/infra/redis"
 	"controlplane/infra/telegram"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	coreSvc "controlplane/internal/iam/domain/service"
+	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
 	"controlplane/internal/security/ratelimit"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -102,7 +106,7 @@ type IAMModule struct {
 	rotationCancel        context.CancelFunc
 	finalizeCancel        context.CancelFunc
 	deviceCapCancel       context.CancelFunc
-	deviceSvcImpl         *iamSvcImpl.DeviceService
+	deviceSvcImpl         iamSvcInterface.DeviceService // giữ interface type để tránh type assertion
 }
 
 // NewModule khởi tạo phân hệ IAM. Thiết lập cơ chế Fail-Fast chặt chẽ ở cấp độ biên khởi chạy.
@@ -187,7 +191,6 @@ func NewModule(
 	if deviceSvc == nil {
 		return nil, errors.New("iam module: failed to construct user device management service")
 	}
-	deviceSvcImpl, _ := deviceSvc.(*iamSvcImpl.DeviceService)
 	deviceHandler := iamHandler.NewDeviceHandler(deviceSvc)
 	if deviceHandler == nil {
 		return nil, errors.New("iam module: failed to initialize HTTP device handler")
@@ -277,7 +280,6 @@ func NewModule(
 		rateLimiter:           rateLimiter,
 		L1Registry:            cacheEngine,
 		AuthHandler:           authHandler,
-		deviceSvcImpl:         deviceSvcImpl,
 		RefreshTokenHandler:   refreshTokenHandler,
 		DeviceHandler:         deviceHandler,
 		AdminAuthHandler:      adminAuthHandler,
@@ -285,5 +287,18 @@ func NewModule(
 		RbacRepository:        rbacRepo,
 		AdminAPIKeyRepository: adminRepo,
 		AdminAPIKeyService:    adminSvc,
+		deviceSvcImpl:         deviceSvc,
 	}, nil
+}
+
+// TouchDeviceLastSeen triển khai đúng signature của middleware.TouchDeviceLastSeenFn.
+// Caller (app layer) truyền trực tiếp iamModule.TouchDeviceLastSeen làm method value — không cần closure.
+func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID string, ip *string, userAgent *string) {
+
+	deviceUUID, err := uuid.Parse(strings.TrimSpace(trackedDeviceID))
+	if err != nil {
+		return
+	}
+	// Best-effort: lỗi flush không ảnh hưởng flow xác thực.
+	_ = m.deviceSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID, ip, userAgent)
 }

@@ -94,10 +94,16 @@ func OpenRedis(t testing.TB, cfg *config.Config) *goredis.Client {
 func PrepareIAMSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := db.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", cfg.SchemaSQL.IAM)); err != nil {
+	conn, err := db.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire connection: %v", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", cfg.SchemaSQL.IAM)); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
-	if _, err := db.Exec(ctx, fmt.Sprintf("SET search_path TO %s,public", cfg.SchemaSQL.IAM)); err != nil {
+	if _, err := conn.Exec(ctx, fmt.Sprintf("SET search_path TO %s,public", cfg.SchemaSQL.IAM)); err != nil {
 		t.Fatalf("set search_path: %v", err)
 	}
 
@@ -125,7 +131,7 @@ func PrepareIAMSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 		if query == "" {
 			continue
 		}
-		if _, err := db.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
+		if _, err := conn.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
 			t.Fatalf("apply migration %s: %v", name, err)
 		}
 	}

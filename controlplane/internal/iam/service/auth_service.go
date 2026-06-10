@@ -310,20 +310,15 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		if values, mgetErr := rdb.MGet(ctx, keys...).Result(); mgetErr == nil && len(values) > 0 && values[0] != nil {
 			if rawStr, ok := values[0].(string); ok {
 				var record iamEntity.UserAccessSession
-				if json.Unmarshal([]byte(rawStr), &record) == nil && record.UserID == userIDStr {
+				if json.Unmarshal([]byte(rawStr), &record) == nil {
 					runtimeCandidates = append(runtimeCandidates, record)
 				}
 			}
 		}
 	}
 	for _, candidate := range runtimeCandidates {
-		if strings.TrimSpace(candidate.UserID) != userIDStr {
-			continue
-		}
-		if strings.TrimSpace(candidate.LastSeenIP) == cleanString(req.IP) &&
-			strings.TrimSpace(candidate.LastSeenUserAgent) == cleanString(req.UserAgent) &&
-			candidate.LastSeenAt > 0 &&
-			time.Since(time.Unix(candidate.LastSeenAt, 0)) < 60*time.Second {
+		// Nếu có session active trong vòng 60s → cùng thiết bị đang thao tác liên tục → skip flush DB.
+		if candidate.LastSeenAt > 0 && time.Since(time.Unix(candidate.LastSeenAt, 0)) < 60*time.Second {
 			flushLabel = "cache_hit"
 			break
 		}
@@ -427,30 +422,18 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	// Runtime write lỗi: rollback theo callsite policy bằng revoke refresh token.
 	// Không fallback chạy tiếp vì sẽ tạo access token không verify được runtime.
 	sessionRecord := iamEntity.UserAccessSession{
-		AccessKey:        accessKey,
 		AccessSecretHash: security.HashTokenSHA256(accessSecret),
-		CurrentJTI:       accessJTI.String(),
 		TrackedDeviceID:  trackedDeviceID.String(),
-		UserID:           user.ID.String(),
-		Status:           "online",
-		Version:          1,
-		LastSeenAt:       now.Unix(),
-		CurrentIssuedAt:  now.Unix(),
-	}
-	if req.IP != nil {
-		sessionRecord.LastSeenIP = strings.TrimSpace(*req.IP)
-	}
-	if req.UserAgent != nil {
-		sessionRecord.LastSeenUserAgent = strings.TrimSpace(*req.UserAgent)
+		LastSeenAt:       now.Unix(), // Middleware sẽ cập nhật lsa realtime sau mỗi request xác thực
 	}
 	var setErr error
 	if payload, marshalErr := json.Marshal(sessionRecord); marshalErr != nil {
 		setErr = marshalErr
 	} else {
-		key := "iam:user_access_session:" + sessionRecord.UserID + ":" + sessionRecord.AccessKey
+		key := "iam:user_access_session:" + userIDStr + ":" + accessKey
 		pipe := rdb.TxPipeline()
 		pipe.Set(ctx, key, payload, s.cfg.Security.AccessSecretTTL)
-		pipe.SAdd(ctx, indexKey, sessionRecord.AccessKey)
+		pipe.SAdd(ctx, indexKey, accessKey)
 		pipe.Expire(ctx, indexKey, s.cfg.Security.AccessSecretTTL+24*time.Hour)
 		_, setErr = pipe.Exec(ctx)
 	}
@@ -543,7 +526,7 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 	key := "iam:user_access_session:" + userIDStr + ":" + accessKey
 	if raw, getErr := rdb.Get(ctx, key).Result(); getErr == nil {
 		var record iamEntity.UserAccessSession
-		if json.Unmarshal([]byte(raw), &record) == nil && record.UserID == userIDStr {
+		if json.Unmarshal([]byte(raw), &record) == nil {
 			runtimeRecord = &record
 		}
 	}
@@ -571,16 +554,6 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 			}
 		}
 
-		// Flush last_seen xuống DB nếu runtime có dirty state (giống AdminLogout).
-		if runtimeRecord != nil && runtimeRecord.LastSeenDirty && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
-			if s.deviceSvc != nil {
-				if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
-					ip := optionalStringPointer(runtimeRecord.LastSeenIP)
-					ua := optionalStringPointer(runtimeRecord.LastSeenUserAgent)
-					_ = s.deviceSvc.TouchDeviceLastSeen(bgCtx, deviceUUID, ip, ua)
-				}
-			}
-		}
 	}()
 
 	return nil

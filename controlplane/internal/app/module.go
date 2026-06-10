@@ -174,7 +174,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 7) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, rdsCore, policyEngineModule, l1Registry); err != nil {
+	if err := initMiddlewares(cfg, db, coreModule, iamModule, rdsCore, policyEngineModule, l1Registry); err != nil {
 		return nil, err
 	}
 
@@ -196,7 +196,7 @@ func NewGlobalModules(cfg *config.Config,
 	return modules, nil
 }
 
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, rds *goredis.Client, policyModule *policyengine.Engine, cacheEngine *cacheengine.CacheRegistry) error {
+func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, iamModule *iam.IAMModule, rds *goredis.Client, policyModule *policyengine.Engine, cacheEngine *cacheengine.CacheRegistry) error {
 	if cfg == nil {
 		return errors.New("app: init middleware: config is required")
 	}
@@ -221,7 +221,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		middleware.InitRateLimitPolicy(*policy)
 	})
 	middleware.InitZoneAuth(cacheEngine)
-	middleware.InitAccess(cacheEngine, 10*time.Second)
+	middleware.InitAccess(cacheEngine, 10*time.Second, iamModule.TouchDeviceLastSeen)
 	if err := middleware.InitAdminAPIKeyAuth(
 		cacheEngine,
 		func(ctx context.Context, accessKey string, accessSecret string) (bool, error) {

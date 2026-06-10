@@ -231,13 +231,8 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	// Băm hash Access Secret mới trước khi lưu xuống cache để tránh lộ plaintext bí mật
 	newAccessSecretHash := security.HashTokenSHA256(rawNextRefreshToken[:0] + accessSecret)
 	sessionRecord := iamEntity.UserAccessSession{
-		AccessKey:        accessKey,
 		AccessSecretHash: newAccessSecretHash,
-		CurrentJTI:       accessJTI.String(),
 		TrackedDeviceID:  trackedDeviceID.String(),
-		UserID:           user.ID.String(),
-		Status:           "online",
-		Version:          1,
 		LastSeenAt:       now.Unix(),
 	}
 	payload, marshalErr := json.Marshal(sessionRecord)
