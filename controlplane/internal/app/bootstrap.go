@@ -27,7 +27,6 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 	// ------------------------------------------------------------------------
 	if modules.L1Registry != nil {
 		RegisterL1Loaders(modules.L1Registry, modules)
-		RegisterL2Loaders(modules.L1Registry, modules)
 	}
 
 	if modules.Core != nil {

@@ -233,7 +233,12 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}
-	if err := middleware.InitAdminCriticalSignature(cacheEngine, time.Minute, 2*time.Minute); err != nil {
+	if err := middleware.InitAdminCriticalSignature(
+		cacheEngine,
+		time.Minute,
+		2*time.Minute,
+		iamModule.AdminAPIKeyService.GetPublicKeyFromSession,
+	); err != nil {
 		return fmt.Errorf("app: init admin critical signature middleware: %w", err)
 	}
 	if err := middleware.InitAdminCriticalStepUp2FA(cacheEngine); err != nil {

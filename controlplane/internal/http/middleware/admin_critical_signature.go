@@ -45,10 +45,14 @@ const (
 // GLOBAL RUNTIME STATE
 // ============================================================================
 
+// GetAdminPublicKeyFn định nghĩa hàm xác thực/truy vấn khoá công khai của SRE admin theo access key.
+type GetAdminPublicKeyFn func(ctx context.Context, accessKey string) (string, error)
+
 type sigRuntime struct {
 	cacheEngine *cacheengine.CacheRegistry
 	nonceTTL    time.Duration
 	skew        time.Duration
+	pubKeyFn    GetAdminPublicKeyFn
 }
 
 var sigState = struct {
@@ -56,11 +60,12 @@ var sigState = struct {
 	runtime sigRuntime
 }{}
 
-// InitAdminCriticalSignature wire CacheRegistry duy nhất, bỏ raw rdb.
+// InitAdminCriticalSignature wire CacheRegistry duy nhất và hàm lấy public key của admin.
 func InitAdminCriticalSignature(
 	cacheEngine *cacheengine.CacheRegistry,
 	nonceTTL time.Duration,
 	skew time.Duration,
+	pubKeyFn GetAdminPublicKeyFn,
 ) error {
 	if cacheEngine == nil {
 		return errors.New("admin critical signature: cache engine is required")
@@ -71,11 +76,15 @@ func InitAdminCriticalSignature(
 	if skew <= 0 {
 		return errors.New("admin critical signature: skew must be positive")
 	}
+	if pubKeyFn == nil {
+		return errors.New("admin critical signature: public key provider function is required")
+	}
 	sigState.mu.Lock()
 	sigState.runtime = sigRuntime{
 		cacheEngine: cacheEngine,
 		nonceTTL:    nonceTTL,
 		skew:        skew,
+		pubKeyFn:    pubKeyFn,
 	}
 	sigState.mu.Unlock()
 	return nil
@@ -128,14 +137,9 @@ func AdminCriticalSignature() gin.HandlerFunc {
 			return
 		}
 
-		// 4. Lấy Ed25519 public key từ CacheRegistry (L1/L2/DB qua loader).
-		pubKeyVal, err := rt.cacheEngine.GetOrLoad(c.Request.Context(), "admin_public_key", accessKey)
-		if err != nil || pubKeyVal == nil {
-			denySig(c)
-			return
-		}
-		pubKeyStr, ok := pubKeyVal.(string)
-		if !ok || strings.TrimSpace(pubKeyStr) == "" {
+		// 4. Lấy Ed25519 public key qua callback provider.
+		pubKeyStr, err := rt.pubKeyFn(c.Request.Context(), accessKey)
+		if err != nil || strings.TrimSpace(pubKeyStr) == "" {
 			denySig(c)
 			return
 		}

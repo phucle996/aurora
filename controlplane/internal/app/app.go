@@ -323,7 +323,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// [FAIL-OPEN] Phase 2: Đăng ký cache loaders và khởi chạy subscription loop
 	// --------------------------------------------------------------------
 	RegisterL1Loaders(cacheEngine, modules)
-	RegisterL2Loaders(cacheEngine, modules)
 	go func() {
 		ctx := context.Background()
 		if err := cacheEngine.StartSubscribe(ctx); err != nil {
