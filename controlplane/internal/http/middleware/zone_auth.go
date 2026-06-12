@@ -65,6 +65,7 @@ func AdminZoneAuth() gin.HandlerFunc {
 			return
 		}
 
+		// Xác minh zone hiện tại của request dựa trên Cookie zone_code
 		zoneCode := extractZoneCode(c)
 		if zoneCode == "" {
 			zoneCode = "global"

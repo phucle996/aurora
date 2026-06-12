@@ -94,7 +94,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	lock, err := s.repo.AcquireRotationLock(ctx)
 	if err != nil {
 		// đo metrics số lần call bị lock chặn
-		if errors.Is(err, iamTaxonomy.ErrBootstrapLockAlreadyHeld) {
+		if errors.Is(err, iamTaxonomy.ErrLockAlreadyHeld) {
 			iamMetrics.Downstream("repo", workflow, "AcquireRotationLock", iamTaxonomy.LockBusy, time.Since(lockStart), err)
 			// Lock bận tức là tiền đề không thỏa mãn cho lượt xoay tiếp theo
 			outcome = iamTaxonomy.LockBusy
@@ -224,34 +224,27 @@ func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Conte
 	// ==========================================================
 	// BƯỚC 2: THỰC HIỆN ROTATE ADMIN API KEY KHẨN CẤP
 	// ==========================================================
+	// Thực hiện gọi service xoay vòng khóa khẩn cấp.
+	// NOTE: Không đo lường metrics downstream ở đây vì:
+	// 1. RotateAdminAPIKeyEmergency là một service method nội bộ của IAM module,
+	//    không phải là cuộc gọi downstream sang database hay hệ thống ngoài.
+	// 2. Bản thân RotateAdminAPIKeyEmergency đã tự phát emit metrics ServiceCall.
+	//    Việc đo downstream ở đây dẫn đến hiện tượng double-emission (ghi nhận 2 lần)
+	//    và phân loại sai ranh giới hạ tầng (gán nhãn kind = "repo").
 	runMetric = true
-	repoStart := time.Now()
 	if err := s.RotateAdminAPIKeyEmergency(ctx); err != nil {
 		outcome = iamTaxonomy.Failure
 		if appErr, ok := apperr.As(err); ok {
 			outcome = appErr.Outcome
 		}
-		iamMetrics.Downstream("repo", workflow, "RotateAdminAPIKeyEmergency", outcome, time.Since(repoStart), err)
 		return err
 	}
-	iamMetrics.Downstream("repo", workflow, "RotateAdminAPIKeyEmergency", iamTaxonomy.Success, time.Since(repoStart), nil)
 
 	return nil
 }
 
 // Bootstrap khởi tạo Admin API Key và các thiết lập bảo mật đầu tiên cho toàn bộ hệ thống.
 // Quy trình này thiết lập các khóa truy cập, cơ chế xác thực hai lớp (TOTP), và mã khôi phục khẩn cấp.
-//
-// Callsite:
-//   - Được gọi một lần duy nhất khi hệ thống được dựng lên (Bootstrap/Provisioning stage)
-//     thông qua CLI command hoặc HTTP Init API.
-//
-// Notes:
-//   - Quy trình sử dụng cơ chế Bootstrap Advisory Lock để đảm bảo chỉ có duy nhất một tiến trình
-//     thực thi khởi tạo thành công tại một thời điểm trên toàn cụm HA.
-//   - Chế độ tự động hoàn trả (Rollback): Nếu hệ thống không thể thông báo thông tin bảo mật đầu tiên
-//     đến Telegram SRE sau 3 lần thử lại (do Telegram sập hoặc ngắt mạng), DB sẽ được rollback sạch sẽ
-//     để đảm bảo không tồn tại khóa truy cập mồ côi mà người vận hành không biết.
 func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	workflow := "admin-key-bootstrap"
 	var outcome = iamTaxonomy.Success
@@ -268,9 +261,9 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 		outcome = iamTaxonomy.Failure
 		// lock thất bại => đo metrics lỗi
 		iamMetrics.Downstream("repo-lock", workflow, "AcquireBootstrapLock", iamTaxonomy.Failure, time.Since(lockStart), err)
-		if errors.Is(err, iamTaxonomy.ErrBootstrapLockAlreadyHeld) {
+		if errors.Is(err, iamTaxonomy.ErrLockAlreadyHeld) {
 			// Lock bận tức là có tiến trình bootstrap song song khác đang chạy
-			return apperr.Wrap(iamTaxonomy.ErrBootstrapLockAlreadyHeld, err, iamTaxonomy.Failure)
+			return apperr.Wrap(iamTaxonomy.ErrLockAlreadyHeld, err, iamTaxonomy.Failure)
 		}
 		// Lỗi kết nối DB khi lấy lock -> ErrInternalError
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
@@ -859,18 +852,6 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 
 // RefreshAdminSession cấp lại admin_api_token cho device đang active mà không
 // yêu cầu login lại bằng API key + MFA.
-//
-// Flow:
-//  1. validate device_id,
-//  2. load runtime fragment + CAS touch để gia hạn TTL theo phiên bản hiện tại,
-//  3. ký lại admin_api_token mới với JTI mới.
-//
-// Boundary:
-//   - Không reset device_secret để tránh phá vỡ HMAC từ phía client.
-//   - Không sinh device_id mới; reuse device_id của runtime hiện tại.
-//   - Mọi lỗi cache/sign quy về ErrAuthenticationUnavailable hoặc
-//     ErrAdminLoginTokenIssueFailed để handler map HTTP nhất quán.
-
 func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	// --- KHỞI TẠO ĐO LƯỜNG TELEMETRY & METRICS ---
 
@@ -1147,6 +1128,13 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 	// Đẩy tác vụ ghi DB xuống một background goroutine để không block luồng phản hồi chính (Latency < 1ms).
 	if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Phòng chống panic trong goroutine chạy nền gây crash sập tiến trình (HA compliance)
+					fmt.Printf("[CRITICAL] Panic recovered in admin logout background goroutine: %v\n", r)
+				}
+			}()
+
 			// Tạo một context chạy nền tách biệt hoàn toàn với timeout chặt chẽ (1s) để tránh treo khi DB chậm/quá tải.
 			bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel()
@@ -1186,14 +1174,8 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 
 // FinalizeInactiveSessions quét runtime cache, flush last_seen xuống DB cho
 // các device không hoạt động trước inactiveBefore, sau đó xoá runtime.
-//
-// Mục tiêu:
-// - giảm áp lực ghi DB so với việc flush mỗi request,
-// - đảm bảo last_seen vẫn được persist khi session timeout.
-//
-// Boundary:
-// - Chỉ flush DB khi runtime đánh dấu LastSeenDirty = true.
-// - Lỗi flush DB hoặc xoá cache bị nuốt để vòng quét tiếp tục với device kế.
+// Chỉ flush DB khi runtime đánh dấu LastSeenDirty = true.
+// Lỗi flush DB hoặc xoá cache bị nuốt để vòng quét tiếp tục với device kế.
 func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inactiveBefore time.Time, limit int) error {
 	rdb := s.cacheEngine.L2.Client()
 

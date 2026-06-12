@@ -56,10 +56,9 @@ var (
 
 	ErrRoleNotFound       = errors.New("iam: role not found")
 	ErrPermissionNotFound = errors.New("iam: permission not found")
-
-	ErrBootstrapLockAlreadyHeld = errors.New("iam: bootstrap lock already held")
 )
 
 var (
-	ErrInternalError = errors.New("iam: internal error")
+	ErrInternalError   = errors.New("iam: internal error")
+	ErrLockAlreadyHeld = errors.New("iam: lock already held")
 )

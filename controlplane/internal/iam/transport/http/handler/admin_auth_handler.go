@@ -210,9 +210,18 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
+	// Lấy zone_code từ query parameter trước
 	zoneCode := strings.TrimSpace(c.Query("zone_code"))
 	if zoneCode == "" {
-		logger.HandlerWarn(c, op, fmt.Errorf("missing zone_code query parameter"), "admin refresh rejected")
+		// Nếu query param rỗng, fallback thử đọc từ Cookie (do browser tự đính kèm qua credentials)
+		if cookieVal, err := c.Cookie(cookie.ZoneCodeName); err == nil {
+			zoneCode = strings.TrimSpace(cookieVal)
+		}
+	}
+
+	// Nếu vẫn trống -> Trả lỗi 400 Bad Request
+	if zoneCode == "" {
+		logger.HandlerWarn(c, op, fmt.Errorf("missing zone_code query parameter and cookie"), "admin refresh rejected")
 		apires.RespondBadRequest(c, "zone_code query parameter is required")
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"controlplane/internal/http/middleware"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/pkg/apperr"
 	"controlplane/pkg/logger"
 	"errors"
 )
@@ -30,8 +31,9 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	}
 
 	if err := m.AdminAPIKeyService.Bootstrap(ctx); err != nil {
-		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-			// Bootstrap already completed in a previous run.
+		if errors.Is(err, iamTaxonomy.ErrPreconditionFailed) || errors.Is(err, iamTaxonomy.ErrLockAlreadyHeld) {
+			// Bootstrap đã hoàn thành ở lần chạy trước hoặc replica khác đang chạy bootstrap
+			// → bỏ qua an toàn, không chặn startup.
 		} else {
 			return err
 		}
@@ -142,7 +144,8 @@ func (m *IAMModule) runAdminRotationScheduler(ctx context.Context) {
 		}
 		retry := backoffSchedule[attempt]
 		reason := "rotate_fail"
-		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+		// Phân loại reason từ outcome trong AppError để log vận hành chính xác
+		if appErr, ok := apperr.As(err); ok && appErr.Outcome == iamTaxonomy.TelegramSendFail {
 			reason = "rotate_delivery_fail"
 		}
 		logger.SysWarnFields(op, "rotation scheduler tick failed", err, logger.Fields{"run_id": runID, "attempt": attempt + 1, "reason": reason, "result": "retry", "retry_in": retry.String()})

@@ -249,11 +249,11 @@ func (r *AdminAPIKeyRepository) AcquireBootstrapLock(ctx context.Context) (iamRe
 		return nil, err
 	}
 
-	// nếu đã có người giữ lock rồi thì rollback và trả lỗi
+	// nếu đã có người giữ lock rồi thì rollback và trả lỗi sentinel
 	if !ok {
 		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
-		return nil, fmt.Errorf("iam repo: bootstrap lock already held")
+		return nil, iamTaxonomy.ErrLockAlreadyHeld
 	}
 	// trả về bootstrap lock để có thể release lock sau này
 	return &bootstrapLock{conn: conn,
@@ -280,7 +280,7 @@ func (r *AdminAPIKeyRepository) AcquireRotationLock(ctx context.Context) (iamRep
 	if !ok {
 		_, _ = conn.Exec(ctx, "ROLLBACK")
 		conn.Release()
-		return nil, iamTaxonomy.ErrBootstrapLockAlreadyHeld
+		return nil, iamTaxonomy.ErrLockAlreadyHeld
 	}
 	return &bootstrapLock{conn: conn, key: adminRotationLockKey}, nil
 }
@@ -454,7 +454,6 @@ func (r *AdminAPIKeyRepository) GetPublicKeyByDeviceID(ctx context.Context, devi
 	return publicKey, nil
 }
 
-
 // UpsertAdminDeviceBinding liên kết thiết bị vật lý an toàn của SRE, kiểm tra trạng thái quarantine/revoked để tránh token hijacking.
 func (r *AdminAPIKeyRepository) UpsertAdminDeviceBinding(ctx context.Context, input iamEntity.AdminDeviceBindingInput) (*iamEntity.AdminDevice, error) {
 	// Kiểm tra xem thiết bị đã tồn tại và có bị thu hồi hay cách ly không
@@ -530,4 +529,3 @@ func (r *AdminAPIKeyRepository) TouchAdminDeviceLastSeen(ctx context.Context, de
 	_, err := r.db.Exec(ctx, r.touchAdminDeviceLastSeenQuery, strings.TrimSpace(deviceID), ip, userAgent, seenAt.UTC())
 	return err
 }
-

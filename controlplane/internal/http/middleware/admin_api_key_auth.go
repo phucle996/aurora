@@ -141,20 +141,27 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
-		// --------------------------------------------------------------------
-		// 🔄 Đọc đủ 3 cookie bắt buộc của Admin.
-		//   Thiếu bất kỳ phần nào đều trả generic 401 để tránh leak trạng thái.
-		// --------------------------------------------------------------------
-		token, ok := readAdminCookie(c, constant.AdminAPITokenName)
-		if !ok {
-			return
-		}
-		accessKey, ok := readAdminCookie(c, constant.AccessKeyName)
-		if !ok {
-			return
-		}
-		accessSecret, ok := readAdminCookie(c, constant.AccessSecretName)
-		if !ok {
+		// Xác định xem đây có phải là yêu cầu đăng xuất hay không
+		isLogout := c.Request.URL.Path == "/admin/auth/logout"
+
+		// Đọc giá trị 3 cookie bảo mật của Admin
+		tokenCookie, errToken := c.Cookie(constant.AdminAPITokenName)
+		accessKeyCookie, errKey := c.Cookie(constant.AccessKeyName)
+		accessSecretCookie, errSecret := c.Cookie(constant.AccessSecretName)
+
+		token := strings.TrimSpace(tokenCookie)
+		accessKey := strings.TrimSpace(accessKeyCookie)
+		accessSecret := strings.TrimSpace(accessSecretCookie)
+
+		// Nếu thiếu cookie và đây không phải luồng logout -> Trả lỗi 401
+		if errToken != nil || errKey != nil || errSecret != nil || token == "" || accessKey == "" || accessSecret == "" {
+			if isLogout {
+				// Nếu là đăng xuất, cho phép đi tiếp để Handler xoá sạch cookie phía Client
+				c.Next()
+				return
+			}
+			logger.HandlerWarn(c, "admin.auth.cookie", nil, "missing or empty admin cookie")
+			abortAdminUnauthorized(c)
 			return
 		}
 
@@ -168,6 +175,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		setRotationRequired := adminAPIKeyAuthState.setRotationRequired
 		adminAPIKeyAuthState.mu.RUnlock()
 		if registry == nil || verifyAccessSecret == nil || setRotationRequired == nil {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminAuthUnavailable(c)
 			return
 		}
@@ -177,11 +188,19 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		val, err := registry.GetOrLoad(c.Request.Context(), "admin_api_key", "")
 		if err != nil {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminAuthUnavailable(c)
 			return
 		}
 		secrets, ok := val.(*coreEntity.RuntimeSecrets)
 		if !ok || secrets == nil {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminAuthUnavailable(c)
 			return
 		}
@@ -201,6 +220,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 				expired = true
 			}
 			if errors.Is(parseErr, security.ErrEmptySecret) {
+				if isLogout {
+					c.Next()
+					return
+				}
 				abortAdminAuthUnavailable(c)
 				return
 			}
@@ -215,6 +238,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		}
 
 		if !parsed {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminUnauthorized(c)
 			return
 		}
@@ -224,6 +251,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		//   Giúp chống copy trộm admin_api_token sang thiết bị khác sử dụng.
 		// --------------------------------------------------------------------
 		if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminUnauthorized(c)
 			return
 		}
@@ -233,10 +264,18 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		verified, err := verifyAccessSecret(c.Request.Context(), accessKey, accessSecret)
 		if err != nil {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminAuthUnavailable(c)
 			return
 		}
 		if !verified {
+			if isLogout {
+				c.Next()
+				return
+			}
 			abortAdminUnauthorized(c)
 			return
 		}
