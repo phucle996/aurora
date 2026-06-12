@@ -144,7 +144,7 @@ func (s *DeviceService) LogoutAllDevices(ctx context.Context, userID string, ip 
 func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
 
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-	iamMetrics.ServiceCall("audit_publish", "fallback_db", "n/a")
+	iamMetrics.ServiceCall("audit_publish", "fallback_db")
 	now := time.Now().UTC()
 	payload := map[string]string{
 		"event":        event,
@@ -168,10 +168,10 @@ func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID
 	}
 	if _, _, err := s.streamPublisher.Publish(ctx, msg, 30*time.Second); err != nil {
 		_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ServiceCall("audit_publish", "fallback_db", "n/a")
+		iamMetrics.ServiceCall("audit_publish", "fallback_db")
 		return
 	}
-	iamMetrics.ServiceCall("audit_publish", "published", "n/a")
+	iamMetrics.ServiceCall("audit_publish", "published")
 }
 
 func (s *DeviceService) scanUserAccessSessions(ctx context.Context, rdb redis.Cmdable, userID string, limit int) ([]iamEntity.UserAccessSession, error) {
@@ -248,9 +248,9 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 	lockToken := ""
 	ok, lockErr := rdb.SetNX(ctx, lockKey, ownerToken, 2*time.Second).Result()
 	if lockErr != nil {
-		iamMetrics.ServiceCall("device_cap_lock", "skip", "n/a")
+		iamMetrics.ServiceCall("device_cap_lock", "skip")
 	} else if !ok {
-		iamMetrics.ServiceCall("device_cap_lock", "skip", "n/a")
+		iamMetrics.ServiceCall("device_cap_lock", "skip")
 		return
 	} else {
 		lockToken = ownerToken
@@ -339,7 +339,7 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 		}
 	}
 
-	iamMetrics.ServiceCall("device_cap_evict", "evicted", "n/a")
+	iamMetrics.ServiceCall("device_cap_evict", "evicted")
 	extras := map[string]string{
 		"reason":        "cap_exceeded",
 		"evicted_count": strconv.Itoa(len(evicted)),

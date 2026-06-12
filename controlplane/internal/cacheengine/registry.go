@@ -2,12 +2,12 @@ package cacheengine
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
+	"controlplane/internal/cacheengine/codec"
 	"controlplane/internal/cacheengine/fanout_cache"
 	"controlplane/internal/cacheengine/l1_cache"
 	"controlplane/internal/cacheengine/l2_cache"
@@ -25,25 +25,19 @@ type RedisFanout = fanout_cache.RedisFanout
 type L2Cache = l2_cache.L2Cache
 type L2LuaExecutor = l2_lua_executor.L2LuaExecutor
 type L2Envelope = l2_cache.L2Envelope
-type Option = l1_cache.Option
 
 // ============================================================================
 // CONSTRUCTORS (MODULE PATTERN FOR ISOLATED CREATION)
 // ============================================================================
 
-// WithJitter thiết lập tỷ lệ skew ngẫu nhiên cho TTL
-func WithJitter(factor float64) Option {
-	return l1_cache.WithJitter(factor)
-}
-
 // NewL1Cache khởi tạo một in-memory L1 cache phân mảnh định dạng interface
-func NewL1Cache(opts ...Option) Cache {
-	return l1_cache.NewShardedCache(opts...)
+func NewL1Cache() Cache {
+	return l1_cache.NewShardedCache()
 }
 
 // NewShardedCache khởi tạo một in-memory L1 cache phân mảnh định dạng interface (Alias tương thích ngược)
-func NewShardedCache(opts ...Option) Cache {
-	return NewL1Cache(opts...)
+func NewShardedCache() Cache {
+	return NewL1Cache()
 }
 
 // NewL2Cache khởi tạo một Redis-based L2 cache định dạng interface
@@ -159,7 +153,7 @@ func (r *CacheRegistry) handleFanoutMessage(key string, payload []byte, version 
 
 	// Tạo instance trống thông qua Factory tự động của registry
 	ptrTarget := loader.Factory()
-	if err := json.Unmarshal(payload, ptrTarget); err != nil {
+	if err := codec.UnmarshalData(payload, ptrTarget); err != nil {
 		return
 	}
 

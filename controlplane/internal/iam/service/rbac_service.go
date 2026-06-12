@@ -2,16 +2,17 @@ package iamSvcImpl
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
 	"controlplane/internal/cacheengine"
+	"controlplane/internal/cacheengine/codec"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
 
@@ -43,12 +44,9 @@ func getActorLevel(ctx context.Context) (int, error) {
 		// Mặc định trả về level thấp nhất và báo lỗi hành động không được phép nếu thiếu context
 		return 999999, iamTaxonomy.ErrActionNotAllowed
 	}
-	// Hỗ trợ cả hai kiểu dữ liệu int và float64
+	// Hỗ trợ duy nhất kiểu dữ liệu int
 	if lvl, ok := actorLevelVal.(int); ok {
 		return lvl, nil
-	}
-	if lvl, ok := actorLevelVal.(float64); ok {
-		return int(lvl), nil
 	}
 	return 999999, iamTaxonomy.ErrActionNotAllowed
 }
@@ -70,7 +68,7 @@ func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, e
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -113,7 +111,7 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -170,7 +168,7 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -210,7 +208,7 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -266,7 +264,7 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) 
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -322,7 +320,7 @@ func (s *RbacService) ListPermissions(ctx context.Context) (perms []*iamEntity.P
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	startRepo := time.Now()
@@ -353,7 +351,7 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -399,8 +397,8 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 	// Truy vấn danh sách Permission Code mới của role từ DB sau khi gán
 	newPerms, pErr := s.repo.GetPermissionCodesByRoleCode(ctx, role.Code)
 	if pErr == nil {
-		roleEntry := iamSvcInterface.RoleEntry{Permissions: newPerms}
-		payloadBytes, jsonErr := json.Marshal(roleEntry)
+		roleEntry := &iamproto.RoleEntry{Permissions: newPerms}
+		payloadBytes, jsonErr := codec.MarshalData(roleEntry)
 		if jsonErr == nil && s.cacheEngine.Fanout != nil {
 			startFanout := time.Now()
 			cacheKey := "rbac_role:" + role.Code
@@ -433,7 +431,7 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -479,8 +477,8 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 	// Truy vấn danh sách Permission Code mới của role từ DB sau khi thu hồi
 	newPerms, pErr := s.repo.GetPermissionCodesByRoleCode(ctx, role.Code)
 	if pErr == nil {
-		roleEntry := iamSvcInterface.RoleEntry{Permissions: newPerms}
-		payloadBytes, jsonErr := json.Marshal(roleEntry)
+		roleEntry := &iamproto.RoleEntry{Permissions: newPerms}
+		payloadBytes, jsonErr := codec.MarshalData(roleEntry)
 		if jsonErr == nil && s.cacheEngine.Fanout != nil {
 			startFanout := time.Now()
 			cacheKey := "rbac_role:" + role.Code
@@ -513,7 +511,7 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -583,7 +581,7 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UU
 				outcome = iamTaxonomy.Failure
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome, "n/a")
+		iamMetrics.ServiceCall(workflow, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB

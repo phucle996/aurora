@@ -114,8 +114,8 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
 	err := svc.AdminLogout(context.Background(), "device-1", nil, nil)
-	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-		t.Fatalf("expected invalid argument kind, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrInternalError) {
+		t.Fatalf("expected ErrInternalError, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {
@@ -139,8 +139,8 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, "device-1")
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
-	if !errors.Is(err, iamTaxonomy.ErrGetL2CacheFailed) {
-		t.Fatalf("expected ErrGetL2CacheFailed, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrInternalError) {
+		t.Fatalf("expected ErrInternalError, got %v", err)
 	}
 	appErr, ok := apperr.As(err)
 	if !ok || appErr == nil {

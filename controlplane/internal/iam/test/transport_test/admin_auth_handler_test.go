@@ -195,7 +195,7 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "internal_error") {
+	if !strings.Contains(w.Body.String(), "internal server error") {
 		t.Fatalf("expected generic internal_error response")
 	}
 	if strings.Contains(w.Body.String(), "db timeout") {

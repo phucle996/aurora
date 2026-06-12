@@ -67,10 +67,9 @@ func NewAuthService(cfg *config.Config,
 
 func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) (err error) {
 	result := iamTaxonomy.Success
-	cachePath := "n/a"
 	defer func() {
 		// Ghi nhận kết quả nghiệp vụ tổng thể của luồng đăng ký.
-		iamMetrics.ServiceCall("register", result, cachePath)
+		iamMetrics.ServiceCall("register", result)
 	}()
 
 	// Presence cache chỉ là acceleration path. Đo lường latency & outcome của Redis check.
@@ -90,7 +89,6 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		emailHitInt, cacheErr = rdb.GetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
 	}
 	if cacheErr != nil {
-		cachePath = "cache_fallback"
 		iamMetrics.Downstream("redis", "register", "checkPresence", iamTaxonomy.Failure, time.Since(presenceStart), cacheErr)
 	} else {
 		usernameHit = usernameHitInt == 1
@@ -99,7 +97,6 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 
 	if cacheErr == nil && (usernameHit || emailHit) {
 		// Cache hit nghi ngờ duplicate -> xác nhận lại ở DB (SoT).
-		cachePath = "cache_hit_db_check"
 		dbCheckStart := time.Now()
 		exists, checkErr := s.repo.CheckUserExist(ctx, user.Username, user.Email)
 		if checkErr != nil {
@@ -113,7 +110,6 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		}
 	}
 	if cacheErr == nil && !(usernameHit || emailHit) {
-		cachePath = "cache_miss"
 	}
 
 	// Đo lường thời gian băm mật khẩu để SRE theo dõi mức sử dụng CPU (CPU-bound).
@@ -195,9 +191,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (result *iamEntity.LoginResult, err error) {
 	const workflow = "login"
 	loginOutcome := iamTaxonomy.Success
-	cachePath := "n/a"
 	defer func() {
-		iamMetrics.ServiceCall(workflow, loginOutcome, cachePath)
+		iamMetrics.ServiceCall(workflow, loginOutcome)
 	}()
 
 	// Repo load user là SoT; no fallback source khác cho identity.
@@ -326,7 +321,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 
 	// RegisterLoginDevice qua DeviceService là DB SoT để lấy tracked device persistent.
 	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, buildLoginDevice(user.ID, req.DevicePublicKey, req.IP, req.UserAgent, now, req.DeviceName, clientDeviceID))
-	iamMetrics.ServiceCall("login_last_seen_flush", flushLabel, "n/a")
+	iamMetrics.ServiceCall("login_last_seen_flush", flushLabel)
 	if deviceErr != nil {
 		loginOutcome = iamTaxonomy.Failure
 		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)

@@ -8,6 +8,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
 
@@ -70,7 +71,9 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 			if ok && val != nil {
 				// Ép kiểu ngược lại từ L1Envelope để lấy dữ liệu Value gốc
 				if envelope, ok := val.(*cacheengine.L1Envelope); ok && envelope != nil {
-					if entry, ok := envelope.Value.(iamSvcInterface.RoleEntry); ok {
+					if protoEntry, ok := envelope.Value.(*iamproto.RoleEntry); ok && protoEntry != nil {
+						permissions = protoEntry.Permissions
+					} else if entry, ok := envelope.Value.(iamSvcInterface.RoleEntry); ok {
 						permissions = entry.Permissions
 					} else if pEntry, ok := envelope.Value.(*iamSvcInterface.RoleEntry); ok && pEntry != nil {
 						permissions = pEntry.Permissions
@@ -84,7 +87,9 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 			var val any
 			val, err = cacheEngine.GetOrLoad(ctx, "rbac_role", roleCode)
 			if err == nil && val != nil {
-				if entry, ok := val.(iamSvcInterface.RoleEntry); ok {
+				if protoEntry, ok := val.(*iamproto.RoleEntry); ok && protoEntry != nil {
+					permissions = protoEntry.Permissions
+				} else if entry, ok := val.(iamSvcInterface.RoleEntry); ok {
 					permissions = entry.Permissions
 				} else if pEntry, ok := val.(*iamSvcInterface.RoleEntry); ok && pEntry != nil {
 					permissions = pEntry.Permissions

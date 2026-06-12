@@ -15,6 +15,8 @@ type RuntimeSecrets struct {
 	LoadedAt   time.Time
 }
 
+// Zero là một hàm setter để đảm bảo rằng bộ nhớ chứa secrets được xóa sạch ngay lập tức
+// để tránh rò rỉ thông tin nhạy cảm (memory leak).
 func (s *RuntimeSecrets) Zero() {
 	if s == nil {
 		return

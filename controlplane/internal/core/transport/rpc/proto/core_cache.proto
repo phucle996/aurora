@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package core.rpc;
+
+option go_package = "controlplane/internal/core/transport/rpc/proto";
+
+message ZoneCatalog {
+  string code = 1;
+  string name = 2;
+}
+
+message ZoneCatalogList {
+  repeated ZoneCatalog zones = 1;
+}
+
+message RuntimeSecret {
+  bytes secret = 1;
+  string fingerprint = 2;
+  int64 created_at_unix_ns = 3;
+}
+
+message RuntimeSecrets {
+  string secret_type = 1;
+  RuntimeSecret active = 2;
+  RuntimeSecret standby = 3;
+  int64 loaded_at_unix_ns = 4;
+}

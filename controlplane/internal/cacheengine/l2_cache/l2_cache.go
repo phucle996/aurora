@@ -29,9 +29,10 @@ package l2_cache
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"time"
+
+	"controlplane/internal/cacheengine/codec"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -99,7 +100,10 @@ func (c *redisL2Cache) Get(ctx context.Context, key string) (payload []byte, ver
 	}
 
 	// 4. Lấy kết quả từ pipeline thành công
-	dataVal, _ := dataCmd.Result()
+	dataBytes, err := dataCmd.Bytes()
+	if err != nil {
+		return nil, 0, false, err
+	}
 	versionVal, _ := versionCmd.Result()
 
 	// Parse số phiên bản ngược về int64
@@ -108,12 +112,12 @@ func (c *redisL2Cache) Get(ctx context.Context, key string) (payload []byte, ver
 		return nil, 0, false, err
 	}
 
-	return []byte(dataVal), v, true, nil
+	return dataBytes, v, true, nil
 }
 
 // Set thực hiện ghi đồng thời data và version của khóa qua Redis Pipeline với TTL.
 func (c *redisL2Cache) Set(ctx context.Context, key string, data interface{}, version int64, ttl time.Duration) error {
-	payload, err := json.Marshal(data)
+	payload, err := codec.MarshalData(data)
 	if err != nil {
 		return err
 	}
@@ -148,7 +152,7 @@ func (c *redisL2Cache) GetOrLoad(ctx context.Context, key string, target interfa
 	}
 	if exists {
 		// Unmarshal payload vào target
-		if err := json.Unmarshal(payload, target); err != nil {
+		if err := codec.UnmarshalData(payload, target); err != nil {
 			return 0, err
 		}
 		return v, nil
@@ -169,11 +173,11 @@ func (c *redisL2Cache) GetOrLoad(ctx context.Context, key string, target interfa
 	}
 
 	// 4. Đồng bộ dữ liệu mới nạp vào target để trả về caller
-	payloadVal, err := json.Marshal(val)
+	payloadVal, err := codec.MarshalData(val)
 	if err != nil {
 		return 0, err
 	}
-	if err := json.Unmarshal(payloadVal, target); err != nil {
+	if err := codec.UnmarshalData(payloadVal, target); err != nil {
 		return 0, err
 	}
 

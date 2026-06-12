@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package iam.rpc;
+
+option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+
+message RoleEntry {
+  repeated string permissions = 1;
+}
+
+message AdminAPIKey {
+  string id = 1; // UUID string
+  string key_hash = 2;
+  string created_by = 3;
+  int64 created_at_unix_ns = 4;
+  int64 expires_at_unix_ns = 5;
+}

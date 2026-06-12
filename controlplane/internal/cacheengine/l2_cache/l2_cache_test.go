@@ -2,28 +2,38 @@ package l2_cache
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
 
+func getTestRedisAddr() string {
+	if addr := strings.TrimSpace(os.Getenv("IAM_TEST_REDIS_ADDR")); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:16380"
+}
+
 // TestL2CacheOps kiểm thử các thao tác Get và Delete của L2Cache.
 func TestL2CacheOps(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("failed to start miniredis: %v", err)
-	}
-	defer mr.Close()
-
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	addr := getTestRedisAddr()
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
 	defer rdb.Close()
 
 	ctx := context.Background()
-	l2Cache := NewL2Cache(rdb)
+	// Kiểm tra kết nối trước
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		t.Skipf("skipping test: Redis not reachable at %s: %v", addr, err)
+	}
 
+	l2Cache := NewL2Cache(rdb)
 	key := "rbac_role:admin"
+
+	// Đảm bảo môi trường sạch trước khi test
+	_ = l2Cache.Delete(ctx, key)
 
 	// 1. Kiểm thử Get khi chưa có dữ liệu (Cache Miss) -> Phải trả về exists = false và err = nil
 	payload, version, exists, err := l2Cache.Get(ctx, key)
@@ -42,6 +52,11 @@ func TestL2CacheOps(t *testing.T) {
 	versionKey := "{" + key + "}:version"
 	rdb.Set(ctx, dataKey, `{"permissions":["read","write"]}`, 10*time.Second)
 	rdb.Set(ctx, versionKey, "1717960000000000000", 10*time.Second)
+
+	defer func() {
+		// Dọn dẹp sau khi test
+		_ = l2Cache.Delete(ctx, key)
+	}()
 
 	// 3. Kiểm thử Get khi đã có dữ liệu (Cache Hit) -> Trả về đúng payload và version
 	payload, version, exists, err = l2Cache.Get(ctx, key)
@@ -73,4 +88,38 @@ func TestL2CacheOps(t *testing.T) {
 	if exists {
 		t.Fatal("expected cache item to be missing after deletion")
 	}
+}
+
+func BenchmarkL2CacheGet(b *testing.B) {
+	addr := getTestRedisAddr()
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	defer rdb.Close()
+
+	ctx := context.Background()
+	// Kiểm tra kết nối trước
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		b.Skipf("skipping benchmark: Redis not reachable at %s: %v", addr, err)
+	}
+
+	l2Cache := NewL2Cache(rdb)
+
+	key := "rbac_role:admin"
+	dataKey := "{" + key + "}:data"
+	versionKey := "{" + key + "}:version"
+	rdb.Set(ctx, dataKey, `{"permissions":["read","write"]}`, time.Hour)
+	rdb.Set(ctx, versionKey, "1717960000000000000", time.Hour)
+
+	defer func() {
+		_ = l2Cache.Delete(ctx, key)
+	}()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _, _, err := l2Cache.Get(ctx, key)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

@@ -12,6 +12,7 @@ const (
 	PreConditionSuccess = "precondition_success"
 	LockBusy            = "lock_contention"
 	LockUnknownError    = "lock_unknown_error"
+	LockRelease         = "lock_release"
 
 	TokenGenerateFail    = "token_generate_fail"
 	TokenGenerateSuccess = "token_generate_success"

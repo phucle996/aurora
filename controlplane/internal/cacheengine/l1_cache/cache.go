@@ -38,39 +38,19 @@ type cacheShard struct {
 type shardedCache struct {
 	shards         []*cacheShard
 	mask           uint32
-	jitterFactor   float64       // Tỷ lệ jitter tối đa (ví dụ: 0.1 đại diện cho ±10% skew)
 	stopSweeperSig chan struct{} // Tín hiệu dừng Active Sweeper
 	wg             sync.WaitGroup
 }
 
 const shardCount = 32
 
-// Option định cấu hình cho cache
-type Option func(*shardedCache)
-
-// WithJitter thiết lập tỷ lệ skew ngẫu nhiên cho TTL (ví dụ: 0.10 đại diện cho ±10%)
-func WithJitter(factor float64) Option {
-	return func(c *shardedCache) {
-		if factor < 0 {
-			factor = 0
-		} else if factor > 0.5 {
-			factor = 0.5 // Khống chế tối đa 50% tránh lệch thời gian quá lớn
-		}
-		c.jitterFactor = factor
-	}
-}
-
 // NewShardedCache khởi tạo một in-memory L1 cache phân mảnh để tránh lock contention,
 // đồng thời kích hoạt luồng Active Sweeper dọn dẹp RAM định kỳ.
-func NewShardedCache(opts ...Option) Cache {
+func NewShardedCache() Cache {
 	c := &shardedCache{
 		shards:         nil,
 		mask:           0,
-		jitterFactor:   0.1, // Mặc định ±10% skew để tránh cache stampede đồng loạt
 		stopSweeperSig: make(chan struct{}),
-	}
-	for _, opt := range opts {
-		opt(c)
 	}
 
 	shards := make([]*cacheShard, shardCount)
@@ -166,17 +146,28 @@ func (c *shardedCache) getShardIndex(key string) uint32 {
 	return hash & c.mask
 }
 
-// applyJitter tính toán lại TTL ngẫu nhiên dựa trên jitterFactor
-func (c *shardedCache) applyJitter(ttl time.Duration) time.Duration {
-	if c.jitterFactor <= 0 || ttl <= 0 {
+// applySkew tính toán lại TTL ngẫu nhiên lệch pha từ +- 10% TTL, thấp nhất 30s và cao nhất 100s.
+func (c *shardedCache) applySkew(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
 		return ttl
 	}
 
-	// Biên độ jitter tối đa (ví dụ: 10 phút * 0.1 = 1 phút)
-	maxJitter := float64(ttl) * c.jitterFactor
+	// Biên độ skew là 10% TTL
+	skewRange := float64(ttl) * 0.1
 
-	// Sinh số thực ngẫu nhiên trong khoảng [-maxJitter, maxJitter]
-	randomOffset := (rand.Float64()*2.0 - 1.0) * maxJitter
+	// Áp dụng giới hạn dưới 30s cho các TTL thực tế lớn hơn hoặc bằng 30s
+	if ttl >= 30*time.Second {
+		if skewRange < float64(30*time.Second) {
+			skewRange = float64(30 * time.Second)
+		}
+	}
+	// Khống chế biên độ tối đa là 100s
+	if skewRange > float64(100*time.Second) {
+		skewRange = float64(100 * time.Second)
+	}
+
+	// Sinh số thực ngẫu nhiên trong khoảng [-skewRange, skewRange]
+	randomOffset := (rand.Float64()*2.0 - 1.0) * skewRange
 
 	jittered := ttl + time.Duration(randomOffset)
 	if jittered <= 0 {
@@ -218,7 +209,7 @@ func (c *shardedCache) Set(key string, val interface{}, ttl time.Duration) {
 	shard := c.shards[idx]
 
 	// Áp dụng skew ngẫu nhiên cho TTL
-	jitteredTTL := c.applyJitter(ttl)
+	jitteredTTL := c.applySkew(ttl)
 
 	shard.mu.Lock()
 	shard.items[key] = cacheItem{
@@ -301,7 +292,7 @@ func (c *shardedCache) GetOrLoad(key string, ttl time.Duration, loadFn func() (i
 		}
 
 		// Tính toán TTL ngẫu nhiên lệch pha
-		jitteredTTL := c.applyJitter(ttl)
+		jitteredTTL := c.applySkew(ttl)
 
 		// Ghi đè vào cache nếu không bị delete/invalidate trong quá trình load
 		shard.mu.Lock()

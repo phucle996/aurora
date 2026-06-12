@@ -79,7 +79,7 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	refreshOutcome := iamTaxonomy.Success
 	defer func() {
 		// Ghi nhận metrics cuộc gọi dịch vụ refresh token phục vụ đo lường hệ thống
-		iamMetrics.ServiceCall(workflow, string(refreshOutcome), "n/a")
+		iamMetrics.ServiceCall(workflow, string(refreshOutcome))
 	}()
 
 	// ==========================================================================

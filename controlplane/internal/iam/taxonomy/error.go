@@ -59,3 +59,7 @@ var (
 
 	ErrBootstrapLockAlreadyHeld = errors.New("iam: bootstrap lock already held")
 )
+
+var (
+	ErrInternalError = errors.New("iam: internal error")
+)

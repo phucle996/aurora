@@ -8,7 +8,7 @@ import (
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
 	iamEntity "controlplane/internal/iam/domain/entity"
-	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -82,12 +82,12 @@ func RegisterL1Loaders(
 	})
 
 	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC (sử dụng GetPermissionCodesByRoleCode tối ưu hơn)
-	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (iamSvcInterface.RoleEntry, error) {
+	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
 		perms, err := modules.IAM.RbacRepository.GetPermissionCodesByRoleCode(ctx, param)
 		if err != nil {
-			return iamSvcInterface.RoleEntry{}, err
+			return nil, err
 		}
-		return iamSvcInterface.RoleEntry{Permissions: perms}, nil
+		return &iamproto.RoleEntry{Permissions: perms}, nil
 	})
 
 	// 7. Đăng ký tĩnh loader cho "admin_2fa_secret"

@@ -32,8 +32,7 @@ func TestCacheBasicOps(t *testing.T) {
 
 // TestCacheLazyEviction kiểm thử cơ chế tự xóa khi hết hạn của Get (Lazy Eviction)
 func TestCacheLazyEviction(t *testing.T) {
-	// Khởi tạo cache tắt Jitter để kiểm tra TTL chính xác
-	cache := NewShardedCache(WithJitter(0.0))
+	cache := NewShardedCache()
 	defer cache.Close()
 
 	cache.Set("key1", "value1", 10*time.Millisecond)
@@ -49,10 +48,9 @@ func TestCacheLazyEviction(t *testing.T) {
 
 // TestCacheActiveSweeper kiểm thử luồng quét ngầm giải phóng các key hết hạn (Active Eviction)
 func TestCacheActiveSweeper(t *testing.T) {
-	// Tạo cache với Jitter = 0.0 và khởi tạo thủ công sweeper chu kỳ siêu ngắn để chạy test nhanh
+	// Tạo cache và khởi tạo thủ công sweeper chu kỳ siêu ngắn để chạy test nhanh
 	c := &shardedCache{
 		stopSweeperSig: make(chan struct{}),
-		jitterFactor:   0.0,
 	}
 	shards := make([]*cacheShard, shardCount)
 	for i := 0; i < shardCount; i++ {

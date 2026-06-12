@@ -178,14 +178,14 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 
 			processed, err := m.deviceSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
-				iamMetrics.ServiceCall("device_cap_reconcile", "error", "n/a")
+				iamMetrics.ServiceCall("device_cap_reconcile", "error")
 				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})
 				continue
 			}
 			if processed > 0 {
 				logger.SysInfoFields(op, "reconcile fixed drift", logger.Fields{"processed_users": processed})
 			}
-			iamMetrics.ServiceCall("device_cap_reconcile", "success", "n/a")
+			iamMetrics.ServiceCall("device_cap_reconcile", "success")
 		}
 	}
 }

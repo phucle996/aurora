@@ -99,8 +99,8 @@ func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
 		Namespace: namespace,
 		Subsystem: "iam",
 		Name:      "service_calls_total",
-		Help:      "Total IAM service calls, partitioned by workflow, result outcome and cache path.",
-	}, []string{"workflow", "result", "cache_path"})
+		Help:      "Total IAM service calls, partitioned by workflow and result outcome.",
+	}, []string{"workflow", "result"})
 
 	// HistogramVec: đo latency downstream của IAM với buckets phù hợp cho cả 3 loại tác vụ:
 	//   - Argon2id hash (~100–500ms, CPU-bound)
@@ -127,10 +127,10 @@ func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // ServiceCall ghi nhận một lần gọi service IAM vào serviceCallsCounter.
-// Callsite tự truyền đầy đủ 3 label, giữ tính generic cho mọi IAM flow.
-func ServiceCall(workflow, result, cachePath string) {
+// Callsite tự truyền đầy đủ các label, giữ tính generic cho mọi IAM flow.
+func ServiceCall(workflow, result string) {
 	if serviceCallsCounter != nil {
-		serviceCallsCounter.WithLabelValues(workflow, result, cachePath).Inc()
+		serviceCallsCounter.WithLabelValues(workflow, result).Inc()
 	}
 }
 
@@ -145,3 +145,4 @@ func Downstream(kind, workflow, destination, result string, duration time.Durati
 		downstreamDuration.WithLabelValues(kind, workflow, destination, result, status).Observe(duration.Seconds())
 	}
 }
+

@@ -56,8 +56,8 @@ func TestAdminBootstrapLockFailed(t *testing.T) {
 	}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil)
 	err := svc.Bootstrap(context.Background())
-	if !errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {
-		t.Fatalf("expected ErrAdminBootstrapLockFailed, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrInternalError) {
+		t.Fatalf("expected ErrInternalError, got %v", err)
 	}
 }
 
@@ -70,8 +70,8 @@ func TestAdminBootstrapNotAllowedWhenActiveKeyExists(t *testing.T) {
 	}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), repo, telegram.NewTelegramClient("", ""), nil)
 	err := svc.Bootstrap(context.Background())
-	if !errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-		t.Fatalf("expected ErrAdminBootstrapNotAllowed, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {
+		t.Fatalf("expected ErrPreconditionFailed, got %v", err)
 	}
 }
 

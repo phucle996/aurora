@@ -27,9 +27,12 @@ import { useZoneStore } from '@/hooks/useZoneStore'
 
 async function extractBackendError(resp: Response): Promise<string> {
   try {
-    await resp.body?.cancel()
+    const data = await resp.json() as { error?: string; message?: string }
+    if (data && typeof data === 'object') {
+      return data.message || data.error || 'Admin login failed.'
+    }
   } catch {
-    // Keep all admin auth failures generic.
+    // Fallback if parsing fails
   }
   return 'Admin login failed.'
 }
@@ -119,7 +122,7 @@ export default function AdminAPIKeyLoginPage() {
       }
 
       const backendError = await extractBackendError(resp)
-      toast.error(backendError === 'Admin login failed.' ? t('loginFailed') : backendError)
+      toast.error(backendError)
       setState({
         loading: false,
         error: '',

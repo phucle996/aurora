@@ -107,11 +107,11 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 			errors.Is(err, iamTaxonomy.ErrDeviceQuarantined),
 			errors.Is(err, iamTaxonomy.ErrDeviceBindingFailed):
 			logger.HandlerWarn(c, op, err, "admin login unauthorized")
-			apires.RespondUnauthorized(c, "unauthorized")
+			apires.RespondUnauthorized(c, "Admin login failed.")
 			return
 		default:
 			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
+			apires.RespondInternalError(c, "Internal Server Error")
 			return
 		}
 	}
@@ -180,7 +180,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 	// set client device id header for device tracking
 	c.Header("X-Client-Device-Id", result.ClientDeviceID.String())
 
-	apires.RespondSuccess(c, map[string]any{"ok": true}, "ok")
+	apires.RespondSuccess(c, nil, "Admin login successful")
 }
 
 // Session godoc

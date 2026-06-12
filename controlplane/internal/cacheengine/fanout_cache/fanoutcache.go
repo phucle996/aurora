@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -70,9 +71,8 @@ func (f *RedisFanout) Publish(ctx context.Context, key string, payload []byte) (
 
 	// Xây dựng version key độc lập cho từng key cụ thể theo định dạng {module_name}:version:{namespace}:{params}
 	var versionKey string
-	parts := strings.SplitN(key, ":", 2)
-	if len(parts) == 2 {
-		versionKey = fmt.Sprintf("%s:version:%s", parts[0], parts[1])
+	if idx := strings.IndexByte(key, ':'); idx != -1 {
+		versionKey = fmt.Sprintf("%s:version:%s", key[:idx], key[idx+1:])
 	} else {
 		versionKey = fmt.Sprintf("cacheengine:version:%s", key)
 	}
@@ -145,7 +145,9 @@ func (f *RedisFanout) StartSubscribe(ctx context.Context) error {
 			}
 
 			var fMsg FanoutMessage
-			if err := json.Unmarshal([]byte(msg.Payload), &fMsg); err != nil {
+			// Sử dụng unsafe để cast string sang []byte không sao chép bộ nhớ (Zero allocation)
+			payloadBytes := unsafe.Slice(unsafe.StringData(msg.Payload), len(msg.Payload))
+			if err := json.Unmarshal(payloadBytes, &fMsg); err != nil {
 				continue // Bỏ qua tin nhắn lỗi định dạng
 			}
 
