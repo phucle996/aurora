@@ -1,7 +1,6 @@
 package l1_cache
 
 import (
-	"hash/fnv"
 	"math/rand/v2" // Thư viện rand/v2 mới của Go 1.22+ (thread-safe, hiệu năng cao)
 	"sync"
 	"time"
@@ -30,7 +29,7 @@ func (item *cacheItem) isExpired() bool {
 
 type cacheShard struct {
 	mu          sync.RWMutex
-	items       map[string]*cacheItem
+	items       map[string]cacheItem
 	deletions   map[string]time.Time
 	activeLoads map[string]int
 	sf          singleflight.Group
@@ -77,7 +76,7 @@ func NewShardedCache(opts ...Option) Cache {
 	shards := make([]*cacheShard, shardCount)
 	for i := 0; i < shardCount; i++ {
 		shards[i] = &cacheShard{
-			items:       make(map[string]*cacheItem),
+			items:       make(map[string]cacheItem),
 			deletions:   make(map[string]time.Time),
 			activeLoads: make(map[string]int),
 		}
@@ -132,7 +131,7 @@ func (c *shardedCache) Flush() {
 		shard := c.shards[i]
 		shard.mu.Lock()
 		for _, item := range shard.items {
-			if item != nil && item.val != nil {
+			if item.val != nil {
 				if env, ok := item.val.(*L1Envelope); ok {
 					if zeroable, ok := env.Value.(Zeroable); ok {
 						zeroable.Zero()
@@ -140,7 +139,7 @@ func (c *shardedCache) Flush() {
 				}
 			}
 		}
-		shard.items = make(map[string]*cacheItem)
+		shard.items = make(map[string]cacheItem)
 		shard.deletions = make(map[string]time.Time)
 		shard.activeLoads = make(map[string]int)
 		shard.mu.Unlock()
@@ -153,11 +152,18 @@ func (c *shardedCache) Close() {
 	c.wg.Wait()
 }
 
-// getShardIndex dùng FNV-1a để xác định shard tương ứng với key
+// getShardIndex dùng FNV-1a thủ công để xác định shard tương ứng với key mà không cấp phát bộ nhớ.
 func (c *shardedCache) getShardIndex(key string) uint32 {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(key))
-	return h.Sum32() & c.mask
+	const (
+		offset32 = 2166136261
+		prime32  = 16777619
+	)
+	hash := uint32(offset32)
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= prime32
+	}
+	return hash & c.mask
 }
 
 // applyJitter tính toán lại TTL ngẫu nhiên dựa trên jitterFactor
@@ -215,7 +221,7 @@ func (c *shardedCache) Set(key string, val interface{}, ttl time.Duration) {
 	jitteredTTL := c.applyJitter(ttl)
 
 	shard.mu.Lock()
-	shard.items[key] = &cacheItem{
+	shard.items[key] = cacheItem{
 		val:       val,
 		expiresAt: time.Now().Add(jitteredTTL),
 	}
@@ -237,7 +243,7 @@ func (c *shardedCache) Delete(key string) bool {
 	shard.sf.Forget(key)
 
 	if item, exists := shard.items[key]; exists {
-		if item != nil && item.val != nil {
+		if item.val != nil {
 			if env, ok := item.val.(*L1Envelope); ok {
 				if zeroable, ok := env.Value.(Zeroable); ok {
 					zeroable.Zero()
@@ -307,7 +313,7 @@ func (c *shardedCache) GetOrLoad(key string, ttl time.Duration, loadFn func() (i
 			return res, nil
 		}
 
-		shard.items[key] = &cacheItem{
+		shard.items[key] = cacheItem{
 			val:       res,
 			expiresAt: time.Now().Add(jitteredTTL),
 		}

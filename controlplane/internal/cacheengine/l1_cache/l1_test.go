@@ -57,7 +57,7 @@ func TestCacheActiveSweeper(t *testing.T) {
 	shards := make([]*cacheShard, shardCount)
 	for i := 0; i < shardCount; i++ {
 		shards[i] = &cacheShard{
-			items: make(map[string]*cacheItem),
+			items: make(map[string]cacheItem),
 		}
 	}
 	c.shards = shards
@@ -143,4 +143,29 @@ func TestCacheGetOrLoadSingleflight(t *testing.T) {
 	if loadCount != 1 {
 		t.Fatalf("expected DB loader to run exactly once under concurrency, ran %d times", loadCount)
 	}
+}
+
+func BenchmarkCacheGet(b *testing.B) {
+	cache := NewShardedCache()
+	defer cache.Close()
+	cache.Set("key1", "value1", time.Hour)
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = cache.Get("key1")
+		}
+	})
+}
+
+func BenchmarkCacheSet(b *testing.B) {
+	cache := NewShardedCache()
+	defer cache.Close()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Set("key1", "value1", time.Hour)
+		}
+	})
 }

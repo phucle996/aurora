@@ -41,6 +41,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
+	middlewareMetrics "controlplane/internal/http/middleware/metrics"
 	"controlplane/internal/security"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
@@ -109,6 +110,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			rawToken = strings.TrimSpace(cookieToken)
 		}
 		if rawToken == "" {
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "missing_token")
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -121,16 +123,21 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		// --------------------------------------------------------------------
 		secretVal, err := registry.GetOrLoad(c.Request.Context(), "access_secret", "")
 		if err != nil {
+			middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "error")
+			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "db_error")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
 		}
 		secrets, ok := secretVal.(*coreEntity.RuntimeSecrets)
 		if !ok || secrets == nil {
+			middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "error")
+			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "db_error")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
 		}
+		middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "hit")
 
 		// Parse JWT lần lượt qua Active rồi Standby secret để hỗ trợ rotation.
 		var (
@@ -151,10 +158,12 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		}
 		if !parsed {
 			if emptySecret {
+				middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "empty_secret")
 				apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 				c.Abort()
 				return
 			}
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "invalid_token")
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -170,6 +179,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		jti := strings.TrimSpace(claims.TokenID)
 
 		if accessKeyClaim == "" || userIDClaim == "" || jti == "" {
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "missing_claims")
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -183,6 +193,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		accessKeyFromCookie := strings.TrimSpace(accessKeyCookie)
 
 		if secretCookieErr != nil || keyCookieErr != nil || accessSecret == "" || accessKeyFromCookie == "" {
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "missing_cookie_credentials")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -191,6 +202,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 
 		// Cookie access_key phải khớp chính xác với access_key trong claims JWT.
 		if accessKeyFromCookie != accessKeyClaim {
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "mismatched_key")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -205,20 +217,26 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		rawPayload, _, exists, l2Err := registry.L2.Get(ctx, sessionKey)
 		if l2Err != nil {
 			// Lỗi kết nối Redis → fail-closed (503).
+			middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "error")
+			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "redis_error")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
 		}
 		if !exists {
 			// Key không tồn tại → phiên đã hết hạn hoặc bị thu hồi.
+			middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "miss")
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "session_not_found")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
 			return
 		}
+		middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "hit")
 
 		var record userAccessSession
 		if jsonErr := json.Unmarshal(rawPayload, &record); jsonErr != nil {
+			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "invalid_session_payload")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
@@ -232,11 +250,15 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		// Chỉ cần so khớp chính xác cặp khóa (access_key và hash của access_secret).
 		// --------------------------------------------------------------------
 		if record.AccessSecretHash != security.HashTokenSHA256(accessSecret) {
+			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "invalid_secret")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
 			return
 		}
+
+		// Ghi nhận xác thực thành công.
+		middlewareMetrics.RecordAuthAttempt("access", "success", "none")
 
 		// --------------------------------------------------------------------
 		// Tiêm vào Go standard context để service layer đọc qua ctx.Value().

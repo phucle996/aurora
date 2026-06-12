@@ -12,6 +12,7 @@ import (
 	"controlplane/internal/cacheengine/l1_cache"
 	"controlplane/internal/cacheengine/l2_cache"
 	"controlplane/internal/cacheengine/l2_lua_executor"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -69,7 +70,7 @@ type RegisteredLoader struct {
 	TTL       time.Duration
 	Load      LoaderFunc
 	// Factory sinh ra đối tượng con trỏ kiểu (*T) phục vụ json.Unmarshal khi nhận được fanout payload
-	Factory   func() interface{}
+	Factory func() interface{}
 }
 
 // CacheRegistry quản lý tập trung các loader tĩnh và điều phối L1, L2, Fanout, Executor
@@ -81,10 +82,10 @@ type CacheRegistry struct {
 	loaders map[string]*RegisteredLoader
 }
 
-// NewCacheRegistry khởi tạo một CacheRegistry mới với L1 Cache
+// NewCacheRegistry khởi tạo một CacheRegistry mới với L1 Cache được bao bọc bởi telemetry decorator.
 func NewCacheRegistry(l1 Cache) *CacheRegistry {
 	return &CacheRegistry{
-		L1:      l1,
+		L1:      &telemetryL1Cache{raw: l1},
 		loaders: make(map[string]*RegisteredLoader),
 	}
 }
