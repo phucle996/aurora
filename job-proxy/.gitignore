@@ -1,0 +1,17 @@
+# Added by cargo
+/target
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db

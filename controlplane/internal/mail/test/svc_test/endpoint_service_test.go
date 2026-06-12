@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
+	"controlplane/internal/http/middleware"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
@@ -37,7 +38,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
 	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, registry)
 	ctx := context.Background()
-	ctx = mailSvcImpl.WithZoneCode(ctx, "test-zone")
+	ctx = middleware.ContextWithZoneID(ctx, zoneID)
 
 	// 1. Create Endpoint.
 	createParams := mailEntity.CreateEndpointParams{
@@ -60,12 +61,15 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	}
 
 	// 2. Retrieve Endpoint.
-	list, err := service.ListEndpoints(ctx, zoneID)
+	list, nextCursor, err := service.ListEndpoints(ctx, "", 10)
 	if err != nil {
 		t.Fatalf("list endpoints failed: %v", err)
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected exactly 1 endpoint in zone, got %d", len(list))
+	}
+	if nextCursor != "" {
+		t.Errorf("expected empty nextCursor, got %q", nextCursor)
 	}
 	createdID := list[0].ID
 
@@ -73,7 +77,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 		t.Errorf("expected UUIDv7 to be generated, got Nil uuid")
 	}
 
-	retrieved, err := service.GetEndpoint(ctx, zoneID, createdID)
+	retrieved, err := service.GetEndpoint(ctx, createdID)
 	if err != nil {
 		t.Fatalf("get endpoint failed: %v", err)
 	}
@@ -125,12 +129,12 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	}
 
 	// 5. Delete Endpoint.
-	if err := service.DeleteEndpoint(ctx, zoneID, createdID); err != nil {
+	if err := service.DeleteEndpoint(ctx, createdID); err != nil {
 		t.Fatalf("delete endpoint failed: %v", err)
 	}
 
 	// Verify deletion.
-	_, err = service.GetEndpoint(ctx, zoneID, createdID)
+	_, err = service.GetEndpoint(ctx, createdID)
 	if err == nil {
 		t.Errorf("expected get after delete to return error, but got nil")
 	}

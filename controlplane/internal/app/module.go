@@ -35,9 +35,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -222,15 +219,7 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	})
 	middleware.InitZoneAuth(cacheEngine)
 	middleware.InitAccess(cacheEngine, 10*time.Second, iamModule.TouchDeviceLastSeen)
-	if err := middleware.InitAdminAPIKeyAuth(
-		cacheEngine,
-		func(ctx context.Context, accessKey string, accessSecret string) (bool, error) {
-			return verifyAdminAccessSecret(ctx, cacheEngine.L2, accessKey, accessSecret)
-		},
-		func(ctx context.Context, ttl time.Duration) error {
-			return setAdminRotationRequired(ctx, cacheEngine.L2, ttl)
-		},
-	); err != nil {
+	if err := middleware.InitAdminAPIKeyAuth(cacheEngine); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}
 	if err := middleware.InitAdminCriticalSignature(
@@ -283,29 +272,4 @@ func (m *Modules) Stop() {
 	if m.L1Registry != nil && m.L1Registry.L1 != nil {
 		m.L1Registry.L1.Close()
 	}
-}
-
-func verifyAdminAccessSecret(ctx context.Context, l2 cacheengine.L2Cache, accessKey string, accessSecret string) (bool, error) {
-	payload, _, exists, err := l2.Get(ctx, "admin_access_session:"+accessKey)
-	if err != nil {
-		return false, err
-	}
-	if !exists {
-		return false, nil
-	}
-
-	var session struct {
-		AccessSecretHash string `json:"access_secret_hash"`
-	}
-	if err := json.Unmarshal(payload, &session); err != nil {
-		return false, err
-	}
-
-	h := sha256.Sum256([]byte(accessSecret))
-	incomingHash := hex.EncodeToString(h[:])
-	return session.AccessSecretHash == incomingHash, nil
-}
-
-func setAdminRotationRequired(ctx context.Context, l2 cacheengine.L2Cache, ttl time.Duration) error {
-	return l2.Set(ctx, "iam:admin_key_rotation:required", "1", 1, ttl)
 }

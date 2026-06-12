@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Send } from 'lucide-react'
 import { toast } from 'sonner'
@@ -23,7 +23,6 @@ import { PageContent } from '@/components/layout/layout'
  * - Số lượng kết nối song song tối đa (max_connections) mặc định là 10.
  */
 const initialForm: EndpointForm = {
-  zone_id: '',
   name: '',
   host: '',
   port: 587,
@@ -61,8 +60,6 @@ export default function NewMailEndpointPage() {
 
   // State quản lý toàn bộ dữ liệu biểu mẫu SMTP Endpoint
   const [form, setForm] = useState<EndpointForm>(initialForm)
-  // State quản lý danh sách các Zone lấy từ API
-  const [zones, setZones] = useState<{ id: string; name: string }[]>([])
   // State quản lý trạng thái submit form lên server (để hiển thị loading/disable nút bấm)
   const [loading, setLoading] = useState(false)
   // State lưu trữ và hiển thị thông điệp lỗi hệ thống/lỗi API
@@ -80,30 +77,6 @@ export default function NewMailEndpointPage() {
     success: null,
     message: '',
   })
-
-  // Gọi API lấy danh sách các Zone khi component được mount
-  useEffect(() => {
-    let active = true
-    async function loadZones() {
-      try {
-        const resp = await Fetch('/admin/core/zones')
-        if (resp.ok) {
-          const body = await resp.json()
-          if (active && body.data?.items) {
-            const list = body.data.items.map((z: any) => ({ id: z.id, name: z.name }))
-            setZones(list)
-            if (list.length > 0) {
-              setForm(prev => ({ ...prev, zone_id: prev.zone_id || list[0].id }))
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Cannot load zones', err)
-      }
-    }
-    void loadZones()
-    return () => { active = false }
-  }, [])
 
   /**
    * Cập nhật động giá trị của một trường dữ liệu trong form state.
@@ -125,7 +98,7 @@ export default function NewMailEndpointPage() {
    */
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    
+
     // Validate dữ liệu client-side trước khi gửi yêu cầu mạng
     const validationError = getEndpointFormValidationError(form)
     if (validationError) {
@@ -143,7 +116,7 @@ export default function NewMailEndpointPage() {
         body: JSON.stringify(endpointPayload(form)),
       })
       if (!resp.ok) throw new Error(await readAPIMessage(resp, 'Cannot create endpoint.'))
-      
+
       toast.success('Mail endpoint created successfully!')
       // Điều hướng về trang quản lý email, tự động scroll đến tab endpoints
       await navigate({ to: '/mail', hash: 'endpoints' })
@@ -206,11 +179,8 @@ export default function NewMailEndpointPage() {
     }
   }
 
-  // Loại bỏ khoảng trắng thừa ở các trường quan trọng để kiểm tra điều kiện submit
-  const trimmedName = form.name.trim()
-  const trimmedHost = form.host.trim()
-  // Nút submit chỉ hoạt động khi Tên, Host và Zone đã được chọn/nhập và không trong trạng thái đang gửi request
-  const canSubmit = trimmedName !== '' && trimmedHost !== '' && form.zone_id.trim() !== '' && !loading
+  // Nút submit chỉ hoạt động khi Tên và Host đã được nhập và không trong trạng thái đang gửi request
+  const canSubmit = form.name.trim() !== '' && form.host.trim() !== '' && !loading
 
   return (
     <PageContent className="pb-0">
@@ -271,7 +241,7 @@ export default function NewMailEndpointPage() {
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
         {/* Form cấu hình bên trái */}
         <form id="new-endpoint-form" className="space-y-6" onSubmit={(event) => void submit(event)}>
-          <EndpointFormFields form={form} update={update} zones={zones} />
+          <EndpointFormFields form={form} update={update} />
         </form>
 
         {/* Live Preview hiển thị bên phải, bám dính (sticky) khi cuộn chuột */}
@@ -324,9 +294,6 @@ function endpointPayload(form: EndpointForm) {
  * - Yêu cầu đầy đủ chứng chỉ client PEM và private key PEM khi chọn chế độ mTLS.
  */
 function getEndpointFormValidationError(form: EndpointForm): string | null {
-  if (form.zone_id.trim() === '') {
-    return 'Please select an infrastructure zone.'
-  }
   if (form.max_connections < 0) {
     return 'Max Connections cannot be negative.'
   }

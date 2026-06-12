@@ -42,20 +42,20 @@ import (
 )
 
 type ZoneRepoImpl struct {
-	db                       *pgxpool.Pool
-	schema                   string
-	listZonesQuery           string
-	getZoneCatalogQuery      string
-	createZoneQuery          string
-	getZoneByIDQuery         string
-	getZoneDetailByIDQuery   string
-	getZoneIDByCodeQuery     string
-	updateZoneStatusQuery    string
-	deleteZoneQuery          string
-	hasDataplaneNodesQuery   string
-	hasEnabledZoneSvcQuery   string
-	listZoneSvcByZoneIDQuery string
-	upsertZoneServiceQuery   string
+	db                                  *pgxpool.Pool
+	schema                              string
+	listZonesQuery                      string
+	getZoneCatalogQuery                 string
+	createZoneQuery                     string
+	getZoneByIDQuery                    string
+	getZoneDetailByIDQuery              string
+	getZoneIDByCodeQuery                string
+	updateZoneStatusQuery               string
+	deleteZoneQuery                     string
+	hasDataplaneNodesQuery              string
+	hasEnabledZoneSvcQuery              string
+	listZoneSvcByZoneIDQuery            string
+	upsertZoneServiceQuery              string
 	upsertZoneServiceByZoneAndTypeQuery string
 }
 

@@ -27,12 +27,17 @@ func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInter
 		db:     db,
 		schema: schema,
 		saveQuery: fmt.Sprintf(`
-			INSERT INTO %s.mail_outbox_records (event_id, zone_id, job_topic, payload_json, status, created_at)
-			VALUES ($1, $2, $3, $4, $5, NOW())
+			INSERT INTO %s.mail_outbox_records (
+				event_id, zone_id, job_topic, payload_json, status, created_at,
+				job_version, resource_id, payload_schema_version, trace_id, idle,
+				error_code, error_message
+			)
+			VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12)
 			RETURNING id
 		`, schema),
 		fetchPendingQuery: fmt.Sprintf(`
-			SELECT id, event_id, zone_id, job_topic, payload_json, status, attempts, last_attempt, created_at
+			SELECT id, event_id, zone_id, job_topic, payload_json, status, attempts, last_attempt, created_at,
+			       job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message
 			FROM %s.mail_outbox_records
 			WHERE status = 'PENDING'
 			ORDER BY created_at ASC
@@ -59,6 +64,13 @@ func (r *MailOutboxRepoImpl) Save(ctx context.Context, record *mailEntity.MailOu
 		record.JobTopic,
 		record.PayloadJSON,
 		string(record.Status),
+		record.JobVersion,
+		record.ResourceID,
+		record.PayloadSchemaVersion,
+		record.TraceID,
+		record.Idle,
+		record.ErrorCode,
+		record.ErrorMessage,
 	).Scan(&record.ID)
 	return err
 }
@@ -85,6 +97,13 @@ func (r *MailOutboxRepoImpl) FetchPendingForUpdate(ctx context.Context, limit in
 			&rec.Attempts,
 			&rec.LastAttempt,
 			&rec.CreatedAt,
+			&rec.JobVersion,
+			&rec.ResourceID,
+			&rec.PayloadSchemaVersion,
+			&rec.TraceID,
+			&rec.Idle,
+			&rec.ErrorCode,
+			&rec.ErrorMessage,
 		)
 		if err != nil {
 			return nil, err

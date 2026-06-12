@@ -8,12 +8,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
-	mailSvcImpl "controlplane/internal/mail/service"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	mailReq "controlplane/internal/mail/transport/http/dto/req"
 	"controlplane/pkg/apires"
@@ -31,16 +31,10 @@ func NewEndpointHandler(svc mailSvcInterface.EndpointService) *EndpointHandler {
 	return &EndpointHandler{svc: svc}
 }
 
-func (h *EndpointHandler) requestContext(c *gin.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
-	code := strings.TrimSpace(c.GetHeader("X-Zone-Code"))
-	return mailSvcImpl.WithZoneCode(ctx, code), cancel
-}
-
 // Create godoc
 func (h *EndpointHandler) Create(c *gin.Context) {
 	const op = "mail.endpoint.create"
-	ctx, cancel := h.requestContext(c, 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	var req mailReq.CreateEndpointRequest
@@ -94,7 +88,7 @@ func (h *EndpointHandler) Create(c *gin.Context) {
 // Get godoc
 func (h *EndpointHandler) Get(c *gin.Context) {
 	const op = "mail.endpoint.get"
-	ctx, cancel := h.requestContext(c, 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	uuidID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
@@ -104,7 +98,7 @@ func (h *EndpointHandler) Get(c *gin.Context) {
 		return
 	}
 
-	endpoint, err := h.svc.GetEndpoint(ctx, uuid.Nil, uuidID)
+	endpoint, err := h.svc.GetEndpoint(ctx, uuidID)
 	if err != nil {
 		if errors.Is(err, mailTaxonomy.ErrEndpointNotFound) {
 			apires.RespondNotFound(c, "mail endpoint not found")
@@ -141,10 +135,22 @@ func (h *EndpointHandler) Get(c *gin.Context) {
 // List godoc
 func (h *EndpointHandler) List(c *gin.Context) {
 	const op = "mail.endpoint.list"
-	ctx, cancel := h.requestContext(c, 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	endpoints, err := h.svc.ListEndpoints(ctx, uuid.Nil)
+	cursor := strings.TrimSpace(c.Query("cursor"))
+	limitStr := strings.TrimSpace(c.Query("limit"))
+	limit := 20
+	if limitStr != "" {
+		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	endpoints, nextCursor, err := h.svc.ListEndpoints(ctx, cursor, limit)
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "failed to list mail endpoints")
@@ -175,13 +181,17 @@ func (h *EndpointHandler) List(c *gin.Context) {
 		items = append(items, item)
 	}
 
-	apires.RespondSuccess(c, items, "ok")
+	apires.RespondSuccess(c, gin.H{
+		"items":       items,
+		"next_cursor": nextCursor,
+	}, "ok")
 }
 
 // Update godoc
 func (h *EndpointHandler) Update(c *gin.Context) {
 	const op = "mail.endpoint.update"
-	ctx, cancel := h.requestContext(c, 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+
 	defer cancel()
 
 	id := strings.TrimSpace(c.Param("id"))
@@ -274,7 +284,8 @@ func (h *EndpointHandler) Update(c *gin.Context) {
 // Delete godoc
 func (h *EndpointHandler) Delete(c *gin.Context) {
 	const op = "mail.endpoint.delete"
-	ctx, cancel := h.requestContext(c, 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+
 	defer cancel()
 
 	id := strings.TrimSpace(c.Param("id"))
@@ -291,7 +302,7 @@ func (h *EndpointHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.DeleteEndpoint(ctx, uuid.Nil, uuidID); err != nil {
+	if err := h.svc.DeleteEndpoint(ctx, uuidID); err != nil {
 		if errors.Is(err, mailTaxonomy.ErrEndpointNotFound) {
 			apires.RespondNotFound(c, "mail endpoint not found")
 		} else {
@@ -307,7 +318,8 @@ func (h *EndpointHandler) Delete(c *gin.Context) {
 // TestConnection godoc
 func (h *EndpointHandler) TestConnection(c *gin.Context) {
 	const op = "mail.endpoint.test_connection"
-	ctx, cancel := h.requestContext(c, 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+
 	defer cancel()
 
 	id := strings.TrimSpace(c.Param("id"))
@@ -324,7 +336,7 @@ func (h *EndpointHandler) TestConnection(c *gin.Context) {
 		return
 	}
 
-	err = h.svc.TestConnection(ctx, uuid.Nil, uuidID)
+	err = h.svc.TestConnection(ctx, uuidID)
 	if err != nil {
 		if errors.Is(err, mailTaxonomy.ErrEndpointNotFound) {
 			apires.RespondNotFound(c, "mail endpoint not found")
@@ -341,7 +353,7 @@ func (h *EndpointHandler) TestConnection(c *gin.Context) {
 // TestConnectionRaw godoc
 func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 	const op = "mail.endpoint.test_connection_raw"
-	ctx, cancel := h.requestContext(c, 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	var req mailReq.TestConnectionRequest

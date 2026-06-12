@@ -1,0 +1,16 @@
+[package]
+name = "aurora-job-proxy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["runtime"] }
+postgres-protocol = "0.6"
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dotenvy = "0.15"
+uuid = { version = "1.8", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }

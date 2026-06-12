@@ -107,7 +107,7 @@ func (p *MailOutboxPoller) publishToRedisStream(ctx context.Context, rec *mailEn
 		"resource_id":            "transient_test",
 		"payload_schema_version": "1",
 		"payload_json":           rec.PayloadJSON,
-		"trace_id":               "trace-" + rec.EventID, // Transient trace ID based on event ID
+		"trace_id":               "trace-" + rec.EventID.String(), // Transient trace ID based on event ID
 		"created_at":             createdAtStr,
 		"deadline_at":            deadlineAtStr,
 	}

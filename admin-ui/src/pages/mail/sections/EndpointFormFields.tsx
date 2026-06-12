@@ -5,7 +5,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 
 export interface EndpointForm {
-  zone_id: string
   name: string
   host: string
   port: number
@@ -25,7 +24,6 @@ export interface EndpointForm {
 interface EndpointFormFieldsProps {
   form: EndpointForm
   update: (key: keyof EndpointForm, value: string) => void
-  zones: { id: string; name: string }[]
 }
 
 const tlsModeOptions = [
@@ -49,7 +47,7 @@ function Required() {
   return <span className="text-destructive">*</span>
 }
 
-export function EndpointFormFields({ form, update, zones }: EndpointFormFieldsProps) {
+export function EndpointFormFields({ form, update }: EndpointFormFieldsProps) {
   return (
     <>
       {/* Card 1: Basic Configuration */}
@@ -61,22 +59,7 @@ export function EndpointFormFields({ form, update, zones }: EndpointFormFieldsPr
 
         <div className="space-y-6">
           <div className="grid gap-6 md:grid-cols-2">
-            <div>
-              <Label className="text-sm font-semibold text-foreground">Infrastructure Zone <Required /></Label>
-              <Select value={form.zone_id} onValueChange={(value) => update('zone_id', value)}>
-                <SelectTrigger className="mt-3 h-12 w-full rounded-lg border-border bg-background px-4 shadow-none font-medium">
-                  <SelectValue placeholder="Select an infrastructure zone" />
-                </SelectTrigger>
-                <SelectContent>
-                  {zones.map((zone) => (
-                    <SelectItem key={zone.id} value={zone.id}>{zone.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FieldHint>The physical infrastructure zone where this Mail endpoint is registered.</FieldHint>
-            </div>
-
-            <div>
+            <div className="md:col-span-2">
               <Label className="text-sm font-semibold text-foreground">Endpoint Name <Required /></Label>
               <Input
                 value={form.name}

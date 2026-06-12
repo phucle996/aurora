@@ -81,12 +81,36 @@ func TestEndpointRepoPostgres(t *testing.T) {
 	}
 
 	// 3. List endpoints within the zone.
-	list, err := repo.List(ctx, zoneID)
+	list, nextCursor, err := repo.ListByZone(ctx, zoneID, "", 10)
 	if err != nil {
-		t.Fatalf("list endpoints failed: %v", err)
+		t.Fatalf("list endpoints by zone failed: %v", err)
 	}
 	if len(list) != 1 {
 		t.Errorf("expected list length 1, got %d", len(list))
+	}
+	if nextCursor != "" {
+		t.Errorf("expected empty nextCursor, got %q", nextCursor)
+	}
+
+	// 3b. List endpoints globally.
+	globalList, nextCursorGlobal, err := repo.ListGlobal(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("list endpoints globally failed: %v", err)
+	}
+	if len(globalList) != 1 {
+		t.Errorf("expected global list length 1, got %d", len(globalList))
+	}
+	if nextCursorGlobal != "" {
+		t.Errorf("expected empty nextCursorGlobal, got %q", nextCursorGlobal)
+	}
+
+	// 3c. Get endpoint globally.
+	globalRetrieved, err := repo.GetGlobalByID(ctx, endpointID)
+	if err != nil {
+		t.Fatalf("get endpoint globally failed: %v", err)
+	}
+	if globalRetrieved.ID != endpointID {
+		t.Errorf("expected ID %q, got %q", endpointID, globalRetrieved.ID)
 	}
 
 	// 4. Update the endpoint credentials.

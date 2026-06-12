@@ -2,8 +2,11 @@ package mailRepoImpl
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"controlplane/internal/config"
@@ -18,14 +21,15 @@ import (
 
 // endpointRepoPostgres triển khai mailRepoInterface.EndpointRepository sử dụng Static Statement để tối ưu hot path.
 type endpointRepoPostgres struct {
-	db              *pgxpool.Pool // Kết nối cơ sở dữ liệu Postgres thread-safe
-	schema          string        // Tên schema SQL động được cấu hình
-	createQuery     string        // Câu lệnh tạo mới endpoint
-	getByIDQuery    string        // Câu lệnh lấy chi tiết endpoint
-	listAllQuery    string        // Câu lệnh lấy toàn bộ danh sách endpoint (global)
-	listByZoneQuery string        // Câu lệnh lấy danh sách endpoint theo zone
-	updateQuery     string        // Câu lệnh cập nhật endpoint
-	deleteQuery     string        // Câu lệnh xóa endpoint
+	db                 *pgxpool.Pool // Kết nối cơ sở dữ liệu Postgres thread-safe
+	schema             string        // Tên schema SQL động được cấu hình
+	createQuery        string        // Câu lệnh tạo mới endpoint
+	getByIDQuery       string        // Câu lệnh lấy chi tiết endpoint theo zone
+	getGlobalByIDQuery string        // Câu lệnh lấy chi tiết endpoint toàn cầu
+	listGlobalQuery    string        // Câu lệnh lấy danh sách endpoint toàn cầu bằng cursor
+	listByZoneQuery    string        // Câu lệnh lấy danh sách endpoint theo zone bằng cursor
+	updateQuery        string        // Câu lệnh cập nhật endpoint
+	deleteQuery        string        // Câu lệnh xóa endpoint
 }
 
 // NewEndpointRepository khởi tạo một đối tượng EndpointRepository mới cho Postgres và biên dịch sẵn SQL statements.
@@ -79,7 +83,7 @@ func NewEndpointRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterfa
 			FROM %s.mail_endpoints
 			WHERE zone_id = $1 AND id = $2
 		`, schema),
-		listAllQuery: fmt.Sprintf(`
+		getGlobalByIDQuery: fmt.Sprintf(`
 			SELECT 
 				id,
 				zone_id,
@@ -100,7 +104,32 @@ func NewEndpointRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterfa
 				created_at,
 				updated_at
 			FROM %s.mail_endpoints
-			ORDER BY created_at DESC
+			WHERE id = $1
+		`, schema),
+		listGlobalQuery: fmt.Sprintf(`
+			SELECT 
+				id,
+				zone_id,
+				name,
+				host,
+				port,
+				username,
+				password,
+				tls_mode,
+				status,
+				max_connections,
+				priority,
+				weight,
+				ca_cert_pem,
+				client_cert_pem,
+				client_key_pem,
+				is_active,
+				created_at,
+				updated_at
+			FROM %s.mail_endpoints
+			WHERE ($1::timestamp IS NULL OR (created_at, id) < ($1::timestamp, $2::varchar))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $3
 		`, schema),
 		listByZoneQuery: fmt.Sprintf(`
 			SELECT 
@@ -123,8 +152,9 @@ func NewEndpointRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterfa
 				created_at,
 				updated_at
 			FROM %s.mail_endpoints
-			WHERE zone_id = $1
-			ORDER BY created_at DESC
+			WHERE zone_id = $1 AND ($2::timestamp IS NULL OR (created_at, id) < ($2::timestamp, $3::varchar))
+			ORDER BY created_at DESC, id DESC
+			LIMIT $4
 		`, schema),
 		updateQuery: fmt.Sprintf(`
 			UPDATE %s.mail_endpoints
@@ -237,22 +267,102 @@ func (r *endpointRepoPostgres) GetByID(ctx context.Context, zoneID uuid.UUID, id
 	return &ent, nil
 }
 
-// List truy vấn toàn bộ danh sách mail endpoints thuộc về một physical Zone chỉ định.
-func (r *endpointRepoPostgres) List(ctx context.Context, zoneID uuid.UUID) ([]*mailEntity.Endpoint, error) {
-	var rows pgx.Rows
-	var err error
-
-	if zoneID == uuid.Nil {
-		rows, err = r.db.Query(ctx, r.listAllQuery)
-	} else {
-		rows, err = r.db.Query(ctx, r.listByZoneQuery, zoneID.String())
+// GetGlobalByID truy vấn chi tiết một Endpoint trên toàn bộ các zone dựa trên ID.
+func (r *endpointRepoPostgres) GetGlobalByID(ctx context.Context, id uuid.UUID) (*mailEntity.Endpoint, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("mail repo: id không được phép nil/empty")
 	}
 
+	var m mailModel.Endpoint
+	var idStr, zoneIDStr string
+	var createdAt, updatedAt time.Time
+	err := r.db.QueryRow(ctx, r.getGlobalByIDQuery, id.String()).Scan(
+		&idStr,
+		&zoneIDStr,
+		&m.Name,
+		&m.Host,
+		&m.Port,
+		&m.Username,
+		&m.Password,
+		&m.TLSMode,
+		&m.Status,
+		&m.MaxConnections,
+		&m.Priority,
+		&m.Weight,
+		&m.CACertPEM,
+		&m.ClientCertPEM,
+		&m.ClientKeyPEM,
+		&m.IsActive,
+		&createdAt,
+		&updatedAt,
+	)
+	m.CreatedAt = &createdAt
+	m.UpdatedAt = &updatedAt
 	if err != nil {
-		return nil, fmt.Errorf("mail repo: lỗi truy vấn các endpoint: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("mail repo: không tìm thấy endpoint toàn cầu (id: %s)", id.String())
+		}
+		return nil, fmt.Errorf("mail repo: lỗi truy vấn endpoint toàn cầu %s: %w", id.String(), err)
+	}
+
+	m.ID = uuid.MustParse(idStr)
+	m.ZoneID = uuid.MustParse(zoneIDStr)
+
+	ent := mailModel.EndpointModelToEntity(m)
+	return &ent, nil
+}
+
+// ListByZone truy vấn danh sách mail endpoints thuộc về một physical Zone chỉ định bằng cursor.
+func (r *endpointRepoPostgres) ListByZone(ctx context.Context, zoneID uuid.UUID, cursor string, limit int) ([]*mailEntity.Endpoint, string, error) {
+	if zoneID == uuid.Nil {
+		return nil, "", fmt.Errorf("mail repo: zoneID không được phép nil khi liệt kê theo zone")
+	}
+
+	var cursorTime *time.Time
+	var cursorID *uuid.UUID
+	if cursor != "" {
+		t, uid, err := decodeCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		cursorTime = &t
+		cursorID = &uid
+	}
+
+	queryLimit := limit + 1
+	rows, err := r.db.Query(ctx, r.listByZoneQuery, zoneID.String(), cursorTime, cursorID, queryLimit)
+	if err != nil {
+		return nil, "", fmt.Errorf("mail repo: lỗi truy vấn các endpoint theo zone: %w", err)
 	}
 	defer rows.Close()
 
+	return r.scanEndpointsAndBuildCursor(rows, limit)
+}
+
+// ListGlobal truy vấn danh sách mail endpoints trên toàn bộ các zone bằng cursor.
+func (r *endpointRepoPostgres) ListGlobal(ctx context.Context, cursor string, limit int) ([]*mailEntity.Endpoint, string, error) {
+	var cursorTime *time.Time
+	var cursorID *uuid.UUID
+	if cursor != "" {
+		t, uid, err := decodeCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		cursorTime = &t
+		cursorID = &uid
+	}
+
+	queryLimit := limit + 1
+	rows, err := r.db.Query(ctx, r.listGlobalQuery, cursorTime, cursorID, queryLimit)
+	if err != nil {
+		return nil, "", fmt.Errorf("mail repo: lỗi truy vấn các endpoint toàn cầu: %w", err)
+	}
+	defer rows.Close()
+
+	return r.scanEndpointsAndBuildCursor(rows, limit)
+}
+
+func (r *endpointRepoPostgres) scanEndpointsAndBuildCursor(rows pgx.Rows, limit int) ([]*mailEntity.Endpoint, string, error) {
 	var endpoints []*mailEntity.Endpoint
 
 	for rows.Next() {
@@ -280,7 +390,7 @@ func (r *endpointRepoPostgres) List(ctx context.Context, zoneID uuid.UUID) ([]*m
 			&updatedAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("mail repo: lỗi scan hàng dữ liệu endpoint: %w", err)
+			return nil, "", fmt.Errorf("mail repo: lỗi scan hàng dữ liệu endpoint: %w", err)
 		}
 		m.CreatedAt = &createdAt
 		m.UpdatedAt = &updatedAt
@@ -293,10 +403,45 @@ func (r *endpointRepoPostgres) List(ctx context.Context, zoneID uuid.UUID) ([]*m
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("mail repo: lỗi rows cursor: %w", err)
+		return nil, "", fmt.Errorf("mail repo: lỗi rows cursor: %w", err)
 	}
 
-	return endpoints, nil
+	var nextCursor string
+	if len(endpoints) > limit {
+		lastRecord := endpoints[limit-1]
+		nextCursor = encodeCursor(*lastRecord.CreatedAt, lastRecord.ID)
+		endpoints = endpoints[:limit]
+	}
+
+	return endpoints, nextCursor, nil
+}
+
+func encodeCursor(t time.Time, id uuid.UUID) string {
+	str := fmt.Sprintf("%d,%s", t.UnixNano(), id.String())
+	return base64.StdEncoding.EncodeToString([]byte(str))
+}
+
+func decodeCursor(cursorStr string) (time.Time, uuid.UUID, error) {
+	if cursorStr == "" {
+		return time.Time{}, uuid.Nil, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(cursorStr)
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+	parts := strings.Split(string(decoded), ",")
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid cursor format")
+	}
+	nano, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid cursor timestamp: %w", err)
+	}
+	uid, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid cursor uuid: %w", err)
+	}
+	return time.Unix(0, nano), uid, nil
 }
 
 // Update cập nhật các trường thông tin phẳng của Endpoint.

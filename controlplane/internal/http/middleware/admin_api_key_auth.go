@@ -27,6 +27,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -51,10 +52,8 @@ const adminAPIKeyRotationTriggerTTL = 10 * time.Minute
 
 // adminAPIKeyAuthState giữ dependency runtime cho admin API-key middleware.
 var adminAPIKeyAuthState = struct {
-	mu                  sync.RWMutex
-	registry            *cacheengine.CacheRegistry
-	verifyAccessSecret  func(ctx context.Context, accessKey string, accessSecret string) (bool, error)
-	setRotationRequired func(ctx context.Context, ttl time.Duration) error
+	mu       sync.RWMutex
+	registry *cacheengine.CacheRegistry
 }{}
 
 type adminAuthOptions struct {
@@ -69,25 +68,13 @@ type adminAuthOptions struct {
 type AdminAuthOption func(*adminAuthOptions)
 
 // InitAdminAPIKeyAuth khởi tạo dependency cho AdminAPIKeyAuth.
-func InitAdminAPIKeyAuth(
-	registry *cacheengine.CacheRegistry,
-	verifyAccessSecret func(ctx context.Context, accessKey string, accessSecret string) (bool, error),
-	setRotationRequired func(ctx context.Context, ttl time.Duration) error,
-) error {
+func InitAdminAPIKeyAuth(registry *cacheengine.CacheRegistry) error {
 	if registry == nil {
 		return errors.New("admin api key auth: cache registry is required")
-	}
-	if verifyAccessSecret == nil {
-		return errors.New("admin api key auth: verify access secret is required")
-	}
-	if setRotationRequired == nil {
-		return errors.New("admin api key auth: rotation trigger is required")
 	}
 
 	adminAPIKeyAuthState.mu.Lock()
 	adminAPIKeyAuthState.registry = registry
-	adminAPIKeyAuthState.verifyAccessSecret = verifyAccessSecret
-	adminAPIKeyAuthState.setRotationRequired = setRotationRequired
 	adminAPIKeyAuthState.mu.Unlock()
 	return nil
 }
@@ -171,10 +158,8 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		adminAPIKeyAuthState.mu.RLock()
 		registry := adminAPIKeyAuthState.registry
-		verifyAccessSecret := adminAPIKeyAuthState.verifyAccessSecret
-		setRotationRequired := adminAPIKeyAuthState.setRotationRequired
 		adminAPIKeyAuthState.mu.RUnlock()
-		if registry == nil || verifyAccessSecret == nil || setRotationRequired == nil {
+		if registry == nil {
 			if isLogout {
 				c.Next()
 				return
@@ -234,7 +219,8 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		//   để hệ thống xoay khóa trong nền. Request hiện tại vẫn bị từ chối (401).
 		// --------------------------------------------------------------------
 		if expired {
-			_ = setRotationRequired(c.Request.Context(), adminAPIKeyRotationTriggerTTL)
+			// Kích hoạt cờ xoay khóa trực tiếp trên L2 Cache
+			_ = registry.L2.Set(c.Request.Context(), "iam:admin_key_rotation:required", "1", 1, adminAPIKeyRotationTriggerTTL)
 		}
 
 		if !parsed {
@@ -260,9 +246,9 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		}
 
 		// --------------------------------------------------------------------
-		// 🔄 Verify access_secret qua runtime cache (Redis).
+		// 🔄 Xác thực access_secret trực tiếp thông qua Redis L2 Cache.
 		// --------------------------------------------------------------------
-		verified, err := verifyAccessSecret(c.Request.Context(), accessKey, accessSecret)
+		payload, _, exists, err := registry.L2.Get(c.Request.Context(), "admin_access_session:"+accessKey)
 		if err != nil {
 			if isLogout {
 				c.Next()
@@ -271,7 +257,29 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			abortAdminAuthUnavailable(c)
 			return
 		}
-		if !verified {
+		if !exists {
+			if isLogout {
+				c.Next()
+				return
+			}
+			abortAdminUnauthorized(c)
+			return
+		}
+
+		var session struct {
+			AccessSecretHash string `json:"access_secret_hash"`
+		}
+		if err := json.Unmarshal(payload, &session); err != nil {
+			if isLogout {
+				c.Next()
+				return
+			}
+			abortAdminAuthUnavailable(c)
+			return
+		}
+
+		incomingHash := security.HashTokenSHA256(accessSecret)
+		if session.AccessSecretHash != incomingHash {
 			if isLogout {
 				c.Next()
 				return

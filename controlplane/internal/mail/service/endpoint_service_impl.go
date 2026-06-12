@@ -14,6 +14,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
+	"controlplane/internal/http/middleware"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -58,41 +59,12 @@ func NewEndpointService(
 	}
 }
 
-func (s *endpointServiceImpl) resolveZone(ctx context.Context) (uuid.UUID, error) {
-	code, ok := ctx.Value(zoneCodeCtxKey{}).(string)
-	if !ok || code == "" || code == "global" || code == "all" {
-		return uuid.Nil, nil
-	}
-
-	normalizedCode := strings.ToLower(strings.TrimSpace(code))
-	val, err := s.l1Registry.GetOrLoad(ctx, "zone_by_code", normalizedCode)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("mail service: zone '%s' not found: %w", normalizedCode, err)
-	}
-
-	zoneIDStr, ok := val.(string)
-	if !ok || zoneIDStr == "" {
-		return uuid.Nil, fmt.Errorf("mail service: zone '%s' resolved empty or invalid type", code)
-	}
-
-	zoneID, err := uuid.Parse(zoneIDStr)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("mail service: zone '%s' has invalid uuid representation: %w", code, err)
-	}
-
-	return zoneID, nil
-}
-
 func (s *endpointServiceImpl) CreateEndpoint(
 	ctx context.Context,
 	params mailEntity.CreateEndpointParams,
 ) error {
-	zoneUUID, err := s.resolveZone(ctx)
-	if err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", "unknown", mailTaxonomy.OutcomeInvalidArgument).Inc()
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
-	}
-	if zoneUUID == uuid.Nil {
+	zoneUUID, ok := middleware.GetZoneID(ctx)
+	if !ok || zoneUUID == uuid.Nil {
 		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
 	}
@@ -176,21 +148,17 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	return nil
 }
 
-func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) (*mailEntity.Endpoint, error) {
+func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*mailEntity.Endpoint, error) {
+	zoneID, _ := middleware.GetZoneID(ctx)
+
+	var ent *mailEntity.Endpoint
+	var err error
 	if zoneID == uuid.Nil {
-		resolved, err := s.resolveZone(ctx)
-		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("get", "unknown", mailTaxonomy.OutcomeInvalidArgument).Inc()
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
-		}
-		if resolved == uuid.Nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("get", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required for get operation"), mailTaxonomy.OutcomeInvalidArgument)
-		}
-		zoneID = resolved
+		ent, err = s.endpointRepo.GetGlobalByID(ctx, id)
+	} else {
+		ent, err = s.endpointRepo.GetByID(ctx, zoneID, id)
 	}
 
-	ent, err := s.endpointRepo.GetByID(ctx, zoneID, id)
 	if err != nil {
 		mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.OutcomeNotFound).Inc()
 		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
@@ -220,20 +188,26 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, zoneID uuid.UUID,
 	return ent, nil
 }
 
-func (s *endpointServiceImpl) ListEndpoints(ctx context.Context, zoneID uuid.UUID) ([]*mailEntity.Endpoint, error) {
+func (s *endpointServiceImpl) ListEndpoints(
+	ctx context.Context,
+	cursor string,
+	limit int,
+) ([]*mailEntity.Endpoint, string, error) {
+	zoneID, _ := middleware.GetZoneID(ctx)
+
+	var list []*mailEntity.Endpoint
+	var nextCursor string
+	var err error
+
 	if zoneID == uuid.Nil {
-		resolved, err := s.resolveZone(ctx)
-		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("list", "unknown", mailTaxonomy.OutcomeDatabaseError).Inc()
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
-		}
-		zoneID = resolved
+		list, nextCursor, err = s.endpointRepo.ListGlobal(ctx, cursor, limit)
+	} else {
+		list, nextCursor, err = s.endpointRepo.ListByZone(ctx, zoneID, cursor, limit)
 	}
 
-	list, err := s.endpointRepo.List(ctx, zoneID)
 	if err != nil {
 		mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
-		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		return nil, "", apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
 	for _, ent := range list {
@@ -241,7 +215,7 @@ func (s *endpointServiceImpl) ListEndpoints(ctx context.Context, zoneID uuid.UUI
 			dec, err := security.DecryptSecret(ent.Password)
 			if err != nil {
 				mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
-				return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
+				return nil, "", apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 			}
 			ent.Password = dec
 		}
@@ -249,14 +223,14 @@ func (s *endpointServiceImpl) ListEndpoints(ctx context.Context, zoneID uuid.UUI
 			dec, err := security.DecryptSecret(ent.ClientKeyPEM)
 			if err != nil {
 				mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
-				return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
+				return nil, "", apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 			}
 			ent.ClientKeyPEM = dec
 		}
 	}
 
 	mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.Success).Inc()
-	return list, nil
+	return list, nextCursor, nil
 }
 
 func (s *endpointServiceImpl) UpdateEndpoint(
@@ -264,12 +238,8 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	params mailEntity.UpdateEndpointParams,
 ) (*mailEntity.Endpoint, error) {
 	if params.ZoneID == uuid.Nil {
-		resolved, err := s.resolveZone(ctx)
-		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", "unknown", mailTaxonomy.OutcomeInvalidArgument).Inc()
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
-		}
-		if resolved == uuid.Nil {
+		resolved, ok := middleware.GetZoneID(ctx)
+		if !ok || resolved == uuid.Nil {
 			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required for update operation"), mailTaxonomy.OutcomeInvalidArgument)
 		}
@@ -361,14 +331,11 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	return existing, nil
 }
 
-func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) error {
-	if zoneID == uuid.Nil {
-		resolved, err := s.resolveZone(ctx)
-		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("delete", "unknown", mailTaxonomy.OutcomeDatabaseError).Inc()
-			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
-		}
-		zoneID = resolved
+func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, id uuid.UUID) error {
+	zoneID, ok := middleware.GetZoneID(ctx)
+	if !ok || zoneID == uuid.Nil {
+		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
 	if err := s.endpointRepo.Delete(ctx, zoneID, id); err != nil {
@@ -380,23 +347,20 @@ func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, zoneID uuid.UU
 	return nil
 }
 
-func (s *endpointServiceImpl) TestConnection(ctx context.Context, zoneID uuid.UUID, id uuid.UUID) error {
-	if zoneID == uuid.Nil {
-		resolved, err := s.resolveZone(ctx)
-		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", "unknown", mailTaxonomy.OutcomeNotFound).Inc()
-			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
-		}
-		zoneID = resolved
+func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) error {
+	zoneUUID, ok := middleware.GetZoneID(ctx)
+	if !ok || zoneUUID == uuid.Nil {
+		mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to test endpoint connection"), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
-	_, err := s.GetEndpoint(ctx, zoneID, id)
+	_, err := s.GetEndpoint(ctx, id)
 	if err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", zoneID.String(), mailTaxonomy.OutcomeNotFound).Inc()
+		mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeNotFound).Inc()
 		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", zoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+	mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
 	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: connection test is not implemented"), mailTaxonomy.OutcomeDatabaseError)
 }
 
@@ -465,11 +429,16 @@ func (s *endpointServiceImpl) TestConnectionRaw(
 
 	// Write to outbox_records
 	record := &mailEntity.MailOutboxRecord{
-		EventID:     eventID.String(),
-		ZoneID:      params.ZoneID,
-		JobTopic:    "mail.test_connection",
-		PayloadJSON: string(payloadBytes),
-		Status:      mailEntity.OutboxStatusPending,
+		EventID:              eventID,
+		ZoneID:               params.ZoneID,
+		JobTopic:             "mail.test_connection",
+		PayloadJSON:          string(payloadBytes),
+		Status:               mailEntity.OutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           "",
+		PayloadSchemaVersion: 1,
+		TraceID:              eventID.String(),
+		Idle:                 30,
 	}
 
 	if err := s.outboxRepo.Save(ctx, record); err != nil {
