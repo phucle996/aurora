@@ -51,8 +51,6 @@ type MailOutboxRecord struct {
 	PayloadSchemaVersion uint32
 	// TraceID: Mã định danh phân tán (OpenTelemetry Trace ID) dùng để liên kết chuỗi vết hoạt động (Distributed Tracing)
 	TraceID *string
-	// Idle: Thời gian Lease tính bằng giây. Tránh các worker khác tranh giành job khi đang xử lý
-	Idle uint32
 	// ErrorCode: Mã lỗi phản hồi từ Dataplane gửi về nếu có sự cố xảy ra
 	ErrorCode *string
 	// ErrorMessage: Mô tả chi tiết thông tin lỗi phản hồi từ hệ thống

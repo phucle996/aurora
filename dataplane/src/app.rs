@@ -36,6 +36,7 @@ pub struct AppContainer {
     pub redis_internal_zone: Arc<RedisClientManager>,
     pub policy_engine: Arc<PolicyEngine>,
     pub worker_pool: Arc<WorkerLifecycleManager>,
+    pub active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
 }
 
 impl AppContainer {
@@ -49,6 +50,7 @@ impl AppContainer {
                 redis_internal_zone: boot.redis_internal_zone,
                 policy_engine: boot.policy_engine,
                 worker_pool: boot.worker_pool,
+                active_lock_registry: Arc::new(crate::workerpool::heartbeat::ActiveLockRegistry::new()),
             },
             boot.worker_signal_rx,
         )
@@ -58,6 +60,18 @@ impl AppContainer {
     pub async fn start(&self, mut worker_signal_rx: mpsc::Receiver<WorkerSignal>) {
         // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
         crate::observability::resource::ResourceMonitor::start_monitor();
+
+        // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Heartbeat Watcher) định kỳ 10 giây
+        let registry = self.active_lock_registry.clone();
+        let redis_internal = self.redis_internal_zone.clone();
+        tokio::spawn(async move {
+            crate::workerpool::heartbeat::start_heartbeat_loop(
+                registry,
+                redis_internal,
+                30, // TTL gia hạn trên Redis là 30 giây
+                Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
+            ).await;
+        });
 
         // 0e. Khởi chạy luồng giám sát sức khỏe kép (Dual-Path Liveness Heartbeat) định kỳ 5 giây
         let redis_job_hb = self.redis_job.clone();
@@ -131,6 +145,7 @@ impl AppContainer {
                 self.policy_engine.clone(),
                 self.redis_job.clone(),
                 self.redis_internal_zone.clone(),
+                self.active_lock_registry.clone(),
             )
             .await;
 
@@ -140,6 +155,7 @@ impl AppContainer {
         let worker_pool_scale = self.worker_pool.clone();
         let redis_job_scale = self.redis_job.clone();
         let redis_internal_zone_scale = self.redis_internal_zone.clone();
+        let active_lock_registry_scale = self.active_lock_registry.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -202,6 +218,7 @@ impl AppContainer {
                                     policy_engine_scale.clone(),
                                     redis_job_scale.clone(),
                                     redis_internal_zone_scale.clone(),
+                                    active_lock_registry_scale.clone(),
                                 )
                                 .await;
                         }

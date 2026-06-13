@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
     resource_id VARCHAR(64),
     payload_schema_version INT NOT NULL DEFAULT 1,
     trace_id VARCHAR(64),
-    idle INT, -- NULL means no timeout/limit
 
     -- CÁC CỘT LƯU KẾT QUẢ PHẢN HỒI TỪ DATAPLANE:
     error_code VARCHAR(100),

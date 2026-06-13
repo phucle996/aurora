@@ -230,7 +230,6 @@ impl CdcStreamer {
         let resource_id = fields.get("resource_id").cloned().unwrap_or_default();
         let payload_schema_version_str = fields.get("payload_schema_version").cloned().unwrap_or_default();
         let trace_id = fields.get("trace_id").cloned().unwrap_or_default();
-        let idle_str = fields.get("idle").cloned().unwrap_or_default();
 
         if event_id.is_empty() || zone_id.is_empty() || job_topic.is_empty() {
             Logger::sys_warn("cdc.insert", "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng", "Missing event_id/zone_id/job_topic");
@@ -247,13 +246,6 @@ impl CdcStreamer {
 
         let job_version = job_version_str.parse::<u32>().unwrap_or(1);
         let payload_schema_version = payload_schema_version_str.parse::<u32>().unwrap_or(1);
-        
-        // idle = None nếu giá trị trong db là NULL (không giới hạn thời gian lease)
-        let idle = if idle_str.is_empty() {
-            None
-        } else {
-            idle_str.parse::<u32>().ok()
-        };
 
         // Đóng gói cấu trúc JobPayload với cột nhị phân thay cho JSON
         let payload = JobPayload {
@@ -265,7 +257,6 @@ impl CdcStreamer {
             payload_schema_version,
             payload: payload_bytes,
             trace_id,
-            idle,
         };
 
         // Chuẩn hóa payload sang chuỗi JSON string (chứa mảng bytes của trường payload)

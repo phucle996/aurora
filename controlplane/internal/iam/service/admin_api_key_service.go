@@ -804,7 +804,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 
 	adminAPIToken, signErr := security.SignWithSecret(security.Claims{
-		Subject:   "admin",
+		Subject:   "sre",
 		AccessKey: accessKey.String(),
 		TokenID:   adminJTI.String(),
 		TokenUse:  "admin_api",

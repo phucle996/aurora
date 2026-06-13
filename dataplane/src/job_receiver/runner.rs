@@ -14,6 +14,7 @@ struct ExecutionCleanupGuard {
     redis_internal_zone: Arc<RedisClientManager>,
     lock_key: String,
     active_jobs: Arc<AtomicUsize>,
+    active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
 }
 
 impl Drop for ExecutionCleanupGuard {
@@ -21,6 +22,10 @@ impl Drop for ExecutionCleanupGuard {
         let redis = self.redis_internal_zone.clone();
         let lock = self.lock_key.clone();
         let active = self.active_jobs.clone();
+        let registry = self.active_lock_registry.clone();
+
+        // Đồng bộ xóa khỏi Registry ngay lập tức để chặn chu kỳ heartbeat tiếp theo gia hạn khóa
+        registry.deregister(&lock);
 
         // Spawn một task độc lập để giải phóng tài nguyên bất đồng bộ ngoài tầm của task bị hủy
         tokio::spawn(async move {
@@ -39,34 +44,51 @@ impl JobRunner {
         worker_pool: Arc<WorkerLifecycleManager>,
         redis_job: Arc<RedisClientManager>,
         redis_internal_zone: Arc<RedisClientManager>,
+        active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
         active_jobs: Arc<AtomicUsize>,
         stream_key: String,
     ) {
         let lock_key = format!("locks:job:{}", payload.job_id);
-        let idle_opt = payload.idle;
 
         tokio::spawn(async move {
-            let timeout_duration = match idle_opt {
-                Some(secs) if secs > 0 => Duration::from_secs((secs as u64 * 9) / 10),
-                _ => Duration::from_secs(3600 * 24 * 365), // 1 year (no limit)
-            };
+            let timeout_duration = Duration::from_secs(600); // Giới hạn tối đa 10 phút cho mỗi job thực thi
             let job_id = payload.job_id.clone();
             let result_channel = format!("job_results:{}", job_id);
 
             Logger::sys_info(
                 "job.runner",
                 &format!(
-                    "Job Runner: Starting execution wrapper for job {} with Early Timeout: {:?}",
+                    "Job Runner: Starting execution wrapper for job {} with Execution Timeout: {:?}",
                     job_id, timeout_duration
                 ),
             );
+
+            // Đăng ký lock key vào Registry để kích hoạt luồng gia hạn tự động (Heartbeating)
+            active_lock_registry.register(lock_key.clone());
 
             // Đăng ký guard tự động dọn dẹp tài nguyên
             let _guard = ExecutionCleanupGuard {
                 redis_internal_zone: redis_internal_zone.clone(),
                 lock_key: lock_key.clone(),
                 active_jobs: active_jobs.clone(),
+                active_lock_registry: active_lock_registry.clone(),
             };
+
+            // Báo cáo trạng thái bắt đầu xử lý (PROCESSING) qua Redis Pub/Sub và gRPC
+            let processing_report = JobExecutionResult {
+                job_id: job_id.clone(),
+                job_version: payload.job_version,
+                attempt: payload.attempt,
+                result_status: "PROCESSING".to_string(),
+                error_code: None,
+                message: "Job execution started on dataplane worker".to_string(),
+            };
+            let _ = JobResultReporter::report_outcome(
+                redis_job.client(),
+                &result_channel,
+                &processing_report,
+            )
+            .await;
 
             // Thực thi định tuyến và gọi Executor nghiệp vụ, bọc trong Early Timeout
             let payload_dispatch = payload.clone();

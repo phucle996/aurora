@@ -89,8 +89,8 @@ impl JobExecutionResult {
                 job_version,
                 attempt,
                 result_status: "FAILED".to_string(),
-                error_code: Some("EARLY_TIMEOUT".to_string()),
-                message: "Workload execution exceeded limit of idle time".to_string(),
+                error_code: Some("EXECUTION_TIMEOUT".to_string()),
+                message: "Workload execution exceeded maximum execution time limit".to_string(),
             },
         }
     }

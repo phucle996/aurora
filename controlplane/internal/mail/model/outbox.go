@@ -24,7 +24,6 @@ type MailOutboxRecord struct {
 	ResourceID           string     `db:"resource_id"`
 	PayloadSchemaVersion uint32     `db:"payload_schema_version"`
 	TraceID              *string    `db:"trace_id"`
-	Idle                 uint32     `db:"idle"`
 	ErrorCode            *string    `db:"error_code"`
 	ErrorMessage         *string    `db:"error_message"`
 }
@@ -44,7 +43,6 @@ func OutboxEntityToModel(e mailEntity.MailOutboxRecord) MailOutboxRecord {
 		ResourceID:           e.ResourceID,
 		PayloadSchemaVersion: e.PayloadSchemaVersion,
 		TraceID:              e.TraceID,
-		Idle:                 e.Idle,
 		ErrorCode:            e.ErrorCode,
 		ErrorMessage:         e.ErrorMessage,
 	}
@@ -65,7 +63,6 @@ func OutboxModelToEntity(m MailOutboxRecord) mailEntity.MailOutboxRecord {
 		ResourceID:           m.ResourceID,
 		PayloadSchemaVersion: m.PayloadSchemaVersion,
 		TraceID:              m.TraceID,
-		Idle:                 m.Idle,
 		ErrorCode:            m.ErrorCode,
 		ErrorMessage:         m.ErrorMessage,
 	}

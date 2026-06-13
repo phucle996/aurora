@@ -83,7 +83,7 @@ impl ResultConsumer {
 
         let status = result.result_status.clone();
         let error_code = result.error_code.clone();
-        let error_message = if status == "SUCCEEDED" {
+        let error_message = if status == "SUCCEEDED" || status == "PROCESSING" {
             None
         } else {
             Some(result.message.clone())
@@ -95,25 +95,33 @@ impl ResultConsumer {
             pg_client.query_opt(
                 "UPDATE mail_outbox_records 
                  SET status = $1, 
-                     attempts = $2, 
-                     last_attempt = CURRENT_TIMESTAMP, 
+                     completed_at = CURRENT_TIMESTAMP, 
                      error_code = NULL, 
                      error_message = NULL
-                 WHERE event_id = $3 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
                  RETURNING user_id, job_topic, trace_id",
-                &[&status, &(result.attempt as i32), &result.job_id],
+                &[&status, &result.job_id],
+            ).await?
+        } else if status == "PROCESSING" {
+            pg_client.query_opt(
+                "UPDATE mail_outbox_records 
+                 SET status = $1,
+                     error_code = NULL, 
+                     error_message = NULL
+                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 RETURNING user_id, job_topic, trace_id",
+                &[&status, &result.job_id],
             ).await?
         } else {
             pg_client.query_opt(
                 "UPDATE mail_outbox_records 
                  SET status = $1, 
-                     attempts = $2, 
-                     last_attempt = CURRENT_TIMESTAMP, 
-                     error_code = $3, 
-                     error_message = $4
-                 WHERE event_id = $5 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                     completed_at = CURRENT_TIMESTAMP, 
+                     error_code = $2, 
+                     error_message = $3
+                 WHERE event_id = $4 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
                  RETURNING user_id, job_topic, trace_id",
-                &[&status, &(result.attempt as i32), &error_code, &error_message, &result.job_id],
+                &[&status, &error_code, &error_message, &result.job_id],
             ).await?
         };
 
@@ -141,11 +149,19 @@ impl ResultConsumer {
                     &format!("Bắt đầu tạo sự kiện realtime cho user {}", user_id),
                 );
 
+                let notification_status = if status == "SUCCEEDED" {
+                    "SUCCESS".to_string()
+                } else if status == "PROCESSING" {
+                    "PROCESSING".to_string()
+                } else {
+                    "FAILED".to_string()
+                };
+
                 // Đóng gói sự kiện JobNotificationEvent theo cấu trúc Protobuf
                 let event = job_proto::JobNotificationEvent {
                     job_id: result.job_id.clone(),
                     user_id: user_id.clone(),
-                    status: if status == "SUCCEEDED" { "SUCCESS".to_string() } else { "FAILED".to_string() },
+                    status: notification_status,
                     event_type: job_topic.clone(),
                     title: match job_topic.as_str() {
                         "mail.test_connection" => "SMTP Connection Test".to_string(),

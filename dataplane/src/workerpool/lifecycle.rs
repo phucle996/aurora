@@ -102,6 +102,7 @@ impl WorkerLifecycleManager {
         policy_engine: Arc<crate::policyengine::engine::PolicyEngine>,
         redis_job: Arc<crate::infra::redis::RedisClientManager>,
         redis_internal_zone: Arc<crate::infra::redis::RedisClientManager>,
+        active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
     ) {
         let child_token = self.cancel_token.child_token();
 
@@ -133,6 +134,7 @@ impl WorkerLifecycleManager {
                 worker_id,
                 worker_token,
                 self_clone,
+                active_lock_registry,
             )
             .await;
 

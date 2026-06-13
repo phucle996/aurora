@@ -138,17 +138,11 @@ pub async fn acknowledge_message(client: &redis::Client, stream_key: &str, group
     Ok(())
 }
 
-/// Thiết lập Distributed Lease Lock với thời hạn (TTL) tính bằng giây.
-pub async fn acquire_lease_lock(client: &redis::Client, lock_key: &str, lease_time_secs: Option<u32>) -> Result<bool, String> {
+/// Thiết lập Distributed Lease Lock với thời hạn (TTL) mặc định 30 giây.
+pub async fn acquire_lease_lock(client: &redis::Client, lock_key: &str) -> Result<bool, String> {
     let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
     let mut cmd = redis::cmd("SET");
-    cmd.arg(lock_key).arg("locked").arg("NX");
-    
-    if let Some(secs) = lease_time_secs {
-        if secs > 0 {
-            cmd.arg("EX").arg(secs);
-        }
-    }
+    cmd.arg(lock_key).arg("locked").arg("NX").arg("EX").arg(30);
     
     let reply: redis::Value = cmd.query_async(&mut conn).await.map_err(|e| e.to_string())?;
 
@@ -173,6 +167,21 @@ pub async fn release_lease_lock(client: &redis::Client, lock_key: &str) -> Resul
     );
     Ok(())
 }
+
+/// Gia hạn hàng loạt các distributed lease lock bằng Redis Pipeline để tiết kiệm băng thông và I/O mạng.
+pub async fn bulk_expire_locks(client: &redis::Client, keys: &[String], ttl_secs: u64) -> Result<(), String> {
+    let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
+    
+    // Sử dụng redis::pipe() để gộp các lệnh EXPIRE gửi đi trong 1 TCP packet duy nhất.
+    let mut pipe = redis::pipe();
+    for key in keys {
+        pipe.cmd("EXPIRE").arg(key).arg(ttl_secs);
+    }
+    
+    let _: () = pipe.query_async(&mut conn).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 
 /// Đo đạc độ ứ đọng (Queue Lag) hiện tại của Stream.
 pub async fn query_stream_lag(client: &redis::Client, stream_key: &str) -> Result<u64, String> {

@@ -37,6 +37,7 @@ impl JobConsumer {
         worker_id: usize,
         cancel_token: CancellationToken,
         worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
+        active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
     ) {
         let stream_key = format!("jobs:{}", config.zone_id);
         Logger::sys_info(
@@ -146,10 +147,9 @@ impl JobConsumer {
                 );
 
                 let lock_key = format!("locks:job:{}", payload.job_id);
-                let idle_opt = payload.idle;
 
                 // 7. Thiết lập khóa phân phối Lease Lock trên redis_internal_zone
-                match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key, idle_opt).await {
+                match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key).await {
                     Ok(acquired) => {
                         if !acquired {
                             Logger::sys_warn(
@@ -180,6 +180,7 @@ impl JobConsumer {
                     worker_pool.clone(),
                     redis_job.clone(),
                     redis_internal_zone.clone(),
+                    active_lock_registry.clone(),
                     active_jobs.clone(),
                     stream_key.clone(),
                 );

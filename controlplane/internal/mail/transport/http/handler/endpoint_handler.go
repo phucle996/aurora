@@ -403,7 +403,7 @@ func (h *EndpointHandler) TryConnect(c *gin.Context) {
 	}
 
 	// thành công thì vào outbox rồi chờ thông báo - async workflow
-	apires.RespondSuccess(c, nil, "Connection successful")
+	apires.RespondSuccess(c, nil, "Connection test requested")
 }
 
 func formatTimePtr(t *time.Time) string {

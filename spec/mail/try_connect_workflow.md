@@ -19,6 +19,19 @@ To ensure **High Availability (HA)**, **DDoS/Abuse Protection**, and **Fault Iso
 
 ---
 
+## 🔍 Code Callsites & References (TOC)
+
+| Lifecycle Stage | Caller / Callsite | File Path | Function / Line Range |
+| :--- | :--- | :--- | :--- |
+| **Frontend Trigger** | UI Connection Test Click | `admin-ui/src/pages/mail/NewMailEndpoint.tsx` | `tryConnect` (~L144-L180) |
+| **Global Middlewares** | Request Lifecycle Gateways | `controlplane/internal/app/app.go` | `App` (~L244-L256) |
+| **Route Registration** | Endpoint Binding | `controlplane/internal/mail/route.go` | `RegisterRoutes` (~L170-L177) |
+| **HTTP Handler** | Request Parsing & validation | `controlplane/internal/mail/transport/http/handler/endpoint_handler.go` | `TryConnect` (~L354-L407) |
+| **Service Layer** | Business validation & outbox construction | `controlplane/internal/mail/service/endpoint_service_impl.go` | `TestConnectionRaw` (~L364-L449) |
+| **Outbox Repo** | DB transactional insert | `controlplane/internal/mail/repository/postgres/outbox_repo_postgres.go` | `Create` (~L59-L82) |
+
+---
+
 ## 🛡️ Middleware Chain & Context Injections
 
 Before reaching the `TryConnect` HTTP Handler, a request goes through a strict multi-layer security and telemetry chain.
@@ -41,7 +54,7 @@ Before reaching the `TryConnect` HTTP Handler, a request goes through a strict m
 | Middleware | Purpose / Action | Context Injections |
 | :--- | :--- | :--- |
 | **`middleware.AdminCIDR()`** | Evaluates client IP against compiled allowed CIDRs / static IP whitelist. Fail-Closed. | None |
-| **`middleware.AdminAPIKeyAuth()`** | Performs session cookie verification: (1) Decodes JWT from `admin_api_token` candidate key rotation keys, (2) Checks session access secret hash in L2 Redis cache. | **Gin & Go Context**: `constant.ContextKeyUserID` ("user_id") -> `claims.Subject` (Value: `"admin"`); **HTTP Header**: `X-Session-Expires-In` |
+| **`middleware.AdminAPIKeyAuth()`** | Performs session cookie verification: (1) Decodes JWT from `admin_api_token` candidate key rotation keys, (2) Checks session access secret hash in L2 Redis cache. | **Gin & Go Context**: `constant.ContextKeyUserID` ("user_id") -> `claims.Subject` (Value: `"sre"`); **HTTP Header**: `X-Session-Expires-In` |
 | **`middleware.UserZoneAuth()`** | Multi-tenancy isolation. (1) Extracts `zone_code` cookie, (2) Queries L1 `"zone_by_code"` loader to resolve UUID, (3) Compares claims Zone ID with resolved Zone ID. | **Go Context**: `zoneIDCtxKey{}` -> resolved `uuid.UUID` (injected via `ContextWithZoneID`) |
 | **`middleware.RateLimitPostAuth(...)`** | Anti-probing rate limit based on identity key: `path + clientIP + user_id / access_key`. | None |
 
@@ -66,7 +79,7 @@ sequenceDiagram
     
     H->>H: Bind JSON → TestConnectionRequest DTO
     H->>H: Trim spaces from certificate strings
-    H->>H: Construct TestConnection Entity (excluding ZoneID)
+    H->>H: Construct TestConnection Entity
     H->>S: Call TestConnectionRaw(ctx, Entity)
     
     S->>S: Extract ZoneID from Go context via GetZoneID(ctx)
@@ -81,38 +94,14 @@ sequenceDiagram
     DB-->>R: Return serial ID (RETURNING id)
     R-->>S: Return success
     S-->>H: Return success
-    H-->>UI: Response HTTP 200: {"message": "Connection successful"}
+    H-->>UI: Response HTTP 200: {"message": "Connection test requested"}
 ```
 
 ---
 
 ## 📊 Database Schema & Field Mappings
 
-The transient job is written to `mail_outbox_records` under the mail module schema.
-
-### 1. Database Table DDL (`000004_mail_outbox.up.sql`)
-
-```sql
-CREATE TABLE IF NOT EXISTS mail_outbox_records (
-    id BIGSERIAL PRIMARY KEY,
-    event_id VARCHAR(64) UNIQUE NOT NULL,
-    zone_id VARCHAR(64) NOT NULL,
-    job_topic VARCHAR(100) NOT NULL,
-    payload BYTEA NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
-    completed_at TIMESTAMP WITH TIME ZONE,
-    job_version INT NOT NULL DEFAULT 1,
-    resource_id VARCHAR(64),
-    payload_schema_version INT NOT NULL DEFAULT 1,
-    trace_id VARCHAR(64),
-    idle INT,
-    error_code VARCHAR(100),
-    error_message TEXT
-);
-```
-
-### 2. Complete Struct & Column Mapping
+The transient connection test job is written to the `mail_outbox_records` table under the mail module schema. The fields are mapped as follows:
 
 | DTO Field / Context Source | Entity / Protobuf Field | DB Model Field (`db` Tag) | Database Column |
 | :--- | :--- | :--- | :--- |
@@ -126,13 +115,74 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
 | Static Identifier | `ResourceID` (`"transient_test"`) | `ResourceID` (`resource_id`) | `resource_id` |
 | Static Schema | `PayloadSchemaVersion` (`1`) | `PayloadSchemaVersion` (`payload_schema_version`) | `payload_schema_version` |
 | `trace.SpanContextFromContext` | `TraceID` | `TraceID` (`trace_id`) | `trace_id` (nullable) |
-| Static Timeout | `Idle` (`90`) | `Idle` (`idle`) | `idle` (nullable) |
+| System Time (when completed) | `CompletedAt` | `CompletedAt` (`completed_at`) | `completed_at` (nullable) |
+| Dataplane Error (on failure) | `ErrorCode` | `ErrorCode` (`error_code`) | `error_code` (nullable) |
+| Dataplane Error Msg (on failure) | `ErrorMessage` | `ErrorMessage` (`error_message`) | `error_message` (nullable) |
+
+## 🔄 Phase 2: Job Lifecycle (CDC & Dataplane Execution)
+
+This phase manages the asynchronous execution of the SMTP test job via Change Data Capture (CDC), Redis Streams transport, Dataplane worker execution, and status synchronization back to the Controlplane database.
+
+### 1. Architectural Components & Callsites
+
+| Component | Responsibility | File Path / Context |
+| :--- | :--- | :--- |
+| **CDC Streamer** | Logical replication hook. Listens to PostgreSQL WAL for `mail_outbox_records` inserts and publishes to Redis Streams. | `job-proxy/src/cdc/mod.rs` |
+| **Redis Streams** | High-throughput, distributed event message broker. | Stream Key Pattern: `jobs:<zone_id>` |
+| **Dataplane Worker** | Consumer that parses `SmtpTestConfig` protobuf, runs SMTP network handshake, and outputs job results. Implemented by `SmtpTestExecutor`. | `dataplane/src/executor/mail/test_connection.rs` |
+| **Result Consumer** | Consumes job execution results and updates the `mail_outbox_records` table status in Controlplane database. | `job-proxy/src/result_consumer.rs` |
+
+### 2. Sequence 1: Job Lifecycle (High-Level Synchronization)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DB as Controlplane DB (PostgreSQL)
+    participant JP_CDC as Job-Proxy (CDC Streamer)
+    participant RDS as Redis Streams (jobs:<zone_id>)
+    participant DP as Dataplane Node
+    participant RP as Redis Pub/Sub (job_results:<job_id>)
+    participant JP_RC as Job-Proxy (Result Consumer)
+
+    DB->>JP_CDC: WAL Logical Replication Event (INSERT mail_outbox_records)
+    Note over JP_CDC: CdcStreamer parses event_id, zone_id, and binary payload
+    JP_CDC->>RDS: Push task event to zone stream (XADD)
+    
+    RDS->>DP: Consume connection test task (XREADGROUP)
+    Note over DP: Execute job & output execution results
+    DP->>RP: Publish Job Result to Pub/Sub channel (PUBLISH)
+    
+    RP->>JP_RC: Intercept result payload (PSUBSCRIBE pattern match)
+    Note over JP_RC: Parse JSON & perform atomic update
+    JP_RC->>DB: UPDATE mail_outbox_records SET status = SUCCEEDED/FAILED, completed_at = CURRENT_TIMESTAMP WHERE event_id = <job_id>
+```
 
 ---
 
-## 🔒 Security & Reliability Guarantees
+### 3. Sequence 2: Dataplane Job Execution (SMTP Connection Test)
 
-1. **Server-Side Zone Enforcement**: The client UI does not supply `zone_id`. It is resolved directly on the server by reading the authenticated user's `zone_code` cookie and mapping it to the zone UUID through the high-performance in-memory L1 cache loader. This prevents cross-tenant spoofing.
-2. **Fail-Closed Operations**: Critical checks (such as CIDR whitelist parsing, JWT candidates loading, and Redis session integrity checks) act as fail-closed gates. If any of these systems fail or lose connectivity, requests are rejected immediately rather than bypassed.
-3. **Fail-Open Telemetry**: Prometheus metrics and OpenTelemetry tracing act as fail-open features. If monitoring collectors are offline, business requests continue to execute successfully.
-4. **Outbox Pattern Integrity**: By saving the SMTP connection test as a transactional record inside PostgreSQL, the Controlplane remains stateless and unaffected by slow network connections. The asynchronous queue worker in the Dataplane executes the request reliably without blocking HTTP request threads.
+> [!NOTE]
+> The generic ingestion loop, admission control, and lease lock acquisition are documented in the separate [Dataplane Runtime Specification](file:///home/phucle/Desktop/New/spec/dataplane/dataplane_runtime.md).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant JR as Job Runner (JobRunner)
+    participant EX as SMTP Executor (SmtpTestExecutor)
+    participant SMTP as Target SMTP Server
+    participant RP as Redis Pub/Sub (job_results:<job_id>)
+    participant CP as Controlplane gRPC (ReportJobCompletion)
+
+    Note over JR: Job is dispatched to mail workload
+    JR->>EX: Execute task (dispatch_workload wrapped in 90% lease timeout)
+    
+    EX->>EX: Unmarshal payload to SmtpTestConfig
+    EX->>EX: Decode CA & Client certs if TLS/mTLS enabled
+    EX->>SMTP: Connect & SMTP Handshake (Raw Socket / TLS Handshake)
+    SMTP-->>EX: Return response (Success / Auth Fail / Network Timeout)
+    
+    EX-->>JR: Return Succeeded / Failed outcome
+    
+    JR->>RP: Publish result JSON to Pub/Sub channel (PUBLISH)
+    JR->>CP: Report job completion via gRPC
+```
