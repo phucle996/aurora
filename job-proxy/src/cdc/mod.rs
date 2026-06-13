@@ -225,7 +225,7 @@ impl CdcStreamer {
         let event_id = fields.get("event_id").cloned().unwrap_or_default();
         let zone_id = fields.get("zone_id").cloned().unwrap_or_default();
         let job_topic = fields.get("job_topic").cloned().unwrap_or_default();
-        let payload_json = fields.get("payload_json").cloned().unwrap_or_default();
+        let payload_hex = fields.get("payload").cloned().unwrap_or_default();
         let job_version_str = fields.get("job_version").cloned().unwrap_or_default();
         let resource_id = fields.get("resource_id").cloned().unwrap_or_default();
         let payload_schema_version_str = fields.get("payload_schema_version").cloned().unwrap_or_default();
@@ -236,6 +236,9 @@ impl CdcStreamer {
             Logger::sys_warn("cdc.insert", "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng", "Missing event_id/zone_id/job_topic");
             return Ok(());
         }
+
+        // Giải mã cột nhị phân (BYTEA) từ chuỗi đại diện hex truyền qua WAL
+        let payload_bytes = decode_pg_bytea(&payload_hex)?;
 
         // Tích hợp OpenTelemetry tracing: inject trace context từ WAL vào Span nghiệp vụ
         if !trace_id.is_empty() {
@@ -252,7 +255,7 @@ impl CdcStreamer {
             idle_str.parse::<u32>().ok()
         };
 
-        // Đóng gói cấu trúc JobPayload
+        // Đóng gói cấu trúc JobPayload với cột nhị phân thay cho JSON
         let payload = JobPayload {
             job_id: event_id.clone(),
             job_version,
@@ -260,12 +263,12 @@ impl CdcStreamer {
             job_topic: job_topic.clone(),
             resource_id,
             payload_schema_version,
-            payload_json,
+            payload: payload_bytes,
             trace_id,
             idle,
         };
 
-        // Chuẩn hóa payload sang chuỗi JSON string
+        // Chuẩn hóa payload sang chuỗi JSON string (chứa mảng bytes của trường payload)
         let payload_str = serde_json::to_string(&payload)?;
 
         // Định tuyến dynamic stream key theo zone_id
@@ -284,4 +287,22 @@ impl CdcStreamer {
 
         Ok(())
     }
+}
+
+/// Giải mã chuỗi hex biểu diễn cột BYTEA trong replication message của Postgres (dạng \x0aef...)
+fn decode_pg_bytea(val: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if !val.starts_with("\\x") {
+        return Ok(val.as_bytes().to_vec());
+    }
+    let hex_part = &val[2..];
+    if hex_part.len() % 2 != 0 {
+        return Err("Invalid hex length for pg bytea".into());
+    }
+    let mut bytes = Vec::with_capacity(hex_part.len() / 2);
+    for i in (0..hex_part.len()).step_by(2) {
+        let chunk = &hex_part[i..i + 2];
+        let byte = u8::from_str_radix(chunk, 16)?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
 }

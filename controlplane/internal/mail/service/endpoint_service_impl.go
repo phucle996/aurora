@@ -7,7 +7,6 @@ package mailSvcImpl
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -19,12 +18,15 @@ import (
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailMetrics "controlplane/internal/mail/metrics"
+	mailproto "controlplane/internal/mail/proto"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 type zoneCodeCtxKey struct{}
@@ -37,24 +39,21 @@ type endpointServiceImpl struct {
 	cfg          *config.Config
 	endpointRepo mailRepoInterface.EndpointRepository
 	outboxRepo   mailRepoInterface.MailOutboxRepository
-	rdsJob       *redis.Client
-	l1Registry   *cacheengine.CacheRegistry
+	cacheEngine  *cacheengine.CacheRegistry
 }
 
 func NewEndpointService(
 	cfg *config.Config,
 	endpointRepo mailRepoInterface.EndpointRepository,
 	outboxRepo mailRepoInterface.MailOutboxRepository,
-	rdsJob *redis.Client,
-	l1Registry *cacheengine.CacheRegistry,
+	cacheEngine *cacheengine.CacheRegistry,
 ) mailSvcInterface.EndpointService {
 
 	return &endpointServiceImpl{
 		cfg:          cfg,
 		endpointRepo: endpointRepo,
 		outboxRepo:   outboxRepo,
-		rdsJob:       rdsJob,
-		l1Registry:   l1Registry,
+		cacheEngine:  cacheEngine,
 	}
 }
 
@@ -71,17 +70,17 @@ func (s *endpointServiceImpl) CreateEndpoint(
 
 	// Xác thực các chứng chỉ TLS dựa vào TLSMode
 	switch params.TLSMode {
-	case "tls":
+	case mailEntity.TLSModeTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" {
 			mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
 			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
-	case "mtls":
+	case mailEntity.TLSModeMTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
 			mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
 			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
-	case "none", "starttls", "":
+	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
 		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
@@ -253,17 +252,17 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 
 	// Xác thực các chứng chỉ TLS dựa vào TLSMode
 	switch params.TLSMode {
-	case "tls":
+	case mailEntity.TLSModeTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" {
 			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
-	case "mtls":
+	case mailEntity.TLSModeMTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
 			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
-	case "none", "starttls", "":
+	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
 		mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
@@ -363,98 +362,83 @@ func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) 
 	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: connection test is not implemented"), mailTaxonomy.OutcomeDatabaseError)
 }
 
-type SmtpTestConfig struct {
-	Host          string  `json:"host"`
-	Port          int     `json:"port"`
-	Username      string  `json:"username"`
-	Password      string  `json:"password"`
-	TLSMode       string  `json:"tls_mode"`
-	CACertPEM     *string `json:"ca_cert_pem,omitempty"`
-	ClientCertPEM *string `json:"client_cert_pem,omitempty"`
-	ClientKeyPEM  *string `json:"client_key_pem,omitempty"`
-}
-
-func (s *endpointServiceImpl) TestConnectionRaw(
-	ctx context.Context,
-	params mailEntity.CreateEndpointParams,
-) error {
-	switch params.TLSMode {
-	case "tls":
-		if strings.TrimSpace(params.CACertPEM) == "" {
-			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
+func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEntity.TestConnection) error {
+	switch req.TLSMode {
+	case mailEntity.TLSModeTLS:
+		if req.CACertPEM == nil || *req.CACertPEM == "" {
+			return mailTaxonomy.ErrInvalidArgument
 		}
-	case "mtls":
-		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
-			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
+	case mailEntity.TLSModeMTLS:
+		if req.CACertPEM == nil || *req.CACertPEM == "" ||
+			req.ClientCertPEM == nil || *req.ClientCertPEM == "" ||
+			req.ClientKeyPEM == nil || *req.ClientKeyPEM == "" {
+			return mailTaxonomy.ErrInvalidArgument
 		}
-	case "none", "starttls", "":
+	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
+		return mailTaxonomy.ErrInvalidArgument
 	}
 
 	eventID, err := uuid.NewV7()
 	if err != nil {
-		return apperr.Wrap(mailTaxonomy.ErrInternal, err, mailTaxonomy.OutcomeDatabaseError)
+		return err
 	}
 
-	// Build payload_json
-	var caPtr, certPtr, keyPtr *string
-	if params.CACertPEM != "" {
-		caPtr = &params.CACertPEM
-	}
-	if params.ClientCertPEM != "" {
-		certPtr = &params.ClientCertPEM
-	}
-	if params.ClientKeyPEM != "" {
-		keyPtr = &params.ClientKeyPEM
+	// Trích xuất UserID từ context được middleware inject từ token xác thực
+	var userIDStr string
+	if uID, ok := ctx.Value(constant.ContextKeyUserID).(string); ok {
+		userIDStr = uID
 	}
 
-	smtpConfig := SmtpTestConfig{
-		Host:          params.Host,
-		Port:          params.Port,
-		Username:      params.Username,
-		Password:      params.Password,
-		TLSMode:       params.TLSMode,
-		CACertPEM:     caPtr,
-		ClientCertPEM: certPtr,
-		ClientKeyPEM:  keyPtr,
+	// Xây dựng cấu trúc cấu hình SMTP bằng protobuf
+	smtpConfig := &mailproto.SmtpTestConfig{
+		Host:     req.Host,
+		Port:     int32(req.Port),
+		Username: req.Username,
+		Password: req.Password,
+		TlsMode:  string(req.TLSMode),
+	}
+	if req.TLSMode == mailEntity.TLSModeTLS || req.TLSMode == mailEntity.TLSModeMTLS {
+		smtpConfig.CaCertPem = req.CACertPEM
+	}
+	if req.TLSMode == mailEntity.TLSModeMTLS {
+		smtpConfig.ClientCertPem = req.ClientCertPEM
+		smtpConfig.ClientKeyPem = req.ClientKeyPEM
 	}
 
-	payloadBytes, err := json.Marshal(smtpConfig)
+	// Tuần tự hóa cấu hình sang nhị phân cực nhanh bằng Protobuf (triệt tiêu dynamic allocation)
+	payloadBytes, err := proto.Marshal(smtpConfig)
 	if err != nil {
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
+		return err
 	}
 
-	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh (đầy đủ các thuộc tính của Entity)
+	// Trích xuất Trace ID thực tế từ context nếu có (do OTelTraceContext ở tầng middleware tiêm vào go context)
+	var traceIDPtr *string
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID().String()
+		traceIDPtr = &tid
+	}
+
+	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh (lưu UserID riêng biệt ở cột DB)
 	record := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		ZoneID:               params.ZoneID,
+		ZoneID:               req.ZoneID,
 		JobTopic:             "mail.test_connection",
-		PayloadJSON:          payloadBytes,
+		Payload:              payloadBytes,
+		UserID:               userIDStr,
 		Status:               mailEntity.OutboxStatusPending,
-		Attempts:             0,
-		LastAttempt:          nil,
-		CreatedAt:            time.Now().UTC(),
 		JobVersion:           1,
 		ResourceID:           "transient_test",
 		PayloadSchemaVersion: 1,
-		TraceID:              "trace-" + eventID.String(),
+		TraceID:              traceIDPtr,
 		Idle:                 90, // Thay đổi thời gian lease chờ kết quả lên 90 giây
-		ErrorCode:            nil,
-		ErrorMessage:         nil,
 	}
 
 	// Lưu bản ghi outbox trực tiếp vào cơ sở dữ liệu Postgres
-	// Hàng đợi outbox này sẽ được CDC qua WAL bởi Job-proxy xử lý bất đồng bộ
-	if err := s.outboxRepo.Save(ctx, record); err != nil {
-		return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("failed to save outbox event: %w", err), mailTaxonomy.OutcomeDatabaseError)
+	if err := s.outboxRepo.Create(ctx, record); err != nil {
+		return err
 	}
 
-	// Phục vụ cơ chế Cloud-Native và HA:
-	// Thay vì chặn luồng để chờ kết quả đồng bộ qua Redis Pub/Sub, chúng ta chỉ cần ghi nhận Job
-	// vào cơ sở dữ liệu Postgres (Outbox Pattern). Phần xử lý kết quả (result processing) sẽ được
-	// thực hiện thông qua một worker / handler bất đồng bộ khác sau này để tránh các lỗi race condition 
-	// cũng như tối ưu hóa tài nguyên kết nối của hệ thống.
 	return nil
 }

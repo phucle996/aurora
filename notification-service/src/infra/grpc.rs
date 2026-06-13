@@ -3,7 +3,7 @@ pub mod auth {
     tonic::include_proto!("auth");
 }
 
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, Endpoint, ClientTlsConfig, Certificate, Identity};
 use auth::auth_service_client::AuthServiceClient;
 use auth::{
     VerifyAdminTrinityTokenRequest, VerifyAdminTrinityTokenResponse,
@@ -17,16 +17,56 @@ pub struct GrpcAuthClient {
 }
 
 impl GrpcAuthClient {
-    pub fn new(endpoint: String) -> Self {
+    pub fn new(
+        endpoint: String,
+        ca_cert: Option<String>,
+        client_cert: Option<String>,
+        client_key: Option<String>,
+    ) -> Self {
         // [ignoring loop detection]
-        let url = format!("http://{}", endpoint);
+        let has_tls = ca_cert.is_some() || (client_cert.is_some() && client_key.is_some());
+        
+        let url = if has_tls {
+            format!("https://{}", endpoint)
+        } else {
+            format!("http://{}", endpoint)
+        };
         
         // Thiết lập endpoint với lazy connection, keep-alive và timeout để chống treo kết nối
-        let endpoint_configured = Endpoint::from_shared(url)
+        let mut endpoint_configured = Endpoint::from_shared(url)
             .expect("Invalid Controlplane gRPC endpoint URI")
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(5))
             .tcp_keepalive(Some(std::time::Duration::from_secs(15)));
+
+        if has_tls {
+            let mut tls_config = ClientTlsConfig::new();
+            
+            if let Some(ref ca_path) = ca_cert {
+                let ca_pem = std::fs::read(ca_path)
+                    .unwrap_or_else(|e| panic!("Failed to read gRPC CA cert from {}: {}", ca_path, e));
+                let cert = Certificate::from_pem(ca_pem);
+                tls_config = tls_config.ca_certificate(cert);
+            }
+            
+            if let (Some(ref cert_path), Some(ref key_path)) = (client_cert.clone(), client_key.clone()) {
+                let cert_pem = std::fs::read(&cert_path)
+                    .unwrap_or_else(|e| panic!("Failed to read gRPC client cert from {}: {}", cert_path, e));
+                let key_pem = std::fs::read(&key_path)
+                    .unwrap_or_else(|e| panic!("Failed to read gRPC client key from {}: {}", key_path, e));
+                let identity = Identity::from_pem(cert_pem, key_pem);
+                tls_config = tls_config.identity(identity);
+            }
+
+            // Cấu hình domain_name khớp với Common Name (CN) hoặc Subject Alternative Name (SAN) trong cert tự ký
+            let domain_name = std::env::var("CONTROLPLANE_GRPC_DOMAIN")
+                .unwrap_or_else(|_| "localhost".to_string());
+            tls_config = tls_config.domain_name(domain_name);
+
+            endpoint_configured = endpoint_configured
+                .tls_config(tls_config)
+                .expect("Failed to configure gRPC client TLS");
+        }
 
         // Khởi tạo kênh kết nối lazy (không block startup nếu Controlplane chưa sẵn sàng)
         let channel = endpoint_configured.connect_lazy();

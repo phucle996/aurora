@@ -6,8 +6,12 @@ use lettre::transport::smtp::client::{
     Certificate, CertificateStore, Identity, Tls, TlsParametersBuilder,
 };
 use lettre::SmtpTransport;
-use serde::Deserialize;
+use prost::Message;
 use std::time::Duration;
+
+pub mod mail_proto {
+    include!(concat!(env!("OUT_DIR"), "/mail.rs"));
+}
 
 /// ============================================================================
 /// 📂 MODULE: executor/mail/test_connection.rs - BỘ KIỂM TRA KẾT NỐI SMTP
@@ -19,8 +23,8 @@ use std::time::Duration;
 ///   - Ràng buộc an toàn: Không gây block thread của worker nhờ cơ chế Async/Tokio và Timeout.
 ///
 /// 🔄 CONTRACT & CALLSITE FLOW (CONTRACT):
-///   - Input: Nhận `JobPayload` chứa `payload_json` chứa cấu hình SMTP nhạy cảm.
-///   - Schema JSON mong đợi: `SmtpTestPayload` với các thuộc tính:
+///   - Input: Nhận `JobPayload` chứa `payload` chứa cấu hình SMTP nhạy cảm dạng nhị phân Protobuf.
+///   - Schema Protobuf mong đợi: `mail_proto::SmtpTestConfig` với các thuộc tính:
 ///       - `host`: Tên miền hoặc IP của SMTP Server.
 ///       - `port`: Cổng dịch vụ (ví dụ: 25, 465, 587).
 ///       - `username` / `password`: Tùy chọn tài khoản đăng nhập SMTP.
@@ -49,26 +53,6 @@ use std::time::Duration;
 ///     bảo vệ tài nguyên cho cụm High Availability của Dataplane.
 ///
 
-#[derive(Deserialize, Debug, Clone)]
-pub struct SmtpTestPayload {
-    /// Tên miền / Địa chỉ IP của SMTP Server (ví dụ: "smtp.gmail.com")
-    pub host: String,
-    /// Cổng kết nối SMTP (thường là 25, 465, 587 hoặc 2525)
-    pub port: u16,
-    /// Tài khoản đăng nhập tùy chọn
-    pub username: Option<String>,
-    /// Mật khẩu đăng nhập tùy chọn (được truyền an toàn qua Redis mã hóa)
-    pub password: Option<String>,
-    /// Chế độ bảo mật mong muốn: "none", "starttls", "tls", hoặc "mtls"
-    pub tls_mode: String,
-    /// Chứng chỉ CA tùy chọn định dạng PEM để xác thực Server
-    pub ca_cert_pem: Option<String>,
-    /// Chứng chỉ Client tùy chọn phục vụ mTLS (Client Authentication)
-    pub client_cert_pem: Option<String>,
-    /// Khóa riêng tư Client tùy chọn phục vụ mTLS (Client Authentication)
-    pub client_key_pem: Option<String>,
-}
-
 pub struct SmtpTestExecutor;
 
 #[async_trait]
@@ -84,11 +68,11 @@ impl Executor for SmtpTestExecutor {
         );
 
         // ----------------------------------------------------------------------
-        // Bước 1: Giải mã cấu hình SMTP từ JSON thô (Lazy Deserialization)
+        // Bước 1: Giải mã cấu hình SMTP từ Protobuf nhị phân (Lazy Deserialization)
         // ----------------------------------------------------------------------
         // Chỉ giải mã ngay trước khi thực thi để giảm diện tích bộ nhớ nhạy cảm.
-        let config: SmtpTestPayload = serde_json::from_str(&payload.payload_json).map_err(|e| {
-            ExecutorError::ExecutionFailed(format!("Invalid SMTP config JSON: {}", e))
+        let config = mail_proto::SmtpTestConfig::decode(payload.payload.as_slice()).map_err(|e| {
+            ExecutorError::ExecutionFailed(format!("Failed to decode SMTP config Protobuf: {}", e))
         })?;
 
         // ----------------------------------------------------------------------
@@ -195,15 +179,13 @@ impl Executor for SmtpTestExecutor {
         // ----------------------------------------------------------------------
         // Khóa cứng timeout 5s để tránh treo luồng hệ thống
         let mut transport_builder = SmtpTransport::builder_dangerous(&config.host)
-            .port(config.port)
+            .port(config.port as u16)
             .tls(connection_security)
             .timeout(Some(Duration::from_secs(5)));
 
         // Nạp thông tin đăng nhập SMTP Credentials nếu được cấu hình
-        if let (Some(user), Some(pass)) = (config.username, config.password) {
-            if !user.is_empty() && !pass.is_empty() {
-                transport_builder = transport_builder.credentials(Credentials::new(user, pass));
-            }
+        if !config.username.is_empty() && !config.password.is_empty() {
+            transport_builder = transport_builder.credentials(Credentials::new(config.username.clone(), config.password.clone()));
         }
 
         let transport = transport_builder.build();

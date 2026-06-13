@@ -61,7 +61,7 @@ func (h *EndpointHandler) Create(c *gin.Context) {
 		Port:           req.Port,
 		Username:       strings.TrimSpace(req.Username),
 		Password:       req.Password,
-		TLSMode:        strings.TrimSpace(req.TLSMode),
+		TLSMode:        mailEntity.TLSMode(strings.TrimSpace(req.TLSMode)),
 		Status:         strings.TrimSpace(req.Status),
 		MaxConnections: req.MaxConnections,
 		Priority:       req.Priority,
@@ -233,7 +233,7 @@ func (h *EndpointHandler) Update(c *gin.Context) {
 		Port:           req.Port,
 		Username:       strings.TrimSpace(req.Username),
 		Password:       req.Password,
-		TLSMode:        strings.TrimSpace(req.TLSMode),
+		TLSMode:        mailEntity.TLSMode(strings.TrimSpace(req.TLSMode)),
 		Status:         strings.TrimSpace(req.Status),
 		MaxConnections: req.MaxConnections,
 		Priority:       req.Priority,
@@ -363,36 +363,47 @@ func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 		return
 	}
 
-	var caCert, clientCert, clientKey string
+	var caCertPtr, clientCertPtr, clientKeyPtr *string
 	if req.CACertPEM != nil {
-		caCert = strings.TrimSpace(*req.CACertPEM)
+		trimmed := strings.TrimSpace(*req.CACertPEM)
+		caCertPtr = &trimmed
 	}
 	if req.ClientCertPEM != nil {
-		clientCert = strings.TrimSpace(*req.ClientCertPEM)
+		trimmed := strings.TrimSpace(*req.ClientCertPEM)
+		clientCertPtr = &trimmed
 	}
 	if req.ClientKeyPEM != nil {
-		clientKey = strings.TrimSpace(*req.ClientKeyPEM)
+		trimmed := strings.TrimSpace(*req.ClientKeyPEM)
+		clientKeyPtr = &trimmed
 	}
 
-	params := mailEntity.CreateEndpointParams{
+	testReq := mailEntity.TestConnection{
 		ZoneID:        req.ZoneID,
 		Host:          strings.TrimSpace(req.Host),
 		Port:          req.Port,
 		Username:      strings.TrimSpace(req.Username),
 		Password:      req.Password,
-		TLSMode:       strings.TrimSpace(req.TLSMode),
-		CACertPEM:     caCert,
-		ClientCertPEM: clientCert,
-		ClientKeyPEM:  clientKey,
+		TLSMode:       mailEntity.TLSMode(strings.TrimSpace(req.TLSMode)),
+		CACertPEM:     caCertPtr,
+		ClientCertPEM: clientCertPtr,
+		ClientKeyPEM:  clientKeyPtr,
 	}
 
-	err := h.svc.TestConnectionRaw(ctx, params)
+	err := h.svc.TestConnectionRaw(ctx, testReq)
 	if err != nil {
-		logger.HandlerError(c, op, err)
-		apires.RespondBadRequest(c, err.Error())
+		if errors.Is(err, mailTaxonomy.ErrInvalidArgument) {
+			logger.HandlerWarn(c, op, err, "TestConnectionRaw failed: invalid argument")
+			apires.RespondBadRequest(c, "Invalid request")
+		} else {
+			// fail do 1 vấn đề nào đó khác ở layer bên dưới
+			// cái này không phải là không connect đc mà do 1 nguyên nhân nào khác.
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "Failed to test connection")
+		}
 		return
 	}
 
+	// thành công thì vào outbox rồi chờ thông báo - async workflow
 	apires.RespondSuccess(c, nil, "Connection successful")
 }
 

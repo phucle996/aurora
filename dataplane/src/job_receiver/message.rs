@@ -43,12 +43,11 @@ pub struct JobPayload {
     /// Ví dụ: "vps-uuid-12345".
     pub resource_id: String,
 
-    /// Phiên bản thiết kế của cấu trúc JSON payload bên dưới.
+    /// Phiên bản thiết kế của cấu trúc payload bên dưới.
     pub payload_schema_version: u32,
 
-    /// Dữ liệu kỹ thuật chi tiết phục vụ thực thi nghiệp vụ (dưới dạng chuỗi JSON thô).
-    /// Ví dụ: "{\"ram_mb\": 2048, \"cpu_cores\": 2}"
-    pub payload_json: String,
+    /// Dữ liệu kỹ thuật chi tiết phục vụ thực thi nghiệp vụ dưới dạng nhị phân.
+    pub payload: Vec<u8>,
 
     /// Mã định danh vết xử lý xuyên suốt hệ thống (Distributed Trace Context).
     pub trace_id: String,

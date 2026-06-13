@@ -31,4 +31,14 @@ BEGIN
     ) THEN
         CREATE TYPE mail_endpoint_status AS ENUM ('planned', 'active', 'disabled');
     END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 
+        FROM pg_type t 
+        JOIN pg_namespace n ON t.typnamespace = n.oid 
+        WHERE t.typname = 'mail_tls_mode' 
+          AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE mail_tls_mode AS ENUM ('none', 'starttls', 'tls', 'mtls');
+    END IF;
 END$$;

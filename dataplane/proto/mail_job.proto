@@ -1,0 +1,14 @@
+syntax = "proto3";
+package mail;
+
+// Cấu hình kiểm tra kết nối SMTP gửi từ Controlplane sang Dataplane
+message SmtpTestConfig {
+  string host = 1;
+  int32 port = 2;
+  string username = 3;
+  string password = 4;
+  string tls_mode = 5;
+  optional string ca_cert_pem = 6;
+  optional string client_cert_pem = 7;
+  optional string client_key_pem = 8;
+}

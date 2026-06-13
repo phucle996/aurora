@@ -11,8 +11,13 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
     // [ignoring loop detection]
     Logger::sys_info("infra.init", "Initializing infrastructure services...");
 
-    // 1. Khởi tạo gRPC client ủy quyền xác thực kết nối đến Controlplane Go
-    let auth_client = GrpcAuthClient::new(cfg.controlplane_grpc_endpoint.clone());
+    // 1. Khởi tạo gRPC client ủy quyền xác thực kết nối đến Controlplane Go (sử dụng mTLS nếu cấu hình)
+    let auth_client = GrpcAuthClient::new(
+        cfg.controlplane_grpc_endpoint.clone(),
+        cfg.controlplane_grpc_ca_cert.clone(),
+        cfg.controlplane_grpc_client_cert.clone(),
+        cfg.controlplane_grpc_client_key.clone(),
+    );
 
     // 2. Khởi tạo Centrifugo HTTP client chuyên dụng phục vụ việc gửi thông báo real-time
     let centrifugo_client = CentrifugoClient::new(

@@ -70,7 +70,7 @@ type Modules struct {
 	// PolicyEngine là runtime hot-reload module cho policies.
 	PolicyEngine *policyengine.Engine
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
-	L1Registry *cacheengine.CacheRegistry
+	CacheEngine *cacheengine.CacheRegistry
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
 	probeCancel context.CancelFunc
 }
@@ -79,18 +79,17 @@ type Modules struct {
 // chính cho bootstrap cross-module.
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
-	rdsCore *goredis.Client,
-	rdsJob *goredis.Client,
+	rds *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	policyEngineModule *policyengine.Engine,
-	l1Registry *cacheengine.CacheRegistry,
+	cacheEngine *cacheengine.CacheRegistry,
 ) (*Modules, error) {
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 1: KHỞI TẠO HỆ THỐNG GIÁM SÁT & OBSERVABILITY
 	// ------------------------------------------------------------------------
 
 	// 1) Global health surface.
-	health := healthhandler.NewHealthHandler(db, rdsCore)
+	health := healthhandler.NewHealthHandler(db, rds)
 
 	// 2) Time drift probe read-only: chỉ ghi tín hiệu health/metrics, không chỉnh clock OS.
 	probe := NewTimeSyncProbe()
@@ -122,7 +121,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rdsCore, rateLimiter, l1Registry)
+	coreModule, err := core.NewModule(cfg, db, rds, rateLimiter, cacheEngine)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
@@ -131,7 +130,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, l1Registry)
+	iamModule, err := iam.NewModule(cfg, db, rds, rateLimiter, cacheEngine)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -160,7 +159,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ gửi mail Mail
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	mailModule, err := mail.NewModule(cfg, db, rdsCore, rdsJob, rateLimiter, coreModule)
+	mailModule, err := mail.NewModule(cfg, db, rds, rateLimiter, cacheEngine)
 	if err != nil {
 		logger.SysError("graceful.degradation.mail", fmt.Sprintf("Failed to initialize mail module: %v. Running in degraded mode.", err))
 		mailModule = mail.NewDegradedModule(err)
@@ -171,7 +170,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 7) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, iamModule, rdsCore, policyEngineModule, l1Registry); err != nil {
+	if err := initMiddlewares(cfg, db, coreModule, iamModule, rds, policyEngineModule, cacheEngine); err != nil {
 		return nil, err
 	}
 
@@ -186,7 +185,7 @@ func NewGlobalModules(cfg *config.Config,
 		Hypervisor:   hypervisorModule,
 		Mail:         mailModule,
 		PolicyEngine: policyEngineModule,
-		L1Registry:   l1Registry,
+		CacheEngine:  cacheEngine,
 		probeCancel:  probeCancel,
 	}
 
@@ -269,7 +268,7 @@ func (m *Modules) Stop() {
 	if m.PolicyEngine != nil {
 		m.PolicyEngine.Stop()
 	}
-	if m.L1Registry != nil && m.L1Registry.L1 != nil {
-		m.L1Registry.L1.Close()
+	if m.CacheEngine != nil && m.CacheEngine.L1 != nil {
+		m.CacheEngine.L1.Close()
 	}
 }

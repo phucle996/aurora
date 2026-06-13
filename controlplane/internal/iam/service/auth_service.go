@@ -562,16 +562,16 @@ func cleanString(value *string) string {
 }
 
 // VerifyAdminTrinitySession xác thực thông tin đăng nhập của Admin/SRE qua gRPC
-func (s *AuthService) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamSvcInterface.VerifySessionResult, error) {
+func (s *AuthService) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
 	// [ignoring loop detection]
 	// Bước 1: Truy xuất danh sách key ký mã hóa cho Admin từ cache registry
 	val, err := s.registry.GetOrLoad(ctx, "admin_api_key", "")
 	if err != nil {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, err
+		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 	secrets, ok := val.(*coreEntity.RuntimeSecrets)
 	if !ok || secrets == nil {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for admin")
+		return &iamEntity.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for admin")
 	}
 
 	// Bước 2: Giải mã JWT lần lượt bằng active rồi standby key
@@ -586,34 +586,34 @@ func (s *AuthService) VerifyAdminTrinitySession(ctx context.Context, token strin
 		}
 	}
 	if !parsed {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, nil
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
 	// Bước 3: Đối chiếu access_key trong token với access_key client cung cấp
 	if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, nil
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
 	// Bước 4: Kiểm tra tính hoạt động của session từ Redis L2 cache
 	payload, _, exists, err := s.registry.L2.Get(ctx, "admin_access_session:"+accessKey)
 	if err != nil || !exists {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, err
+		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 
 	var session struct {
 		AccessSecretHash string `json:"access_secret_hash"`
 	}
 	if err := json.Unmarshal(payload, &session); err != nil {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, err
+		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 
 	// So sánh SHA256 hash của access_secret nhận được
 	incomingHash := security.HashTokenSHA256(accessSecret)
 	if session.AccessSecretHash != incomingHash {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, nil
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
-	return &iamSvcInterface.VerifySessionResult{
+	return &iamEntity.VerifySessionResult{
 		Valid:  true,
 		UserID: claims.Subject,
 		Role:   "SRE",
@@ -621,16 +621,16 @@ func (s *AuthService) VerifyAdminTrinitySession(ctx context.Context, token strin
 }
 
 // VerifyUserTrinitySession xác thực thông tin đăng nhập của End-User thông thường qua gRPC
-func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamSvcInterface.VerifySessionResult, error) {
+func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
 	// [ignoring loop detection]
 	// Bước 1: Truy xuất danh sách key ký mã hóa cho User từ cache registry
 	val, err := s.registry.GetOrLoad(ctx, "access_secret", "")
 	if err != nil {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, err
+		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 	secrets, ok := val.(*coreEntity.RuntimeSecrets)
 	if !ok || secrets == nil {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for user")
+		return &iamEntity.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for user")
 	}
 
 	// Bước 2: Giải mã JWT lần lượt bằng active rồi standby key
@@ -645,35 +645,35 @@ func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string
 		}
 	}
 	if !parsed {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, nil
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
 	// Bước 3: Đối chiếu access_key trong token với access_key client cung cấp
 	if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, nil
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
 	// Bước 4: Kiểm tra tính hoạt động của session từ Redis L2 cache
 	sessionKey := "iam:user_access_session:" + claims.Subject + ":" + accessKey
 	payload, _, exists, err := s.registry.L2.Get(ctx, sessionKey)
 	if err != nil || !exists {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, err
+		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 
 	var session struct {
 		AccessSecretHash string `json:"access_secret_hash"`
 	}
 	if err := json.Unmarshal(payload, &session); err != nil {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, err
+		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 
 	// So sánh SHA256 hash của access_secret nhận được
 	incomingHash := security.HashTokenSHA256(accessSecret)
 	if session.AccessSecretHash != incomingHash {
-		return &iamSvcInterface.VerifySessionResult{Valid: false}, nil
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
-	return &iamSvcInterface.VerifySessionResult{
+	return &iamEntity.VerifySessionResult{
 		Valid:  true,
 		UserID: claims.Subject,
 		Role:   claims.Role,

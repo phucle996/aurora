@@ -9,13 +9,16 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
 	mailEntity "controlplane/internal/mail/domain/entity"
+	mailproto "controlplane/internal/mail/proto"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
 	"controlplane/internal/mail/test/testutil"
+	"controlplane/pkg/constant"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestEndpointServiceCRUD(t *testing.T) {
@@ -37,7 +40,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 
 	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
-	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, registry)
+	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, registry)
 	ctx := context.Background()
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
 
@@ -49,7 +52,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 		Port:           587,
 		Username:       "apikey",
 		Password:       "svc-sendgrid-key-xyz",
-		TLSMode:        "starttls",
+		TLSMode:        mailEntity.TLSModeStartTLS,
 		Status:         "active",
 		MaxConnections: 10,
 		Priority:       100,
@@ -109,7 +112,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 		Port:           587,
 		Username:       "apikey",
 		Password:       "svc-sendgrid-key-new",
-		TLSMode:        "starttls",
+		TLSMode:        mailEntity.TLSModeStartTLS,
 		Status:         "active",
 		MaxConnections: 10,
 		Priority:       100,
@@ -158,37 +161,34 @@ func TestEndpointServiceTestConnectionRaw(t *testing.T) {
 
 	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
-	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, registry)
+	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, registry)
 	ctx := context.Background()
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
+	ctx = context.WithValue(ctx, constant.ContextKeyUserID, "test-user-123")
 
 	// Khởi tạo các tham số cấu hình SMTP thô để gửi yêu cầu test connection
-	params := mailEntity.CreateEndpointParams{
-		ZoneID:         zoneID,
-		Name:           "Raw Test SMTP Server",
-		Host:           "smtp.example.com",
-		Port:           587,
-		Username:       "raw-test-user",
-		Password:       "raw-test-password",
-		TLSMode:        "starttls",
-		Status:         "active",
-		MaxConnections: 5,
-		Priority:       10,
-		Weight:         1,
+	testReq := mailEntity.TestConnection{
+		ZoneID:        zoneID,
+		Host:          "smtp.example.com",
+		Port:          587,
+		Username:      "raw-test-user",
+		Password:      "raw-test-password",
+		TLSMode:       mailEntity.TLSModeStartTLS,
 	}
 
 	// Gọi TestConnectionRaw. Luồng mới sẽ chỉ lưu job vào outbox repository (Postgres)
 	// mà không chặn kết nối đồng bộ tới Redis, đảm bảo tính sẵn sàng (HA) và tránh nghẽn luồng.
-	err := service.TestConnectionRaw(ctx, params)
+	err := service.TestConnectionRaw(ctx, testReq)
 	if err != nil {
 		t.Fatalf("TestConnectionRaw failed: %v", err)
 	}
 
 	// Xác nhận xem bản ghi outbox đã được lưu xuống Postgres thành công chưa
 	// và trạng thái của bản ghi đó có đúng là PENDING hay không bằng cách truy vấn trực tiếp DB.
-	var jobTopic, status string
-	query := fmt.Sprintf("SELECT job_topic, status FROM %s.mail_outbox_records LIMIT 1", cfg.SchemaSQL.Mail)
-	err = db.QueryRow(ctx, query).Scan(&jobTopic, &status)
+	var jobTopic, status, userID string
+	var payloadBytes []byte
+	query := fmt.Sprintf("SELECT job_topic, status, payload, user_id FROM %s.mail_outbox_records LIMIT 1", cfg.SchemaSQL.Mail)
+	err = db.QueryRow(ctx, query).Scan(&jobTopic, &status, &payloadBytes, &userID)
 	if err != nil {
 		t.Fatalf("Failed to query outbox record from database: %v", err)
 	}
@@ -199,5 +199,22 @@ func TestEndpointServiceTestConnectionRaw(t *testing.T) {
 
 	if status != string(mailEntity.OutboxStatusPending) {
 		t.Errorf("expected outbox record status to be PENDING, got %s", status)
+	}
+
+	if userID != "test-user-123" {
+		t.Errorf("expected user_id to be 'test-user-123', got %s", userID)
+	}
+
+	// Giải mã binary payload dưới dạng Protobuf
+	var smtpConfig mailproto.SmtpTestConfig
+	if err := proto.Unmarshal(payloadBytes, &smtpConfig); err != nil {
+		t.Errorf("failed to unmarshal payload as Protobuf: %v", err)
+	} else {
+		if smtpConfig.Host != "smtp.example.com" {
+			t.Errorf("expected host 'smtp.example.com', got %s", smtpConfig.Host)
+		}
+		if smtpConfig.Port != 587 {
+			t.Errorf("expected port 587, got %d", smtpConfig.Port)
+		}
 	}
 }

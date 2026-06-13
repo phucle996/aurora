@@ -63,3 +63,11 @@ type LoginResult struct {
 	AccessExpiresAt          time.Time
 	RefreshExpiresAt         time.Time
 }
+
+// VerifySessionResult chứa thông tin phản hồi sau khi xác thực Trinity session thành công
+type VerifySessionResult struct {
+	Valid  bool
+	UserID string
+	Role   string
+	ZoneID string
+}

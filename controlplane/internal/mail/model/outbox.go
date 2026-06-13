@@ -1,7 +1,6 @@
 package mailModel
 
 import (
-	"encoding/json"
 	"time"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
@@ -11,22 +10,23 @@ import (
 
 // MailOutboxRecord đại diện cho mô hình dữ liệu ánh xạ trực tiếp xuống PostgreSQL
 type MailOutboxRecord struct {
-	ID                   int64           `db:"id"`
-	EventID              uuid.UUID       `db:"event_id"`
-	ZoneID               uuid.UUID       `db:"zone_id"`
-	JobTopic             string          `db:"job_topic"`
-	PayloadJSON          json.RawMessage `db:"payload_json"`
-	Status               string          `db:"status"`
-	Attempts             int             `db:"attempts"`
-	LastAttempt          *time.Time      `db:"last_attempt"`
-	CreatedAt            time.Time       `db:"created_at"`
-	JobVersion           uint32          `db:"job_version"`
-	ResourceID           string          `db:"resource_id"`
-	PayloadSchemaVersion uint32          `db:"payload_schema_version"`
-	TraceID              string          `db:"trace_id"`
-	Idle                 uint32          `db:"idle"`
-	ErrorCode            *string         `db:"error_code"`
-	ErrorMessage         *string         `db:"error_message"`
+	ID       int64     `db:"id"`
+	EventID  uuid.UUID `db:"event_id"`
+	ZoneID   uuid.UUID `db:"zone_id"`
+	JobTopic string    `db:"job_topic"`
+	// Payload: Lưu trữ dạng nhị phân (Protobuf) cho công việc
+	Payload []byte `db:"payload"`
+	// UserID: ID người dùng thực thi công việc
+	UserID               string     `db:"user_id"`
+	Status               string     `db:"status"`
+	CompletedAt          *time.Time `db:"completed_at"`
+	JobVersion           uint32     `db:"job_version"`
+	ResourceID           string     `db:"resource_id"`
+	PayloadSchemaVersion uint32     `db:"payload_schema_version"`
+	TraceID              *string    `db:"trace_id"`
+	Idle                 uint32     `db:"idle"`
+	ErrorCode            *string    `db:"error_code"`
+	ErrorMessage         *string    `db:"error_message"`
 }
 
 // OutboxEntityToModel chuyển đổi từ Domain Entity sang DB Model
@@ -36,11 +36,10 @@ func OutboxEntityToModel(e mailEntity.MailOutboxRecord) MailOutboxRecord {
 		EventID:              e.EventID,
 		ZoneID:               e.ZoneID,
 		JobTopic:             e.JobTopic,
-		PayloadJSON:          e.PayloadJSON,
+		Payload:              e.Payload,
+		UserID:               e.UserID,
 		Status:               string(e.Status),
-		Attempts:             e.Attempts,
-		LastAttempt:          e.LastAttempt,
-		CreatedAt:            e.CreatedAt,
+		CompletedAt:          e.CompletedAt,
 		JobVersion:           e.JobVersion,
 		ResourceID:           e.ResourceID,
 		PayloadSchemaVersion: e.PayloadSchemaVersion,
@@ -58,11 +57,10 @@ func OutboxModelToEntity(m MailOutboxRecord) mailEntity.MailOutboxRecord {
 		EventID:              m.EventID,
 		ZoneID:               m.ZoneID,
 		JobTopic:             m.JobTopic,
-		PayloadJSON:          m.PayloadJSON,
+		Payload:              m.Payload,
+		UserID:               m.UserID,
 		Status:               mailEntity.OutboxStatus(m.Status),
-		Attempts:             m.Attempts,
-		LastAttempt:          m.LastAttempt,
-		CreatedAt:            m.CreatedAt,
+		CompletedAt:          m.CompletedAt,
 		JobVersion:           m.JobVersion,
 		ResourceID:           m.ResourceID,
 		PayloadSchemaVersion: m.PayloadSchemaVersion,
@@ -71,10 +69,4 @@ func OutboxModelToEntity(m MailOutboxRecord) mailEntity.MailOutboxRecord {
 		ErrorCode:            m.ErrorCode,
 		ErrorMessage:         m.ErrorMessage,
 	}
-}
-
-// MailJobPayload đại diện cho payload của công việc gửi thư (cần thiết cho cấu trúc JobPublisher xương cá)
-type MailJobPayload struct {
-	JobID   string
-	Payload string
 }

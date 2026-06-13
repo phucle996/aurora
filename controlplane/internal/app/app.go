@@ -131,21 +131,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 
 	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Infrastructure bootstrap: Redis Job Broker.
-	// Mất Job Redis -> pipeline xử lý background job tê liệt hoàn toàn -> abort.
-	// --------------------------------------------------------------------
-	rdsJob, err := redisinfra.NewRedis(ctx, &cfg.RedisJob)
-	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: redis job init failed: %w", err)
-	}
-	app.rdsJob = rdsJob
-	if rdsJob == nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: redis job client is required")
-	}
-
-	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Schema bootstrap: Database migrations bắt buộc chạy trước khi modules dùng DB.
 	// Schema sai -> data corruption tức thì -> abort.
 	// --------------------------------------------------------------------
@@ -286,7 +271,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, ratelimiter, policyModule, cacheEngine)
+	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter, policyModule, cacheEngine)
 	if err != nil {
 		app.Stop()
 		return nil, err

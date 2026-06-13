@@ -119,7 +119,6 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	rdsJob *goredis.Client,
 	rateLimiter *ratelimit.Bucket,
 	cacheEngine *cacheengine.CacheRegistry,
 ) (*IAMModule, error) {
@@ -139,9 +138,6 @@ func NewModule(
 	}
 	if rds == nil {
 		return nil, errors.New("iam module: redis cluster client (rds) is nil (check redis sentinel/cluster endpoint)")
-	}
-	if rdsJob == nil {
-		return nil, errors.New("iam module: redis job client (rdsJob) is nil (check redis sentinel/cluster endpoint)")
 	}
 	if rateLimiter == nil {
 		return nil, errors.New("iam module: global rate limiter bucket (rateLimiter) is nil")
@@ -181,7 +177,7 @@ func NewModule(
 	}
 
 	// Redis Stream Event Publisher - Phát sự kiện bảo mật (Security audit logging)
-	streamPublisher := infraredis.NewRedisStreamPublisher(rdsJob)
+	streamPublisher := infraredis.NewRedisStreamPublisher(rds)
 	if streamPublisher == nil {
 		return nil, errors.New("iam module: failed to initialize redis stream event publisher")
 	}

@@ -28,36 +28,35 @@ func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInter
 		schema: schema,
 		saveQuery: fmt.Sprintf(`
 			INSERT INTO %s.mail_outbox_records (
-				event_id, zone_id, job_topic, payload_json, status, created_at,
-				job_version, resource_id, payload_schema_version, trace_id, idle,
-				error_code, error_message
+				event_id, zone_id, job_topic, payload, user_id, status,
+				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id
 		`, schema),
 		fetchPendingQuery: fmt.Sprintf(`
-			SELECT id, event_id, zone_id, job_topic, payload_json, status, attempts, last_attempt, created_at,
-			       job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message
+			SELECT id, event_id, zone_id, job_topic, payload, user_id, status,
+			       job_version, resource_id, payload_schema_version, trace_id, idle
 			FROM %s.mail_outbox_records
 			WHERE status = 'PENDING'
-			ORDER BY created_at ASC
+			ORDER BY id ASC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		`, schema),
 		markPublishedQuery: fmt.Sprintf(`
 			UPDATE %s.mail_outbox_records
-			SET status = 'PUBLISHED', last_attempt = NOW()
+			SET status = 'PUBLISHED', completed_at = NOW()
 			WHERE id = $1
 		`, schema),
 		markFailedQuery: fmt.Sprintf(`
 			UPDATE %s.mail_outbox_records
-			SET status = 'FAILED', attempts = attempts + 1, last_attempt = NOW()
+			SET status = 'FAILED', error_message = $2, completed_at = NOW()
 			WHERE id = $1
 		`, schema),
 	}
 }
 
-func (r *MailOutboxRepoImpl) Save(ctx context.Context, record *mailEntity.MailOutboxRecord) error {
+func (r *MailOutboxRepoImpl) Create(ctx context.Context, record *mailEntity.MailOutboxRecord) error {
 	// Chuyển đổi từ Domain Entity sang DB Model để tách biệt logic nghiệp vụ khỏi tầng lưu trữ
 	model := mailModel.OutboxEntityToModel(*record)
 
@@ -65,15 +64,14 @@ func (r *MailOutboxRepoImpl) Save(ctx context.Context, record *mailEntity.MailOu
 		model.EventID,
 		model.ZoneID,
 		model.JobTopic,
-		model.PayloadJSON,
+		model.Payload,
+		model.UserID,
 		model.Status,
 		model.JobVersion,
 		model.ResourceID,
 		model.PayloadSchemaVersion,
 		model.TraceID,
 		model.Idle,
-		model.ErrorCode,
-		model.ErrorMessage,
 	).Scan(&model.ID)
 
 	if err == nil {
@@ -93,24 +91,20 @@ func (r *MailOutboxRepoImpl) FetchPendingForUpdate(ctx context.Context, limit in
 	var records []*mailEntity.MailOutboxRecord
 	for rows.Next() {
 		var model mailModel.MailOutboxRecord
-		// Quét dữ liệu trực tiếp vào struct DB Model
+		// Quét dữ liệu trực tiếp vào struct DB Model bao gồm cả payload và user_id
 		err := rows.Scan(
 			&model.ID,
 			&model.EventID,
 			&model.ZoneID,
 			&model.JobTopic,
-			&model.PayloadJSON,
+			&model.Payload,
+			&model.UserID,
 			&model.Status,
-			&model.Attempts,
-			&model.LastAttempt,
-			&model.CreatedAt,
 			&model.JobVersion,
 			&model.ResourceID,
 			&model.PayloadSchemaVersion,
 			&model.TraceID,
 			&model.Idle,
-			&model.ErrorCode,
-			&model.ErrorMessage,
 		)
 		if err != nil {
 			return nil, err
@@ -129,6 +123,6 @@ func (r *MailOutboxRepoImpl) MarkPublished(ctx context.Context, id int64) error 
 }
 
 func (r *MailOutboxRepoImpl) MarkFailed(ctx context.Context, id int64, reason string) error {
-	_, err := r.db.Exec(ctx, r.markFailedQuery, id)
+	_, err := r.db.Exec(ctx, r.markFailedQuery, id, reason)
 	return err
 }

@@ -7,6 +7,12 @@ pub struct Config {
     pub centrifugo_api_key: String,
     pub redis_url: String,
     pub controlplane_grpc_endpoint: String,
+    // Đường dẫn chứng chỉ CA phục vụ xác thực HTTPS/gRPC
+    pub controlplane_grpc_ca_cert: Option<String>,
+    // Đường dẫn chứng chỉ Client phục vụ xác thực hai chiều mTLS
+    pub controlplane_grpc_client_cert: Option<String>,
+    // Đường dẫn khóa riêng tư của Client phục vụ mTLS
+    pub controlplane_grpc_client_key: Option<String>,
 }
 
 impl Config {
@@ -25,7 +31,10 @@ impl Config {
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://controlplane-redis-job:6379/0".to_string()),
             controlplane_grpc_endpoint: env::var("CONTROLPLANE_GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "controlplane-dev-1:9090".to_string()),
+                .unwrap_or_else(|_| "controlplane-dev-1:9443".to_string()), // Cập nhật port chuẩn sang 9443
+            controlplane_grpc_ca_cert: env::var("CONTROLPLANE_GRPC_CA_CERT").ok(),
+            controlplane_grpc_client_cert: env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok(),
+            controlplane_grpc_client_key: env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok(),
         }
     }
 }

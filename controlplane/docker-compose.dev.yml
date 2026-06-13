@@ -42,6 +42,7 @@ services:
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
+      GRPC_PORT: "9090"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -80,6 +81,7 @@ services:
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
+      GRPC_PORT: "9090"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -118,6 +120,7 @@ services:
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
+      GRPC_PORT: "9090"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -649,12 +652,18 @@ services:
     container_name: aurora-notification-service
     ports:
       - "8083:8083"
+    volumes:
+      - ./dev/tls:/etc/notification-service/tls:ro
     environment:
       - APP_PORT=8083
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       - REDIS_URL=redis://controlplane-redis-job:6379/0
       - CONTROLPLANE_GRPC_ENDPOINT=controlplane-dev-1:9090
+      - CONTROLPLANE_GRPC_CA_CERT=/etc/notification-service/tls/ca.crt
+      - CONTROLPLANE_GRPC_CLIENT_CERT=/etc/notification-service/tls/grpc-server.crt
+      - CONTROLPLANE_GRPC_CLIENT_KEY=/etc/notification-service/tls/grpc-server.key
+      - CONTROLPLANE_GRPC_DOMAIN=localhost
     depends_on:
       centrifugo:
         condition: service_started

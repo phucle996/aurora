@@ -25,8 +25,8 @@ func RunModuleBootstraps(ctx context.Context, modules *Modules) error {
 	// [BOOTSTRAP CACHE loaders] Đăng ký các loader tĩnh trước khi các module
 	// bootstrap để sẵn sàng cung cấp dữ liệu qua L1 cache.
 	// ------------------------------------------------------------------------
-	if modules.L1Registry != nil {
-		RegisterL1Loaders(modules.L1Registry, modules)
+	if modules.CacheEngine != nil {
+		RegisterL1Loaders(modules.CacheEngine, modules)
 	}
 
 	if modules.Core != nil {

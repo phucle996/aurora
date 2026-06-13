@@ -6,6 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// TLSMode đại diện cho chế độ bảo mật kết nối TLS của mail server (none, starttls, tls, mtls)
+type TLSMode string
+
+const (
+	TLSModeNone     TLSMode = "none"
+	TLSModeStartTLS TLSMode = "starttls"
+	TLSModeTLS      TLSMode = "tls"
+	TLSModeMTLS     TLSMode = "mtls"
+)
+
 type Endpoint struct {
 	ID             uuid.UUID
 	ZoneID         uuid.UUID
@@ -14,7 +24,7 @@ type Endpoint struct {
 	Port           int
 	Username       string
 	Password       string
-	TLSMode        string
+	TLSMode        TLSMode
 	Status         string
 	MaxConnections int
 	Priority       int
@@ -35,7 +45,7 @@ type CreateEndpointParams struct {
 	Port           int
 	Username       string
 	Password       string
-	TLSMode        string
+	TLSMode        TLSMode
 	Status         string
 	MaxConnections int
 	Priority       int
@@ -54,7 +64,7 @@ type UpdateEndpointParams struct {
 	Port           int
 	Username       string
 	Password       string
-	TLSMode        string
+	TLSMode        TLSMode
 	Status         string
 	MaxConnections int
 	Priority       int
@@ -63,4 +73,17 @@ type UpdateEndpointParams struct {
 	ClientCertPEM  string
 	ClientKeyPEM   string
 	IsActive       bool
+}
+
+// TestConnection đại diện cho thông tin cấu hình cần thiết để kiểm tra kết nối SMTP thô
+type TestConnection struct {
+	ZoneID        uuid.UUID
+	Host          string
+	Port          int
+	Username      string
+	Password      string
+	TLSMode       TLSMode
+	CACertPEM     *string
+	ClientCertPEM *string
+	ClientKeyPEM  *string
 }

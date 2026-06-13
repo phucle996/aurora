@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS mail_endpoints (
     port INT NOT NULL, -- Cổng kết nối SMTP
     username VARCHAR(255), -- Tên đăng nhập SMTP
     password TEXT, -- Mật khẩu hoặc API Key (mã hóa phong bì AES-256-GCM)
-    tls_mode VARCHAR(50) NOT NULL DEFAULT 'starttls', -- Chế độ bảo mật TLS (none, starttls, tls, mtls)
+    tls_mode mail_tls_mode NOT NULL DEFAULT 'starttls', -- Chế độ bảo mật TLS (none, starttls, tls, mtls)
     status mail_endpoint_status NOT NULL DEFAULT 'planned', -- Trạng thái lập kế hoạch (planned, active, disabled)
     max_connections INT NOT NULL DEFAULT 10, -- Số lượng kết nối song song tối đa
     priority INT NOT NULL DEFAULT 100, -- Độ ưu tiên định tuyến

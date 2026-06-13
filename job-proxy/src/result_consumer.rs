@@ -1,12 +1,15 @@
 use crate::config::Config;
 use crate::payload::JobExecutionResult;
 use tokio_postgres::NoTls;
-
 use futures_util::StreamExt;
 use crate::logger::Logger;
+use prost::Message;
 
-/// ResultConsumer chịu trách nhiệm lắng nghe kết quả thực thi của Dataplane từ Redis Pub/Sub,
-/// giải mã và thực hiện câu lệnh UPDATE cập nhật trạng thái job trực tiếp vào Postgres.
+pub mod job_proto {
+    // Nạp struct sinh tự động từ protobuf (job_event.proto)
+    include!(concat!(env!("OUT_DIR"), "/job.rs"));
+}
+
 pub struct ResultConsumer {
     config: Config,
     redis_client: redis::Client,
@@ -37,6 +40,9 @@ impl ResultConsumer {
         // Subscribe vào tất cả các kênh job_results:<job_id>
         pubsub.psubscribe("job_results:*").await?;
 
+        // Khởi tạo một multiplexed connection để sử dụng cho lệnh XADD phát sự kiện notification
+        let mut redis_conn = self.redis_client.get_multiplexed_tokio_connection().await?;
+
         Logger::sys_info("result_consumer.run", "ResultConsumer: Đang lắng nghe kết quả từ Redis Pub/Sub (pattern: job_results:*)...");
 
         let mut pubsub_stream = pubsub.on_message();
@@ -50,7 +56,7 @@ impl ResultConsumer {
                 }
             };
 
-            if let Err(err) = self.process_result(&payload, &client).await {
+            if let Err(err) = self.process_result(&payload, &client, &mut redis_conn).await {
                 Logger::sys_error("result_consumer.process", "ResultConsumer: Lỗi xử lý kết quả", &err.to_string());
             }
         }
@@ -63,6 +69,7 @@ impl ResultConsumer {
         &self,
         payload_str: &str,
         pg_client: &tokio_postgres::Client,
+        redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let result: JobExecutionResult = serde_json::from_str(payload_str)?;
 
@@ -83,31 +90,34 @@ impl ResultConsumer {
         };
 
         // Thực hiện cập nhật DB nguyên tử (Atomic Update) tránh xung đột trạng thái
-        let rows_updated = if status == "SUCCEEDED" {
-            pg_client.execute(
+        // Lấy lại user_id, job_topic và trace_id bằng mệnh đề RETURNING để tạo sự kiện real-time
+        let row_opt = if status == "SUCCEEDED" {
+            pg_client.query_opt(
                 "UPDATE mail_outbox_records 
                  SET status = $1, 
                      attempts = $2, 
                      last_attempt = CURRENT_TIMESTAMP, 
                      error_code = NULL, 
                      error_message = NULL
-                 WHERE event_id = $3 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')",
+                 WHERE event_id = $3 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 RETURNING user_id, job_topic, trace_id",
                 &[&status, &(result.attempt as i32), &result.job_id],
             ).await?
         } else {
-            pg_client.execute(
+            pg_client.query_opt(
                 "UPDATE mail_outbox_records 
                  SET status = $1, 
                      attempts = $2, 
                      last_attempt = CURRENT_TIMESTAMP, 
                      error_code = $3, 
                      error_message = $4
-                 WHERE event_id = $5 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')",
+                 WHERE event_id = $5 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 RETURNING user_id, job_topic, trace_id",
                 &[&status, &(result.attempt as i32), &error_code, &error_message, &result.job_id],
             ).await?
         };
 
-        if rows_updated > 0 {
+        if let Some(row) = row_opt {
             Logger::job_log(
                 &result.job_id,
                 "unknown",
@@ -115,13 +125,65 @@ impl ResultConsumer {
                 "result_consumer.update",
                 &format!("Cập nhật thành công DB -> Trạng thái {}", status),
             );
+
+            // Phân tích dữ liệu outbox record vừa được cập nhật
+            let user_id: String = row.get(0);
+            let job_topic: String = row.get(1);
+            let trace_id: String = row.get(2);
+
+            // Lấy user_id trực tiếp từ cột DB. Nếu có, tiến hành phát sự kiện thông báo real-time.
+            if !user_id.is_empty() {
+                Logger::job_log(
+                    &result.job_id,
+                    &user_id,
+                    result.attempt,
+                    "result_consumer.notify_start",
+                    &format!("Bắt đầu tạo sự kiện realtime cho user {}", user_id),
+                );
+
+                // Đóng gói sự kiện JobNotificationEvent theo cấu trúc Protobuf
+                let event = job_proto::JobNotificationEvent {
+                    job_id: result.job_id.clone(),
+                    user_id: user_id.clone(),
+                    status: if status == "SUCCEEDED" { "SUCCESS".to_string() } else { "FAILED".to_string() },
+                    event_type: job_topic.clone(),
+                    title: match job_topic.as_str() {
+                        "mail.test_connection" => "SMTP Connection Test".to_string(),
+                        _ => "Job Execution Result".to_string(),
+                    },
+                    message: result.message.clone(),
+                    created_at: chrono::Utc::now().timestamp(),
+                    trace_parent: trace_id,
+                };
+
+                // Mã hóa sự kiện sang dạng nhị phân Protobuf bytes
+                let mut binary_buf = Vec::new();
+                event.encode(&mut binary_buf)?;
+
+                // Đẩy dữ liệu nhị phân vào Redis Stream bằng câu lệnh XADD
+                let _: String = redis::cmd("XADD")
+                    .arg("stream:job_notifications")
+                    .arg("*")
+                    .arg("data")
+                    .arg(&binary_buf)
+                    .query_async(redis_conn)
+                    .await?;
+
+                Logger::job_log(
+                    &result.job_id,
+                    &user_id,
+                    result.attempt,
+                    "result_consumer.notify_sent",
+                    "Đã đẩy thành công sự kiện thông báo vào stream:job_notifications",
+                );
+            }
         } else {
             Logger::job_log(
                 &result.job_id,
                 "unknown",
                 result.attempt,
                 "result_consumer.update_skip",
-                "Không thể cập nhật Job (trạng thái hiện tại trong DB đã là SUCCEEDED/FAILED/CANCELLED hoặc không tìm thấy)",
+                "Không thể cập nhật Job hoặc không tìm thấy bản ghi phù hợp (có thể đã hoàn thành trước đó)",
             );
         }
 

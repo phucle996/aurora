@@ -6,9 +6,10 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
     event_id VARCHAR(64) UNIQUE NOT NULL,
     zone_id VARCHAR(64) NOT NULL,
     job_topic VARCHAR(100) NOT NULL,
-    payload_json JSONB NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'COMPLETED', 'FAILED')),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payload BYTEA NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
+    completed_at TIMESTAMP WITH TIME ZONE,
 
     -- CÁC CỘT ĐỒNG BỘ CONTRACT VỚI DATAPLANE:
     job_version INT NOT NULL DEFAULT 1,
@@ -24,17 +25,5 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
 
 -- Index for high-performance outbox polling
 CREATE INDEX IF NOT EXISTS idx_mail_outbox_pending 
-ON mail_outbox_records (status, created_at ASC) 
+ON mail_outbox_records (status, id ASC) 
 WHERE status = 'PENDING';
-
--- Đảm bảo các cột mới tồn tại kể cả khi bảng đã có sẵn từ trước
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS job_version INT NOT NULL DEFAULT 1;
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS resource_id VARCHAR(64);
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS payload_schema_version INT NOT NULL DEFAULT 1;
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS trace_id VARCHAR(64);
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS idle INT;
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS error_code VARCHAR(100);
-ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS error_message TEXT;
-
--- Đảm bảo cột payload_json luôn ở kiểu JSONB trong trường hợp bảng đã tồn tại sẵn
-ALTER TABLE mail_outbox_records ALTER COLUMN payload_json TYPE JSONB USING payload_json::jsonb;

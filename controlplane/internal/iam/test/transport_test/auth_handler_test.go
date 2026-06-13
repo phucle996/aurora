@@ -43,6 +43,14 @@ func (s *authServiceStub) Login(ctx context.Context, req iamEntity.LoginRequest)
 	return s.loginResult, s.loginErr
 }
 
+func (s *authServiceStub) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
+	return nil, nil
+}
+
+func (s *authServiceStub) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
+	return nil, nil
+}
+
 func newAuthHandler(service iamSvcInterface.AuthService) *handler.AuthHandler {
 	cfg := config.LoadConfig()
 	return handler.NewAuthHandler(cfg, service)

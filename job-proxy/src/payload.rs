@@ -19,11 +19,11 @@ pub struct JobPayload {
     /// Mã tài nguyên chịu tác động của Job
     pub resource_id: String,
 
-    /// Phiên bản thiết kế của cấu trúc JSON payload bên dưới
+    /// Phiên bản thiết kế của cấu trúc payload bên dưới
     pub payload_schema_version: u32,
 
-    /// Dữ liệu kỹ thuật chi tiết dưới dạng chuỗi JSON thô
-    pub payload_json: String,
+    /// Dữ liệu kỹ thuật chi tiết dưới dạng nhị phân (Protobuf bytes)
+    pub payload: Vec<u8>,
 
     /// Mã định danh vết xử lý để liên kết trace log
     pub trace_id: String,

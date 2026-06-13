@@ -49,17 +49,15 @@ package mail
 
 import (
 	"context"
-	"errors"
-
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	"controlplane/internal/core"
-	mailCache "controlplane/internal/mail/cache"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailHandler "controlplane/internal/mail/transport/http/handler"
 	"controlplane/internal/security/ratelimit"
+	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -89,12 +87,9 @@ type Module struct {
 	GatewayHandler  *mailHandler.GatewayHandler
 	EndpointHandler *mailHandler.EndpointHandler
 
-	// 4) Cache & Queue
-	MailCache    *mailCache.MailCache
-	JobPublisher *mailCache.JobPublisher
-
 	// 5) Security
 	RateLimiter *ratelimit.Bucket
+	cacheEngine *cacheengine.CacheRegistry
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -121,10 +116,7 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the Dependency Graph for the Mail Module.
 // coreModule is required to resolve cross-module dependencies (e.g. ZoneService for endpoint zone resolution).
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rdsJob *goredis.Client, rateLimiter *ratelimit.Bucket, coreModule *core.Module) (*Module, error) {
-	if coreModule == nil {
-		return nil, errors.New("mail module: core module is required for cross-module zone resolution")
-	}
+func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
 
 	// ------------------------------------------------------------------------
 	// 🔄 GIAI ĐOẠN 1: CORE REPOSITORIES & CACHES BOOTSTRAPPING
@@ -152,16 +144,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 		return nil, errors.New("mail module: failed to construct outbox repository")
 	}
 
-	// Initialize Cache & Publisher
-	mCache := mailCache.NewMailCache(rdsCore, cfg)
-	if mCache == nil {
-		return nil, errors.New("mail module: failed to initialize mail cache")
-	}
-	publisher := mailCache.NewJobPublisher(rdsJob, cfg)
-	if publisher == nil {
-		return nil, errors.New("mail module: failed to initialize job publisher")
-	}
-
 	// ------------------------------------------------------------------------
 	// 💼 GIAI ĐOẠN 2: SERVICE LAYER INITIALIZATION
 	// ------------------------------------------------------------------------
@@ -179,7 +161,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 	if gatewaySvc == nil {
 		return nil, errors.New("mail module: failed to construct gateway service")
 	}
-	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, outboxRepo, rdsJob, coreModule.L1Registry)
+	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, outboxRepo, cacheEngine)
 	if endpointSvc == nil {
 		return nil, errors.New("mail module: failed to construct endpoint service")
 	}
@@ -224,8 +206,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 		TemplateHandler: templateHandler,
 		GatewayHandler:  gatewayHandler,
 		EndpointHandler: endpointHandler,
-		MailCache:       mCache,
-		JobPublisher:    publisher,
 		RateLimiter:     rateLimiter,
 	}, nil
 }
