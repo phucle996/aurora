@@ -43,10 +43,13 @@ impl JobRunner {
         stream_key: String,
     ) {
         let lock_key = format!("locks:job:{}", payload.job_id);
-        let idle_secs = payload.idle;
+        let idle_opt = payload.idle;
 
         tokio::spawn(async move {
-            let timeout_duration = Duration::from_secs((idle_secs as u64 * 9) / 10);
+            let timeout_duration = match idle_opt {
+                Some(secs) if secs > 0 => Duration::from_secs((secs as u64 * 9) / 10),
+                _ => Duration::from_secs(3600 * 24 * 365), // 1 year (no limit)
+            };
             let job_id = payload.job_id.clone();
             let result_channel = format!("job_results:{}", job_id);
 

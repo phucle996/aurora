@@ -82,7 +82,6 @@ type Module struct {
 	TemplateService mailSvcInterface.TemplateService
 	GatewayService  mailSvcInterface.GatewayService
 	EndpointService mailSvcInterface.EndpointService
-	OutboxPoller    *mailSvcImpl.MailOutboxPoller
 
 	// 3) Handlers
 	ConsumerHandler *mailHandler.ConsumerHandler
@@ -96,9 +95,6 @@ type Module struct {
 
 	// 5) Security
 	RateLimiter *ratelimit.Bucket
-
-	// 6) Lifecycle Control
-	pollerCancel context.CancelFunc
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -187,10 +183,8 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 	if endpointSvc == nil {
 		return nil, errors.New("mail module: failed to construct endpoint service")
 	}
-	outboxPoller := mailSvcImpl.NewMailOutboxPoller(cfg, outboxRepo, rdsJob)
-	if outboxPoller == nil {
-		return nil, errors.New("mail module: failed to construct outbox poller")
-	}
+	// Đã decommissioning OutboxPoller cũ, việc chuyển tiếp dữ liệu qua Redis Stream
+	// giờ đây do job-proxy chạy ngầm đọc trực tiếp từ logical replication WAL stream.
 
 	// ------------------------------------------------------------------------
 	// 🎛️ GIAI ĐOẠN 3: TRANSPORT LAYER (HTTP HANDLERS) INITIALIZATION
@@ -226,7 +220,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 		TemplateService: templateSvc,
 		GatewayService:  gatewaySvc,
 		EndpointService: endpointSvc,
-		OutboxPoller:    outboxPoller,
 		ConsumerHandler: consumerHandler,
 		TemplateHandler: templateHandler,
 		GatewayHandler:  gatewayHandler,
@@ -237,27 +230,12 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rdsCore *goredis.Client, rd
 	}, nil
 }
 
-// Start manages any background process lifecycles (draining, heartbeats if any).
+// Start quản lý vòng đời của các tiến trình chạy ngầm (đã lược bỏ OutboxPoller).
 func (m *Module) Start(ctx context.Context) error {
-	if !m.IsEnabled() {
-		return nil
-	}
-	if m.OutboxPoller != nil && m.pollerCancel == nil {
-		pollerCtx, cancel := context.WithCancel(ctx)
-		m.pollerCancel = cancel
-		go m.OutboxPoller.Start(pollerCtx)
-	}
 	return nil
 }
 
-// Stop cleanly terminates background tasks during graceful control plane shutdown.
+// Stop dừng dọn dẹp các tiến trình chạy ngầm khi tắt control plane gracefully.
 func (m *Module) Stop(ctx context.Context) error {
-	if !m.IsEnabled() {
-		return nil
-	}
-	if m.pollerCancel != nil {
-		m.pollerCancel()
-		m.pollerCancel = nil
-	}
 	return nil
 }

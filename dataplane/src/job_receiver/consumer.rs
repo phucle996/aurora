@@ -146,10 +146,10 @@ impl JobConsumer {
                 );
 
                 let lock_key = format!("locks:job:{}", payload.job_id);
-                let idle_secs = payload.idle;
+                let idle_opt = payload.idle;
 
                 // 7. Thiết lập khóa phân phối Lease Lock trên redis_internal_zone
-                match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key, idle_secs).await {
+                match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key, idle_opt).await {
                     Ok(acquired) => {
                         if !acquired {
                             Logger::sys_warn(

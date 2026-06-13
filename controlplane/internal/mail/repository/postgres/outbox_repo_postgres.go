@@ -7,8 +7,8 @@ import (
 	"controlplane/internal/config"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
+	mailModel "controlplane/internal/mail/model"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -58,20 +58,28 @@ func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInter
 }
 
 func (r *MailOutboxRepoImpl) Save(ctx context.Context, record *mailEntity.MailOutboxRecord) error {
+	// Chuyển đổi từ Domain Entity sang DB Model để tách biệt logic nghiệp vụ khỏi tầng lưu trữ
+	model := mailModel.OutboxEntityToModel(*record)
+
 	err := r.db.QueryRow(ctx, r.saveQuery,
-		record.EventID,
-		record.ZoneID,
-		record.JobTopic,
-		record.PayloadJSON,
-		string(record.Status),
-		record.JobVersion,
-		record.ResourceID,
-		record.PayloadSchemaVersion,
-		record.TraceID,
-		record.Idle,
-		record.ErrorCode,
-		record.ErrorMessage,
-	).Scan(&record.ID)
+		model.EventID,
+		model.ZoneID,
+		model.JobTopic,
+		model.PayloadJSON,
+		model.Status,
+		model.JobVersion,
+		model.ResourceID,
+		model.PayloadSchemaVersion,
+		model.TraceID,
+		model.Idle,
+		model.ErrorCode,
+		model.ErrorMessage,
+	).Scan(&model.ID)
+
+	if err == nil {
+		// Trả lại ID tự sinh từ database về cho Domain Entity
+		record.ID = model.ID
+	}
 	return err
 }
 
@@ -84,37 +92,33 @@ func (r *MailOutboxRepoImpl) FetchPendingForUpdate(ctx context.Context, limit in
 
 	var records []*mailEntity.MailOutboxRecord
 	for rows.Next() {
-		rec := &mailEntity.MailOutboxRecord{}
-		var statusStr string
-		var zoneIDStr string
+		var model mailModel.MailOutboxRecord
+		// Quét dữ liệu trực tiếp vào struct DB Model
 		err := rows.Scan(
-			&rec.ID,
-			&rec.EventID,
-			&zoneIDStr,
-			&rec.JobTopic,
-			&rec.PayloadJSON,
-			&statusStr,
-			&rec.Attempts,
-			&rec.LastAttempt,
-			&rec.CreatedAt,
-			&rec.JobVersion,
-			&rec.ResourceID,
-			&rec.PayloadSchemaVersion,
-			&rec.TraceID,
-			&rec.Idle,
-			&rec.ErrorCode,
-			&rec.ErrorMessage,
+			&model.ID,
+			&model.EventID,
+			&model.ZoneID,
+			&model.JobTopic,
+			&model.PayloadJSON,
+			&model.Status,
+			&model.Attempts,
+			&model.LastAttempt,
+			&model.CreatedAt,
+			&model.JobVersion,
+			&model.ResourceID,
+			&model.PayloadSchemaVersion,
+			&model.TraceID,
+			&model.Idle,
+			&model.ErrorCode,
+			&model.ErrorMessage,
 		)
 		if err != nil {
 			return nil, err
 		}
-		rec.Status = mailEntity.OutboxStatus(statusStr)
-		if u, err := uuid.Parse(zoneIDStr); err == nil {
-			rec.ZoneID = u
-		} else {
-			return nil, fmt.Errorf("failed to parse zone_id: %w", err)
-		}
-		records = append(records, rec)
+
+		// Chuyển đổi DB Model thành Domain Entity trước khi trả về tầng Service
+		entity := mailModel.OutboxModelToEntity(model)
+		records = append(records, &entity)
 	}
 	return records, rows.Err()
 }

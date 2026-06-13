@@ -67,6 +67,8 @@ impl CdcStreamer {
         client.execute("SET search_path TO mail, public", &[]).await?;
 
         // Kiểm tra xem Publication đã tồn tại chưa
+        // TODO: (Roadmap V3/Production) Tránh hardcode bảng mail_outbox_records. 
+        // Khi mở rộng sang các module khác (IAM, Billing), Publication nên hỗ trợ thêm bảng qua ALTER PUBLICATION.
         let pub_check = client.query(
             "SELECT 1 FROM pg_publication WHERE pubname = $1",
             &[&self.config.publication_name],
@@ -213,6 +215,8 @@ impl CdcStreamer {
     }
 
     /// Xử lý sự kiện INSERT đã giải mã, định tuyến và push sang Redis Stream jobs:<zone_id>
+    // TODO: (Roadmap V2) Thay thế phần code ghi Redis Stream (XADD) bên dưới bằng Kafka Producer 
+    // khi nâng cấp hạ tầng để phân phối job sang Kafka Topic (hỗ trợ thêm luồng Audit, Analytics).
     async fn process_insert(
         &self,
         fields: &HashMap<String, String>,

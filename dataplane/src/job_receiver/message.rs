@@ -54,7 +54,7 @@ pub struct JobPayload {
     pub trace_id: String,
 
     /// Giới hạn thời gian rảnh rỗi và khóa Lease của Job (tính bằng giây).
-    pub idle: u32,
+    pub idle: Option<u32>,
 
     /// Mã tin nhắn Redis Stream thực tế (Redis Message ID).
     #[serde(default)]

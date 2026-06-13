@@ -22,7 +22,6 @@ import (
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/logger"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -427,28 +426,32 @@ func (s *endpointServiceImpl) TestConnectionRaw(
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeInvalidArgument)
 	}
 
-	// Write to outbox_records
+	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh (đầy đủ các thuộc tính của Entity)
 	record := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
 		ZoneID:               params.ZoneID,
 		JobTopic:             "mail.test_connection",
-		PayloadJSON:          string(payloadBytes),
+		PayloadJSON:          payloadBytes,
 		Status:               mailEntity.OutboxStatusPending,
+		Attempts:             0,
+		LastAttempt:          nil,
+		CreatedAt:            time.Now().UTC(),
 		JobVersion:           1,
-		ResourceID:           "",
+		ResourceID:           "transient_test",
 		PayloadSchemaVersion: 1,
-		TraceID:              eventID.String(),
-		Idle:                 30,
+		TraceID:              "trace-" + eventID.String(),
+		Idle:                 90, // Thay đổi thời gian lease chờ kết quả lên 90 giây
+		ErrorCode:            nil,
+		ErrorMessage:         nil,
 	}
 
+	// Lưu bản ghi outbox trực tiếp vào cơ sở dữ liệu Postgres
 	if err := s.outboxRepo.Save(ctx, record); err != nil {
 		return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("failed to save outbox event: %w", err), mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	// Publish trigger event on rdsJob
-	if err := s.rdsJob.Publish(ctx, "mail:outbox:trigger", "1").Err(); err != nil {
-		logger.SysWarn("mail.outbox", fmt.Sprintf("Failed to publish outbox trigger notification: %v", err))
-	}
+	// Đã loại bỏ phần publish "mail:outbox:trigger" lên Redis cũ
+	// Do job-proxy giờ đây bắt sự kiện CDC trực tiếp qua WAL stream của Postgres.
 
 	// Subscribe to result on rdsJob
 	resultChannel := fmt.Sprintf("job_results:%s", eventID.String())

@@ -139,17 +139,18 @@ pub async fn acknowledge_message(client: &redis::Client, stream_key: &str, group
 }
 
 /// Thiết lập Distributed Lease Lock với thời hạn (TTL) tính bằng giây.
-pub async fn acquire_lease_lock(client: &redis::Client, lock_key: &str, lease_time_secs: u32) -> Result<bool, String> {
+pub async fn acquire_lease_lock(client: &redis::Client, lock_key: &str, lease_time_secs: Option<u32>) -> Result<bool, String> {
     let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
-    let reply: redis::Value = redis::cmd("SET")
-        .arg(lock_key)
-        .arg("locked")
-        .arg("NX")
-        .arg("EX")
-        .arg(lease_time_secs)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut cmd = redis::cmd("SET");
+    cmd.arg(lock_key).arg("locked").arg("NX");
+    
+    if let Some(secs) = lease_time_secs {
+        if secs > 0 {
+            cmd.arg("EX").arg(secs);
+        }
+    }
+    
+    let reply: redis::Value = cmd.query_async(&mut conn).await.map_err(|e| e.to_string())?;
 
     match reply {
         redis::Value::Okay => Ok(true),
