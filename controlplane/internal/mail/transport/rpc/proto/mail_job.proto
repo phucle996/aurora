@@ -1,7 +1,7 @@
 syntax = "proto3";
 package mail;
 
-option go_package = "controlplane/internal/mail/proto;mailproto";
+option go_package = "controlplane/internal/mail/transport/rpc/proto;mailproto";
 
 // Cấu hình kiểm tra kết nối SMTP gửi từ Controlplane sang Dataplane
 message SmtpTestConfig {

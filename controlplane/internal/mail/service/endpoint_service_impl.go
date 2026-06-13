@@ -7,10 +7,6 @@ package mailSvcImpl
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"time"
-
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
@@ -18,11 +14,14 @@ import (
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailMetrics "controlplane/internal/mail/metrics"
-	mailproto "controlplane/internal/mail/proto"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
+	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -363,6 +362,12 @@ func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) 
 }
 
 func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEntity.TestConnection) error {
+	// Trích xuất ZoneID đã được middleware UserZoneAuth phân giải và inject vào Go context
+	zoneID, ok := middleware.GetZoneID(ctx)
+	if !ok || zoneID == uuid.Nil {
+		return mailTaxonomy.ErrInvalidArgument
+	}
+
 	switch req.TLSMode {
 	case mailEntity.TLSModeTLS:
 		if req.CACertPEM == nil || *req.CACertPEM == "" {
@@ -423,7 +428,7 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh (lưu UserID riêng biệt ở cột DB)
 	record := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		ZoneID:               req.ZoneID,
+		ZoneID:               zoneID,
 		JobTopic:             "mail.test_connection",
 		Payload:              payloadBytes,
 		UserID:               userIDStr,

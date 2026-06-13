@@ -9,10 +9,10 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
 	mailEntity "controlplane/internal/mail/domain/entity"
-	mailproto "controlplane/internal/mail/proto"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
 	"controlplane/internal/mail/test/testutil"
+	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/pkg/constant"
 
 	"github.com/alicebob/miniredis/v2"
@@ -167,13 +167,13 @@ func TestEndpointServiceTestConnectionRaw(t *testing.T) {
 	ctx = context.WithValue(ctx, constant.ContextKeyUserID, "test-user-123")
 
 	// Khởi tạo các tham số cấu hình SMTP thô để gửi yêu cầu test connection
+	// ZoneID đã được inject vào context ở trên (middleware.ContextWithZoneID)
 	testReq := mailEntity.TestConnection{
-		ZoneID:        zoneID,
-		Host:          "smtp.example.com",
-		Port:          587,
-		Username:      "raw-test-user",
-		Password:      "raw-test-password",
-		TLSMode:       mailEntity.TLSModeStartTLS,
+		Host:     "smtp.example.com",
+		Port:     587,
+		Username: "raw-test-user",
+		Password: "raw-test-password",
+		TLSMode:  mailEntity.TLSModeStartTLS,
 	}
 
 	// Gọi TestConnectionRaw. Luồng mới sẽ chỉ lưu job vào outbox repository (Postgres)

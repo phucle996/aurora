@@ -1,7 +1,5 @@
 package mailReq
 
-import "github.com/google/uuid"
-
 // CreateEndpointRequest định nghĩa cấu trúc yêu cầu tạo mới Mail Endpoint dạng phẳng (compatible với admin-ui FE).
 type CreateEndpointRequest struct {
 	Name           string  `json:"name" binding:"required"`
@@ -38,14 +36,15 @@ type UpdateEndpointRequest struct {
 }
 
 // TestConnectionRequest định nghĩa cấu trúc yêu cầu kiểm tra kết nối SMTP (chỉ chứa các trường cần thiết).
+// ZoneID không còn trong DTO — middleware UserZoneAuth() đã phân giải zone_code → zone UUID
+// và inject sẵn vào Go context trước khi request tới handler.
 type TestConnectionRequest struct {
-	ZoneID        uuid.UUID `json:"zone_id" binding:"required"`
-	Host          string    `json:"host" binding:"required"`
-	Port          int       `json:"port" binding:"required"`
-	Username      string    `json:"username" binding:"required"`
-	Password      string    `json:"password" binding:"required"`
-	TLSMode       string    `json:"tls_mode" binding:"required"`
-	CACertPEM     *string   `json:"ca_cert_pem"`
-	ClientCertPEM *string   `json:"client_cert_pem"`
-	ClientKeyPEM  *string   `json:"client_key_pem"`
+	Host          string  `json:"host" binding:"required"`
+	Port          int     `json:"port" binding:"required"`
+	Username      string  `json:"username" binding:"required"`
+	Password      string  `json:"password" binding:"required"`
+	TLSMode       string  `json:"tls_mode" binding:"required"`
+	CACertPEM     *string `json:"ca_cert_pem"`
+	ClientCertPEM *string `json:"client_cert_pem"`
+	ClientKeyPEM  *string `json:"client_key_pem"`
 }

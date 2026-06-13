@@ -75,9 +75,10 @@ type UpdateEndpointParams struct {
 	IsActive       bool
 }
 
-// TestConnection đại diện cho thông tin cấu hình cần thiết để kiểm tra kết nối SMTP thô
+// TestConnection đại diện cho thông tin cấu hình cần thiết để kiểm tra kết nối SMTP thô.
+// ZoneID không có ở đây — service tự trích xuất từ Go context
+// (middleware UserZoneAuth đã phân giải zone_code → UUID và inject sẵn).
 type TestConnection struct {
-	ZoneID        uuid.UUID
 	Host          string
 	Port          int
 	Username      string

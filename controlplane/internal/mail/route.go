@@ -156,6 +156,8 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/:id"),
 		module.EndpointHandler.Delete,
 	)
+
+	// test connect to old server mail
 	router.POST("/admin/mail/endpoints/:id/test-connect",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
@@ -163,11 +165,14 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/:id/test-connect"),
 		module.EndpointHandler.TestConnection,
 	)
+
+	// try connect to new server mail before create endpoint
 	router.POST("/admin/mail/endpoints/try-connect",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		// cái này không chấp nhận zone global , bắt buộc cụ thể trong 1 zone
+		middleware.UserZoneAuth(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/try-connect"),
-		module.EndpointHandler.TestConnectionRaw,
+		module.EndpointHandler.TryConnect,
 	)
 }

@@ -60,7 +60,6 @@ type adminAuthOptions struct {
 	injectAccessKey    bool
 	injectAccessSecret bool
 	injectTokenJTI     bool
-	injectZoneID       bool
 }
 
 // AdminAuthOption chỉ điều khiển dữ liệu nào được inject vào gin.Context
@@ -95,25 +94,6 @@ func WithInjectAccessSecret() AdminAuthOption {
 	return func(options *adminAuthOptions) {
 		if options != nil {
 			options.injectAccessSecret = true
-		}
-	}
-}
-
-// WithInjectTokenJTI chỉ định middleware tiêm JTI (JWT ID) của token vào Gin Context.
-// Phục vụ việc định danh và kiểm tra trạng thái thu hồi của chính tấm token này.
-func WithInjectTokenJTI() AdminAuthOption {
-	return func(options *adminAuthOptions) {
-		if options != nil {
-			options.injectTokenJTI = true
-		}
-	}
-}
-
-// WithInjectZoneID chỉ định middleware tiêm ZoneID của Admin vào Gin Context.
-func WithInjectZoneID() AdminAuthOption {
-	return func(options *adminAuthOptions) {
-		if options != nil {
-			options.injectZoneID = true
 		}
 	}
 }
@@ -307,16 +287,6 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			c.Set(constant.ContextKeyAdminAccessSecret, accessSecret)
 			// SRE Note: Inject accessSecret vào Go standard context
 			goCtx = context.WithValue(goCtx, constant.ContextKeyAdminAccessSecret, accessSecret)
-		}
-		if options.injectTokenJTI {
-			c.Set(constant.ContextKeyAdminTokenJTI, strings.TrimSpace(claims.TokenID))
-			// SRE Note: Inject tokenJTI vào Go standard context
-			goCtx = context.WithValue(goCtx, constant.ContextKeyAdminTokenJTI, strings.TrimSpace(claims.TokenID))
-		}
-		if options.injectZoneID {
-			c.Set(constant.ContextKeyAdminZoneID, strings.TrimSpace(claims.ZoneID))
-			// SRE Note: Inject zoneID vào Go standard context
-			goCtx = context.WithValue(goCtx, constant.ContextKeyAdminZoneID, strings.TrimSpace(claims.ZoneID))
 		}
 		c.Request = c.Request.WithContext(goCtx)
 

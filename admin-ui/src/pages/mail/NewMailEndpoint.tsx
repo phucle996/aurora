@@ -155,7 +155,7 @@ export default function NewMailEndpointPage() {
       const resp = await Fetch('/admin/mail/endpoints/try-connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(endpointPayload(form)),
+        body: JSON.stringify(tryConnectPayload(form)),
       })
       const resultMessage = await readAPIMessage(
         resp,
@@ -274,13 +274,30 @@ export default function NewMailEndpointPage() {
 const numericKeys = new Set<keyof EndpointForm>(['port', 'priority', 'weight', 'max_connections'])
 
 /**
- * Chuẩn hóa cấu trúc dữ liệu form (FormState) thành Payload DTO gửi lên API.
+ * Chuẩn hóa cấu trúc dữ liệu form (FormState) thành Payload DTO gửi lên API tạo endpoint.
  * Chuyển đổi các chuỗi chứng chỉ PEM trống thành `undefined` thay vì gửi chuỗi rỗng
  * để hệ thống Backend Go nhận diện chính xác giá trị rỗng/không thiết lập.
  */
 function endpointPayload(form: EndpointForm) {
   return {
     ...form,
+    ca_cert_pem: form.ca_cert_pem || undefined,
+    client_cert_pem: form.client_cert_pem || undefined,
+    client_key_pem: form.client_key_pem || undefined,
+  }
+}
+
+/**
+ * Payload riêng cho try-connect: chỉ gửi các trường cấu hình SMTP cần thiết.
+ * ZoneID không cần truyền — middleware UserZoneAuth phân giải zone_code từ cookie.
+ */
+function tryConnectPayload(form: EndpointForm) {
+  return {
+    host: form.host,
+    port: form.port,
+    username: form.username,
+    password: form.password,
+    tls_mode: form.tls_mode,
     ca_cert_pem: form.ca_cert_pem || undefined,
     client_cert_pem: form.client_cert_pem || undefined,
     client_key_pem: form.client_key_pem || undefined,

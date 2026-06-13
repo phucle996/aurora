@@ -350,9 +350,9 @@ func (h *EndpointHandler) TestConnection(c *gin.Context) {
 	apires.RespondSuccess(c, nil, "Connection successful")
 }
 
-// TestConnectionRaw godoc
-func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
-	const op = "mail.endpoint.test_connection_raw"
+// TryConnect godoc
+func (h *EndpointHandler) TryConnect(c *gin.Context) {
+	const op = "mail.endpoint.try_connect"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -378,7 +378,6 @@ func (h *EndpointHandler) TestConnectionRaw(c *gin.Context) {
 	}
 
 	testReq := mailEntity.TestConnection{
-		ZoneID:        req.ZoneID,
 		Host:          strings.TrimSpace(req.Host),
 		Port:          req.Port,
 		Username:      strings.TrimSpace(req.Username),
