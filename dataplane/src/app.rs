@@ -36,7 +36,7 @@ pub struct AppContainer {
     pub redis_internal_zone: Arc<RedisClientManager>,
     pub policy_engine: Arc<PolicyEngine>,
     pub worker_pool: Arc<WorkerLifecycleManager>,
-    pub active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
+    pub active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
 }
 
 impl AppContainer {
@@ -50,7 +50,7 @@ impl AppContainer {
                 redis_internal_zone: boot.redis_internal_zone,
                 policy_engine: boot.policy_engine,
                 worker_pool: boot.worker_pool,
-                active_lock_registry: Arc::new(crate::workerpool::heartbeat::ActiveLockRegistry::new()),
+                active_lock_registry: Arc::new(crate::workerpool::watchdog::ActiveLockRegistry::new()),
             },
             boot.worker_signal_rx,
         )
@@ -61,11 +61,11 @@ impl AppContainer {
         // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
         crate::observability::resource::ResourceMonitor::start_monitor();
 
-        // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Heartbeat Watcher) định kỳ 10 giây
+        // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.active_lock_registry.clone();
         let redis_internal = self.redis_internal_zone.clone();
         tokio::spawn(async move {
-            crate::workerpool::heartbeat::start_heartbeat_loop(
+            crate::workerpool::watchdog::start_watchdog_loop(
                 registry,
                 redis_internal,
                 30, // TTL gia hạn trên Redis là 30 giây

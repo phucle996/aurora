@@ -27,6 +27,9 @@ pub struct JobPayload {
 
     /// Mã định danh vết xử lý để liên kết trace log
     pub trace_id: String,
+
+    /// Hạn mức thời gian chạy tối đa (giây) của công việc
+    pub idle: Option<u32>,
 }
 
 /// JobExecutionResult đại diện cho kết quả xử lý công việc nhận về từ Dataplane.

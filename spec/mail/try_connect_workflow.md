@@ -115,6 +115,7 @@ The transient connection test job is written to the `mail_outbox_records` table 
 | Static Identifier | `ResourceID` (`"transient_test"`) | `ResourceID` (`resource_id`) | `resource_id` |
 | Static Schema | `PayloadSchemaVersion` (`1`) | `PayloadSchemaVersion` (`payload_schema_version`) | `payload_schema_version` |
 | `trace.SpanContextFromContext` | `TraceID` | `TraceID` (`trace_id`) | `trace_id` (nullable) |
+| Static Timeout Option | `Idle` (`90`) | `Idle` (`idle`) | `idle` (nullable) |
 | System Time (when completed) | `CompletedAt` | `CompletedAt` (`completed_at`) | `completed_at` (nullable) |
 | Dataplane Error (on failure) | `ErrorCode` | `ErrorCode` (`error_code`) | `error_code` (nullable) |
 | Dataplane Error Msg (on failure) | `ErrorMessage` | `ErrorMessage` (`error_message`) | `error_message` (nullable) |
@@ -174,7 +175,7 @@ sequenceDiagram
     participant CP as Controlplane gRPC (ReportJobCompletion)
 
     Note over JR: Job is dispatched to mail workload
-    JR->>EX: Execute task (dispatch_workload wrapped in 90% lease timeout)
+    JR->>EX: Execute task (dispatch_workload monitored by Watchdog, max limit is 90s (idle), SmtpTestExecutor inner timeout is 5s)
     
     EX->>EX: Unmarshal payload to SmtpTestConfig
     EX->>EX: Decode CA & Client certs if TLS/mTLS enabled
@@ -185,4 +186,47 @@ sequenceDiagram
     
     JR->>RP: Publish result JSON to Pub/Sub channel (PUBLISH)
     JR->>CP: Report job completion via gRPC
+```
+
+---
+
+### 4. Phase 4: Real-time Notification Flow (End-to-End Callback to UI Client)
+
+This phase manages the real-time callback of the SMTP test job completion back to the UI web browser via Centrifugo WebSockets.
+
+#### 1. Architectural Components & Callsites
+
+| Component | Responsibility | File Path / Context |
+| :--- | :--- | :--- |
+| **Result Consumer** | Subscribes to `job_results:*`, updates DB, and pushes a binary Protobuf notification to Redis Streams. | `job-proxy/src/result_consumer.rs` |
+| **Redis stream** | High-throughput, distributed event message broker channel. | Stream Key: `stream:job_notifications` |
+| **Notification Service** | Axum service consuming from stream, decoding Protobuf, and publishing to Centrifugo. | `notification-service/src/infra/redis.rs` |
+| **Centrifugo Gateway** | Real-time messaging server managing persistent WebSocket connections. | Channel Key: `personal:<user_id>` |
+| **Admin UI Client** | Web browser WebSocket client receiving real-time outcome payload. | `admin-ui/` |
+
+#### 2. Sequence 3: Notification Broadcast Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant JP_RC as Job-Proxy (Result Consumer)
+    participant RDS_NOTIF as Redis Stream (stream:job_notifications)
+    participant NS as Notification Service
+    participant CF as Centrifugo WebSocket Gateway
+    participant UI as Admin UI Browser
+
+    Note over JP_RC: Intercepts job outcome via Pub/Sub<br/>Updates postgres outbox record
+    JP_RC->>JP_RC: Map outcome to JobNotificationEvent Protobuf
+    JP_RC->>RDS_NOTIF: Push binary event data (XADD)
+    
+    RDS_NOTIF->>NS: Consume event (XREADGROUP)
+    Note over NS: Decode binary Protobuf into JobNotificationEvent
+    NS->>NS: Construct simplified client JSON payload
+    NS->>CF: Publish payload to channel personal:<user_id> (HTTP POST)
+    CF-->>NS: Return publish success
+    
+    NS->>RDS_NOTIF: Acknowledge message processing (XACK)
+    
+    CF->>UI: Broadcast real-time message via persistent WebSocket
+    Note over UI: Display Toast notification (SUCCESS / FAILED)<br/>Complete Try-Connect UI state
 ```

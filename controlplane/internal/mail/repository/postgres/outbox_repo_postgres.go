@@ -29,14 +29,14 @@ func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInter
 		saveQuery: fmt.Sprintf(`
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, user_id, status,
-				job_version, resource_id, payload_schema_version, trace_id
+				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id
 		`, schema),
 		fetchPendingQuery: fmt.Sprintf(`
 			SELECT id, event_id, zone_id, job_topic, payload, user_id, status,
-			       job_version, resource_id, payload_schema_version, trace_id
+			       job_version, resource_id, payload_schema_version, trace_id, idle
 			FROM %s.mail_outbox_records
 			WHERE status = 'PENDING'
 			ORDER BY id ASC
@@ -71,6 +71,7 @@ func (r *MailOutboxRepoImpl) Create(ctx context.Context, record *mailEntity.Mail
 		model.ResourceID,
 		model.PayloadSchemaVersion,
 		model.TraceID,
+		model.Idle,
 	).Scan(&model.ID)
 
 	if err == nil {
@@ -103,6 +104,7 @@ func (r *MailOutboxRepoImpl) FetchPendingForUpdate(ctx context.Context, limit in
 			&model.ResourceID,
 			&model.PayloadSchemaVersion,
 			&model.TraceID,
+			&model.Idle,
 		)
 		if err != nil {
 			return nil, err

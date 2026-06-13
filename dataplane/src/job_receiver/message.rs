@@ -52,19 +52,10 @@ pub struct JobPayload {
     /// Mã định danh vết xử lý xuyên suốt hệ thống (Distributed Trace Context).
     pub trace_id: String,
 
+    /// Hạn mức thời gian chạy tối đa (giây) của công việc
+    pub idle: Option<u32>,
+
     /// Mã tin nhắn Redis Stream thực tế (Redis Message ID).
     #[serde(default)]
     pub redis_msg_id: Option<String>,
-}
-
-impl JobPayload {
-    /// Phân tích dữ liệu JSON thô nhận được từ Redis Stream thành cấu trúc nghiệp vụ sạch sẽ.
-    ///
-    /// # Xử lý Lỗi (Failure Handling):
-    ///   - Nếu tệp JSON bị lỗi định dạng hoặc sai schema, trả về `Err` để báo hiệu drop/quét lại
-    ///     và gửi cảnh báo hệ thống, tránh làm sập luồng ingest của worker.
-    pub fn parse_from_stream(raw_data: &str) -> Result<Self, String> {
-        serde_json::from_str(raw_data)
-            .map_err(|e| format!("Message Deserialization Failed: Invalid JSON: {}", e))
-    }
 }

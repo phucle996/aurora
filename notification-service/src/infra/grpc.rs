@@ -1,6 +1,7 @@
-// Sinh mã Rust từ gRPC protobuf definitions
+// Sinh mã Rust từ gRPC protobuf definitions dựa trên package name 'iam.rpc' tương thích Go
 pub mod auth {
-    tonic::include_proto!("auth");
+    // Nạp mã nguồn tự động sinh từ file proto có package name là 'iam.rpc'
+    tonic::include_proto!("iam.rpc");
 }
 
 use tonic::transport::{Channel, Endpoint, ClientTlsConfig, Certificate, Identity};

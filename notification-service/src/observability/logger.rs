@@ -104,14 +104,4 @@ impl Logger {
             );
         }
     }
-
-    pub fn job_log(job_id: &str, job_topic: &str, attempt: u32, op: &str, message: &str) {
-        if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message
-            );
-        }
-    }
 }

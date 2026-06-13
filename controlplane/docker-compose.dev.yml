@@ -637,8 +637,8 @@ services:
     volumes:
       - ./dev/centrifugo/config.json:/centrifugo/config.json:ro
     command: centrifugo --config /centrifugo/config.json
+    # Chỉ sử dụng API Key cho Server-to-Server communication (gửi message), xác thực kết nối khách hàng đã được ủy quyền cho Connect Proxy.
     environment:
-      - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=your_shared_jwt_secret_key
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
     depends_on:
       redis-job:
@@ -672,13 +672,6 @@ services:
       redis-job:
         condition: service_healthy
     restart: unless-stopped
-
-# ============================================================================
-# 💾 ĐỊNH NGHĨA CÁC VOLUMES BỀN VỮNG TOÀN CỤM (PERSISTENT NAMED VOLUMES)
-# ============================================================================
-# Định nghĩa các ổ đĩa ảo có tên (named volumes) được quản lý trực tiếp bởi Docker.
-# Đảm bảo dữ liệu của cơ sở dữ liệu quan hệ, bộ nhớ đệm Redis, logs, metrics,
-# và cache biên dịch phần mềm không bị xóa mất khi các containers bị tắt hay xoay vòng.
 
 volumes:
   # Caching thư viện Golang cho cụm Controlplane

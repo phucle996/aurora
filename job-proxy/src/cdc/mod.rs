@@ -89,6 +89,27 @@ impl CdcStreamer {
                     return Err(err.into());
                 }
             }
+        } else {
+            // Kiểm tra xem bảng mail_outbox_records đã nằm trong publication chưa
+            let table_check = client.query(
+                "SELECT 1 FROM pg_publication_tables WHERE pubname = $1 AND tablename = 'mail_outbox_records'",
+                &[&self.config.publication_name],
+            ).await?;
+            if table_check.is_empty() {
+                Logger::sys_info("cdc.run", &format!("CdcStreamer: Thêm bảng mail_outbox_records vào publication '{}'...", self.config.publication_name));
+                let alter_pub_sql = format!(
+                    "ALTER PUBLICATION {} ADD TABLE mail_outbox_records",
+                    self.config.publication_name
+                );
+                if let Err(err) = client.execute(&alter_pub_sql, &[]).await {
+                    let err_str = err.to_string();
+                    if err_str.contains("already is member") || err_str.contains("duplicate") {
+                        Logger::sys_warn("cdc.run", "CdcStreamer: Bảng đã thuộc publication (bỏ qua do tranh chấp)", &err_str);
+                    } else {
+                        return Err(err.into());
+                    }
+                }
+            }
         }
 
         // Kiểm tra xem Replication Slot đã tồn tại chưa
@@ -230,6 +251,7 @@ impl CdcStreamer {
         let resource_id = fields.get("resource_id").cloned().unwrap_or_default();
         let payload_schema_version_str = fields.get("payload_schema_version").cloned().unwrap_or_default();
         let trace_id = fields.get("trace_id").cloned().unwrap_or_default();
+        let idle_str = fields.get("idle").cloned().unwrap_or_default();
 
         if event_id.is_empty() || zone_id.is_empty() || job_topic.is_empty() {
             Logger::sys_warn("cdc.insert", "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng", "Missing event_id/zone_id/job_topic");
@@ -246,6 +268,7 @@ impl CdcStreamer {
 
         let job_version = job_version_str.parse::<u32>().unwrap_or(1);
         let payload_schema_version = payload_schema_version_str.parse::<u32>().unwrap_or(1);
+        let idle = if idle_str.is_empty() { None } else { idle_str.parse::<u32>().ok() };
 
         // Đóng gói cấu trúc JobPayload với cột nhị phân thay cho JSON
         let payload = JobPayload {
@@ -257,6 +280,7 @@ impl CdcStreamer {
             payload_schema_version,
             payload: payload_bytes,
             trace_id,
+            idle,
         };
 
         // Chuẩn hóa payload sang chuỗi JSON string (chứa mảng bytes của trường payload)

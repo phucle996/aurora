@@ -437,6 +437,7 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 		ResourceID:           "transient_test",
 		PayloadSchemaVersion: 1,
 		TraceID:              traceIDPtr,
+		Idle:                 90, // Hạn mức timeout 90 giây cho kết nối test
 	}
 
 	// Lưu bản ghi outbox trực tiếp vào cơ sở dữ liệu Postgres

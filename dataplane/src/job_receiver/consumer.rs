@@ -37,7 +37,7 @@ impl JobConsumer {
         worker_id: usize,
         cancel_token: CancellationToken,
         worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
-        active_lock_registry: Arc<crate::workerpool::heartbeat::ActiveLockRegistry>,
+        active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
     ) {
         let stream_key = format!("jobs:{}", config.zone_id);
         Logger::sys_info(

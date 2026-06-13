@@ -32,7 +32,7 @@ sequenceDiagram
     end
 
     JC->>RDS: Blocking Read next message (fetch_next_stream_message via XREADGROUP)
-    RDS-->>JC: Return job payload (event_id, payload, idle, trace_id)
+    RDS-->>JC: Return job payload (event_id, payload, trace_id)
     
     JC->>LZ: Acquire Lease Lock on locks:job:<job_id> (acquire_lease_lock)
     alt Lock Already Held by other replica
@@ -96,7 +96,7 @@ Before pulling new messages from the Redis Stream, the ingestion loop evaluates 
 
 ### Description
 
-To achieve reliable multi-replica HA execution without double-processing jobs, the consumer attempts to acquire a distributed lease lock on `locks:job:<job_id>` in `redis_internal_zone` immediately after deserialization. The lock TTL is matched directly with the job's `idle` lease duration. If lock acquisition fails, the job is skipped.
+To achieve reliable multi-replica HA execution without double-processing jobs, the consumer attempts to acquire a distributed lease lock on `locks:job:<job_id>` in `redis_internal_zone` immediately after deserialization. The lock is acquired with a default TTL of 30 seconds, which is dynamically extended by the background Watchdog loop as long as the worker is actively running and has not exceeded its execution limit. If lock acquisition fails, the job is skipped.
 
 ---
 
@@ -111,8 +111,8 @@ Once the lock is acquired, the consumer increments the active task counter and c
 
 - **Early Processing Notification**: Before executing the workload, the runner immediately publishes a `PROCESSING` status update via Redis Pub/Sub and gRPC. This allows the Controlplane DB status to instantly move to `PROCESSING` and triggers real-time progress notifications to the UI.
 - **Execution Guard**: The runner registers an `ExecutionCleanupGuard` (RAII pattern).
-- **Lease Timeout**: Workload execution is wrapped in an early timeout (90% of the lease lock TTL) to protect against hanging sockets.
-- **Auto Release**: When the executor finishes (or if it timeouts/panics/cancels), the `ExecutionCleanupGuard` drops. This drops the active job count and releases the Redis lock asynchronously, ensuring complete resource cleanup and preventing leakage.
+- **Execution Timeout**: Workload execution is regulated by the Watchdog loop. The watchdog monitors the execution time against the specific task's `idle` limit (default 10 minutes). If a task exceeds its limit, the Watchdog triggers proactive cancellation via `AbortHandle::abort()`.
+- **Auto Release**: When the executor finishes (or is aborted/panics), the `ExecutionCleanupGuard` drops. This drops the active job count and releases the Redis lock asynchronously, ensuring complete resource cleanup and preventing leakage.
 
 ---
 
@@ -140,10 +140,10 @@ The Dataplane's high-performance, resilient runtime is built using several core 
 - **Implementation**: `dataplane/src/workerpool/lifecycle.rs` & `dataplane/src/workerpool/auto_scale.rs`
 - **Pattern**: Instead of managing a custom operating system thread-pool with heavy mutex locks, this implementation uses a **Tokio task-allocation pattern** where logical workers map directly to lightweight Tokio green tasks. The `WorkerLifecycleManager` manages graceful shutdowns via `CancellationToken` and tracking wrappers. The `AutoScaleEngine` applies a **Strategy Pattern** to scale active loops up or down based on lag and latency metrics, with a hard resource safeguard capping scaling at 90%.
 
-### 5. Distributed Lock and Lease: Centralized Heartbeat Lease Pattern with RAII Cleanup Guard
+### 5. Distributed Lock and Lease: Watchdog-driven Lease & Execution Timeout Control Pattern
 
-- **Implementation**: `dataplane/src/infra/redis/query.rs`, `dataplane/src/workerpool/heartbeat.rs` & `dataplane/src/job_receiver/runner.rs`
-- **Pattern**: Implements a **Lease Lock Pattern** using Redis key-value isolation (`SETNX` with TTL) to guarantee exactly-once processing in HA clusters. To prevent ghost-job duplicates on long-running tasks, the node maintains a thread-safe `ActiveLockRegistry` and runs a single background **Lock Heartbeat Watcher**. Every 10 seconds, this watcher uses **Redis Pipelining** to batch-extend the TTL of all active locks to 30 seconds. If a node crashes, the heartbeat ceases, letting the lock expire within 30 seconds so other replicas can reclaim it. Lock cleanup is bound to an **RAII (Resource Acquisition Is Initialization)** `ExecutionCleanupGuard` that synchronously removes keys from the local registry and asynchronously deletes the Redis lock when exiting scope.
+- **Implementation**: `dataplane/src/infra/redis/query.rs`, `dataplane/src/workerpool/watchdog.rs` & `dataplane/src/job_receiver/runner.rs`
+- **Pattern**: Implements a **Lease Lock Pattern** using Redis key-value isolation (`SETNX` with TTL) to guarantee exactly-once processing in HA clusters. To prevent ghost-job duplicates and hung worker execution, the node maintains a thread-safe `ActiveLockRegistry` containing active task start times, abort handles, and execution limits, monitored by a background **Watchdog loop**. Every 10 seconds, the watchdog checks all active locks. If the elapsed execution time is below the task-specific `idle` timeout, the watchdog uses **Redis Pipelining** to batch-extend the lease TTL on Redis by 30 seconds. If a task exceeds its timeout limit, the watchdog triggers proactive task cancellation via its `AbortHandle`, stops extending the lease, and reports an `EXECUTION_TIMEOUT` failure to the Controlplane.
 
 ### 6. Job Dispatch Workload: Command / Strategy Pattern
 

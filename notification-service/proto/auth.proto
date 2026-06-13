@@ -1,5 +1,7 @@
 syntax = "proto3";
-package auth;
+
+// Thiết lập package iam.rpc trùng khớp với cấu trúc package định nghĩa ở phía Go Controlplane
+package iam.rpc;
 
 // Dịch vụ xác thực Trinity Token gRPC kết nối giữa Notification Service (Rust) và Controlplane (Go)
 service AuthService {
