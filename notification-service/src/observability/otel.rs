@@ -27,7 +27,7 @@ impl TraceContext {
         let trace_id = uuid::Uuid::new_v4().simple().to_string();
         // Lấy 16 ký tự đầu của một uuid v4 khác làm span_id ngẫu nhiên
         let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
-        
+
         Self { trace_id, span_id }
     }
 
