@@ -1,21 +1,38 @@
 # syntax=docker/dockerfile:1.7
 
+# ----------------------------------------------------------------------------
+# Stage 1: Build binary (Tốc độ tối đa với Cache & Bind Mount)
+# ----------------------------------------------------------------------------
 FROM golang:1.26-bookworm AS builder
 WORKDIR /src
 
-COPY go.mod go.sum* ./
-RUN go mod download
+# Giữ lại cache download của Go modules giữa các lần build
+RUN --mount=type=cache,target=/go/pkg/mod/ \
+    --mount=type=bind,source=go.mod,target=go.mod \
+    --mount=type=bind,source=go.sum,target=go.sum \
+    go mod download
 
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/controlplane ./cmd/server
+# Giữ lại cache biên dịch (go-build cache) - Sửa code build lại chỉ mất vài giây
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=bind,source=.,target=. \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags='-s -w' -o /out/controlplane ./cmd/server
 
+# ----------------------------------------------------------------------------
+# Stage 2: Runtime image (Giữ lại Debian, cài sẵn tool trace mạng)
+# ----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 ARG LOCAL_USER=phucle
 ARG LOCAL_UID=1000
 ARG LOCAL_GID=1000
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+# Cài thêm curl, iputils-ping (lệnh ping), và net-tools (netstat) để debug mạng khi cần
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    curl \
+    iputils-ping \
+    net-tools \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid ${LOCAL_GID} ${LOCAL_USER} \
     && useradd --uid ${LOCAL_UID} --gid ${LOCAL_GID} --home-dir /var/lib/controlplane --shell /bin/bash ${LOCAL_USER} \

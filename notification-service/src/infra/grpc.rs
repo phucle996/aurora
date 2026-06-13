@@ -83,6 +83,7 @@ impl GrpcAuthClient {
         access_key: String,
         access_secret: String,
     ) -> Result<VerifyAdminTrinityTokenResponse, tonic::Status> {
+        let start_time = std::time::Instant::now();
         Logger::sys_info(
             "grpc.auth_call",
             "Verifying admin trinity token via lazy-connected gRPC Channel pool",
@@ -91,14 +92,31 @@ impl GrpcAuthClient {
         // Client của tonic rẻ để clone (chỉ clone underlying channel reference)
         let mut client = self.client.clone();
 
-        let request = tonic::Request::new(VerifyAdminTrinityTokenRequest {
+        let mut request = tonic::Request::new(VerifyAdminTrinityTokenRequest {
             admin_api_token,
             access_key,
             access_secret,
         });
 
-        let response = client.verify_admin_trinity_token(request).await?;
-        Ok(response.into_inner())
+        // Bơm traceparent W3C vào gRPC Metadata để tiếp tục distributed tracing ở Controlplane (Go)
+        if let Some(traceparent) = crate::observability::otel::OtelTracer::get_traceparent() {
+            if let Ok(meta_val) = tonic::metadata::MetadataValue::try_from(&traceparent) {
+                request.metadata_mut().insert("traceparent", meta_val);
+            }
+        }
+
+        let response = client.verify_admin_trinity_token(request).await;
+
+        // Lưu trữ các chỉ số đo đạc cuộc gọi gRPC
+        let duration = start_time.elapsed().as_secs_f64();
+        let status = if response.is_ok() { "ok" } else { "error" };
+        crate::observability::prometheus::GRPC_CALLS_TOTAL.with_label_values(&["verify_admin_trinity_token", status]).inc();
+        crate::observability::prometheus::GRPC_CALL_DURATION_SECONDS.with_label_values(&["verify_admin_trinity_token", status]).observe(duration);
+
+        match response {
+            Ok(res) => Ok(res.into_inner()),
+            Err(status) => Err(status),
+        }
     }
 
     // Gửi yêu cầu xác thực User qua gRPC đến Controlplane
@@ -108,6 +126,7 @@ impl GrpcAuthClient {
         access_key: String,
         access_secret: String,
     ) -> Result<VerifyUserTrinityTokenResponse, tonic::Status> {
+        let start_time = std::time::Instant::now();
         Logger::sys_info(
             "grpc.auth_call",
             "Verifying user trinity token via lazy-connected gRPC Channel pool",
@@ -116,13 +135,30 @@ impl GrpcAuthClient {
         // Client của tonic rẻ để clone (chỉ clone underlying channel reference)
         let mut client = self.client.clone();
 
-        let request = tonic::Request::new(VerifyUserTrinityTokenRequest {
+        let mut request = tonic::Request::new(VerifyUserTrinityTokenRequest {
             access_token,
             access_key,
             access_secret,
         });
 
-        let response = client.verify_user_trinity_token(request).await?;
-        Ok(response.into_inner())
+        // Bơm traceparent W3C vào gRPC Metadata để tiếp tục distributed tracing ở Controlplane (Go)
+        if let Some(traceparent) = crate::observability::otel::OtelTracer::get_traceparent() {
+            if let Ok(meta_val) = tonic::metadata::MetadataValue::try_from(&traceparent) {
+                request.metadata_mut().insert("traceparent", meta_val);
+            }
+        }
+
+        let response = client.verify_user_trinity_token(request).await;
+
+        // Lưu trữ các chỉ số đo đạc cuộc gọi gRPC
+        let duration = start_time.elapsed().as_secs_f64();
+        let status = if response.is_ok() { "ok" } else { "error" };
+        crate::observability::prometheus::GRPC_CALLS_TOTAL.with_label_values(&["verify_user_trinity_token", status]).inc();
+        crate::observability::prometheus::GRPC_CALL_DURATION_SECONDS.with_label_values(&["verify_user_trinity_token", status]).observe(duration);
+
+        match response {
+            Ok(res) => Ok(res.into_inner()),
+            Err(status) => Err(status),
+        }
     }
 }

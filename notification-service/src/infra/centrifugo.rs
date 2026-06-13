@@ -53,12 +53,17 @@ impl CentrifugoClient {
         };
 
         // Thực hiện cuộc gọi HTTP POST gửi tin nhắn sang Centrifugo
-        let response = self.client.post(&url)
+        let mut request = self.client.post(&url)
             .header("X-API-Key", &self.api_key) // Gửi API Key qua Header chuẩn của Centrifugo
             .header("Authorization", format!("apikey {}", self.api_key)) // Dự phòng Authorization header cho các phiên bản cũ hơn
-            .json(&payload)
-            .send()
-            .await?;
+            .json(&payload);
+
+        // Đính kèm Trace Context (traceparent) nếu được truyền trong luồng thực thi async hiện tại
+        if let Some(traceparent) = crate::observability::otel::OtelTracer::get_traceparent() {
+            request = request.header("traceparent", traceparent);
+        }
+
+        let response = request.send().await?;
 
         // Ghi nhận cảnh báo nếu Centrifugo phản hồi mã lỗi không thành công (ví dụ: 401 Unauthorized, 404)
         if !response.status().is_success() {

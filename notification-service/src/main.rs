@@ -9,26 +9,26 @@ use config::Config;
 use observability::logger::Logger;
 use observability::otel::OtelTracer;
 use observability::prometheus::PromRegistry;
-use observability::resource::ResourceMonitor;
 use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [ignoring loop detection]
-    // Khởi tạo các thành phần thuộc hệ thống giám sát Observability đồng bộ với Dataplane
+    // Khởi tạo Logger đầu tiên để phục vụ ghi log hệ thống
     Logger::init();
-    OtelTracer::init();
-    PromRegistry::init();
-    ResourceMonitor::start_monitor();
 
-    Logger::sys_info("system.startup", "Starting Notification Service (Rust)...");
-
-    // Nạp cấu hình biến môi trường từ environment
+    // Nạp cấu hình biến môi trường từ environment trước khi khởi tạo các dịch vụ khác
     let cfg = Config::from_env();
     Logger::sys_info(
         "system.config",
         &format!("Loaded configuration successfully: {:?}", cfg),
     );
+
+    Logger::sys_info("system.startup", "Starting Notification Service (Rust)...");
+
+    // Khởi tạo các thành phần thuộc hệ thống giám sát Observability đồng bộ với Dataplane sử dụng thông tin cấu hình
+    OtelTracer::init();
+    PromRegistry::init(cfg.metrics_port);
 
     // Khởi tạo toàn bộ kết nối hạ tầng từ folder app/
     let app_state = app::init::init_infrastructure(&cfg).await;

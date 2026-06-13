@@ -5,6 +5,8 @@ use std::time::Duration;
 use tokio::time::sleep;
 use prost::Message;
 use chrono::{Utc, TimeZone};
+use crate::observability::prometheus::{REDIS_EVENTS_TOTAL, CENTRIFUGO_PUBLISHES_TOTAL, DELIVERED_EVENT_LAG_SECONDS};
+use crate::observability::otel::TraceContext;
 
 // Sinh mã Rust từ file proto/job_event.proto
 pub mod job {
@@ -136,52 +138,91 @@ impl RedisSubscriber {
 
                                                 // 5. Xử lý giải mã bản tin và đẩy qua Centrifugo
                                                 if let Some(raw_bytes) = binary_data {
+                                                    REDIS_EVENTS_TOTAL.with_label_values(&["consumed"]).inc();
                                                     if let Ok(event) = JobNotificationEvent::decode(&*raw_bytes) {
-                                                        Logger::sys_info(
-                                                            "redis.subscriber",
-                                                            &format!("Successfully decoded job event {} for user: {}", event.job_id, event.user_id),
-                                                        );
-
-                                                        // Chuyển đổi Unix timestamp sang chuỗi ISO 8601 UTC
-                                                        let datetime = Utc.timestamp_opt(event.created_at, 0).unwrap();
+                                                        // Trích xuất hoặc khởi tạo Trace Context từ sự kiện nhận được
+                                                        let trace_ctx = TraceContext::parse(&event.trace_parent)
+                                                            .unwrap_or_else(TraceContext::new_random);
                                                         
-                                                        // Đóng gói JSON tinh giản hoàn toàn (lược bỏ job_id và event_type)
-                                                        let client_payload = serde_json::json!({
-                                                            "status": event.status,
-                                                            "title": event.title,
-                                                            "message": event.message,
-                                                            "created_at": datetime.to_rfc3339()
-                                                        });
+                                                        let centrifugo_client = self.centrifugo_client.clone();
+                                                        let message_id_clone = message_id.clone();
+                                                        let event_job_id = event.job_id.clone();
+                                                        let event_user_id = event.user_id.clone();
+                                                        let event_status = event.status.clone();
+                                                        let event_title = event.title.clone();
+                                                        let event_message = event.message.clone();
+                                                        let event_created_at = event.created_at;
+                                                        let client = self.client.clone();
 
-                                                        // Phát sự kiện tới Centrifugo API
-                                                        let channel_name = format!("personal:{}", event.user_id);
-                                                        match self.centrifugo_client.publish(&channel_name, client_payload).await {
-                                                            Ok(_) => {
-                                                                // 6. Gửi xác nhận XACK để đánh dấu xử lý xong tin nhắn
-                                                                let ack_res: redis::RedisResult<()> = redis::cmd("XACK")
-                                                                    .arg("stream:job_notifications")
-                                                                    .arg("notification_consumers")
-                                                                    .arg(&message_id)
-                                                                    .query_async(&mut conn)
-                                                                    .await;
-                                                                
-                                                                if let Err(ack_err) = ack_res {
+                                                        // Thực thi xử lý nghiệp vụ đẩy tin trong phạm vi Trace Context
+                                                        crate::observability::otel::CURRENT_TRACE.scope(trace_ctx, async move {
+                                                            Logger::sys_info(
+                                                                "redis.subscriber",
+                                                                &format!("Successfully decoded job event {} for user: {}", event_job_id, event_user_id),
+                                                            );
+
+                                                            // Chuyển đổi Unix timestamp sang chuỗi ISO 8601 UTC
+                                                            let datetime = Utc.timestamp_opt(event_created_at, 0).unwrap();
+                                                            
+                                                            // Đóng gói JSON tinh giản hoàn toàn (lược bỏ job_id và event_type)
+                                                            let client_payload = serde_json::json!({
+                                                                "status": event_status,
+                                                                "title": event_title,
+                                                                "message": event_message,
+                                                                "created_at": datetime.to_rfc3339()
+                                                            });
+
+                                                            // Phát sự kiện tới Centrifugo API
+                                                            let channel_name = format!("personal:{}", event_user_id);
+                                                            match centrifugo_client.publish(&channel_name, client_payload).await {
+                                                                Ok(_) => {
+                                                                    CENTRIFUGO_PUBLISHES_TOTAL.with_label_values(&["success"]).inc();
+                                                                    
+                                                                    // Đo lường độ trễ từ khi phát sinh CDC ở DB đến lúc xuất bản Websocket
+                                                                    let current_time = Utc::now().timestamp();
+                                                                    let lag = (current_time - event_created_at).max(0) as f64;
+                                                                    DELIVERED_EVENT_LAG_SECONDS.with_label_values(&["success"]).observe(lag);
+
+                                                                    // Tạo kết nối Redis riêng để thực hiện XACK tránh nghẽn thread đọc
+                                                                    if let Ok(mut ack_conn) = client.get_async_connection().await {
+                                                                        let ack_res: redis::RedisResult<()> = redis::cmd("XACK")
+                                                                            .arg("stream:job_notifications")
+                                                                            .arg("notification_consumers")
+                                                                            .arg(&message_id_clone)
+                                                                            .query_async(&mut ack_conn)
+                                                                            .await;
+                                                                        
+                                                                        if let Err(ack_err) = ack_res {
+                                                                            REDIS_EVENTS_TOTAL.with_label_values(&["ack_failed"]).inc();
+                                                                            Logger::sys_error(
+                                                                                "redis.subscriber",
+                                                                                "Failed to ACK message",
+                                                                                &format!("{:?}", ack_err),
+                                                                            );
+                                                                        } else {
+                                                                            REDIS_EVENTS_TOTAL.with_label_values(&["ack_success"]).inc();
+                                                                        }
+                                                                    } else {
+                                                                        REDIS_EVENTS_TOTAL.with_label_values(&["ack_conn_failed"]).inc();
+                                                                        Logger::sys_error(
+                                                                            "redis.subscriber",
+                                                                            "Failed to obtain Redis connection for XACK",
+                                                                            "connection_error",
+                                                                        );
+                                                                    }
+                                                                }
+                                                                Err(pub_err) => {
+                                                                    CENTRIFUGO_PUBLISHES_TOTAL.with_label_values(&["failed"]).inc();
                                                                     Logger::sys_error(
                                                                         "redis.subscriber",
-                                                                        "Failed to ACK message",
-                                                                        &format!("{:?}", ack_err),
+                                                                        "Failed to publish to Centrifugo. Message held in PEL.",
+                                                                        &format!("{:?}", pub_err),
                                                                     );
                                                                 }
                                                             }
-                                                            Err(pub_err) => {
-                                                                Logger::sys_error(
-                                                                    "redis.subscriber",
-                                                                    "Failed to publish to Centrifugo. Message held in PEL.",
-                                                                    &format!("{:?}", pub_err),
-                                                                );
-                                                            }
-                                                        }
+                                                        }).await;
                                                     } else {
+                                                        REDIS_EVENTS_TOTAL.with_label_values(&["decode_failed"]).inc();
                                                         Logger::sys_error(
                                                             "redis.subscriber",
                                                             "Protobuf decode failed for incoming stream message.",

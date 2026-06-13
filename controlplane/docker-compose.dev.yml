@@ -333,7 +333,7 @@ services:
       # Mount policy config cho binary prod đọc từ path chuẩn /etc/dataplane/.
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "01903e8c-55c1-7da3-87de-6e69622d1df7"
+      ZONE_ID: "019eba50-596b-7b77-b3e2-966e3f8ef885"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
@@ -652,10 +652,14 @@ services:
     container_name: aurora-notification-service
     ports:
       - "8083:8083"
+      # Cổng xuất bản Prometheus Metrics
+      - "2112:2112"
     volumes:
       - ./dev/tls:/etc/notification-service/tls:ro
     environment:
       - APP_PORT=8083
+      # Chỉ định cổng chạy Metrics Exporter
+      - METRICS_PORT=2112
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       - REDIS_URL=redis://controlplane-redis-job:6379/0

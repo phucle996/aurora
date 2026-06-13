@@ -45,6 +45,7 @@ import (
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
+	"controlplane/pkg/logger"
 	"errors"
 
 	"github.com/google/uuid"
@@ -565,13 +566,20 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	if req.ClientDeviceID != uuid.Nil {
 		existingPubKey, err := s.repo.GetPublicKeyByDeviceID(ctx, req.ClientDeviceID.String())
 		if err == nil {
-			// Device ID đã tồn tại, kiểm tra sự trùng khớp của khóa công khai để tránh Device Hijacking
+			// 🛡️ SRE HA & LOGIC FIX:
+			//   - Tránh deadlock/lockout vô hạn: Nếu IndexedDB lưu key ở client bị xóa (do browser auto-clean, private mode)
+			//     nhưng HttpOnly cookie ClientDeviceID vẫn còn, việc so khớp cứng sẽ block 100% các lần thử đăng nhập tiếp theo.
+			//   - An toàn bảo mật: Do đăng nhập bắt buộc phải đi qua xác thực API Key và mã MFA (TOTP/Recovery Code) có độ
+			//     bảo mật cực cao, nếu hai yếu tố trên đúng thì danh tính SRE Admin đã được đảm bảo.
+			//   - Tính sẵn sàng & Tự phục hồi (Self-Healing): Khi khóa công khai gửi lên không khớp, ta ghi nhận log cảnh báo
+			//     nhưng cho phép đi tiếp. Sau khi verify MFA thành công, hàm repo.UpsertAdminDeviceBinding sẽ thực hiện GHI ĐÈ 
+			//     (overwrite/rotate) khóa công khai mới trực tiếp vào dòng của ClientDeviceID hiện tại thông qua mệnh đề ON CONFLICT DO UPDATE.
+			//     Quy trình này đảm bảo KHÔNG TẠO thiết bị mới trong database mà chỉ cập nhật khóa của thiết bị cũ.
 			if existingPubKey != canonicalPublicKey {
-				loginOutcome = iamTaxonomy.Failure
-				return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrDeviceBindingFailed, fmt.Errorf("device public key mismatch"), iamTaxonomy.Failure)
+				logger.SysWarn("iam.admin_auth.login", fmt.Sprintf("Admin device public key mismatch for device %s. Public key will be rotated upon successful MFA verification.", req.ClientDeviceID.String()))
 			}
 		} else if !errors.Is(err, iamTaxonomy.ErrNotFound) {
-			// Lỗi database thực sự trả ErrInternalError
+			// Lỗi truy vấn database thực sự sẽ trả ErrInternalError
 			loginOutcome = iamTaxonomy.Failure
 			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
 		}

@@ -3,6 +3,8 @@ use std::env;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub app_port: u16,
+    // Cổng HTTP phục vụ cho việc export metrics sang Prometheus (mặc định: 2112)
+    pub metrics_port: u16,
     pub centrifugo_api_url: String,
     pub centrifugo_api_key: String,
     pub redis_url: String,
@@ -24,6 +26,10 @@ impl Config {
                 .unwrap_or_else(|_| "8083".to_string())
                 .parse()
                 .expect("APP_PORT must be a valid number"),
+            metrics_port: env::var("METRICS_PORT")
+                .unwrap_or_else(|_| "2112".to_string())
+                .parse()
+                .expect("METRICS_PORT must be a valid number"),
             centrifugo_api_url: env::var("CENTRIFUGO_API_URL")
                 .unwrap_or_else(|_| "http://centrifugo:8000/api".to_string()),
             centrifugo_api_key: env::var("CENTRIFUGO_API_KEY")

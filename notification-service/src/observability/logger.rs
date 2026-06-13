@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// ============================================================================
@@ -11,13 +10,9 @@ use std::sync::OnceLock;
 ///
 pub const LOG_TYPE_ACCESS: &str = "access";
 pub const LOG_TYPE_SYSTEM: &str = "system";
-pub const LOG_TYPE_JOB: &str = "job";
-
-pub struct Fields(pub HashMap<String, serde_json::Value>);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
-    Debug = 0,
     Info = 1,
     Warn = 2,
     Error = 3,
@@ -26,7 +21,6 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "debug" => LogLevel::Debug,
             "warn" => LogLevel::Warn,
             "error" => LogLevel::Error,
             _ => LogLevel::Info,
@@ -46,6 +40,15 @@ impl Logger {
         })
     }
 
+    // Trích xuất mã trace_id từ Task-Local Storage nếu có để đính kèm vào JSON log
+    fn get_trace_part() -> String {
+        if let Some(ctx) = crate::observability::otel::OtelTracer::get_current_trace() {
+            format!(",\"trace_id\":\"{}\"", ctx.trace_id)
+        } else {
+            "".to_string()
+        }
+    }
+
     pub fn init() {
         let level = Self::get_level();
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
@@ -55,22 +58,13 @@ impl Logger {
         );
     }
 
-    pub fn sys_debug(op: &str, message: &str) {
-        if Self::get_level() <= LogLevel::Debug {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"debug\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message
-            );
-        }
-    }
-
     pub fn access_log(op: &str, method: &str, route: &str, status_code: i32, latency_ms: f64) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_part = Self::get_trace_part();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}}}",
-                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}{}}}",
+                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms, trace_part
             );
         }
     }
@@ -78,9 +72,10 @@ impl Logger {
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_part = Self::get_trace_part();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, trace_part
             );
         }
     }
@@ -88,9 +83,10 @@ impl Logger {
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_part = Self::get_trace_part();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_part
             );
         }
     }
@@ -98,9 +94,10 @@ impl Logger {
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_part = Self::get_trace_part();
             eprintln!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_part
             );
         }
     }

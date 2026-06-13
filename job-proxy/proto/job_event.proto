@@ -1,8 +1,8 @@
 syntax = "proto3";
 package job;
 
-// WARNING: This file is duplicated in job-proxy/proto/job_event.proto.
-// If you modify this file, you MUST also update the duplicated file in job-proxy!
+// WARNING: This file is duplicated in notification-service/proto/job_event.proto.
+// If you modify this file, you MUST also update the duplicated file in notification-service!
 
 // Định nghĩa thông điệp gửi từ Job-Proxy qua Redis Stream
 message JobNotificationEvent {

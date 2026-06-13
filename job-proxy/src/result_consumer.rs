@@ -137,7 +137,7 @@ impl ResultConsumer {
             // Phân tích dữ liệu outbox record vừa được cập nhật
             let user_id: String = row.get(0);
             let job_topic: String = row.get(1);
-            let trace_id: String = row.get(2);
+            let trace_id: String = row.get::<_, Option<String>>(2).unwrap_or_default();
 
             // Lấy user_id trực tiếp từ cột DB. Nếu có, tiến hành phát sự kiện thông báo real-time.
             if !user_id.is_empty() {
