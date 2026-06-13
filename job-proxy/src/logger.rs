@@ -15,7 +15,6 @@ pub struct Fields(pub HashMap<String, serde_json::Value>);
 /// Phân cấp độ ưu tiên của Log Level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
-    Debug = 0,
     Info = 1,
     Warn = 2,
     Error = 3,
@@ -24,7 +23,6 @@ pub enum LogLevel {
 impl LogLevel {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "debug" => LogLevel::Debug,
             "warn" => LogLevel::Warn,
             "error" => LogLevel::Error,
             _ => LogLevel::Info, // Mặc định là Info
@@ -55,16 +53,7 @@ impl Logger {
         );
     }
 
-    /// Ghi nhận nhật ký gỡ lỗi hệ thống cấp thấp (System Debug Logs).
-    pub fn sys_debug(op: &str, message: &str) {
-        if Self::get_level() <= LogLevel::Debug {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"debug\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message
-            );
-        }
-    }
+
 
     /// Ghi nhận nhật ký truy cập mạng/kết nối mạng (Access Logs).
     pub fn access_log(op: &str, method: &str, route: &str, status_code: i32, latency_ms: f64) {

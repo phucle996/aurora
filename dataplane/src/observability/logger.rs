@@ -79,9 +79,15 @@ impl Logger {
     pub fn sys_debug(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Debug {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
+            let trace_segment = if let Some(ref tid) = trace_id {
+                format!(",\"trace_id\":\"{}\"", tid)
+            } else {
+                "".to_string()
+            };
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"debug\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"debug\",\"message\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, trace_segment
             );
         }
     }
@@ -90,9 +96,15 @@ impl Logger {
     pub fn access_log(op: &str, method: &str, route: &str, status_code: i32, latency_ms: f64) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
+            let trace_segment = if let Some(ref tid) = trace_id {
+                format!(",\"trace_id\":\"{}\"", tid)
+            } else {
+                "".to_string()
+            };
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}}}",
-                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}{}}}",
+                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms, trace_segment
             );
         }
     }
@@ -101,9 +113,15 @@ impl Logger {
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
+            let trace_segment = if let Some(ref tid) = trace_id {
+                format!(",\"trace_id\":\"{}\"", tid)
+            } else {
+                "".to_string()
+            };
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, trace_segment
             );
         }
     }
@@ -112,9 +130,15 @@ impl Logger {
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
+            let trace_segment = if let Some(ref tid) = trace_id {
+                format!(",\"trace_id\":\"{}\"", tid)
+            } else {
+                "".to_string()
+            };
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_segment
             );
         }
     }
@@ -123,9 +147,15 @@ impl Logger {
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
+            let trace_segment = if let Some(ref tid) = trace_id {
+                format!(",\"trace_id\":\"{}\"", tid)
+            } else {
+                "".to_string()
+            };
             eprintln!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_segment
             );
         }
     }
@@ -134,9 +164,15 @@ impl Logger {
     pub fn job_log(job_id: &str, job_topic: &str, attempt: u32, op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
+            let trace_segment = if let Some(ref tid) = trace_id {
+                format!(",\"trace_id\":\"{}\"", tid)
+            } else {
+                "".to_string()
+            };
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message, trace_segment
             );
         }
     }

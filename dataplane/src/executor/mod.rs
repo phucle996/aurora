@@ -7,7 +7,7 @@ use async_trait::async_trait;
 /// ============================================================================
 /// 📂 MODULE: executor/mod.rs - Giao Diện & Bộ Khung Thực Thi Nghiệp Vụ
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Định nghĩa Trait chuẩn `Executor` cho toàn bộ các nghiệp vụ chạy trên Dataplane.
 ///   - Khai báo các cấu trúc lỗi (`ExecutorError`) và kết quả (`ExecutionResult`) chuẩn hóa.
@@ -32,11 +32,11 @@ use async_trait::async_trait;
 pub enum ExecutorError {
     /// Lỗi xảy ra khi phát hiện Job này đã từng được thực thi thành công trước đó (Trùng lặp khóa).
     IdempotencyViolation(String),
-    
+
     /// Lỗi xảy ra khi tác vụ xử lý vượt quá thời gian timeout quy định bởi chính sách hệ thống.
     /// Giúp giải phóng luồng xử lý bị treo trên production.
     DeadlineExceeded(String),
-    
+
     /// Các lỗi phát sinh trong quá trình tương tác API hoặc lỗi vật lý của máy chủ ảo hóa.
     ExecutionFailed(String),
 }
@@ -45,10 +45,10 @@ pub enum ExecutorError {
 pub struct ExecutionResult {
     /// Đánh dấu tác vụ hoàn thành tốt hay thất bại.
     pub success: bool,
-    
+
     /// Mã trạng thái trả về để báo cáo lên Controlplane. Ví dụ: "SUCCESS" | "FAILED".
     pub return_code: String,
-    
+
     /// Chuỗi thông báo kỹ thuật mô tả kết quả xử lý.
     pub message: String,
 }
@@ -62,7 +62,7 @@ pub trait Executor {
     ///   - Không được phép để xảy ra tình trạng crash thô (panic) làm sập hệ thống Dataplane.
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError>;
 }
-// 
+//
 // 💡 Ý TƯỞNG MỞ RỘNG (SCALABILITY PRO-TIP):
 //   Khi hệ thống có thêm các workload mới như Database, DNS, Storage,... bạn chỉ việc tạo thêm
 //   thư mục con tương tự như /hypervisor/ hoặc /mail/, định nghĩa struct nghiệp vụ và implement

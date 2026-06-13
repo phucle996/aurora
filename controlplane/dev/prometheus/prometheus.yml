@@ -13,3 +13,11 @@ scrape_configs:
           - "controlplane1:8080"
           - "controlplane2:8080"
           - "controlplane3:8080"
+
+  # Thu thập metrics từ tất cả các Dataplane node qua endpoint /metrics (cổng 2112)
+  - job_name: dataplane
+    static_configs:
+      - targets:
+          - "dataplane-z1-n1:2112"
+          - "dataplane-z2-n1:2112"
+          - "dataplane-z2-n2:2112"

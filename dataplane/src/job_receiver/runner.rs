@@ -68,90 +68,132 @@ impl JobRunner {
             // Chờ tín hiệu đăng ký hoàn tất vào Watchdog Registry để tránh race condition deregister trước register
             let _ = rx.await;
 
-            let job_id = payload.job_id.clone();
-            let result_channel = format!("job_results:{}", job_id);
+            let trace_id = payload.trace_id.clone();
+            let stream_key_clone = stream_key.clone();
 
-            Logger::sys_info(
-                "job.runner",
-                &format!(
-                    "Job Runner: Starting execution wrapper for job {} with Max Execution Limit: {:?}",
-                    job_id, limit
-                ),
-            );
+            crate::observability::otel::CURRENT_TRACE_ID.scope(trace_id, async move {
+                use opentelemetry::trace::Span;
+                use opentelemetry::trace::TraceContextExt;
+                use opentelemetry::trace::Tracer;
+                let tracer = opentelemetry::global::tracer("dataplane");
 
-            // Đăng ký guard tự động dọn dẹp tài nguyên
-            let _guard = ExecutionCleanupGuard {
-                redis_internal_zone: redis_internal_zone.clone(),
-                lock_key: lock_key.clone(),
-                active_jobs: active_jobs.clone(),
-                active_lock_registry: active_lock_registry_clone.clone(),
-            };
+                let cx = if let Some(parent_ctx) = crate::observability::otel::OtelTracer::parse_traceparent(&payload.trace_id) {
+                    opentelemetry::Context::current().with_remote_span_context(parent_ctx)
+                } else {
+                    opentelemetry::Context::current()
+                };
 
-            // Báo cáo trạng thái bắt đầu xử lý (PROCESSING) qua Redis Pub/Sub và gRPC
-            let processing_report = JobExecutionResult {
-                job_id: job_id.clone(),
-                job_version: payload.job_version,
-                attempt: payload.attempt,
-                result_status: "PROCESSING".to_string(),
-                error_code: None,
-                message: "Job execution started on dataplane worker".to_string(),
-            };
-            let _ = JobResultReporter::report_outcome(
-                redis_job.client(),
-                &result_channel,
-                &processing_report,
-            )
-            .await;
+                let mut span = tracer.start_with_context(format!("job.{}", payload.job_topic), &cx);
 
-            // Thực thi định tuyến và gọi Executor nghiệp vụ, được giám sát bởi Watchdog bên ngoài
-            let payload_dispatch = payload.clone();
-            let worker_pool_dispatch = worker_pool.clone();
-            let exec_res = Ok(JobConsumer::dispatch_workload(payload_dispatch, worker_pool_dispatch).await);
+                let job_id = payload.job_id.clone();
+                let result_channel = format!("job_results:{}", job_id);
 
-            // Phân loại kết quả thực thi
-            let report = JobExecutionResult::from_outcome(
-                job_id.clone(),
-                payload.job_version,
-                payload.attempt,
-                exec_res,
-            );
-
-            // Ghi audit log kết quả thực thi
-            if report.result_status == "SUCCEEDED" {
-                Logger::job_log(
-                    &payload.job_id,
-                    &payload.job_topic,
-                    payload.attempt,
-                    "job.success",
-                    &report.message,
-                );
-            } else {
-                Logger::sys_error(
+                Logger::sys_info(
                     "job.runner",
-                    &format!("Workload execution failed for job {}: {}", job_id, report.message),
-                    report.error_code.as_deref().unwrap_or("UNKNOWN"),
+                    &format!(
+                        "Job Runner: Starting execution wrapper for job {} with Max Execution Limit: {:?}",
+                        job_id, limit
+                    ),
                 );
-            }
 
-            // Báo cáo kết quả đồng thời qua Redis Pub/Sub và gRPC
-            let _ = JobResultReporter::report_outcome(
-                redis_job.client(),
-                &result_channel,
-                &report,
-            )
-            .await;
+                // Đăng ký guard tự động dọn dẹp tài nguyên
+                let _guard = ExecutionCleanupGuard {
+                    redis_internal_zone: redis_internal_zone.clone(),
+                    lock_key: lock_key.clone(),
+                    active_jobs: active_jobs.clone(),
+                    active_lock_registry: active_lock_registry_clone.clone(),
+                };
 
-            // Xác nhận giải phóng tin nhắn (XACK) trên Stream nếu xử lý thành công
-            if report.result_status == "SUCCEEDED" {
-                let ack_id = payload.redis_msg_id.as_deref().unwrap_or(&payload.job_id);
-                let _ = crate::infra::redis::query::acknowledge_message(
+                // Báo cáo trạng thái bắt đầu xử lý (PROCESSING) qua Redis Pub/Sub và gRPC
+                let processing_report = JobExecutionResult {
+                    job_id: job_id.clone(),
+                    job_version: payload.job_version,
+                    attempt: payload.attempt,
+                    result_status: "PROCESSING".to_string(),
+                    error_code: None,
+                    message: "Job execution started on dataplane worker".to_string(),
+                };
+                let _ = JobResultReporter::report_outcome(
                     redis_job.client(),
-                    &stream_key,
-                    "dataplane-group",
-                    ack_id,
+                    &result_channel,
+                    &processing_report,
                 )
                 .await;
-            }
+
+                // Đo lường thời gian bắt đầu thực thi nghiệp vụ thô
+                let start_time = tokio::time::Instant::now();
+
+                // Thực thi định tuyến và gọi Executor nghiệp vụ, được giám sát bởi Watchdog bên ngoài
+                let payload_dispatch = payload.clone();
+                let worker_pool_dispatch = worker_pool.clone();
+                let exec_res = Ok(JobConsumer::dispatch_workload(payload_dispatch, worker_pool_dispatch).await);
+
+                let duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+                let zone_id = stream_key_clone.strip_prefix("jobs:").unwrap_or(&stream_key_clone).to_string();
+
+                // Phân loại kết quả thực thi
+                let report = JobExecutionResult::from_outcome(
+                    job_id.clone(),
+                    payload.job_version,
+                    payload.attempt,
+                    exec_res,
+                );
+
+                // Thiết lập trạng thái OTel span dựa theo kết quả của job
+                if report.result_status == "SUCCEEDED" {
+                    span.set_status(opentelemetry::trace::Status::Ok);
+                } else {
+                    span.set_status(opentelemetry::trace::Status::error(report.message.clone()));
+                }
+                span.end();
+
+                // Ghi nhận Prometheus metric đo độ trễ xử lý nghiệp vụ thực tế và tổng số lượng job
+                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
+                    crate::workerpool::metrics::MetricsType::HandlerLatencyMs {
+                        zone_id,
+                        job_topic: payload.job_topic.clone(),
+                        status: report.result_status.clone(),
+                        latency_ms: duration_ms,
+                    }
+                );
+
+                // Ghi audit log kết quả thực thi
+                if report.result_status == "SUCCEEDED" {
+                    Logger::job_log(
+                        &payload.job_id,
+                        &payload.job_topic,
+                        payload.attempt,
+                        "job.success",
+                        &report.message,
+                    );
+                } else {
+                    Logger::sys_error(
+                        "job.runner",
+                        &format!("Workload execution failed for job {}: {}", job_id, report.message),
+                        report.error_code.as_deref().unwrap_or("UNKNOWN"),
+                    );
+                }
+
+                // Báo cáo kết quả đồng thời qua Redis Pub/Sub và gRPC
+                let _ = JobResultReporter::report_outcome(
+                    redis_job.client(),
+                    &result_channel,
+                    &report,
+                )
+                .await;
+
+                // Xác nhận giải phóng tin nhắn (XACK) trên Stream khi hoàn tất xử lý (SUCCEEDED hoặc FAILED)
+                if report.result_status == "SUCCEEDED" || report.result_status == "FAILED" {
+                    let ack_id = payload.redis_msg_id.as_deref().unwrap_or(&payload.job_id);
+                    let _ = crate::infra::redis::query::acknowledge_message(
+                        redis_job.client(),
+                        &stream_key_clone,
+                        "dataplane-group",
+                        ack_id,
+                    )
+                    .await;
+                }
+            }).await;
         });
 
         // Đăng ký tác vụ và AbortHandle vào Watchdog để giám sát vòng đời

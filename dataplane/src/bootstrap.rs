@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
-use crate::infra::sqlite::SqliteDb;
 use crate::observability::logger::Logger;
 use crate::policyengine::engine::PolicyEngine;
 use crate::policyengine::types::PolicySet;
@@ -32,7 +31,6 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 pub struct BootstrapResult {
     pub config: Arc<Config>,
-    pub sqlite_db: SqliteDb,
     pub redis_job: Arc<RedisClientManager>,
     pub redis_internal_zone: Arc<RedisClientManager>,
     pub policy_engine: Arc<PolicyEngine>,
@@ -59,21 +57,6 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
             cfg.zone_id
         ),
     );
-
-    // 4. Initialize local SQLite Database for Idempotency
-    let db = match SqliteDb::init_connection("/var/lib/dataplane/idempotency.db") {
-        Ok(d) => d,
-        Err(err) => {
-            Logger::sys_error(
-                "system.bootstrap",
-                "CRITICAL: Failed to initialize local SQLite database connection pool",
-                &err,
-            );
-            std::io::stdout().flush().ok();
-            std::io::stderr().flush().ok();
-            std::process::exit(1);
-        }
-    };
 
     // 5. Initialize Job Queue Redis connection pool
     let redis_job = match RedisClientManager::new(
@@ -121,9 +104,8 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // Đường dẫn ưu tiên theo thứ tự:
     //   1. Biến môi trường POLICY_FILE (được set bởi Docker/K8s volume mount).
     //   2. config/policy.yaml (fallback cho dev local không qua container).
-    let policy_path = PathBuf::from(
-        env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string()),
-    );
+    let policy_path =
+        PathBuf::from(env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string()));
     let initial_yaml = match std::fs::read_to_string(&policy_path) {
         Ok(s) => s,
         Err(err) => {
@@ -175,7 +157,6 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
 
     Ok(BootstrapResult {
         config: Arc::new(cfg),
-        sqlite_db: db,
         redis_job: Arc::new(redis_job),
         redis_internal_zone: Arc::new(redis_internal_zone),
         policy_engine,

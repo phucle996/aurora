@@ -4,6 +4,7 @@
 # Stage 1: Builder - biên dịch binary release của aurora-dataplane
 # ============================================================================
 FROM rust:bookworm AS builder
+RUN apt-get update && apt-get install -y protobuf-compiler
 WORKDIR /src
 
 # 1. Pre-warm dependency cache: chỉ copy manifest, build dummy để cache layer deps.

@@ -340,6 +340,10 @@ services:
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
+      # Cổng export Prometheus metrics endpoint /metrics
+      METRICS_PORT: "2112"
+      # Endpoint gRPC của OTel Collector để gửi traces (Tempo)
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
       controlplane1:
         condition: service_started
@@ -347,7 +351,17 @@ services:
         condition: service_healthy
       redis-dataplane-z1:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
   envoy-zone1:
     image: envoyproxy/envoy:v1.33.2
@@ -392,6 +406,8 @@ services:
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-2:9090"
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
+      METRICS_PORT: "2112"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
       controlplane2:
         condition: service_started
@@ -399,6 +415,8 @@ services:
         condition: service_healthy
       redis-dataplane-z2:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
   dataplane-z2-n2:
@@ -420,6 +438,8 @@ services:
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-3:9090"
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
+      METRICS_PORT: "2112"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
       controlplane3:
         condition: service_started
@@ -427,6 +447,8 @@ services:
         condition: service_healthy
       redis-dataplane-z2:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
   envoy-zone2:

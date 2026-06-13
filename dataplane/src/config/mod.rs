@@ -123,9 +123,8 @@ pub struct Config {
     /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Controlplane gRPC.
     pub controlplane_grpc_client_key: Option<String>,
 
-    /// Cấu hình mức độ hiển thị nhật ký hệ thống (log level).
-    /// Giá trị: "debug" | "info" | "warn" | "error"
-    pub log_level: String,
+    /// Cổng HTTP phục vụ cho việc export metrics sang Prometheus (mặc định: 2113)
+    pub metrics_port: u16,
 }
 
 impl Config {
@@ -201,11 +200,10 @@ impl Config {
             dataplane_grpc_ca_cert: env::var("DATAPLANE_GRPC_CA_CERT").ok(),
             dataplane_grpc_client_cert: env::var("DATAPLANE_GRPC_CLIENT_CERT").ok(),
             dataplane_grpc_client_key: env::var("DATAPLANE_GRPC_CLIENT_KEY").ok(),
-
-            // ============================================================================
-            // 🚀 CẤU HÌNH LOGGING
-            // ============================================================================
-            log_level: env::var("APP_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            metrics_port: env::var("METRICS_PORT")
+                .unwrap_or_else(|_| "2113".to_string())
+                .parse::<u16>()
+                .unwrap_or(2113),
         }
     }
 }

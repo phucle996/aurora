@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 use crate::bootstrap::BootstrapResult;
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
-use crate::infra::sqlite::SqliteDb;
 use crate::observability::logger::Logger;
 use crate::policyengine::adapter::YamlFileAdapter;
 use crate::policyengine::engine::PolicyEngine;
@@ -31,7 +30,6 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 pub struct AppContainer {
     pub config: Arc<Config>,
-    pub sqlite_db: SqliteDb,
     pub redis_job: Arc<RedisClientManager>,
     pub redis_internal_zone: Arc<RedisClientManager>,
     pub policy_engine: Arc<PolicyEngine>,
@@ -45,12 +43,13 @@ impl AppContainer {
         (
             Self {
                 config: boot.config,
-                sqlite_db: boot.sqlite_db,
                 redis_job: boot.redis_job,
                 redis_internal_zone: boot.redis_internal_zone,
                 policy_engine: boot.policy_engine,
                 worker_pool: boot.worker_pool,
-                active_lock_registry: Arc::new(crate::workerpool::watchdog::ActiveLockRegistry::new()),
+                active_lock_registry: Arc::new(
+                    crate::workerpool::watchdog::ActiveLockRegistry::new(),
+                ),
             },
             boot.worker_signal_rx,
         )
@@ -61,6 +60,12 @@ impl AppContainer {
         // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
         crate::observability::resource::ResourceMonitor::start_monitor();
 
+        // 0b. Khởi chạy máy chủ HTTP scrape metrics cho Prometheus
+        crate::workerpool::metrics::PromRegistry::init(self.config.metrics_port);
+
+        // 0d. Khởi tạo OpenTelemetry tracer pipeline kết nối tới Tempo
+        crate::observability::otel::OtelTracer::init();
+
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.active_lock_registry.clone();
         let redis_internal = self.redis_internal_zone.clone();
@@ -68,19 +73,23 @@ impl AppContainer {
             crate::workerpool::watchdog::start_watchdog_loop(
                 registry,
                 redis_internal,
-                30, // TTL gia hạn trên Redis là 30 giây
+                30,                      // TTL gia hạn trên Redis là 30 giây
                 Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
-            ).await;
+            )
+            .await;
         });
 
         // 0e. Khởi chạy luồng giám sát sức khỏe kép (Dual-Path Liveness Heartbeat) định kỳ 5 giây
         let redis_job_hb = self.redis_job.clone();
         let zone_id_hb = self.config.zone_id.clone();
         let hostname_hb = crate::config::get_node_hostname();
-        
+
         Logger::sys_info(
             "system.heartbeat",
-            &format!("Starting Dataplane Dual-Path Heartbeat loop for node [{}] in zone [{}]", hostname_hb, zone_id_hb)
+            &format!(
+                "Starting Dataplane Dual-Path Heartbeat loop for node [{}] in zone [{}]",
+                hostname_hb, zone_id_hb
+            ),
         );
 
         tokio::spawn(async move {
@@ -89,9 +98,21 @@ impl AppContainer {
                 interval.tick().await;
 
                 // Thử nghiệm luồng chính: Đăng ký và ghi liveness cache lên Redis Job Broker
-                match crate::infra::redis::query::register_node(redis_job_hb.client(), &zone_id_hb, &hostname_hb).await {
+                match crate::infra::redis::query::register_node(
+                    redis_job_hb.client(),
+                    &zone_id_hb,
+                    &hostname_hb,
+                )
+                .await
+                {
                     Ok(_) => {
-                        match crate::infra::redis::query::send_liveness_heartbeat(redis_job_hb.client(), &zone_id_hb, &hostname_hb).await {
+                        match crate::infra::redis::query::send_liveness_heartbeat(
+                            redis_job_hb.client(),
+                            &zone_id_hb,
+                            &hostname_hb,
+                        )
+                        .await
+                        {
                             Ok(_) => {
                                 Logger::sys_debug(
                                     "system.heartbeat",
@@ -118,7 +139,12 @@ impl AppContainer {
                 }
 
                 // Luồng dự phòng: Gọi gRPC Fallback Heartbeat trực tiếp lên Controlplane
-                match crate::rpc::client::client::ExternalRpcSenderClient::send_fallback_heartbeat(&hostname_hb, &zone_id_hb).await {
+                match crate::rpc::client::client::ExternalRpcSenderClient::send_fallback_heartbeat(
+                    &hostname_hb,
+                    &zone_id_hb,
+                )
+                .await
+                {
                     Ok(_) => {
                         Logger::sys_info(
                             "system.heartbeat",
@@ -135,7 +161,6 @@ impl AppContainer {
                 }
             }
         });
-
 
         // 0b. Khởi tạo 1 Worker ban đầu hoạt động nhận tin
         self.worker_pool
@@ -188,9 +213,24 @@ impl AppContainer {
                 .unwrap_or(0.0);
                 let active_conns = 0; // Thống kê kết nối giả lập
 
+                // Ghi nhận các chỉ số đo đạc thu được vào Prometheus Registry phục vụ giám sát HA
+                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
+                    crate::workerpool::metrics::MetricsType::RedisStreamLag {
+                        zone_id: config_scale.zone_id.clone(),
+                        lag,
+                    },
+                );
+
                 // 3. Đánh giá tải thực tế
                 let active_ids = worker_pool_scale.active_worker_ids();
                 let current_count = active_ids.len();
+
+                crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
+                    crate::workerpool::metrics::MetricsType::ActiveConnectionsCount {
+                        zone_id: config_scale.zone_id.clone(),
+                        count: current_count,
+                    },
+                );
 
                 let target_count =
                     auto_scaler.evaluate_scale(current_count, lag, latency, active_conns);
@@ -272,7 +312,8 @@ impl AppContainer {
 
         // 2. Kích hoạt Dedicated Policy Watcher Worker thông qua Worker Pool
         let policy_engine_clone = self.policy_engine.clone();
-        let policy_file = std::env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string());
+        let policy_file =
+            std::env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string());
         let policy_path = PathBuf::from(&policy_file);
         let adapter = YamlFileAdapter::new(policy_path);
 
@@ -281,7 +322,8 @@ impl AppContainer {
                 adapter
                     .start_watch(token, move || {
                         let path = PathBuf::from(
-                            std::env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string())
+                            std::env::var("POLICY_FILE")
+                                .unwrap_or_else(|_| "config/policy.yaml".to_string()),
                         );
                         if let Ok(raw_yaml) = std::fs::read_to_string(&path) {
                             let checksum = PolicySet::calculate_checksum(&raw_yaml);
@@ -315,5 +357,7 @@ impl AppContainer {
             "Stopping application container gracefully...",
         );
         self.worker_pool.shutdown().await;
+        // Giải phóng và flush toàn bộ trace spans còn sót lại lên collector
+        crate::observability::otel::OtelTracer::stop();
     }
 }
