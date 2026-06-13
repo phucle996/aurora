@@ -1,0 +1,16 @@
+# [ignoring loop detection]
+# Bỏ qua thư mục build target của Rust
+/target
+
+# Bỏ qua các file cấu hình môi trường cục bộ
+.env
+.env*.local
+
+# Bỏ qua IDE configs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

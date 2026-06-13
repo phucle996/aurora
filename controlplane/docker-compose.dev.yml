@@ -626,6 +626,44 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    container_name: aurora-centrifugo
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./dev/centrifugo/config.json:/centrifugo/config.json:ro
+    command: centrifugo --config /centrifugo/config.json
+    environment:
+      - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=your_shared_jwt_secret_key
+      - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
+    depends_on:
+      redis-job:
+        condition: service_healthy
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: ../notification-service
+      dockerfile: Dockerfile
+    container_name: aurora-notification-service
+    ports:
+      - "8083:8083"
+    environment:
+      - APP_PORT=8083
+      - CENTRIFUGO_API_URL=http://centrifugo:8000/api
+      - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
+      - REDIS_URL=redis://controlplane-redis-job:6379/0
+      - CONTROLPLANE_GRPC_ENDPOINT=controlplane-dev-1:9090
+    depends_on:
+      centrifugo:
+        condition: service_started
+      controlplane1:
+        condition: service_started
+      redis-job:
+        condition: service_healthy
+    restart: unless-stopped
+
 # ============================================================================
 # 💾 ĐỊNH NGHĨA CÁC VOLUMES BỀN VỮNG TOÀN CỤM (PERSISTENT NAMED VOLUMES)
 # ============================================================================

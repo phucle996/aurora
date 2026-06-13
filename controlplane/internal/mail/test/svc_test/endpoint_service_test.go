@@ -2,6 +2,7 @@ package svc_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -137,5 +138,66 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	_, err = service.GetEndpoint(ctx, createdID)
 	if err == nil {
 		t.Errorf("expected get after delete to return error, but got nil")
+	}
+}
+
+func TestEndpointServiceTestConnectionRaw(t *testing.T) {
+	// Khởi tạo cấu hình schema riêng biệt cho tiến trình kiểm thử độc lập
+	cfg := testutil.NewMailTestConfig(testutil.UniqueSchema("mail_endpoint_test_conn_raw"))
+	db := testutil.OpenPostgres(t, cfg)
+	testutil.PrepareMailSchema(t, cfg, db)
+	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
+
+	redisServer := miniredis.RunT(t)
+	rdsClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = rdsClient.Close() })
+
+	zoneID := uuid.New()
+	l1Cache := cacheengine.NewShardedCache()
+	registry := cacheengine.NewCacheRegistry(l1Cache)
+
+	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
+	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
+	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, rdsClient, registry)
+	ctx := context.Background()
+	ctx = middleware.ContextWithZoneID(ctx, zoneID)
+
+	// Khởi tạo các tham số cấu hình SMTP thô để gửi yêu cầu test connection
+	params := mailEntity.CreateEndpointParams{
+		ZoneID:         zoneID,
+		Name:           "Raw Test SMTP Server",
+		Host:           "smtp.example.com",
+		Port:           587,
+		Username:       "raw-test-user",
+		Password:       "raw-test-password",
+		TLSMode:        "starttls",
+		Status:         "active",
+		MaxConnections: 5,
+		Priority:       10,
+		Weight:         1,
+	}
+
+	// Gọi TestConnectionRaw. Luồng mới sẽ chỉ lưu job vào outbox repository (Postgres)
+	// mà không chặn kết nối đồng bộ tới Redis, đảm bảo tính sẵn sàng (HA) và tránh nghẽn luồng.
+	err := service.TestConnectionRaw(ctx, params)
+	if err != nil {
+		t.Fatalf("TestConnectionRaw failed: %v", err)
+	}
+
+	// Xác nhận xem bản ghi outbox đã được lưu xuống Postgres thành công chưa
+	// và trạng thái của bản ghi đó có đúng là PENDING hay không bằng cách truy vấn trực tiếp DB.
+	var jobTopic, status string
+	query := fmt.Sprintf("SELECT job_topic, status FROM %s.mail_outbox_records LIMIT 1", cfg.SchemaSQL.Mail)
+	err = db.QueryRow(ctx, query).Scan(&jobTopic, &status)
+	if err != nil {
+		t.Fatalf("Failed to query outbox record from database: %v", err)
+	}
+
+	if jobTopic != "mail.test_connection" {
+		t.Errorf("expected job topic 'mail.test_connection', got %s", jobTopic)
+	}
+
+	if status != string(mailEntity.OutboxStatusPending) {
+		t.Errorf("expected outbox record status to be PENDING, got %s", status)
 	}
 }

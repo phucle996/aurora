@@ -1,0 +1,15 @@
+{
+  "allowed_origins": ["*"],
+  "port": 8000,
+  "proxy_connect_endpoint": "http://notification-service:8083/api/v1/realtime/connect",
+  "proxy_connect_timeout": "2s",
+  "proxy_headers": ["Cookie", "Authorization", "X-Real-IP", "User-Agent"],
+  "namespaces": [
+    {
+      "name": "personal",
+      "presence": true,
+      "publish": false,
+      "subscribe": true
+    }
+  ]
+}

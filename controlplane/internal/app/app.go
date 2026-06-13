@@ -314,6 +314,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	if g != nil && g.Server != nil && g.Server.Server != nil {
 		modules.Core.RegisterGRPCServices(g.Server.Server)
+		modules.IAM.RegisterGRPCServices(g.Server.Server)
 	}
 
 	// Register tất cả HTTP routes sau khi modules đã wire xong hoàn toàn.

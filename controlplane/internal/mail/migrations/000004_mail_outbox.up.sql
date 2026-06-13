@@ -38,7 +38,3 @@ ALTER TABLE mail_outbox_records ADD COLUMN IF NOT EXISTS error_message TEXT;
 
 -- Đảm bảo cột payload_json luôn ở kiểu JSONB trong trường hợp bảng đã tồn tại sẵn
 ALTER TABLE mail_outbox_records ALTER COLUMN payload_json TYPE JSONB USING payload_json::jsonb;
-
-
-
-

@@ -77,12 +77,16 @@ import (
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
+	iamRpcHandler "controlplane/internal/iam/transport/rpc/handler"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security/ratelimit"
+	"controlplane/pkg/logger"
 	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
 )
 
 type IAMModule struct {
@@ -103,6 +107,7 @@ type IAMModule struct {
 	RbacRepository        iamRepoInterface.RbacRepository
 	AdminAPIKeyRepository iamRepoInterface.AdminAPIKeyRepository
 	AdminAPIKeyService    coreSvc.AdminAPIKeyService
+	AuthService           iamSvcInterface.AuthService
 	rotationCancel        context.CancelFunc
 	finalizeCancel        context.CancelFunc
 	deviceCapCancel       context.CancelFunc
@@ -279,6 +284,7 @@ func NewModule(
 		rds:                   rds,
 		rateLimiter:           rateLimiter,
 		L1Registry:            cacheEngine,
+		AuthService:           authSvc,
 		AuthHandler:           authHandler,
 		RefreshTokenHandler:   refreshTokenHandler,
 		DeviceHandler:         deviceHandler,
@@ -301,4 +307,14 @@ func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID str
 	}
 	// Best-effort: lỗi flush không ảnh hưởng flow xác thực.
 	_ = m.deviceSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID, ip, userAgent)
+}
+
+// RegisterGRPCServices đăng ký các dịch vụ gRPC của phân hệ IAM phục vụ xác thực Trinity
+func (m *IAMModule) RegisterGRPCServices(server *grpc.Server) {
+	if m == nil || m.AuthService == nil {
+		return
+	}
+	handler := iamRpcHandler.NewAuthGRPCHandler(m.AuthService)
+	iamproto.RegisterAuthServiceServer(server, handler)
+	logger.SysInfo("grpc", "registered IAM AuthService onto gRPC server")
 }

@@ -8,8 +8,22 @@ import (
 	"github.com/google/uuid"
 )
 
+// VerifySessionResult chứa thông tin phản hồi sau khi xác thực Trinity session thành công
+type VerifySessionResult struct {
+	Valid  bool
+	UserID string
+	Role   string
+	ZoneID string
+}
+
 type AuthService interface {
 	RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) error
 	Login(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.LoginResult, error)
 	Logout(ctx context.Context, userID uuid.UUID, accessKey string, accessSecret string) error
+	
+	// Xác thực credentials của Admin/SRE quản trị qua gRPC
+	VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*VerifySessionResult, error)
+	
+	// Xác thực credentials của End-User qua gRPC
+	VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*VerifySessionResult, error)
 }

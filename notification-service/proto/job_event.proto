@@ -1,0 +1,14 @@
+syntax = "proto3";
+package job;
+
+// Định nghĩa thông điệp gửi từ Job-Proxy qua Redis Stream
+message JobNotificationEvent {
+  string job_id = 1;        // Mã định danh duy nhất của Job
+  string user_id = 2;       // ID người nhận thông báo
+  string status = 3;        // Trạng thái kết quả: SUCCESS hoặc FAILED
+  string event_type = 4;    // Loại sự kiện để phục vụ log nghiệp vụ
+  string title = 5;         // Tiêu đề của thông báo
+  string message = 6;       // Nội dung chi tiết của thông báo
+  int64 created_at = 7;     // Thời điểm xảy ra sự kiện dưới dạng Unix Epoch seconds
+  string trace_parent = 8;  // OpenTelemetry context cho distributed tracing
+}

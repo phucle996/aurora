@@ -446,46 +446,15 @@ func (s *endpointServiceImpl) TestConnectionRaw(
 	}
 
 	// Lưu bản ghi outbox trực tiếp vào cơ sở dữ liệu Postgres
+	// Hàng đợi outbox này sẽ được CDC qua WAL bởi Job-proxy xử lý bất đồng bộ
 	if err := s.outboxRepo.Save(ctx, record); err != nil {
 		return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("failed to save outbox event: %w", err), mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	// Đã loại bỏ phần publish "mail:outbox:trigger" lên Redis cũ
-	// Do job-proxy giờ đây bắt sự kiện CDC trực tiếp qua WAL stream của Postgres.
-
-	// Subscribe to result on rdsJob
-	resultChannel := fmt.Sprintf("job_results:%s", eventID.String())
-	pubsub := s.rdsJob.Subscribe(ctx, resultChannel)
-	defer pubsub.Close()
-
-	// Wait with timeout
-	select {
-	case <-ctx.Done():
-		return apperr.Wrap(mailTaxonomy.ErrInternal, ctx.Err(), mailTaxonomy.OutcomeTimeout)
-	case msg, ok := <-pubsub.Channel():
-		if !ok || msg == nil {
-			return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("result channel closed"), mailTaxonomy.OutcomeInternalError)
-		}
-
-		// Decode job execution result
-		var result struct {
-			Status       string `json:"status"` // SUCCEEDED, FAILED
-			ErrorCode    string `json:"error_code"`
-			ErrorMessage string `json:"error_message"`
-		}
-		if err := json.Unmarshal([]byte(msg.Payload), &result); err != nil {
-			// fallback check if payload is plain text
-			if msg.Payload == "SUCCEEDED" {
-				return nil
-			}
-			return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("connection test failed: %s", msg.Payload), mailTaxonomy.OutcomeDatabaseError)
-		}
-
-		if result.Status == "SUCCEEDED" {
-			return nil
-		}
-		return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("connection test failed: %s (code: %s)", result.ErrorMessage, result.ErrorCode), mailTaxonomy.OutcomeDatabaseError)
-	case <-time.After(8 * time.Second):
-		return apperr.Wrap(mailTaxonomy.ErrInternal, fmt.Errorf("timeout waiting for connection test result from dataplane"), mailTaxonomy.OutcomeTimeout)
-	}
+	// Phục vụ cơ chế Cloud-Native và HA:
+	// Thay vì chặn luồng để chờ kết quả đồng bộ qua Redis Pub/Sub, chúng ta chỉ cần ghi nhận Job
+	// vào cơ sở dữ liệu Postgres (Outbox Pattern). Phần xử lý kết quả (result processing) sẽ được
+	// thực hiện thông qua một worker / handler bất đồng bộ khác sau này để tránh các lỗi race condition 
+	// cũng như tối ưu hóa tài nguyên kết nối của hệ thống.
+	return nil
 }
