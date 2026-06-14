@@ -79,88 +79,7 @@ impl AppContainer {
             .await;
         });
 
-        // 0e. Khởi chạy luồng giám sát sức khỏe kép (Dual-Path Liveness Heartbeat) định kỳ 5 giây
-        let redis_job_hb = self.redis_job.clone();
-        let zone_id_hb = self.config.zone_id.clone();
-        let hostname_hb = crate::config::get_node_hostname();
 
-        Logger::sys_info(
-            "system.heartbeat",
-            &format!(
-                "Starting Dataplane Dual-Path Heartbeat loop for node [{}] in zone [{}]",
-                hostname_hb, zone_id_hb
-            ),
-        );
-
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-
-                // Thử nghiệm luồng chính: Đăng ký và ghi liveness cache lên Redis Job Broker
-                match crate::infra::redis::query::register_node(
-                    redis_job_hb.client(),
-                    &zone_id_hb,
-                    &hostname_hb,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        match crate::infra::redis::query::send_liveness_heartbeat(
-                            redis_job_hb.client(),
-                            &zone_id_hb,
-                            &hostname_hb,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                Logger::sys_debug(
-                                    "system.heartbeat",
-                                    &format!("Successfully sent liveness cache heartbeat to Redis Job for node [{}]", hostname_hb)
-                                );
-                                continue; // Gửi luồng chính thành công, bỏ qua luồng dự phòng
-                            }
-                            Err(err) => {
-                                Logger::sys_warn(
-                                    "system.heartbeat",
-                                    &format!("Failed to write liveness heartbeat to Redis Job: {}. Triggering fallback path...", err),
-                                    "REDIS_HEARTBEAT_FAIL"
-                                );
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        Logger::sys_warn(
-                            "system.heartbeat",
-                            &format!("Failed to register node in Redis Set: {}. Triggering fallback path...", err),
-                            "REDIS_REGISTER_FAIL"
-                        );
-                    }
-                }
-
-                // Luồng dự phòng: Gọi gRPC Fallback Heartbeat trực tiếp lên Controlplane
-                match crate::rpc::client::client::ExternalRpcSenderClient::send_fallback_heartbeat(
-                    &hostname_hb,
-                    &zone_id_hb,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        Logger::sys_info(
-                            "system.heartbeat",
-                            &format!("Successfully sent fallback gRPC heartbeat to Controlplane for node [{}]", hostname_hb)
-                        );
-                    }
-                    Err(err) => {
-                        Logger::sys_error(
-                            "system.heartbeat",
-                            &format!("CRITICAL: Both Main and Fallback heartbeat paths failed for node [{}]: {}", hostname_hb, err),
-                            &err
-                        );
-                    }
-                }
-            }
-        });
 
         // 0b. Khởi tạo 1 Worker ban đầu hoạt động nhận tin
         self.worker_pool
@@ -278,22 +197,7 @@ impl AppContainer {
             }
         });
 
-        // 0c. Khởi động gRPC Server nội bộ của Dataplane dạng Stateless
-        let grpc_port = self.config.dataplane_grpc_port;
-        let grpc_tls_mode = self.config.dataplane_grpc_tls_mode;
-        let grpc_ca = self.config.dataplane_grpc_ca_cert.clone();
-        let grpc_cert = self.config.dataplane_grpc_client_cert.clone();
-        let grpc_key = self.config.dataplane_grpc_client_key.clone();
-        tokio::spawn(async move {
-            let _ = crate::rpc::server::server::DataplaneGrpcServer::start_server(
-                grpc_port,
-                grpc_tls_mode,
-                grpc_ca,
-                grpc_cert,
-                grpc_key,
-            )
-            .await;
-        });
+
 
         // 1. Khởi chạy luồng giám sát sự cố/hoạt động của Worker Pool
         tokio::spawn(async move {

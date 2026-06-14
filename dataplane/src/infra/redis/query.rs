@@ -217,43 +217,5 @@ pub async fn query_stream_latency_ms(client: &redis::Client, stream_key: &str) -
     Ok(0.0)
 }
 
-/// Đăng ký Node động vào Redis Set đại diện cho active pool của Zone
-pub async fn register_node(client: &redis::Client, zone_id: &str, hostname: &str) -> Result<(), String> {
-    let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
-    let key = format!("dataplane:nodes:{}", zone_id);
-    let _: u64 = redis::cmd("SADD")
-        .arg(&key)
-        .arg(hostname)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
 
-/// Gửi nhịp tim liveness lên Redis Cache TTL
-pub async fn send_liveness_heartbeat(client: &redis::Client, zone_id: &str, hostname: &str) -> Result<(), String> {
-    let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
-    let key = format!("dataplane:liveness:{}:{}", zone_id, hostname);
-    let _: String = redis::cmd("SET")
-        .arg(&key)
-        .arg("1")
-        .arg("EX")
-        .arg(8)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Phát hành thông tin/kết quả công việc vào một kênh Pub/Sub.
-pub async fn publish_pubsub(client: &redis::Client, channel: &str, message: &str) -> Result<(), String> {
-    let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
-    let _: () = redis::cmd("PUBLISH")
-        .arg(channel)
-        .arg(message)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
 

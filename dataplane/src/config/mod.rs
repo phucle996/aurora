@@ -51,25 +51,7 @@ impl FromStr for RedisTlsMode {
     }
 }
 
-/// 🛡️ CHẾ ĐỘ BẢO MẬT TRUYỀN DẪN gRPC (gRPC SECURITY MODE)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GrpcTlsMode {
-    Disable,
-    Tls,
-    Mtls,
-}
 
-impl FromStr for GrpcTlsMode {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_ascii_lowercase().as_str() {
-            "disable" | "false" => Ok(GrpcTlsMode::Disable),
-            "tls" | "true" => Ok(GrpcTlsMode::Tls),
-            "mtls" => Ok(GrpcTlsMode::Mtls),
-            _ => Ok(GrpcTlsMode::Disable),
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -98,30 +80,6 @@ pub struct Config {
     pub redis_internal_zone_client_cert: Option<String>,
     /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Internal Zone Redis.
     pub redis_internal_zone_client_key: Option<String>,
-
-    /// Port của Dataplane gRPC server
-    pub dataplane_grpc_port: u32,
-    /// Chế độ bảo mật TLS cho Dataplane gRPC server.
-    pub dataplane_grpc_tls_mode: GrpcTlsMode,
-    /// Đường dẫn file chứng chỉ CA cho Dataplane gRPC server
-    pub dataplane_grpc_ca_cert: Option<String>,
-    /// Đường dẫn file chứng chỉ Client phục vụ mTLS cho Dataplane gRPC server
-    pub dataplane_grpc_client_cert: Option<String>,
-    /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Dataplane gRPC server
-    pub dataplane_grpc_client_key: Option<String>,
-
-    /// Địa chỉ gRPC endpoint của Controlplane để gửi các báo cáo hoàn thành nghiệp vụ hoặc lazy state.
-    /// Định dạng: "host:port"
-    pub controlplane_grpc_endpoint: String,
-
-    /// Chế độ bảo mật TLS cho Controlplane gRPC.
-    pub controlplane_grpc_tls_mode: GrpcTlsMode,
-    /// Đường dẫn file chứng chỉ CA cho Controlplane gRPC.
-    pub controlplane_grpc_ca_cert: Option<String>,
-    /// Đường dẫn file chứng chỉ Client phục vụ mTLS cho Controlplane gRPC.
-    pub controlplane_grpc_client_cert: Option<String>,
-    /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Controlplane gRPC.
-    pub controlplane_grpc_client_key: Option<String>,
 
     /// Cổng HTTP phục vụ cho việc export metrics sang Prometheus (mặc định: 2113)
     pub metrics_port: u16,
@@ -172,34 +130,6 @@ impl Config {
             redis_internal_zone_ca_cert: env::var("REDIS_INTERNAL_ZONE_CA_CERT").ok(),
             redis_internal_zone_client_cert: env::var("REDIS_INTERNAL_ZONE_CLIENT_CERT").ok(),
             redis_internal_zone_client_key: env::var("REDIS_INTERNAL_ZONE_CLIENT_KEY").ok(),
-
-            // ============================================================================
-            // 🚀 CẤU HÌNH CONTROLPLANE GPRC CLIENT
-            // ============================================================================
-            controlplane_grpc_endpoint: env::var("CONTROLPLANE_GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "controlplane-dev-1:9090".to_string()),
-            controlplane_grpc_tls_mode: env::var("CONTROLPLANE_GRPC_TLS_ENABLED")
-                .unwrap_or_else(|_| "disable".to_string())
-                .parse::<GrpcTlsMode>()
-                .unwrap_or(GrpcTlsMode::Disable),
-            controlplane_grpc_ca_cert: env::var("CONTROLPLANE_GRPC_CA_CERT").ok(),
-            controlplane_grpc_client_cert: env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok(),
-            controlplane_grpc_client_key: env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok(),
-
-            // ============================================================================
-            // 🚀 CẤU HÌNH DATAPLANE GPRC SERVER
-            // ============================================================================
-            dataplane_grpc_port: env::var("DATAPLANE_GRPC_PORT")
-                .unwrap_or_else(|_| "50051".to_string())
-                .parse::<u32>()
-                .unwrap_or(50051),
-            dataplane_grpc_tls_mode: env::var("DATAPLANE_GRPC_TLS_ENABLED")
-                .unwrap_or_else(|_| "disable".to_string())
-                .parse::<GrpcTlsMode>()
-                .unwrap_or(GrpcTlsMode::Disable),
-            dataplane_grpc_ca_cert: env::var("DATAPLANE_GRPC_CA_CERT").ok(),
-            dataplane_grpc_client_cert: env::var("DATAPLANE_GRPC_CLIENT_CERT").ok(),
-            dataplane_grpc_client_key: env::var("DATAPLANE_GRPC_CLIENT_KEY").ok(),
             metrics_port: env::var("METRICS_PORT")
                 .unwrap_or_else(|_| "2113".to_string())
                 .parse::<u16>()

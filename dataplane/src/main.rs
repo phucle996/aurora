@@ -8,7 +8,6 @@ mod infra;
 mod job_receiver;
 mod observability;
 mod policyengine;
-mod rpc;
 mod workerpool;
 
 use crate::observability::logger::Logger;

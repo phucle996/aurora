@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// ============================================================================
@@ -26,11 +25,8 @@ use std::sync::OnceLock;
 ///   - Mọi log ghi ra bắt buộc phải mang mốc thời gian độ phân giải cao `RFC3339Nano` để phân tích
 ///     chính xác thứ tự xảy ra sự kiện trên production.
 ///
-pub const LOG_TYPE_ACCESS: &str = "access";
 pub const LOG_TYPE_SYSTEM: &str = "system";
 pub const LOG_TYPE_JOB: &str = "job";
-
-pub struct Fields(pub HashMap<String, serde_json::Value>);
 
 /// Phân cấp độ ưu tiên của Log Level
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,22 +88,7 @@ impl Logger {
         }
     }
 
-    /// Ghi nhận nhật ký truy cập mạng/kết nối mạng (Access Logs).
-    pub fn access_log(op: &str, method: &str, route: &str, status_code: i32, latency_ms: f64) {
-        if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
-            let trace_segment = if let Some(ref tid) = trace_id {
-                format!(",\"trace_id\":\"{}\"", tid)
-            } else {
-                "".to_string()
-            };
-            println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}{}}}",
-                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms, trace_segment
-            );
-        }
-    }
+
 
     /// Ghi nhận nhật ký hệ thống cấp thấp (System Info Logs).
     pub fn sys_info(op: &str, message: &str) {
