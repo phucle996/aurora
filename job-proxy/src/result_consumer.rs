@@ -1,7 +1,6 @@
 use crate::config::Config;
 use crate::payload::JobExecutionResult;
 use tokio_postgres::NoTls;
-use futures_util::StreamExt;
 use crate::logger::Logger;
 use prost::Message;
 
@@ -21,7 +20,7 @@ impl ResultConsumer {
         Self { config, redis_client }
     }
 
-    /// Khởi chạy vòng lặp nhận tin nhắn kết quả và cập nhật database Postgres
+    /// Khởi chạy vòng lặp nhận tin nhắn kết quả từ Redis Stream và cập nhật database Postgres
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         Logger::sys_info("result_consumer.run", "ResultConsumer: Bắt đầu kết nối tới PostgreSQL...");
         let (client, connection) = tokio_postgres::connect(&self.config.database_url, NoTls).await?;
@@ -34,34 +33,109 @@ impl ResultConsumer {
         // Đảm bảo search path nằm ở mail schema
         client.execute("SET search_path TO mail, public", &[]).await?;
 
-        Logger::sys_info("result_consumer.run", "ResultConsumer: Kết nối tới Redis Pub/Sub...");
-        let mut pubsub = self.redis_client.get_async_pubsub().await?;
-        
-        // Subscribe vào tất cả các kênh job_results:<job_id>
-        pubsub.psubscribe("job_results:*").await?;
-
-        // Khởi tạo một multiplexed connection để sử dụng cho lệnh XADD phát sự kiện notification
+        Logger::sys_info("result_consumer.run", "ResultConsumer: Kết nối tới Redis...");
+        // Khởi tạo một multiplexed connection để sử dụng cho các thao tác đọc ghi Redis Stream
         let mut redis_conn = self.redis_client.get_multiplexed_tokio_connection().await?;
 
-        Logger::sys_info("result_consumer.run", "ResultConsumer: Đang lắng nghe kết quả từ Redis Pub/Sub (pattern: job_results:*)...");
+        let stream_key = &self.config.result_stream_name;
+        let group_name = "job-proxy-group";
+        
+        // 1. Đảm bảo Consumer Group đã tồn tại cho stream kết quả (XGROUP CREATE stream_key group_name $ MKSTREAM)
+        let _: redis::RedisResult<()> = redis::cmd("XGROUP")
+            .arg("CREATE")
+            .arg(stream_key)
+            .arg(group_name)
+            .arg("$")
+            .arg("MKSTREAM")
+            .query_async(&mut redis_conn)
+            .await;
 
-        let mut pubsub_stream = pubsub.on_message();
+        let consumer_id = format!("job-proxy-{}", std::process::id());
+        Logger::sys_info(
+            "result_consumer.run",
+            &format!("ResultConsumer: Đang lắng nghe kết quả từ Redis Stream: {} (Group: {}, Consumer: {})...", stream_key, group_name, consumer_id)
+        );
 
-        while let Some(msg) = pubsub_stream.next().await {
-            let payload: String = match msg.get_payload() {
-                Ok(p) => p,
+        loop {
+            // Đọc tin nhắn mới từ stream sử dụng cơ chế Consumer Group chặn (blocking read 2000ms)
+            let reply: redis::Value = match redis::cmd("XREADGROUP")
+                .arg("GROUP")
+                .arg(group_name)
+                .arg(&consumer_id)
+                .arg("BLOCK")
+                .arg(2000)
+                .arg("COUNT")
+                .arg(1)
+                .arg("STREAMS")
+                .arg(stream_key)
+                .arg(">")
+                .query_async(&mut redis_conn)
+                .await 
+            {
+                Ok(val) => val,
                 Err(e) => {
-                    Logger::sys_error("result_consumer.payload", "ResultConsumer: Lỗi lấy payload tin nhắn", &e.to_string());
+                    Logger::sys_error("result_consumer.read", "Lỗi đọc từ Redis Stream", &e.to_string());
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
             };
 
-            if let Err(err) = self.process_result(&payload, &client, &mut redis_conn).await {
-                Logger::sys_error("result_consumer.process", "ResultConsumer: Lỗi xử lý kết quả", &err.to_string());
+            // Phân tích cú pháp tin nhắn Redis Stream
+            // Định dạng trả về của XREADGROUP: [ [stream_key, [ [msg_id, [field, value, ...]], ... ]], ... ]
+            if let redis::Value::Bulk(streams) = reply {
+                if streams.is_empty() {
+                    continue;
+                }
+                if let redis::Value::Bulk(ref stream_data) = streams[0] {
+                    if stream_data.len() >= 2 {
+                        if let redis::Value::Bulk(ref messages) = stream_data[1] {
+                            for message in messages {
+                                if let redis::Value::Bulk(ref msg_parts) = message {
+                                    if msg_parts.len() >= 2 {
+                                        let msg_id = match &msg_parts[0] {
+                                            redis::Value::Data(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                                            _ => continue,
+                                        };
+
+                                        if let redis::Value::Bulk(ref fields) = msg_parts[1] {
+                                            let mut payload_str = None;
+                                            for i in (0..fields.len()).step_by(2) {
+                                                let key = match &fields[i] {
+                                                    redis::Value::Data(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                                                    _ => continue,
+                                                };
+                                                if key == "data" && i + 1 < fields.len() {
+                                                    if let redis::Value::Data(bytes) = &fields[i + 1] {
+                                                        payload_str = Some(String::from_utf8_lossy(bytes).into_owned());
+                                                    }
+                                                }
+                                            }
+
+                                            if let Some(payload) = payload_str {
+                                                match self.process_result(&payload, &client, &mut redis_conn).await {
+                                                    Ok(_) => {
+                                                        // Acknowledge (XACK) tin nhắn sau khi xử lý và cập nhật DB thành công
+                                                        let _: redis::RedisResult<i32> = redis::cmd("XACK")
+                                                            .arg(stream_key)
+                                                            .arg(group_name)
+                                                            .arg(&msg_id)
+                                                            .query_async(&mut redis_conn)
+                                                            .await;
+                                                    }
+                                                    Err(err) => {
+                                                        Logger::sys_error("result_consumer.process", "Lỗi xử lý kết quả", &err.to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-
-        Ok(())
     }
 
     /// Cập nhật trạng thái Job vào Postgres dựa trên kết quả nhận từ Dataplane

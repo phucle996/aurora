@@ -86,7 +86,6 @@ impl JobRunner {
                 let mut span = tracer.start_with_context(format!("job.{}", payload.job_topic), &cx);
 
                 let job_id = payload.job_id.clone();
-                let result_channel = format!("job_results:{}", job_id);
 
                 Logger::sys_info(
                     "job.runner",
@@ -104,7 +103,7 @@ impl JobRunner {
                     active_lock_registry: active_lock_registry_clone.clone(),
                 };
 
-                // Báo cáo trạng thái bắt đầu xử lý (PROCESSING) qua Redis Pub/Sub và gRPC
+                // Báo cáo trạng thái bắt đầu xử lý (PROCESSING) qua Redis Stream
                 let processing_report = JobExecutionResult {
                     job_id: job_id.clone(),
                     job_version: payload.job_version,
@@ -115,7 +114,6 @@ impl JobRunner {
                 };
                 let _ = JobResultReporter::report_outcome(
                     redis_job.client(),
-                    &result_channel,
                     &processing_report,
                 )
                 .await;
@@ -174,10 +172,9 @@ impl JobRunner {
                     );
                 }
 
-                // Báo cáo kết quả đồng thời qua Redis Pub/Sub và gRPC
+                // Báo cáo kết quả qua Redis Stream (durable) để Job-Proxy cập nhật outbox table
                 let _ = JobResultReporter::report_outcome(
                     redis_job.client(),
-                    &result_channel,
                     &report,
                 )
                 .await;

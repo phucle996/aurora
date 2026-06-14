@@ -43,7 +43,7 @@ sequenceDiagram
         
         JC->>JR: Spawn runner thread (JobRunner::run_job)
         Note over JR: Register ExecutionCleanupGuard (RAII lock/counter release)
-        JR->>LZ: Report outcome with status: PROCESSING (Pub/Sub & gRPC)
+        JR->>RDS: Report outcome with status: PROCESSING (XADD to job_results_stream)
         Note over JR: Dispatch specific workload executor (e.g., SmtpTestExecutor)
     end
 ```
@@ -89,14 +89,55 @@ Before pulling new messages from the Redis Stream, the ingestion loop evaluates 
 
 ---
 
-## 🔒 How Distributed Lease Locks are Managed
+## 🔒 How Distributed Lease Locks & Watchdog are Managed
 
 - **Lock Acquisition Callsite**: `dataplane/src/infra/redis/query.rs` -> `acquire_lease_lock` (Starts at Line 142)
 - **Lock Release Callsite**: `dataplane/src/infra/redis/query.rs` -> `release_lease_lock` (Starts at Line 163)
+- **Registry**: `dataplane/src/workerpool/watchdog.rs` -> `ActiveLockRegistry` (Starts at Line 31)
+- **Watchdog Background Loop**: `dataplane/src/workerpool/watchdog.rs` -> `start_watchdog_loop` (Starts at Line 111)
 
-### Description
+### 1. Distributed Lease Lock Concept
 
-To achieve reliable multi-replica HA execution without double-processing jobs, the consumer attempts to acquire a distributed lease lock on `locks:job:<job_id>` in `redis_internal_zone` immediately after deserialization. The lock is acquired with a default TTL of 30 seconds, which is dynamically extended by the background Watchdog loop as long as the worker is actively running and has not exceeded its execution limit. If lock acquisition fails, the job is skipped.
+To achieve reliable multi-replica execution in a High Availability (HA) cluster and guarantee exactly-once processing, a distributed lease lock is acquired on Redis before processing a job:
+
+- **Key Pattern**: `locks:job:<job_id>`
+- **Acquisition**: Done via `SETNX` with a TTL of 30 seconds.
+- **Fail-Safe**: If lock acquisition fails (meaning another Dataplane node is already processing the job), the current node immediately skips the job message to avoid double execution.
+
+### 2. Active Lock Registry
+
+Once the lock is successfully acquired, its metadata is registered in a thread-safe registry:
+
+- **Structure**: `ActiveLockRegistry` wrapping a `RwLock<HashMap<String, ActiveLockInfo>>`.
+- **Metadata stored**:
+  - `started_at` (timestamp when the execution started).
+  - `max_execution_limit` (the `idle` timeout option specified in the job payload, or a fallback default).
+  - `abort_handle` (the Tokio `AbortHandle` of the running task).
+  - `job_id`, `job_version`, `attempt`.
+
+### 3. Background Watchdog Loop (Auto-Renewal via Pipelining)
+
+The Watchdog runs as a background task executing every 10 seconds. In each tick, it scans all active registered locks:
+
+- **Renewal (Time elapsed < limit)**:
+  - If the job is still running and the elapsed time has not hit `max_execution_limit`, the Watchdog includes the lock key in a batch list.
+  - To optimize performance and prevent network blocking under high-concurrency, the Watchdog performs **Redis Pipelining** to batch-extend the expiration TTL of all running locks (`EXPIRE key 30`) in a single network request.
+- **Forced Timeout Abort (Time elapsed >= limit)**:
+  - If a job hangs or exceeds its maximum execution limit, the Watchdog triggers proactive cancellation:
+    1. Calls `abort_handle.abort()` to terminate the Tokio green task executing the job.
+    2. Deregisters the lock from the registry.
+    3. Spawns a background task to report a `FAILED` result with error code `EXECUTION_TIMEOUT` to the Redis Result Stream (`job_results_stream`).
+
+### 4. RAII Cleanup Guard (`ExecutionCleanupGuard`)
+
+To prevent lock leaks and resource leaks when a task finishes, is aborted, or panics, the execution is wrapped using an RAII pattern:
+
+- **Drop Lifecycle**:
+  - The runner registers `ExecutionCleanupGuard` which is bound to the task context.
+  - When the task completes (successfully or via failure/abort/panic), the guard's `drop()` method is automatically called.
+  - On drop, the guard:
+    1. **Instantly deregisters** the lock from the `ActiveLockRegistry` to stop the Watchdog from sending lease renewals.
+    2. Spawns a detached tokio task to call `release_lease_lock` (deleting the Redis lock key) and atomically decrements the global `active_jobs` counter.
 
 ---
 
@@ -109,7 +150,7 @@ To achieve reliable multi-replica HA execution without double-processing jobs, t
 
 Once the lock is acquired, the consumer increments the active task counter and calls `run_job`, spawning a non-blocking async Tokio task:
 
-- **Early Processing Notification**: Before executing the workload, the runner immediately publishes a `PROCESSING` status update via Redis Pub/Sub and gRPC. This allows the Controlplane DB status to instantly move to `PROCESSING` and triggers real-time progress notifications to the UI.
+- **Early Processing Notification**: Before executing the workload, the runner immediately publishes a `PROCESSING` status update via the Redis Stream `job_results_stream` (XADD). This allows the Job-Proxy to receive the update, modify the Controlplane DB status to `PROCESSING` in a transaction, and trigger real-time progress notifications to the UI.
 - **Execution Guard**: The runner registers an `ExecutionCleanupGuard` (RAII pattern).
 - **Execution Timeout**: Workload execution is regulated by the Watchdog loop. The watchdog monitors the execution time against the specific task's `idle` limit (default 10 minutes). If a task exceeds its limit, the Watchdog triggers proactive cancellation via `AbortHandle::abort()`.
 - **Auto Release**: When the executor finishes (or is aborted/panics), the `ExecutionCleanupGuard` drops. This drops the active job count and releases the Redis lock asynchronously, ensuring complete resource cleanup and preventing leakage.

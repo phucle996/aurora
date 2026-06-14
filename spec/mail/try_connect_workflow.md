@@ -142,7 +142,7 @@ sequenceDiagram
     participant JP_CDC as Job-Proxy (CDC Streamer)
     participant RDS as Redis Streams (jobs:<zone_id>)
     participant DP as Dataplane Node
-    participant RP as Redis Pub/Sub (job_results:<job_id>)
+    participant RDS_RES as Redis Stream (job_results_stream)
     participant JP_RC as Job-Proxy (Result Consumer)
 
     DB->>JP_CDC: WAL Logical Replication Event (INSERT mail_outbox_records)
@@ -151,11 +151,12 @@ sequenceDiagram
     
     RDS->>DP: Consume connection test task (XREADGROUP)
     Note over DP: Execute job & output execution results
-    DP->>RP: Publish Job Result to Pub/Sub channel (PUBLISH)
+    DP->>RDS_RES: Push Job Result to result stream (XADD)
     
-    RP->>JP_RC: Intercept result payload (PSUBSCRIBE pattern match)
+    RDS_RES->>JP_RC: Consume result payload (XREADGROUP)
     Note over JP_RC: Parse JSON & perform atomic update
     JP_RC->>DB: UPDATE mail_outbox_records SET status = SUCCEEDED/FAILED, completed_at = CURRENT_TIMESTAMP WHERE event_id = <job_id>
+    JP_RC->>RDS_RES: Acknowledge message (XACK)
 ```
 
 ---
@@ -171,8 +172,7 @@ sequenceDiagram
     participant JR as Job Runner (JobRunner)
     participant EX as SMTP Executor (SmtpTestExecutor)
     participant SMTP as Target SMTP Server
-    participant RP as Redis Pub/Sub (job_results:<job_id>)
-    participant CP as Controlplane gRPC (ReportJobCompletion)
+    participant RDS_RES as Redis Stream (job_results_stream)
 
     Note over JR: Job is dispatched to mail workload
     JR->>EX: Execute task (dispatch_workload monitored by Watchdog, max limit is 90s (idle), SmtpTestExecutor inner timeout is 5s)
@@ -184,8 +184,7 @@ sequenceDiagram
     
     EX-->>JR: Return Succeeded / Failed outcome
     
-    JR->>RP: Publish result JSON to Pub/Sub channel (PUBLISH)
-    JR->>CP: Report job completion via gRPC
+    JR->>RDS_RES: Push result JSON to result stream (XADD)
 ```
 
 ---
@@ -198,7 +197,7 @@ This phase manages the real-time callback of the SMTP test job completion back t
 
 | Component | Responsibility | File Path / Context |
 | :--- | :--- | :--- |
-| **Result Consumer** | Subscribes to `job_results:*`, updates DB, and pushes a binary Protobuf notification to Redis Streams. | `job-proxy/src/result_consumer.rs` |
+| **Result Consumer** | Consumes from `job_results_stream`, updates DB, acknowledges message, and pushes a binary Protobuf notification to Redis Streams. | `job-proxy/src/result_consumer.rs` |
 | **Redis stream** | High-throughput, distributed event message broker channel. | Stream Key: `stream:job_notifications` |
 | **Notification Service** | Axum service consuming from stream, decoding Protobuf, and publishing to Centrifugo. | `notification-service/src/infra/redis.rs` |
 | **Centrifugo Gateway** | Real-time messaging server managing persistent WebSocket connections. | Channel Key: `personal:<user_id>` |
@@ -215,7 +214,7 @@ sequenceDiagram
     participant CF as Centrifugo WebSocket Gateway
     participant UI as Admin UI Browser
 
-    Note over JP_RC: Intercepts job outcome via Pub/Sub<br/>Updates postgres outbox record
+    Note over JP_RC: Consumes job outcome via Stream<br/>Updates postgres outbox record
     JP_RC->>JP_RC: Map outcome to JobNotificationEvent Protobuf
     JP_RC->>RDS_NOTIF: Push binary event data (XADD)
     

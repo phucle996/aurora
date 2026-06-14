@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"controlplane/internal/config"
 	"controlplane/internal/cacheengine"
+	"controlplane/internal/config"
+	"controlplane/internal/http/middleware"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoImpl "controlplane/internal/mail/repository/postgres"
 	mailSvcImpl "controlplane/internal/mail/service"
 	"controlplane/pkg/constant"
-	"controlplane/internal/http/middleware"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,7 +30,7 @@ func TestTryConnectE2E(t *testing.T) {
 	cfg.Psql.SSLMode = "disable"
 
 	// 2. Khởi tạo kết nối DB pool
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", 
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Psql.Host, cfg.Psql.Port, cfg.Psql.User, cfg.Psql.Password, cfg.Psql.DBName, cfg.Psql.SSLMode)
 	dbPool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestTryConnectE2E(t *testing.T) {
 	// 3. Khởi tạo service với real repositories
 	repo := mailRepoImpl.NewEndpointRepository(dbPool, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(dbPool, cfg)
-	
+
 	l1Cache := cacheengine.NewShardedCache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
 	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, registry)
@@ -53,7 +53,7 @@ func TestTryConnectE2E(t *testing.T) {
 		t.Fatalf("Failed to parse zone ID: %v", err)
 	}
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
-	
+
 	uniqueUserID := fmt.Sprintf("e2e-user-%d", time.Now().UnixNano())
 	ctx = context.WithValue(ctx, constant.ContextKeyUserID, uniqueUserID)
 
@@ -80,9 +80,9 @@ func TestTryConnectE2E(t *testing.T) {
 	var dbStatus, errorMsg string
 	var eventIDStr string
 	var found bool
-	
+
 	query := fmt.Sprintf("SELECT event_id, status, COALESCE(error_message, '') FROM %s.mail_outbox_records WHERE user_id = $1", cfg.SchemaSQL.Mail)
-	
+
 	timeout := time.After(15 * time.Second)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()

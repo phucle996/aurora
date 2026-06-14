@@ -150,10 +150,9 @@ pub async fn start_watchdog_loop(
                 // 2. Đồng bộ xóa ra khỏi Registry
                 registry.deregister(&lock_key);
 
-                // 3. Khởi chạy tác vụ gửi báo cáo lỗi lên Controlplane qua Redis Pub/Sub và gRPC
+                // 3. Khởi chạy tác vụ gửi báo cáo lỗi timeout lên Redis Stream (durable) cho Job-Proxy
                 let client_clone = redis_client.client().clone();
                 tokio::spawn(async move {
-                    let result_channel = format!("job_results:{}", job_id);
                     let timeout_report = JobExecutionResult {
                         job_id,
                         job_version,
@@ -162,7 +161,7 @@ pub async fn start_watchdog_loop(
                         error_code: Some("EXECUTION_TIMEOUT".to_string()),
                         message: "Job execution aborted by watchdog due to timeout".to_string(),
                     };
-                    let _ = JobResultReporter::report_outcome(&client_clone, &result_channel, &timeout_report).await;
+                    let _ = JobResultReporter::report_outcome(&client_clone, &timeout_report).await;
                 });
             } else {
                 // Tác vụ hoạt động bình thường, đưa vào danh sách gia hạn
