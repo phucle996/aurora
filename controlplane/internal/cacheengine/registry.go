@@ -12,6 +12,7 @@ import (
 	"controlplane/internal/cacheengine/l1_cache"
 	"controlplane/internal/cacheengine/l2_cache"
 	"controlplane/internal/cacheengine/l2_lua_executor"
+	"controlplane/pkg/logger"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -181,9 +182,18 @@ func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param s
 	}
 
 	envelopeVal, err := r.L1.GetOrLoad(cacheKey, loader.TTL, func() (interface{}, error) {
+		// Log thông tin khi gặp Cache Miss trong RAM L1 để tiện theo dõi và debug luồng dữ liệu
+		logger.SysInfoFields("cache.get_or_load", "L1 cache miss, triggering loader callback", logger.Fields{
+			"key": cacheKey,
+		})
+
 		// Gọi loader của caller để nạp dữ liệu gốc từ DB/Service
 		raw, err := loader.Load(ctx, param)
 		if err != nil {
+			// Log lỗi khi hàm loader bị lỗi (ví dụ lỗi kết nối DB, DB query error) và trả lỗi gốc về
+			logger.SysErrorFields("cache.get_or_load", "L1 loader execution failed, returning database/service error", err, logger.Fields{
+				"key": cacheKey,
+			})
 			return nil, err
 		}
 

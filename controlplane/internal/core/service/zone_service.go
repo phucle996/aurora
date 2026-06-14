@@ -99,8 +99,8 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		return err
 	}
 
-	// invalidate cache để lazy load khi có request tiếp theo
-	s.l1Registry.L1.Delete("zone_catalog:")
+	// Invalidate cache "zone_catalog" để lazy load khi có request tiếp theo (sửa lại key không có dấu hai chấm ":")
+	s.l1Registry.L1.Delete("zone_catalog")
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
 	// nếu đã có code từ trước thì phải invalid zone_by_code trước rồi tạo lại để clean cache
@@ -113,7 +113,8 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			// Sửa lại key pub "zone_catalog" để các replica nhận diện chính xác và dọn RAM cache L1 cục bộ
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
@@ -158,7 +159,8 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		return nil, err
 	}
 
-	if ok := s.l1Registry.L1.Delete("zone_catalog:"); ok {
+	// Đồng bộ dọn dẹp RAM L1 cache cục bộ sử dụng key chuẩn "zone_catalog"
+	if ok := s.l1Registry.L1.Delete("zone_catalog"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
@@ -167,7 +169,8 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			// Fanout invalidation key "zone_catalog" không chứa dấu ":" để đồng bộ hóa cho các replica khác
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
@@ -185,7 +188,8 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 		return err
 	}
 
-	if ok := s.l1Registry.L1.Delete("zone_catalog:"); ok {
+	// Invalidate cache catalog khi xóa zone (dùng key "zone_catalog" không chứa ":")
+	if ok := s.l1Registry.L1.Delete("zone_catalog"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
@@ -199,7 +203,8 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			// Publish dọn dẹp cache cho các replica khác với key "zone_catalog"
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
@@ -236,7 +241,8 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 		return nil, err
 	}
 
-	if ok := s.l1Registry.L1.Delete("zone_catalog:"); ok {
+	// Xóa RAM cache cục bộ cho catalog sử dụng key chuẩn "zone_catalog"
+	if ok := s.l1Registry.L1.Delete("zone_catalog"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
@@ -250,7 +256,8 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog:", nil); err != nil {
+			// Đồng bộ xóa cache của các replica hyper-scale qua Pub/Sub với key "zone_catalog"
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)

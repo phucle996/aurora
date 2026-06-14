@@ -8,6 +8,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+// Import thư viện Sonner Toast để hiển thị thông báo lỗi/thành công dạng toast notification (HA-friendly)
+import { toast } from 'sonner'
 
 // Nhập Dialog kiểm tra kết nối SMTP
 import { TestConnectionDialog } from '../sections/TestConnectionDialog'
@@ -128,7 +130,8 @@ type EndpointListItem = {
   zone_id: string
   name: string
   provider: string
-  connection_config: mapStringAny
+  // connection_config được đánh dấu optional vì backend trả về cấu trúc phẳng (flat fields)
+  connection_config?: mapStringAny
   is_active: boolean
   created_at?: string
   updated_at?: string
@@ -138,6 +141,12 @@ type EndpointListItem = {
   tls_mode?: string
   has_secret?: boolean
   status?: string
+  // Bổ sung các trường cấu hình phẳng được API trả về trực tiếp để đồng bộ hóa DTO
+  username?: string
+  priority?: number
+  weight?: number
+  ca_cert_pem?: string
+  client_cert_pem?: string
 }
 
 type mapStringAny = {
@@ -176,23 +185,28 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
     endpointName: '',
   })
 
+  // Gọi API tải danh sách endpoints từ backend.
+  // API thực tế trả về một object có dạng { items: [...], next_cursor: ... } ở trường "data".
   const loadEndpoints = useCallback(async (signal: AbortSignal) => {
     void refreshKey
     const zoneHeader = zoneCode ?? 'global'
-    const list = await Fetch(`/admin/mail/endpoints`, {
+    const listResponse = await Fetch(`/admin/mail/endpoints`, {
       signal,
       headers: { 'X-Zone-Code': zoneHeader },
-    }).then((resp) => readAPIData<EndpointListItem[]>(resp))
+    }).then((resp) => readAPIData<{ items: EndpointListItem[] }>(resp))
 
-    const items = (list ?? []).map(ep => {
-      const cfg = ep.connection_config || {}
+    // Trích xuất mảng dữ liệu thực tế từ listResponse.items
+    const list = listResponse?.items ?? []
+
+    // Map dữ liệu phẳng (flat properties) trả về trực tiếp từ backend API
+    const items = list.map(ep => {
       return {
         ...ep,
-        host: String(cfg.host || cfg.address || '-'),
-        port: Number(cfg.port || 0),
-        max_connections: Number(cfg.max_connections || cfg.pool_size || 10),
-        tls_mode: String(cfg.tls_mode || 'none'),
-        has_secret: !!(cfg.password || cfg.api_key || cfg.client_key_pem),
+        host: String(ep.host || '-'),
+        port: Number(ep.port || 0),
+        max_connections: Number(ep.max_connections || 10),
+        tls_mode: String(ep.tls_mode || 'none'),
+        has_secret: !!(ep.username || ep.client_cert_pem), // Xác định xem đã được cấu hình thông tin xác thực/chứng chỉ hay chưa
         status: ep.is_active ? 'active' : 'disabled',
       }
     })
@@ -202,19 +216,33 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
 
   const state = usePollingResource(loadEndpoints, { poll: false })
 
+  // Lắng nghe và hiển thị lỗi load danh sách bằng toaster notification thay vì hiển thị trực tiếp trên UI
+  useEffect(() => {
+    if (state.error) {
+      toast.error(`Cannot load endpoints: ${state.error}`)
+    }
+  }, [state.error])
+
+  // Hàm xóa endpoint, nếu có lỗi sẽ hiển thị qua Sonner Toast thay vì alert
   const deleteEndpoint = async (endpoint: EndpointListItem) => {
     if (!window.confirm(`Delete endpoint ${endpoint.name}?`)) return
-    const resp = await Fetch(`/admin/mail/endpoints/${endpoint.id}`, {
-      method: 'DELETE',
-      headers: { 'X-Zone-Code': zoneCode ?? 'global' },
-    })
-    if (!resp.ok) {
-      window.alert(await readAPIMessage(resp, 'Cannot delete endpoint.'))
-      return
+    try {
+      const resp = await Fetch(`/admin/mail/endpoints/${endpoint.id}`, {
+        method: 'DELETE',
+        headers: { 'X-Zone-Code': zoneCode ?? 'global' },
+      })
+      if (!resp.ok) {
+        toast.error(await readAPIMessage(resp, 'Cannot delete endpoint.'))
+        return
+      }
+      toast.success('Mail endpoint deleted successfully!')
+      setRefreshKey((value) => value + 1)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Cannot delete endpoint.')
     }
-    setRefreshKey((value) => value + 1)
   }
 
+  // Chức năng Test connection thủ công từ UI
   const tryConnect = async (endpoint: EndpointListItem) => {
     setConnState({
       isOpen: true,
@@ -259,6 +287,7 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
     }
   }
 
+  // Hàm cập nhật trạng thái hoạt động (Active/Suspended) dùng cấu trúc phẳng (flat payload) tương thích DTO
   const updateStatus = async (endpoint: EndpointListItem, isActive: boolean) => {
     try {
       const resp = await Fetch(`/admin/mail/endpoints/${endpoint.id}`, {
@@ -269,15 +298,25 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
         },
         body: JSON.stringify({
           name: endpoint.name,
-          connection_config: endpoint.connection_config,
+          host: endpoint.host,
+          port: endpoint.port,
+          username: endpoint.username,
+          tls_mode: endpoint.tls_mode,
+          max_connections: endpoint.max_connections,
+          priority: endpoint.priority,
+          weight: endpoint.weight,
+          status: endpoint.status,
+          ca_cert_pem: endpoint.ca_cert_pem || undefined,
+          client_cert_pem: endpoint.client_cert_pem || undefined,
           is_active: isActive,
         }),
       })
       if (!resp.ok) throw new Error(await readAPIMessage(resp, 'Cannot update status.'))
+      toast.success(`Endpoint status updated successfully!`)
       setRefreshKey((v) => v + 1)
     } catch (err) {
       console.error(err)
-      alert(err instanceof Error ? err.message : 'Cannot update status.')
+      toast.error(err instanceof Error ? err.message : 'Cannot update status.')
     }
   }
 
@@ -354,12 +393,7 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
         </Button>
       </div>
 
-      {/* Khối lỗi nếu có */}
-      {state.error && (
-        <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive">
-          Cannot load endpoints: {state.error}
-        </div>
-      )}
+
 
       {/* Bảng Dữ liệu chính */}
       <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
