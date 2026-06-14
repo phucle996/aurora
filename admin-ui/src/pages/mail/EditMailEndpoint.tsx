@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
+import { useFeatureScope } from '@/hooks/useFeatureScope'
 
 // Định nghĩa cấu trúc của biểu mẫu chỉnh sửa Endpoint SMTP
 type EndpointForm = {
@@ -37,6 +38,9 @@ export default function EditMailEndpointPage() {
   
   // Đọc mã ID của Endpoint cần chỉnh sửa trực tiếp từ URL route params
   const { id } = useParams({ strict: false }) as { id: string }
+
+  // Kiểm soát phạm vi hoạt động
+  const { canWrite } = useFeatureScope('endpoints')
   
   // States quản lý trạng thái tải thông tin, lưu dữ liệu, báo lỗi và lưu form
   const [loading, setLoading] = useState(true)
@@ -106,6 +110,24 @@ export default function EditMailEndpointPage() {
 
   // Hiển thị vòng xoay Loading khi đang tải dữ liệu ban đầu từ API
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="size-8 animate-spin text-muted-foreground" /></div>
+
+  if (!canWrite) {
+    return (
+      <div className="mx-auto max-w-3xl space-y-8 p-6">
+        <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+          <div className="rounded-xl border border-destructive/20 bg-destructive/10 p-6 text-center max-w-md w-full">
+            <h2 className="text-lg font-semibold text-destructive mb-2">Quyền ghi bị từ chối</h2>
+            <p className="text-sm text-muted-foreground mb-4">
+              Không thể chỉnh sửa Endpoint ở phạm vi Global. Vui lòng chọn một Zone cụ thể trước khi thực hiện thao tác này.
+            </p>
+            <Button onClick={() => navigate({ to: '/mail', hash: 'endpoints' })} variant="outline">
+              Quay lại danh sách
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <>

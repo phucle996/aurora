@@ -64,9 +64,6 @@ func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) (string, er
 	}
 	return "", coreErrorx.ErrZoneNotFound
 }
-func (f *fakeZoneRepo) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
-	return false, nil
-}
 func (f *fakeZoneRepo) HasEnabledZoneServicesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
 	return false, nil
 }

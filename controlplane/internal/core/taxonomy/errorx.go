@@ -22,4 +22,5 @@ var (
 	ErrZoneServiceZoneNotFound      = errors.New("core zone service: zone not found")
 	ErrZoneServiceInvalidType       = errors.New("core zone service: invalid service type")
 	ErrZoneServiceStateConflict     = errors.New("core zone service: state conflict")
+	ErrZoneCongested                = errors.New("core zone: zone is congested, backpressure limit exceeded")
 )

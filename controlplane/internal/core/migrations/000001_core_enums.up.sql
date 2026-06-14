@@ -69,26 +69,4 @@ BEGIN
 END
 $$;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'dataplane_node_status' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE dataplane_node_status AS ENUM ('registered', 'ready', 'degraded', 'draining', 'stale', 'failed', 'maintenance');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'registered');
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'ready');
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'degraded');
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'draining');
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'stale');
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'failed');
-    EXECUTE format('ALTER TYPE %I.dataplane_node_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'maintenance');
-END
-$$;
+

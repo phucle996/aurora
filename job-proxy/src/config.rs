@@ -17,6 +17,13 @@ pub struct Config {
 
     /// Tên Stream nhận kết quả xử lý từ Dataplane
     pub result_stream_name: String,
+
+    /// Cấu hình gRPC kết nối tới Controlplane
+    pub controlplane_grpc_endpoint: String,
+    pub controlplane_grpc_ca_cert: Option<String>,
+    pub controlplane_grpc_client_cert: Option<String>,
+    pub controlplane_grpc_client_key: Option<String>,
+    pub controlplane_grpc_domain: Option<String>,
 }
 
 impl Config {
@@ -40,12 +47,25 @@ impl Config {
         let result_stream_name = env::var("RESULT_STREAM_NAME")
             .unwrap_or_else(|_| "job_results_stream".to_string());
 
+        let controlplane_grpc_endpoint = env::var("CONTROLPLANE_GRPC_ENDPOINT")
+            .unwrap_or_else(|_| "127.0.0.1:9090".to_string());
+
+        let controlplane_grpc_ca_cert = env::var("CONTROLPLANE_GRPC_CA_CERT").ok();
+        let controlplane_grpc_client_cert = env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok();
+        let controlplane_grpc_client_key = env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok();
+        let controlplane_grpc_domain = env::var("CONTROLPLANE_GRPC_DOMAIN").ok();
+
         Ok(Self {
             database_url,
             redis_url,
             slot_name,
             publication_name,
             result_stream_name,
+            controlplane_grpc_endpoint,
+            controlplane_grpc_ca_cert,
+            controlplane_grpc_client_cert,
+            controlplane_grpc_client_key,
+            controlplane_grpc_domain,
         })
     }
 }

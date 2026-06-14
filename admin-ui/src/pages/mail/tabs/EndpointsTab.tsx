@@ -14,6 +14,9 @@ import { toast } from 'sonner'
 // Nhập Dialog kiểm tra kết nối SMTP
 import { TestConnectionDialog } from '../sections/TestConnectionDialog'
 
+// Nhập hook kiểm soát phạm vi hoạt động (Global vs Zone)
+import { useFeatureScope } from '@/hooks/useFeatureScope'
+
 // Kiểu dữ liệu phản hồi API chuẩn
 type APIResponse<T = unknown> = {
   data?: T
@@ -166,6 +169,9 @@ interface EndpointsTabProps {
 }
 
 export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
+  // Sử dụng declarative scope-matching hook để xác định quyền ghi trên tab endpoints
+  const { canWrite } = useFeatureScope('endpoints')
+
   const [refreshKey, setRefreshKey] = useState(0)
   const [query, setQuery] = useState('')
   const [pageSize, setPageSize] = useState(8)
@@ -385,12 +391,23 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
           </Button>
         </div>
 
-        <Button asChild className="h-12 rounded-lg px-6 text-sm font-semibold shadow-sm shrink-0 cursor-pointer">
-          <Link to="/mail/endpoints/new">
+        {canWrite ? (
+          <Button asChild className="h-12 rounded-lg px-6 text-sm font-semibold shadow-sm shrink-0 cursor-pointer">
+            <Link to="/mail/endpoints/new">
+              <Plus className="size-4 mr-2" />
+              Add Endpoint
+            </Link>
+          </Button>
+        ) : (
+          <Button
+            disabled
+            className="h-12 rounded-lg px-6 text-sm font-semibold shadow-sm shrink-0 opacity-50 cursor-not-allowed"
+            title="Vui lòng chọn một Zone cụ thể để thêm mới Endpoint"
+          >
             <Plus className="size-4 mr-2" />
             Add Endpoint
-          </Link>
-        </Button>
+          </Button>
+        )}
       </div>
 
 
@@ -467,16 +484,36 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
                   </TableCell>
                   <TableCell className="py-3.5 text-right">
                     <div className="flex justify-end items-center gap-2">
-                      <Button asChild variant="outline" size="sm" className="h-9 cursor-pointer">
-                        <Link to="/mail/endpoints/$id/edit" params={{ id: item.id }}>Edit</Link>
-                      </Button>
+                      {canWrite ? (
+                        <Button asChild variant="outline" size="sm" className="h-9 cursor-pointer">
+                          <Link to="/mail/endpoints/$id/edit" params={{ id: item.id }}>Edit</Link>
+                        </Button>
+                      ) : (
+                        <Button disabled variant="outline" size="sm" className="h-9 opacity-50 cursor-not-allowed" title="Vui lòng chọn Zone để chỉnh sửa">
+                          Edit
+                        </Button>
+                      )}
                       
                       {item.is_active ? (
-                        <Button variant="outline" size="icon-sm" onClick={() => void updateStatus(item, false)} title="Suspend" className="h-9 w-9 cursor-pointer">
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          disabled={!canWrite}
+                          onClick={() => void updateStatus(item, false)}
+                          title={canWrite ? "Suspend" : "Vui lòng chọn Zone để tạm dừng"}
+                          className={cn("h-9 w-9", canWrite ? "cursor-pointer" : "opacity-50 cursor-not-allowed")}
+                        >
                           <Pause className="size-4 text-amber-500 fill-amber-500/20" />
                         </Button>
                       ) : (
-                        <Button variant="outline" size="icon-sm" onClick={() => void updateStatus(item, true)} title="Activate" className="h-9 w-9 cursor-pointer">
+                        <Button
+                          variant="outline"
+                          size="icon-sm"
+                          disabled={!canWrite}
+                          onClick={() => void updateStatus(item, true)}
+                          title={canWrite ? "Activate" : "Vui lòng chọn Zone để kích hoạt"}
+                          className={cn("h-9 w-9", canWrite ? "cursor-pointer" : "opacity-50 cursor-not-allowed")}
+                        >
                           <Play className="size-4 text-emerald-500 fill-emerald-500/20" />
                         </Button>
                       )}
@@ -485,7 +522,15 @@ export function EndpointsTab({ zoneCode }: EndpointsTabProps) {
                         Try
                       </Button>
 
-                      <Button variant="destructive" size="icon-sm" onClick={() => void deleteEndpoint(item)} aria-label={`Delete ${item.name}`} className="h-9 w-9 cursor-pointer">
+                      <Button
+                        variant="destructive"
+                        size="icon-sm"
+                        disabled={!canWrite}
+                        onClick={() => void deleteEndpoint(item)}
+                        aria-label={`Delete ${item.name}`}
+                        title={canWrite ? "Delete" : "Vui lòng chọn Zone để xóa"}
+                        className={cn("h-9 w-9", canWrite ? "cursor-pointer" : "opacity-50 cursor-not-allowed")}
+                      >
                         <Trash2 className="size-4" />
                       </Button>
                     </div>

@@ -52,7 +52,6 @@ type ZoneRepoImpl struct {
 	getZoneIDByCodeQuery                string
 	updateZoneStatusQuery               string
 	deleteZoneQuery                     string
-	hasDataplaneNodesQuery              string
 	hasEnabledZoneSvcQuery              string
 	listZoneSvcByZoneIDQuery            string
 	upsertZoneServiceQuery              string
@@ -118,28 +117,21 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		deleteZoneQuery: fmt.Sprintf(`
 			WITH target AS (
 				SELECT status FROM %s.zones WHERE id = $1
-			), nodes_exist AS (
-				SELECT EXISTS(SELECT 1 FROM %s.dataplane_nodes WHERE zone_id = $1) AS val
 			), svcs_exist AS (
 				SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND enabled = true) AS val
 			), deleted AS (
 				DELETE FROM %s.zones
 				WHERE id = $1 
 				  AND status = 'disabled'
-				  AND NOT EXISTS (SELECT 1 FROM %s.dataplane_nodes WHERE zone_id = $1)
 				  AND NOT EXISTS (SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND enabled = true)
 				RETURNING code
 			)
 			SELECT 
 				(SELECT COUNT(*) FROM target) AS exists,
 				COALESCE((SELECT status FROM target), '') AS status,
-				(SELECT val FROM nodes_exist) AS has_nodes,
 				(SELECT val FROM svcs_exist) AS has_svcs,
 				COALESCE((SELECT code FROM deleted), '') AS deleted_code
-		`, schema, schema, schema, schema, schema, schema),
-		hasDataplaneNodesQuery: fmt.Sprintf(`
-			SELECT EXISTS(SELECT 1 FROM %s.dataplane_nodes WHERE zone_id=$1)
-		`, schema),
+		`, schema, schema, schema, schema),
 		hasEnabledZoneSvcQuery: fmt.Sprintf(`
 			SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id=$1 AND enabled=true)
 		`, schema),
@@ -365,11 +357,10 @@ func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
 	var exists int
 	var status string
-	var hasNodes bool
 	var hasSvcs bool
 	var deletedCode string
 
-	err := r.db.QueryRow(ctx, r.deleteZoneQuery, id).Scan(&exists, &status, &hasNodes, &hasSvcs, &deletedCode)
+	err := r.db.QueryRow(ctx, r.deleteZoneQuery, id).Scan(&exists, &status, &hasSvcs, &deletedCode)
 	if err != nil {
 		return "", err
 	}
@@ -377,20 +368,12 @@ func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, er
 	if exists == 0 {
 		return "", coreTaxonomy.ErrZoneNotFound
 	}
-	if status != "disabled" || hasNodes || hasSvcs {
+	if status != "disabled" || hasSvcs {
 		return "", coreTaxonomy.ErrZoneDeletePreconditionFailed
 	}
 	return deletedCode, nil
 }
 
-// HasDataplaneNodesByZone kiểm tra xem Zone hiện tại có Dataplane Nodes nào neo vào không.
-func (r *ZoneRepoImpl) HasDataplaneNodesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {
-	var exists bool
-	if err := r.db.QueryRow(ctx, r.hasDataplaneNodesQuery, zoneID).Scan(&exists); err != nil {
-		return false, err
-	}
-	return exists, nil
-}
 
 // HasEnabledZoneServicesByZone kiểm tra xem Zone hiện tại có dịch vụ nào đang được kích hoạt hay không.
 func (r *ZoneRepoImpl) HasEnabledZoneServicesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {

@@ -24,7 +24,6 @@ func Register(registry *prometheus.Registry, namespace string) error {
 	registerOnce.Do(func() {
 		namespace = normalizeNamespace(namespace)
 
-		InitDataplaneMetrics(namespace)
 		InitZoneMetrics(namespace)
 
 		secretRotationSuccessCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -69,7 +68,6 @@ func Register(registry *prometheus.Registry, namespace string) error {
 			secretLifecycleTotalCounter,
 			secretLifecycleDurHistogram,
 			authTokenVerifyFallbackCount,
-			dataplaneHeartbeatTotal,
 			zoneOperationsTotal,
 		} {
 			if err := registry.Register(collector); err != nil {

@@ -342,7 +342,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 
 // DeleteZone godoc
 // @Summary      Delete a zone
-// @Description  Delete a zone when it meets all preconditions: disabled status, no dataplane nodes, no enabled services. Irreversible operation.
+// @Description  Delete a zone when it meets all preconditions: disabled status and no enabled services. Irreversible operation.
 // @Tags         zones
 // @Produce      json
 // @Param        zone_id path string true "Zone ID (UUID)"

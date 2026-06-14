@@ -33,7 +33,6 @@ type Config struct {
 	RedisJob   RedisCfg
 	GRPC       GRPCCfg
 	Telegram   TelegramCfg
-	Dataplane  DataplaneCfg
 	Prometheus PrometheusCfg
 	SchemaSQL  SchemaSQLCfg
 	Agent      AgentCfg
@@ -128,11 +127,7 @@ type GRPCCfg struct {
 	ClientCACertPath string
 }
 
-// DataplaneCfg chứa cấu hình kết nối tới phân hệ Dataplane.
-type DataplaneCfg struct {
-	GRPCTarget     string
-	RequestTimeout time.Duration
-}
+
 
 // SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
@@ -141,7 +136,7 @@ type SchemaSQLCfg struct {
 	Mail string
 }
 
-// AgentCfg chứa cấu hình cấp phát chứng chỉ cho Dataplane Agent.
+// AgentCfg chứa cấu hình cấp phát chứng chỉ mTLS cho các Agent kết nối vào gRPC Server.
 type AgentCfg struct {
 	CACertPath string
 	CAKeyPath  string
@@ -247,10 +242,7 @@ func LoadConfig() *Config {
 			BotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
 			ChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
 		},
-		Dataplane: DataplaneCfg{
-			GRPCTarget:     getEnv("DATAPLANE_GRPC_TARGET", "localhost:50051"),
-			RequestTimeout: getEnvAsDuration("DATAPLANE_REQUEST_TIMEOUT", 10*time.Second),
-		},
+
 		Prometheus: PrometheusCfg{
 			BaseURL:      getEnv("PROMETHEUS_BASE_URL", "http://127.0.0.1:9090"),
 			QueryTimeout: 5 * time.Second,

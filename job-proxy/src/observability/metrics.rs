@@ -1,5 +1,8 @@
 use crate::observability::logger::Logger;
-use prometheus::{register_int_counter_with_registry, Encoder, IntCounter, Registry, TextEncoder};
+use prometheus::{
+    register_int_counter_with_registry, register_int_gauge_vec_with_registry, Encoder, IntCounter,
+    IntGaugeVec, Registry, TextEncoder,
+};
 use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -7,11 +10,13 @@ use tokio::net::TcpListener;
 // Registry trung tâm để quản lý tất cả các metrics của job-proxy
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
-// Các Counter giám sát trạng thái ứng dụng nguyên tử (Atomic counters)
+// Các Counter/Gauge giám sát trạng thái ứng dụng nguyên tử (Atomic counters/gauges)
 static WAL_RECORDS_READ: OnceLock<IntCounter> = OnceLock::new();
 static STREAM_JOBS_PUSHED: OnceLock<IntCounter> = OnceLock::new();
 static RESULTS_CONSUMED: OnceLock<IntCounter> = OnceLock::new();
 static NOTIFICATIONS_SENT: OnceLock<IntCounter> = OnceLock::new();
+static QUEUE_LEN: OnceLock<IntGaugeVec> = OnceLock::new();
+static PENDING_LEN: OnceLock<IntGaugeVec> = OnceLock::new();
 
 /// Trình quản lý chỉ số giám sát hiệu năng Prometheus cho Job-Proxy
 pub struct MetricsManager;
@@ -57,6 +62,26 @@ impl MetricsManager {
         )
         .expect("Không thể đăng ký metric job_proxy_notifications_sent_total");
         NOTIFICATIONS_SENT.set(notifications_sent_counter).unwrap();
+
+        // 5. Đăng ký gauge vec cho độ dài hàng đợi của các zone
+        let queue_len_gauge = register_int_gauge_vec_with_registry!(
+            "job_proxy_queue_len",
+            "Do dai hien tai cua Redis Stream theo tung zone",
+            &["zone_id"],
+            registry
+        )
+        .expect("Không thể đăng ký metric job_proxy_queue_len");
+        QUEUE_LEN.set(queue_len_gauge).unwrap();
+
+        // 6. Đăng ký gauge vec cho số tin nhắn pending trong consumer group của các zone
+        let pending_len_gauge = register_int_gauge_vec_with_registry!(
+            "job_proxy_pending_len",
+            "So luong tin nhan pending trong consumer group cua cac zone",
+            &["zone_id"],
+            registry
+        )
+        .expect("Không thể đăng ký metric job_proxy_pending_len");
+        PENDING_LEN.set(pending_len_gauge).unwrap();
 
         Logger::sys_info(
             "metrics.init",
@@ -160,6 +185,20 @@ impl MetricsManager {
     pub fn inc_notifications_sent() {
         if let Some(counter) = NOTIFICATIONS_SENT.get() {
             counter.inc();
+        }
+    }
+
+    /// Cập nhật độ dài hàng đợi của một zone
+    pub fn set_queue_len(zone_id: &str, val: i64) {
+        if let Some(gauge) = QUEUE_LEN.get() {
+            gauge.with_label_values(&[zone_id]).set(val);
+        }
+    }
+
+    /// Cập nhật số tin nhắn pending của một zone
+    pub fn set_pending_len(zone_id: &str, val: i64) {
+        if let Some(gauge) = PENDING_LEN.get() {
+            gauge.with_label_values(&[zone_id]).set(val);
         }
     }
 }

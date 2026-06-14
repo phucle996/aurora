@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
 import { PageContent } from '@/components/layout/layout'
+import { useFeatureScope } from '@/hooks/useFeatureScope'
 
 /**
  * Khai báo giá trị khởi tạo mặc định cho biểu mẫu cấu hình SMTP Endpoint.
@@ -57,6 +58,9 @@ export default function NewMailEndpointPage() {
   // Cập nhật thẻ tiêu đề <title> và meta description động cho trình duyệt để tối ưu SEO
   usePageMeta('New Mail Endpoint | Aurora Admin', 'Create a new Mail endpoint for outbound email routing.')
   const navigate = useNavigate()
+
+  // Kiểm soát phạm vi hoạt động
+  const { canWrite } = useFeatureScope('endpoints')
 
   // State quản lý toàn bộ dữ liệu biểu mẫu SMTP Endpoint
   const [form, setForm] = useState<EndpointForm>(initialForm)
@@ -181,6 +185,24 @@ export default function NewMailEndpointPage() {
 
   // Nút submit chỉ hoạt động khi Tên và Host đã được nhập và không trong trạng thái đang gửi request
   const canSubmit = form.name.trim() !== '' && form.host.trim() !== '' && !loading
+
+  if (!canWrite) {
+    return (
+      <PageContent>
+        <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+          <div className="rounded-xl border border-destructive/20 bg-destructive/10 p-6 text-center max-w-md">
+            <h2 className="text-lg font-semibold text-destructive mb-2">Quyền ghi bị từ chối</h2>
+            <p className="text-sm text-muted-foreground mb-4">
+              Không thể tạo Endpoint ở phạm vi Global. Vui lòng chọn một Zone cụ thể trước khi thực hiện thao tác này.
+            </p>
+            <Button asChild variant="outline">
+              <Link to="/mail" hash="endpoints">Quay lại danh sách</Link>
+            </Button>
+          </div>
+        </div>
+      </PageContent>
+    )
+  }
 
   return (
     <PageContent className="pb-0">

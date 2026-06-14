@@ -12,7 +12,6 @@
 -- 🔒 REFERENTIAL INTEGRITY:
 --   - core_secret_versions → core_secret_families: ON DELETE CASCADE
 --   - zone_services → zones: ON DELETE CASCADE
---   - dataplane_nodes → zones: UNIQUE constraint (one dataplane per zone)
 --
 -- ======================================================================================================
 
@@ -49,7 +48,7 @@ CREATE TABLE IF NOT EXISTS zones (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE zones IS 'Zone catalog as independent edge location taxonomy used by dataplane placement and runtime decisions.';
+COMMENT ON TABLE zones IS 'Zone catalog as independent edge location taxonomy used by placement and runtime decisions.';
 COMMENT ON COLUMN zones.id IS 'Primary key of zone row. Must be generated as UUIDv7 by application/service layer.';
 COMMENT ON COLUMN zones.code IS 'Stable unique zone code, for example edge-hcm-1.';
 COMMENT ON COLUMN zones.name IS 'Human-readable zone display name.';
@@ -77,19 +76,4 @@ COMMENT ON COLUMN zone_services.enabled IS 'Whether the given service type is en
 COMMENT ON COLUMN zone_services.created_at IS 'Timestamp when zone service row was created.';
 COMMENT ON COLUMN zone_services.updated_at IS 'Timestamp when zone service row was last updated.';
 
-CREATE TABLE IF NOT EXISTS dataplane_nodes (
-    id UUID PRIMARY KEY,
-    status dataplane_node_status NOT NULL,
-    zone_id UUID NOT NULL UNIQUE REFERENCES zones(id),
-    endpoint TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
-COMMENT ON TABLE dataplane_nodes IS 'Dataplane cluster registry snapshot. Each zone contains exactly one active dataplane cluster.';
-COMMENT ON COLUMN dataplane_nodes.id IS 'Primary key and unique identity of dataplane cluster (UUIDv7) issued by identity flow.';
-COMMENT ON COLUMN dataplane_nodes.status IS 'Current runtime lifecycle status of the dataplane cluster.';
-COMMENT ON COLUMN dataplane_nodes.zone_id IS 'Foreign key and unique link to the zone that this dataplane cluster belongs to.';
-COMMENT ON COLUMN dataplane_nodes.endpoint IS 'The public/internal gRPC or HTTP load balancer URL of the dataplane cluster in this zone.';
-COMMENT ON COLUMN dataplane_nodes.created_at IS 'Timestamp when dataplane cluster row was created.';
-COMMENT ON COLUMN dataplane_nodes.updated_at IS 'Timestamp when dataplane cluster row was last updated.';

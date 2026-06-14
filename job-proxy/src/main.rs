@@ -3,6 +3,7 @@ mod payload;
 mod cdc;
 mod result_consumer;
 mod observability;
+mod transport;
 
 use config::Config;
 use cdc::CdcStreamer;
@@ -10,6 +11,7 @@ use result_consumer::ResultConsumer;
 use observability::logger::Logger;
 use observability::otel::OtelTracer;
 use observability::metrics::MetricsManager;
+use observability::queue_monitor::QueueMonitor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,11 +45,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis_client = redis::Client::open(config.redis_url.clone())?;
     Logger::sys_info("main.init", "Đã khởi tạo Redis Client thành công.");
 
-    // 3. Khởi tạo các cấu phần proxy 2 chiều
+    // 3. Khởi tạo các cấu phần proxy 2 chiều và monitor
     let streamer = CdcStreamer::new(config.clone(), redis_client.clone());
-    let consumer = ResultConsumer::new(config, redis_client);
+    let consumer = ResultConsumer::new(config.clone(), redis_client.clone());
+    let monitor = QueueMonitor::new(config, redis_client);
 
-    // 4. Chạy song song 2 luồng đi và về
+    // 4. Chạy song song 3 luồng: Outbound, Inbound và Queue Monitor (độc lập, HA)
     tokio::select! {
         res = streamer.run() => {
             if let Err(err) = res {
@@ -60,6 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Logger::sys_error("main.run", "Result Consumer (Inbound) gặp lỗi nghiêm trọng", &err.to_string());
                 std::process::exit(1);
             }
+        }
+        _ = monitor.run() => {
+            Logger::sys_error("main.run", "Queue Monitor gặp lỗi hoặc dừng bất ngờ", "");
+            std::process::exit(1);
         }
     }
 

@@ -288,7 +288,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Transport bootstrap: gRPC server.
-	// gRPC lỗi -> dataplane không kết nối được vào controlplane -> abort.
+	// gRPC lỗi -> job-proxy không kết nối được vào controlplane -> abort.
 	// --------------------------------------------------------------------
 	g, err := bootstrap.InitGRPCServer(&cfg.GRPC)
 	if err != nil {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -117,5 +118,25 @@ func RegisterL1Loaders(
 			return nil, fmt.Errorf("active admin api key not found")
 		}
 		return active, nil
+	})
+
+	// 9. Đăng ký tĩnh loader cho "zone_backpressure" phục vụ đọc-xuyên-thấu L2 Redis khi L1 RAM cache bị miss
+	cacheengine.Register(registry, "zone_backpressure", 30*time.Second, func(ctx context.Context, param string) (map[string]interface{}, error) {
+		key := "zone_backpressure:" + param
+		payload, _, exists, err := registry.L2.Get(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return map[string]interface{}{
+				"zone_id":   param,
+				"congested": false,
+			}, nil
+		}
+		var result map[string]interface{}
+		if err := json.Unmarshal(payload, &result); err != nil {
+			return nil, err
+		}
+		return result, nil
 	})
 }

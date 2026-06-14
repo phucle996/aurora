@@ -8,7 +8,7 @@
 //   - Quản lý vòng đời chạy nền (Start/Stop) của các tiến trình background an toàn:
 //
 //     1) GRACEFUL LIFECYCLE MANAGEMENT:
-//        * Đảm bảo mọi background workers (Invalidation Bus, Dataplane Orchestrator, Redis Subscriber)
+//        * Đảm bảo mọi background workers (Invalidation Bus, Redis Subscriber)
 //          đều được kiểm soát bởi các context cancellation biệt lập.
 //        * Tắt gracefully sạch sẽ toàn bộ tài nguyên khi hệ thống shutdown, ngăn chặn rò rỉ RAM/Socket.
 //
@@ -34,7 +34,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreCache "controlplane/internal/core/cache"
 	coreRepoInterface "controlplane/internal/core/domain/repo"
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreRepoImpl "controlplane/internal/core/repository"
@@ -51,21 +50,16 @@ import (
 )
 
 type Module struct {
-	cfg                          *config.Config
-	SecretRepository             coreRepoInterface.SecretRepository
-	SecretRotationService        coreSvcInterface.SecretRotationService
-	ZoneRepository               coreRepoInterface.ZoneRepository
-	ZoneService                  coreSvcInterface.ZoneService
-	ZoneHandler                  *coreHandler.ZoneHandler
-	DataplaneNodeRepository      coreRepoInterface.DataplaneNodeRepository
-	DataplaneNodeService         coreSvcInterface.DataplaneNodeService
-	DataplaneOrchestrator        *coreSvcImpl.DataplaneOrchestrator
-	DataplaneHeartbeatSubscriber *coreSvcImpl.DataplaneHeartbeatSubscriber
-	listenCancel                 context.CancelFunc
-	orchestratorCancel           context.CancelFunc
-	subscriberCancel             context.CancelFunc
-	rateLimiter                  *ratelimit.Bucket
-	L1Registry                   *cacheengine.CacheRegistry
+	cfg                   *config.Config
+	SecretRepository      coreRepoInterface.SecretRepository
+	SecretRotationService coreSvcInterface.SecretRotationService
+	ZoneRepository        coreRepoInterface.ZoneRepository
+	ZoneService           coreSvcInterface.ZoneService
+	ZoneHandler           *coreHandler.ZoneHandler
+	BackpressureService   coreSvcInterface.BackpressureService
+	listenCancel          context.CancelFunc
+	rateLimiter           *ratelimit.Bucket
+	L1Registry            *cacheengine.CacheRegistry
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
@@ -99,41 +93,22 @@ func NewModule(
 		return nil, fmt.Errorf("core module: zone handler is nil")
 	}
 
-	// 6) Dataplane dependencies injection
-	dataplaneNodeRepo := coreRepoImpl.NewDataplaneNodeRepoImpl(cfg, db)
-	if dataplaneNodeRepo == nil {
-		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane repository is nil")
-	}
-	dataplaneCache := coreCache.NewDataplaneCacheImpl(rds)
-	if dataplaneCache == nil {
-		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane cache is nil")
-	}
-	dataplaneNodeService := coreSvcImpl.NewDataplaneNodeService(dataplaneNodeRepo, dataplaneCache, zoneRepo)
-	if dataplaneNodeService == nil {
-		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane service is nil")
-	}
-	dataplaneOrchestrator := coreSvcImpl.NewDataplaneOrchestrator(dataplaneNodeRepo, dataplaneCache, dataplaneNodeService)
-	if dataplaneOrchestrator == nil {
-		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane orchestrator is nil")
-	}
-	dataplaneHeartbeatSubscriber := coreSvcImpl.NewDataplaneHeartbeatSubscriber(dataplaneCache, dataplaneNodeService)
-	if dataplaneHeartbeatSubscriber == nil {
-		return nil, fmt.Errorf("core module: dataplane service unavailable: dataplane subscriber is nil")
+	// 6) Backpressure service (zone-scoped, no node-level tracking)
+	backpressureSvc := coreSvcImpl.NewBackpressureService(cacheEngine)
+	if backpressureSvc == nil {
+		return nil, fmt.Errorf("core module: backpressure service is nil")
 	}
 
 	m := &Module{
-		cfg:                          cfg,
-		SecretRepository:             repo,
-		SecretRotationService:        rotationService,
-		ZoneRepository:               zoneRepo,
-		ZoneService:                  zoneService,
-		ZoneHandler:                  zoneHandler,
-		DataplaneNodeRepository:      dataplaneNodeRepo,
-		DataplaneNodeService:         dataplaneNodeService,
-		DataplaneOrchestrator:        dataplaneOrchestrator,
-		DataplaneHeartbeatSubscriber: dataplaneHeartbeatSubscriber,
-		rateLimiter:                  rateLimiter,
-		L1Registry:                   cacheEngine,
+		cfg:                   cfg,
+		SecretRepository:      repo,
+		SecretRotationService: rotationService,
+		ZoneRepository:        zoneRepo,
+		ZoneService:           zoneService,
+		ZoneHandler:           zoneHandler,
+		BackpressureService:   backpressureSvc,
+		rateLimiter:           rateLimiter,
+		L1Registry:            cacheEngine,
 	}
 
 	return m, nil
@@ -141,28 +116,18 @@ func NewModule(
 
 // RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
 func (m *Module) RegisterGRPCServices(server *grpc.Server) {
-	if m == nil || m.DataplaneNodeService == nil {
+	if m == nil || m.BackpressureService == nil {
 		return
 	}
-	handler := coreRpcHandler.NewDataplaneGRPCHandler(m.DataplaneNodeService)
-	coreProto.RegisterDataplaneRegistryServiceServer(server, handler)
-	logger.SysInfo("grpc", "registered DataplaneRegistryService onto gRPC server")
+	handler := coreRpcHandler.NewBackpressureGRPCHandler(m.BackpressureService)
+	coreProto.RegisterBackpressureServiceServer(server, handler)
+	logger.SysInfo("grpc", "registered BackpressureService onto gRPC server")
 }
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
 	if m == nil || m.SecretRotationService == nil {
 		return nil
-	}
-	if m.DataplaneOrchestrator != nil && m.orchestratorCancel == nil {
-		orchCtx, cancel := context.WithCancel(ctx)
-		m.orchestratorCancel = cancel
-		go m.DataplaneOrchestrator.Start(orchCtx)
-	}
-	if m.DataplaneHeartbeatSubscriber != nil && m.subscriberCancel == nil {
-		subCtx, cancel := context.WithCancel(ctx)
-		m.subscriberCancel = cancel
-		go m.DataplaneHeartbeatSubscriber.Start(subCtx)
 	}
 
 	types := []string{
@@ -187,13 +152,5 @@ func (m *Module) Stop() {
 	if m.listenCancel != nil {
 		m.listenCancel()
 		m.listenCancel = nil
-	}
-	if m.orchestratorCancel != nil {
-		m.orchestratorCancel()
-		m.orchestratorCancel = nil
-	}
-	if m.subscriberCancel != nil {
-		m.subscriberCancel()
-		m.subscriberCancel = nil
 	}
 }
