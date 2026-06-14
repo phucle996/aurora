@@ -16,6 +16,11 @@ dotenvy = "0.15"
 uuid = { version = "1.8", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 prost = "0.12"
+prometheus = "0.13"
+opentelemetry = { version = "0.23", features = ["trace"] }
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.16.0", features = ["grpc-tonic"] }
+hostname = "0.4"
 
 [build-dependencies]
 prost-build = "0.12"

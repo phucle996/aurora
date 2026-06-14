@@ -52,6 +52,7 @@ func TestTryConnectE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to parse zone ID: %v", err)
 	}
+
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
 
 	uniqueUserID := fmt.Sprintf("e2e-user-%d", time.Now().UnixNano())

@@ -2,19 +2,20 @@ mod config;
 mod payload;
 mod cdc;
 mod result_consumer;
-mod logger;
-mod otel;
+mod observability;
 
 use config::Config;
 use cdc::CdcStreamer;
 use result_consumer::ResultConsumer;
-use logger::Logger;
-use otel::OtelTracer;
+use observability::logger::Logger;
+use observability::otel::OtelTracer;
+use observability::metrics::MetricsManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Khởi tạo logger có cấu trúc và tracing
+    // Khởi tạo logger có cấu trúc, metrics và tracing
     Logger::init();
+    MetricsManager::init();
     OtelTracer::init();
     Logger::sys_info("main.init", "Khởi động aurora-job-proxy (Mô hình 2 chiều)...");
 
@@ -35,7 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     );
 
-    // 2. Khởi tạo kết nối Redis
+    // 2. Khởi tạo và kiểm tra hạ tầng Logical Replication (Chạy một lần duy nhất lúc khởi động app, tự động reconnect)
+    cdc::setup::setup_replication_infrastructure(&config).await?;
+
+    // 3. Khởi tạo kết nối Redis
     let redis_client = redis::Client::open(config.redis_url.clone())?;
     Logger::sys_info("main.init", "Đã khởi tạo Redis Client thành công.");
 

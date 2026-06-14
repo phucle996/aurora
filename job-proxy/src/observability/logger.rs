@@ -53,15 +53,23 @@ impl Logger {
         );
     }
 
-
+    /// Lấy phân đoạn trace_id định dạng JSON để gắn vào logs
+    fn get_trace_segment() -> String {
+        if let Some(tid) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+            format!(",\"trace_id\":\"{}\"", tid)
+        } else {
+            "".to_string()
+        }
+    }
 
     /// Ghi nhận nhật ký truy cập mạng/kết nối mạng (Access Logs).
     pub fn access_log(op: &str, method: &str, route: &str, status_code: i32, latency_ms: f64) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_segment = Self::get_trace_segment();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}}}",
-                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}{}}}",
+                timestamp, LOG_TYPE_ACCESS, op, method, route, status_code, latency_ms, trace_segment
             );
         }
     }
@@ -70,9 +78,10 @@ impl Logger {
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_segment = Self::get_trace_segment();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, trace_segment
             );
         }
     }
@@ -81,9 +90,10 @@ impl Logger {
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_segment = Self::get_trace_segment();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_segment
             );
         }
     }
@@ -92,9 +102,10 @@ impl Logger {
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_segment = Self::get_trace_segment();
             eprintln!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"}}",
-                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_SYSTEM, op, message, err_msg, trace_segment
             );
         }
     }
@@ -103,9 +114,10 @@ impl Logger {
     pub fn job_log(job_id: &str, job_topic: &str, attempt: u32, op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let trace_segment = Self::get_trace_segment();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"}}",
-                timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"{}}}",
+                timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message, trace_segment
             );
         }
     }

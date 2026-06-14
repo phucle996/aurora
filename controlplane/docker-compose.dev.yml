@@ -637,6 +637,8 @@ services:
         LOCAL_GID: 1000
     container_name: aurora-job-proxy
     init: true
+    ports:
+      - "9102:9102"
     environment:
       DATABASE_URL: "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
       REDIS_URL: "redis://controlplane-redis-job:6379/0"
@@ -644,6 +646,7 @@ services:
       PUBLICATION_NAME: "outbox_pub"
       RESULT_STREAM_NAME: "job_results_stream"
       APP_LOG_LEVEL: "debug"
+      METRICS_PORT: "9102"
     depends_on:
       psql:
         condition: service_healthy

@@ -21,3 +21,9 @@ scrape_configs:
           - "dataplane-z1-n1:2112"
           - "dataplane-z2-n1:2112"
           - "dataplane-z2-n2:2112"
+
+  # Thu thập metrics từ Job-Proxy qua endpoint /metrics (cổng 9102)
+  - job_name: job-proxy
+    static_configs:
+      - targets:
+          - "job-proxy:9102"

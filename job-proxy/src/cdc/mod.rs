@@ -1,11 +1,12 @@
 pub mod parser;
 pub mod utils;
+pub mod setup;
 
 use std::collections::HashMap;
 use crate::config::Config;
 use crate::payload::JobPayload;
-use tokio_postgres::NoTls;
-use crate::logger::Logger;
+use crate::observability::logger::Logger;
+use crate::observability::otel::OtelTracer;
 use pgwire_replication::{ReplicationClient, ReplicationConfig, ReplicationEvent, Lsn};
 
 use parser::{PgOutputRelation, parse_relation_message, parse_insert_message, read_u32};
@@ -55,89 +56,7 @@ impl CdcStreamer {
         let (pg_host, pg_port, pg_user, pg_password, pg_db) = parse_pg_config(&self.config.database_url)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
-        // 1. Kết nối PostgreSQL thông thường để kiểm tra và tự tạo publication/slot
-        let (client, connection) = tokio_postgres::connect(&self.config.database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                Logger::sys_error("cdc.postgres", "CdcStreamer: Lỗi kết nối PostgreSQL kiểm tra hạ tầng", &e.to_string());
-            }
-        });
-
-        // Set search path đến mail schema
-        client.execute("SET search_path TO mail, public", &[]).await?;
-
-        // Kiểm tra xem Publication đã tồn tại chưa
-        // TODO: (Roadmap V3/Production) Tránh hardcode bảng mail_outbox_records. 
-        // Khi mở rộng sang các module khác (IAM, Billing), Publication nên hỗ trợ thêm bảng qua ALTER PUBLICATION.
-        let pub_check = client.query(
-            "SELECT 1 FROM pg_publication WHERE pubname = $1",
-            &[&self.config.publication_name],
-        ).await?;
-
-        if pub_check.is_empty() {
-            Logger::sys_info("cdc.run", &format!("CdcStreamer: Tạo publication '{}' cho bảng mail_outbox_records...", self.config.publication_name));
-            let create_pub_sql = format!(
-                "CREATE PUBLICATION {} FOR TABLE mail_outbox_records",
-                self.config.publication_name
-            );
-            if let Err(err) = client.execute(&create_pub_sql, &[]).await {
-                let err_str = err.to_string();
-                // Bắt lỗi trùng lặp đối tượng (duplicate_object / 42710) phòng trường hợp tranh chấp HA khi nhiều instance chạy song song
-                if err_str.contains("already exists") || err_str.contains("42710") {
-                    Logger::sys_warn("cdc.run", "CdcStreamer: Publication đã tồn tại (bỏ qua do tranh chấp HA)", &err_str);
-                } else {
-                    return Err(err.into());
-                }
-            }
-        } else {
-            // Kiểm tra xem bảng mail_outbox_records đã nằm trong publication chưa
-            let table_check = client.query(
-                "SELECT 1 FROM pg_publication_tables WHERE pubname = $1 AND tablename = 'mail_outbox_records'",
-                &[&self.config.publication_name],
-            ).await?;
-            if table_check.is_empty() {
-                Logger::sys_info("cdc.run", &format!("CdcStreamer: Thêm bảng mail_outbox_records vào publication '{}'...", self.config.publication_name));
-                let alter_pub_sql = format!(
-                    "ALTER PUBLICATION {} ADD TABLE mail_outbox_records",
-                    self.config.publication_name
-                );
-                if let Err(err) = client.execute(&alter_pub_sql, &[]).await {
-                    let err_str = err.to_string();
-                    if err_str.contains("already is member") || err_str.contains("duplicate") {
-                        Logger::sys_warn("cdc.run", "CdcStreamer: Bảng đã thuộc publication (bỏ qua do tranh chấp)", &err_str);
-                    } else {
-                        return Err(err.into());
-                    }
-                }
-            }
-        }
-
-        // Kiểm tra xem Replication Slot đã tồn tại chưa
-        let slot_check = client.query(
-            "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1 AND plugin = 'pgoutput'",
-            &[&self.config.slot_name],
-        ).await?;
-
-        if slot_check.is_empty() {
-            Logger::sys_info("cdc.run", &format!("CdcStreamer: Tạo logical replication slot '{}' với plugin pgoutput...", self.config.slot_name));
-            let create_slot_sql = format!(
-                "SELECT lsn FROM pg_create_logical_replication_slot('{}', 'pgoutput')",
-                self.config.slot_name
-            );
-            if let Err(err) = client.query(&create_slot_sql, &[]).await {
-                let err_str = err.to_string();
-                // Bắt lỗi trùng lặp đối tượng (duplicate_object / 42710) phòng trường hợp tranh chấp HA khi nhiều instance chạy song song
-                if err_str.contains("already exists") || err_str.contains("42710") {
-                    Logger::sys_warn("cdc.run", "CdcStreamer: Replication slot đã tồn tại (bỏ qua do tranh chấp HA)", &err_str);
-                } else {
-                    return Err(err.into());
-                }
-            }
-        }
-
-        // Đóng kết nối kiểm tra hạ tầng SQL thường
-        drop(client);
-        Logger::sys_info("cdc.run", "CdcStreamer: Hạ tầng replication đã sẵn sàng. Tiến hành kết nối stream nhị phân...");
+        Logger::sys_info("cdc.run", "CdcStreamer: Tiến hành kết nối stream nhị phân...");
 
         // 2. Khởi tạo cấu hình cho pgwire-replication client
         let config = ReplicationConfig {
@@ -258,47 +177,108 @@ impl CdcStreamer {
             return Ok(());
         }
 
-        // Giải mã cột nhị phân (BYTEA) từ chuỗi đại diện hex truyền qua WAL
-        let payload_bytes = decode_pg_bytea(&payload_hex)?;
+        // Tăng chỉ số metrics số bản ghi WAL đã đọc từ Postgres
+        crate::observability::metrics::MetricsManager::inc_wal_records_read();
 
-        // Tích hợp OpenTelemetry tracing: inject trace context từ WAL vào Span nghiệp vụ
-        if !trace_id.is_empty() {
-            crate::otel::OtelTracer::inject_trace_context(&trace_id);
-        }
+        // Ghi nhận sự kiện nhận được WAL từ Postgres
+        Logger::job_log(
+            &event_id,
+            &job_topic,
+            0,
+            "cdc.recv_wal",
+            "CdcStreamer: Nhận được sự kiện WAL từ Postgres"
+        );
 
-        let job_version = job_version_str.parse::<u32>().unwrap_or(1);
-        let payload_schema_version = payload_schema_version_str.parse::<u32>().unwrap_or(1);
-        let idle = if idle_str.is_empty() { None } else { idle_str.parse::<u32>().ok() };
+        // Thiết lập scope trace_id cho toàn bộ quá trình đóng gói và gửi job lên Redis
+        let trace_id_clone = trace_id.clone();
+        let event_id_clone = event_id.clone();
+        let job_topic_clone = job_topic.clone();
+        let zone_id_clone = zone_id.clone();
+        let payload_hex_clone = payload_hex.clone();
+        let job_version_str_clone = job_version_str.clone();
+        let resource_id_clone = resource_id.clone();
+        let payload_schema_version_str_clone = payload_schema_version_str.clone();
+        let idle_str_clone = idle_str.clone();
 
-        // Đóng gói cấu trúc JobPayload với cột nhị phân thay cho JSON
-        let payload = JobPayload {
-            job_id: event_id.clone(),
-            job_version,
-            attempt: 0, // Luôn mặc định là 0 cho lần chạy đầu tiên (đã bỏ attempts trong db)
-            job_topic: job_topic.clone(),
-            resource_id,
-            payload_schema_version,
-            payload: payload_bytes,
-            trace_id,
-            idle,
-        };
+        crate::observability::otel::CURRENT_TRACE_ID.scope(trace_id_clone, async move {
+            use opentelemetry::trace::{Tracer, Span, TraceContextExt};
 
-        // Chuẩn hóa payload sang chuỗi JSON string (chứa mảng bytes của trường payload)
-        let payload_str = serde_json::to_string(&payload)?;
+            // 1. Phân tích ngữ cảnh cha (Parent Span) từ traceparent truyền qua WAL
+            let cx = if let Some(parent_ctx) = OtelTracer::parse_traceparent(&trace_id) {
+                opentelemetry::Context::current().with_remote_span_context(parent_ctx)
+            } else {
+                opentelemetry::Context::current()
+            };
 
-        // Định tuyến dynamic stream key theo zone_id
-        let stream_key = format!("jobs:{}", zone_id);
+            // 2. Bắt đầu một Span nghiệp vụ mới trong Tempo
+            let tracer = opentelemetry::global::tracer("job-proxy");
+            let mut span = tracer.start_with_context(format!("cdc.push.{}", job_topic_clone), &cx);
 
-        Logger::job_log(&event_id, &job_topic, 0, "cdc.push", &format!("Push job sang Redis Stream {}", stream_key));
+            span.set_attribute(opentelemetry::KeyValue::new("job_id", event_id_clone.clone()));
+            span.set_attribute(opentelemetry::KeyValue::new("zone_id", zone_id_clone.clone()));
 
-        // Đẩy tin nhắn vào Redis Stream (Sử dụng lệnh XADD của Redis)
-        let _: String = redis::cmd("XADD")
-            .arg(&stream_key)
-            .arg("*")
-            .arg("payload")
-            .arg(&payload_str)
-            .query_async(redis_conn)
-            .await?;
+            // Giải mã cột nhị phân (BYTEA) từ chuỗi đại diện hex truyền qua WAL
+            let payload_bytes = match decode_pg_bytea(&payload_hex_clone) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    span.record_error(e.as_ref());
+                    return Err(e);
+                }
+            };
+
+            let job_version = job_version_str_clone.parse::<u32>().unwrap_or(1);
+            let payload_schema_version = payload_schema_version_str_clone.parse::<u32>().unwrap_or(1);
+            let idle = if idle_str_clone.is_empty() { None } else { idle_str_clone.parse::<u32>().ok() };
+
+            // Đóng gói cấu trúc JobPayload với cột nhị phân thay cho JSON
+            let payload = JobPayload {
+                job_id: event_id_clone.clone(),
+                job_version,
+                attempt: 0,
+                job_topic: job_topic_clone.clone(),
+                resource_id: resource_id_clone,
+                payload_schema_version,
+                payload: payload_bytes,
+                trace_id: trace_id.clone(),
+                idle,
+            };
+
+            // Chuẩn hóa payload sang chuỗi JSON string
+            let payload_str = serde_json::to_string(&payload)?;
+
+            // Định tuyến dynamic stream key theo zone_id
+            let stream_key = format!("jobs:{}", zone_id_clone);
+
+            // Đẩy tin nhắn vào Redis Stream (Sử dụng lệnh XADD của Redis)
+            let xadd_res: Result<String, redis::RedisError> = redis::cmd("XADD")
+                .arg(&stream_key)
+                .arg("*")
+                .arg("payload")
+                .arg(&payload_str)
+                .query_async(redis_conn)
+                .await;
+
+            match xadd_res {
+                Ok(_) => {
+                    // Ghi nhận sự kiện đẩy thành công sang Redis Stream
+                    Logger::job_log(
+                        &event_id_clone,
+                        &job_topic_clone,
+                        0,
+                        "cdc.push_success",
+                        &format!("CdcStreamer: Đã đẩy thành công job vào Redis Stream {}", stream_key)
+                    );
+                    // Tăng chỉ số metrics số job đã push thành công sang Redis Stream
+                    crate::observability::metrics::MetricsManager::inc_stream_jobs_pushed();
+                }
+                Err(e) => {
+                    span.record_error(&e);
+                    return Err(Box::new(e) as Box<dyn std::error::Error>);
+                }
+            }
+
+            Ok(())
+        }).await?;
 
         Ok(())
     }
