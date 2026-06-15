@@ -122,8 +122,10 @@ func AdminCriticalSignature() gin.HandlerFunc {
 		}
 
 		// 2. Lấy accessKey từ context (đã inject bởi AdminAPIKeyAuth).
-		rawKey, _ := c.Get(constant.ContextKeyAdminAccessKey)
-		accessKey, _ := rawKey.(string)
+		var accessKey string
+		if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+			accessKey = ident.AccessKey
+		}
 		accessKey = strings.TrimSpace(accessKey)
 		if accessKey == "" {
 			denySig(c)

@@ -8,6 +8,7 @@ import (
 	tenantRepo "controlplane/internal/tenant/domain/repo"
 	tenantSvc "controlplane/internal/tenant/domain/service"
 	tenantErrorx "controlplane/internal/tenant/errorx"
+	"controlplane/pkg/constant"
 )
 
 type Service struct {
@@ -21,7 +22,14 @@ func NewService(repo tenantRepo.Repository) tenantSvc.Service {
 func (s *Service) CreateTenant(ctx context.Context, input tenantEntity.CreateTenantInput) (*tenantEntity.CreateTenantResult, error) {
 	input.Name = strings.TrimSpace(input.Name)
 	input.Domain = strings.ToLower(strings.TrimSpace(input.Domain))
-	input.CreatorID = strings.TrimSpace(input.CreatorID)
+
+	// Trích xuất CreatorID trực tiếp từ Go standard context (được Middleware inject)
+	var creatorID string
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		creatorID = ident.UserID
+	}
+	input.CreatorID = strings.TrimSpace(creatorID)
+
 	if input.Name == "" || input.Domain == "" || input.CreatorID == "" {
 		return nil, tenantErrorx.ErrInvalidArgument
 	}

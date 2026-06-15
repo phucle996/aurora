@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 )
 
+// authServiceStub là mock service để kiểm thử hành vi của handler độc lập
 type authServiceStub struct {
 	err         error
 	loginErr    error
@@ -56,12 +57,14 @@ func newAuthHandler(service iamSvcInterface.AuthService) *handler.AuthHandler {
 	return handler.NewAuthHandler(cfg, service)
 }
 
-func TestAuthHandlerRegisterAccountBadRequest(t *testing.T) {
+// TestRegisterAccount_BadRequest kiểm thử trường hợp dữ liệu đăng ký không hợp lệ (Bad Request)
+func TestRegisterAccount_BadRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
 	router.POST("/register", h.RegisterAccount)
 
+	// Dữ liệu đầu vào thiếu/sai định dạng email, mật khẩu không trùng khớp
 	body, _ := json.Marshal(map[string]any{
 		"username":    "abc",
 		"email":       "bad",
@@ -75,12 +78,14 @@ func TestAuthHandlerRegisterAccountBadRequest(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
+	// Phải trả về lỗi 400 Bad Request
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
 	}
 }
 
-func TestAuthHandlerRegisterAccountConflict(t *testing.T) {
+// TestRegisterAccount_Conflict kiểm thử trường hợp tài khoản đã tồn tại trong hệ thống
+func TestRegisterAccount_Conflict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{err: iamTaxonomy.ErrUserAlreadyExist})
@@ -99,12 +104,14 @@ func TestAuthHandlerRegisterAccountConflict(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
+	// Phải trả về 409 Conflict khi username/email trùng
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", w.Code)
 	}
 }
 
-func TestAuthHandlerRegisterAccountInternalError(t *testing.T) {
+// TestRegisterAccount_InternalError kiểm thử lỗi hệ thống/cơ sở dữ liệu khi đăng ký tài khoản
+func TestRegisterAccount_InternalError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{err: errors.New("boom")})
@@ -123,12 +130,14 @@ func TestAuthHandlerRegisterAccountInternalError(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
+	// Phải trả về 500 Internal Server Error
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
 	}
 }
 
-func TestAuthHandlerLoginBadRequest(t *testing.T) {
+// TestLogin_BadRequest kiểm thử trường hợp yêu cầu đăng nhập gửi dữ liệu sai định dạng
+func TestLogin_BadRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
@@ -144,7 +153,8 @@ func TestAuthHandlerLoginBadRequest(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerLoginInvalidCredentials(t *testing.T) {
+// TestLogin_InvalidCredentials kiểm thử khi thông tin đăng nhập (username/password) sai
+func TestLogin_InvalidCredentials(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrInvalidCredentials})
@@ -160,7 +170,8 @@ func TestAuthHandlerLoginInvalidCredentials(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerLoginVerificationRequired(t *testing.T) {
+// TestLogin_VerificationRequired kiểm thử trường hợp đăng nhập đúng nhưng cần xác thực 2FA/MFA
+func TestLogin_VerificationRequired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrVerificationRequired})
@@ -176,7 +187,8 @@ func TestAuthHandlerLoginVerificationRequired(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
+// TestLogin_SuccessSetsCookies kiểm thử đăng nhập thành công và thiết lập đúng các session cookies
+func TestLogin_SuccessSetsCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{loginResult: &iamEntity.LoginResult{
@@ -232,7 +244,8 @@ func TestAuthHandlerLoginSuccessSetsCookies(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerSessionUnauthorizedWithoutAuthContext(t *testing.T) {
+// TestSession_Unauthorized kiểm thử việc truy cập session endpoint khi không có token định danh
+func TestSession_Unauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
@@ -247,13 +260,18 @@ func TestAuthHandlerSessionUnauthorizedWithoutAuthContext(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerSessionSuccessWithAuthContext(t *testing.T) {
+// TestSession_Success kiểm thử lấy thông tin phiên làm việc thành công với Identity hợp lệ trong context
+func TestSession_Success(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
 	router.GET("/session", func(c *gin.Context) {
-		c.Set(constant.ContextKeyUserID, "user-1")
-		c.Set(constant.ContextKeyRuntimeAccessKey, "device-1")
+		ident := &constant.Identity{
+			UserID:    "user-1",
+			AccessKey: "device-1",
+		}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		h.Session(c)
 	})
 
@@ -269,7 +287,8 @@ func TestAuthHandlerSessionSuccessWithAuthContext(t *testing.T) {
 	}
 }
 
-func TestAuthHandlerSessionServiceUnavailableWhenAccessMiddlewareMissing(t *testing.T) {
+// TestSession_ServiceUnavailable kiểm thử khi thiếu middleware Access() xử lý định danh
+func TestSession_ServiceUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
@@ -284,13 +303,18 @@ func TestAuthHandlerSessionServiceUnavailableWhenAccessMiddlewareMissing(t *test
 	}
 }
 
-func TestAuthHandlerSessionReadOnlyNoSetCookie(t *testing.T) {
+// TestSession_ReadOnly kiểm thử tính năng session endpoint là read-only (không được ghi lại/cập nhật cookies mới)
+func TestSession_ReadOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
 	router.GET("/session", func(c *gin.Context) {
-		c.Set(constant.ContextKeyUserID, "user-1")
-		c.Set(constant.ContextKeyRuntimeAccessKey, "device-1")
+		ident := &constant.Identity{
+			UserID:    "user-1",
+			AccessKey: "device-1",
+		}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		h.Session(c)
 	})
 

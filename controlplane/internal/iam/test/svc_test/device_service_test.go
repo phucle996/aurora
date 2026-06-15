@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
-	infraredis "controlplane/infra/redis"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -94,22 +93,8 @@ func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Con
 var _ iamRepoInterface.DeviceRepository = (*deviceRepoMock)(nil)
 var _ iamRepoInterface.RefreshTokenRepository = (*refreshRepoMock)(nil)
 
-type mockStreamPublisher struct{}
-
-func (m *mockStreamPublisher) Publish(ctx context.Context, msg infraredis.StreamMessage, idempotencyTTL time.Duration) (string, bool, error) {
-	return "msg-id", true, nil
-}
-
 func newDeviceService(d iamRepoInterface.DeviceRepository, r iamRepoInterface.RefreshTokenRepository) iamSvcInterface.DeviceService {
-	return iamSvcImpl.NewDeviceService(d, r, nil, &mockStreamPublisher{})
-}
-
-func TestDeviceServiceListMyDevicesInvalidUserID(t *testing.T) {
-	svc := newDeviceService(&deviceRepoMock{}, &refreshRepoMock{})
-	_, err := svc.ListMyDevices(context.Background(), "not-uuid", 10, 0)
-	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-		t.Fatalf("expected ErrInvalidArgument, got %v", err)
-	}
+	return iamSvcImpl.NewDeviceService(d, r, nil)
 }
 
 func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {
@@ -122,7 +107,10 @@ func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {
 	}, &refreshRepoMock{
 		revokeFn: func(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) { return 0, nil },
 	})
-	err := svc.RevokeMyDevice(context.Background(), uuid.NewString(), uuid.NewString(), nil, nil)
+	userID := uuid.New()
+	ident := &constant.Identity{UserID: userID.String()}
+	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
+	err := svc.RevokeMyDevice(ctx, uuid.New(), nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -146,7 +134,11 @@ func TestDeviceServiceLogoutOtherDevicesSuccess(t *testing.T) {
 			return revokedTokenN, nil
 		},
 	})
-	n, err := svc.LogoutOtherDevices(context.Background(), uuid.NewString(), uuid.NewString(), nil, nil)
+	userID := uuid.New()
+	ident := &constant.Identity{UserID: userID.String()}
+	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
+	keep := uuid.New()
+	n, err := svc.LogoutOtherDevices(ctx, &keep, nil, nil)
 	if err != nil {
 		t.Fatalf("expected nil err, got %v", err)
 	}

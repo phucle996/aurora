@@ -25,7 +25,7 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb), nil)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh User"}, "secret123"); err != nil {
@@ -80,7 +80,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb), nil)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_pending")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Pending User"}, "secret123"); err != nil {
@@ -124,7 +124,7 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb), nil)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_claims")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Claims User"}, "secret123"); err != nil {

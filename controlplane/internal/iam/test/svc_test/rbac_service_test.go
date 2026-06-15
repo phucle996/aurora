@@ -96,7 +96,8 @@ func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 		},
 	}, nil)
 
-	ctx := context.WithValue(context.Background(), constant.ContextKeyLevel, 0)
+	ident := &constant.Identity{Level: 0}
+	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
 	_, err := svc.GetRole(ctx, roleID)
 	if !errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
 		t.Fatalf("expected ErrRoleNotFound, got %v", err)
@@ -115,7 +116,8 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 		},
 	}, nil)
 
-	ctx := context.WithValue(context.Background(), constant.ContextKeyLevel, 0)
+	ident := &constant.Identity{Level: 0}
+	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
 	_, err := svc.ListRoles(ctx)
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)

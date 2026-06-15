@@ -39,15 +39,10 @@ func NewRbacService(
 // Tránh truy xuất database dư thừa trên mỗi request nghiệp vụ.
 func getActorLevel(ctx context.Context) (int, error) {
 	// Lấy giá trị Level từ Go Standard Context (đã được middleware Access inject sẵn)
-	actorLevelVal := ctx.Value(constant.ContextKeyLevel)
-	if actorLevelVal == nil {
-		// Mặc định trả về level thấp nhất và báo lỗi hành động không được phép nếu thiếu context
-		return 999999, iamTaxonomy.ErrActionNotAllowed
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		return ident.Level, nil
 	}
-	// Hỗ trợ duy nhất kiểu dữ liệu int
-	if lvl, ok := actorLevelVal.(int); ok {
-		return lvl, nil
-	}
+	// Mặc định trả về level thấp nhất và báo lỗi hành động không được phép nếu thiếu context
 	return 999999, iamTaxonomy.ErrActionNotAllowed
 }
 

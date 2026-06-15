@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"controlplane/pkg/constant"
 	middleware "controlplane/internal/http/middleware"
 	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
 	"controlplane/internal/security/ratelimit"
@@ -94,10 +95,14 @@ func TestRateLimitPostAuth_EnforcementAndRedisKeys(t *testing.T) {
 	middleware.InitRateLimitPolicy(policy)
 
 	r := gin.New()
-	// Middleware access guard giả lập để inject user identity sử dụng các keys chuẩn từ pkg/constant
+	// Middleware access guard giả lập để inject user identity sử dụng Identity struct chuẩn
 	r.Use(func(c *gin.Context) {
-		c.Set("user_id", "user-123")
-		c.Set("runtime_access_key", "device-abc")
+		ident := &constant.Identity{
+			UserID:    "user-123",
+			AccessKey: "device-abc",
+		}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	})
 	r.POST(path, middleware.RateLimitPostAuth(bucket, path), func(c *gin.Context) {

@@ -68,7 +68,9 @@ func TestRbacHandlerCreateRoleInvalidArgument(t *testing.T) {
 		return iamTaxonomy.ErrInvalidArgument
 	}})
 	r.POST("/admin/rbac/roles", func(c *gin.Context) {
-		c.Set(constant.ContextKeyUserID, uuid.NewString())
+		ident := &constant.Identity{UserID: uuid.NewString()}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		h.CreateRole(c)
 	})
 
@@ -90,7 +92,9 @@ func TestRbacHandlerCreateRoleNotFound(t *testing.T) {
 		return iamTaxonomy.ErrRoleNotFound
 	}})
 	r.POST("/admin/rbac/roles", func(c *gin.Context) {
-		c.Set(constant.ContextKeyUserID, uuid.NewString())
+		ident := &constant.Identity{UserID: uuid.NewString()}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		h.CreateRole(c)
 	})
 
@@ -112,7 +116,9 @@ func TestRbacHandlerCreateRoleInternal(t *testing.T) {
 		return errors.New("db timeout")
 	}})
 	r.POST("/admin/rbac/roles", func(c *gin.Context) {
-		c.Set(constant.ContextKeyUserID, uuid.NewString())
+		ident := &constant.Identity{UserID: uuid.NewString()}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		h.CreateRole(c)
 	})
 

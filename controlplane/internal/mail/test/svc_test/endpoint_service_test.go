@@ -164,7 +164,8 @@ func TestEndpointServiceTestConnectionRaw(t *testing.T) {
 	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, registry)
 	ctx := context.Background()
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
-	ctx = context.WithValue(ctx, constant.ContextKeyUserID, "test-user-123")
+	ident := &constant.Identity{UserID: "test-user-123"}
+	ctx = context.WithValue(ctx, constant.IdentityKey, ident)
 
 	// Khởi tạo các tham số cấu hình SMTP thô để gửi yêu cầu test connection
 	// ZoneID đã được inject vào context ở trên (middleware.ContextWithZoneID)

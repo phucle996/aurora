@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"controlplane/internal/http/middleware"
+
 	tenantEntity "controlplane/internal/tenant/domain/entity"
 	tenantSvc "controlplane/internal/tenant/domain/service"
 	tenantErrorx "controlplane/internal/tenant/errorx"
@@ -32,8 +32,7 @@ func (h *Handler) CreateTenant(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	creatorID := middleware.GetUserID(c)
-	result, err := h.svc.CreateTenant(ctx, tenantEntity.CreateTenantInput{Name: req.Name, Domain: req.Domain, CreatorID: creatorID})
+	result, err := h.svc.CreateTenant(ctx, tenantEntity.CreateTenantInput{Name: req.Name, Domain: req.Domain})
 	if err != nil {
 		switch {
 		case errors.Is(err, tenantErrorx.ErrInvalidArgument):

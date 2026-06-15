@@ -872,9 +872,11 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 
 	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY TỪ GO CONTEXT ---
 	// Trích xuất accessKey trực tiếp từ Go standard context thay vì nhận qua tham số
-	accessKeyVal := ctx.Value(constant.ContextKeyAdminAccessKey)
-	accessKey, ok := accessKeyVal.(string)
-	if !ok || strings.TrimSpace(accessKey) == "" {
+	var accessKey string
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		accessKey = ident.AccessKey
+	}
+	if strings.TrimSpace(accessKey) == "" {
 		refreshOutcome = iamTaxonomy.InvalidArgument
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
 	}

@@ -4,6 +4,7 @@ import (
 	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/apires"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 	"crypto/sha256"
 	"encoding/hex"
@@ -322,8 +323,14 @@ func RateLimitPostAuth(limiter *ratelimit.Bucket, path string) gin.HandlerFunc {
 		// 🚀 BƯỚC B3: LẤY THÔNG TIN ĐỊNH DANH ĐỂ BUILD IDENTITY KEY
 		// --------------------------------------------------------------------
 		clientIP := clientIdentity(c)
-		runtimeDeviceID := strings.TrimSpace(GetRuntimeAccessKey(c)) // Lấy Device Access Key
-		userID := strings.TrimSpace(GetUserID(c))                    // Lấy User ID từ token claims
+		var runtimeDeviceID string
+		var userID string
+		if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+			runtimeDeviceID = ident.AccessKey
+			userID = ident.UserID
+		}
+		runtimeDeviceID = strings.TrimSpace(runtimeDeviceID)
+		userID = strings.TrimSpace(userID)
 
 		// Xây dựng Key theo thứ tự ưu tiên giảm dần để tránh NAT Blocking:
 		ruleScope := rateLimitScopeIPTracking

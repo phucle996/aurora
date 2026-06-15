@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 
 	"controlplane/internal/cacheengine"
-	"controlplane/internal/security"
+
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
@@ -73,33 +73,20 @@ func ZoneAuth(allowGlobal bool) gin.HandlerFunc {
 		var hasSession bool
 		var isAdmin bool
 
-		if userIDVal, exists := c.Get(constant.ContextKeyUserID); exists {
-			if userIDStr, ok := userIDVal.(string); ok && userIDStr == "sre" {
+		if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+			hasSession = true
+			if ident.UserID == "sre" {
 				isAdmin = true
-				hasSession = true
-				// Đối với Admin, nếu có giới hạn zone trong token thì trích xuất nó
-				if valZoneID, existsZone := c.Get(constant.ContextKeyAdminZoneID); existsZone {
-					if strZoneID, okZone := valZoneID.(string); okZone {
-						sessionZoneID = strings.TrimSpace(strZoneID)
-					}
-				}
-			}
-		}
+				sessionZoneID = strings.TrimSpace(ident.ZoneID)
+			} else {
+				sessionZoneID = strings.TrimSpace(ident.ZoneID)
 
-		// Thử lấy cấu hình User JWT Claims nếu không phải Admin session
-		if !isAdmin {
-			if valClaims, exists := c.Get(constant.ContextKeyJWTClaims); exists {
-				if claims, ok := valClaims.(security.Claims); ok {
-					sessionZoneID = strings.TrimSpace(claims.ZoneID)
-					hasSession = true
-
-					// User session thông thường bắt buộc phải được gán vào 1 Zone cụ thể (không được để trống)
-					if sessionZoneID == "" {
-						logger.HandlerWarn(c, op, errors.New("user claims missing zone ID constraint"), "user zone access forbidden")
-						apires.RespondForbidden(c, "forbidden: user session requires a valid zone constraint")
-						c.Abort()
-						return
-					}
+				// User session thông thường bắt buộc phải được gán vào 1 Zone cụ thể (không được để trống)
+				if sessionZoneID == "" {
+					logger.HandlerWarn(c, op, errors.New("user claims missing zone ID constraint"), "user zone access forbidden")
+					apires.RespondForbidden(c, "forbidden: user session requires a valid zone constraint")
+					c.Abort()
+					return
 				}
 			}
 		}

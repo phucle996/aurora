@@ -9,12 +9,13 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	"controlplane/internal/http/middleware"
+
 	iamEntity "controlplane/internal/iam/domain/entity"
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
+	"controlplane/pkg/constant"
 	cookie "controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
@@ -311,7 +312,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Session(c *gin.Context) {
 	const op = "iam.auth.session"
 
-	if strings.TrimSpace(middleware.GetUserID(c)) == "" || strings.TrimSpace(middleware.GetRuntimeAccessKey(c)) == "" {
+	var userID string
+	var accessKey string
+	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		userID = ident.UserID
+		accessKey = ident.AccessKey
+	}
+
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(accessKey) == "" {
 		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidCredentials, "session invalid auth context")
 		apires.RespondUnauthorized(c, "unauthorized")
 		return
@@ -361,7 +369,16 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	userIDStr := strings.TrimSpace(middleware.GetUserID(c))
+	var userIDStr string
+	var accessKey string
+	var accessSecret string
+	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		userIDStr = ident.UserID
+		accessKey = ident.AccessKey
+		accessSecret = ident.AccessSecret
+	}
+
+	userIDStr = strings.TrimSpace(userIDStr)
 	if userIDStr == "" {
 		apires.RespondUnauthorized(c, "unauthorized")
 		return
@@ -372,8 +389,8 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		return
 	}
 
-	accessKey := strings.TrimSpace(middleware.GetRuntimeAccessKey(c))
-	accessSecret := strings.TrimSpace(middleware.GetRuntimeAccessSecret(c))
+	accessKey = strings.TrimSpace(accessKey)
+	accessSecret = strings.TrimSpace(accessSecret)
 
 	// Cho phép logout dù thiếu accessKey/secret (best-effort clear cookies đã xong ở đầu).
 	if accessKey == "" {

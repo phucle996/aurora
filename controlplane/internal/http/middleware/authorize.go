@@ -51,8 +51,10 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		ctx := c.Request.Context()
 
 		// 1. Trích xuất RoleCode từ Go Context (được inject từ Access Middleware)
-		roleCodeVal := ctx.Value(constant.ContextKeyRole)
-		roleCode, _ := roleCodeVal.(string)
+		var roleCode string
+		if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+			roleCode = ident.Role
+		}
 		roleCode = strings.TrimSpace(roleCode)
 		if roleCode == "" {
 			apires.RespondUnauthorized(c, "unauthorized")

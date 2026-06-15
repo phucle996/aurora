@@ -10,7 +10,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
-	"controlplane/internal/security"
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
@@ -57,9 +56,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session của Admin toàn cục (không giới hạn zone)
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, "")
+				// Giả lập session của Admin toàn cục (không giới hạn zone) qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: "",
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneOptional(),
@@ -84,9 +87,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session của Admin toàn cục
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, "")
+				// Giả lập session của Admin toàn cục qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: "",
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -113,9 +120,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session Admin bị giới hạn ở vn-hn-1
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, zoneMap["vn-hn-1"])
+				// Giả lập session Admin bị giới hạn ở vn-hn-1 qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: zoneMap["vn-hn-1"],
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -137,9 +148,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session Admin bị giới hạn ở vn-hn-1
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, zoneMap["vn-hn-1"])
+				// Giả lập session Admin bị giới hạn ở vn-hn-1 qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: zoneMap["vn-hn-1"],
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -161,9 +176,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session Admin bị giới hạn ở vn-hn-1 nhưng được phép xem global
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, zoneMap["vn-hn-1"])
+				// Giả lập session Admin bị giới hạn ở vn-hn-1 nhưng được phép xem global qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: zoneMap["vn-hn-1"],
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneOptional(),
@@ -189,9 +208,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session Admin bị giới hạn ở vn-sg-1 (đang bảo trì)
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, zoneMap["vn-sg-1"])
+				// Giả lập session Admin bị giới hạn ở vn-sg-1 (đang bảo trì) qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: zoneMap["vn-sg-1"],
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -213,9 +236,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session của Admin toàn cục
-				c.Set(constant.ContextKeyUserID, "sre")
-				c.Set(constant.ContextKeyAdminZoneID, "")
+				// Giả lập session của Admin toàn cục qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+					ZoneID: "",
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -237,8 +264,12 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				// Giả lập session của Admin
-				c.Set(constant.ContextKeyUserID, "sre")
+				// Giả lập session của Admin qua Go context
+				ident := &constant.Identity{
+					UserID: "sre",
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -260,9 +291,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				c.Set(constant.ContextKeyJWTClaims, security.Claims{
+				// Giả lập user session qua Go context
+				ident := &constant.Identity{
+					UserID: "user-uuid",
 					ZoneID: zoneMap["us-east"],
-				})
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -289,9 +324,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				c.Set(constant.ContextKeyJWTClaims, security.Claims{
+				// Giả lập user session qua Go context
+				ident := &constant.Identity{
+					UserID: "user-uuid",
 					ZoneID: zoneMap["vn-hn-1"],
-				})
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -313,9 +352,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				c.Set(constant.ContextKeyJWTClaims, security.Claims{
+				// Giả lập user session qua Go context
+				ident := &constant.Identity{
+					UserID: "user-uuid",
 					ZoneID: zoneMap["vn-hn-1"],
-				})
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -337,9 +380,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				c.Set(constant.ContextKeyJWTClaims, security.Claims{
+				// Giả lập user session qua Go context
+				ident := &constant.Identity{
+					UserID: "user-uuid",
 					ZoneID: zoneMap["vn-hn-1"],
-				})
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),
@@ -360,9 +407,13 @@ func TestZoneAuthMiddleware(t *testing.T) {
 		router := gin.New()
 		router.GET("/test",
 			func(c *gin.Context) {
-				c.Set(constant.ContextKeyJWTClaims, security.Claims{
+				// Giả lập user session qua Go context
+				ident := &constant.Identity{
+					UserID: "user-uuid",
 					ZoneID: zoneMap["vn-sg-1"],
-				})
+				}
+				ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+				c.Request = c.Request.WithContext(ctx)
 				c.Next()
 			},
 			middleware.ZoneRequired(),

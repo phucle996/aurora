@@ -392,8 +392,8 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 
 	// Trích xuất UserID từ context được middleware inject từ token xác thực
 	var userIDStr string
-	if uID, ok := ctx.Value(constant.ContextKeyUserID).(string); ok {
-		userIDStr = uID
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		userIDStr = ident.UserID
 	}
 
 	// Xây dựng cấu trúc cấu hình SMTP bằng protobuf

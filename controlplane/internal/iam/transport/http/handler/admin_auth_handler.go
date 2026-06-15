@@ -330,9 +330,9 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	defer cancel()
 
 	accessKey, _ := c.Cookie(cookie.AccessKeyName)
-	if value, ok := c.Get(constant.ContextKeyAdminAccessKey); ok {
-		if accessKeyCtx, castOK := value.(string); castOK {
-			accessKey = accessKeyCtx
+	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		if ident.AccessKey != "" {
+			accessKey = ident.AccessKey
 		}
 	}
 	trimmedAccessKey := strings.TrimSpace(accessKey)

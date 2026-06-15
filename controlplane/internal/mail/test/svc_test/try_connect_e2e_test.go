@@ -56,7 +56,8 @@ func TestTryConnectE2E(t *testing.T) {
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
 
 	uniqueUserID := fmt.Sprintf("e2e-user-%d", time.Now().UnixNano())
-	ctx = context.WithValue(ctx, constant.ContextKeyUserID, uniqueUserID)
+	ident := &constant.Identity{UserID: uniqueUserID}
+	ctx = context.WithValue(ctx, constant.IdentityKey, ident)
 
 	// 5. Khởi tạo tham số TestConnection (SMTP kết nối lỗi cố ý)
 	testReq := mailEntity.TestConnection{

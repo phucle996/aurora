@@ -9,7 +9,7 @@ import (
 func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/admin/core/zones",
 		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(middleware.WithInjectAccessKey()),
+		middleware.AdminAPIKeyAuth(middleware.WithInjectAdminAccessKey()),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
 		middleware.AdminCriticalSignature(),
 		middleware.AdminCriticalStepUp2FA(),
@@ -43,7 +43,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 
 	router.PATCH("/admin/core/zones/status",
 		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(middleware.WithInjectAccessKey()),
+		middleware.AdminAPIKeyAuth(middleware.WithInjectAdminAccessKey()),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones/status"),
 		middleware.AdminCriticalSignature(),
 		middleware.AdminCriticalStepUp2FA(),

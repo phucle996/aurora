@@ -91,7 +91,8 @@ func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
 	registry := &cacheengine.CacheRegistry{}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
-	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, " ")
+	ident := &constant.Identity{AccessKey: " "}
+	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 		t.Fatalf("expected invalid argument kind, got %v", err)
@@ -137,7 +138,8 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	registry := &cacheengine.CacheRegistry{L2: l2Mock}
 	svc := iamSvcImpl.NewAdminAPIKeyService(config.LoadConfig(), &adminBootstrapRepoMock{}, telegram.NewTelegramClient("", ""), registry)
 
-	ctx := context.WithValue(context.Background(), constant.ContextKeyAdminAccessKey, "device-1")
+	ident := &constant.Identity{AccessKey: "device-1"}
+	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
 	_, err := svc.RefreshAdminSession(ctx, "global", nil, nil)
 	if !errors.Is(err, iamTaxonomy.ErrInternalError) {
 		t.Fatalf("expected ErrInternalError, got %v", err)

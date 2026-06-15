@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	infraredis "controlplane/infra/redis"
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -17,6 +16,7 @@ import (
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -27,24 +27,35 @@ type DeviceService struct {
 	deviceRepo       iamRepoInterface.DeviceRepository
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
 	registry         *cacheengine.CacheRegistry
-	streamPublisher  infraredis.StreamPublisher
 }
 
 func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
-	streamPublisher infraredis.StreamPublisher,
 ) iamSvcInterface.DeviceService {
-	return &DeviceService{deviceRepo: deviceRepo,
+	return &DeviceService{
+		deviceRepo:       deviceRepo,
 		refreshTokenRepo: refreshTokenRepo,
 		registry:         registry,
-		streamPublisher:  streamPublisher}
+	}
 }
 
-func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
-	uid, err := uuid.Parse(userID)
+func (s *DeviceService) getUserIDFromContext(ctx context.Context) (uuid.UUID, error) {
+	ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity)
+	if !ok || ident == nil || ident.UserID == "" {
+		return uuid.Nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, errors.New("missing or invalid user identity in context"), "unauthorized")
+	}
+	uid, err := uuid.Parse(ident.UserID)
 	if err != nil {
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
+		return uuid.Nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
+	}
+	return uid, nil
+}
+
+func (s *DeviceService) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+	userID, err := s.getUserIDFromContext(ctx)
+	if err != nil {
+		return nil, err
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -52,13 +63,13 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 	if offset < 0 {
 		offset = 0
 	}
-	items, listErr := s.deviceRepo.ListDevicesByUserID(ctx, uid, limit, offset)
+	items, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
 	if listErr != nil {
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
 	presenceByTracked := map[string]iamEntity.UserAccessSession{}
 	if s.registry != nil {
-		runtimes, runtimeErr := s.scanUserAccessSessions(ctx, s.registry.L2.Client(), uid.String(), 200)
+		runtimes, runtimeErr := s.scanUserAccessSessions(ctx, s.registry.L2.Client(), userID.String(), 200)
 		if runtimeErr == nil {
 			for _, rt := range runtimes {
 				key := strings.TrimSpace(rt.TrackedDeviceID)
@@ -85,93 +96,49 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID string, limit 
 	return &iamSvcInterface.DeviceListResult{Devices: out, Total: int64(len(out))}, nil
 }
 
-func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID string, deviceID string, ip *string, userAgent *string) error {
-	uid, err := uuid.Parse(userID)
+func (s *DeviceService) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+	userID, err := s.getUserIDFromContext(ctx)
 	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
+		return err
 	}
-	did, err := uuid.Parse(deviceID)
-	if err != nil {
-		return apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
-	}
-	_, getErr := s.deviceRepo.GetDeviceByIDAndUserID(ctx, did, uid)
+	_, getErr := s.deviceRepo.GetDeviceByIDAndUserID(ctx, deviceID, userID)
 	if getErr != nil {
 		if errors.Is(getErr, pgx.ErrNoRows) {
 			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, getErr, "invalid_session")
 		}
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, getErr, "dependency_error")
 	}
-	if revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, did, uid); revokeErr != nil {
+	if revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID); revokeErr != nil {
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
-	_, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, uid, did)
+	_, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, userID, deviceID)
 	if revokeTokenErr != nil {
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
-	s.publishDeviceAudit(ctx, uid, "device.revoked", "warning", ip, userAgent, map[string]string{"target_device_id": strings.TrimSpace(deviceID)})
+	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning", ip, userAgent)
+	iamMetrics.ServiceCall("audit_publish", "db")
 	return nil
 }
 
-func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID string, currentTrackedDeviceID string, ip *string, userAgent *string) (int64, error) {
-	uid, err := uuid.Parse(userID)
+func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error) {
+	userID, err := s.getUserIDFromContext(ctx)
 	if err != nil {
-		return 0, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
+		return 0, err
 	}
-	var keep *uuid.UUID
-	if currentTrackedDeviceID != "" {
-		parsed, parseErr := uuid.Parse(currentTrackedDeviceID)
-		if parseErr != nil {
-			return 0, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, parseErr, "invalid_argument")
-		}
-		keep = &parsed
-	}
-	if _, revokeErr := s.deviceRepo.RevokeOtherDevicesByUserID(ctx, uid, keep); revokeErr != nil {
+	if _, revokeErr := s.deviceRepo.RevokeOtherDevicesByUserID(ctx, userID, currentTrackedDeviceID); revokeErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
-	affected, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByUserID(ctx, uid, keep)
+	affected, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByUserID(ctx, userID, currentTrackedDeviceID)
 	if revokeTokenErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
-	s.publishDeviceAudit(ctx, uid, "device.logout_others", "warning", ip, userAgent, map[string]string{"affected_count": strconv.FormatInt(affected, 10)})
+	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning", ip, userAgent)
+	iamMetrics.ServiceCall("audit_publish", "db")
 	return affected, nil
 }
 
-func (s *DeviceService) LogoutAllDevices(ctx context.Context, userID string, ip *string, userAgent *string) (int64, error) {
-	return s.LogoutOtherDevices(ctx, userID, "", ip, userAgent)
-}
-
-// publishDeviceAudit publish device audit qua Redis stream với fallback DB.
-func (s *DeviceService) publishDeviceAudit(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
-
-	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-	iamMetrics.ServiceCall("audit_publish", "fallback_db")
-	now := time.Now().UTC()
-	payload := map[string]string{
-		"event":        event,
-		"severity":     severity,
-		"user_id":      userID.String(),
-		"published_at": now.Format(time.RFC3339Nano),
-	}
-	if ip != nil {
-		payload["ip"] = strings.TrimSpace(*ip)
-	}
-	if userAgent != nil {
-		payload["user_agent"] = strings.TrimSpace(*userAgent)
-	}
-	for k, v := range extras {
-		payload[k] = v
-	}
-	msg := infraredis.StreamMessage{
-		Stream:         "iam:audit:device",
-		IdempotencyKey: userID.String() + ":" + event,
-		Payload:        payload,
-	}
-	if _, _, err := s.streamPublisher.Publish(ctx, msg, 30*time.Second); err != nil {
-		_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ServiceCall("audit_publish", "fallback_db")
-		return
-	}
-	iamMetrics.ServiceCall("audit_publish", "published")
+func (s *DeviceService) LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error) {
+	return s.LogoutOtherDevices(ctx, nil, ip, userAgent)
 }
 
 func (s *DeviceService) scanUserAccessSessions(ctx context.Context, rdb redis.Cmdable, userID string, limit int) ([]iamEntity.UserAccessSession, error) {
@@ -366,6 +333,7 @@ func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.publishDeviceAudit(bgCtx, userID, event, severity, ip, userAgent, extras)
+		_ = s.deviceRepo.InsertAuditEvent(bgCtx, &userID, event, severity, ip, userAgent)
+		iamMetrics.ServiceCall("audit_publish", "db")
 	}()
 }

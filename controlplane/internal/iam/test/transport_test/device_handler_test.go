@@ -28,17 +28,21 @@ type deviceServiceStub struct {
 	logoutAllErr    error
 }
 
-func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID string, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+func (s *deviceServiceStub) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	return s.listResult, s.listErr
 }
-func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, userID string, deviceID string, ip *string, userAgent *string) error {
+func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
 	return s.revokeErr
 }
-func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, userID string, currentTrackedDeviceID string, ip *string, userAgent *string) (int64, error) {
-	s.logoutOthersID = currentTrackedDeviceID
+func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error) {
+	if currentTrackedDeviceID != nil {
+		s.logoutOthersID = currentTrackedDeviceID.String()
+	} else {
+		s.logoutOthersID = ""
+	}
 	return s.logoutOthersN, s.logoutOthersErr
 }
-func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, userID string, ip *string, userAgent *string) (int64, error) {
+func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error) {
 	return s.logoutAllN, s.logoutAllErr
 }
 func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
@@ -57,9 +61,13 @@ var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 
 func withUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Set(constant.ContextKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
-		c.Set(constant.ContextKeyRuntimeAccessKey, "runtime-device-1")
-		c.Set(constant.ContextKeyTrackedDeviceID, "177682fc-3e96-4a5a-84eb-b5e9c71af721")
+		ident := &constant.Identity{
+			UserID:          "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a",
+			AccessKey:       "runtime-device-1",
+			TrackedDeviceID: "177682fc-3e96-4a5a-84eb-b5e9c71af721",
+		}
+		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }
@@ -67,7 +75,7 @@ func withUser() gin.HandlerFunc {
 func TestDeviceHandlerListMyDevicesUnauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := handler.NewDeviceHandler(&deviceServiceStub{})
+	h := handler.NewDeviceHandler(&deviceServiceStub{listErr: iamTaxonomy.ErrInvalidSession})
 	router.GET("/devices", h.ListMyDevices)
 
 	req := httptest.NewRequest(http.MethodGet, "/devices", nil)
@@ -103,7 +111,7 @@ func TestDeviceHandlerRevokeForbidden(t *testing.T) {
 	h := handler.NewDeviceHandler(&deviceServiceStub{revokeErr: iamTaxonomy.ErrInvalidSession})
 	router.POST("/devices/:device_id/revoke", withUser(), h.RevokeMyDevice)
 
-	req := httptest.NewRequest(http.MethodPost, "/devices/aaa/revoke", nil)
+	req := httptest.NewRequest(http.MethodPost, "/devices/3b9f2af0-8d95-4380-9d4e-90f0f7191f4a/revoke", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
@@ -135,8 +143,12 @@ func TestDeviceHandlerLogoutOthersRequiresTrackedDeviceID(t *testing.T) {
 	h := handler.NewDeviceHandler(&deviceServiceStub{logoutOthersN: 3})
 	router.POST("/devices/logout-others",
 		func(c *gin.Context) {
-			c.Set(constant.ContextKeyUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
-			c.Set(constant.ContextKeyRuntimeAccessKey, "runtime-device-1")
+			ident := &constant.Identity{
+				UserID:    "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a",
+				AccessKey: "runtime-device-1",
+			}
+			ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+			c.Request = c.Request.WithContext(ctx)
 			c.Next()
 		},
 		h.LogoutOtherDevices,

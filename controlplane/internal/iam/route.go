@@ -135,7 +135,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 12) Đăng xuất Admin: Thu hồi và giải phóng Access Key
 	router.POST("/admin/auth/logout",
 		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectAccessKey(),
+			middleware.WithInjectAdminAccessKey(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/logout"),
 		module.AdminAuthHandler.Logout,
@@ -145,8 +145,8 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.POST("/admin/auth/refresh",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectAccessKey(),
-			middleware.WithInjectAccessSecret(),
+			middleware.WithInjectAdminAccessKey(),
+			middleware.WithInjectAdminAccessSecret(),
 		),
 		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/refresh"),
@@ -162,7 +162,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.POST("/admin/auth/rotate-key",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectAccessKey(),
+			middleware.WithInjectAdminAccessKey(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/rotate-key"),
 		middleware.AdminCriticalSignature(),

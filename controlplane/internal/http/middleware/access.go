@@ -1,5 +1,5 @@
 // ============================================================================
-// 🛡️ ARCHITECTURAL & SYSTEM CONTRACTS
+// 🛡️ ARCHITECTURAL & SYSTEM CONTRACTS - ACCESS MIDDLEWARE
 // ============================================================================
 //
 // 🤝 1. SYSTEM CONTRACT
@@ -17,16 +17,15 @@
 //
 // 🚧 3. SYSTEM BOUNDARY
 //   - Đóng vai trò Authentication Gate của tầng HTTP.
-//   - Chỉ xác thực danh tính và tiêm thông tin định danh vào context.
+//   - Chỉ xác thực danh tính và tiêm thông tin định danh vào Go context.
 //     Không thực hiện authorization hoặc RBAC ở đây.
 //
-// 💡 4. LUỒNG XỬ LÝ
-//   1. Lấy access token từ Authorization header hoặc cookie.
-//   2. GetOrLoad access_secret từ CacheRegistry → parse JWT → lấy claims.AccessKey.
-//   3. Lấy access_secret từ cookie.
-//   4. Tra bản ghi phiên từ Redis L2 theo key = userID + accessKey từ claims.
-//   5. So khớp access_key cookie với claims, hash access_secret, graceWindow JTI.
-//   6. Tiêm claims + định danh phiên vào Gin context + Go context.
+// 💡 4. OPTION PATTERN
+//   - Hỗ trợ các options (WithInjectAccessKey, WithInjectAccessSecret, v.v.)
+//     để chọn lựa tiêm các trường tùy chọn vào struct Identity.
+//   - Chỉ 1 lần duy nhất ValueContext.WithValue được gọi, triệt tiêu chain inflation.
+//
+// ============================================================================
 
 package middleware
 
@@ -50,58 +49,101 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
-// accessMiddleware nắm giữ handler động cho middleware Access.
+// accessMiddleware nắm giữ dependency runtime cho middleware Access.
 var accessMiddleware = struct {
-	mu      sync.RWMutex
-	handler gin.HandlerFunc
+	mu          sync.RWMutex
+	registry    *cacheengine.CacheRegistry
+	graceWindow time.Duration
+	touchFn     TouchDeviceLastSeenFn
 }{}
 
 // TouchDeviceLastSeenFn là kiểu hàm inject vào middleware để flush IP/UA xuống DB khi sự kiện last-seen fire.
-// Thiết kế dạng function type để tránh coupling middleware với service/repo layer.
 type TouchDeviceLastSeenFn func(ctx context.Context, trackedDeviceID string, ip *string, userAgent *string)
 
 // InitAccess khởi tạo middleware Access với CacheRegistry và hàm flush last-seen xuống DB.
-// touchFn có thể là nil — khi đó chỉ cập nhật Redis, không flush DB.
 func InitAccess(registry *cacheengine.CacheRegistry, graceWindow time.Duration, touchFn TouchDeviceLastSeenFn) {
 	accessMiddleware.mu.Lock()
-	accessMiddleware.handler = buildAccessHandler(registry, graceWindow, touchFn)
+	accessMiddleware.registry = registry
+	accessMiddleware.graceWindow = graceWindow
+	accessMiddleware.touchFn = touchFn
 	accessMiddleware.mu.Unlock()
 }
 
-// Access trả về gin.HandlerFunc đang hoạt động.
-func Access() gin.HandlerFunc {
-	accessMiddleware.mu.RLock()
-	handler := accessMiddleware.handler
-	accessMiddleware.mu.RUnlock()
-	if handler == nil {
-		return func(c *gin.Context) {
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			c.Abort()
-		}
-	}
-	return handler
-}
-
 // userAccessSession là struct nội bộ ánh xạ bản ghi phiên lưu trong Redis.
-// Chỉ giữ lại các trường thực sự cần dùng để đối chiếu chữ ký, định danh thiết bị, và realtime tracking.
 type userAccessSession struct {
 	AccessSecretHash string `json:"ash"`  // Hash của Access secret để so khớp chữ ký
 	TrackedDeviceID  string `json:"tdid"` // ID thiết bị đã qua kiểm tra
 	LastSeenAt       int64  `json:"lsa"`  // Unix timestamp — được middleware ghi lại sau mỗi request xác thực thành công
 }
 
-// buildAccessHandler xây dựng hàm xác thực JWT, tra phiên Redis, và inject context.
-func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Duration, touchFn TouchDeviceLastSeenFn) gin.HandlerFunc {
-	if graceWindow <= 0 {
-		graceWindow = 10 * time.Second
+// accessOptions cấu hình các trường tùy chọn sẽ được inject vào Go context.
+type accessOptions struct {
+	injectAccessKey     bool
+	injectAccessSecret  bool
+	injectTokenJTI      bool
+	injectTrackedDevice bool
+}
+
+// AccessOption định nghĩa hàm cấu hình tùy chọn cho Access middleware.
+type AccessOption func(*accessOptions)
+
+// WithInjectAccessKey kích hoạt tiêm AccessKey vào Identity context struct.
+func WithInjectAccessKey() AccessOption {
+	return func(o *accessOptions) {
+		o.injectAccessKey = true
 	}
+}
+
+// WithInjectAccessSecret kích hoạt tiêm AccessSecret vào Identity context struct.
+func WithInjectAccessSecret() AccessOption {
+	return func(o *accessOptions) {
+		o.injectAccessSecret = true
+	}
+}
+
+// WithInjectTokenJTI kích hoạt tiêm Token JTI (JWT ID) vào Identity context struct.
+func WithInjectTokenJTI() AccessOption {
+	return func(o *accessOptions) {
+		o.injectTokenJTI = true
+	}
+}
+
+// WithInjectTrackedDevice kích hoạt tiêm TrackedDeviceID vào Identity context struct.
+func WithInjectTrackedDevice() AccessOption {
+	return func(o *accessOptions) {
+		o.injectTrackedDevice = true
+	}
+}
+
+// Access trả về gin.HandlerFunc xác thực JWT, tra cứu Redis và tiêm Identity struct vào Go context.
+func Access(opts ...AccessOption) gin.HandlerFunc {
+	// Parse các cấu hình tùy chọn nhận vào
+	options := &accessOptions{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(options)
+		}
+	}
+
 	const cookiePath = "/"
 	const cookieDomain = ""
 
 	return func(c *gin.Context) {
+		// Đọc cấu hình runtime đã lưu từ InitAccess
+		accessMiddleware.mu.RLock()
+		registry := accessMiddleware.registry
+		touchFn := accessMiddleware.touchFn
+		accessMiddleware.mu.RUnlock()
+
+		if registry == nil {
+			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "uninitialized_middleware")
+			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
+			c.Abort()
+			return
+		}
+
 		// --------------------------------------------------------------------
 		// BƯỚC 1: LẤY ACCESS TOKEN TỪ HEADER HOẶC COOKIE
-		// Ưu tiên Authorization header (Bearer <token>), fallback sang cookie.
 		// --------------------------------------------------------------------
 		var rawToken string
 		if bearer, ok := security.ExtractBearerToken(c.GetHeader("Authorization")); ok {
@@ -119,7 +161,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 
 		// --------------------------------------------------------------------
 		// BƯỚC 2: LẤY SIGNING SECRET TỪ CACHE REGISTRY → PARSE JWT
-		// GetOrLoad đi qua L1 in-memory trước, miss thì load từ DB.
 		// --------------------------------------------------------------------
 		secretVal, err := registry.GetOrLoad(c.Request.Context(), "access_secret", "")
 		if err != nil {
@@ -139,7 +180,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		}
 		middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "hit")
 
-		// Parse JWT lần lượt qua Active rồi Standby secret để hỗ trợ rotation.
 		var (
 			claims      security.Claims
 			parsed      bool
@@ -171,8 +211,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 		}
 
 		// --------------------------------------------------------------------
-		// BƯỚC 3: XÁC THỰC PHIÊN QUA REDIS L2 (SESSION BINDING)
-		// access_key lấy từ claims JWT; access_secret lấy từ cookie.
+		// BƯỚC 3: TRÍCH XUẤT CLAIMS & COOKIES CƠ BẢN
 		// --------------------------------------------------------------------
 		accessKeyClaim := strings.TrimSpace(claims.AccessKey)
 		userIDClaim := strings.TrimSpace(claims.Subject)
@@ -186,7 +225,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 
-		// Lấy access_secret từ cookie để đối chiếu với hash trong Redis.
 		accessSecretCookie, secretCookieErr := c.Cookie(constant.AccessSecretName)
 		accessKeyCookie, keyCookieErr := c.Cookie(constant.AccessKeyName)
 		accessSecret := strings.TrimSpace(accessSecretCookie)
@@ -200,7 +238,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 
-		// Cookie access_key phải khớp chính xác với access_key trong claims JWT.
 		if accessKeyFromCookie != accessKeyClaim {
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "mismatched_key")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
@@ -209,14 +246,15 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 
-		// Tra bản ghi phiên từ Redis thông qua CacheEngine L2.
+		// --------------------------------------------------------------------
+		// BƯỚC 4: XÁC THỰC PHIÊN QUA REDIS L2 (SESSION BINDING)
+		// --------------------------------------------------------------------
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
 		defer cancel()
 
 		sessionKey := "iam:user_access_session:" + userIDClaim + ":" + accessKeyClaim
 		rawPayload, _, exists, l2Err := registry.L2.Get(ctx, sessionKey)
 		if l2Err != nil {
-			// Lỗi kết nối Redis → fail-closed (503).
 			middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "error")
 			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "redis_error")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
@@ -224,7 +262,6 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 		if !exists {
-			// Key không tồn tại → phiên đã hết hạn hoặc bị thu hồi.
 			middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "miss")
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "session_not_found")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
@@ -242,13 +279,7 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 
-		// --------------------------------------------------------------------
-		// BƯỚC 4: XÁC THỰC ACCESS KEY VÀ ACCESS SECRET
-		// Không cần kiểm tra JTI và trạng thái 'revoked' chi tiết ở đây vì:
-		// 1. Khi logout/thu hồi phiên, bản ghi session tương ứng sẽ bị xóa hoặc vô hiệu hóa trực tiếp trong Redis.
-		// 2. Việc loại bỏ kiểm tra JTI giúp tránh race condition cho các HTTP request đồng thời trong lúc xoay vòng token.
-		// Chỉ cần so khớp chính xác cặp khóa (access_key và hash của access_secret).
-		// --------------------------------------------------------------------
+		// Đối khớp access_secret cookie với hash lưu trong Redis
 		if record.AccessSecretHash != security.HashTokenSHA256(accessSecret) {
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "invalid_secret")
 			clearUserAccessCookies(c, cookieDomain, cookiePath)
@@ -257,47 +288,47 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			return
 		}
 
-		// Ghi nhận xác thực thành công.
 		middlewareMetrics.RecordAuthAttempt("access", "success", "none")
 
 		// --------------------------------------------------------------------
-		// Tiêm vào Go standard context để service layer đọc qua ctx.Value().
-		goCtx := context.WithValue(c.Request.Context(), constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
-		goCtx = context.WithValue(goCtx, constant.ContextKeyRuntimeAccessSecret, accessSecret)
-		goCtx = context.WithValue(goCtx, constant.ContextKeyUserID, claims.Subject)
-		goCtx = context.WithValue(goCtx, constant.ContextKeyRole, claims.Role)
-		goCtx = context.WithValue(goCtx, constant.ContextKeyJTI, claims.TokenID)
-		goCtx = context.WithValue(goCtx, constant.ContextKeyLevel, claims.Level)
-		goCtx = context.WithValue(goCtx, constant.ContextKeyTenant, claims.TenantID)
-		if trackedDevice := strings.TrimSpace(record.TrackedDeviceID); trackedDevice != "" {
-			goCtx = context.WithValue(goCtx, constant.ContextKeyTrackedDeviceID, trackedDevice)
-			c.Set(constant.ContextKeyTrackedDeviceID, trackedDevice)
+		// BƯỚC 5: TẠO STRUCT IDENTITY VÀ INJECT VÀO GO CONTEXT
+		// --------------------------------------------------------------------
+		// Nhóm các thông tin cơ bản luôn luôn được inject
+		ident := &constant.Identity{
+			UserID:   userIDClaim,
+			Role:     claims.Role,
+			TenantID: claims.TenantID,
+			Level:    claims.Level,
+			ZoneID:   claims.ZoneID,
 		}
-		c.Request = c.Request.WithContext(goCtx)
 
-		// Tiêm toàn bộ claims JWT vào Gin context.
-		c.Set(constant.ContextKeyJWTClaims, claims)
-		c.Set(constant.ContextKeyUserID, claims.Subject)
-		c.Set(constant.ContextKeyRole, claims.Role)
-		c.Set(constant.ContextKeyJTI, claims.TokenID)
-		c.Set(constant.ContextKeyLevel, claims.Level)
-		c.Set(constant.ContextKeyTenant, claims.TenantID)
-		c.Set(constant.ContextKeyRuntimeAccessKey, accessKeyClaim)
-		c.Set(constant.ContextKeyRuntimeAccessSecret, accessSecret)
+		// Inject các thông tin tùy chọn theo cấu hình để tránh phình context
+		if options.injectAccessKey {
+			ident.AccessKey = accessKeyClaim
+		}
+		if options.injectAccessSecret {
+			ident.AccessSecret = accessSecret
+		}
+		if options.injectTokenJTI {
+			ident.JTI = jti
+		}
+		if options.injectTrackedDevice {
+			if trackedDevice := strings.TrimSpace(record.TrackedDeviceID); trackedDevice != "" {
+				ident.TrackedDeviceID = trackedDevice
+			}
+		}
+
+		// Tiêm Identity vào Go standard context
+		goCtx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		c.Request = c.Request.WithContext(goCtx)
 
 		c.Next()
 
 		// --------------------------------------------------------------------
-		// CẬP NHẬT LAST SEEN (BEST-EFFORT, HAI TẦNG THROTTLE)
-		// Sau khi request xử lý xong:
-		//   Tầng 1 — Redis lsa: cập nhật mỗi 30s (cheap, giữ KEEPTTL).
-		//   Tầng 2 — DB flush: dùng SET NX EX làm distributed gate (mỗi ~3 phút/user).
-		//     Goroutine nào SET NX thành công mới được flush DB → tự rate-limit,
-		//     loại bỏ write storm dù có 10k+ user online đồng thời.
+		// BƯỚC 6: CẬP NHẬT LAST SEEN (BEST-EFFORT, HAI TẦNG THROTTLE)
 		// --------------------------------------------------------------------
 		now := time.Now().Unix()
 		if now-record.LastSeenAt > 30 {
-			// Capture IP và UA từ gin context trước khi rời khỏi request goroutine.
 			clientIP := c.ClientIP()
 			userAgent := c.Request.UserAgent()
 			trackedDeviceID := strings.TrimSpace(record.TrackedDeviceID)
@@ -306,17 +337,15 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 			updatedRecord.LastSeenAt = now
 			if payload, marshalErr := json.Marshal(updatedRecord); marshalErr == nil {
 				rdb := registry.L2.Client()
-				// dbFlushGateKey: key tồn tại trong 3 phút, đóng vai trò distributed rate limiter cho DB write.
 				dbFlushGateKey := "iam:user_lsadb:" + userIDClaim + ":" + accessKeyClaim
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 					defer cancel()
 
-					// Tầng 1: Cập nhật lsa trong Redis, giữ nguyên TTL gốc của session.
+					// Cập nhật lsa trong Redis, giữ nguyên TTL gốc của session
 					_ = rdb.Set(ctx, sessionKey, payload, goredis.KeepTTL).Err()
 
-					// Tầng 2: Chỉ flush DB nếu SET NX thành công (gate chưa có ai giữ).
-					// TTL 3 phút → tối đa ~1 DB write / 3 phút / session, bất kể traffic.
+					// Chỉ flush DB nếu SET NX thành công (tần suất ~3 phút/lần)
 					if touchFn != nil && trackedDeviceID != "" {
 						won, _ := rdb.SetNX(ctx, dbFlushGateKey, 1, 3*time.Minute).Result()
 						if won {
@@ -331,62 +360,27 @@ func buildAccessHandler(registry *cacheengine.CacheRegistry, graceWindow time.Du
 	}
 }
 
-// ============================================================================
-// Context Accessor Helpers
-// ============================================================================
-
-func GetUserID(c *gin.Context) string {
-	return getContextString(c, constant.ContextKeyUserID)
-}
-
-func GetTrackedDeviceID(c *gin.Context) string {
-	return getContextString(c, constant.ContextKeyTrackedDeviceID)
-}
-
-func GetRuntimeAccessKey(c *gin.Context) string {
-	return getContextString(c, constant.ContextKeyRuntimeAccessKey)
-}
-
-func GetRuntimeAccessSecret(c *gin.Context) string {
-	return getContextString(c, constant.ContextKeyRuntimeAccessSecret)
-}
-
-func getContextString(c *gin.Context, key string) string {
+// clearUserAccessCookies xóa cookie xác thực phía client
+func clearUserAccessCookies(c *gin.Context, domain, path string) {
 	if c == nil {
-		return ""
+		return
 	}
-	v, ok := c.Get(key)
-	if !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
-}
-
-// clearUserAccessCookies xóa tất cả session cookies khi phiên không hợp lệ.
-func clearUserAccessCookies(c *gin.Context, cookieDomain, cookiePath string) {
-	secure := c.Request.TLS != nil
 	exp := time.Unix(0, 0)
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     constant.AccessKeyName,
-		Value:    "",
-		Path:     cookiePath,
-		Domain:   cookieDomain,
-		HttpOnly: false,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-		Expires:  exp,
-	})
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     constant.AccessSecretName,
-		Value:    "",
-		Path:     cookiePath,
-		Domain:   cookieDomain,
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-		Expires:  exp,
-	})
+	for _, name := range []string{
+		constant.AccessTokenName,
+		constant.AccessKeyName,
+		constant.AccessSecretName,
+	} {
+		http.SetCookie(c.Writer, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     path,
+			Domain:   domain,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   -1,
+			Expires:  exp,
+		})
+	}
 }

@@ -174,7 +174,7 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, nil, makeIntegrationRegistry(rdb), nil)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, nil, makeIntegrationRegistry(rdb))
 	registerSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("login_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Login User"}, "secret123"); err != nil {

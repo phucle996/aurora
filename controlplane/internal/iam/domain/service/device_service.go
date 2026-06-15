@@ -22,10 +22,10 @@ type DeviceListResult struct {
 }
 
 type DeviceService interface {
-	ListMyDevices(ctx context.Context, userID string, limit int, offset int) (*DeviceListResult, error)
-	RevokeMyDevice(ctx context.Context, userID string, deviceID string, ip *string, userAgent *string) error
-	LogoutOtherDevices(ctx context.Context, userID string, currentTrackedDeviceID string, ip *string, userAgent *string) (int64, error)
-	LogoutAllDevices(ctx context.Context, userID string, ip *string, userAgent *string) (int64, error)
+	ListMyDevices(ctx context.Context, limit int, offset int) (*DeviceListResult, error)
+	RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error
+	LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error)
+	LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error)
 
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error
