@@ -24,7 +24,7 @@ func NewMailTestConfig(schema string) *config.Config {
 	cfg.SchemaSQL.Mail = schema
 	cfg.App.AppName = "mail-test-node"
 	cfg.Psql.Host = envString("MAIL_TEST_PSQL_HOST", "127.0.0.1")
-	cfg.Psql.Port = envInt("MAIL_TEST_PSQL_PORT", 15433)
+	cfg.Psql.Port = envInt("MAIL_TEST_PSQL_PORT", 15434)
 	cfg.Psql.User = envString("MAIL_TEST_PSQL_USER", "postgres")
 	cfg.Psql.Password = envString("MAIL_TEST_PSQL_PASSWORD", "postgres")
 	cfg.Psql.DBName = envString("MAIL_TEST_PSQL_DBNAME", "controlplane")

@@ -188,7 +188,7 @@ services:
       - "15434:5432" # Direct debug port for schema migrations and heavy queries
     volumes:
       # Sử dụng named volume để lưu trữ dữ liệu bền vững, tránh mất mát dữ liệu khi container bị hủy.
-      - controlplane_psql_data:/var/lib/postgresql/data
+      - controlplane_psql_data:/var/lib/postgresql
     healthcheck:
       # Thực thi pg_isready định kỳ để đảm bảo DB chỉ nhận kết nối khi đã sẵn sàng hoàn toàn.
       test: [ "CMD-SHELL", "pg_isready -U postgres -d controlplane" ]
@@ -447,11 +447,15 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.154.0
     container_name: controlplane-otel-collector
+    # Chạy với quyền root (0:0) để có quyền đọc file logs trong /var/lib/docker/containers
+    user: "0:0"
     command:
       - "--config=/etc/otelcol-contrib/config.yaml"
     volumes:
       # Nạp tệp cấu hình các receivers, processors, và exporters của OpenTelemetry.
       - ./dev/otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+      # Gắn thư mục chứa logs của Docker container để filelog đọc trực tiếp log file
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     ports:
       - "14317:4317" # Cổng nhận OpenTelemetry gRPC Traces & Metrics
       - "14318:4318" # Cổng nhận OpenTelemetry HTTP Traces & Metrics
@@ -504,6 +508,8 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false" # Khóa tính năng tự đăng ký để bảo đảm an ninh mạng nội bộ
+      # Tự động tải và cài đặt plugin của VictoriaMetrics để truy vấn logs, và plugin Redis để giám sát cache/queues
+      GF_INSTALL_PLUGINS: "victoriametrics-logs-datasource,redis-datasource"
     volumes:
       - controlplane_grafana_data:/var/lib/grafana
       # Tự động nạp sẵn các Data Sources (Loki, Tempo, Prometheus) và các Dashboards tiêu chuẩn.

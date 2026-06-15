@@ -145,12 +145,19 @@ func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*cor
 
 // UpdateZoneStatus chuyển trạng thái zone.
 func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+	// allowed quy định bản đồ chuyển đổi trạng thái hợp lệ (State Machine Transitions).
+	// Key: Trạng thái đích (toStatus) - Value: Danh sách các trạng thái cũ được phép chuyển đổi sang trạng thái đích.
 	allowed := map[coreEntity.ZoneStatus][]coreEntity.ZoneStatus{
-		coreEntity.ZoneStatusPlanned:     {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
-		coreEntity.ZoneStatusActive:      {coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
-		coreEntity.ZoneStatusDraining:    {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
+		// Có thể đưa zone quay lại trạng thái Planned từ Active hoặc Disabled.
+		coreEntity.ZoneStatusPlanned: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
+		// [BUG FIX]: Bổ sung ZoneStatusPlanned vào danh sách trạng thái cũ hợp lệ để cho phép kích hoạt (Active) một zone mới được tạo.
+		coreEntity.ZoneStatusActive: {coreEntity.ZoneStatusPlanned, coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
+		// Trạng thái Draining (xả tải) có thể kích hoạt từ Active, Maintenance hoặc Disabled.
+		coreEntity.ZoneStatusDraining: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
+		// Trạng thái Bảo trì (Maintenance) chỉ cho phép từ Active hoặc Disabled.
 		coreEntity.ZoneStatusMaintenance: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
-		coreEntity.ZoneStatusDisabled:    {coreEntity.ZoneStatusActive},
+		// zone chỉ có thể disabled từ active
+		coreEntity.ZoneStatusDisabled: {coreEntity.ZoneStatusActive},
 	}
 
 	allowedOld := append(allowed[toStatus], toStatus)

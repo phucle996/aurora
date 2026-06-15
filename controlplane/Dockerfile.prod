@@ -12,8 +12,9 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=bind,source=go.sum,target=go.sum \
     go mod download
 
-# Giữ lại cache biên dịch (go-build cache) - Sửa code build lại chỉ mất vài giây
-RUN --mount=type=cache,target=/root/.cache/go-build \
+# Giữ lại cache biên dịch (go-build cache) và cache modules - Sửa code build lại chỉ mất vài giây
+RUN --mount=type=cache,target=/go/pkg/mod/ \
+    --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,source=.,target=. \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -trimpath -ldflags='-s -w' -o /out/controlplane ./cmd/server

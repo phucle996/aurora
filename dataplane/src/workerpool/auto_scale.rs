@@ -62,8 +62,22 @@ impl AutoScaleEngine {
             // Không log tại đây: caller chịu trách nhiệm log khi target thực sự đổi.
             0
         } else {
-            // Giữ nguyên quy mô hiện hành
-            current_workers
+            // Nếu có job trong hàng đợi (lag > 0) nhưng số worker hiện tại lại là 0,
+            // chúng ta phải scale up lên ít nhất 1 worker để bắt đầu xử lý job,
+            // tránh việc bị treo hàng đợi (deadlock) do không có worker nào hoạt động.
+            if current_workers == 0 {
+                crate::observability::logger::Logger::sys_info(
+                    "worker.scaler",
+                    &format!(
+                        "Autoscaler: New job detected (lag={}). Scaling up from 0 to 1 worker (cap={})",
+                        lag, self.max_workers
+                    ),
+                );
+                1.min(self.max_workers)
+            } else {
+                // Giữ nguyên quy mô hiện hành nếu đã có worker chạy
+                current_workers
+            }
         }
     }
 }

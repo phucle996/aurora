@@ -1,8 +1,3 @@
-extensions:
-  docker_observer:
-    endpoint: unix:///var/run/docker.sock
-    api_version: "1.40"
-
 receivers:
   otlp:
     protocols:
@@ -10,38 +5,81 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
-  # receiver_creator dynamically starts a filelog receiver for each container discovered by docker_observer
-  receiver_creator:
-    watch_observers: [docker_observer]
-    receivers:
-      filelog:
-        rule: type == "container"
-        config:
-          include:
-            - /var/lib/docker/containers/`id`/`id`-json.log
-          exclude:
-            - /var/lib/docker/containers/`id`/*otel-collector*
-            - /var/lib/docker/containers/`id`/*victorialogs*
-            - /var/lib/docker/containers/`id`/*victoriametrics*
-            - /var/lib/docker/containers/`id`/*prometheus*
-            - /var/lib/docker/containers/`id`/*tempo*
-          operators:
-            - type: json_parser
-              id: parser_docker
-            - type: json_parser
-              id: parser_app
-              parse_from: attributes.log
+
+  # filelog đọc trực tiếp từ đĩa của Docker host mà không cần gọi qua docker.sock (bảo mật hơn)
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    exclude:
+      # Loại trừ chính log của container otel-collector này để tránh loop log (HOSTNAME là short container ID mặc định do Docker cấp)
+      - /var/lib/docker/containers/${env:HOSTNAME}*/*
+    operators:
+      # 1. Parse JSON của log wrapper Docker (chuyển log thô thành attributes.log)
+      - type: json_parser
+        id: parser_docker
+        on_error: send_quiet
+      # 2. Đưa chuỗi log thực tế của app từ attributes.log vào trường body chính
+      - type: move
+        id: move_log_to_body
+        from: attributes.log
+        to: body
+        on_error: send_quiet
+      # 3. Parse tiếp JSON từ body (lúc này là log của app với các trường client_ip, level, msg...)
+      - type: json_parser
+        id: parser_app
+        on_error: send_quiet
+      # 4. Đưa trường `msg` trong log app làm nội dung tin nhắn chính hiển thị ở body
+      - type: move
+        id: move_msg_to_body
+        from: attributes.msg
+        to: body
+        on_error: send_quiet
+      # 5. Trích xuất container_id từ đường dẫn file log của container
+      - type: regex_parser
+        id: extract_container_id
+        regex: '^/var/lib/docker/containers/(?P<container_id>[a-f0-9]+)/'
+        parse_from: attributes["log.file.path"]
+        on_error: send_quiet
 
 processors:
   batch:
-  # transform processor maps container.name to container_name for Grafana query consistency
+  # [OPTIMIZATION & DATA SUSTAINABILITY]: Bộ lọc loại bỏ log rác từ chính hệ thống giám sát
+  # Giúp tránh vòng lặp ghi log vô hạn (log loop) và tối ưu hóa dung lượng lưu trữ trên môi trường HA.
+  filter/exclude_noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        # Loại bỏ logs của Grafana (dạng logfmt bắt đầu bằng logger=)
+        - IsMatch(body, "^logger=")
+        # Loại bỏ logs của VictoriaMetrics, VictoriaLogs, VictoriaTraces chứa thư viện chung VictoriaMetrics@
+        - IsMatch(body, "VictoriaMetrics@")
+        # Loại bỏ logs từ module khởi chạy của VictoriaLogs
+        - IsMatch(body, "VictoriaLogs/")
+        # [OPTIMIZATION & DATA SUSTAINABILITY]: Loại bỏ log health check thành công (200 OK) của app để tránh log bloat.
+        # Chỉ giữ lại log health check nếu status code khác 200 (khi hệ thống có sự cố) để phục vụ cảnh báo/giám sát.
+        - IsMatch(attributes["route"], "^/api/v1/health/") and (attributes["status_code"] == 200 or attributes["status_code"] == "200")
+        # [OPTIMIZATION]: Loại bỏ log kết nối thành công của health check nội bộ PgBouncer (mỗi 5s).
+        # Chỉ loại bỏ log "login attempt" phát sinh từ localhost (127.0.0.1) của chính container pbouncer.
+        - IsMatch(body, "login attempt:") and IsMatch(body, "@127\\.0\\.0\\.1")
+
+  # transform processor ánh xạ container_id sang container_name và dọn dẹp các trường log thừa
   transform:
     error_mode: ignore
     log_statements:
       - context: log
         statements:
-          - set(attributes["container_name"], resource.attributes["container.name"])
-          - replace_pattern(attributes["container_name"], "^/", "")
+          - set(attributes["container_name"], attributes["container_id"])
+          # Xóa các thuộc tính siêu dữ liệu dư thừa từ filelog receiver và Docker để giữ log sạch
+          - delete_key(attributes, "log.file.name")
+          - delete_key(attributes, "log.file.path")
+          - delete_key(attributes, "stream")
+          - delete_key(attributes, "detected_level")
+          - delete_key(attributes, "container_id")
+          # Đặt các trường hệ thống mặc định về rỗng/không xác định để tránh làm rác log
+          - set(scope.name, "")
+          - set(scope.version, "")
+          - set(severity_text, "")
+          - set(severity_number, 0)
 
 exporters:
   debug:
@@ -64,19 +102,22 @@ exporters:
       insecure: true
 
 service:
-  extensions: [docker_observer]
   pipelines:
     # Pipeline traces nhận log qua OTLP gRPC/HTTP và xuất sang VictoriaTraces
     # [VictoriaTraces Integration]: Nhận traceparent phân tán từ các microservices
+    # (Đã loại bỏ exporter debug để tránh spam console log)
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlphttp/victoriatraces]
+      exporters: [otlphttp/victoriatraces]
+    # Pipeline metrics (Đã loại bỏ exporter debug)
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, prometheusremotewrite]
+      exporters: [prometheusremotewrite]
+    # Pipeline logs (Đã loại bỏ exporter debug)
     logs:
-      receivers: [otlp, receiver_creator]
-      processors: [transform, batch]
-      exporters: [debug, otlphttp/victorialogs]
+      receivers: [otlp, filelog]
+      # Bổ sung filter/exclude_noise trước transform để lọc bỏ log rác ngay khi nhận được
+      processors: [filter/exclude_noise, transform, batch]
+      exporters: [otlphttp/victorialogs]

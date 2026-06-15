@@ -7,13 +7,25 @@ deleteDatasources:
     orgId: 1
   - name: Tempo
     orgId: 1
+  - name: PostgreSQL
+    orgId: 1
+  - name: Redis-Core
+    orgId: 1
+  - name: Redis-Job
+    orgId: 1
+  - name: Redis-Dataplane-Z1
+    orgId: 1
+  - name: Redis-Dataplane-Z2
+    orgId: 1
 
 datasources:
+  # Cấu hình Datasource Prometheus ảo trỏ trực tiếp về VictoriaMetrics để đảm bảo
+  # tính tương thích ngược cho các Dashboard sử dụng tên "Prometheus" làm nguồn dữ liệu mặc định.
   - name: Prometheus
     uid: prometheus
     type: prometheus
     access: proxy
-    url: http://prometheus:9090
+    url: http://controlplane-victoriametrics:8428
     isDefault: true
     editable: false
 
@@ -37,10 +49,9 @@ datasources:
     uid: jaeger
     type: jaeger
     access: proxy
-    url: http://controlplane-victoriatraces:10428/query/jaeger
+    url: http://controlplane-victoriatraces:10428/select/jaeger
     editable: false
 
-  # Datasource VictoriaMetrics (Prometheus-compatible)
   - name: VictoriaMetrics
     uid: victoriametrics
     type: prometheus
@@ -48,4 +59,51 @@ datasources:
     url: http://controlplane-victoriametrics:8428
     isDefault: false
     editable: false
+
+  # Datasource PostgreSQL phục vụ giám sát cấu trúc bảng và truy vấn trực tiếp
+  - name: PostgreSQL
+    uid: postgresql
+    type: postgres
+    access: proxy
+    url: controlplane-psql:5432
+    user: postgres
+    jsonData:
+      database: controlplane
+      sslmode: disable
+    secureJsonData:
+      password: postgres
+    editable: false
+
+  # Datasource Redis Core phục vụ giám sát Session/Identity cache
+  - name: Redis-Core
+    uid: redis-core
+    type: redis-datasource
+    access: proxy
+    url: redis://controlplane-redis:6379
+    editable: false
+
+  # Datasource Redis Job phục vụ giám sát hàng đợi công việc (Job Stream)
+  - name: Redis-Job
+    uid: redis-job
+    type: redis-datasource
+    access: proxy
+    url: redis://controlplane-redis-job:6379
+    editable: false
+
+  # Datasource Redis Dataplane Zone 1 phục vụ giám sát co giãn và tải của Zone 1
+  - name: Redis-Dataplane-Z1
+    uid: redis-dataplane-z1
+    type: redis-datasource
+    access: proxy
+    url: redis://controlplane-redis-dataplane-z1:6379
+    editable: false
+
+  # Datasource Redis Dataplane Zone 2 phục vụ giám sát co giãn và tải của Zone 2
+  - name: Redis-Dataplane-Z2
+    uid: redis-dataplane-z2
+    type: redis-datasource
+    access: proxy
+    url: redis://controlplane-redis-dataplane-z2:6379
+    editable: false
+
 

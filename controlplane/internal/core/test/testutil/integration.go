@@ -43,7 +43,7 @@ func NewCoreTestConfig(schema string) *config.Config {
 	cfg.SchemaSQL.Core = schema
 	cfg.App.AppName = "core-test-node"
 	cfg.Psql.Host = envString("CORE_TEST_PSQL_HOST", "127.0.0.1")
-	cfg.Psql.Port = envInt("CORE_TEST_PSQL_PORT", 15433)
+	cfg.Psql.Port = envInt("CORE_TEST_PSQL_PORT", 15434)
 	cfg.Psql.User = envString("CORE_TEST_PSQL_USER", "postgres")
 	cfg.Psql.Password = envString("CORE_TEST_PSQL_PASSWORD", "postgres")
 	cfg.Psql.DBName = envString("CORE_TEST_PSQL_DBNAME", "controlplane")
