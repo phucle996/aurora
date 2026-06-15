@@ -882,7 +882,9 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 	}
 
 	// --- BƯỚC 2: PHÂN GIẢI MÃ PHÂN VÙNG THÀNH UUID QUA L1 CACHE REGISTRY ---
-	var resolvedZoneID string
+	// [BUG FIX]: Khởi tạo mặc định là "global" thay vì chuỗi rỗng để đồng bộ với AdminLogin.
+	// Nếu để rỗng, middleware ZoneAuth sẽ nhận diện sai Admin thành User thường và trả 403.
+	resolvedZoneID := "global"
 	if !strings.EqualFold(zoneCode, "global") {
 		// Gọi L1 cache để phân giải zone_code -> zone_id (UUID)
 		val, err := s.cacheEngine.GetOrLoad(ctx, "zone_by_code", zoneCode)
@@ -1059,7 +1061,8 @@ return 1
 	}
 
 	adminAPITokenNew, signErr := security.SignWithSecret(security.Claims{
-		Subject:   "admin",
+		// [BUG FIX]: Phải dùng "sre" để middleware ZoneAuth nhận diện đúng vai trò Admin (đồng bộ với AdminLogin).
+		Subject:   "sre",
 		AccessKey: accessKeyNew,
 		TokenID:   tokenJTINewUUID.String(),
 		TokenUse:  "admin_api",

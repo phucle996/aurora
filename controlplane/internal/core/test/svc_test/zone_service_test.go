@@ -35,7 +35,7 @@ func (f *fakeZoneRepo) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCat
 func (f *fakeZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
 	return nil
 }
-func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) error {
 	if f.zone != nil && f.zone.ID == id {
 		// Verify that the current status is allowed before updating
 		allowed := false
@@ -46,12 +46,12 @@ func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 			}
 		}
 		if !allowed {
-			return nil, coreErrorx.ErrZoneInvalidTransition
+			return coreErrorx.ErrZoneInvalidTransition
 		}
 		f.zone.Status = status
-		return f.zone, nil
+		return nil
 	}
-	return nil, coreErrorx.ErrZoneNotFound
+	return coreErrorx.ErrZoneNotFound
 }
 func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
 	if f.zone != nil && f.zone.ID == id {

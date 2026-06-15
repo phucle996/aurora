@@ -144,7 +144,7 @@ func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*cor
 }
 
 // UpdateZoneStatus chuyển trạng thái zone.
-func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, toStatus coreEntity.ZoneStatus) error {
 	// allowed quy định bản đồ chuyển đổi trạng thái hợp lệ (State Machine Transitions).
 	// Key: Trạng thái đích (toStatus) - Value: Danh sách các trạng thái cũ được phép chuyển đổi sang trạng thái đích.
 	allowed := map[coreEntity.ZoneStatus][]coreEntity.ZoneStatus{
@@ -161,9 +161,9 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	}
 
 	allowedOld := append(allowed[toStatus], toStatus)
-	updatedZone, err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
+	err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Đồng bộ dọn dẹp RAM L1 cache cục bộ sử dụng key chuẩn "zone_catalog" và "zone_status_by_id"
@@ -192,7 +192,7 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		}
 	}()
 
-	return updatedZone, nil
+	return nil
 }
 
 // DeleteZone xóa zone khi đủ 3 preconditions.

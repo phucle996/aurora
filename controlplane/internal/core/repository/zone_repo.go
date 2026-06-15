@@ -99,20 +99,16 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		`, schema),
 		updateZoneStatusQuery: fmt.Sprintf(`
 			WITH target AS (
-				SELECT code, name, status, created_at, updated_at FROM %s.zones WHERE id = $1
+				SELECT 1 FROM %s.zones WHERE id = $1
 			), updated AS (
 				UPDATE %s.zones
 				SET status = $2, updated_at = now()
 				WHERE id = $1 AND status = ANY($3)
-				RETURNING code, name, created_at, updated_at
+				RETURNING 1
 			)
 			SELECT 
-				(SELECT COUNT(*) FROM target) AS exists,
-				(SELECT COUNT(*) FROM updated) AS updated,
-				COALESCE((SELECT code FROM target), '') AS code,
-				COALESCE((SELECT name FROM target), '') AS name,
-				COALESCE((SELECT created_at FROM target), now()) AS created_at,
-				COALESCE((SELECT updated_at FROM updated), now()) AS updated_at
+				EXISTS(SELECT 1 FROM target) AS exists,
+				EXISTS(SELECT 1 FROM updated) AS updated
 		`, schema, schema),
 		deleteZoneQuery: fmt.Sprintf(`
 			WITH target AS (
@@ -319,38 +315,30 @@ func (r *ZoneRepoImpl) GetZoneIDByCode(ctx context.Context, code string) (uuid.U
 }
 
 // UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
-func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
+func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) error {
 	statusStrings := make([]string, len(allowedOld))
 	for i, s := range allowedOld {
 		statusStrings[i] = string(s)
 	}
 
-	var exists int
-	var updated int
-	var code string
-	var name string
-	var createdAt time.Time
-	var updatedAt time.Time
+	var exists bool
+	var updated bool
+	// Thực hiện truy vấn kiểm tra sự tồn tại và cập nhật trạng thái theo State Machine.
 	err := r.db.QueryRow(ctx, r.updateZoneStatusQuery, id, string(status), statusStrings).Scan(
-		&exists, &updated, &code, &name, &createdAt, &updatedAt,
+		&exists, &updated,
 	)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if exists == 0 {
-		return nil, coreTaxonomy.ErrZoneNotFound
+	// Trả lỗi nếu bản ghi không tồn tại.
+	if !exists {
+		return coreTaxonomy.ErrZoneNotFound
 	}
-	if updated == 0 {
-		return nil, coreTaxonomy.ErrZoneInvalidTransition
+	// Trả lỗi nếu quá trình chuyển đổi trạng thái không hợp lệ.
+	if !updated {
+		return coreTaxonomy.ErrZoneInvalidTransition
 	}
-	return &coreEntity.Zone{
-		ID:        id,
-		Code:      code,
-		Name:      name,
-		Status:    status,
-		CreatedAt: &createdAt,
-		UpdatedAt: &updatedAt,
-	}, nil
+	return nil
 }
 
 // DeleteZone xóa Zone khỏi cơ sở dữ liệu (hard delete).

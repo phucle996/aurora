@@ -39,8 +39,8 @@ func (s *zoneServiceStub) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (
 func (s *zoneServiceStub) CreateZone(ctx context.Context, input coreEntity.CreateZoneInput) error {
 	return nil
 }
-func (s *zoneServiceStub) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, status coreEntity.ZoneStatus) (*coreEntity.Zone, error) {
-	return &coreEntity.Zone{}, nil
+func (s *zoneServiceStub) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, status coreEntity.ZoneStatus) error {
+	return nil
 }
 func (s *zoneServiceStub) DeleteZone(ctx context.Context, zoneID uuid.UUID) error { return nil }
 func (s *zoneServiceStub) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {

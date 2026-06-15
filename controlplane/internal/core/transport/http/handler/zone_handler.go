@@ -315,7 +315,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	zone, err := h.zoneSvc.UpdateZoneStatus(ctx, request.ZoneID, toStatus)
+	err := h.zoneSvc.UpdateZoneStatus(ctx, request.ZoneID, toStatus)
 	if err != nil {
 		switch {
 		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
@@ -330,14 +330,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondSuccess(c, gin.H{
-		"id":         zone.ID,
-		"code":       zone.Code,
-		"name":       zone.Name,
-		"status":     string(zone.Status),
-		"created_at": zone.CreatedAt,
-		"updated_at": zone.UpdatedAt,
-	}, "zone status updated")
+	apires.RespondSuccess(c, nil, "zone status updated")
 }
 
 // DeleteZone godoc
