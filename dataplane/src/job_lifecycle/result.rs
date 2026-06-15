@@ -66,13 +66,9 @@ impl JobExecutionResult {
                 message: res.message,
             },
             Ok(Err(e)) => {
+                // Do chúng ta đã rút gọn ExecutorError chỉ còn variant ExecutionFailed để xóa dead code,
+                // phần match lỗi ở đây được đơn giản hóa để chỉ ánh xạ duy nhất lỗi này về Controlplane.
                 let (code, msg) = match e {
-                    crate::executor::ExecutorError::IdempotencyViolation(m) => {
-                        (Some("IDEMPOTENCY_VIOLATION".to_string()), m)
-                    }
-                    crate::executor::ExecutorError::DeadlineExceeded(m) => {
-                        (Some("DEADLINE_EXCEEDED".to_string()), m)
-                    }
                     crate::executor::ExecutorError::ExecutionFailed(m) => {
                         (Some("EXECUTION_FAILED".to_string()), m)
                     }
@@ -134,7 +130,12 @@ impl JobResultReporter {
             .arg(&payload_str)
             .query_async(&mut conn)
             .await
-            .map_err(|e| format!("Failed to XADD result to stream '{}': {}", DEFAULT_RESULT_STREAM, e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to XADD result to stream '{}': {}",
+                    DEFAULT_RESULT_STREAM, e
+                )
+            })?;
 
         crate::observability::logger::Logger::sys_info(
             "job.result",

@@ -66,7 +66,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 3) Làm mới Token (Refresh): Yêu cầu định danh qua Access Guard & Rate Limit
 	router.POST("/api/v1/auth/refresh",
 		middleware.Access(),
-		middleware.UserZoneAuth(),
+		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/refresh"),
 		module.RefreshTokenHandler.Refresh,
 	)
@@ -127,7 +127,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 11) Lấy thông tin phiên làm việc hiện tại của Admin: Bảo vệ bởi Admin API Key
 	router.GET("/admin/auth/session",
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/session"),
 		module.AdminAuthHandler.Session,
 	)
@@ -148,7 +148,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			middleware.WithInjectAccessKey(),
 			middleware.WithInjectAccessSecret(),
 		),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/refresh"),
 		module.AdminAuthHandler.Refresh,
 	)

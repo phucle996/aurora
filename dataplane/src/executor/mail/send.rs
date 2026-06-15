@@ -1,5 +1,6 @@
 use crate::executor::{Executor, ExecutorError, ExecutionResult};
-use crate::job_receiver::message::JobPayload;
+// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
+use crate::job_lifecycle::message::JobPayload;
 use async_trait::async_trait;
 
 /// ============================================================================
@@ -45,9 +46,8 @@ impl Executor for MailExecutor {
         //   - Thực thi lệnh gọi SMTP Client với cơ chế Timeout chặt chẽ.
         //   - Bắt và xử lý các lỗi mã trạng thái HTTP/SMTP để chuyển đổi thành ExecutorError hợp lệ.
         
+        // Khởi tạo ExecutionResult đã tinh gọn, chỉ giữ lại trường message mô tả chi tiết kết quả.
         Ok(ExecutionResult {
-            success: true,
-            return_code: "SUCCESS".to_string(),
             message: "Mail: Transactional email successfully delivered to mail server queue".to_string(),
         })
     }

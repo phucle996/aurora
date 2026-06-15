@@ -5,9 +5,9 @@ mod bootstrap;
 mod config;
 mod executor;
 mod infra;
-mod job_receiver;
+mod job_lifecycle;
 mod observability;
-mod policyengine;
+// Đã loại bỏ module policyengine
 mod workerpool;
 
 use crate::observability::logger::Logger;
@@ -39,7 +39,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 5. Gracefully shutdown the container & release resources
     app.stop().await;
-    Logger::sys_info("system.shutdown", "Shutdown process completed. Exiting Dataplane process safely.");
+    Logger::sys_info(
+        "system.shutdown",
+        "Shutdown process completed. Exiting Dataplane process safely.",
+    );
 
     Ok(())
 }

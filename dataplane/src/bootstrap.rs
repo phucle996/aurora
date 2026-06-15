@@ -1,16 +1,13 @@
 use dotenvy::dotenv;
-use std::env;
 use std::error::Error;
 use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
-use crate::policyengine::engine::PolicyEngine;
-use crate::policyengine::types::PolicySet;
+// Đã loại bỏ PolicyEngine để đơn giản hóa kiến trúc Dataplane
 use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 
 /// ============================================================================
@@ -33,7 +30,7 @@ pub struct BootstrapResult {
     pub config: Arc<Config>,
     pub redis_job: Arc<RedisClientManager>,
     pub redis_internal_zone: Arc<RedisClientManager>,
-    pub policy_engine: Arc<PolicyEngine>,
+    // Đã loại bỏ trường policy_engine trong BootstrapResult
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub worker_signal_rx: mpsc::Receiver<WorkerSignal>,
 }
@@ -100,58 +97,10 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         }
     };
 
-    // 7. Load and Parse Initial YAML Policy file
-    // Đường dẫn ưu tiên theo thứ tự:
-    //   1. Biến môi trường POLICY_FILE (được set bởi Docker/K8s volume mount).
-    //   2. config/policy.yaml (fallback cho dev local không qua container).
-    let policy_path =
-        PathBuf::from(env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string()));
-    let initial_yaml = match std::fs::read_to_string(&policy_path) {
-        Ok(s) => s,
-        Err(err) => {
-            Logger::sys_error(
-                "system.bootstrap",
-                &format!(
-                    "CRITICAL: Failed to read initial policy file at {:?}",
-                    policy_path
-                ),
-                &err.to_string(),
-            );
-            std::io::stdout().flush().ok();
-            std::io::stderr().flush().ok();
-            std::process::exit(1);
-        }
-    };
+    // Đã loại bỏ hoàn toàn phần đọc file policy.yaml và khởi tạo PolicyEngine ở đây.
+    // max_workers sẽ được quản lý tĩnh qua biến môi trường nạp từ Config.
 
-    let mut initial_policy: PolicySet = match serde_yaml::from_str(&initial_yaml) {
-        Ok(p) => p,
-        Err(err) => {
-            Logger::sys_error(
-                "system.bootstrap",
-                "CRITICAL: Failed to parse initial YAML policy file",
-                &err.to_string(),
-            );
-            std::io::stdout().flush().ok();
-            std::io::stderr().flush().ok();
-            std::process::exit(1);
-        }
-    };
-
-    // Calculate dynamic checksum on bootstrap
-    initial_policy.checksum_sha = PolicySet::calculate_checksum(&initial_yaml);
-
-    // 8. Instantiate PolicyEngine in-memory lock-free snapshot manager
-    let policy_engine = Arc::new(PolicyEngine::new(initial_policy));
-    let active_policy = policy_engine.current();
-    Logger::sys_info(
-        "system.bootstrap",
-        &format!(
-            "Policy Engine initialized successfully. Active policy version: {}, checksum: {}",
-            active_policy.version, active_policy.checksum_sha
-        ),
-    );
-
-    // 9. Initialize Worker Pool Lifecycle Manager
+    // 8. Khởi tạo Worker Pool Lifecycle Manager
     let (worker_pool, worker_signal_rx) = WorkerLifecycleManager::new();
     let worker_pool = Arc::new(worker_pool);
 
@@ -159,7 +108,6 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         config: Arc::new(cfg),
         redis_job: Arc::new(redis_job),
         redis_internal_zone: Arc::new(redis_internal_zone),
-        policy_engine,
         worker_pool,
         worker_signal_rx,
     })

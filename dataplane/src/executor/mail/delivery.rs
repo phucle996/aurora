@@ -1,5 +1,6 @@
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::job_receiver::message::JobPayload;
+// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
+use crate::job_lifecycle::message::JobPayload;
 use crate::observability::logger::Logger;
 use std::sync::Arc;
 

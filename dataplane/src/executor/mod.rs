@@ -1,7 +1,8 @@
 pub mod hypervisor;
 pub mod mail;
 
-use crate::job_receiver::message::JobPayload;
+// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
+use crate::job_lifecycle::message::JobPayload;
 use async_trait::async_trait;
 
 /// ============================================================================
@@ -30,24 +31,20 @@ use async_trait::async_trait;
 ///
 #[derive(Debug)]
 pub enum ExecutorError {
-    /// Lỗi xảy ra khi phát hiện Job này đã từng được thực thi thành công trước đó (Trùng lặp khóa).
-    IdempotencyViolation(String),
-
-    /// Lỗi xảy ra khi tác vụ xử lý vượt quá thời gian timeout quy định bởi chính sách hệ thống.
-    /// Giúp giải phóng luồng xử lý bị treo trên production.
-    DeadlineExceeded(String),
-
+    // Để tinh giản mã nguồn và loại bỏ cảnh báo biên dịch (dead_code), chúng ta chỉ giữ lại lỗi ExecutionFailed.
+    // IdempotencyViolation và DeadlineExceeded tạm thời được lược bỏ vì:
+    // 1. Logic Idempotency được xử lý thông qua database filter và silent success (trả về Ok).
+    // 2. Deadline được xử lý trực tiếp bởi lớp bảo vệ Watchdog (Timeout) ở tầng ngoài.
+    
     /// Các lỗi phát sinh trong quá trình tương tác API hoặc lỗi vật lý của máy chủ ảo hóa.
     ExecutionFailed(String),
 }
 
 /// Cấu trúc kết quả trả về sau khi thực thi nghiệp vụ hoàn tất.
 pub struct ExecutionResult {
-    /// Đánh dấu tác vụ hoàn thành tốt hay thất bại.
-    pub success: bool,
-
-    /// Mã trạng thái trả về để báo cáo lên Controlplane. Ví dụ: "SUCCESS" | "FAILED".
-    pub return_code: String,
+    // Loại bỏ các trường 'success' và 'return_code' vì chúng không được sử dụng ở tầng truyền kết quả
+    // qua Redis Stream lên Controlplane. Việc hardcode "SUCCEEDED" / "FAILED" trên tầng cao giúp
+    // đơn giản hóa và tăng tính an toàn dữ liệu.
 
     /// Chuỗi thông báo kỹ thuật mô tả kết quả xử lý.
     pub message: String,

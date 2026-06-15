@@ -1,7 +1,8 @@
 use crate::infra::redis::RedisClientManager;
-use crate::job_receiver::consumer::JobConsumer;
-use crate::job_receiver::message::JobPayload;
-use crate::job_receiver::result::{JobExecutionResult, JobResultReporter};
+// Sử dụng các module nội bộ từ job_lifecycle mới đổi tên
+use crate::job_lifecycle::consumer::JobConsumer;
+use crate::job_lifecycle::message::JobPayload;
+use crate::job_lifecycle::result::{JobExecutionResult, JobResultReporter};
 use crate::observability::logger::Logger;
 use crate::workerpool::lifecycle::WorkerLifecycleManager;
 use std::sync::atomic::{AtomicUsize, Ordering};

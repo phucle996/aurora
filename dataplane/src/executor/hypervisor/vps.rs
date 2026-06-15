@@ -1,5 +1,6 @@
 use crate::executor::{Executor, ExecutorError, ExecutionResult};
-use crate::job_receiver::message::JobPayload;
+// Sử dụng JobPayload từ module job_lifecycle mới đổi tên
+use crate::job_lifecycle::message::JobPayload;
 use async_trait::async_trait;
 
 /// ============================================================================
@@ -52,9 +53,8 @@ impl Executor for VpsExecutor {
         //             tokio::time::timeout(Duration::from_secs(120), self.invoke_libvirt_api(...))
         //   - Step 3: Ghi nhận kết quả SQLite sau khi hoàn thành.
         
+        // Khởi tạo ExecutionResult đã tinh gọn, chỉ giữ lại trường message để tối ưu luồng truyền tin.
         Ok(ExecutionResult {
-            success: true,
-            return_code: "SUCCESS".to_string(),
             message: format!("Hypervisor: VPS orchestration task successfully completed for resource {}", payload.resource_id),
         })
     }

@@ -4,9 +4,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use crate::job_receiver::message::JobPayload;
-use crate::job_receiver::admission::AdmissionController;
-use crate::policyengine::engine::PolicyEngine;
+// Sử dụng các module message và admission từ thư mục job_lifecycle mới đổi tên
+use crate::job_lifecycle::message::JobPayload;
+use crate::job_lifecycle::admission::AdmissionController;
+// Đã loại bỏ import PolicyEngine
 use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
 
@@ -31,7 +32,6 @@ impl JobConsumer {
     /// Bắt đầu vòng lặp đọc dữ liệu bất đồng bộ từ Redis Stream (Ingestion loop).
     pub async fn start_ingestion(
         config: Arc<crate::config::Config>,
-        policy_engine: Arc<PolicyEngine>,
         redis_job: Arc<RedisClientManager>,
         redis_internal_zone: Arc<RedisClientManager>,
         worker_id: usize,
@@ -53,13 +53,8 @@ impl JobConsumer {
         let mut admission_controller = AdmissionController::new();
 
         loop {
-            // 1. Trích xuất giới hạn max_workers động từ Policy Engine cấu hình
-            let max_workers = policy_engine
-                .current()
-                .policies
-                .get("max_workers")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(100) as usize;
+            // 1. Trích xuất giới hạn max_workers tĩnh trực tiếp từ Config (đã lược bỏ PolicyEngine)
+            let max_workers = config.max_workers;
 
             // 2. Lấy số lượng job hiện hành và thực hiện tính toán qua AdmissionController
             let current_active = active_jobs.load(Ordering::SeqCst);
@@ -174,8 +169,8 @@ impl JobConsumer {
                 // Tăng số lượng job đang xử lý
                 active_jobs.fetch_add(1, Ordering::SeqCst);
 
-                // Giao việc cho Orchestrated Runner xử lý độc lập chạy ngầm (non-blocking)
-                crate::job_receiver::runner::JobRunner::run_job(
+                // Giao việc cho Orchestrated Runner thuộc module job_lifecycle mới đổi tên để xử lý chạy ngầm (non-blocking)
+                crate::job_lifecycle::runner::JobRunner::run_job(
                     payload,
                     worker_pool.clone(),
                     redis_job.clone(),

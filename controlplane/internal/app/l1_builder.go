@@ -12,6 +12,7 @@ import (
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 
+	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -57,6 +58,19 @@ func RegisterL1Loaders(
 	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
 		zoneID, err := modules.Core.ZoneRepository.GetZoneIDByCode(ctx, param)
 		return zoneID.String(), err
+	})
+
+	// 3b. Đăng ký tĩnh loader cho "zone_status_by_id" để kiểm tra trạng thái Zone theo thời gian thực (real-time status check)
+	cacheengine.Register(registry, "zone_status_by_id", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
+		zoneUUID, err := uuid.Parse(param)
+		if err != nil {
+			return "", err
+		}
+		zone, err := modules.Core.ZoneRepository.GetZoneByID(ctx, zoneUUID)
+		if err != nil {
+			return "", err
+		}
+		return string(zone.Status), nil
 	})
 
 	// 4. Đăng ký tĩnh loader cho danh sách "zone_catalog" phục vụ dropdown/select UI

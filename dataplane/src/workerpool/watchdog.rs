@@ -3,7 +3,8 @@ use std::sync::{Arc, RwLock};
 use tokio::time::{sleep, Duration, Instant};
 use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
-use crate::job_receiver::result::{JobExecutionResult, JobResultReporter};
+// Import từ module job_lifecycle mới đổi tên để báo cáo kết quả và quản lý cấu trúc báo cáo.
+use crate::job_lifecycle::result::{JobExecutionResult, JobResultReporter};
 
 /// ============================================================================
 /// 📂 MODULE: workerpool/watchdog.rs - WATCHDOG GIÁM SÁT & CƯỠNG CHẾ KHÓA LEASE

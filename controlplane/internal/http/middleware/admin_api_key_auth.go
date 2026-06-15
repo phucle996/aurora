@@ -275,8 +275,10 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		goCtx := c.Request.Context()
 		c.Set(constant.ContextKeyUserID, claims.Subject)
 		c.Set(constant.ContextKeyLevel, claims.Level)
+		c.Set(constant.ContextKeyAdminZoneID, claims.ZoneID)
 		goCtx = context.WithValue(goCtx, constant.ContextKeyUserID, claims.Subject)
 		goCtx = context.WithValue(goCtx, constant.ContextKeyLevel, claims.Level)
+		goCtx = context.WithValue(goCtx, constant.ContextKeyAdminZoneID, claims.ZoneID)
 
 		if options.injectAccessKey {
 			c.Set(constant.ContextKeyAdminAccessKey, accessKey)

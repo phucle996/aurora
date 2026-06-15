@@ -1,5 +1,5 @@
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::job_receiver::message::JobPayload;
+use crate::job_lifecycle::message::JobPayload;
 use async_trait::async_trait;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{
@@ -71,9 +71,13 @@ impl Executor for SmtpTestExecutor {
         // Bước 1: Giải mã cấu hình SMTP từ Protobuf nhị phân (Lazy Deserialization)
         // ----------------------------------------------------------------------
         // Chỉ giải mã ngay trước khi thực thi để giảm diện tích bộ nhớ nhạy cảm.
-        let config = mail_proto::SmtpTestConfig::decode(payload.payload.as_slice()).map_err(|e| {
-            ExecutorError::ExecutionFailed(format!("Failed to decode SMTP config Protobuf: {}", e))
-        })?;
+        let config =
+            mail_proto::SmtpTestConfig::decode(payload.payload.as_slice()).map_err(|e| {
+                ExecutorError::ExecutionFailed(format!(
+                    "Failed to decode SMTP config Protobuf: {}",
+                    e
+                ))
+            })?;
 
         // ----------------------------------------------------------------------
         // Bước 2: Thiết lập cấu hình bảo mật TLS nếu cần thiết
@@ -185,7 +189,10 @@ impl Executor for SmtpTestExecutor {
 
         // Nạp thông tin đăng nhập SMTP Credentials nếu được cấu hình
         if !config.username.is_empty() && !config.password.is_empty() {
-            transport_builder = transport_builder.credentials(Credentials::new(config.username.clone(), config.password.clone()));
+            transport_builder = transport_builder.credentials(Credentials::new(
+                config.username.clone(),
+                config.password.clone(),
+            ));
         }
 
         let transport = transport_builder.build();
@@ -203,9 +210,8 @@ impl Executor for SmtpTestExecutor {
                         payload.job_id
                     ),
                 );
+                // Khởi tạo ExecutionResult đã tinh gọn, chỉ giữ lại trường message mô tả chi tiết kết quả.
                 Ok(ExecutionResult {
-                    success: true,
-                    return_code: "SUCCEEDED".to_string(),
                     message: "SMTP handshake and/or credentials validation succeeded".to_string(),
                 })
             }

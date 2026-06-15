@@ -13,14 +13,12 @@ sequenceDiagram
     autonumber
     participant RDS as Redis Streams (jobs:<zone_id>)
     participant JC as Ingestion Loop (JobConsumer)
-    participant PE as Policy Engine (Local Snapshot)
     participant AC as Admission Controller
     participant LZ as Local Cache (redis_internal_zone)
     participant JR as Job Runner (JobRunner)
 
     loop Concurrency & Admission Evaluation
-        JC->>PE: Query dynamic max_workers limit
-        PE-->>JC: Return limit (e.g. max_workers = 100)
+        JC->>JC: Query static max_workers config limit
         JC->>AC: Evaluate load (evaluate(active_jobs, max_workers))
         alt Circuit Broken (active_jobs >= max_workers)
             Note over JC: Pause pulling from Redis Stream<br/>Back off & sleep for 500ms
@@ -52,7 +50,7 @@ sequenceDiagram
 
 ## 📥 How Jobs are Received (Job Ingestion Loop)
 
-- **Entrypoint File**: `dataplane/src/job_receiver/consumer.rs`
+- **Entrypoint File**: `dataplane/src/job_lifecycle/consumer.rs`
 - **Caller/Function**: `JobConsumer::start_ingestion` (Starts at Line 32)
 - **Redis Query Callsite**: `dataplane/src/infra/redis/query.rs` -> `fetch_next_stream_message` (Starts at Line 18)
 
@@ -60,24 +58,13 @@ sequenceDiagram
 
 The main ingestion engine runs a continuous, async-blocking loop polling the zone-specific Redis Stream `jobs:<zone_id>`. This ingestion loop runs within an independent worker spawned dynamically as a Tokio green task by the `WorkerLifecycleManager`.
 
-To facilitate automated scaling, the orchestrator polls real-time queue metrics (including Redis stream lag, message latency, and connection states) and feeds them into the `AutoScaleEngine`. Based on these metrics, the pool dynamically provisions additional workers (scale-up) or terminates active loops (scale-down) up to the limit configured by the Policy Engine. If no new messages are present, the worker dynamically paces itself before retrying.
-
----
-
-## ⚙️ How Policy Engine Limits are Evaluated
-
-- **Entrypoint File**: `dataplane/src/policyengine/engine.rs`
-- **Caller/Function**: `PolicyEngine::current` (Starts at Line 63)
-
-### Description
-
-At the start of each ingestion loop cycle, the consumer retrieves a dynamic snapshot of the active cluster policies (such as the `max_workers` concurrent task capacity ceiling) via the local `PolicyEngine`. This allows the instance to adapt instantly to load-shedding limits without requiring a restart.
+To facilitate automated scaling, the orchestrator polls real-time queue metrics (including Redis stream lag, message latency, and connection states) and feeds them into the `AutoScaleEngine`. Based on these metrics, the pool dynamically provisions additional workers (scale-up) or terminates active loops (scale-down) up to the limit configured by environment variables (`max_workers`). If no new messages are present, the worker dynamically paces itself before retrying.
 
 ---
 
 ## 🛡️ How Admission Control Limits Overloads
 
-- **Entrypoint File**: `dataplane/src/job_receiver/admission.rs`
+- **Entrypoint File**: `dataplane/src/job_lifecycle/admission.rs`
 - **Caller/Function**: `AdmissionController::evaluate` (Starts at Line 35)
 
 ### Description
@@ -143,8 +130,8 @@ To prevent lock leaks and resource leaks when a task finishes, is aborted, or pa
 
 ## 🚀 How Jobs are Executed & Cleaned Up
 
-- **Task Spawner Callsite**: `dataplane/src/job_receiver/runner.rs` -> `JobRunner::run_job` (Starts at Line 37)
-- **RAII Cleanup Guard**: `dataplane/src/job_receiver/runner.rs` -> `ExecutionCleanupGuard::drop` (Starts at Line 19)
+- **Task Spawner Callsite**: `dataplane/src/job_lifecycle/runner.rs` -> `JobRunner::run_job` (Starts at Line 37)
+- **RAII Cleanup Guard**: `dataplane/src/job_lifecycle/runner.rs` -> `ExecutionCleanupGuard::drop` (Starts at Line 19)
 
 ### Description
 
@@ -163,30 +150,25 @@ The Dataplane's high-performance, resilient runtime is built using several core 
 
 ### 1. Job Ingestion Loop: Reactive Pull / Event Loop Pattern
 
-- **Implementation**: `dataplane/src/job_receiver/consumer.rs`
+- **Implementation**: `dataplane/src/job_lifecycle/consumer.rs`
 - **Pattern**: An asynchronous, non-blocking polling loop subscribing to Redis Streams via `XREADGROUP`. It operates on a **Pull Model** to allow backpressure propagation where downstream workers decide when they are ready to process more items, rather than having tasks pushed to them blindly.
 
-### 2. Policy Engine: Thread-Safe State Snapshot / Observer Pattern
+### 2. Admission Control: Circuit Breaker with Hysteresis & Rate Pacing
 
-- **Implementation**: `dataplane/src/policyengine/engine.rs`
-- **Pattern**: Employs an observer-cache pattern with atomic snapshot swaps. To ensure zero-lock reads in the fast path of the worker threads, the `PolicyEngine` holds a local cache of limits (e.g. `max_workers`). Changes are pushed to the engine and swapped atomically using thread-safe pointers (`Arc`), preventing database or lock contention during limit checks.
-
-### 3. Admission Control: Circuit Breaker with Hysteresis & Rate Pacing
-
-- **Implementation**: `dataplane/src/job_receiver/admission.rs`
+- **Implementation**: `dataplane/src/job_lifecycle/admission.rs`
 - **Pattern**: Implements a **Circuit Breaker** with hysteresis bounds to shield the node from cascading resource failures. If local CPU, RAM, or worker thread usage exceeds `80%`, the loop cuts ingestion (OPEN state). It stays open until usage drops below `50%` (CLOSED state). Additionally, near-capacity workloads trigger a linear **Rate Pacing Delay** to prevent thundering herd spikes.
 
-### 4. Worker Pool & Auto Scale: Dynamic Task Spawning & Scaler Strategy
+### 3. Worker Pool & Auto Scale: Dynamic Task Spawning & Scaler Strategy
 
 - **Implementation**: `dataplane/src/workerpool/lifecycle.rs` & `dataplane/src/workerpool/auto_scale.rs`
 - **Pattern**: Instead of managing a custom operating system thread-pool with heavy mutex locks, this implementation uses a **Tokio task-allocation pattern** where logical workers map directly to lightweight Tokio green tasks. The `WorkerLifecycleManager` manages graceful shutdowns via `CancellationToken` and tracking wrappers. The `AutoScaleEngine` applies a **Strategy Pattern** to scale active loops up or down based on lag and latency metrics, with a hard resource safeguard capping scaling at 90%.
 
-### 5. Distributed Lock and Lease: Watchdog-driven Lease & Execution Timeout Control Pattern
+### 4. Distributed Lock and Lease: Watchdog-driven Lease & Execution Timeout Control Pattern
 
-- **Implementation**: `dataplane/src/infra/redis/query.rs`, `dataplane/src/workerpool/watchdog.rs` & `dataplane/src/job_receiver/runner.rs`
+- **Implementation**: `dataplane/src/infra/redis/query.rs`, `dataplane/src/workerpool/watchdog.rs` & `dataplane/src/job_lifecycle/runner.rs`
 - **Pattern**: Implements a **Lease Lock Pattern** using Redis key-value isolation (`SETNX` with TTL) to guarantee exactly-once processing in HA clusters. To prevent ghost-job duplicates and hung worker execution, the node maintains a thread-safe `ActiveLockRegistry` containing active task start times, abort handles, and execution limits, monitored by a background **Watchdog loop**. Every 10 seconds, the watchdog checks all active locks. If the elapsed execution time is below the task-specific `idle` timeout, the watchdog uses **Redis Pipelining** to batch-extend the lease TTL on Redis by 30 seconds. If a task exceeds its timeout limit, the watchdog triggers proactive task cancellation via its `AbortHandle`, stops extending the lease, and reports an `EXECUTION_TIMEOUT` failure to the Controlplane.
 
-### 6. Job Dispatch Workload: Command / Strategy Pattern
+### 5. Job Dispatch Workload: Command / Strategy Pattern
 
-- **Implementation**: `dataplane/src/job_receiver/consumer.rs`
+- **Implementation**: `dataplane/src/job_lifecycle/consumer.rs`
 - **Pattern**: Utilizes a dynamic **Command Dispatcher** pattern. The ingestion loop parses incoming jobs by their dot-separated namespace/topic prefix (e.g., routing `mail.test_connection` to `SmtpTestExecutor`). The runner resolves these namespaces to individual execution strategies, decoupling the ingestion loop framework from concrete job business logic.

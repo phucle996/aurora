@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -7,9 +6,7 @@ use crate::bootstrap::BootstrapResult;
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
-use crate::policyengine::adapter::YamlFileAdapter;
-use crate::policyengine::engine::PolicyEngine;
-use crate::policyengine::types::PolicySet;
+// Đã lược bỏ các import liên quan đến policyengine
 use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 
 /// ============================================================================
@@ -32,7 +29,7 @@ pub struct AppContainer {
     pub config: Arc<Config>,
     pub redis_job: Arc<RedisClientManager>,
     pub redis_internal_zone: Arc<RedisClientManager>,
-    pub policy_engine: Arc<PolicyEngine>,
+    // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
 }
@@ -45,7 +42,6 @@ impl AppContainer {
                 config: boot.config,
                 redis_job: boot.redis_job,
                 redis_internal_zone: boot.redis_internal_zone,
-                policy_engine: boot.policy_engine,
                 worker_pool: boot.worker_pool,
                 active_lock_registry: Arc::new(
                     crate::workerpool::watchdog::ActiveLockRegistry::new(),
@@ -86,7 +82,6 @@ impl AppContainer {
             .spawn_worker(
                 1,
                 self.config.clone(),
-                self.policy_engine.clone(),
                 self.redis_job.clone(),
                 self.redis_internal_zone.clone(),
                 self.active_lock_registry.clone(),
@@ -95,7 +90,6 @@ impl AppContainer {
 
         // 0d. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
         let config_scale = self.config.clone();
-        let policy_engine_scale = self.policy_engine.clone();
         let worker_pool_scale = self.worker_pool.clone();
         let redis_job_scale = self.redis_job.clone();
         let redis_internal_zone_scale = self.redis_internal_zone.clone();
@@ -106,13 +100,8 @@ impl AppContainer {
             loop {
                 interval.tick().await;
 
-                // 1. Trích xuất max_workers cấu hình động từ Policy Engine
-                let max_workers = policy_engine_scale
-                    .current()
-                    .policies
-                    .get("max_workers")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(100) as usize;
+                // 1. Trích xuất max_workers cấu hình tĩnh trực tiếp từ Config (Đã lược bỏ PolicyEngine)
+                let max_workers = config_scale.max_workers;
 
                 let auto_scaler = crate::workerpool::auto_scale::AutoScaleEngine::new(max_workers);
 
@@ -174,7 +163,6 @@ impl AppContainer {
                                 .spawn_worker(
                                     i,
                                     config_scale.clone(),
-                                    policy_engine_scale.clone(),
                                     redis_job_scale.clone(),
                                     redis_internal_zone_scale.clone(),
                                     active_lock_registry_scale.clone(),
@@ -214,39 +202,8 @@ impl AppContainer {
             }
         });
 
-        // 2. Kích hoạt Dedicated Policy Watcher Worker thông qua Worker Pool
-        let policy_engine_clone = self.policy_engine.clone();
-        let policy_file =
-            std::env::var("POLICY_FILE").unwrap_or_else(|_| "config/policy.yaml".to_string());
-        let policy_path = PathBuf::from(&policy_file);
-        let adapter = YamlFileAdapter::new(policy_path);
-
-        self.worker_pool
-            .spawn_dedicated_policy_watcher(0, move |token| async move {
-                adapter
-                    .start_watch(token, move || {
-                        let path = PathBuf::from(
-                            std::env::var("POLICY_FILE")
-                                .unwrap_or_else(|_| "config/policy.yaml".to_string()),
-                        );
-                        if let Ok(raw_yaml) = std::fs::read_to_string(&path) {
-                            let checksum = PolicySet::calculate_checksum(&raw_yaml);
-                            if let Ok(mut new_policy) = serde_yaml::from_str::<PolicySet>(&raw_yaml)
-                            {
-                                new_policy.checksum_sha = checksum;
-                                if let Err(err) = policy_engine_clone.swap(new_policy) {
-                                    Logger::sys_warn(
-                                        "policyengine.reload",
-                                        "Failed to swap policy snapshot, keeping Last-Known-Good",
-                                        &err,
-                                    );
-                                }
-                            }
-                        }
-                    })
-                    .await
-            })
-            .await;
+        // 2. Đã loại bỏ hoàn toàn Dedicated Policy Watcher Worker do overengineering.
+        // Hệ thống sẽ sử dụng cấu hình tĩnh max_workers nạp lúc khởi động.
 
         Logger::sys_info(
             "system.bootstrap",

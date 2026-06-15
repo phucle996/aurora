@@ -123,14 +123,14 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/admin/mail/endpoints",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints"),
 		module.EndpointHandler.Create,
 	)
 	router.GET("/admin/mail/endpoints",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints"),
 		module.EndpointHandler.List,
 	)
@@ -138,21 +138,21 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.GET("/admin/mail/endpoints/:id",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/:id"),
 		module.EndpointHandler.Get,
 	)
 	router.PATCH("/admin/mail/endpoints/:id",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/:id"),
 		module.EndpointHandler.Update,
 	)
 	router.DELETE("/admin/mail/endpoints/:id",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/:id"),
 		module.EndpointHandler.Delete,
 	)
@@ -161,7 +161,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/admin/mail/endpoints/:id/test-connect",
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
-		middleware.AdminZoneAuth(),
+		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/:id/test-connect"),
 		module.EndpointHandler.TestConnection,
 	)
@@ -171,7 +171,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.AdminCIDR(),
 		middleware.AdminAPIKeyAuth(),
 		// cái này không chấp nhận zone global , bắt buộc cụ thể trong 1 zone
-		middleware.UserZoneAuth(),
+		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.RateLimiter, "/admin/mail/endpoints/try-connect"),
 		module.EndpointHandler.TryConnect,
 	)

@@ -30,13 +30,15 @@ use tokio_util::sync::CancellationToken;
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
 ///   - Vòng đời và trạng thái hoạt động thực của các luồng tokio (`JoinHandle`).
-///   - Trạng thái cấu hình số lượng worker hiện hành được cung cấp bởi `policyengine`.
+///   - Trạng thái cấu hình số lượng worker hiện hành được cung cấp bởi `Config` thông qua biến môi trường.
 ///
 pub struct WorkerLifecycleManager {
     /// Token gốc dùng để phát tín hiệu dừng đồng loạt cho toàn bộ các worker đang chạy ngầm.
     cancel_token: CancellationToken,
 
     /// Kênh truyền nhận tín hiệu điều khiển trạng thái sống của các worker.
+    // Thêm #[allow(dead_code)] để tránh cảnh báo biên dịch do loại bỏ watcher động.
+    #[allow(dead_code)]
     signal_sender: mpsc::Sender<WorkerSignal>,
 
     /// Registry quản lý CancellationToken của từng Worker đang hoạt động song song.
@@ -47,6 +49,8 @@ pub struct WorkerLifecycleManager {
 }
 
 /// Các loại tín hiệu điều phối vòng đời của worker
+// Thêm #[allow(dead_code)] để duy trì thiết kế mở rộng phục vụ việc tự động hồi sinh worker khi panic trong tương lai.
+#[allow(dead_code)]
 pub enum WorkerSignal {
     /// Báo động khẩn cấp yêu cầu hồi sinh một worker cụ thể theo ID do bị crash/panic
     RestartWorker(usize),
@@ -99,7 +103,6 @@ impl WorkerLifecycleManager {
         self: &Arc<Self>,
         worker_id: usize,
         config: Arc<crate::config::Config>,
-        policy_engine: Arc<crate::policyengine::engine::PolicyEngine>,
         redis_job: Arc<crate::infra::redis::RedisClientManager>,
         redis_internal_zone: Arc<crate::infra::redis::RedisClientManager>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
@@ -126,9 +129,10 @@ impl WorkerLifecycleManager {
                 ),
             );
 
-            crate::job_receiver::consumer::JobConsumer::start_ingestion(
+            // Bắt đầu luồng tiếp nhận job (ingestion loop) thuộc module job_lifecycle.
+            // Đã loại bỏ tham số policy_engine.
+            crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
                 config,
-                policy_engine,
                 redis_job,
                 redis_internal_zone,
                 worker_id,
@@ -169,60 +173,7 @@ impl WorkerLifecycleManager {
         active.keys().cloned().collect()
     }
 
-    /// Cấp phát và khởi chạy một Worker chuyên biệt chuyên trách theo dõi chính sách (Dedicated Watcher Worker).
-    pub async fn spawn_dedicated_policy_watcher<F, Fut>(
-        &self,
-        watcher_id: usize,
-        make_watcher_future: F,
-    ) where
-        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
-    {
-        let token = self.cancel_token.child_token();
-        let tx = self.signal_sender.clone();
-        let token_clone = token.clone();
-        let guard = self.tracker.track();
-
-        tokio::spawn(async move {
-            let _guard = guard; // Giữ guard cho dedicated watcher
-            crate::observability::logger::Logger::sys_info(
-                "worker.lifecycle",
-                &format!(
-                    "Worker Pool: Dedicated Policy Watcher Worker {} started under lifecycle surveillance...",
-                    watcher_id
-                ),
-            );
-
-            // Khởi chạy future thực thi việc watch file/subscribe
-            let watcher_future = make_watcher_future(token_clone);
-
-            tokio::select! {
-                _ = token.cancelled() => {
-                    crate::observability::logger::Logger::sys_info(
-                        "worker.lifecycle",
-                        &format!(
-                            "Worker Pool: Dedicated Policy Watcher Worker {} shutdown gracefully.",
-                            watcher_id
-                        ),
-                    );
-                }
-                res = watcher_future => {
-                    if let Err(err) = res {
-                        crate::observability::logger::Logger::sys_error(
-                            "worker.lifecycle",
-                            &format!(
-                                "Worker Pool ERROR: Dedicated Policy Watcher Worker {} crashed",
-                                watcher_id
-                            ),
-                            &err.to_string(),
-                        );
-                        // Bắn tín hiệu hồi sinh về Lifecycle Manager
-                        let _ = tx.send(WorkerSignal::RestartWorker(watcher_id)).await;
-                    }
-                }
-            }
-        });
-    }
+    // Đã loại bỏ hoàn toàn spawn_dedicated_policy_watcher ở đây do overengineering.
 
     /// Phát tín hiệu dừng đồng loạt cho toàn bộ các worker và đợi toàn bộ hoàn thành (Graceful Shutdown).
     pub async fn shutdown(&self) {

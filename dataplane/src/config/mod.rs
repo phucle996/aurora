@@ -83,6 +83,10 @@ pub struct Config {
 
     /// Cổng HTTP phục vụ cho việc export metrics sang Prometheus (mặc định: 2113)
     pub metrics_port: u16,
+
+    // Cấu hình giới hạn số lượng Worker chạy đồng thời (max concurrency limit).
+    // Được nạp tĩnh qua biến môi trường để tối ưu hóa hiệu năng, loại bỏ overengineering của PolicyEngine.
+    pub max_workers: usize,
 }
 
 impl Config {
@@ -134,6 +138,12 @@ impl Config {
                 .unwrap_or_else(|_| "2113".to_string())
                 .parse::<u16>()
                 .unwrap_or(2113),
+
+            // Nạp max_workers từ biến môi trường MAX_WORKERS, mặc định là 100 nếu không được cấu hình.
+            max_workers: env::var("MAX_WORKERS")
+                .unwrap_or_else(|_| "100".to_string())
+                .parse::<usize>()
+                .unwrap_or(100),
         }
     }
 }

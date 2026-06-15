@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/security"
@@ -17,31 +17,27 @@ import (
 	"github.com/google/uuid"
 )
 
-var (
-	zoneL1RegistryMu sync.RWMutex
-	zoneL1Registry   *cacheengine.CacheRegistry
-)
+var zoneL1Registry atomic.Pointer[cacheengine.CacheRegistry]
 
-// InitZoneAuth khởi tạo dependencies cho zone authentication middleware.
+// InitZoneAuth khởi tạo cache registry hỗ trợ phân giải nhanh thông tin Zone.
 func InitZoneAuth(registry *cacheengine.CacheRegistry) {
-	zoneL1RegistryMu.Lock()
-	zoneL1Registry = registry
-	zoneL1RegistryMu.Unlock()
+	zoneL1Registry.Store(registry)
 }
 
 type zoneIDCtxKey struct{}
 
-// ContextWithZoneID chèn Zone ID vào Go context.
+// ContextWithZoneID chèn Zone ID đã xác thực vào Go context để tầng Service sử dụng.
 func ContextWithZoneID(ctx context.Context, id uuid.UUID) context.Context {
 	return context.WithValue(ctx, zoneIDCtxKey{}, id)
 }
 
-// GetZoneID lấy Zone ID từ Go context.
+// GetZoneID trích xuất Zone ID từ Go context.
 func GetZoneID(ctx context.Context) (uuid.UUID, bool) {
 	id, ok := ctx.Value(zoneIDCtxKey{}).(uuid.UUID)
 	return id, ok
 }
 
+// extractZoneCode lấy mã định danh zone (zone code) từ Cookie của request.
 func extractZoneCode(c *gin.Context) string {
 	var code string
 	if cookieVal, err := c.Cookie(constant.ZoneCodeName); err == nil {
@@ -50,14 +46,15 @@ func extractZoneCode(c *gin.Context) string {
 	return code
 }
 
-// AdminZoneAuth kiểm tra và so khớp zone định danh cho Admin role.
-func AdminZoneAuth() gin.HandlerFunc {
+// ZoneAuth là middleware kiểm soát ranh giới Zone độc lập với vai trò (identity-agnostic).
+// Quyết định cho phép truy cập dựa trên cấu hình yêu cầu của Route (allowGlobal)
+// kết hợp đối chiếu với các ràng buộc bảo mật (claims/constraints) của phiên làm việc.
+func ZoneAuth(allowGlobal bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		const op = "middleware.admin_zone_auth"
+		const op = "middleware.zone_auth"
 
-		zoneL1RegistryMu.RLock()
-		registry := zoneL1Registry
-		zoneL1RegistryMu.RUnlock()
+		// Đọc cache registry an toàn đa luồng không dùng lock (lock-free)
+		registry := zoneL1Registry.Load()
 		if registry == nil {
 			logger.HandlerError(c, op, errors.New("zone l1 registry is not initialized"))
 			apires.RespondServiceUnavailable(c, "zone lookup temporarily unavailable")
@@ -65,32 +62,84 @@ func AdminZoneAuth() gin.HandlerFunc {
 			return
 		}
 
-		// Xác minh zone hiện tại của request dựa trên Cookie zone_code
+		// 1. Xác định mã zone từ request
 		zoneCode := extractZoneCode(c)
 		if zoneCode == "" {
 			zoneCode = "global"
 		}
 
-		tokenZoneID := strings.TrimSpace(c.GetString(constant.ContextKeyAdminZoneID))
+		// 2. Trích xuất vai trò và ràng buộc bảo mật từ session (Admin vs User)
+		var sessionZoneID string
+		var hasSession bool
+		var isAdmin bool
 
+		if userIDVal, exists := c.Get(constant.ContextKeyUserID); exists {
+			if userIDStr, ok := userIDVal.(string); ok && userIDStr == "sre" {
+				isAdmin = true
+				hasSession = true
+				// Đối với Admin, nếu có giới hạn zone trong token thì trích xuất nó
+				if valZoneID, existsZone := c.Get(constant.ContextKeyAdminZoneID); existsZone {
+					if strZoneID, okZone := valZoneID.(string); okZone {
+						sessionZoneID = strings.TrimSpace(strZoneID)
+					}
+				}
+			}
+		}
+
+		// Thử lấy cấu hình User JWT Claims nếu không phải Admin session
+		if !isAdmin {
+			if valClaims, exists := c.Get(constant.ContextKeyJWTClaims); exists {
+				if claims, ok := valClaims.(security.Claims); ok {
+					sessionZoneID = strings.TrimSpace(claims.ZoneID)
+					hasSession = true
+
+					// User session thông thường bắt buộc phải được gán vào 1 Zone cụ thể (không được để trống)
+					if sessionZoneID == "" {
+						logger.HandlerWarn(c, op, errors.New("user claims missing zone ID constraint"), "user zone access forbidden")
+						apires.RespondForbidden(c, "forbidden: user session requires a valid zone constraint")
+						c.Abort()
+						return
+					}
+				}
+			}
+		}
+
+		// Bảo mật an toàn: Nếu không tìm thấy thông tin xác thực nào từ các bước trước, từ chối truy cập
+		if !hasSession {
+			logger.HandlerError(c, op, errors.New("unauthenticated: missing security context for zone verification"))
+			apires.RespondUnauthorized(c, "unauthorized")
+			c.Abort()
+			return
+		}
+
+		// 3. Xử lý kịch bản truy cập Global
 		if strings.EqualFold(zoneCode, "global") {
-			// Nếu session token bị ràng buộc vào một zone cụ thể, không được phép truy cập global.
-			if tokenZoneID != "" {
-				logger.HandlerWarn(c, op, fmt.Errorf("restricted admin token tried to access global"), "admin zone access forbidden")
-				apires.RespondForbidden(c, "forbidden: admin is restricted to a specific zone")
+			// Nếu Endpoint này là Write Path hoặc yêu cầu có Zone cụ thể (allowGlobal = false) -> Từ chối
+			if !allowGlobal {
+				logger.HandlerWarn(c, op, fmt.Errorf("global access rejected for this endpoint"), "")
+				apires.RespondBadRequest(c, "valid zone code is required (global not allowed)")
 				c.Abort()
 				return
 			}
 
-			// Injects vào Go Context (không inject vào Gin Context)
+			// Nếu Endpoint cho phép global:
+			// - Đối với User: Nếu bị giới hạn ở một zone nhất định -> Từ chối truy cập global
+			// - Đối với Admin: Được phép truy cập global bất kể token có mang zoneID hay không (để xem/quản trị toàn cục)
+			if !isAdmin && sessionZoneID != "" {
+				logger.HandlerWarn(c, op, fmt.Errorf("restricted user session tried to access global: session_zone=%s", sessionZoneID), "zone access forbidden")
+				apires.RespondForbidden(c, "forbidden: session is restricted to a specific zone")
+				c.Abort()
+				return
+			}
+
+			// Hợp lệ: Ghi nhận global zone ID (uuid.Nil) vào Go context
 			ctx := ContextWithZoneID(c.Request.Context(), uuid.Nil)
 			c.Request = c.Request.WithContext(ctx)
-
 			c.Next()
 			return
 		}
 
-		// Với zone code cụ thể, phân giải thông qua L1 Registry
+		// 4. Xử lý kịch bản truy cập Zone cụ thể
 		normalizedZoneCode := strings.ToLower(strings.TrimSpace(zoneCode))
 		val, err := registry.GetOrLoad(c.Request.Context(), "zone_by_code", normalizedZoneCode)
 		if err != nil {
@@ -102,7 +151,7 @@ func AdminZoneAuth() gin.HandlerFunc {
 
 		zoneIDStr, ok := val.(string)
 		if !ok || zoneIDStr == "" {
-			logger.HandlerWarn(c, op, fmt.Errorf("resolved empty or invalid type zone ID for code: %s", zoneCode), "")
+			logger.HandlerWarn(c, op, fmt.Errorf("resolved empty zone ID for code: %s", zoneCode), "")
 			apires.RespondBadRequest(c, "invalid zone code")
 			c.Abort()
 			return
@@ -116,103 +165,48 @@ func AdminZoneAuth() gin.HandlerFunc {
 			return
 		}
 
-		// Nếu token của Admin có giới hạn zone, so sánh xem có trùng khớp không
-		if tokenZoneID != "" {
-			if !strings.EqualFold(tokenZoneID, zoneIDStr) {
-				logger.HandlerWarn(c, op, fmt.Errorf("admin session zone mismatch: token has %s, request has %s", tokenZoneID, zoneIDStr), "admin zone access forbidden")
-				apires.RespondForbidden(c, "forbidden: admin is restricted to a different zone")
+		// Kiểm tra ràng buộc ranh giới zone (áp dụng cho cả Admin lẫn User nếu có ràng buộc cụ thể và không phải global)
+		if sessionZoneID != "" && !strings.EqualFold(sessionZoneID, "global") && sessionZoneID != uuid.Nil.String() {
+			if !strings.EqualFold(sessionZoneID, zoneIDStr) {
+				logger.HandlerWarn(c, op, fmt.Errorf("session zone mismatch: session has %s, request has %s", sessionZoneID, zoneIDStr), "zone access forbidden")
+				apires.RespondForbidden(c, "forbidden: session is restricted to a different zone")
 				c.Abort()
 				return
 			}
 		}
 
-		// Injects vào Go Context (không inject vào Gin Context)
+		// Kiểm tra trạng thái hoạt động của Zone nếu là User thường (Admin được phép bypass hoạt động check status này)
+		if !isAdmin {
+			valStatus, err := registry.GetOrLoad(c.Request.Context(), "zone_status_by_id", resolvedZoneID.String())
+			if err != nil {
+				logger.HandlerWarn(c, op, err, "failed to resolve zone status")
+				apires.RespondForbidden(c, "forbidden: zone status verification failed")
+				c.Abort()
+				return
+			}
+
+			zoneStatus, ok := valStatus.(string)
+			if !ok || zoneStatus != "active" {
+				logger.HandlerWarn(c, op, fmt.Errorf("user tried to access non-active zone: status=%v", valStatus), "")
+				apires.RespondForbidden(c, "forbidden: zone is currently not active")
+				c.Abort()
+				return
+			}
+		}
+
+		// Hợp lệ: Ghi nhận UUID của Zone đã xác thực vào Go context
 		ctx := ContextWithZoneID(c.Request.Context(), resolvedZoneID)
 		c.Request = c.Request.WithContext(ctx)
-
 		c.Next()
 	}
 }
 
-// UserZoneAuth kiểm tra và so khớp zone định danh cho User role (không chấp nhận global).
-func UserZoneAuth() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		const op = "middleware.user_zone_auth"
+// ZoneRequired yêu cầu client cung cấp một zone code cụ thể và từ chối truy cập global.
+func ZoneRequired() gin.HandlerFunc {
+	return ZoneAuth(false)
+}
 
-		zoneL1RegistryMu.RLock()
-		registry := zoneL1Registry
-		zoneL1RegistryMu.RUnlock()
-		if registry == nil {
-			logger.HandlerError(c, op, errors.New("zone l1 registry is not initialized"))
-			apires.RespondServiceUnavailable(c, "zone lookup temporarily unavailable")
-			c.Abort()
-			return
-		}
-
-		zoneCode := extractZoneCode(c)
-		// User bắt buộc phải có zone code hợp lệ và không được phép dùng "global"
-		if zoneCode == "" || strings.EqualFold(zoneCode, "global") {
-			logger.HandlerWarn(c, op, fmt.Errorf("missing or global zone code rejected for user request"), "")
-			apires.RespondBadRequest(c, "valid zone code is required")
-			c.Abort()
-			return
-		}
-
-		// Lấy claims của User đã được lưu ở middleware trước
-		valClaims, exists := c.Get(constant.ContextKeyJWTClaims)
-		if !exists {
-			logger.HandlerError(c, op, errors.New("jwt claims not found in context"))
-			apires.RespondUnauthorized(c, "unauthorized")
-			c.Abort()
-			return
-		}
-
-		claims, ok := valClaims.(security.Claims)
-		if !ok {
-			logger.HandlerError(c, op, errors.New("failed to cast jwt claims"))
-			apires.RespondUnauthorized(c, "unauthorized")
-			c.Abort()
-			return
-		}
-
-		// Phân giải zone code
-		normalizedZoneCode := strings.ToLower(strings.TrimSpace(zoneCode))
-		val, err := registry.GetOrLoad(c.Request.Context(), "zone_by_code", normalizedZoneCode)
-		if err != nil {
-			logger.HandlerWarn(c, op, err, fmt.Sprintf("failed to resolve zone ID for user code: %s", zoneCode))
-			apires.RespondBadRequest(c, "invalid zone code")
-			c.Abort()
-			return
-		}
-
-		zoneIDStr, ok := val.(string)
-		if !ok || zoneIDStr == "" {
-			logger.HandlerWarn(c, op, fmt.Errorf("resolved empty or invalid type zone ID for user code: %s", zoneCode), "")
-			apires.RespondBadRequest(c, "invalid zone code")
-			c.Abort()
-			return
-		}
-
-		resolvedZoneID, parseErr := uuid.Parse(zoneIDStr)
-		if parseErr != nil {
-			logger.HandlerError(c, op, parseErr)
-			apires.RespondBadRequest(c, "invalid zone configuration")
-			c.Abort()
-			return
-		}
-
-		// User bắt buộc phải trùng khớp Zone ID
-		if claims.ZoneID == "" || !strings.EqualFold(claims.ZoneID, zoneIDStr) {
-			logger.HandlerWarn(c, op, fmt.Errorf("user session zone mismatch: token has %s, request has %s", claims.ZoneID, zoneIDStr), "user zone access forbidden")
-			apires.RespondForbidden(c, "forbidden: user is restricted to a different zone")
-			c.Abort()
-			return
-		}
-
-		// Injects vào Go Context (không inject vào Gin Context)
-		ctx := ContextWithZoneID(c.Request.Context(), resolvedZoneID)
-		c.Request = c.Request.WithContext(ctx)
-
-		c.Next()
-	}
+// ZoneOptional cho phép client truy cập qua một zone code cụ thể hoặc global.
+func ZoneOptional() gin.HandlerFunc {
+	return ZoneAuth(true)
 }
