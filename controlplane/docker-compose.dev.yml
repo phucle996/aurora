@@ -352,20 +352,8 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+  # Đã loại bỏ dịch vụ envoy-zone1 do Dataplane không có inbound traffic.
 
-  envoy-zone1:
-    image: envoyproxy/envoy:v1.33.2
-    container_name: envoy-zone1
-    command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
-    volumes:
-      # Mount tệp cấu hình chuyên dụng định tuyến gRPC trực tiếp cho Zone 1.
-      - ./dev/envoy/envoy-zone1.yaml:/etc/envoy/envoy.yaml:ro
-    ports:
-      - "8081:8080" # Expose cổng Ingress gRPC của Zone 1 ra ngoài máy host tại cổng 8081
-    depends_on:
-      dataplane-z1-n1:
-        condition: service_started
-    restart: unless-stopped
 
   # ============================================================================
   # 🚀 PHẦN 6: DATAPLANE ZONE 2 (HIGH-AVAILABILITY CLUSTER - US WEST ZONE)
@@ -440,22 +428,8 @@ services:
       otel-collector:
         condition: service_started
     restart: unless-stopped
+  # Đã loại bỏ dịch vụ envoy-zone2 do Dataplane không có inbound traffic.
 
-  envoy-zone2:
-    image: envoyproxy/envoy:v1.33.2
-    container_name: envoy-zone2
-    command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
-    volumes:
-      # Cấu hình định tuyến Round-Robin thông minh cho các Dataplane Nodes thuộc Zone 2.
-      - ./dev/envoy/envoy-zone2.yaml:/etc/envoy/envoy.yaml:ro
-    ports:
-      - "8082:8080" # Expose cổng Ingress gRPC của Zone 2 ra ngoài máy host tại cổng 8082
-    depends_on:
-      dataplane-z2-n1:
-        condition: service_started
-      dataplane-z2-n2:
-        condition: service_started
-    restart: unless-stopped
 
   # ============================================================================
   # 📊 PHẦN 7: INDUSTRIAL 360-DEGREE OBSERVABILITY INFRASTRUCTURE

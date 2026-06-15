@@ -1,0 +1,14 @@
+# Cấu hình tự động nạp dashboard của Aurora
+apiVersion: 1
+
+providers:
+  - name: 'Aurora Job Monitor'
+    orgId: 1
+    folder: 'Aurora Ops'
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 10
+    options:
+      # Đường dẫn thư mục chứa các file JSON dashboard bên trong container
+      path: /etc/grafana/provisioning/dashboards

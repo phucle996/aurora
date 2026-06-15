@@ -23,6 +23,13 @@ datasources:
     access: proxy
     url: http://loki:3100
     editable: false
+    # Cấu hình derivedFields để liên kết tự động Log với Trace của Tempo
+    jsonData:
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: "(?:trace_id|traceID|traceId|trace)[=:\\s\"]+([a-fA-F0-9]{32})"
+          name: TraceID
+          url: '$${__value.raw}'
 
   - name: Tempo
     uid: tempo
