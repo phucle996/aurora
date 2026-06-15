@@ -75,21 +75,21 @@ func TestAdminCriticalSignature(t *testing.T) {
 		},
 	)
 
-	req := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, deviceID, "nonce-valid", privateKey, time.Now())
+	req := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, "nonce-valid", privateKey, time.Now())
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("valid signature status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 
-	replayReq := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, deviceID, "nonce-valid", privateKey, time.Now())
+	replayReq := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, "nonce-valid", privateKey, time.Now())
 	replayRec := httptest.NewRecorder()
 	router.ServeHTTP(replayRec, replayReq)
 	if replayRec.Code != http.StatusUnauthorized {
 		t.Fatalf("replay status = %d, want %d", replayRec.Code, http.StatusUnauthorized)
 	}
 
-	badReq := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, deviceID, "nonce-invalid-then-valid", privateKey, time.Now())
+	badReq := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, "nonce-invalid-then-valid", privateKey, time.Now())
 	badReq.Header.Set(constant.HeaderAdminSignature, base64.StdEncoding.EncodeToString([]byte("invalid-signature")))
 	badRec := httptest.NewRecorder()
 	router.ServeHTTP(badRec, badReq)
@@ -97,7 +97,7 @@ func TestAdminCriticalSignature(t *testing.T) {
 		t.Fatalf("invalid signature status = %d, want %d", badRec.Code, http.StatusUnauthorized)
 	}
 
-	validAfterBadReq := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, deviceID, "nonce-invalid-then-valid", privateKey, time.Now())
+	validAfterBadReq := newSignedCriticalRequest(t, http.MethodPost, "/admin/critical?sort=asc", body, "nonce-invalid-then-valid", privateKey, time.Now())
 	validAfterBadRec := httptest.NewRecorder()
 	router.ServeHTTP(validAfterBadRec, validAfterBadReq)
 	if validAfterBadRec.Code != http.StatusNoContent {
@@ -110,7 +110,6 @@ func newSignedCriticalRequest(
 	method string,
 	target string,
 	body string,
-	deviceID string,
 	nonce string,
 	privateKey ed25519.PrivateKey,
 	now time.Time,

@@ -13,14 +13,6 @@ import (
 	"controlplane/internal/iam/test/testutil"
 )
 
-func seedDevicesForCap(t *testing.T, db interface {
-	Exec(ctx context.Context, sql string, args ...any) (any, error)
-}, schema string, userID uuid.UUID, count int) {
-	// not used
-	_ = schema
-	_ = userID
-	_ = count
-}
 
 func TestEvictExcessDevicesAtomic(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_cap_evict"))

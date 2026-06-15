@@ -42,7 +42,11 @@ services:
         condition: service_healthy
       redis-job:
         condition: service_healthy
-      prometheus:
+      victoriametrics:
+        condition: service_started
+      victorialogs:
+        condition: service_started
+      victoriatraces:
         condition: service_started
       otel-collector:
         condition: service_started
@@ -79,7 +83,11 @@ services:
         condition: service_healthy
       redis-job:
         condition: service_healthy
-      prometheus:
+      victoriametrics:
+        condition: service_started
+      victorialogs:
+        condition: service_started
+      victoriatraces:
         condition: service_started
       otel-collector:
         condition: service_started
@@ -116,7 +124,11 @@ services:
         condition: service_healthy
       redis-job:
         condition: service_healthy
-      prometheus:
+      victoriametrics:
+        condition: service_started
+      victorialogs:
+        condition: service_started
+      victoriatraces:
         condition: service_started
       otel-collector:
         condition: service_started
@@ -164,7 +176,7 @@ services:
   # Sử dụng PostgreSQL 17 cho dữ liệu quan hệ có cấu trúc và Redis Core cho Cache/Sessions.
 
   psql:
-    image: postgres:17-bookworm
+    image: postgres:18
     container_name: controlplane-psql
     command: [ "postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=10", "-c", "max_replication_slots=10" ]
     environment:
@@ -223,7 +235,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:8-bookworm
+    image: redis:8.8.0
     container_name: controlplane-redis
     command: [ "redis-server", "--appendonly", "yes" ] # Bật AOF (Append Only File) để tối đa hóa tính bền vững dữ liệu
     ports:
@@ -249,7 +261,7 @@ services:
   #     bình thường mà không bị ảnh hưởng chéo (mục tiêu cốt lõi của tính năng SRE HA).
 
   redis-job:
-    image: redis:7.2-alpine
+    image: redis:8.8.0
     container_name: controlplane-redis-job
     command: [ "redis-server", "--appendonly", "yes" ]
     ports:
@@ -264,7 +276,7 @@ services:
     restart: unless-stopped
 
   redis-dataplane-z1:
-    image: redis:7.2-alpine
+    image: redis:8.8.0
     container_name: controlplane-redis-dataplane-z1
     command: [ "redis-server", "--appendonly", "yes" ]
     ports:
@@ -279,7 +291,7 @@ services:
     restart: unless-stopped
 
   redis-dataplane-z2:
-    image: redis:7.2-alpine
+    image: redis:8.8.0
     container_name: controlplane-redis-dataplane-z2
     command: [ "redis-server", "--appendonly", "yes" ]
     ports:
@@ -433,7 +445,7 @@ services:
   # và OpenTelemetry Collector làm bộ điều phối luồng dữ liệu giám sát thống nhất.
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.136.0
+    image: otel/opentelemetry-collector-contrib:0.154.0
     container_name: controlplane-otel-collector
     command:
       - "--config=/etc/otelcol-contrib/config.yaml"
@@ -449,7 +461,7 @@ services:
     restart: unless-stopped
 
   victoriatraces:
-    image: victoriametrics/victoria-traces:v0.1.0
+    image: victoriametrics/victoria-traces:latest
     container_name: controlplane-victoriatraces
     command:
       - "-storageDataPath=/vtraces"
@@ -460,54 +472,32 @@ services:
       - "10428:10428" # Cổng OTLP ingestion & Jaeger-compatible query API
     restart: unless-stopped
 
-  prometheus:
-    image: prom/prometheus:v3.7.2
-    container_name: controlplane-prometheus
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: controlplane-victoriametrics
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      # Bật tính năng live-reload thông qua HTTP POST request để tránh restart server khi đổi config.
-      - "--web.enable-lifecycle"
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-httpListenAddr=:8428"
     volumes:
-      - ./dev/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - controlplane_prometheus_data:/prometheus
+      - controlplane_vmetrics_data:/victoria-metrics-data
     ports:
-      - "19091:9090" # Cổng xem biểu đồ và truy vấn Prometheus UI
+      - "8428:8428" # Cổng Remote Write và query API của VictoriaMetrics
     restart: unless-stopped
 
-  loki:
-    image: grafana/loki:3.4.2
-    container_name: controlplane-loki
+  victorialogs:
+    image: victoriametrics/victoria-logs:latest
+    container_name: controlplane-victorialogs
     command:
-      - "-config.file=/etc/loki/config.yml"
+      - "-storageDataPath=/vlogs"
+      - "-httpListenAddr=:9428"
     volumes:
-      - ./dev/loki/loki-config.yml:/etc/loki/config.yml:ro
-      - controlplane_loki_data:/loki
+      - controlplane_vlogs_data:/vlogs
     ports:
-      - "13100:3100" # REST API của Loki cung cấp dữ liệu logs cho Grafana
-    restart: unless-stopped
-
-
-  promtail:
-    image: grafana/promtail:3.4.2
-    container_name: controlplane-promtail
-    command:
-      - "-config.file=/etc/promtail/config.yml"
-    volumes:
-      # Nạp cấu hình chỉ thị thư mục log và cơ chế gán nhãn Loki cho Promtail.
-      - ./dev/loki/promtail-config.yml:/etc/promtail/config.yml:ro
-      # Mount Docker socket để Promtail tự động trích xuất siêu dữ liệu (metadata) của các containers.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Đọc logs trực tiếp từ file logs thô của hệ thống Docker Engine.
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - controlplane_promtail_positions:/tmp
-    depends_on:
-      loki:
-        condition: service_started
+      - "9428:9428" # Cổng OTLP logs ingestion & querying API
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:12.2.0
+    image: grafana/grafana:11.6
     container_name: controlplane-grafana
     environment:
       # Tài khoản quản trị tối cao của hệ thống Dashboard Grafana
@@ -521,9 +511,9 @@ services:
     ports:
       - "13001:3000" # Cổng UI chính thức của Grafana để giám sát và phân tích toàn hệ thống
     depends_on:
-      prometheus:
+      victoriametrics:
         condition: service_started
-      loki:
+      victorialogs:
         condition: service_started
       otel-collector:
         condition: service_started
@@ -679,14 +669,11 @@ volumes:
 
   controlplane_redis_data: # Cơ sở dữ liệu chuỗi thời gian của Prometheus
 
-  controlplane_prometheus_data: # Bộ đệm dữ liệu dấu vết phân tán của Grafana Tempo
+  controlplane_vmetrics_data: # Cơ sở dữ liệu chuỗi thời gian của VictoriaMetrics
 
   controlplane_vtraces_data: # Bộ đệm dữ liệu traces của VictoriaTraces
 
-
-  controlplane_loki_data: # Vị trí lưu dấu chỉ mục đọc logs của Promtail
-
-  controlplane_promtail_positions: # Dữ liệu cấu hình người dùng và cài đặt Grafana Dashboards
+  controlplane_vlogs_data: # Bộ đệm dữ liệu logs của VictoriaLogs
 
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
 

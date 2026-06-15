@@ -363,7 +363,6 @@ func (r *AdminAPIKeyRepository) Bootstrap(ctx context.Context, payload iamEntity
 		ID:               uuid.Nil,
 		SecretCiphertext: payload.SecretCiphertext,
 		CreatedAt:        now,
-		UpdatedAt:        now,
 	}
 
 	batch := &pgx.Batch{}
