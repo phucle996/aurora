@@ -146,7 +146,7 @@ impl JobRunner {
                 }
                 span.end();
 
-                // Ghi nhận Prometheus metric đo độ trễ xử lý nghiệp vụ thực tế và tổng số lượng job
+                // Ghi nhận OpenTelemetry metric đo độ trễ xử lý nghiệp vụ thực tế và tổng số lượng job
                 crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
                     crate::workerpool::metrics::MetricsType::HandlerLatencyMs {
                         zone_id,

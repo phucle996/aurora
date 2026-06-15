@@ -40,8 +40,6 @@ import (
 	"controlplane/internal/config"
 	policyErrorx "controlplane/internal/policyengine/errorx"
 	"controlplane/internal/policyengine/policies/admincidr"
-	"controlplane/internal/policyengine/policies/otel"
-	"controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/policyengine/policies/ratelimit"
 	policytypes "controlplane/internal/policyengine/runtime/types"
 	"controlplane/pkg/logger"
@@ -67,10 +65,8 @@ type PoliciesFile struct {
 
 // PoliciesRuntimeRoot gom các nhánh cấu hình chính sách thô dưới dạng modular.
 type PoliciesRuntimeRoot struct {
-	AdminCIDR  admincidr.AdminCIDRPolicy   `yaml:"admin_cidr"`
-	RateLimit  ratelimit.RateLimitPolicy   `yaml:"rate_limit"`
-	OTel       otel.OTelPolicy             `yaml:"otel"`
-	Prometheus prometheus.PrometheusPolicy `yaml:"prometheus"`
+	AdminCIDR admincidr.AdminCIDRPolicy `yaml:"admin_cidr"`
+	RateLimit ratelimit.RateLimitPolicy `yaml:"rate_limit"`
 }
 
 // EngineService là cấu trúc dịch vụ cốt lõi quản lý việc reload chính sách.
@@ -79,15 +75,13 @@ type EngineService struct {
 	mu  sync.RWMutex
 	cur *policytypes.PolicySet
 
-	sourceAdapter   PolicySourceAdapter
-	notifier        PolicyPropagationNotifier
-	subscriber      PolicyEventSubscriber
-	lastChecksum    string
-	lastMetaKey     string
-	lastReloadAt    time.Time
-	otelHooks       []func(*otel.CompiledPolicy)
-	prometheusHooks []func(*prometheus.CompiledPolicy)
-	rateLimitHooks  []func(*ratelimit.CompiledPolicy)
+	sourceAdapter  PolicySourceAdapter
+	notifier       PolicyPropagationNotifier
+	subscriber     PolicyEventSubscriber
+	lastChecksum   string
+	lastMetaKey    string
+	lastReloadAt   time.Time
+	rateLimitHooks []func(*ratelimit.CompiledPolicy)
 }
 
 // NewEngineService khởi tạo EngineService và liên kết các thành phần hạ tầng (source adapter, pub/sub notifier).
@@ -151,23 +145,6 @@ func (s *EngineService) Current(ctx context.Context) (*policytypes.PolicySet, er
 //
 // # Tham số:
 //   - `hook`: Hàm callback chạy ngầm nhận vào cấu hình OTel đã được compile.
-func (s *EngineService) RegisterOTelHook(hook func(*otel.CompiledPolicy)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.otelHooks = append(s.otelHooks, hook)
-}
-
-// RegisterPrometheusHook đăng ký một hàm callback (hook) nhận sự thay đổi cấu hình Prometheus.
-// Hook này chỉ được trigger khi cấu hình Prometheus thực sự có thay đổi so với snapshot trước đó.
-//
-// # Tham số:
-//   - `hook`: Hàm callback chạy ngầm nhận vào cấu hình Prometheus đã được compile.
-func (s *EngineService) RegisterPrometheusHook(hook func(*prometheus.CompiledPolicy)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prometheusHooks = append(s.prometheusHooks, hook)
-}
-
 // RegisterRateLimitHook đăng ký một hàm callback (hook) nhận sự thay đổi cấu hình Rate Limit.
 // Hook này chỉ được trigger khi cấu hình Rate Limit thực sự có thay đổi so với snapshot trước đó.
 //
@@ -237,26 +214,6 @@ func (s *EngineService) Reload(ctx context.Context) (*policytypes.PolicySet, err
 	s.lastMetaKey = metaKey
 	s.lastReloadAt = now
 	s.mu.Unlock()
-
-	// Chỉ trigger các OTel hooks nếu cấu hình OTel thực sự thay đổi hoặc trong lần nạp đầu tiên.
-	if old == nil || !reflect.DeepEqual(old.Runtime.OTel, next.Runtime.OTel) {
-		s.mu.RLock()
-		hooks := s.otelHooks
-		s.mu.RUnlock()
-		for _, hook := range hooks {
-			go hook(&next.Runtime.OTel)
-		}
-	}
-
-	// Chỉ trigger các Prometheus hooks nếu cấu hình Prometheus thực sự thay đổi hoặc trong lần nạp đầu tiên.
-	if old == nil || !reflect.DeepEqual(old.Runtime.Prometheus, next.Runtime.Prometheus) {
-		s.mu.RLock()
-		hooks := s.prometheusHooks
-		s.mu.RUnlock()
-		for _, hook := range hooks {
-			go hook(&next.Runtime.Prometheus)
-		}
-	}
 
 	// Chỉ trigger các Rate Limit hooks nếu cấu hình Rate Limit thực sự thay đổi hoặc trong lần nạp đầu tiên.
 	if old == nil || !reflect.DeepEqual(old.Runtime.RateLimit, next.Runtime.RateLimit) {
@@ -386,7 +343,7 @@ func (s *EngineService) loadPolicySnapshotFromSource(ctx context.Context) (*poli
 		UpdatedAt:   now,
 		Source:      meta.Path,
 		ChecksumSHA: hex.EncodeToString(checksum[:]),
-		Policies:    map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR, "otel": runtimePolicies.OTel, "prometheus": runtimePolicies.Prometheus},
+		Policies:    map[string]interface{}{"admin_cidr": runtimePolicies.AdminCIDR, "rate_limit": runtimePolicies.RateLimit},
 		Runtime:     runtimePolicies,
 	}
 	metaKey := strings.TrimSpace(meta.Path) + ":" + strings.TrimSpace(meta.Version) + ":" + fmt.Sprintf("%d", meta.Size)
@@ -423,20 +380,8 @@ func compilePolicies(parsed PoliciesFile) (policytypes.RuntimePolicies, error) {
 		return policytypes.RuntimePolicies{}, err
 	}
 
-	ot, err := otel.Compile(parsed.Policies.OTel)
-	if err != nil {
-		return policytypes.RuntimePolicies{}, err
-	}
-
-	prom, err := prometheus.Compile(parsed.Policies.Prometheus)
-	if err != nil {
-		return policytypes.RuntimePolicies{}, err
-	}
-
 	return policytypes.RuntimePolicies{
 		AdminCIDR:  cidr,
 		RateLimit:  rl,
-		OTel:       ot,
-		Prometheus: prom,
 	}, nil
 }

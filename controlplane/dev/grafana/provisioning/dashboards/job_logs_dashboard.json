@@ -11,8 +11,8 @@
   "panels": [
     {
       "datasource": {
-        "type": "loki",
-        "uid": "loki"
+        "type": "victoriametrics-logs-datasource",
+        "uid": "victorialogs"
       },
       "gridPos": {
         "h": 22,
@@ -26,11 +26,11 @@
       "targets": [
         {
           "datasource": {
-            "type": "loki",
-            "uid": "loki"
+            "type": "victoriametrics-logs-datasource",
+            "uid": "victorialogs"
           },
           "editorMode": "code",
-          "expr": "{container_name=~\"controlplane-dev.*|aurora-job-proxy.*|dataplane.*|aurora-notification-service.*\"} |= \"${job_id}\"",
+          "expr": "container_name:~\"controlplane-dev.*|aurora-job-proxy.*|dataplane.*|aurora-notification-service.*\" \"${job_id}\"",
           "queryType": "range",
           "refId": "A"
         }

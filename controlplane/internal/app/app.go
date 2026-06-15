@@ -50,8 +50,6 @@ import (
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
 	"controlplane/internal/policyengine"
-	otelPolicy "controlplane/internal/policyengine/policies/otel"
-	promPolicy "controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/security"
 	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
@@ -75,7 +73,7 @@ type App struct {
 	cfg        *config.Config
 	modules    *Modules
 	otel       *observability.OTel
-	prom       *observability.Prometheus
+	prom       *observability.Metrics
 	httpServer *http.Server
 	grpc       *bootstrap.GRPC
 	psql       *pgxpool.Pool
@@ -154,23 +152,32 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		}
 	}()
 
-	policySet, err := policyModule.EngineService.Current(ctx)
-	if err != nil {
+	if _, err := policyModule.EngineService.Current(ctx); err != nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: failed to get active policy set: %w", err)
 	}
-	otelCfg := &policySet.Runtime.OTel
 
-	// --------------------------------------------------------------------
-	// [FAIL-OPEN / FAIL-CLOSE] Observability bootstrap: OpenTelemetry Tracing.
-	// Chiến lược do Policy Engine kiểm soát động qua otelCfg.FailStrategy:
-	//   - fail_open  -> lỗi OTel thì dùng NullOTel (nil), hệ thống tiếp tục không có tracing.
-	//   - fail_close -> lỗi OTel thì abort toàn bộ startup.
-	// OTelTraceContext middleware đã xử lý obs == nil an toàn (Fail-Open tại request level).
-	// --------------------------------------------------------------------
+	otelCfg := &observability.OTelConfig{
+		Enabled:       cfg.OTel.Enabled,
+		ExporterType:  cfg.OTel.ExporterType,
+		Endpoint:      cfg.OTel.Endpoint,
+		Insecure:      cfg.OTel.Insecure,
+		SamplingRatio: cfg.OTel.SamplingRatio,
+		ExportTimeout: cfg.OTel.ExportTimeout,
+		BatchTimeout:  cfg.OTel.BatchTimeout,
+		BatchMaxSize:  cfg.OTel.BatchMaxSize,
+		BatchMaxQueue: cfg.OTel.BatchMaxQueue,
+		TLS: observability.OTelTLSConfig{
+			Mode:       cfg.OTel.TLS.Mode,
+			CACertPath: cfg.OTel.TLS.CACertPath,
+			CertPath:   cfg.OTel.TLS.CertPath,
+			KeyPath:    cfg.OTel.TLS.KeyPath,
+		},
+	}
+
 	otelObs, err := observability.InitOTel(ctx, otelCfg, "aurora-controlplane")
 	if err != nil {
-		if otelCfg.FailStrategy == "fail_open" {
+		if cfg.OTel.FailStrategy == "fail_open" {
 			logger.SysWarn("bootstrap", fmt.Sprintf("otel init failed [FAIL-OPEN]: %v. Tracing disabled, continuing startup.", err))
 			otelObs = nil
 			err = nil // clear error, tiếp tục startup bình thường
@@ -181,41 +188,25 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	app.otel = otelObs
 
-	// Đăng ký hook hot-swap để Policy Engine có thể cập nhật cấu hình OTel lúc runtime (không cần restart).
-	policyModule.EngineService.RegisterOTelHook(func(newOTelCfg *otelPolicy.CompiledPolicy) {
-		if err := otelObs.Update(context.Background(), newOTelCfg, cfg.App.AppName); err != nil {
-			logger.SysError("app", fmt.Sprintf("failed to hot-swap OTel config: %v", err))
-		}
-	})
-
-	promCfg := &policySet.Runtime.Prometheus
-
 	// --------------------------------------------------------------------
-	// [FAIL-OPEN / FAIL-CLOSE] Observability bootstrap: Prometheus Metrics.
-	// Chiến lược do Policy Engine kiểm soát động:
-	//   - fail_open  -> lỗi Prometheus thì dùng NullPrometheus (no-op), hệ thống tiếp tục.
-	//   - fail_close -> lỗi Prometheus thì abort toàn bộ startup.
+	// [FAIL-OPEN / FAIL-CLOSE] Observability bootstrap: OTel Metrics.
+	// Chiến lược do cấu hình tĩnh kiểm soát qua cfg.OTel.FailStrategy:
+	//   - fail_open  -> lỗi Metrics thì dùng NullMetrics (no-op), hệ thống tiếp tục.
+	//   - fail_close -> lỗi Metrics thì abort toàn bộ startup.
 	// --------------------------------------------------------------------
-	var promObs *observability.Prometheus
-	promObs, err = observability.InitPrometheus(cfg.App.AppName)
+	var promObs *observability.Metrics
+	promObs, err = observability.InitMetrics(cfg.App.AppName)
 	if err != nil {
-		if promCfg.FailStrategy == "fail_open" {
-			logger.SysWarn("bootstrap", fmt.Sprintf("prometheus init failed [FAIL-OPEN]: %v. Falling back to NullPrometheus.", err))
-			promObs = observability.NullPrometheus()
+		if cfg.OTel.FailStrategy == "fail_open" {
+			logger.SysWarn("bootstrap", fmt.Sprintf("OTel metrics init failed [FAIL-OPEN]: %v. Falling back to NullMetrics.", err))
+			promObs = observability.NullMetrics()
 			err = nil // clear error, tiếp tục startup bình thường
 		} else {
 			app.Stop()
-			return nil, fmt.Errorf("bootstrap: prometheus init failed [FAIL-CLOSE]: %w", err)
+			return nil, fmt.Errorf("bootstrap: OTel metrics init failed [FAIL-CLOSE]: %w", err)
 		}
 	}
-	promObs.UpdatePolicy(promCfg)
 	app.prom = promObs
-
-	// Đăng ký hook hot-swap để Policy Engine có thể cập nhật cấu hình Prometheus lúc runtime.
-	policyModule.EngineService.RegisterPrometheusHook(func(newPromCfg *promPolicy.CompiledPolicy) {
-		promObs.UpdatePolicy(newPromCfg)
-		logger.SysInfo("app", "Prometheus dynamic policy swapped successfully (hot-swap)")
-	})
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Rate Limiter bootstrap: SetFailOpen(false) -> mất Redis thì chặn toàn bộ request.
@@ -245,7 +236,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		gin.Recovery(),
 		middleware.RequestID(),
 		middleware.OTelTraceContext(otelObs),
-		middleware.PrometheusHTTPMetrics(promObs),
+		middleware.OTelHTTPMetrics(promObs),
 		// CORS được offload sang Envoy Edge Ingress Gateway (xem dev/envoy/envoy.yaml) để
 		// tối ưu hiệu năng và quản lý headers tập trung ở cấp gateway trong môi trường HA.
 		// middleware.CORS(cfg.App.AllowedOrigins),
@@ -254,7 +245,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		middleware.AccessLog(),
 		middleware.AdminXSSI(),
 	)
-	engine.GET("/metrics", middleware.PrometheusMetricsEndpoint(promObs))
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Phase 1: Khởi tạo Cache Engine
@@ -413,7 +403,7 @@ func (a *App) Stop() {
 		}
 		otelCancel()
 	}
-	observability.ClearCurrentPrometheus()
+	observability.ClearCurrentMetrics()
 
 	if a.cancel != nil {
 		a.cancel()

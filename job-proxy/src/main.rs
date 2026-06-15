@@ -15,20 +15,22 @@ use observability::queue_monitor::QueueMonitor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Khởi tạo logger có cấu trúc, metrics và tracing
-    Logger::init();
-    MetricsManager::init();
-    OtelTracer::init();
-    Logger::sys_info("main.init", "Khởi động aurora-job-proxy (Mô hình 2 chiều)...");
-
-    // 1. Nạp cấu hình từ biến môi trường
+    // 1. Nạp cấu hình từ biến môi trường đầu tiên để phục vụ khởi tạo Observability
     let config = match Config::from_env() {
         Ok(cfg) => cfg,
         Err(err) => {
+            // Khởi động tạm logger thô để in lỗi cấu hình
+            Logger::init();
             Logger::sys_error("main.init", "Lỗi cấu hình biến môi trường", &err);
             std::process::exit(1);
         }
     };
+
+    // Khởi tạo logger có cấu trúc, OpenTelemetry Tracer & Metrics (Push model)
+    Logger::init();
+    OtelTracer::init(&config);
+    MetricsManager::init();
+    Logger::sys_info("main.init", "Khởi động aurora-job-proxy (Mô hình 2 chiều)...");
 
     Logger::sys_info(
         "main.init",

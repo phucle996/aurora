@@ -56,11 +56,9 @@ impl AppContainer {
         // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
         crate::observability::resource::ResourceMonitor::start_monitor();
 
-        // 0b. Khởi chạy máy chủ HTTP scrape metrics cho Prometheus
-        crate::workerpool::metrics::PromRegistry::init(self.config.metrics_port);
-
-        // 0d. Khởi tạo OpenTelemetry tracer pipeline kết nối tới Tempo
-        crate::observability::otel::OtelTracer::init();
+        // 0b. Khởi tạo OpenTelemetry (Traces & Metrics) kết nối tới OTel Collector
+        crate::observability::otel::OtelTracer::init(&self.config);
+        crate::workerpool::metrics::WorkerMetricsManager::init_registry();
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.active_lock_registry.clone();
@@ -74,8 +72,6 @@ impl AppContainer {
             )
             .await;
         });
-
-
 
         // 0b. Khởi tạo 1 Worker ban đầu hoạt động nhận tin
         self.worker_pool
@@ -121,7 +117,7 @@ impl AppContainer {
                 .unwrap_or(0.0);
                 let active_conns = 0; // Thống kê kết nối giả lập
 
-                // Ghi nhận các chỉ số đo đạc thu được vào Prometheus Registry phục vụ giám sát HA
+                // Ghi nhận các chỉ số đo đạc thu được vào OpenTelemetry Registry phục vụ giám sát HA
                 crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
                     crate::workerpool::metrics::MetricsType::RedisStreamLag {
                         zone_id: config_scale.zone_id.clone(),
@@ -184,8 +180,6 @@ impl AppContainer {
                 }
             }
         });
-
-
 
         // 1. Khởi chạy luồng giám sát sự cố/hoạt động của Worker Pool
         tokio::spawn(async move {

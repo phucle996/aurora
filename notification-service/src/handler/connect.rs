@@ -293,17 +293,13 @@ pub async fn handle_connect(
         }
     }).await;
 
-    // 2. Thu thập chỉ số hiệu năng HTTP cho Prometheus
-    let duration = start_time.elapsed().as_secs_f64();
+    // 2. Thu thập chỉ số hiệu năng HTTP sử dụng OTel Metrics
     let status_str = response.status().as_u16().to_string();
-
-    crate::observability::prometheus::HTTP_REQUESTS_TOTAL
-        .with_label_values(&["/api/v1/realtime/connect", &status_str])
-        .inc();
-
-    crate::observability::prometheus::HTTP_REQUEST_DURATION_SECONDS
-        .with_label_values(&["/api/v1/realtime/connect", &status_str])
-        .observe(duration);
+    crate::observability::metrics::MetricsManager::record_http_request(
+        "/api/v1/realtime/connect",
+        &status_str,
+        start_time.elapsed(),
+    );
 
     response
 }

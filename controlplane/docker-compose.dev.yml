@@ -46,8 +46,6 @@ services:
         condition: service_started
       otel-collector:
         condition: service_started
-      tempo:
-        condition: service_started
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -85,8 +83,6 @@ services:
         condition: service_started
       otel-collector:
         condition: service_started
-      tempo:
-        condition: service_started
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -123,8 +119,6 @@ services:
       prometheus:
         condition: service_started
       otel-collector:
-        condition: service_started
-      tempo:
         condition: service_started
     restart: unless-stopped
     extra_hosts:
@@ -449,6 +443,21 @@ services:
     ports:
       - "14317:4317" # Cổng nhận OpenTelemetry gRPC Traces & Metrics
       - "14318:4318" # Cổng nhận OpenTelemetry HTTP Traces & Metrics
+    depends_on:
+      victoriatraces:
+        condition: service_started
+    restart: unless-stopped
+
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.1.0
+    container_name: controlplane-victoriatraces
+    command:
+      - "-storageDataPath=/vtraces"
+      - "-httpListenAddr=:10428"
+    volumes:
+      - controlplane_vtraces_data:/vtraces
+    ports:
+      - "10428:10428" # Cổng OTLP ingestion & Jaeger-compatible query API
     restart: unless-stopped
 
   prometheus:
@@ -478,17 +487,6 @@ services:
       - "13100:3100" # REST API của Loki cung cấp dữ liệu logs cho Grafana
     restart: unless-stopped
 
-  tempo:
-    image: grafana/tempo:2.7.2
-    container_name: controlplane-tempo
-    command:
-      - "-config.file=/etc/tempo/tempo.yml"
-    volumes:
-      - ./dev/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
-      - controlplane_tempo_data:/var/tempo
-    ports:
-      - "13200:3200" # REST API của Tempo cung cấp trace phân tán cho Grafana
-    restart: unless-stopped
 
   promtail:
     image: grafana/promtail:3.4.2
@@ -529,7 +527,7 @@ services:
         condition: service_started
       otel-collector:
         condition: service_started
-      tempo:
+      victoriatraces:
         condition: service_started
     restart: unless-stopped
 
@@ -683,7 +681,8 @@ volumes:
 
   controlplane_prometheus_data: # Bộ đệm dữ liệu dấu vết phân tán của Grafana Tempo
 
-  controlplane_tempo_data: # Bộ đệm logs của Grafana Loki
+  controlplane_vtraces_data: # Bộ đệm dữ liệu traces của VictoriaTraces
+
 
   controlplane_loki_data: # Vị trí lưu dấu chỉ mục đọc logs của Promtail
 

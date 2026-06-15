@@ -1,3 +1,10 @@
+// ============================================================================
+// 📂 FILE: internal/observability/redis_hook.go - Redis Command Tracer Hook
+// ============================================================================
+// Tích hợp OpenTelemetry Tracing và OTel Metrics cho mọi lệnh Redis
+// thông qua go-redis Hook interface. Ghi nhận cả Span tracing và dependency latency.
+// ============================================================================
+
 package observability
 
 import (
@@ -48,8 +55,9 @@ func (h redisHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		}
 		span.End()
 
-		if prom := CurrentPrometheus(); prom != nil {
-			prom.ObserveDependency("redis", operation, time.Since(startedAt), metricErr)
+		// Ghi nhận dependency latency vào OTel Metrics thông qua Metrics trung tâm
+		if m := CurrentMetrics(); m != nil {
+			m.ObserveDependency("redis", operation, time.Since(startedAt), metricErr)
 		}
 
 		return err
@@ -78,8 +86,9 @@ func (h redisHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 		}
 		span.End()
 
-		if prom := CurrentPrometheus(); prom != nil {
-			prom.ObserveDependency("redis", "PIPELINE", time.Since(startedAt), metricErr)
+		// Ghi nhận dependency latency pipeline vào OTel Metrics
+		if m := CurrentMetrics(); m != nil {
+			m.ObserveDependency("redis", "PIPELINE", time.Since(startedAt), metricErr)
 		}
 
 		return err

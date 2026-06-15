@@ -24,6 +24,11 @@ pub struct Config {
     pub controlplane_grpc_client_cert: Option<String>,
     pub controlplane_grpc_client_key: Option<String>,
     pub controlplane_grpc_domain: Option<String>,
+
+    /// Cấu hình OpenTelemetry exporter (gửi traces/metrics đến OTel Collector)
+    pub otel_exporter_otlp_endpoint: String,
+    /// Định danh vùng (zone_id) để đánh nhãn metrics/traces
+    pub zone_id: String,
 }
 
 impl Config {
@@ -55,6 +60,13 @@ impl Config {
         let controlplane_grpc_client_key = env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok();
         let controlplane_grpc_domain = env::var("CONTROLPLANE_GRPC_DOMAIN").ok();
 
+        // Đọc endpoint của OpenTelemetry Collector (mặc định trỏ tới otel-collector trên cổng 4317)
+        let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .unwrap_or_else(|_| "http://controlplane-otel-collector:4317".to_string());
+
+        // Đọc zone_id từ biến môi trường (mặc định là unknown)
+        let zone_id = env::var("ZONE_ID").unwrap_or_else(|_| "unknown".to_string());
+
         Ok(Self {
             database_url,
             redis_url,
@@ -66,7 +78,19 @@ impl Config {
             controlplane_grpc_client_cert,
             controlplane_grpc_client_key,
             controlplane_grpc_domain,
+            otel_exporter_otlp_endpoint,
+            zone_id,
         })
     }
+}
+
+/// Hàm phụ trợ lấy Hostname của node hiện tại phục vụ định danh tài nguyên (Resource Attributes)
+pub fn get_node_hostname() -> String {
+    std::env::var("HOSTNAME")
+        .unwrap_or_else(|_| {
+            hostname::get()
+                .map(|h| h.into_string().unwrap_or_default())
+                .unwrap_or_default()
+        })
 }
 

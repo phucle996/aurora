@@ -12,23 +12,23 @@ import (
 	"strings"
 	"time"
 
-	infraredis "controlplane/infra/redis"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
+	"controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/id"
 
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -37,13 +37,13 @@ const (
 )
 
 type AuthService struct {
-	repo            iamRepoInterface.AuthRepository
-	refreshSvc      iamSvcInterface.RefreshTokenService
-	deviceSvc       iamSvcInterface.DeviceService
-	registry        *cacheengine.CacheRegistry
-	ott             iamSvcInterface.OneTimeTokenService
-	streamPublisher infraredis.StreamPublisher
-	cfg             *config.Config
+	repo       iamRepoInterface.AuthRepository
+	refreshSvc iamSvcInterface.RefreshTokenService
+	deviceSvc  iamSvcInterface.DeviceService
+	registry   *cacheengine.CacheRegistry
+	ott        iamSvcInterface.OneTimeTokenService
+	outboxRepo iamRepoInterface.IamOutboxRepository
+	cfg        *config.Config
 }
 
 func NewAuthService(cfg *config.Config,
@@ -52,16 +52,16 @@ func NewAuthService(cfg *config.Config,
 	deviceSvc iamSvcInterface.DeviceService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
-	streamPublisher infraredis.StreamPublisher,
+	outboxRepo iamRepoInterface.IamOutboxRepository,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
-		repo:            repo,
-		refreshSvc:      refreshSvc,
-		deviceSvc:       deviceSvc,
-		registry:        registry,
-		ott:             ott,
-		streamPublisher: streamPublisher,
-		cfg:             cfg,
+		repo:       repo,
+		refreshSvc: refreshSvc,
+		deviceSvc:  deviceSvc,
+		registry:   registry,
+		ott:        ott,
+		outboxRepo: outboxRepo,
+		cfg:        cfg,
 	}
 }
 
@@ -221,12 +221,13 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	switch user.Status {
 	case iamEntity.UserStatusPendingActive:
 		// Pending-active: trigger verification side effect theo policy ở callsite.
-		// Nếu OTT/publisher config thiếu -> degrade thành VerificationRequired.
-		if s.ott == nil || s.streamPublisher == nil {
+		// Nếu OTT/outboxRepo config thiếu -> degrade thành VerificationRequired.
+		if s.ott == nil || s.outboxRepo == nil {
 			loginOutcome = iamTaxonomy.PreConditionFailed
 			return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamTaxonomy.PreConditionFailed)
 		}
 
+		// Khởi tạo token OTT để gửi kèm mail xác thực
 		verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", user.ID)
 		if issueErr != nil {
 			loginOutcome = iamTaxonomy.Failure
@@ -234,45 +235,59 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 		idempotencyKey := uuid.Must(uuid.NewV7())
 
-		// mail job send verify email
-		streamMsg := infraredis.StreamMessage{
-			Stream:         "mail:jobs",
-			IdempotencyKey: idempotencyKey.String(),
-			Payload: map[string]string{
-				"event_type":   "mail.verify_account.requested",
-				"purpose":      "account_verify",
-				"user_id":      user.ID.String(),
-				"email":        user.Email,
+		// Trích xuất Trace ID từ context để truyền nối tiếp vết (Distributed Tracing)
+		var traceIDPtr *string
+		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+			tid := spanCtx.TraceID().String()
+			traceIDPtr = &tid
+		}
+
+		// Trích xuất Zone ID từ context để phân vùng multi-tenant
+		zoneID, ok := middleware.GetZoneID(ctx)
+		if !ok || zoneID == uuid.Nil {
+			zoneID = uuid.Nil
+		}
+
+		// Đóng gói payload gửi mail bằng generic protobuf SendMailConfig
+		mailConfig := &mailproto.SendMailConfig{
+			To:       user.Email,
+			Subject:  "Kích hoạt tài khoản của bạn",
+			BodyHtml: "Vui lòng sử dụng token sau để kích hoạt tài khoản của bạn.",
+			TemplateVariables: map[string]string{
 				"fullname":     user.Fullname,
 				"verify_token": verificationToken,
-				"requested_at": time.Now().UTC().Format(time.RFC3339Nano),
-				"request_id":   idempotencyKey.String(),
+				"purpose":      "account_verify",
 			},
 		}
-		// Publish fail -> fail login theo security policy, không fallback silent.
-		publishStartedAt := time.Now()
-		traceCtx, span := otel.Tracer("aurora-controlplane.iam").Start(ctx, "iam.login.publish_verify_mail_job")
-		streamID, published, publishErr := s.streamPublisher.Publish(traceCtx, streamMsg, s.cfg.Security.OneTimeTokenTTL)
-		if publishErr != nil {
-			iamMetrics.Downstream("redis", "login", "Publish", iamTaxonomy.Failure, time.Since(publishStartedAt), publishErr)
-			span.RecordError(publishErr)
-			span.SetStatus(codes.Error, publishErr.Error())
-			span.End()
+
+		// Tuần tự hóa cấu hình sang dạng nhị phân Protobuf
+		payloadBytes, marshalErr := proto.Marshal(mailConfig)
+		if marshalErr != nil {
 			loginOutcome = iamTaxonomy.Failure
-			return nil, fmt.Errorf("%w: failed to publish verification mail job: %v", iamTaxonomy.ErrAuthenticationUnavailable, publishErr)
+			return nil, fmt.Errorf("%w: failed to marshal verification mail config: %v", iamTaxonomy.ErrAuthenticationUnavailable, marshalErr)
 		}
-		span.SetAttributes(
-			attribute.String("stream", streamMsg.Stream),
-			attribute.String("event_type", streamMsg.Payload["event_type"]),
-			attribute.String("purpose", streamMsg.Payload["purpose"]),
-			attribute.String("user_id", streamMsg.Payload["user_id"]),
-			attribute.String("idempotency_key", idempotencyKey.String()),
-			attribute.Bool("published", published),
-		)
-		if streamID != "" {
-			span.SetAttributes(attribute.String("stream_id", streamID))
+
+		// Khởi tạo thực thể bản ghi IamOutboxRecord để lưu xuống DB
+		record := &iamEntity.IamOutboxRecord{
+			EventID:              idempotencyKey,
+			ZoneID:               zoneID,
+			JobTopic:             "mail.system.verify_account",
+			Payload:              payloadBytes,
+			UserID:               user.ID.String(),
+			Status:               iamEntity.IamOutboxStatusPending,
+			JobVersion:           1,
+			ResourceID:           "verify_account",
+			PayloadSchemaVersion: 1,
+			TraceID:              traceIDPtr,
+			Idle:                 60, // Hạn mức thời gian thực thi job 60 giây
 		}
-		span.End()
+
+		// Thực hiện lưu trữ bền vững outbox record trong cùng luồng
+		if insertErr := s.outboxRepo.Create(ctx, record); insertErr != nil {
+			loginOutcome = iamTaxonomy.Failure
+			return nil, fmt.Errorf("%w: failed to create iam outbox record: %v", iamTaxonomy.ErrAuthenticationUnavailable, insertErr)
+		}
+
 		loginOutcome = iamTaxonomy.PreConditionFailed
 		return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamTaxonomy.PreConditionFailed)
 
@@ -539,14 +554,12 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 		bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		if s.refreshSvc != nil {
-			if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
-				if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
-					_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(bgCtx, userID, deviceUUID)
-				}
-			} else {
-				_ = s.refreshSvc.RevokeRefreshTokensByUserID(bgCtx, userID, nil)
+		if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
+			if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
+				_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(bgCtx, userID, deviceUUID)
 			}
+		} else {
+			_ = s.refreshSvc.RevokeRefreshTokensByUserID(bgCtx, userID, nil)
 		}
 
 	}()
@@ -680,4 +693,3 @@ func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string
 		ZoneID: claims.ZoneID,
 	}, nil
 }
-

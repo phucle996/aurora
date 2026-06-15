@@ -14,3 +14,12 @@ message SmtpTestConfig {
   optional string client_cert_pem = 7;
   optional string client_key_pem = 8;
 }
+
+// Cấu hình gửi email giao dịch/hệ thống dùng chung (generic mail job)
+message SendMailConfig {
+  string to = 1; // Địa chỉ nhận email
+  string subject = 2; // Tiêu đề email
+  string body_html = 3; // Nội dung email định dạng HTML (hoặc raw text)
+  map<string, string> template_variables = 4; // Các tham số động truyền vào template
+}
+

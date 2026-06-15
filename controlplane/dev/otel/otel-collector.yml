@@ -1,3 +1,8 @@
+extensions:
+  docker_observer:
+    endpoint: unix:///var/run/docker.sock
+    api_version: "1.40"
+
 receivers:
   otlp:
     protocols:
@@ -5,29 +10,73 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  # receiver_creator dynamically starts a filelog receiver for each container discovered by docker_observer
+  receiver_creator:
+    watch_observers: [docker_observer]
+    receivers:
+      filelog:
+        rule: type == "container"
+        config:
+          include:
+            - /var/lib/docker/containers/`id`/`id`-json.log
+          exclude:
+            - /var/lib/docker/containers/`id`/*otel-collector*
+            - /var/lib/docker/containers/`id`/*victorialogs*
+            - /var/lib/docker/containers/`id`/*victoriametrics*
+            - /var/lib/docker/containers/`id`/*prometheus*
+            - /var/lib/docker/containers/`id`/*tempo*
+          operators:
+            - type: json_parser
+              id: parser_docker
+            - type: json_parser
+              id: parser_app
+              parse_from: attributes.log
 
 processors:
   batch:
+  # transform processor maps container.name to container_name for Grafana query consistency
+  transform:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["container_name"], resource.attributes["container.name"])
+          - replace_pattern(attributes["container_name"], "^/", "")
 
 exporters:
   debug:
     verbosity: basic
-  otlp/tempo:
-    endpoint: controlplane-tempo:4317
+  # Exporter gửi dữ liệu metrics sang VictoriaMetrics bằng chuẩn Remote Write
+  prometheusremotewrite:
+    endpoint: "http://controlplane-victoriametrics:8428/api/v1/write"
+    tls:
+      insecure: true
+  # Exporter gửi dữ liệu logs sang VictoriaLogs bằng chuẩn OTLP HTTP
+  otlphttp/victorialogs:
+    endpoint: "http://controlplane-victorialogs:9428/insert/opentelemetry"
+    tls:
+      insecure: true
+  # Exporter gửi dữ liệu traces sang VictoriaTraces bằng chuẩn OTLP HTTP
+  # [VictoriaTraces Integration]: Đóng vai trò làm backend lưu trữ traces cho hệ thống
+  otlphttp/victoriatraces:
+    endpoint: "http://controlplane-victoriatraces:10428/insert/opentelemetry"
     tls:
       insecure: true
 
 service:
+  extensions: [docker_observer]
   pipelines:
+    # Pipeline traces nhận log qua OTLP gRPC/HTTP và xuất sang VictoriaTraces
+    # [VictoriaTraces Integration]: Nhận traceparent phân tán từ các microservices
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlp/tempo]
+      exporters: [debug, otlphttp/victoriatraces]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, prometheusremotewrite]
     logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [debug]
+      receivers: [otlp, receiver_creator]
+      processors: [transform, batch]
+      exporters: [debug, otlphttp/victorialogs]

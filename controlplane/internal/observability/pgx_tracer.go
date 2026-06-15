@@ -1,3 +1,10 @@
+// ============================================================================
+// 📂 FILE: internal/observability/pgx_tracer.go - PostgreSQL Query Tracer
+// ============================================================================
+// Tích hợp OpenTelemetry Tracing và OTel Metrics cho mọi câu truy vấn PostgreSQL
+// thông qua pgx QueryTracer interface. Ghi nhận cả Span tracing và dependency latency.
+// ============================================================================
+
 package observability
 
 import (
@@ -62,8 +69,9 @@ func (pgxQueryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.T
 	}
 	traceCtx.span.End()
 
-	if prom := CurrentPrometheus(); prom != nil {
-		prom.ObserveDependency("db", traceCtx.operation, duration, data.Err)
+	// Ghi nhận dependency latency vào OTel Metrics thông qua Metrics trung tâm
+	if m := CurrentMetrics(); m != nil {
+		m.ObserveDependency("db", traceCtx.operation, duration, data.Err)
 	}
 }
 

@@ -31,7 +31,7 @@ flowchart TD
     Request["📥 HTTP Request"] --> Recovery["1. gin.Recovery()"]:::globalMid
     Recovery --> ReqID["2. RequestID Middleware"]:::globalMid
     ReqID --> Trace["3. OTelTraceContext"]:::globalMid
-    Trace --> Metrics["4. PrometheusHTTPMetrics"]:::globalMid
+    Trace --> Metrics["4. OTelHTTPMetrics"]:::globalMid
     Metrics --> CSRF["5. CookieOriginGuard"]:::globalMid
     CSRF --> PreRL["6. RateLimitPreAuth"]:::globalMid
     PreRL --> AccessLog["7. AccessLog()"]:::globalMid

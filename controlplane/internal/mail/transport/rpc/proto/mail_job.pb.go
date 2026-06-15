@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: internal/mail/proto/mail_job.proto
+// source: internal/mail/transport/rpc/proto/mail_job.proto
 
 package mailproto
 
@@ -38,7 +38,7 @@ type SmtpTestConfig struct {
 
 func (x *SmtpTestConfig) Reset() {
 	*x = SmtpTestConfig{}
-	mi := &file_internal_mail_proto_mail_job_proto_msgTypes[0]
+	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -50,7 +50,7 @@ func (x *SmtpTestConfig) String() string {
 func (*SmtpTestConfig) ProtoMessage() {}
 
 func (x *SmtpTestConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_proto_mail_job_proto_msgTypes[0]
+	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -63,7 +63,7 @@ func (x *SmtpTestConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SmtpTestConfig.ProtoReflect.Descriptor instead.
 func (*SmtpTestConfig) Descriptor() ([]byte, []int) {
-	return file_internal_mail_proto_mail_job_proto_rawDescGZIP(), []int{0}
+	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SmtpTestConfig) GetHost() string {
@@ -122,11 +122,80 @@ func (x *SmtpTestConfig) GetClientKeyPem() string {
 	return ""
 }
 
-var File_internal_mail_proto_mail_job_proto protoreflect.FileDescriptor
+// Cấu hình gửi email giao dịch/hệ thống dùng chung (generic mail job)
+type SendMailConfig struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	To                string                 `protobuf:"bytes,1,opt,name=to,proto3" json:"to,omitempty"`                                                                                                                                  // Địa chỉ nhận email
+	Subject           string                 `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`                                                                                                                        // Tiêu đề email
+	BodyHtml          string                 `protobuf:"bytes,3,opt,name=body_html,json=bodyHtml,proto3" json:"body_html,omitempty"`                                                                                                      // Nội dung email định dạng HTML (hoặc raw text)
+	TemplateVariables map[string]string      `protobuf:"bytes,4,rep,name=template_variables,json=templateVariables,proto3" json:"template_variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Các tham số động truyền vào template
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
 
-const file_internal_mail_proto_mail_job_proto_rawDesc = "" +
+func (x *SendMailConfig) Reset() {
+	*x = SendMailConfig{}
+	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendMailConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendMailConfig) ProtoMessage() {}
+
+func (x *SendMailConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendMailConfig.ProtoReflect.Descriptor instead.
+func (*SendMailConfig) Descriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SendMailConfig) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *SendMailConfig) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *SendMailConfig) GetBodyHtml() string {
+	if x != nil {
+		return x.BodyHtml
+	}
+	return ""
+}
+
+func (x *SendMailConfig) GetTemplateVariables() map[string]string {
+	if x != nil {
+		return x.TemplateVariables
+	}
+	return nil
+}
+
+var File_internal_mail_transport_rpc_proto_mail_job_proto protoreflect.FileDescriptor
+
+const file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc = "" +
 	"\n" +
-	"\"internal/mail/proto/mail_job.proto\x12\x04mail\"\xbf\x02\n" +
+	"0internal/mail/transport/rpc/proto/mail_job.proto\x12\x04mail\"\xbf\x02\n" +
 	"\x0eSmtpTestConfig\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
@@ -138,53 +207,64 @@ const file_internal_mail_proto_mail_job_proto_rawDesc = "" +
 	"\x0eclient_key_pem\x18\b \x01(\tH\x02R\fclientKeyPem\x88\x01\x01B\x0e\n" +
 	"\f_ca_cert_pemB\x12\n" +
 	"\x10_client_cert_pemB\x11\n" +
-	"\x0f_client_key_pemB,Z*controlplane/internal/mail/proto;mailprotob\x06proto3"
+	"\x0f_client_key_pem\"\xf9\x01\n" +
+	"\x0eSendMailConfig\x12\x0e\n" +
+	"\x02to\x18\x01 \x01(\tR\x02to\x12\x18\n" +
+	"\asubject\x18\x02 \x01(\tR\asubject\x12\x1b\n" +
+	"\tbody_html\x18\x03 \x01(\tR\bbodyHtml\x12Z\n" +
+	"\x12template_variables\x18\x04 \x03(\v2+.mail.SendMailConfig.TemplateVariablesEntryR\x11templateVariables\x1aD\n" +
+	"\x16TemplateVariablesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B:Z8controlplane/internal/mail/transport/rpc/proto;mailprotob\x06proto3"
 
 var (
-	file_internal_mail_proto_mail_job_proto_rawDescOnce sync.Once
-	file_internal_mail_proto_mail_job_proto_rawDescData []byte
+	file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescOnce sync.Once
+	file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescData []byte
 )
 
-func file_internal_mail_proto_mail_job_proto_rawDescGZIP() []byte {
-	file_internal_mail_proto_mail_job_proto_rawDescOnce.Do(func() {
-		file_internal_mail_proto_mail_job_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_mail_proto_mail_job_proto_rawDesc), len(file_internal_mail_proto_mail_job_proto_rawDesc)))
+func file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP() []byte {
+	file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescOnce.Do(func() {
+		file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc)))
 	})
-	return file_internal_mail_proto_mail_job_proto_rawDescData
+	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescData
 }
 
-var file_internal_mail_proto_mail_job_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
-var file_internal_mail_proto_mail_job_proto_goTypes = []any{
+var file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_internal_mail_transport_rpc_proto_mail_job_proto_goTypes = []any{
 	(*SmtpTestConfig)(nil), // 0: mail.SmtpTestConfig
+	(*SendMailConfig)(nil), // 1: mail.SendMailConfig
+	nil,                    // 2: mail.SendMailConfig.TemplateVariablesEntry
 }
-var file_internal_mail_proto_mail_job_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+var file_internal_mail_transport_rpc_proto_mail_job_proto_depIdxs = []int32{
+	2, // 0: mail.SendMailConfig.template_variables:type_name -> mail.SendMailConfig.TemplateVariablesEntry
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_internal_mail_proto_mail_job_proto_init() }
-func file_internal_mail_proto_mail_job_proto_init() {
-	if File_internal_mail_proto_mail_job_proto != nil {
+func init() { file_internal_mail_transport_rpc_proto_mail_job_proto_init() }
+func file_internal_mail_transport_rpc_proto_mail_job_proto_init() {
+	if File_internal_mail_transport_rpc_proto_mail_job_proto != nil {
 		return
 	}
-	file_internal_mail_proto_mail_job_proto_msgTypes[0].OneofWrappers = []any{}
+	file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_mail_proto_mail_job_proto_rawDesc), len(file_internal_mail_proto_mail_job_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_internal_mail_proto_mail_job_proto_goTypes,
-		DependencyIndexes: file_internal_mail_proto_mail_job_proto_depIdxs,
-		MessageInfos:      file_internal_mail_proto_mail_job_proto_msgTypes,
+		GoTypes:           file_internal_mail_transport_rpc_proto_mail_job_proto_goTypes,
+		DependencyIndexes: file_internal_mail_transport_rpc_proto_mail_job_proto_depIdxs,
+		MessageInfos:      file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes,
 	}.Build()
-	File_internal_mail_proto_mail_job_proto = out.File
-	file_internal_mail_proto_mail_job_proto_goTypes = nil
-	file_internal_mail_proto_mail_job_proto_depIdxs = nil
+	File_internal_mail_transport_rpc_proto_mail_job_proto = out.File
+	file_internal_mail_transport_rpc_proto_mail_job_proto_goTypes = nil
+	file_internal_mail_transport_rpc_proto_mail_job_proto_depIdxs = nil
 }

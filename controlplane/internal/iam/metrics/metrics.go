@@ -1,148 +1,105 @@
-// ======================================================================================================
+// ============================================================================
 // 📂 MODULE: controlplane/internal/iam/metrics/metrics.go
-//            Điểm Đo Lường Trung Tâm Của Module IAM (Prometheus Telemetry)
-// ======================================================================================================
+//            Điểm Đo Lường Trung Tâm Của Module IAM (OTel Metrics)
+// ============================================================================
 //
-// 📊 METRICS GRAPH TREE — VỊ TRÍ TRONG CÂY ĐO LƯỜNG CỦA CONTROLPLANE:
+// 📊 METRICS GRAPH TREE:
+//   aurora_controlplane
+//   └── iam
+//       ├── service_calls_total  [Counter]   — Đếm số lần gọi service IAM
+//       └── downstream_duration_seconds [Histogram] — Đo latency downstream
 //
-//   aurora_controlplane                          (namespace – toàn hệ thống)
-//   └── iam                                      (subsystem – module định danh & xác thực)
-//       ├── service_calls_total  [CounterVec]    ← FILE NÀY QUẢN LÝ
-//       │     Đếm tổng số lần gọi service layer của IAM, phân theo luồng, kết quả và cache path.
-//       │     Callsite tự truyền giá trị label — metric này là generic cho mọi IAM flow.
-//       │     Labels:
-//       │       flow       = bất kỳ tên luồng IAM nào ("register", "login", "refresh_token", ...)
-//       │       result     = outcome code từ taxonomy ("success", "already_exists", ...)
-//       │       cache_path = trạng thái presence cache ("cache_miss", "n/a", ...)
-//       │
-//       └── downstream_duration_seconds  [HistogramVec]    ← FILE NÀY QUẢN LÝ
-//             Đo latency (giây) của các tác vụ downstream IAM gọi xuống.
-//             Callsite tự truyền giá trị label — metric này là generic cho mọi downstream call.
-//             Labels:
-//               kind     = loại downstream ("db", "redis", "crypto")
-//               workflow = tên luồng IAM ("register", "login", "admin_rotation", ...)
-//               result   = outcome code tại bước đó ("success", "delivery_fail", ...)
-//               status   = "ok" | "error"
+// 🔌 ĐIỂM KẾT NỐI:
+//   • Sử dụng otel.Meter() global, lazy init qua sync.Once.
+//   • Không cần callback RegisterModuleMetrics như Prometheus cũ.
 //
-// ❌ PHẠM VI KHÔNG BAO GỒM (đo đạc ở nơi khác):
-//   • HTTP-level metrics (request_total, request_duration_seconds, in_flight):
-//     → internal/http/middleware/observability.go
-//   • DB-level pgx tracing tổng hợp:
-//     → internal/observability/pgx_tracer.go
-//   • Redis hook tracing tổng hợp:
-//     → internal/observability/redis_hook.go
-//   • Global dependency histogram (dependency_duration_seconds):
-//     → internal/observability/prometheus.go
-//
-// 🔌 ĐIỂM KẾT NỐI VÀO HỆ THỐNG:
-//   • init() → observability.RegisterModuleMetrics(Register)
-//   • Register() được observability gọi khi khởi tạo Prometheus Registry.
-//   • Đăng ký đúng 1 lần (sync.Once), an toàn với môi trường concurrent.
-//
-// 🎯 NGUYÊN TẮC THIẾT KẾ:
-//   • 1 CounterVec + 1 HistogramVec cho toàn bộ module IAM — không tạo thêm metric mới.
-//   • API công khai gồm đúng 2 hàm generic: ObserveServiceCall & ObserveDownstream.
-//   • Callsite (service layer) tự truyền đầy đủ label value — metric không hard-code flow name.
-//   • Tất cả hàm Observe đều safe khi metric nil (chưa khởi tạo / unit test).
-// ======================================================================================================
+// 🎯 NGUYÊN TẮC:
+//   • 1 Counter + 1 Histogram cho toàn module IAM (Rule of Two).
+//   • Tất cả hàm Observe safe khi instrument nil (unit test / chưa init).
+// ============================================================================
 
 package iamMetrics
 
 import (
+	"context"
 	"sync"
 	"time"
 
-	"controlplane/internal/observability"
-
-	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
-// METRIC VARIABLES
+// OTel INSTRUMENT VARIABLES (lazy init qua sync.Once)
 // ──────────────────────────────────────────────────────────────────────────────
 
-// serviceCallsCounter đếm tổng số lần gọi service layer IAM.
-// FQN: aurora_controlplane_iam_service_calls_total
-var serviceCallsCounter *prometheus.CounterVec
+var (
+	// serviceCallsCounter đếm tổng số lần gọi service layer IAM.
+	serviceCallsCounter metric.Int64Counter
 
-// downstreamDuration đo latency (giây) các tác vụ downstream của module IAM.
-// FQN: aurora_controlplane_iam_downstream_duration_seconds
-var downstreamDuration *prometheus.HistogramVec
+	// downstreamDuration đo latency (giây) các tác vụ downstream của module IAM.
+	downstreamDuration metric.Float64Histogram
 
-// ──────────────────────────────────────────────────────────────────────────────
-// MODULE REGISTRATION (self-register vào Prometheus Registry qua init)
-// ──────────────────────────────────────────────────────────────────────────────
+	// initOnce đảm bảo instruments chỉ được tạo một lần duy nhất.
+	initOnce sync.Once
+)
 
-var registerOnce sync.Once
+// ensureInit khởi tạo OTel instruments một cách an toàn đa luồng.
+// Sử dụng Global MeterProvider (đã được app.go bootstrap thiết lập trước).
+func ensureInit() {
+	initOnce.Do(func() {
+		meter := otel.Meter("aurora-controlplane.iam")
 
-// Register đăng ký toàn bộ IAM metrics vào Prometheus Registry.
-// Namespace đã được chuẩn hóa bởi observability.NormalizeNamespace trước khi được truyền vào đây.
-// Nếu namespace không hợp lệ, lỗi sẽ được trả lên observability layer để xử lý theo policies engine.
-func Register(registry *prometheus.Registry, namespace string) error {
-	var registerErr error
-	registerOnce.Do(func() {
-		registerErr = registerIAMMetrics(registry, namespace)
+		// Counter: đếm tổng số lần gọi service IAM theo workflow và result
+		serviceCallsCounter, _ = meter.Int64Counter(
+			"aurora_controlplane_iam_service_calls_total",
+			metric.WithDescription("Total IAM service calls, partitioned by workflow and result outcome."),
+		)
+
+		// Histogram: đo latency downstream IAM (DB, Redis, Crypto)
+		downstreamDuration, _ = meter.Float64Histogram(
+			"aurora_controlplane_iam_downstream_duration_seconds",
+			metric.WithDescription("Latency in seconds of IAM downstream calls."),
+		)
 	})
-	return registerErr
-}
-
-func init() {
-	// Tự đăng ký module vào callback chain của observability layer.
-	// observability.RegisterModuleMetrics gọi Register() khi Prometheus Registry được khởi tạo.
-	observability.RegisterModuleMetrics(Register)
-}
-
-// registerIAMMetrics khởi tạo và đăng ký 2 metric dùng chung cho toàn module IAM.
-func registerIAMMetrics(registry *prometheus.Registry, namespace string) error {
-	// CounterVec: đếm tổng số lần gọi service IAM, phân loại đa chiều theo label.
-	serviceCallsCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: namespace,
-		Subsystem: "iam",
-		Name:      "service_calls_total",
-		Help:      "Total IAM service calls, partitioned by workflow and result outcome.",
-	}, []string{"workflow", "result"})
-
-	// HistogramVec: đo latency downstream của IAM với buckets phù hợp cho cả 3 loại tác vụ:
-	//   - Argon2id hash (~100–500ms, CPU-bound)
-	//   - Postgres write (~1–20ms, I/O-bound)
-	//   - Redis check   (~0.1–5ms, network-bound)
-	downstreamDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: namespace,
-		Subsystem: "iam",
-		Name:      "downstream_duration_seconds",
-		Help:      "Latency in seconds of IAM downstream calls (db, redis, crypto), partitioned by kind, workflow, destination, result and status.",
-		Buckets:   []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5},
-	}, []string{"kind", "workflow", "destination", "result", "status"})
-
-	for _, c := range []prometheus.Collector{serviceCallsCounter, downstreamDuration} {
-		if err := registry.Register(c); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // PUBLIC API — 2 hàm generic cho mọi callsite trong module IAM
 // ──────────────────────────────────────────────────────────────────────────────
 
-// ServiceCall ghi nhận một lần gọi service IAM vào serviceCallsCounter.
-// Callsite tự truyền đầy đủ các label, giữ tính generic cho mọi IAM flow.
+// ServiceCall ghi nhận một lần gọi service IAM.
+// Callsite tự truyền đầy đủ label values.
 func ServiceCall(workflow, result string) {
+	ensureInit()
 	if serviceCallsCounter != nil {
-		serviceCallsCounter.WithLabelValues(workflow, result).Inc()
+		serviceCallsCounter.Add(context.Background(), 1,
+			metric.WithAttributes(
+				attribute.String("workflow", workflow),
+				attribute.String("result", result),
+			),
+		)
 	}
 }
 
-// Downstream ghi nhận latency của một tác vụ downstream IAM vào downstreamDuration.
-// Callsite tự truyền đầy đủ các label để giữ tính generic.
+// Downstream ghi nhận latency của một tác vụ downstream IAM.
+// Callsite tự truyền đầy đủ label values.
 func Downstream(kind, workflow, destination, result string, duration time.Duration, err error) {
+	ensureInit()
 	if downstreamDuration != nil {
 		status := "ok"
 		if err != nil {
 			status = "error"
 		}
-		downstreamDuration.WithLabelValues(kind, workflow, destination, result, status).Observe(duration.Seconds())
+		downstreamDuration.Record(context.Background(), duration.Seconds(),
+			metric.WithAttributes(
+				attribute.String("kind", kind),
+				attribute.String("workflow", workflow),
+				attribute.String("destination", destination),
+				attribute.String("result", result),
+				attribute.String("status", status),
+			),
+		)
 	}
 }
-

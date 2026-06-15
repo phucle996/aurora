@@ -1,3 +1,11 @@
+// ============================================================================
+// 📂 MODULE: controlplane/internal/core/metrics/secret_metric.go
+//            Public API cho Secret Rotation / Lifecycle / Auth Fallback Metrics
+// ============================================================================
+// Các hàm Observe public được gọi từ service layer. Chuẩn hóa input trước khi
+// ghi nhận vào OTel instruments đã khởi tạo trong module_register.go.
+// ============================================================================
+
 package coreMetric
 
 import (
@@ -5,7 +13,9 @@ import (
 	"time"
 )
 
+// ObserveSecretLifecycle ghi nhận sự kiện vòng đời secret với thời gian bắt đầu.
 func ObserveSecretLifecycle(operation string, family string, result string, startedAt time.Time) {
+	// Chuẩn hóa input trước khi ghi metrics
 	operation = strings.TrimSpace(operation)
 	if operation == "" {
 		operation = "unknown"
@@ -18,39 +28,33 @@ func ObserveSecretLifecycle(operation string, family string, result string, star
 	if result == "" {
 		result = "unknown"
 	}
-	if secretLifecycleTotalCounter == nil || secretLifecycleDurHistogram == nil {
-		return
-	}
-	secretLifecycleTotalCounter.WithLabelValues(operation, family, result).Inc()
-	secretLifecycleDurHistogram.WithLabelValues(operation, family, result).Observe(time.Since(startedAt).Seconds())
+
+	// Delegate sang hàm trong module_register.go đã sử dụng OTel instruments
+	duration := time.Since(startedAt)
+	ensureInit()
+	observeSecretLifecycleInternal(operation, family, result, duration)
 }
 
+// ObserveSecretRotationSuccess ghi nhận rotation thành công.
 func ObserveSecretRotationSuccess(family string) {
-	if secretRotationSuccessCounter == nil {
-		return
-	}
 	family = strings.TrimSpace(family)
 	if family == "" {
 		family = "unknown"
 	}
-	secretRotationSuccessCounter.WithLabelValues(family).Inc()
+	ObserveSecretRotationSuccessOTel(family)
 }
 
+// ObserveSecretRotationFailure ghi nhận rotation thất bại.
 func ObserveSecretRotationFailure(family string) {
-	if secretRotationFailureCounter == nil {
-		return
-	}
 	family = strings.TrimSpace(family)
 	if family == "" {
 		family = "unknown"
 	}
-	secretRotationFailureCounter.WithLabelValues(family).Inc()
+	ObserveSecretRotationFailureOTel(family)
 }
 
+// ObserveAuthTokenVerifyFallback ghi nhận token verify fallback path.
 func ObserveAuthTokenVerifyFallback(family, versionState string) {
-	if authTokenVerifyFallbackCount == nil {
-		return
-	}
 	family = strings.TrimSpace(family)
 	if family == "" {
 		family = "unknown"
@@ -59,5 +63,5 @@ func ObserveAuthTokenVerifyFallback(family, versionState string) {
 	if versionState == "" {
 		versionState = "unknown"
 	}
-	authTokenVerifyFallbackCount.WithLabelValues(family, versionState).Inc()
+	ObserveAuthTokenFallback(family, versionState)
 }

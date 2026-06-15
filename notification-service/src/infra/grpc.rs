@@ -108,10 +108,8 @@ impl GrpcAuthClient {
         let response = client.verify_admin_trinity_token(request).await;
 
         // Lưu trữ các chỉ số đo đạc cuộc gọi gRPC
-        let duration = start_time.elapsed().as_secs_f64();
         let status = if response.is_ok() { "ok" } else { "error" };
-        crate::observability::prometheus::GRPC_CALLS_TOTAL.with_label_values(&["verify_admin_trinity_token", status]).inc();
-        crate::observability::prometheus::GRPC_CALL_DURATION_SECONDS.with_label_values(&["verify_admin_trinity_token", status]).observe(duration);
+        crate::observability::metrics::MetricsManager::record_grpc_call("verify_admin_trinity_token", status, start_time.elapsed());
 
         match response {
             Ok(res) => Ok(res.into_inner()),
@@ -151,10 +149,8 @@ impl GrpcAuthClient {
         let response = client.verify_user_trinity_token(request).await;
 
         // Lưu trữ các chỉ số đo đạc cuộc gọi gRPC
-        let duration = start_time.elapsed().as_secs_f64();
         let status = if response.is_ok() { "ok" } else { "error" };
-        crate::observability::prometheus::GRPC_CALLS_TOTAL.with_label_values(&["verify_user_trinity_token", status]).inc();
-        crate::observability::prometheus::GRPC_CALL_DURATION_SECONDS.with_label_values(&["verify_user_trinity_token", status]).observe(duration);
+        crate::observability::metrics::MetricsManager::record_grpc_call("verify_user_trinity_token", status, start_time.elapsed());
 
         match response {
             Ok(res) => Ok(res.into_inner()),

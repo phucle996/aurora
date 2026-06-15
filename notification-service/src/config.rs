@@ -3,8 +3,6 @@ use std::env;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub app_port: u16,
-    // Cổng HTTP phục vụ cho việc export metrics sang Prometheus (mặc định: 2112)
-    pub metrics_port: u16,
     pub centrifugo_api_url: String,
     pub centrifugo_api_key: String,
     pub redis_url: String,
@@ -15,6 +13,8 @@ pub struct Config {
     pub controlplane_grpc_client_cert: Option<String>,
     // Đường dẫn khóa riêng tư của Client phục vụ mTLS
     pub controlplane_grpc_client_key: Option<String>,
+    pub otel_exporter_otlp_endpoint: String,
+    pub zone_id: String,
 }
 
 impl Config {
@@ -26,10 +26,6 @@ impl Config {
                 .unwrap_or_else(|_| "8083".to_string())
                 .parse()
                 .expect("APP_PORT must be a valid number"),
-            metrics_port: env::var("METRICS_PORT")
-                .unwrap_or_else(|_| "2112".to_string())
-                .parse()
-                .expect("METRICS_PORT must be a valid number"),
             centrifugo_api_url: env::var("CENTRIFUGO_API_URL")
                 .unwrap_or_else(|_| "http://centrifugo:8000/api".to_string()),
             centrifugo_api_key: env::var("CENTRIFUGO_API_KEY")
@@ -41,6 +37,9 @@ impl Config {
             controlplane_grpc_ca_cert: env::var("CONTROLPLANE_GRPC_CA_CERT").ok(),
             controlplane_grpc_client_cert: env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok(),
             controlplane_grpc_client_key: env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok(),
+            otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://controlplane-otel-collector:4317".to_string()),
+            zone_id: env::var("ZONE_ID").unwrap_or_else(|_| "zone-global".to_string()),
         }
     }
 }

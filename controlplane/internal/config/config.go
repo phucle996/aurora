@@ -33,16 +33,31 @@ type Config struct {
 	RedisJob   RedisCfg
 	GRPC       GRPCCfg
 	Telegram   TelegramCfg
-	Prometheus PrometheusCfg
+	OTel       OTelCfg
 	SchemaSQL  SchemaSQLCfg
 	Agent      AgentCfg
 }
 
-// PrometheusCfg lưu trữ các tham số kết nối và truy vấn metrics tới Prometheus Server.
-type PrometheusCfg struct {
-	BaseURL      string
-	QueryTimeout time.Duration
-	DefaultStep  time.Duration
+// OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
+type OTelCfg struct {
+	Enabled       bool
+	FailStrategy  string
+	ExporterType  string
+	Endpoint      string
+	Insecure      bool
+	SamplingRatio float64
+	ExportTimeout time.Duration
+	BatchTimeout  time.Duration
+	BatchMaxSize  int
+	BatchMaxQueue int
+	TLS           OTelTLSCfg
+}
+
+type OTelTLSCfg struct {
+	Mode       string
+	CACertPath string
+	CertPath   string
+	KeyPath    string
 }
 
 // AppCfg lưu trữ thông tin cấu hình cơ bản của Web Application và HTTP Server.
@@ -243,10 +258,23 @@ func LoadConfig() *Config {
 			ChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
 		},
 
-		Prometheus: PrometheusCfg{
-			BaseURL:      getEnv("PROMETHEUS_BASE_URL", "http://127.0.0.1:9090"),
-			QueryTimeout: 5 * time.Second,
-			DefaultStep:  15 * time.Second,
+		OTel: OTelCfg{
+			Enabled:       getEnvAsBool("OTEL_ENABLED", true),
+			FailStrategy:  getEnv("OTEL_FAIL_STRATEGY", "fail_open"),
+			ExporterType:  getEnv("OTEL_EXPORTER_TYPE", "otlpgrpc"),
+			Endpoint:      getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
+			Insecure:      getEnvAsBool("OTEL_EXPORTER_OTLP_INSECURE", true),
+			SamplingRatio: getEnvAsFloat64("OTEL_TRACES_SAMPLER_ARG", 1.0),
+			ExportTimeout: getEnvAsDuration("OTEL_EXPORT_TIMEOUT", 5*time.Second),
+			BatchTimeout:  getEnvAsDuration("OTEL_BSP_SCHEDULE_DELAY", 2*time.Second),
+			BatchMaxSize:  getEnvAsInt("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
+			BatchMaxQueue: getEnvAsInt("OTEL_BSP_MAX_QUEUE_SIZE", 2048),
+			TLS: OTelTLSCfg{
+				Mode:       getEnv("OTEL_TLS_MODE", "disable"),
+				CACertPath: getEnv("OTEL_TLS_CA", ""),
+				CertPath:   getEnv("OTEL_TLS_CERT", ""),
+				KeyPath:    getEnv("OTEL_TLS_KEY", ""),
+			},
 		},
 		SchemaSQL: SchemaSQLCfg{
 			Core: "core",

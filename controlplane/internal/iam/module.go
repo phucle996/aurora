@@ -67,7 +67,6 @@ import (
 	"context"
 	"strings"
 
-	infraredis "controlplane/infra/redis"
 	"controlplane/infra/telegram"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
@@ -176,19 +175,13 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct one time token service")
 	}
 
-	// Redis Stream Event Publisher - Phát sự kiện bảo mật (Security audit logging)
-	streamPublisher := infraredis.NewRedisStreamPublisher(rds)
-	if streamPublisher == nil {
-		return nil, errors.New("iam module: failed to initialize redis stream event publisher")
-	}
-
 	// ------------------------------------------------------------------------
 	// 💼 GIAI ĐOẠN 3: SERVICE LAYER INITIALIZATION
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
 
 	// Device Management Service
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, cacheEngine, streamPublisher)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, cacheEngine)
 	if deviceSvc == nil {
 		return nil, errors.New("iam module: failed to construct user device management service")
 	}
@@ -207,9 +200,15 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP refresh token handler")
 	}
 
+	// Khởi tạo repository phục vụ cơ chế Transactional Outbox riêng biệt của module IAM (giải quyết HA & data reliability)
+	iamOutboxRepo := iamRepoImpl.NewIamOutboxRepository(db, cfg)
+	if iamOutboxRepo == nil {
+		return nil, errors.New("iam module: failed to construct IAM outbox repository")
+	}
+
 	authSvc := iamSvcImpl.NewAuthService(
 		cfg, authRepo, refreshTokenSvc, deviceSvc,
-		cacheEngine, oneTimeTokenSvc, streamPublisher,
+		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
 	)
 	if authSvc == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")

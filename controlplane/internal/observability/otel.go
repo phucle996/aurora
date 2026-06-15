@@ -5,22 +5,20 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	otelPolicy "controlplane/internal/policyengine/policies/otel"
 	"controlplane/pkg/constant"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -29,59 +27,38 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// DynamicRatioSampler is a custom thread-safe, lock-free sampler that allows updating
-// trace sampling ratios dynamically at runtime without restarting the tracer provider.
-type DynamicRatioSampler struct {
-	ratio uint64
+// OTelConfig đại diện cho cấu hình tĩnh OpenTelemetry.
+type OTelConfig struct {
+	Enabled       bool
+	ExporterType  string
+	Endpoint      string
+	Insecure      bool
+	SamplingRatio float64
+	ExportTimeout time.Duration
+	BatchTimeout  time.Duration
+	BatchMaxSize  int
+	BatchMaxQueue int
+	TLS           OTelTLSConfig
 }
 
-// NewDynamicRatioSampler constructs a new DynamicRatioSampler.
-func NewDynamicRatioSampler(ratio float64) *DynamicRatioSampler {
-	s := &DynamicRatioSampler{}
-	s.SetRatio(ratio)
-	return s
+// OTelTLSConfig chứa cấu hình bảo mật TLS/mTLS cho exporter.
+type OTelTLSConfig struct {
+	Mode       string
+	CACertPath string
+	CertPath   string
+	KeyPath    string
 }
 
-// SetRatio updates the active sampling ratio.
-func (s *DynamicRatioSampler) SetRatio(ratio float64) {
-	if ratio < 0.0 {
-		ratio = 0.0
-	} else if ratio > 1.0 {
-		ratio = 1.0
-	}
-	atomic.StoreUint64(&s.ratio, math.Float64bits(ratio))
-}
-
-// GetRatio returns the active sampling ratio.
-func (s *DynamicRatioSampler) GetRatio() float64 {
-	bits := atomic.LoadUint64(&s.ratio)
-	return math.Float64frombits(bits)
-}
-
-// ShouldSample decides whether a span should be sampled based on the current ratio.
-func (s *DynamicRatioSampler) ShouldSample(parameters sdktrace.SamplingParameters) sdktrace.SamplingResult {
-	ratio := s.GetRatio()
-	return sdktrace.TraceIDRatioBased(ratio).ShouldSample(parameters)
-}
-
-// Description returns the description of the sampler.
-func (s *DynamicRatioSampler) Description() string {
-	return fmt.Sprintf("DynamicRatioSampler{ratio: %0.4f}", s.GetRatio())
-}
-
-// OTel manages the OpenTelemetry tracer instance and supports thread-safe hot-swaps.
+// OTel quản lý các đối tượng Tracer và Meter của OpenTelemetry.
 type OTel struct {
-	mu             sync.RWMutex
-	tracer         trace.Tracer
-	propagator     propagation.TextMapPropagator
-	shutdown       func(context.Context) error
-	dynamicSampler *DynamicRatioSampler
-	activeCfg      *otelPolicy.CompiledPolicy
+	tracer        trace.Tracer
+	meterProvider *sdkmetric.MeterProvider
+	propagator    propagation.TextMapPropagator
+	shutdown      func(context.Context) error
 }
 
-// InitOTel initializes the global OpenTelemetry tracing system using configurations
-// provided by the early-booted Policy Engine.
-func InitOTel(ctx context.Context, cfg *otelPolicy.CompiledPolicy, serviceName string) (*OTel, error) {
+// InitOTel khởi tạo hệ thống tracing và metrics của OpenTelemetry tĩnh lúc khởi động.
+func InitOTel(ctx context.Context, cfg *OTelConfig, serviceName string) (*OTel, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -101,9 +78,9 @@ func InitOTel(ctx context.Context, cfg *otelPolicy.CompiledPolicy, serviceName s
 		return nil, fmt.Errorf("observability: init otel resource: %w", err)
 	}
 
-	dynamicSampler := NewDynamicRatioSampler(cfg.SamplingRatio)
-	sampler := sdktrace.ParentBased(dynamicSampler)
-	options := []sdktrace.TracerProviderOption{
+	// [1] TRACING SETUP
+	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SamplingRatio))
+	traceOptions := []sdktrace.TracerProviderOption{
 		sdktrace.WithSampler(sampler),
 		sdktrace.WithResource(res),
 	}
@@ -114,122 +91,60 @@ func InitOTel(ctx context.Context, cfg *otelPolicy.CompiledPolicy, serviceName s
 		if err != nil {
 			return nil, err
 		}
-		options = append(options, sdktrace.WithBatcher(spanExporter,
+		traceOptions = append(traceOptions, sdktrace.WithBatcher(spanExporter,
 			sdktrace.WithBatchTimeout(cfg.BatchTimeout),
 			sdktrace.WithExportTimeout(cfg.ExportTimeout),
 			sdktrace.WithMaxExportBatchSize(cfg.BatchMaxSize),
 			sdktrace.WithMaxQueueSize(cfg.BatchMaxQueue),
 		))
 	}
-
-	tp := sdktrace.NewTracerProvider(options...)
-	propagator := propagation.TraceContext{}
+	tp := sdktrace.NewTracerProvider(traceOptions...)
 	otel.SetTracerProvider(tp)
+
+	// [2] METRICS SETUP
+	var meterProvider *sdkmetric.MeterProvider
+	if cfg.Enabled {
+		metricExporter, err := newOTLPMetricExporter(ctx, cfg)
+		if err == nil {
+			reader := sdkmetric.NewPeriodicReader(metricExporter,
+				sdkmetric.WithInterval(30*time.Second),
+			)
+			meterProvider = sdkmetric.NewMeterProvider(
+				sdkmetric.WithResource(res),
+				sdkmetric.WithReader(reader),
+			)
+			otel.SetMeterProvider(meterProvider)
+		}
+	}
+
+	propagator := propagation.TraceContext{}
 	otel.SetTextMapPropagator(propagator)
 
+	shutdownFn := func(sCtx context.Context) error {
+		var errs []string
+		if err := tp.Shutdown(sCtx); err != nil {
+			errs = append(errs, fmt.Sprintf("tracer: %v", err))
+		}
+		if meterProvider != nil {
+			if err := meterProvider.Shutdown(sCtx); err != nil {
+				errs = append(errs, fmt.Sprintf("meter: %v", err))
+			}
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("otel shutdown error: %s", strings.Join(errs, ", "))
+		}
+		return nil
+	}
+
 	return &OTel{
-		tracer:         tp.Tracer(serviceName),
-		propagator:     propagator,
-		shutdown:       tp.Shutdown,
-		dynamicSampler: dynamicSampler,
-		activeCfg:      cfg,
+		tracer:        tp.Tracer(serviceName),
+		meterProvider: meterProvider,
+		propagator:    propagator,
+		shutdown:      shutdownFn,
 	}, nil
 }
 
-// Update handles dynamic updates from the Policy Engine thread-safely.
-func (o *OTel) Update(ctx context.Context, newCfg *otelPolicy.CompiledPolicy, serviceName string) error {
-	if o == nil || newCfg == nil {
-		return nil
-	}
-
-	o.mu.RLock()
-	oldCfg := o.activeCfg
-	o.mu.RUnlock()
-
-	// Check if only the SamplingRatio changed
-	onlySamplingChanged := false
-	if oldCfg != nil && oldCfg.Enabled == newCfg.Enabled &&
-		oldCfg.ExporterType == newCfg.ExporterType &&
-		oldCfg.Endpoint == newCfg.Endpoint &&
-		oldCfg.Insecure == newCfg.Insecure &&
-		oldCfg.ExportTimeout == newCfg.ExportTimeout &&
-		oldCfg.BatchTimeout == newCfg.BatchTimeout &&
-		oldCfg.BatchMaxSize == newCfg.BatchMaxSize &&
-		oldCfg.BatchMaxQueue == newCfg.BatchMaxQueue &&
-		oldCfg.TLS.Mode == newCfg.TLS.Mode &&
-		oldCfg.TLS.CACertPath == newCfg.TLS.CACertPath &&
-		oldCfg.TLS.CertPath == newCfg.TLS.CertPath &&
-		oldCfg.TLS.KeyPath == newCfg.TLS.KeyPath {
-
-		if oldCfg.SamplingRatio != newCfg.SamplingRatio {
-			onlySamplingChanged = true
-		}
-	}
-
-	if onlySamplingChanged {
-		o.dynamicSampler.SetRatio(newCfg.SamplingRatio)
-		o.mu.Lock()
-		o.activeCfg = newCfg
-		o.mu.Unlock()
-		return nil
-	}
-
-	// Rebuild TracerProvider due to batch parameters or connection updates
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes("",
-			attribute.String("service.name", serviceName),
-		),
-	)
-	if err != nil {
-		return fmt.Errorf("observability: init resource error during swap: %w", err)
-	}
-
-	dynamicSampler := NewDynamicRatioSampler(newCfg.SamplingRatio)
-	sampler := sdktrace.ParentBased(dynamicSampler)
-	options := []sdktrace.TracerProviderOption{
-		sdktrace.WithSampler(sampler),
-		sdktrace.WithResource(res),
-	}
-
-	var spanExporter sdktrace.SpanExporter
-	if newCfg.Enabled {
-		spanExporter, err = newOTLPTraceExporter(ctx, newCfg)
-		if err != nil {
-			return err
-		}
-		options = append(options, sdktrace.WithBatcher(spanExporter,
-			sdktrace.WithBatchTimeout(newCfg.BatchTimeout),
-			sdktrace.WithExportTimeout(newCfg.ExportTimeout),
-			sdktrace.WithMaxExportBatchSize(newCfg.BatchMaxSize),
-			sdktrace.WithMaxQueueSize(newCfg.BatchMaxQueue),
-		))
-	}
-
-	tp := sdktrace.NewTracerProvider(options...)
-	newTracer := tp.Tracer(serviceName)
-
-	o.mu.Lock()
-	oldShutdown := o.shutdown
-	o.tracer = newTracer
-	o.shutdown = tp.Shutdown
-	o.dynamicSampler = dynamicSampler
-	o.activeCfg = newCfg
-	o.mu.Unlock()
-
-	// Graceful Drain: Drain and shut down the old provider in a background routine with a 5s timeout
-	if oldShutdown != nil {
-		go func() {
-			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = oldShutdown(drainCtx)
-		}()
-	}
-
-	return nil
-}
-
-func newOTLPTraceExporter(ctx context.Context, cfg *otelPolicy.CompiledPolicy) (sdktrace.SpanExporter, error) {
+func newOTLPTraceExporter(ctx context.Context, cfg *OTelConfig) (sdktrace.SpanExporter, error) {
 	endpoint := strings.TrimSpace(cfg.Endpoint)
 	if endpoint == "" {
 		return nil, fmt.Errorf("observability: otlp endpoint is required")
@@ -264,6 +179,41 @@ func newOTLPTraceExporter(ctx context.Context, cfg *otelPolicy.CompiledPolicy) (
 	return exporter, nil
 }
 
+func newOTLPMetricExporter(ctx context.Context, cfg *OTelConfig) (sdkmetric.Exporter, error) {
+	endpoint := strings.TrimSpace(cfg.Endpoint)
+	if endpoint == "" {
+		return nil, fmt.Errorf("observability: otlp endpoint is required for metrics")
+	}
+
+	options := []otlpmetricgrpc.Option{
+		otlpmetricgrpc.WithDialOption(grpc.WithBlock()),
+	}
+	if parsed, err := url.Parse(endpoint); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		options = append(options, otlpmetricgrpc.WithEndpointURL(endpoint))
+	} else {
+		options = append(options, otlpmetricgrpc.WithEndpoint(strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")))
+	}
+
+	if cfg.TLS.Mode == "tls" || cfg.TLS.Mode == "mtls" {
+		tlsCreds, err := loadOTelTLSCredentials(cfg.TLS.Mode, cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("observability: load TLS credentials for metrics: %w", err)
+		}
+		options = append(options, otlpmetricgrpc.WithTLSCredentials(tlsCreds))
+	} else if cfg.Insecure {
+		options = append(options, otlpmetricgrpc.WithTLSCredentials(insecure.NewCredentials()))
+	}
+
+	exportCtx, cancel := context.WithTimeout(ctx, cfg.ExportTimeout)
+	defer cancel()
+
+	exporter, err := otlpmetricgrpc.New(exportCtx, options...)
+	if err != nil {
+		return nil, fmt.Errorf("observability: init otlp metric exporter: %w", err)
+	}
+	return exporter, nil
+}
+
 func loadOTelTLSCredentials(mode string, caCertPath, certPath, keyPath string) (credentials.TransportCredentials, error) {
 	caCert, err := os.ReadFile(caCertPath)
 	if err != nil {
@@ -290,20 +240,17 @@ func loadOTelTLSCredentials(mode string, caCertPath, certPath, keyPath string) (
 	return credentials.NewTLS(tlsConfig), nil
 }
 
+// Shutdown thực hiện xả (flush) dữ liệu trong bộ nhớ đệm và đóng các kết nối của OTel an toàn.
+// Được gọi lúc ứng dụng tắt (graceful shutdown) để tránh mất mát vết (traces) và chỉ số (metrics).
 func (o *OTel) Shutdown(ctx context.Context) error {
-	if o == nil {
+	if o == nil || o.shutdown == nil {
 		return nil
 	}
-	o.mu.RLock()
-	shutdownFn := o.shutdown
-	o.mu.RUnlock()
-
-	if shutdownFn == nil {
-		return nil
-	}
-	return shutdownFn(ctx)
+	return o.shutdown(ctx)
 }
 
+// Extract giải nén thông tin trace context (traceparent) từ HTTP Request Headers vào Go Context.
+// Giúp liên kết vết phân tán từ client hoặc service upstream gửi đến.
 func (o *OTel) Extract(ctx context.Context, headers http.Header) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -314,6 +261,8 @@ func (o *OTel) Extract(ctx context.Context, headers http.Header) context.Context
 	return o.propagator.Extract(ctx, propagation.HeaderCarrier(headers))
 }
 
+// Inject nạp thông tin trace context từ Go Context hiện tại vào HTTP Headers trước khi gửi request đi.
+// Giúp truyền vết phân tán tới các service downstream khác.
 func (o *OTel) Inject(ctx context.Context, headers http.Header) {
 	if ctx == nil || headers == nil {
 		return
@@ -324,23 +273,19 @@ func (o *OTel) Inject(ctx context.Context, headers http.Header) {
 	o.propagator.Inject(ctx, propagation.HeaderCarrier(headers))
 }
 
+// StartServerSpan khởi tạo và bắt đầu một Span mới với vai trò xử lý yêu cầu phía Server (SpanKindServer).
+// Được sử dụng bởi các middleware để ghi vết toàn bộ vòng đời xử lý request trên controlplane.
 func (o *OTel) StartServerSpan(ctx context.Context, name string) (context.Context, trace.Span) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if o == nil {
+	if o == nil || o.tracer == nil {
 		return ctx, trace.SpanFromContext(ctx)
 	}
-	o.mu.RLock()
-	tracer := o.tracer
-	o.mu.RUnlock()
-
-	if tracer == nil {
-		return ctx, trace.SpanFromContext(ctx)
-	}
-	return tracer.Start(ctx, strings.TrimSpace(name), trace.WithSpanKind(trace.SpanKindServer))
+	return o.tracer.Start(ctx, strings.TrimSpace(name), trace.WithSpanKind(trace.SpanKindServer))
 }
 
+// ExtractTraceparent là hàm tiện ích giúp lấy trực tiếp chuỗi traceparent từ Header của HTTP Request.
 func ExtractTraceparent(r *http.Request) string {
 	if r == nil {
 		return ""

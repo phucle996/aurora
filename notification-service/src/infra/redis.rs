@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use prost::Message;
 use chrono::{Utc, TimeZone};
-use crate::observability::prometheus::{REDIS_EVENTS_TOTAL, CENTRIFUGO_PUBLISHES_TOTAL, DELIVERED_EVENT_LAG_SECONDS};
+use crate::observability::metrics::MetricsManager;
 use crate::observability::otel::TraceContext;
 
 // Sinh mã Rust từ file proto/job_event.proto
@@ -138,7 +138,7 @@ impl RedisSubscriber {
 
                                                 // 5. Xử lý giải mã bản tin và đẩy qua Centrifugo
                                                 if let Some(raw_bytes) = binary_data {
-                                                    REDIS_EVENTS_TOTAL.with_label_values(&["consumed"]).inc();
+                                                    MetricsManager::record_redis_event("consumed");
                                                     if let Ok(event) = JobNotificationEvent::decode(&*raw_bytes) {
                                                         // Trích xuất hoặc khởi tạo Trace Context từ sự kiện nhận được
                                                         let trace_ctx = TraceContext::parse(&event.trace_parent)
@@ -176,12 +176,12 @@ impl RedisSubscriber {
                                                             let channel_name = format!("personal:{}", event_user_id);
                                                             match centrifugo_client.publish(&channel_name, client_payload).await {
                                                                 Ok(_) => {
-                                                                    CENTRIFUGO_PUBLISHES_TOTAL.with_label_values(&["success"]).inc();
+                                                                    MetricsManager::record_centrifugo_publish("success");
                                                                     
                                                                     // Đo lường độ trễ từ khi phát sinh CDC ở DB đến lúc xuất bản Websocket
                                                                     let current_time = Utc::now().timestamp();
                                                                     let lag = (current_time - event_created_at).max(0) as f64;
-                                                                    DELIVERED_EVENT_LAG_SECONDS.with_label_values(&["success"]).observe(lag);
+                                                                    MetricsManager::record_delivered_lag("success", Duration::from_secs_f64(lag));
 
                                                                     // Tạo kết nối Redis riêng để thực hiện XACK tránh nghẽn thread đọc
                                                                     if let Ok(mut ack_conn) = client.get_async_connection().await {
@@ -193,17 +193,17 @@ impl RedisSubscriber {
                                                                             .await;
                                                                         
                                                                         if let Err(ack_err) = ack_res {
-                                                                            REDIS_EVENTS_TOTAL.with_label_values(&["ack_failed"]).inc();
+                                                                            MetricsManager::record_redis_event("ack_failed");
                                                                             Logger::sys_error(
                                                                                 "redis.subscriber",
                                                                                 "Failed to ACK message",
                                                                                 &format!("{:?}", ack_err),
                                                                             );
                                                                         } else {
-                                                                            REDIS_EVENTS_TOTAL.with_label_values(&["ack_success"]).inc();
+                                                                            MetricsManager::record_redis_event("ack_success");
                                                                         }
                                                                     } else {
-                                                                        REDIS_EVENTS_TOTAL.with_label_values(&["ack_conn_failed"]).inc();
+                                                                        MetricsManager::record_redis_event("ack_conn_failed");
                                                                         Logger::sys_error(
                                                                             "redis.subscriber",
                                                                             "Failed to obtain Redis connection for XACK",
@@ -212,7 +212,7 @@ impl RedisSubscriber {
                                                                     }
                                                                 }
                                                                 Err(pub_err) => {
-                                                                    CENTRIFUGO_PUBLISHES_TOTAL.with_label_values(&["failed"]).inc();
+                                                                    MetricsManager::record_centrifugo_publish("failed");
                                                                     Logger::sys_error(
                                                                         "redis.subscriber",
                                                                         "Failed to publish to Centrifugo. Message held in PEL.",
@@ -222,7 +222,7 @@ impl RedisSubscriber {
                                                             }
                                                         }).await;
                                                     } else {
-                                                        REDIS_EVENTS_TOTAL.with_label_values(&["decode_failed"]).inc();
+                                                        MetricsManager::record_redis_event("decode_failed");
                                                         Logger::sys_error(
                                                             "redis.subscriber",
                                                             "Protobuf decode failed for incoming stream message.",

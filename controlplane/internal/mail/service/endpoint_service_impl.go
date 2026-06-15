@@ -62,7 +62,7 @@ func (s *endpointServiceImpl) CreateEndpoint(
 ) error {
 	zoneUUID, ok := middleware.GetZoneID(ctx)
 	if !ok || zoneUUID == uuid.Nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
+		mailMetrics.IncEndpointOperations("create", "global", mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
 	}
 	params.ZoneID = zoneUUID
@@ -71,18 +71,18 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	switch params.TLSMode {
 	case mailEntity.TLSModeTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
+			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
 			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
 	case mailEntity.TLSModeMTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
+			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
 			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
 	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
+		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
@@ -91,7 +91,7 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	if params.Password != "" {
 		enc, err := security.EncryptSecret(params.Password)
 		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
 			return apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 		}
 		encryptedPassword = enc
@@ -102,7 +102,7 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	if params.ClientKeyPEM != "" {
 		enc, err := security.EncryptSecret(params.ClientKeyPEM)
 		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
 			return apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 		}
 		encryptedClientKey = enc
@@ -110,7 +110,7 @@ func (s *endpointServiceImpl) CreateEndpoint(
 
 	newID, err := uuid.NewV7()
 	if err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
@@ -137,11 +137,11 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	}
 
 	if err := s.endpointRepo.Create(ctx, ent); err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("create", params.ZoneID.String(), mailTaxonomy.Success).Inc()
+	mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.Success)
 	return nil
 }
 
@@ -157,7 +157,7 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*m
 	}
 
 	if err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.OutcomeNotFound).Inc()
+		mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.OutcomeNotFound)
 		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
 	}
 
@@ -165,7 +165,7 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*m
 	if ent.Password != "" {
 		dec, err := security.DecryptSecret(ent.Password)
 		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+			mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
 			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 		}
 		ent.Password = dec
@@ -175,13 +175,13 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*m
 	if ent.ClientKeyPEM != "" {
 		dec, err := security.DecryptSecret(ent.ClientKeyPEM)
 		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+			mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
 			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 		}
 		ent.ClientKeyPEM = dec
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("get", zoneID.String(), mailTaxonomy.Success).Inc()
+	mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.Success)
 	return ent, nil
 }
 
@@ -203,7 +203,7 @@ func (s *endpointServiceImpl) ListEndpoints(
 	}
 
 	if err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+		mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return nil, "", apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
@@ -211,7 +211,7 @@ func (s *endpointServiceImpl) ListEndpoints(
 		if ent.Password != "" {
 			dec, err := security.DecryptSecret(ent.Password)
 			if err != nil {
-				mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+				mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
 				return nil, "", apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 			}
 			ent.Password = dec
@@ -219,14 +219,14 @@ func (s *endpointServiceImpl) ListEndpoints(
 		if ent.ClientKeyPEM != "" {
 			dec, err := security.DecryptSecret(ent.ClientKeyPEM)
 			if err != nil {
-				mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+				mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
 				return nil, "", apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 			}
 			ent.ClientKeyPEM = dec
 		}
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("list", zoneID.String(), mailTaxonomy.Success).Inc()
+	mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.Success)
 	return list, nextCursor, nil
 }
 
@@ -237,7 +237,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	if params.ZoneID == uuid.Nil {
 		resolved, ok := middleware.GetZoneID(ctx)
 		if !ok || resolved == uuid.Nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
+			mailMetrics.IncEndpointOperations("update", "global", mailTaxonomy.OutcomeInvalidArgument)
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required for update operation"), mailTaxonomy.OutcomeInvalidArgument)
 		}
 		params.ZoneID = resolved
@@ -245,7 +245,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 
 	existing, err := s.endpointRepo.GetByID(ctx, params.ZoneID, params.ID)
 	if err != nil || existing == nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeNotFound).Inc()
+		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeNotFound)
 		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, fmt.Errorf("endpoint not found"), mailTaxonomy.OutcomeNotFound)
 	}
 
@@ -253,18 +253,18 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	switch params.TLSMode {
 	case mailEntity.TLSModeTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
+			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
 	case mailEntity.TLSModeMTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
+			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
 		}
 	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument).Inc()
+		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
 		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
@@ -286,7 +286,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	if params.Password != "" {
 		enc, err := security.EncryptSecret(params.Password)
 		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
 			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 		}
 		existing.Password = enc
@@ -296,7 +296,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	if params.ClientKeyPEM != "" {
 		enc, err := security.EncryptSecret(params.ClientKeyPEM)
 		if err != nil {
-			mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError).Inc()
+			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
 			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
 		}
 		existing.ClientKeyPEM = enc
@@ -306,7 +306,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	existing.UpdatedAt = &now
 
 	if err := s.endpointRepo.Update(ctx, existing); err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
@@ -324,40 +324,40 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 		}
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("update", params.ZoneID.String(), mailTaxonomy.Success).Inc()
+	mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.Success)
 	return existing, nil
 }
 
 func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, id uuid.UUID) error {
 	zoneID, ok := middleware.GetZoneID(ctx)
 	if !ok || zoneID == uuid.Nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("create", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
+		mailMetrics.IncEndpointOperations("create", "global", mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
 	if err := s.endpointRepo.Delete(ctx, zoneID, id); err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("delete", zoneID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+		mailMetrics.IncEndpointOperations("delete", zoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("delete", zoneID.String(), mailTaxonomy.Success).Inc()
+	mailMetrics.IncEndpointOperations("delete", zoneID.String(), mailTaxonomy.Success)
 	return nil
 }
 
 func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) error {
 	zoneUUID, ok := middleware.GetZoneID(ctx)
 	if !ok || zoneUUID == uuid.Nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", "global", mailTaxonomy.OutcomeInvalidArgument).Inc()
+		mailMetrics.IncEndpointOperations("test_connection", "global", mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to test endpoint connection"), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
 	_, err := s.GetEndpoint(ctx, id)
 	if err != nil {
-		mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeNotFound).Inc()
+		mailMetrics.IncEndpointOperations("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeNotFound)
 		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
 	}
 
-	mailMetrics.EndpointOperationsCounter.WithLabelValues("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeDatabaseError).Inc()
+	mailMetrics.IncEndpointOperations("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeDatabaseError)
 	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: connection test is not implemented"), mailTaxonomy.OutcomeDatabaseError)
 }
 

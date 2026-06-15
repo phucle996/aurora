@@ -8,7 +8,7 @@ mod observability;
 use config::Config;
 use observability::logger::Logger;
 use observability::otel::OtelTracer;
-use observability::prometheus::PromRegistry;
+use observability::metrics::MetricsManager;
 use std::net::SocketAddr;
 
 #[tokio::main]
@@ -27,8 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info("system.startup", "Starting Notification Service (Rust)...");
 
     // Khởi tạo các thành phần thuộc hệ thống giám sát Observability đồng bộ với Dataplane sử dụng thông tin cấu hình
-    OtelTracer::init();
-    PromRegistry::init(cfg.metrics_port);
+    OtelTracer::init(&cfg);
+    MetricsManager::init();
 
     // Khởi tạo toàn bộ kết nối hạ tầng từ folder app/
     let app_state = app::init::init_infrastructure(&cfg).await;

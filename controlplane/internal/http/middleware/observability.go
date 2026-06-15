@@ -31,7 +31,6 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -93,26 +92,20 @@ func OTelTraceContext(obs *observability.OTel) gin.HandlerFunc {
 	}
 }
 
-// PrometheusHTTPMetrics thu thập các thông số vận hành (Telemetry Metrics) ở tầng HTTP toàn cục.
+// OTelHTTPMetrics thu thập các thông số vận hành (Telemetry Metrics) ở tầng HTTP toàn cục.
 //
 // ⚠️ LƯU Ý CHO DEVELOPERS:
 // Middleware này hoạt động ở cấp độ toàn cục (Global). Để tránh trùng lặp số liệu (Double-counting),
-// tuyệt đối không tự ý đăng ký hoặc đo đạc lại các metrics HTTP ở tầng Route-level hay Handler-level nữa.
+// tuyệt đối không tự ý đo đạc lại các metrics HTTP ở tầng Route-level hay Handler-level nữa.
 //
 // Các metrics thu thập tự động bao gồm:
-//  1. [Gauge] Namespace_http_in_flight_requests: Theo dõi số lượng request xử lý đồng thời.
-//  2. [Counter] Namespace_http_requests_total: Tổng số lượng HTTP request đã xử lý thành công/thất bại.
-//  3. [Histogram] Namespace_http_request_duration_seconds: Latency xử lý request chi tiết theo method, route, status.
-func PrometheusHTTPMetrics(obs *observability.Prometheus) gin.HandlerFunc {
+//  1. [UpDownCounter] http_in_flight_requests: Theo dõi số lượng request xử lý đồng thời.
+//  2. [Counter] http_requests_total: Tổng số lượng HTTP request đã xử lý thành công/thất bại.
+//  3. [Histogram] http_request_duration_seconds: Latency xử lý request chi tiết theo method, route, status.
+func OTelHTTPMetrics(obs *observability.Metrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// [FAIL-OPEN CONTRACT]: Bỏ qua đo lường an toàn nếu Prometheus chưa khởi tạo thành công.
-		if obs == nil {
-			c.Next()
-			return
-		}
-
-		policy := obs.GetPolicy()
-		if policy == nil || !policy.Enabled {
+		// [FAIL-OPEN CONTRACT]: Bỏ qua đo lường an toàn nếu Metrics chưa khởi tạo thành công.
+		if !obs.Enabled() {
 			c.Next()
 			return
 		}
@@ -123,41 +116,13 @@ func PrometheusHTTPMetrics(obs *observability.Prometheus) gin.HandlerFunc {
 
 		c.Next()
 
-		// Ghi nhận số liệu thống kê đầy đủ vào Prometheus:
+		// Ghi nhận số liệu thống kê đầy đủ vào OTel Metrics:
 		obs.ObserveRequest(
 			c.Request.Method,
 			requestRoute(c),
 			strconv.Itoa(c.Writer.Status()),
 			time.Since(start),
 		)
-	}
-}
-
-// PrometheusMetricsEndpoint xuất bản endpoint (/metrics) để hệ thống Prometheus Server cào thông tin (scrape).
-func PrometheusMetricsEndpoint(obs *observability.Prometheus) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if obs == nil {
-			c.AbortWithStatus(http.StatusServiceUnavailable)
-			return
-		}
-
-		policy := obs.GetPolicy()
-		if policy == nil || !policy.Enabled || !policy.ExposeMetric.Enabled {
-			c.AbortWithStatus(http.StatusServiceUnavailable)
-			return
-		}
-
-		// Xác minh đường dẫn động cào dữ liệu:
-		expectedPath := "/metrics"
-		if policy.ExposeMetric.RoutePath != "" {
-			expectedPath = policy.ExposeMetric.RoutePath
-		}
-		if c.Request.URL.Path != expectedPath {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-
-		gin.WrapH(obs.HTTPHandler())(c)
 	}
 }
 

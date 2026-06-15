@@ -51,8 +51,6 @@ impl FromStr for RedisTlsMode {
     }
 }
 
-
-
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Định danh phân vùng địa lý (Zone ID) mà Dataplane này được cấp phát để phục vụ.
@@ -81,8 +79,8 @@ pub struct Config {
     /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Internal Zone Redis.
     pub redis_internal_zone_client_key: Option<String>,
 
-    /// Cổng HTTP phục vụ cho việc export metrics sang Prometheus (mặc định: 2113)
-    pub metrics_port: u16,
+    /// Endpoint của OpenTelemetry Collector phục vụ gửi traces & metrics.
+    pub otel_exporter_otlp_endpoint: String,
 
     // Cấu hình giới hạn số lượng Worker chạy đồng thời (max concurrency limit).
     // Được nạp tĩnh qua biến môi trường để tối ưu hóa hiệu năng, loại bỏ overengineering của PolicyEngine.
@@ -134,11 +132,8 @@ impl Config {
             redis_internal_zone_ca_cert: env::var("REDIS_INTERNAL_ZONE_CA_CERT").ok(),
             redis_internal_zone_client_cert: env::var("REDIS_INTERNAL_ZONE_CLIENT_CERT").ok(),
             redis_internal_zone_client_key: env::var("REDIS_INTERNAL_ZONE_CLIENT_KEY").ok(),
-            metrics_port: env::var("METRICS_PORT")
-                .unwrap_or_else(|_| "2113".to_string())
-                .parse::<u16>()
-                .unwrap_or(2113),
-
+            otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
             // Nạp max_workers từ biến môi trường MAX_WORKERS, mặc định là 100 nếu không được cấu hình.
             max_workers: env::var("MAX_WORKERS")
                 .unwrap_or_else(|_| "100".to_string())

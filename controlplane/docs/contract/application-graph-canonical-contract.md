@@ -24,7 +24,7 @@ classDiagram
         -cfg *config.Config
         -modules *Modules
         -otel *observability.OTel
-        -prom *observability.Prometheus
+        -prom *observability.Metrics
         -httpServer *http.Server
         -grpc *bootstrap.GRPC
         -psql *pgxpool.Pool
@@ -72,7 +72,7 @@ flowchart TD
 
     %% Observability
     Policy --> OTel["7. OpenTelemetry Tracing <br/> (Dynamic Fail-Open/Close)"]:::obsStyle
-    OTel --> Prom["8. Prometheus Metrics <br/> (Dynamic Fail-Open/Close)"]:::obsStyle
+    OTel --> Prom["8. OTel Metrics <br/> (Dynamic Fail-Open/Close)"]:::obsStyle
     Prom --> RL["9. Rate Limiter <br/> (Fail-Open: False)"]:::obsStyle
 
     %% HTTP Engine & Mid
@@ -106,7 +106,7 @@ Tất cả request HTTP đi vào Controlplane bắt buộc phải đi qua chuỗ
 1. **`gin.Recovery()`**: Bọc ngoài cùng để bắt panic và giữ tiến trình không bị crash do lỗi code runtime.
 2. **`middleware.RequestID()`**: Trích xuất hoặc sinh mới `X-Request-ID` cho request.
 3. **`middleware.OTelTraceContext`**: Kế thừa trace context từ Envoy và gắn Server Span con.
-4. **`middleware.PrometheusHTTPMetrics`**: Đo đạc latency và đếm số lượng HTTP request.
+4. **`middleware.OTelHTTPMetrics`**: Đo đạc latency và đếm số lượng HTTP request.
 5. **`middleware.CookieOriginGuard`**: Ngăn chặn tấn công CSRF thông qua kiểm tra Origin và Host Header.
 6. **`middleware.RateLimitPreAuth`**: Chặn đứng các request spam tần suất cao ngay từ biên trước khi vào nghiệp vụ.
 7. **`middleware.AccessLog()`**: Ghi nhận Access log có cấu trúc.
@@ -134,7 +134,7 @@ flowchart TD
     GRPCStop --> ModStop["4. Modules Stop <br/> (Dừng background workers/schedulers)"]:::stageStyle
     
     %% Stop Observability
-    ModStop --> OTelStop["5. OTel Shutdown <br/> (timeout 10s) + Clear Prometheus state"]:::stageStyle
+    ModStop --> OTelStop["5. OTel Shutdown <br/> (timeout 10s) + Clear OTel Metrics state"]:::stageStyle
     OTelStop --> RootCtx["6. Cancel Root context.Context"]:::stageStyle
     
     %% Release connection

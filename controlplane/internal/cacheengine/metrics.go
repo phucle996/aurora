@@ -1,49 +1,53 @@
+// ============================================================================
+// 📂 MODULE: controlplane/internal/cacheengine/metrics.go
+//            Đo Lường L1 Cache Operations (OTel Metrics)
+// ============================================================================
+// Ghi nhận telemetry cho mọi thao tác Get/Set/Delete/Flush/GetOrLoad trên L1 Cache.
+// Sử dụng native OTel Counter, lazy init qua sync.Once.
+// ============================================================================
+
 package cacheengine
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
 
-	"controlplane/internal/observability"
-
-	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 var (
-	registerOnce sync.Once
+	metricsOnce sync.Once
 
-	// l1CacheOperationsCounter đếm tổng số lần thao tác với L1 Cache.
-	// FQN: aurora_controlplane_cache_l1_operations_total
-	l1CacheOperationsCounter *prometheus.CounterVec
+	// l1CacheOperationsCounter đếm tổng số thao tác với L1 Cache.
+	l1CacheOperationsCounter metric.Int64Counter
 )
 
-// RegisterCacheMetrics đăng ký metrics của L1 Cache vào Prometheus Registry.
-func RegisterCacheMetrics(registry *prometheus.Registry, namespace string) error {
-	var registerErr error
-	registerOnce.Do(func() {
-		l1CacheOperationsCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: "cache",
-			Name:      "l1_operations_total",
-			Help:      "Total operations on L1 in-memory cache, partitioned by operation name, cache name (namespace) and outcome.",
-		}, []string{"operation", "cache_name", "outcome"})
-
-		if err := registry.Register(l1CacheOperationsCounter); err != nil {
-			registerErr = err
-		}
+// ensureCacheMetrics khởi tạo OTel instrument cho cache metrics.
+func ensureCacheMetrics() {
+	metricsOnce.Do(func() {
+		meter := otel.Meter("aurora-controlplane.cache")
+		l1CacheOperationsCounter, _ = meter.Int64Counter(
+			"aurora_controlplane_cache_l1_operations_total",
+			metric.WithDescription("Total operations on L1 in-memory cache, partitioned by operation name, cache name and outcome."),
+		)
 	})
-	return registerErr
 }
 
-func init() {
-	// Tự đăng ký module metrics vào callback chain của observability.
-	observability.RegisterModuleMetrics(RegisterCacheMetrics)
-}
-
+// recordL1Operation ghi nhận một thao tác L1 Cache vào OTel Counter.
 func recordL1Operation(operation, cacheName, outcome string) {
+	ensureCacheMetrics()
 	if l1CacheOperationsCounter != nil {
-		l1CacheOperationsCounter.WithLabelValues(operation, cacheName, outcome).Inc()
+		l1CacheOperationsCounter.Add(context.Background(), 1,
+			metric.WithAttributes(
+				attribute.String("operation", operation),
+				attribute.String("cache_name", cacheName),
+				attribute.String("outcome", outcome),
+			),
+		)
 	}
 }
 

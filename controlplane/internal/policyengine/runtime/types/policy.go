@@ -27,8 +27,6 @@ package policytypes
 
 import (
 	"controlplane/internal/policyengine/policies/admincidr"
-	"controlplane/internal/policyengine/policies/otel"
-	"controlplane/internal/policyengine/policies/prometheus"
 	"controlplane/internal/policyengine/policies/ratelimit"
 	"time"
 )
@@ -62,12 +60,6 @@ type RuntimePolicies struct {
 
 	// RateLimit chứa cấu hình giới hạn tần suất yêu cầu (Token Bucket & Concurrency).
 	RateLimit ratelimit.CompiledPolicy
-
-	// OTel chứa cấu hình giám sát OpenTelemetry dynamic tracing.
-	OTel otel.CompiledPolicy
-
-	// Prometheus chứa cấu hình giám sát Prometheus dynamic metrics.
-	Prometheus prometheus.CompiledPolicy
 }
 
 // PolicySourceMeta mô tả siêu dữ liệu nguồn tệp tin phục vụ việc tối ưu hóa reload.

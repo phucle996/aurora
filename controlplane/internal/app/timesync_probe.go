@@ -96,7 +96,7 @@ func (p *TimeSyncProbe) tick() {
 	p.snapshot = snap
 	p.mu.Unlock()
 
-	if prom := observability.CurrentPrometheus(); prom != nil {
+	if prom := observability.CurrentMetrics(); prom != nil {
 		prom.ObserveTimeDrift(snap.Seconds, string(snap.State))
 	}
 	if prev != snap.State {
