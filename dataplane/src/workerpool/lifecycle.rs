@@ -98,7 +98,12 @@ impl WorkerLifecycleManager {
             .map_err(|e| format!("Worker failed or task cancelled during execution: {}", e))
     }
 
-    /// Cấp phát và khởi chạy một Worker (Luồng Ingestion Loop) song song thực sự.
+    /// Lấy bản sao của global cancel token
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
+    }
+
+    /// Cấp phát và khởi chạy một Worker (Luồng Worker xử lý Job từ channel) song song thực sự.
     pub async fn spawn_worker(
         self: &Arc<Self>,
         worker_id: usize,
@@ -106,6 +111,8 @@ impl WorkerLifecycleManager {
         redis_job: Arc<crate::infra::redis::RedisClientManager>,
         redis_internal_zone: Arc<crate::infra::redis::RedisClientManager>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
+        rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<crate::job_lifecycle::message::JobPayload>>>,
+        active_jobs: Arc<std::sync::atomic::AtomicUsize>,
     ) {
         let child_token = self.cancel_token.child_token();
 
@@ -118,29 +125,50 @@ impl WorkerLifecycleManager {
         let worker_token = child_token.clone();
         let self_clone = self.clone();
         let guard = self.tracker.track();
+        
+        let rx = rx.clone();
+        let active_jobs = active_jobs.clone();
+        let stream_key = format!("jobs:{}", config.zone_id);
 
         tokio::spawn(async move {
-            let _guard = guard; // Giữ guard cho luồng ingestion
+            let _guard = guard; // Giữ guard cho luồng worker
             crate::observability::logger::Logger::sys_info(
                 "worker.lifecycle",
                 &format!(
-                    "Worker Pool: Worker {} provisioned and starting active job ingestion loop...",
+                    "Worker Pool: Worker {} provisioned and starting active job processing loop...",
                     worker_id
                 ),
             );
 
-            // Bắt đầu luồng tiếp nhận job (ingestion loop) thuộc module job_lifecycle.
-            // Đã loại bỏ tham số policy_engine.
-            crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
-                config,
-                redis_job,
-                redis_internal_zone,
-                worker_id,
-                worker_token,
-                self_clone,
-                active_lock_registry,
-            )
-            .await;
+            loop {
+                // Nhận job từ channel an toàn khi app shutdown hoặc worker bị dừng (Scale Down)
+                let job_opt = tokio::select! {
+                    _ = worker_token.cancelled() => {
+                        break;
+                    }
+                    res = async {
+                        let mut rx_guard = rx.lock().await;
+                        rx_guard.recv().await
+                    } => res
+                };
+
+                match job_opt {
+                    Some(payload) => {
+                        crate::job_lifecycle::runner::JobRunner::run_job(
+                            payload,
+                            self_clone.clone(),
+                            redis_job.clone(),
+                            redis_internal_zone.clone(),
+                            active_lock_registry.clone(),
+                            active_jobs.clone(),
+                            stream_key.clone(),
+                        );
+                    }
+                    None => {
+                        break; // Channel closed
+                    }
+                }
+            }
 
             crate::observability::logger::Logger::sys_info(
                 "worker.lifecycle",

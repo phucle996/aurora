@@ -18,12 +18,13 @@
 pub async fn fetch_next_stream_message(client: &redis::Client, stream_key: &str) -> Result<String, String> {
     let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
 
-    // 1. Đảm bảo Consumer Group đã tồn tại (XGROUP CREATE stream_key dataplane-group $ MKSTREAM)
+    // 1. Đảm bảo Consumer Group đã tồn tại (XGROUP CREATE stream_key dataplane-group 0 MKSTREAM)
+    // Sửa mốc khởi đầu từ "$" sang "0" để khi scale-up từ 0 node, Worker không bị bỏ lỡ các job đang chờ sẵn trong stream.
     let _: redis::RedisResult<()> = redis::cmd("XGROUP")
         .arg("CREATE")
         .arg(stream_key)
         .arg("dataplane-group")
-        .arg("$")
+        .arg("0")
         .arg("MKSTREAM")
         .query_async(&mut conn)
         .await;

@@ -71,7 +71,7 @@ export function TestConnectionDialog({
             {loading ? (
               <span className="flex items-center gap-2 text-foreground/80">
                 <Loader2 className="size-3.5 animate-spin shrink-0 text-primary" />
-                Establishing TCP handshake and negotiating TLS connection...
+                {message || 'Establishing TCP handshake and negotiating TLS connection...'}
               </span>
             ) : (
               message || 'No diagnostic output returned.'

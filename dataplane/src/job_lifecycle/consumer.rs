@@ -30,30 +30,28 @@ pub struct JobConsumer;
 
 impl JobConsumer {
     /// Bắt đầu vòng lặp đọc dữ liệu bất đồng bộ từ Redis Stream (Ingestion loop).
+    /// Phiên bản này hoạt động dưới dạng IngestionDaemon chạy xuyên suốt vòng đời app (Producer).
     pub async fn start_ingestion(
         config: Arc<crate::config::Config>,
         redis_job: Arc<RedisClientManager>,
         redis_internal_zone: Arc<RedisClientManager>,
-        worker_id: usize,
+        tx: tokio::sync::mpsc::Sender<JobPayload>,
         cancel_token: CancellationToken,
-        worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
-        active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
+        active_jobs: Arc<AtomicUsize>,
     ) {
         let stream_key = format!("jobs:{}", config.zone_id);
         Logger::sys_info(
             "job.ingestion",
             &format!(
-                "Starting Worker {} consumer loop with Admission Control & Distributed Lease Lock on stream '{}'...",
-                worker_id, stream_key
+                "Starting persistent IngestionDaemon consumer loop with Admission Control & Distributed Lease Lock on stream '{}'...",
+                stream_key
             )
         );
 
-        // Đếm số lượng Job đang xử lý đồng thời tại instance này
-        let active_jobs = Arc::new(AtomicUsize::new(0));
         let mut admission_controller = AdmissionController::new();
 
         loop {
-            // 1. Trích xuất giới hạn max_workers tĩnh trực tiếp từ Config (đã lược bỏ PolicyEngine)
+            // 1. Trích xuất giới hạn max_workers tĩnh trực tiếp từ Config
             let max_workers = config.max_workers;
 
             // 2. Lấy số lượng job hiện hành và thực hiện tính toán qua AdmissionController
@@ -66,7 +64,7 @@ impl JobConsumer {
                     _ = cancel_token.cancelled() => {
                         Logger::sys_info(
                             "job.ingestion",
-                            &format!("Worker {} Ingestion Loop cancelled (Circuit Broken state). Exiting gracefully...", worker_id)
+                            "IngestionDaemon Ingestion Loop cancelled (Circuit Broken state). Exiting gracefully..."
                         );
                         break;
                     }
@@ -81,7 +79,7 @@ impl JobConsumer {
                     _ = cancel_token.cancelled() => {
                         Logger::sys_info(
                             "job.ingestion",
-                            &format!("Worker {} Ingestion Loop cancelled (Pacing Delay state). Exiting gracefully...", worker_id)
+                            "IngestionDaemon Ingestion Loop cancelled (Pacing Delay state). Exiting gracefully..."
                         );
                         break;
                     }
@@ -95,7 +93,7 @@ impl JobConsumer {
                 _ = cancel_token.cancelled() => {
                     Logger::sys_info(
                         "job.ingestion",
-                        &format!("Worker {} Ingestion Loop cancelled (Waiting for Message state). Exiting gracefully...", worker_id)
+                        "IngestionDaemon Ingestion Loop cancelled (Waiting for Message state). Exiting gracefully..."
                     );
                     break;
                 }
@@ -105,7 +103,7 @@ impl JobConsumer {
                         Err(e) => {
                             Logger::sys_error(
                                 "job.ingestion",
-                                &format!("Worker {} failed to fetch stream message: {}", worker_id, e),
+                                &format!("IngestionDaemon failed to fetch stream message: {}", e),
                                 "REDIS_FETCH_ERROR"
                             );
                             sleep(Duration::from_secs(2)).await;
@@ -121,7 +119,7 @@ impl JobConsumer {
                     _ = cancel_token.cancelled() => {
                         Logger::sys_info(
                             "job.ingestion",
-                            &format!("Worker {} Ingestion Loop cancelled (Empty Message state). Exiting gracefully...", worker_id)
+                            "IngestionDaemon Ingestion Loop cancelled (Empty Message state). Exiting gracefully..."
                         );
                         break;
                     }
@@ -138,7 +136,7 @@ impl JobConsumer {
                     &payload.job_topic,
                     payload.attempt,
                     "job.received",
-                    &format!("Worker {} successfully claimed raw job message from Redis Stream", worker_id)
+                    "IngestionDaemon successfully claimed raw job message from Redis Stream"
                 );
 
                 let lock_key = format!("locks:job:{}", payload.job_id);
@@ -158,7 +156,7 @@ impl JobConsumer {
                     Err(e) => {
                         Logger::sys_error(
                             "job.ingestion",
-                            &format!("Worker {} failed to connect to redis_internal_zone for locking job {}: {}", worker_id, payload.job_id, e),
+                            &format!("IngestionDaemon failed to connect to redis_internal_zone for locking job {}: {}", payload.job_id, e),
                             "REDIS_LOCK_ERROR"
                         );
                         sleep(Duration::from_secs(1)).await;
@@ -166,19 +164,29 @@ impl JobConsumer {
                     }
                 }
 
-                // Tăng số lượng job đang xử lý
+                // Tăng số lượng job đang xử lý (kể cả job đang chờ trong channel)
                 active_jobs.fetch_add(1, Ordering::SeqCst);
 
-                // Giao việc cho Orchestrated Runner thuộc module job_lifecycle mới đổi tên để xử lý chạy ngầm (non-blocking)
-                crate::job_lifecycle::runner::JobRunner::run_job(
-                    payload,
-                    worker_pool.clone(),
-                    redis_job.clone(),
-                    redis_internal_zone.clone(),
-                    active_lock_registry.clone(),
-                    active_jobs.clone(),
-                    stream_key.clone(),
-                );
+                // Gửi payload vào channel cho Worker xử lý. Hỗ trợ cơ chế backpressure và cancel-safe khi dừng app.
+                let send_fut = tx.send(payload);
+                let send_res = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        Err("Shutdown initiated while sending to channel")
+                    }
+                    res = send_fut => {
+                        res.map_err(|_| "Channel closed")
+                    }
+                };
+
+                if let Err(err_msg) = send_res {
+                    Logger::sys_error(
+                        "job.ingestion",
+                        &format!("Failed to dispatch job: {}. Releasing lock.", err_msg),
+                        "CHANNEL_DISPATCH_ERROR"
+                    );
+                    active_jobs.fetch_sub(1, Ordering::SeqCst);
+                    let _ = crate::infra::redis::query::release_lease_lock(redis_internal_zone.client(), &lock_key).await;
+                }
             }
         }
     }

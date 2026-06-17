@@ -13,6 +13,7 @@ receivers:
     exclude:
       # Loại trừ chính log của container otel-collector này để tránh loop log (HOSTNAME là short container ID mặc định do Docker cấp)
       - /var/lib/docker/containers/${env:HOSTNAME}*/*
+    include_file_path: true
     operators:
       # 1. Parse JSON của log wrapper Docker (chuyển log thô thành attributes.log)
       - type: json_parser
@@ -28,7 +29,17 @@ receivers:
       - type: json_parser
         id: parser_app
         on_error: send_quiet
-      # 4. Đưa trường `msg` trong log app làm nội dung tin nhắn chính hiển thị ở body
+      # 3a. Nếu log là của Redis, parse bằng regex đặc thù
+      - type: regex_parser
+        id: parser_redis
+        regex: '^(?P<pid>[0-9]+):(?P<role>[a-zA-Z]) (?P<time>[0-9]{2} [a-zA-Z]{3} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}) (?P<redis_level>[*#.-]) (?P<msg>.*?)\s*$'
+        on_error: send_quiet
+      # 3b. Nếu log là của PgBouncer hoặc Postgres, parse bằng regex đặc thù
+      - type: regex_parser
+        id: parser_pgbouncer
+        regex: '^(?P<time>[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}) (?P<tz>[A-Z]+) \[(?P<pid>[0-9]+)\] (?P<level>[A-Z]+):? (?P<msg>.*?)\s*$'
+        on_error: send_quiet
+      # 4. Đưa trường `msg` trong log app hoặc infra làm nội dung tin nhắn chính hiển thị ở body
       - type: move
         id: move_msg_to_body
         from: attributes.msg
@@ -78,8 +89,11 @@ processors:
           # Đặt các trường hệ thống mặc định về rỗng/không xác định để tránh làm rác log
           - set(scope.name, "")
           - set(scope.version, "")
-          - set(severity_text, "")
-          - set(severity_number, 0)
+          - set(severity_text, attributes["level"]) where attributes["level"] != nil
+          - set(severity_text, "INFO") where attributes["redis_level"] == "*"
+          - set(severity_text, "WARN") where attributes["redis_level"] == "#"
+          - set(severity_text, "DEBUG") where attributes["redis_level"] == "."
+          - set(severity_text, "VERBOSE") where attributes["redis_level"] == "-"
 
 exporters:
   debug:
@@ -92,6 +106,8 @@ exporters:
   # Exporter gửi dữ liệu logs sang VictoriaLogs bằng chuẩn OTLP HTTP
   otlphttp/victorialogs:
     endpoint: "http://controlplane-victorialogs:9428/insert/opentelemetry"
+    headers:
+      "VL-Stream-Fields": "container_name"
     tls:
       insecure: true
   # Exporter gửi dữ liệu traces sang VictoriaTraces bằng chuẩn OTLP HTTP

@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, useRef, useEffect } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Send } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { centrifugoClient } from '@/lib/centrifugo'
 // Import hộp thoại hiển thị tiến trình và kết quả kiểm tra kết nối SMTP
 import { TestConnectionDialog } from './sections/TestConnectionDialog'
 // Import component con quản lý các trường nhập liệu của form (Basic Config & Security Certs)
@@ -82,6 +83,26 @@ export default function NewMailEndpointPage() {
     message: '',
   })
 
+  const unsubscribeRef = useRef<(() => void) | null>(null)
+  const timeoutRef = useRef<number | null>(null)
+
+  const cleanupTest = () => {
+    if (unsubscribeRef.current) {
+      unsubscribeRef.current()
+      unsubscribeRef.current = null
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      cleanupTest()
+    }
+  }, [])
+
   /**
    * Cập nhật động giá trị của một trường dữ liệu trong form state.
    * Tự động kiểm tra nếu khóa thuộc nhóm numericKeys thì thực hiện chuyển đổi kiểu dữ liệu
@@ -147,33 +168,68 @@ export default function NewMailEndpointPage() {
       return
     }
 
+    // Đảm bảo dọn dẹp các listener/timeout cũ trước khi chạy test mới
+    cleanupTest()
+
     // Mở modal thông báo tiến trình kết nối thử
     setTestState({
       isOpen: true,
       loading: true,
       success: null,
-      message: 'Testing connection...',
+      message: 'Requesting connection test...',
     })
     setError('')
+
     try {
       const resp = await Fetch('/admin/mail/endpoints/try-connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tryConnectPayload(form)),
       })
-      const resultMessage = await readAPIMessage(
-        resp,
-        resp.ok ? 'Connection successful' : 'Connection failed',
-      )
 
-      // Cập nhật kết quả phản hồi của API lên modal
+      if (!resp.ok) {
+        const resultMessage = await readAPIMessage(resp, 'Connection failed')
+        setTestState(prev => ({
+          ...prev,
+          loading: false,
+          success: false,
+          message: resultMessage,
+        }))
+        return
+      }
+
+      // Đổi sang trạng thái chờ kết quả test thực tế
       setTestState(prev => ({
         ...prev,
-        loading: false,
-        success: resp.ok,
-        message: resultMessage || (resp.ok ? 'Connection successful' : 'Connection failed'),
+        message: 'Waiting for test result from dataplane...',
       }))
+
+      // Đăng ký nhận push notifications từ Centrifugo
+      unsubscribeRef.current = centrifugoClient.subscribe((data) => {
+        if (data.title === 'SMTP Connection Test') {
+          cleanupTest()
+          setTestState(prev => ({
+            ...prev,
+            loading: false,
+            success: data.status === 'SUCCESS',
+            message: data.message || (data.status === 'SUCCESS' ? 'Connection successful' : 'Connection failed'),
+          }))
+        }
+      })
+
+      // Thiết lập timeout phòng trường hợp không nhận được push
+      timeoutRef.current = window.setTimeout(() => {
+        cleanupTest()
+        setTestState(prev => ({
+          ...prev,
+          loading: false,
+          success: false,
+          message: 'Connection test timed out. Please check your credentials and try again.',
+        }))
+      }, 25000)
+
     } catch (err) {
+      cleanupTest()
       setTestState(prev => ({
         ...prev,
         loading: false,
@@ -282,7 +338,12 @@ export default function NewMailEndpointPage() {
       {/* 4. Modal Test Connection Dialog: Hiển thị logs/kết quả bắt tay SMTP */}
       <TestConnectionDialog
         isOpen={testState.isOpen}
-        onOpenChange={(open) => setTestState(prev => ({ ...prev, isOpen: open }))}
+        onOpenChange={(open) => {
+          setTestState(prev => ({ ...prev, isOpen: open }))
+          if (!open) {
+            cleanupTest()
+          }
+        }}
         loading={testState.loading}
         success={testState.success}
         message={testState.message}

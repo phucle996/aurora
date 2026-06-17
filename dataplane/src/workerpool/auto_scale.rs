@@ -8,14 +8,16 @@
 ///   - Tích hợp **Hard Resource Safeguard** nhằm đóng băng co giãn khi hệ thống đạt ngưỡng tài nguyên cao.
 ///
 pub struct AutoScaleEngine {
+    /// Giới hạn tối thiểu số lượng worker chạy ngầm (baseline capacity).
+    min_workers: usize,
     /// Giới hạn tối đa số lượng worker được phép cấp phát tại một thời điểm.
     max_workers: usize,
 }
 
 impl AutoScaleEngine {
-    /// Khởi tạo bộ máy autoscaler với giới hạn trần cấu hình.
-    pub fn new(max_workers: usize) -> Self {
-        Self { max_workers }
+    /// Khởi tạo bộ máy autoscaler với giới hạn sàn và trần cấu hình.
+    pub fn new(min_workers: usize, max_workers: usize) -> Self {
+        Self { min_workers, max_workers }
     }
 
     /// Đánh giá tải thực tế dựa theo chỉ số đo đạc để đưa ra số lượng worker mục tiêu (Target Worker Scale).
@@ -58,24 +60,23 @@ impl AutoScaleEngine {
             );
             target
         } else if lag == 0 {
-            // Hàng đợi rỗng hoàn toàn -> Tiết kiệm tài nguyên scale về 0 luồng.
-            // Không log tại đây: caller chịu trách nhiệm log khi target thực sự đổi.
-            0
+            // Hàng đợi rỗng hoàn toàn -> Tiết kiệm tài nguyên, giữ tối thiểu min_workers thay vì tắt hết về 0.
+            self.min_workers.min(self.max_workers)
         } else {
-            // Nếu có job trong hàng đợi (lag > 0) nhưng số worker hiện tại lại là 0,
-            // chúng ta phải scale up lên ít nhất 1 worker để bắt đầu xử lý job,
-            // tránh việc bị treo hàng đợi (deadlock) do không có worker nào hoạt động.
-            if current_workers == 0 {
+            // Nếu có job trong hàng đợi (lag > 0) nhưng số worker hiện tại lại ít hơn min_workers,
+            // chúng ta phải scale up lên ít nhất min_workers (hoặc ít nhất 1) để tránh treo hàng đợi.
+            let min_target = self.min_workers.max(1).min(self.max_workers);
+            if current_workers < min_target {
                 crate::observability::logger::Logger::sys_info(
                     "worker.scaler",
                     &format!(
-                        "Autoscaler: New job detected (lag={}). Scaling up from 0 to 1 worker (cap={})",
-                        lag, self.max_workers
+                        "Autoscaler: New job detected (lag={}). Scaling up to target baseline: {} workers (cap={})",
+                        lag, min_target, self.max_workers
                     ),
                 );
-                1.min(self.max_workers)
+                min_target
             } else {
-                // Giữ nguyên quy mô hiện hành nếu đã có worker chạy
+                // Giữ nguyên quy mô hiện hành nếu đã có worker chạy vượt baseline
                 current_workers
             }
         }

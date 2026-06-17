@@ -82,6 +82,10 @@ pub struct Config {
     /// Endpoint của OpenTelemetry Collector phục vụ gửi traces & metrics.
     pub otel_exporter_otlp_endpoint: String,
 
+    // Cấu hình số lượng Worker tối thiểu chạy ngầm (min concurrency baseline).
+    // Đảm bảo hệ thống luôn có ít nhất 1 worker chạy ngầm để tiêu thụ job ngay lập tức, tránh cold start.
+    pub min_workers: usize,
+
     // Cấu hình giới hạn số lượng Worker chạy đồng thời (max concurrency limit).
     // Được nạp tĩnh qua biến môi trường để tối ưu hóa hiệu năng, loại bỏ overengineering của PolicyEngine.
     pub max_workers: usize,
@@ -134,6 +138,11 @@ impl Config {
             redis_internal_zone_client_key: env::var("REDIS_INTERNAL_ZONE_CLIENT_KEY").ok(),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
+            // Nạp min_workers từ biến môi trường MIN_WORKERS, mặc định là 1 để giữ tối thiểu 1 worker hoạt động.
+            min_workers: env::var("MIN_WORKERS")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse::<usize>()
+                .unwrap_or(1),
             // Nạp max_workers từ biến môi trường MAX_WORKERS, mặc định là 100 nếu không được cấu hình.
             max_workers: env::var("MAX_WORKERS")
                 .unwrap_or_else(|_| "100".to_string())

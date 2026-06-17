@@ -222,6 +222,9 @@ services:
       - MIN_POOL_SIZE=5
       - RESERVE_POOL_SIZE=5
       - IGNORE_STARTUP_PARAMETERS=extra_float_digits,search_path
+      - LOG_CONNECTIONS=0
+      - LOG_DISCONNECTIONS=0
+      - STATS_PERIOD=3600
     ports:
       - "15433:6432" # Transparent host port replacement for developer tools
     depends_on:

@@ -73,7 +73,32 @@ impl AppContainer {
             .await;
         });
 
-        // 0b. Khởi tạo 1 Worker ban đầu hoạt động nhận tin
+        // 0b. Khởi tạo Kênh truyền tin và Bộ đếm active_jobs dùng chung
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::job_lifecycle::message::JobPayload>(100);
+        let rx_shared = Arc::new(tokio::sync::Mutex::new(rx));
+        let active_jobs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        // 0c. Khởi chạy persistent IngestionDaemon loop nhận tin từ Redis Stream
+        let config_ingest = self.config.clone();
+        let redis_job_ingest = self.redis_job.clone();
+        let redis_internal_zone_ingest = self.redis_internal_zone.clone();
+        let tx_ingest = tx;
+        let active_jobs_ingest = active_jobs.clone();
+        let cancel_token = self.worker_pool.cancel_token();
+
+        tokio::spawn(async move {
+            crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
+                config_ingest,
+                redis_job_ingest,
+                redis_internal_zone_ingest,
+                tx_ingest,
+                cancel_token,
+                active_jobs_ingest,
+            )
+            .await;
+        });
+
+        // 0d. Khởi tạo 1 Worker ban đầu hoạt động xử lý tin từ channel
         self.worker_pool
             .spawn_worker(
                 1,
@@ -81,25 +106,30 @@ impl AppContainer {
                 self.redis_job.clone(),
                 self.redis_internal_zone.clone(),
                 self.active_lock_registry.clone(),
+                rx_shared.clone(),
+                active_jobs.clone(),
             )
             .await;
 
-        // 0d. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
+        // 0e. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
         let config_scale = self.config.clone();
         let worker_pool_scale = self.worker_pool.clone();
         let redis_job_scale = self.redis_job.clone();
         let redis_internal_zone_scale = self.redis_internal_zone.clone();
         let active_lock_registry_scale = self.active_lock_registry.clone();
+        let rx_scale = rx_shared.clone();
+        let active_jobs_scale = active_jobs.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
 
-                // 1. Trích xuất max_workers cấu hình tĩnh trực tiếp từ Config (Đã lược bỏ PolicyEngine)
+                // 1. Trích xuất min_workers và max_workers cấu hình tĩnh trực tiếp từ Config
+                let min_workers = config_scale.min_workers;
                 let max_workers = config_scale.max_workers;
 
-                let auto_scaler = crate::workerpool::auto_scale::AutoScaleEngine::new(max_workers);
+                let auto_scaler = crate::workerpool::auto_scale::AutoScaleEngine::new(min_workers, max_workers);
 
                 // 2. Thu thập chỉ số hàng đợi thực tế từ Redis
                 let stream_key = format!("jobs:{}", config_scale.zone_id);
@@ -162,6 +192,8 @@ impl AppContainer {
                                     redis_job_scale.clone(),
                                     redis_internal_zone_scale.clone(),
                                     active_lock_registry_scale.clone(),
+                                    rx_scale.clone(),
+                                    active_jobs_scale.clone(),
                                 )
                                 .await;
                         }
