@@ -189,6 +189,8 @@ services:
     volumes:
       # Sử dụng named volume để lưu trữ dữ liệu bền vững, tránh mất mát dữ liệu khi container bị hủy.
       - controlplane_psql_data:/var/lib/postgresql
+      # [SECURITY]: Mount script khởi tạo tài khoản giám sát postgres_exporter với phân quyền tối thiểu (Least Privilege).
+      - ./dev/postgres/init-monitoring.sql:/docker-entrypoint-initdb.d/init-monitoring.sql:ro
     healthcheck:
       # Thực thi pg_isready định kỳ để đảm bảo DB chỉ nhận kết nối khi đã sẵn sàng hoàn toàn.
       test: [ "CMD-SHELL", "pg_isready -U postgres -d controlplane" ]
@@ -235,6 +237,60 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
+
+  psql-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.19.1
+    container_name: controlplane-psql-exporter
+    environment:
+      # [SECURITY]: Chuỗi kết nối sử dụng tài khoản postgres_exporter chuyên dụng có quyền pg_monitor.
+      # Không sử dụng tài khoản root 'postgres' để đảm bảo tuân thủ tiêu chuẩn an ninh thông tin.
+      - DATA_SOURCE_URI=psql:5432/controlplane?sslmode=disable
+      - DATA_SOURCE_USER=postgres_exporter
+      - DATA_SOURCE_PASS=postgres_exporter_password
+      # [OPTIMIZATION]: Tối ưu hóa tần suất truy vấn và phòng ngừa lỗi cạn kiệt pool kết nối (Connection Exhaustion).
+      - PG_EXPORTER_DISABLE_SETTINGS_METRICS=true # Đặt true để tắt collector mặc định vì đã tự định nghĩa pg_settings.
+      - PG_EXPORTER_AUTO_DISCOVER_DATABASES=false # Chỉ giám sát db controlplane để hạn chế số lượng active backends.
+      - PG_EXPORTER_EXTEND_QUERY_PATH=/etc/postgres_exporter/queries.yaml
+    volumes:
+      - ./dev/postgres/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    depends_on:
+      psql:
+        condition: service_healthy
+    restart: unless-stopped
+    command: [
+      "--disable-default-metrics",
+      "--no-collector.database",
+      "--no-collector.locks",
+      "--no-collector.replication",
+      "--no-collector.replication_slot",
+      "--no-collector.roles",
+      "--no-collector.stat_bgwriter",
+      "--no-collector.stat_database",
+      "--no-collector.stat_progress_vacuum",
+      "--no-collector.stat_user_tables",
+      "--no-collector.statio_user_tables",
+      "--no-collector.wal"
+    ]
+
+  # 📊 PHẦN 3.5: REDIS EXPORTER - THU THẬP METRICS CHO CẢ 4 INSTANCES REDIS (HA SCRAPER)
+  # - Sử dụng oliver006/redis_exporter để cào metrics qua cơ chế multi-target /scrape.
+  # - Chỉ cần chạy 1 container duy nhất để tối ưu hóa tài nguyên phần cứng (Optimization).
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.85.0
+    container_name: controlplane-redis-exporter
+    environment:
+      # Địa chỉ mặc định để exporter tự kiểm tra khi cào không có tham số target
+      - REDIS_ADDR=redis://controlplane-redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-job:
+        condition: service_healthy
+      redis-dataplane-z1:
+        condition: service_healthy
+      redis-dataplane-z2:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:

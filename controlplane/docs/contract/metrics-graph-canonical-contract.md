@@ -172,3 +172,54 @@ sequenceDiagram
 2. **Generic API calls:** Callsite tại Service Layer phải gọi qua các hàm Record generic, tự truyền giá trị label (flow, result, operation) thay vì gọi các hàm hard-code nghiệp vụ.
 3. **No-op Staging:** Khi thực hiện refactor metrics, các hàm đo lường chưa chuyển đổi phải được dọn dẹp sạch sẽ (bỏ stub rỗng) hoặc chuyển đổi đồng loạt để tránh để lại dead code.
 4. **Panic-safe Invariant:** Tất cả các collector/metric pointer tại module nghiệp vụ phải được kiểm tra `nil` trước khi gọi `.Add()` hoặc `.Record()`. Nếu OTel không được khởi động (ví dụ: trong unit test), luồng đo lường sẽ tự động bỏ qua (fail-open) thay vì gây panic ứng dụng.
+
+---
+
+## 5. Redis Infrastructure Observability Metrics Contract
+
+Để giám sát tài nguyên và hiệu năng của các cụm Redis (`core`, `job`, `dataplane-z1`, `dataplane-z2`), hệ thống tích hợp `redis_exporter` thu thập và xuất bản các chỉ số chuẩn hóa dưới đây về VictoriaMetrics.
+
+### 5.1 Các chỉ số giám sát cốt lõi
+
+| Tên Metric | Kiểu Dữ Liệu | Labels Quan Trọng | Mô Tả Nghiệp Vụ / Kỹ Thuật |
+| :--- | :--- | :--- | :--- |
+| `redis_up` | Gauge | `instance` | Trạng thái sống/chết của Redis instance (`1` = Online, `0` = Offline). |
+| `redis_uptime_in_seconds` | Counter | `instance` | Thời gian chạy liên tục của Redis instance. |
+| `redis_connected_clients` | Gauge | `instance` | Số lượng kết nối client đồng thời đang active. |
+| `redis_blocked_clients` | Gauge | `instance` | Số lượng client đang bị block bởi các lệnh blocking (e.g. `BLPOP`, `BRPOP`). |
+| `redis_memory_used_bytes` | Gauge | `instance` | Dung lượng bộ nhớ RAM thực tế Redis đang sử dụng để lưu data. |
+| `redis_memory_max_bytes` | Gauge | `instance` | Giới hạn bộ nhớ tối đa cấu hình cho Redis (`maxmemory`). |
+| `redis_mem_fragmentation_ratio` | Gauge | `instance` | Tỷ lệ phân mảnh bộ nhớ (`used_memory_rss / used_memory`). |
+| `redis_commands_processed_total` | Counter | `instance` | Tổng số lệnh đã được xử lý lũy kế từ lúc khởi động. |
+| `redis_cpu_sys_seconds_total` | Counter | `instance` | Thời gian CPU tiêu thụ ở không gian Kernel. |
+| `redis_cpu_user_seconds_total` | Counter | `instance` | Thời gian CPU tiêu thụ ở không gian User. |
+| `redis_net_input_bytes_total` | Counter | `instance` | Tổng băng thông inbound nhận được qua mạng. |
+| `redis_net_output_bytes_total` | Counter | `instance` | Tổng băng thông outbound gửi đi qua mạng. |
+| `redis_db_keys` | Gauge | `instance`, `db` | Số lượng key phân tách cụ thể trên từng cơ sở dữ liệu (`db0` - `db15`). |
+| `redis_expired_keys_total` | Counter | `instance` | Tổng số key đã hết hạn (`TTL` expire) lũy kế. |
+| `redis_evicted_keys_total` | Counter | `instance` | Tổng số key bị giải phóng cưỡng bức do vượt ngưỡng memory limit (`maxmemory` eviction). |
+
+---
+
+## 6. Job Lifecycle & CDC Flow Observability Metrics Contract
+
+Để kiểm soát và cô lập sự cố trên đường ống CDC Ingestion và Job Processing phân tán, các chỉ số dưới đây được thu thập từ bộ máy `job-proxy` (Rust) sử dụng OpenTelemetry Metrics SDK push trực tiếp về OTel Collector.
+
+### 6.1 Các chỉ số giám sát đường ống (Pipeline Metrics)
+
+| Tên Metric | Kiểu Dữ Liệu | Labels Quan Trọng | Mô Tả Nghiệp Vụ / Kỹ Thuật |
+| :--- | :--- | :--- | :--- |
+| `job_proxy_wal_records_read_total` | Counter | `otel_scope_name` | Tổng số bản ghi thay đổi dữ liệu (WAL) đọc được từ logical replication slot Postgres. |
+| `job_proxy_stream_jobs_pushed_total` | Counter | `otel_scope_name` | Tổng số tác vụ đã được đẩy thành công lên Redis Stream (`jobs:zone_id`). |
+| `job_proxy_results_consumed_total` | Counter | `otel_scope_name` | Tổng số kết quả xử lý từ Dataplane được nhận diện và xử lý qua `ResultConsumer`. |
+| `job_proxy_notifications_sent_total` | Counter | `otel_scope_name` | Tổng số sự kiện thông báo thời gian thực (realtime toast) được gửi thành công sang Centrifugo. |
+| `job_proxy_queue_len` | Gauge | `zone_id` | Độ dài hàng đợi hiện thời trong Redis Stream phân vùng theo Zone ID (`dataplane-z1`, `dataplane-z2`). |
+| `job_proxy_pending_len` | Gauge | `zone_id` | Số lượng job đang nằm ở trạng thái `Pending` của consumer group (đã phân phối nhưng chưa ACK). |
+
+### 6.2 Ý nghĩa phân tích đối sánh (Metrics Correlation Rules)
+
+SRE và các kỹ sư vận hành hệ thống sử dụng các quy tắc đối sánh sau trên Grafana Dashboard để cô lập sự cố:
+
+1. **CDC Ingestion Lag**: Nếu `job_proxy_wal_records_read_total` tăng trưởng ổn định nhưng `job_proxy_stream_jobs_pushed_total` đi ngang hoặc chậm, hệ thống đang tắc nghẽn ở khâu đẩy dữ liệu sang Redis.
+2. **Dataplane Processing Delay**: Nếu `job_proxy_queue_len` hoặc `job_proxy_pending_len` liên tục tăng cao, năng lực xử lý (Active Workers) của Dataplane trong Zone đang bị quá tải hoặc bị block.
+3. **Execution Lag**: Đối sánh tỷ lệ tốc độ `job_proxy_stream_jobs_pushed_total` (vào) với `job_proxy_results_consumed_total` (ra) để tính toán tỷ lệ xử lý trễ hoặc lỗi rò rỉ tác vụ trong hệ thống.

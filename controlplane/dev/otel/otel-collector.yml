@@ -6,6 +6,41 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+  # [METRICS SCRAPER]: Thu thập dữ liệu từ các exporter hạ tầng (như postgres_exporter)
+  # chạy theo mô hình Pull để chuyển đổi thành luồng đẩy Push-based thống nhất về VictoriaMetrics.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'postgres-exporter'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['controlplane-psql-exporter:9187']
+              labels:
+                kubernetes_namespace: "controlplane"
+                release: "controlplane"
+
+        # [REDIS MULTI-TARGET SCRAPER]: Cào metrics cho cả 4 instance Redis thông qua 1 exporter duy nhất.
+        # Cơ chế hoạt động: Gửi request đến http://controlplane-redis-exporter:9121/scrape?target=redis://...
+        - job_name: 'redis-exporter'
+          scrape_interval: 15s
+          static_configs:
+            - targets:
+                - 'redis://controlplane-redis:6379'
+                - 'redis://controlplane-redis-job:6379'
+                - 'redis://controlplane-redis-dataplane-z1:6379'
+                - 'redis://controlplane-redis-dataplane-z2:6379'
+          metrics_path: /scrape
+          relabel_configs:
+            # 1. Chuyển địa chỉ đích ban đầu thành tham số query "target" cho exporter
+            - source_labels: [__address__]
+              target_label: __param_target
+            # 2. Gán nhãn "instance" bằng địa chỉ target thực tế để hiển thị đẹp trên dashboard
+            - source_labels: [__param_target]
+              target_label: instance
+            # 3. Ghi đè địa chỉ đích thực sự mà collector sẽ gửi HTTP request tới là container redis-exporter
+            - target_label: __address__
+              replacement: 'controlplane-redis-exporter:9121'
+
   # filelog đọc trực tiếp từ đĩa của Docker host mà không cần gọi qua docker.sock (bảo mật hơn)
   filelog:
     include:
@@ -103,6 +138,8 @@ exporters:
     endpoint: "http://controlplane-victoriametrics:8428/api/v1/write"
     tls:
       insecure: true
+    resource_to_telemetry_conversion:
+      enabled: true
   # Exporter gửi dữ liệu logs sang VictoriaLogs bằng chuẩn OTLP HTTP
   otlphttp/victorialogs:
     endpoint: "http://controlplane-victorialogs:9428/insert/opentelemetry"
@@ -128,7 +165,7 @@ service:
       exporters: [otlphttp/victoriatraces]
     # Pipeline metrics (Đã loại bỏ exporter debug)
     metrics:
-      receivers: [otlp]
+      receivers: [otlp, prometheus]
       processors: [batch]
       exporters: [prometheusremotewrite]
     # Pipeline logs (Đã loại bỏ exporter debug)

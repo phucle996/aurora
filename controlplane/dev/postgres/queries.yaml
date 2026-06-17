@@ -1,0 +1,352 @@
+# Custom queries for postgres_exporter to monitor PostgreSQL 17/18+.
+# Disabling all default metrics and using only these custom queries for maximum safety,
+# compatibility, performance, and deterministic behavior.
+
+pg:
+  query: "SELECT split_part(current_setting('server_version'), ' ', 1) AS short_version, version() AS version, 1 AS static"
+  metrics:
+    - short_version:
+        usage: "LABEL"
+        description: "Postgres version short string"
+    - version:
+        usage: "LABEL"
+        description: "Postgres version full string"
+    - static:
+        usage: "GAUGE"
+        description: "Static metric value"
+
+pg_postmaster:
+  query: "SELECT extract(epoch from pg_postmaster_start_time()) AS start_time_seconds"
+  metrics:
+    - start_time_seconds:
+        usage: "GAUGE"
+        description: "Time at which postmaster started"
+
+pg_settings:
+  query: |
+    SELECT
+      (SELECT setting::float FROM pg_settings WHERE name = 'effective_cache_size') * 8192 AS effective_cache_size_bytes,
+      (SELECT setting::float FROM pg_settings WHERE name = 'maintenance_work_mem') * 1024 AS maintenance_work_mem_bytes,
+      (SELECT setting::float FROM pg_settings WHERE name = 'max_connections') AS max_connections,
+      (SELECT setting::float FROM pg_settings WHERE name = 'max_parallel_workers') AS max_parallel_workers,
+      (SELECT setting::float FROM pg_settings WHERE name = 'max_wal_size') * 1024 * 1024 AS max_wal_size_bytes,
+      (SELECT setting::float FROM pg_settings WHERE name = 'max_worker_processes') AS max_worker_processes,
+      (SELECT setting::float FROM pg_settings WHERE name = 'random_page_cost') AS random_page_cost,
+      (SELECT setting::float FROM pg_settings WHERE name = 'seq_page_cost') AS seq_page_cost,
+      (SELECT setting::float FROM pg_settings WHERE name = 'shared_buffers') * 8192 AS shared_buffers_bytes,
+      (SELECT setting::float FROM pg_settings WHERE name = 'work_mem') * 1024 AS work_mem_bytes
+  metrics:
+    - effective_cache_size_bytes:
+        usage: "GAUGE"
+        description: "effective_cache_size in bytes"
+    - maintenance_work_mem_bytes:
+        usage: "GAUGE"
+        description: "maintenance_work_mem in bytes"
+    - max_connections:
+        usage: "GAUGE"
+        description: "max_connections"
+    - max_parallel_workers:
+        usage: "GAUGE"
+        description: "max_parallel_workers"
+    - max_wal_size_bytes:
+        usage: "GAUGE"
+        description: "max_wal_size in bytes"
+    - max_worker_processes:
+        usage: "GAUGE"
+        description: "max_worker_processes"
+    - random_page_cost:
+        usage: "GAUGE"
+        description: "random_page_cost"
+    - seq_page_cost:
+        usage: "GAUGE"
+        description: "seq_page_cost"
+    - shared_buffers_bytes:
+        usage: "GAUGE"
+        description: "shared_buffers in bytes"
+    - work_mem_bytes:
+        usage: "GAUGE"
+        description: "work_mem in bytes"
+
+# [OPTIMIZATION]: Sử dụng CROSS JOIN thay thế cấu trúc Subquery lồng độc lập để gộp tối đa hiệu năng quét RAM
+pg_stat_bgwriter:
+  query: |
+    SELECT
+      coalesce(bg.buffers_clean, 0) AS buffers_clean,
+      coalesce(bg.maxwritten_clean, 0) AS maxwritten_clean,
+      coalesce(bg.buffers_alloc, 0) AS buffers_alloc,
+      coalesce(cp.buffers_written, 0) AS buffers_checkpoint,
+      coalesce(cp.num_timed, 0) AS checkpoints_timed,
+      coalesce(cp.num_requested, 0) AS checkpoints_req,
+      coalesce(cp.write_time, 0.0) AS checkpoint_write_time,
+      coalesce(cp.sync_time, 0.0) AS checkpoint_sync_time,
+      (SELECT COALESCE(SUM(writes), 0) FROM pg_stat_io WHERE backend_type = 'client backend' AND object = 'relation') AS buffers_backend,
+      (SELECT COALESCE(SUM(fsyncs), 0) FROM pg_stat_io WHERE backend_type = 'client backend' AND object = 'relation') AS buffers_backend_fsync
+    FROM pg_stat_bgwriter bg
+    CROSS JOIN pg_stat_checkpointer cp
+  metrics:
+    - buffers_clean:
+        usage: "COUNTER"
+        description: "Number of buffers written by the background writer"
+    - maxwritten_clean:
+        usage: "COUNTER"
+        description: "Number of times the background writer stopped a round because it had written too many buffers"
+    - buffers_alloc:
+        usage: "COUNTER"
+        description: "Number of buffers allocated"
+    - buffers_checkpoint:
+        usage: "COUNTER"
+        description: "Number of buffers written during checkpoints"
+    - checkpoints_timed:
+        usage: "COUNTER"
+        description: "Number of scheduled checkpoints that have been performed"
+    - checkpoints_req:
+        usage: "COUNTER"
+        description: "Number of requested checkpoints that have been performed"
+    - checkpoint_write_time:
+        usage: "COUNTER"
+        description: "Total amount of time spent writing files to disk during checkpoints, in milliseconds"
+    - checkpoint_sync_time:
+        usage: "COUNTER"
+        description: "Total amount of time spent synchronizing files to disk during checkpoints, in milliseconds"
+    - buffers_backend:
+        usage: "COUNTER"
+        description: "Number of buffers written directly by client backends (pg_stat_io)"
+    - buffers_backend_fsync:
+        usage: "COUNTER"
+        description: "Number of times a client backend had to execute its own fsync call (pg_stat_io)"
+
+# [CARDINALITY OPTIMIZATION]: Lọc bỏ các database hệ thống/mặc định để tránh bùng nổ Time Series trên VictoriaMetrics
+pg_stat_database:
+  query: |
+    SELECT
+      datname,
+      numbackends,
+      xact_commit,
+      xact_rollback,
+      blks_read,
+      blks_hit,
+      tup_returned,
+      tup_fetched,
+      tup_inserted,
+      tup_updated,
+      tup_deleted,
+      conflicts,
+      temp_bytes,
+      deadlocks
+    FROM pg_stat_database
+    WHERE datname IS NOT NULL 
+      AND datname NOT LIKE 'template%' 
+      AND datname NOT IN ('postgres')
+  metrics:
+    - datname:
+        usage: "LABEL"
+        description: "Database name"
+    - numbackends:
+        usage: "GAUGE"
+        description: "Number of active backends"
+    - xact_commit:
+        usage: "COUNTER"
+        description: "Number of transactions committed"
+    - xact_rollback:
+        usage: "COUNTER"
+        description: "Number of transactions rolled back"
+    - blks_read:
+        usage: "COUNTER"
+        description: "Number of disk blocks read"
+    - blks_hit:
+        usage: "COUNTER"
+        description: "Number of times disk blocks were found already in the buffer cache"
+    - tup_returned:
+        usage: "COUNTER"
+        description: "Number of rows returned by queries"
+    - tup_fetched:
+        usage: "COUNTER"
+        description: "Number of rows fetched by queries"
+    - tup_inserted:
+        usage: "COUNTER"
+        description: "Number of rows inserted by queries"
+    - tup_updated:
+        usage: "COUNTER"
+        description: "Number of rows updated by queries"
+    - tup_deleted:
+        usage: "COUNTER"
+        description: "Number of rows deleted by queries"
+    - conflicts:
+        usage: "COUNTER"
+        description: "Number of queries canceled due to conflicts with recovery"
+    - temp_bytes:
+        usage: "COUNTER"
+        description: "Total amount of data written to temporary files by queries"
+    - deadlocks:
+        usage: "COUNTER"
+        description: "Number of deadlocks detected"
+
+pg_stat_activity:
+  query: |
+    SELECT
+      datname,
+      state,
+      count(*)::float AS count
+    FROM pg_stat_activity
+    WHERE datname IS NOT NULL AND datname NOT IN ('postgres')
+    GROUP BY datname, state
+  metrics:
+    - datname:
+        usage: "LABEL"
+        description: "Database name"
+    - state:
+        usage: "LABEL"
+        description: "Connection state"
+    - count:
+        usage: "GAUGE"
+        description: "Number of active connections"
+
+pg_locks:
+  query: |
+    SELECT
+      pg_database.datname AS datname,
+      lower(mode) AS mode,
+      count(*)::float AS count
+    FROM pg_locks
+    JOIN pg_database ON pg_database.oid = pg_locks.database
+    WHERE pg_database.datname NOT IN ('postgres')
+    GROUP BY pg_database.datname, pg_locks.mode
+  metrics:
+    - datname:
+        usage: "LABEL"
+        description: "Database name"
+    - mode:
+        usage: "LABEL"
+        description: "Lock mode"
+    - count:
+        usage: "GAUGE"
+        description: "Number of locks"
+
+# [HA & CLOUD-NATIVE OBSERVABILITY]: Thêm các metrics đặc thù phục vụ giám sát mô hình Cluster HA trên Production
+pg_replication:
+  query: |
+    SELECT
+      pg_is_in_recovery()::int::float AS is_in_recovery,
+      CASE
+        WHEN pg_is_in_recovery() THEN pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())::float
+        ELSE 0.0
+      END AS standby_replay_lag_bytes
+  metrics:
+    - is_in_recovery:
+        usage: "GAUGE"
+        description: "Whether the server is in recovery mode (1 for standby, 0 for primary)"
+    - standby_replay_lag_bytes:
+        usage: "GAUGE"
+        description: "Standby replay lag in bytes"
+
+pg_stat_replication:
+  query: |
+    SELECT
+      coalesce(client_addr::text, 'local') AS client_addr,
+      application_name,
+      state,
+      CASE
+        WHEN pg_is_in_recovery() THEN 0.0
+        ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), COALESCE(replay_lsn, pg_current_wal_lsn()))::float
+      END AS replay_lag_bytes
+    FROM pg_stat_replication
+  metrics:
+    - client_addr:
+        usage: "LABEL"
+        description: "IP address of the client connected to this standby"
+    - application_name:
+        usage: "LABEL"
+        description: "Application name of the standby"
+    - state:
+        usage: "LABEL"
+        description: "Replication state"
+    - replay_lag_bytes:
+        usage: "GAUGE"
+        description: "Replication lag in bytes (Primary perspective)"
+
+pg_replication_slots:
+  query: |
+    SELECT
+      slot_name,
+      slot_type,
+      active::int::float AS active,
+      CASE
+        WHEN pg_is_in_recovery() THEN 0.0
+        ELSE pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::float
+      END AS retained_bytes
+    FROM pg_replication_slots
+  metrics:
+    - slot_name:
+        usage: "LABEL"
+        description: "Replication slot name"
+    - slot_type:
+        usage: "LABEL"
+        description: "Replication slot type"
+    - active:
+        usage: "GAUGE"
+        description: "Whether the slot is active (1 for active, 0 for inactive)"
+    - retained_bytes:
+        usage: "GAUGE"
+        description: "WAL retained by this slot in bytes"
+
+# [BACKUP HEALTH MONITORING]: Đo khoảng cách thời gian trễ Archive để tránh tình trạng kẹt WAL Archive âm thầm
+pg_stat_archiver:
+  query: |
+    SELECT
+      archived_count::float AS archived_count,
+      failed_count::float AS failed_count,
+      coalesce(extract(epoch from last_failed_time), 0.0)::float AS last_failed_time_seconds,
+      coalesce(extract(epoch from last_archived_time), 0.0)::float AS last_archived_time_seconds,
+      CASE 
+        WHEN last_archived_time IS NOT NULL THEN extract(epoch from (now() - last_archived_time))::float
+        ELSE 0.0
+      END AS seconds_since_last_archive
+    FROM pg_stat_archiver
+  metrics:
+    - archived_count:
+        usage: "COUNTER"
+        description: "Number of WAL files successfully archived"
+    - failed_count:
+        usage: "COUNTER"
+        description: "Number of failed attempts to archive WAL files"
+    - last_failed_time_seconds:
+        usage: "GAUGE"
+        description: "Epoch timestamp of the last failed archive attempt"
+    - last_archived_time_seconds:
+        usage: "GAUGE"
+        description: "Epoch timestamp of the last successful archive attempt"
+    - seconds_since_last_archive:
+        usage: "GAUGE"
+        description: "Seconds elapsed since the last successful WAL archive operation (Critical alert for backup health)"
+
+pg_stat_vacuum:
+  query: |
+    SELECT
+      count(*)::float AS active_vacuums
+    FROM pg_stat_progress_vacuum
+  metrics:
+    - active_vacuums:
+        usage: "GAUGE"
+        description: "Number of active vacuum processes"
+
+# [SAFETY HARD SHUTDOWN PROTECTION]: Giám sát cả TxID và MultiXact ID Wraparound để ngăn ngừa cluster dừng đột ngột
+pg_database_wraparound:
+  query: |
+    SELECT
+      datname,
+      age(datfrozenxid)::float AS age_txid,
+      mxid_age(datminmxid)::float AS age_mxid
+    FROM pg_database
+    WHERE datallowconn 
+      AND datname NOT LIKE 'template%'
+      AND datname NOT IN ('postgres')
+  metrics:
+    - datname:
+        usage: "LABEL"
+        description: "Database name"
+    - age_txid:
+        usage: "GAUGE"
+        description: "Age of the oldest transaction ID (txid) that has not been frozen"
+    - age_mxid:
+        usage: "GAUGE"
+        description: "Age of the oldest multi-transaction ID (mxid) that has not been frozen (Critical for preventing sudden forced shutdowns)"
