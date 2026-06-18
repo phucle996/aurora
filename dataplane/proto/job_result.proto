@@ -1,0 +1,14 @@
+syntax = "proto3";
+package job_lifecycle;
+
+// Cấu trúc báo cáo kết quả thực thi dạng nhị phân Protobuf gửi từ Dataplane về Job-Proxy
+message JobExecutionResultProto {
+  bytes job_id = 1;         // 16 bytes UUID nhị phân thô
+  uint32 job_version = 2;   // Phiên bản tác vụ để kiểm soát ghi đè (Optimistic Concurrency Control)
+  uint32 attempt = 3;       // Số lần thử lại
+  string result_status = 4; // Trạng thái: "SUCCEEDED" | "FAILED" | "PROCESSING"
+  string job_topic = 5;     // Tên topic (e.g. "mail.test_connection") phục vụ định tuyến và audit log
+  bytes trace_id = 6;       // 16 bytes Trace ID nhị phân thô để kết nối vết spans/logs
+  optional string error_code = 7; // Mã lỗi (nếu có, e.g. "EXECUTION_TIMEOUT")
+  string message = 8;       // Thông điệp kết quả chi tiết
+}

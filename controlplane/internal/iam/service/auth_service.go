@@ -235,11 +235,11 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 		idempotencyKey := uuid.Must(uuid.NewV7())
 
-		// Trích xuất Trace ID từ context để truyền nối tiếp vết (Distributed Tracing)
-		var traceIDPtr *string
+		// Trích xuất Trace ID dạng nhị phân 16-byte từ context để tối ưu hóa lưu trữ cột BYTEA trong DB
+		var traceID []byte
 		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-			tid := spanCtx.TraceID().String()
-			traceIDPtr = &tid
+			tid := spanCtx.TraceID()
+			traceID = tid[:]
 		}
 
 		// Trích xuất Zone ID từ context để phân vùng multi-tenant
@@ -278,7 +278,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 			JobVersion:           1,
 			ResourceID:           "verify_account",
 			PayloadSchemaVersion: 1,
-			TraceID:              traceIDPtr,
+			TraceID:              traceID,
 			Idle:                 60, // Hạn mức thời gian thực thi job 60 giây
 		}
 
@@ -608,7 +608,13 @@ func (s *AuthService) VerifyAdminTrinitySession(ctx context.Context, token strin
 	}
 
 	// Bước 4: Kiểm tra tính hoạt động của session từ Redis L2 cache
-	payload, _, exists, err := s.registry.L2.Get(ctx, "admin_access_session:"+accessKey)
+	// Sử dụng Zone ID từ claims để định tuyến phân vùng chính xác
+	zoneID := strings.TrimSpace(claims.ZoneID)
+	if zoneID == "" {
+		// Fallback về global nếu không tìm thấy phân vùng trong claims
+		zoneID = "global"
+	}
+	payload, _, exists, err := s.registry.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	if err != nil || !exists {
 		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}

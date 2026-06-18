@@ -89,7 +89,7 @@ impl JobConsumer {
 
             // 5. Mạch bình thường -> Gọi Redis Stream kéo job mới (Blocking Read bọc trong select)
             let fetch_fut = crate::infra::redis::query::fetch_next_stream_message(redis_job.client(), &stream_key);
-            let raw_message = tokio::select! {
+            let opt_payload = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     Logger::sys_info(
                         "job.ingestion",
@@ -99,7 +99,7 @@ impl JobConsumer {
                 }
                 res = fetch_fut => {
                     match res {
-                        Ok(msg) => msg,
+                        Ok(payload) => payload,
                         Err(e) => {
                             Logger::sys_error(
                                 "job.ingestion",
@@ -113,80 +113,81 @@ impl JobConsumer {
                 }
             };
 
-            if raw_message == "{}" {
-                // Không phát sinh message mới -> Thăm dò lại sau 1 giây
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        Logger::sys_info(
-                            "job.ingestion",
-                            "IngestionDaemon Ingestion Loop cancelled (Empty Message state). Exiting gracefully..."
-                        );
-                        break;
-                    }
-                    _ = sleep(Duration::from_secs(1)) => {}
-                }
-                continue;
-            }
-
-            // 6. Giải mã gói tin
-            if let Ok(payload) = serde_json::from_str::<JobPayload>(&raw_message) {
-                // Ghi log Audit nhận Job ngay lập tức
-                Logger::job_log(
-                    &payload.job_id,
-                    &payload.job_topic,
-                    payload.attempt,
-                    "job.received",
-                    "IngestionDaemon successfully claimed raw job message from Redis Stream"
-                );
-
-                let lock_key = format!("locks:job:{}", payload.job_id);
-
-                // 7. Thiết lập khóa phân phối Lease Lock trên redis_internal_zone
-                match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key).await {
-                    Ok(acquired) => {
-                        if !acquired {
-                            Logger::sys_warn(
+            // 6. Kiểm tra xem có nhận được JobPayload hợp lệ hay không
+            let payload = match opt_payload {
+                Some(p) => p,
+                None => {
+                    // Không phát sinh message mới -> Thăm dò lại sau 1 giây
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            Logger::sys_info(
                                 "job.ingestion",
-                                &format!("Lock key '{}' already held by another instance. Skipping job ID: {}", lock_key, payload.job_id),
-                                "LOCK_ACQUISITION_FAILED"
+                                "IngestionDaemon Ingestion Loop cancelled (Empty Message state). Exiting gracefully..."
                             );
-                            continue;
+                            break;
                         }
+                        _ = sleep(Duration::from_secs(1)) => {}
                     }
-                    Err(e) => {
-                        Logger::sys_error(
+                    continue;
+                }
+            };
+
+            // Ghi log Audit nhận Job ngay lập tức
+            Logger::job_log(
+                &payload.job_id,
+                &payload.job_topic,
+                payload.attempt,
+                "job.received",
+                "IngestionDaemon successfully claimed raw job message from Redis Stream"
+            );
+
+            let lock_key = format!("locks:job:{}", payload.job_id);
+
+            // 7. Thiết lập khóa phân phối Lease Lock trên redis_internal_zone
+            match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key).await {
+                Ok(acquired) => {
+                    if !acquired {
+                        Logger::sys_warn(
                             "job.ingestion",
-                            &format!("IngestionDaemon failed to connect to redis_internal_zone for locking job {}: {}", payload.job_id, e),
-                            "REDIS_LOCK_ERROR"
+                            &format!("Lock key '{}' already held by another instance. Skipping job ID: {}", lock_key, payload.job_id),
+                            "LOCK_ACQUISITION_FAILED"
                         );
-                        sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                 }
-
-                // Tăng số lượng job đang xử lý (kể cả job đang chờ trong channel)
-                active_jobs.fetch_add(1, Ordering::SeqCst);
-
-                // Gửi payload vào channel cho Worker xử lý. Hỗ trợ cơ chế backpressure và cancel-safe khi dừng app.
-                let send_fut = tx.send(payload);
-                let send_res = tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        Err("Shutdown initiated while sending to channel")
-                    }
-                    res = send_fut => {
-                        res.map_err(|_| "Channel closed")
-                    }
-                };
-
-                if let Err(err_msg) = send_res {
+                Err(e) => {
                     Logger::sys_error(
                         "job.ingestion",
-                        &format!("Failed to dispatch job: {}. Releasing lock.", err_msg),
-                        "CHANNEL_DISPATCH_ERROR"
+                        &format!("IngestionDaemon failed to connect to redis_internal_zone for locking job {}: {}", payload.job_id, e),
+                        "REDIS_LOCK_ERROR"
                     );
-                    active_jobs.fetch_sub(1, Ordering::SeqCst);
-                    let _ = crate::infra::redis::query::release_lease_lock(redis_internal_zone.client(), &lock_key).await;
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
+            }
+
+            // Tăng số lượng job đang xử lý (kể cả job đang chờ trong channel)
+            active_jobs.fetch_add(1, Ordering::SeqCst);
+
+            // Gửi payload vào channel cho Worker xử lý. Hỗ trợ cơ chế backpressure và cancel-safe khi dừng app.
+            let send_fut = tx.send(payload);
+            let send_res = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    Err("Shutdown initiated while sending to channel")
+                }
+                res = send_fut => {
+                    res.map_err(|_| "Channel closed")
+                }
+            };
+
+            if let Err(err_msg) = send_res {
+                Logger::sys_error(
+                    "job.ingestion",
+                    &format!("Failed to dispatch job: {}. Releasing lock.", err_msg),
+                    "CHANNEL_DISPATCH_ERROR"
+                );
+                active_jobs.fetch_sub(1, Ordering::SeqCst);
+                let _ = crate::infra::redis::query::release_lease_lock(redis_internal_zone.client(), &lock_key).await;
             }
         }
     }

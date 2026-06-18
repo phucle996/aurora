@@ -839,7 +839,8 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		"last_seen_at":       now.UTC().Unix(),
 	}
 
-	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey.String(), session, 1, s.cfg.Security.AdminSessionTTL); err != nil {
+	// Lưu trữ session được phân vùng theo cả Access Key và Zone ID (Zone-scoped)
+	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey.String()+":"+zoneID, session, 1, s.cfg.Security.AdminSessionTTL); err != nil {
 		loginOutcome = iamTaxonomy.SetAccessSessionFail
 		iamMetrics.Downstream("cacheEngine", workflow, "L2.Set", iamTaxonomy.SetAccessSessionFail, time.Since(now), err)
 		// Set access session lỗi -> ErrInternalError
@@ -870,15 +871,21 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		iamMetrics.ServiceCall(workflow, refreshOutcome)
 	}()
 
-	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY TỪ GO CONTEXT ---
-	// Trích xuất accessKey trực tiếp từ Go standard context thay vì nhận qua tham số
+	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY VÀ ZONE ID TỪ GO CONTEXT ---
+	// Trích xuất accessKey và zoneID trực tiếp từ Go standard context
 	var accessKey string
+	var zoneID string
 	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
 		accessKey = ident.AccessKey
+		zoneID = ident.ZoneID
 	}
 	if strings.TrimSpace(accessKey) == "" {
 		refreshOutcome = iamTaxonomy.InvalidArgument
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
+	}
+	if zoneID == "" {
+		// Fallback về global nếu không tìm thấy thông tin phân vùng trong context
+		zoneID = "global"
 	}
 
 	// --- BƯỚC 2: PHÂN GIẢI MÃ PHÂN VÙNG THÀNH UUID QUA L1 CACHE REGISTRY ---
@@ -904,7 +911,8 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 	// --- BƯỚC 3: TRUY VẤN VÀ KIỂM TRA PHIÊN LÀM VIỆC HIỆN TẠI TRONG REDIS ---
 
 	now := time.Now()
-	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey)
+	// Thực hiện truy vấn session key có chứa zoneID để đảm bảo phân vùng bảo mật
+	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	if err != nil {
 		iamMetrics.Downstream("sessionCache", workflow, "GetAccessSession", iamTaxonomy.GetL2CacheFail, time.Since(now), err)
 		refreshOutcome = iamTaxonomy.GetL2CacheFail
@@ -947,8 +955,9 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		uaValue = strings.TrimSpace(*userAgent)
 	}
 
-	dataKey := "{admin_access_session:" + accessKey + "}:data"
-	versionKey := "{admin_access_session:" + accessKey + "}:version"
+	// Xây dựng dataKey và versionKey chứa kèm zoneID để cô lập với các phân vùng khác
+	dataKey := "{admin_access_session:" + accessKey + ":" + zoneID + "}:data"
+	versionKey := "{admin_access_session:" + accessKey + ":" + zoneID + "}:version"
 
 	casLua := `
 local current_ver = redis.call('GET', KEYS[2])
@@ -1040,7 +1049,8 @@ return 1
 		"last_seen_user_agent": runtimeRecord.LastSeenUserAgent,
 	}
 
-	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKeyNew, sessionNew, 1, s.cfg.Security.AdminSessionTTL); err != nil {
+	// Lưu phiên mới đã phân vùng theo resolvedZoneID
+	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKeyNew+":"+resolvedZoneID, sessionNew, 1, s.cfg.Security.AdminSessionTTL); err != nil {
 		refreshOutcome = iamTaxonomy.SetAccessSessionFail
 		// Set access session thất bại trả ErrInternalError
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.SetAccessSessionFail)
@@ -1092,8 +1102,17 @@ return 1
 // việc cập nhật thông tin thiết bị xuống Postgres Database được thực hiện bất đồng bộ (Asynchronous Background Flush)
 // dưới cơ chế bảo vệ cắt tải chủ động (Load Shedding) sử dụng context timeout 1 giây và chỉ ghi khi thực sự thay đổi (LastSeenDirty = true).
 func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
+	// Trích xuất zoneID của Admin từ context định danh
+	var zoneID string
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		zoneID = ident.ZoneID
+	}
+	if zoneID == "" {
+		zoneID = "global"
+	}
+
 	// 1. Đọc nhanh thông tin session hiện tại trong Redis để lấy dữ liệu thiết bị (nếu có).
-	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey)
+	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	if err != nil {
 		// Cache L2 lỗi -> ErrInternalError
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.FailureUnknown)
@@ -1132,7 +1151,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 
 	// 2. PHẾ BỎ PHIÊN LÀM VIỆC LẬP TỨC (SECURITY EXTREMELY CRITICAL)
 	// Thực hiện xóa session khỏi Redis trước để đảm bảo phiên chạy bị vô hiệu hóa ngay lập tức.
-	if err := s.cacheEngine.L2.Delete(ctx, "admin_access_session:"+accessKey); err != nil {
+	if err := s.cacheEngine.L2.Delete(ctx, "admin_access_session:"+accessKey+":"+zoneID); err != nil {
 		// Cache L2 xóa lỗi -> ErrInternalError
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.FailureUnknown)
 	}
@@ -1216,9 +1235,16 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 		keyName := key
 		keyName = strings.TrimPrefix(keyName, "{admin_access_session:")
 		keyName = strings.TrimSuffix(keyName, "}:data")
-		accessKey := keyName
+		
+		// Bóc tách accessKey và zoneID từ cấu hình key phân vùng dạng <accessKey>:<zoneID>
+		parts := strings.Split(keyName, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		accessKey := parts[0]
+		zoneID := parts[1]
 
-		payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey)
+		payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 		if err != nil || !exists {
 			continue
 		}
@@ -1247,7 +1273,7 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 			_ = s.repo.TouchAdminDeviceLastSeen(ctx, record.TrackedDeviceID, optionalStringPointer(record.LastSeenIP),
 				optionalStringPointer(record.LastSeenUserAgent), time.Unix(record.LastSeenAt, 0).UTC())
 		}
-		_ = s.cacheEngine.L2.Delete(ctx, "admin_access_session:"+accessKey)
+		_ = s.cacheEngine.L2.Delete(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	}
 	return nil
 }
@@ -1264,7 +1290,16 @@ func optionalStringPointer(raw string) *string {
 
 // GetPublicKeyFromSession lấy public key từ session cache, nếu không có sẽ load từ DB và cập nhật lại cache.
 func (s *AdminAPIKeyService) GetPublicKeyFromSession(ctx context.Context, accessKey string) (string, error) {
-	payload, version, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey)
+	// Trích xuất zoneID của Admin từ context
+	var zoneID string
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		zoneID = ident.ZoneID
+	}
+	if zoneID == "" {
+		zoneID = "global"
+	}
+
+	payload, version, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	if err != nil {
 		return "", err
 	}
@@ -1299,9 +1334,9 @@ func (s *AdminAPIKeyService) GetPublicKeyFromSession(ctx context.Context, access
 		return "", err
 	}
 
-	// Đồng bộ key ngược lại L2 Cache
+	// Đồng bộ key ngược lại L2 Cache có chứa zoneID
 	record.DevicePublicKey = pubKey
-	_ = s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey, record, version, 30*time.Minute)
+	_ = s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey+":"+zoneID, record, version, 30*time.Minute)
 
 	return pubKey, nil
 }

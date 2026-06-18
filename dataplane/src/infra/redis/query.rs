@@ -15,7 +15,12 @@
 ///
 
 /// Đọc gói tin tiếp theo từ Stream sử dụng cơ chế Consumer Group chặn (blocking read).
-pub async fn fetch_next_stream_message(client: &redis::Client, stream_key: &str) -> Result<String, String> {
+use crate::job_lifecycle::message::JobPayload;
+
+/// Đọc gói tin tiếp theo từ Stream sử dụng cơ chế Consumer Group chặn (blocking read).
+/// Đã được tối ưu hóa để parse trực tiếp các trường Key-Value nhị phân từ Redis Stream,
+/// tránh sử dụng JSON Wrapper gây tốn CPU và phình to mảng bytes.
+pub async fn fetch_next_stream_message(client: &redis::Client, stream_key: &str) -> Result<Option<JobPayload>, String> {
     let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| e.to_string())?;
 
     // 1. Đảm bảo Consumer Group đã tồn tại (XGROUP CREATE stream_key dataplane-group 0 MKSTREAM)
@@ -46,25 +51,12 @@ pub async fn fetch_next_stream_message(client: &redis::Client, stream_key: &str)
         .await
         .map_err(|e| e.to_string())?;
 
-    // 3. Phân tích kết quả từ Value nguyên thủy của Redis
-    if let Some((msg_id, raw_json)) = parse_stream_message(&reply) {
-        // Nhúng động redis_msg_id vào chuỗi JSON trả về
-        if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(&raw_json) {
-            if let Some(obj) = json_val.as_object_mut() {
-                obj.insert("redis_msg_id".to_string(), serde_json::Value::String(msg_id.clone()));
-            }
-            if let Ok(modified_json) = serde_json::to_string(&json_val) {
-                return Ok(modified_json);
-            }
-        }
-        return Ok(raw_json);
-    }
-
-    Ok("{}".to_string())
+    // 3. Phân tích kết quả từ Value nguyên thủy của Redis trực tiếp thành JobPayload
+    Ok(parse_job_payload(&reply))
 }
 
-/// Trích xuất ID và payload JSON từ phản hồi Bulk của Redis Stream
-fn parse_stream_message(val: &redis::Value) -> Option<(String, String)> {
+/// Trích xuất và parse trực tiếp các thuộc tính của Job từ phản hồi Bulk của Redis Stream
+fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
     match val {
         redis::Value::Bulk(streams) => {
             let stream = streams.first()?;
@@ -76,50 +68,122 @@ fn parse_stream_message(val: &redis::Value) -> Option<(String, String)> {
                             let entry = entry_list.first()?;
                             match entry {
                                 redis::Value::Bulk(entry_data) => {
+                                    // Phần tử đầu tiên là ID của tin nhắn Redis (e.g. "171873918-0")
                                     let msg_id_val = entry_data.get(0)?;
                                     let msg_id = match msg_id_val {
                                         redis::Value::Data(d) => String::from_utf8_lossy(d).into_owned(),
                                         _ => return None,
                                     };
+                                    
+                                    // Phần tử thứ hai chứa danh sách cặp Key-Value dẹt
                                     let fields_val = entry_data.get(1)?;
                                     match fields_val {
                                         redis::Value::Bulk(fields) => {
-                                            // Tìm trường có khóa là "payload"
+                                            let mut job_id = String::new();
+                                            let mut job_version = 1;
+                                            let mut attempt = 0;
+                                            let mut job_topic = String::new();
+                                            let mut resource_id = String::new();
+                                            let mut payload_schema_version = 1;
+                                            let mut payload = Vec::new();
+                                            let mut trace_id = String::new();
+                                            let mut idle = None;
+
+                                            // Lặp qua từng cặp Key-Value trong bulk array
                                             for chunk in fields.chunks(2) {
                                                 if chunk.len() == 2 {
                                                     let k = match &chunk[0] {
-                                                        redis::Value::Data(d) => String::from_utf8_lossy(d).into_owned(),
+                                                        redis::Value::Data(d) => String::from_utf8_lossy(d),
                                                         _ => continue,
                                                     };
-                                                    if k == "payload" {
-                                                        if let redis::Value::Data(d) = &chunk[1] {
-                                                            return Some((msg_id, String::from_utf8_lossy(d).into_owned()));
+                                                    match k.as_ref() {
+                                                        "job_id" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                job_id = String::from_utf8_lossy(d).into_owned();
+                                                            }
                                                         }
+                                                        "job_version" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                let s = String::from_utf8_lossy(d);
+                                                                job_version = s.parse().unwrap_or(1);
+                                                            }
+                                                        }
+                                                        "attempt" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                let s = String::from_utf8_lossy(d);
+                                                                attempt = s.parse().unwrap_or(0);
+                                                            }
+                                                        }
+                                                        "job_topic" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                job_topic = String::from_utf8_lossy(d).into_owned();
+                                                            }
+                                                        }
+                                                        "resource_id" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                resource_id = String::from_utf8_lossy(d).into_owned();
+                                                            }
+                                                        }
+                                                        "payload_schema_version" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                let s = String::from_utf8_lossy(d);
+                                                                payload_schema_version = s.parse().unwrap_or(1);
+                                                            }
+                                                        }
+                                                        "payload" => {
+                                                            // Đọc trực tiếp bytes nhị phân thô không bị phình kích thước
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                payload = d.clone();
+                                                            }
+                                                        }
+                                                        "trace_id" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                // Convert 16-byte raw binary to 32-character hex string for task-local propagation
+                                                                trace_id = d.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                                                            }
+                                                        }
+                                                        "idle" => {
+                                                            if let redis::Value::Data(d) = &chunk[1] {
+                                                                let s = String::from_utf8_lossy(d);
+                                                                idle = s.parse().ok();
+                                                            }
+                                                        }
+                                                        _ => {}
                                                     }
                                                 }
                                             }
-                                            // Fallback trả về giá trị đầu tiên
-                                            if fields.len() >= 2 {
-                                                if let redis::Value::Data(d) = &fields[1] {
-                                                    return Some((msg_id, String::from_utf8_lossy(d).into_owned()));
-                                                }
+                                            
+                                            if job_id.is_empty() {
+                                                return None;
                                             }
+
+                                            Some(JobPayload {
+                                                job_id,
+                                                job_version,
+                                                attempt,
+                                                job_topic,
+                                                resource_id,
+                                                payload_schema_version,
+                                                payload,
+                                                trace_id,
+                                                idle,
+                                                redis_msg_id: Some(msg_id),
+                                            })
                                         }
-                                        _ => {}
+                                        _ => None
                                     }
                                 }
-                                _ => {}
+                                _ => None
                             }
                         }
-                        _ => {}
+                        _ => None
                     }
                 }
-                _ => {}
+                _ => None
             }
         }
-        _ => {}
+        _ => None
     }
-    None
 }
 
 /// Xác nhận hoàn tất xử lý gói tin (Acknowledge Message) để gỡ khỏi hàng đợi kẹt.

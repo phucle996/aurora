@@ -1,38 +1,3 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/iam/repository/admin_api_key_repo.go
-//            Đặc Tả Hạ Tầng Lưu Trữ & Quản Trị Cơ Sở Dữ Liệu SRE Admin API Key
-// ======================================================================================================
-//
-// 📜 HIỆP ĐỒNG THIẾT KẾ & TỐI ƯU HÓA HẠ TẦNG (INFRASTRUCTURE DESIGN & PEAK PERFORMANCE):
-//   - File này chịu trách nhiệm lưu trữ và tương tác trực tiếp với Postgres Database cho mặt phẳng
-//     quản trị hệ thống SRE (Infrastructure Management Plane).
-//   - Tối ưu hóa cực hạn (Peak Performance Optimization) nhằm triệt tiêu hoàn toàn runtime overhead:
-//
-//     1) TRUY VẤN TĨNH KHỞI TẠO SỚM (STATIC QUERY PRE-COMPUTATION):
-//        * Tất cả chuỗi truy vấn SQL được định dạng schema và biên dịch trước một lần duy nhất tại
-//          hàm khởi tạo `NewAdminAPIKeyRepository`.
-//        * Triệt tiêu hoàn toàn chi phí sử dụng `fmt.Sprintf` tại runtime ở hot path, giảm thiểu
-//          các phân bổ heap dynamic memory và tiết kiệm chu kỳ CPU của Go GC.
-//
-//     2) GIAO DỊCH GỘP KIỂU BATCH (SINGLE NETWORK ROUND-TRIP TRANSACTIONS VIA pgx.Batch):
-//        * Các thao tác phức hợp (như `Bootstrap` và `RollbackBootstrap`) thực thi nhiều câu lệnh
-//          SQL khác nhau trong cùng một transaction.
-//        * Sử dụng `pgx.Batch` để gom tất cả các lệnh SQL lại và gửi đi trong **đúng 1 vòng khứ hồi mạng**
-//          (1 Network Round-trip) thay vì tuần tự từng connection, tối ưu hóa triệt để latency P99.
-//
-//     3) TÁCH BIỆT MÔ HÌNH DỮ LIỆU TUYỆT ĐỐI (STRICT MODEL-ENTITY DECOUPLING):
-//        * Tầng logic nghiệp vụ chỉ giao tiếp thông qua Domain Entities (`iamEntity.AdminAPIKey`, v.v.).
-//        * Tầng lưu trữ (Repository) thực hiện chuyển đổi hai chiều sang Database Storage Models
-//          chuyên biệt (`iamModel.AdminAPIKey`, `iamModel.AdminDevice`, `iamModel.Admin2FASettings`)
-//          trước khi ghi xuống DB hoặc sau khi quét lên từ cơ sở dữ liệu.
-//
-//     4) NGĂN CHẶN TRANH CHẤP RACE CONDITION (RACE CONDITION & SECURITY LOCKS):
-//        * Sử dụng PostgreSQL Advisory Locks thông qua `AcquireBootstrapLock` và `AcquireRotationLock`
-//          với mã khóa tĩnh (`20260514` và `20260515`) để bảo vệ các thao tác thay đổi hạ tầng quan trọng,
-//          đảm bảo chỉ có một instance SRE Node duy nhất được phép Bootstrap hoặc Rotate Key tại một thời điểm.
-//
-// ======================================================================================================
-
 package iamRepoImpl
 
 import (

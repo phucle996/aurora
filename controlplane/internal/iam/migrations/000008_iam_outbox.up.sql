@@ -3,8 +3,8 @@
 
 CREATE TABLE IF NOT EXISTS iam_outbox_records (
     id BIGSERIAL PRIMARY KEY,
-    event_id VARCHAR(64) UNIQUE NOT NULL, -- UUID định danh duy nhất của sự kiện (Idempotency Key)
-    zone_id VARCHAR(64) NOT NULL, -- Định danh zone phục vụ đa thuê bao (Multi-tenancy)
+    event_id UUID UNIQUE NOT NULL, -- UUID định danh duy nhất của sự kiện (Idempotency Key)
+    zone_id UUID NOT NULL, -- Định danh zone phục vụ đa thuê bao (Multi-tenancy)
     job_topic VARCHAR(100) NOT NULL, -- Tên topic/tác vụ (e.g. mail.system.verify_account)
     payload BYTEA NOT NULL, -- Dữ liệu nhị phân serialized dạng Protobuf
     user_id VARCHAR(64) NOT NULL, -- ID người dùng kích hoạt hành động này
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS iam_outbox_records (
     job_version INT NOT NULL DEFAULT 1,
     resource_id VARCHAR(64),
     payload_schema_version INT NOT NULL DEFAULT 1,
-    trace_id VARCHAR(64), -- Trích xuất OpenTelemetry trace parent để liên kết vết
+    trace_id BYTEA, -- Trích xuất OpenTelemetry trace parent để liên kết vết
     idle INT, -- Hạn mức timeout cho tác vụ tính bằng giây
 
     -- CÁC CỘT PHẢN HỒI KẾT QUẢ:

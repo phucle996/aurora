@@ -423,11 +423,11 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 		return err
 	}
 
-	// Trích xuất Trace ID thực tế từ context nếu có (do OTelTraceContext ở tầng middleware tiêm vào go context)
-	var traceIDPtr *string
+	// Trích xuất Trace ID thực tế dạng nhị phân 16-byte từ context để tối ưu hóa lưu trữ cột BYTEA trong DB
+	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-		tid := spanCtx.TraceID().String()
-		traceIDPtr = &tid
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
 	}
 
 	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh (lưu UserID riêng biệt ở cột DB)
@@ -441,7 +441,7 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 		JobVersion:           1,
 		ResourceID:           "transient_test",
 		PayloadSchemaVersion: 1,
-		TraceID:              traceIDPtr,
+		TraceID:              traceID,
 		Idle:                 90, // Hạn mức timeout 90 giây cho kết nối test
 	}
 

@@ -1,5 +1,4 @@
 mod config;
-mod payload;
 mod cdc;
 mod result_consumer;
 mod observability;

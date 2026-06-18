@@ -1,10 +1,8 @@
 pub mod parser;
 pub mod utils;
 pub mod setup;
-
 use std::collections::HashMap;
 use crate::config::Config;
-use crate::payload::JobPayload;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
 use pgwire_replication::{ReplicationClient, ReplicationConfig, ReplicationEvent, Lsn};
@@ -169,7 +167,11 @@ impl CdcStreamer {
         let job_version_str = fields.get("job_version").cloned().unwrap_or_default();
         let resource_id = fields.get("resource_id").cloned().unwrap_or_default();
         let payload_schema_version_str = fields.get("payload_schema_version").cloned().unwrap_or_default();
-        let trace_id = fields.get("trace_id").cloned().unwrap_or_default();
+        let trace_id_raw = fields.get("trace_id").cloned().unwrap_or_default();
+        // Giải mã trace_id cột nhị phân (BYTEA) từ chuỗi đại diện hex truyền qua WAL
+        let trace_id_bytes = decode_pg_bytea(&trace_id_raw).unwrap_or_default();
+        // Chuyển đổi sang chuỗi hex 32 ký tự để tương thích với OTel spans và logs cục bộ
+        let trace_id_hex = trace_id_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
         let idle_str = fields.get("idle").cloned().unwrap_or_default();
 
         if event_id.is_empty() || zone_id.is_empty() || job_topic.is_empty() {
@@ -190,7 +192,7 @@ impl CdcStreamer {
         );
 
         // Thiết lập scope trace_id cho toàn bộ quá trình đóng gói và gửi job lên Redis
-        let trace_id_clone = trace_id.clone();
+        let trace_id_hex_clone = trace_id_hex.clone();
         let event_id_clone = event_id.clone();
         let job_topic_clone = job_topic.clone();
         let zone_id_clone = zone_id.clone();
@@ -200,11 +202,11 @@ impl CdcStreamer {
         let payload_schema_version_str_clone = payload_schema_version_str.clone();
         let idle_str_clone = idle_str.clone();
 
-        crate::observability::otel::CURRENT_TRACE_ID.scope(trace_id_clone, async move {
+        crate::observability::otel::CURRENT_TRACE_ID.scope(trace_id_hex_clone, async move {
             use opentelemetry::trace::{Tracer, Span, TraceContextExt};
 
             // 1. Phân tích ngữ cảnh cha (Parent Span) từ traceparent truyền qua WAL
-            let cx = if let Some(parent_ctx) = OtelTracer::parse_traceparent(&trace_id) {
+            let cx = if let Some(parent_ctx) = OtelTracer::parse_traceparent(&trace_id_hex) {
                 opentelemetry::Context::current().with_remote_span_context(parent_ctx)
             } else {
                 opentelemetry::Context::current()
@@ -230,33 +232,29 @@ impl CdcStreamer {
             let payload_schema_version = payload_schema_version_str_clone.parse::<u32>().unwrap_or(1);
             let idle = if idle_str_clone.is_empty() { None } else { idle_str_clone.parse::<u32>().ok() };
 
-            // Đóng gói cấu trúc JobPayload với cột nhị phân thay cho JSON
-            let payload = JobPayload {
-                job_id: event_id_clone.clone(),
-                job_version,
-                attempt: 0,
-                job_topic: job_topic_clone.clone(),
-                resource_id: resource_id_clone,
-                payload_schema_version,
-                payload: payload_bytes,
-                trace_id: trace_id.clone(),
-                idle,
-            };
-
-            // Chuẩn hóa payload sang chuỗi JSON string
-            let payload_str = serde_json::to_string(&payload)?;
-
             // Định tuyến dynamic stream key theo zone_id
             let stream_key = format!("jobs:{}", zone_id_clone);
 
-            // Đẩy tin nhắn vào Redis Stream (Sử dụng lệnh XADD của Redis)
-            let xadd_res: Result<String, redis::RedisError> = redis::cmd("XADD")
-                .arg(&stream_key)
-                .arg("*")
-                .arg("payload")
-                .arg(&payload_str)
-                .query_async(redis_conn)
-                .await;
+            // Tinh chỉnh tối ưu hóa hiệu năng (HA Performance): 
+            // Thay vì bọc JSON gây chi phí Serde và phình to mảng bytes nhị phân,
+            // ta đẩy trực tiếp các trường dưới dạng Key-Value thô của Redis Stream.
+            // Đẩy trace_id dạng raw binary bytes (16 bytes) thay vì string hex 32 bytes để tiết kiệm 50% dung lượng.
+            let mut cmd = redis::cmd("XADD");
+            cmd.arg(&stream_key).arg("*");
+            cmd.arg("job_id").arg(&event_id_clone);
+            cmd.arg("job_version").arg(job_version.to_string());
+            cmd.arg("attempt").arg("0");
+            cmd.arg("job_topic").arg(&job_topic_clone);
+            cmd.arg("resource_id").arg(&resource_id_clone);
+            cmd.arg("payload_schema_version").arg(payload_schema_version.to_string());
+            cmd.arg("payload").arg(&payload_bytes);
+            cmd.arg("trace_id").arg(&trace_id_bytes);
+            if let Some(idle_val) = idle {
+                cmd.arg("idle").arg(idle_val.to_string());
+            }
+
+            // Gửi lệnh XADD sang Redis bất đồng bộ
+            let xadd_res: Result<String, redis::RedisError> = cmd.query_async(redis_conn).await;
 
             match xadd_res {
                 Ok(_) => {

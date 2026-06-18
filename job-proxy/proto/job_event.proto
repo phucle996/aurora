@@ -13,5 +13,5 @@ message JobNotificationEvent {
   string title = 5;         // Tiêu đề của thông báo
   string message = 6;       // Nội dung chi tiết của thông báo
   int64 created_at = 7;     // Thời điểm xảy ra sự kiện dưới dạng Unix Epoch seconds
-  string trace_parent = 8;  // OpenTelemetry context cho distributed tracing
+  string trace_parent = 8;  // Trace context nội bộ cho distributed tracing (Job-Proxy → Notification Service, không truyền tới client)
 }

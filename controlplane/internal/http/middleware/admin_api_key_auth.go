@@ -204,8 +204,14 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 
 		// --------------------------------------------------------------------
 		// Xác thực access_secret trực tiếp thông qua Redis L2 Cache.
+		// Bổ sung phân vùng theo Zone ID (Zone-scoped) để triệt tiêu bypass.
 		// --------------------------------------------------------------------
-		payload, _, exists, err := registry.L2.Get(c.Request.Context(), "admin_access_session:"+accessKey)
+		zoneID := strings.TrimSpace(claims.ZoneID)
+		if zoneID == "" {
+			// Nếu rỗng, fallback về global để đảm bảo tương thích ngược
+			zoneID = "global"
+		}
+		payload, _, exists, err := registry.L2.Get(c.Request.Context(), "admin_access_session:"+accessKey+":"+zoneID)
 		if err != nil {
 			if isLogout {
 				c.Next()

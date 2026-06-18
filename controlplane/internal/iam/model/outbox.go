@@ -21,7 +21,8 @@ type IamOutboxRecord struct {
 	JobVersion           uint32     `db:"job_version"`
 	ResourceID           string     `db:"resource_id"`
 	PayloadSchemaVersion uint32     `db:"payload_schema_version"`
-	TraceID              *string    `db:"trace_id"`
+	// TraceID: Lưu nhị phân 16 bytes thay vì string hex 32 bytes
+	TraceID              []byte    `db:"trace_id"`
 	Idle                 uint32     `db:"idle"`
 	ErrorCode            *string    `db:"error_code"`
 	ErrorMessage         *string    `db:"error_message"`

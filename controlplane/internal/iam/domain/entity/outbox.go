@@ -36,7 +36,9 @@ type IamOutboxRecord struct {
 	JobVersion           uint32          // Phiên bản logic của Job chạy ở Dataplane
 	ResourceID           string          // Định danh tài nguyên đích liên quan đến sự kiện
 	PayloadSchemaVersion uint32          // Phiên bản cấu trúc dữ liệu của Payload
-	TraceID              *string         // Trace ID OpenTelemetry để trace luồng bất đồng bộ
+	// TraceID: Mã định danh phân tán (OpenTelemetry Trace ID) dùng để liên kết chuỗi vết hoạt động (Distributed Tracing)
+	// Lưu trữ dạng nhị phân BYTEA (16 bytes) thay vì string hex 32 ký tự để tối ưu hóa bộ nhớ
+	TraceID []byte
 	Idle                 uint32          // Thời gian tối đa cho phép xử lý job (seconds)
 	ErrorCode            *string         // Mã lỗi phản hồi từ Dataplane nếu thất bại
 	ErrorMessage         *string         // Chi tiết lỗi phản hồi từ Dataplane

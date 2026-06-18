@@ -671,11 +671,15 @@ services:
       CONTROLPLANE_GRPC_CLIENT_CERT: "/etc/job-proxy/tls/grpc-server.crt"
       CONTROLPLANE_GRPC_CLIENT_KEY: "/etc/job-proxy/tls/grpc-server.key"
       CONTROLPLANE_GRPC_DOMAIN: "localhost"
+      # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
       psql:
         condition: service_healthy
       redis-job:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
   centrifugo:
@@ -689,9 +693,14 @@ services:
     # Chỉ sử dụng API Key cho Server-to-Server communication (gửi message), xác thực kết nối khách hàng đã được ủy quyền cho Connect Proxy.
     environment:
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
+      # OpenTelemetry: Kết nối Centrifugo tới OTel Collector để sinh spans phục vụ distributed tracing E2E
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
     depends_on:
       redis-job:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
   notification-service:
@@ -717,6 +726,8 @@ services:
       - CONTROLPLANE_GRPC_CLIENT_CERT=/etc/notification-service/tls/grpc-server.crt
       - CONTROLPLANE_GRPC_CLIENT_KEY=/etc/notification-service/tls/grpc-server.key
       - CONTROLPLANE_GRPC_DOMAIN=localhost
+      # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
     depends_on:
       centrifugo:
         condition: service_started
@@ -724,6 +735,8 @@ services:
         condition: service_started
       redis-job:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     restart: unless-stopped
 
 volumes:

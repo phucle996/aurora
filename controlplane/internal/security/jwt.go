@@ -70,7 +70,6 @@ type jwtHeader struct {
 
 var jwtEncoding = base64.RawURLEncoding
 
-
 // SignWithSecret creates a compact JWT using HMAC-SHA256 with an explicit raw
 // secret value. This is the low-level helper used after runtime secret lookup.
 func SignWithSecret(claims Claims, secret []byte) (string, error) {

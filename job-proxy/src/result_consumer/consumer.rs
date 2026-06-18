@@ -1,8 +1,11 @@
 use super::notifier::JobNotifier;
 use crate::config::Config;
 use crate::observability::logger::Logger;
-use crate::payload::JobExecutionResult;
 use tokio_postgres::NoTls;
+
+pub mod job_proto {
+    include!(concat!(env!("OUT_DIR"), "/job_lifecycle.rs"));
+}
 
 /// Trình tiêu thụ và cập nhật kết quả công việc chạy từ Dataplane về Controlplane
 pub struct ResultConsumer {
@@ -116,7 +119,7 @@ impl ResultConsumer {
                                         };
 
                                         if let redis::Value::Bulk(ref fields) = msg_parts[1] {
-                                            let mut payload_str = None;
+                                            let mut payload_bytes = None;
                                             for i in (0..fields.len()).step_by(2) {
                                                 let key = match &fields[i] {
                                                     redis::Value::Data(bytes) => {
@@ -124,19 +127,16 @@ impl ResultConsumer {
                                                     }
                                                     _ => continue,
                                                 };
-                                                if key == "data" && i + 1 < fields.len() {
+                                                if key == "payload" && i + 1 < fields.len() {
                                                     if let redis::Value::Data(bytes) =
                                                         &fields[i + 1]
                                                     {
-                                                        payload_str = Some(
-                                                            String::from_utf8_lossy(bytes)
-                                                                .into_owned(),
-                                                        );
+                                                        payload_bytes = Some(bytes.clone());
                                                     }
                                                 }
                                             }
 
-                                            if let Some(payload) = payload_str {
+                                            if let Some(payload) = payload_bytes {
                                                 match self
                                                     .process_result(
                                                         &payload,
@@ -175,21 +175,49 @@ impl ResultConsumer {
         }
     }
 
-    /// Cập nhật trạng thái Job vào Postgres dựa trên kết quả nhận từ Dataplane
+    /// Cập nhật trạng thái Job vào Postgres dựa trên kết quả nhận từ Dataplane (Protobuf)
     async fn process_result(
         &self,
-        payload_str: &str,
+        payload_bytes: &[u8],
         pg_client: &tokio_postgres::Client,
         redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let result: JobExecutionResult = serde_json::from_str(payload_str)?;
+        use prost::Message;
+
+        let result = match job_proto::JobExecutionResultProto::decode(payload_bytes) {
+            Ok(res) => res,
+            Err(e) => {
+                Logger::sys_error(
+                    "result_consumer.decode",
+                    "Không thể giải mã Protobuf payload từ Redis Stream",
+                    &e.to_string(),
+                );
+                return Err(Box::new(e));
+            }
+        };
+
+        // Convert UUID bytes từ Protobuf thành chuỗi string UUID
+        let job_id = uuid::Uuid::from_slice(&result.job_id)
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+
+        // Convert trace_id bytes từ Protobuf thành chuỗi hex
+        let _trace_id_from_proto = if result.trace_id.is_empty() {
+            String::new()
+        } else {
+            result
+                .trace_id
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
+        };
 
         // Tăng chỉ số metrics số kết quả nhận được từ Dataplane
         crate::observability::metrics::MetricsManager::inc_results_consumed();
 
         Logger::job_log(
-            &result.job_id,
-            "unknown",
+            &job_id,
+            &result.job_topic,
             result.attempt,
             "result_consumer.recv",
             &format!("Nhận kết quả: status={}", result.result_status),
@@ -207,50 +235,51 @@ impl ResultConsumer {
         // Hỗ trợ môi trường phân tán HA: Chỉ cập nhật trạng thái khi bản ghi Outbox
         // đang ở trạng thái chưa hoàn tất (PENDING hoặc PROCESSING). Loại bỏ hoàn toàn PUBLISHED.
         // Lấy lại user_id, job_topic và trace_id bằng mệnh đề RETURNING để tạo sự kiện real-time.
+        // Thêm kiểm tra topic khớp với database để tăng cường tính nhất quán bảo mật dữ liệu.
         let row_opt = if status == "SUCCEEDED" {
             pg_client
                 .query_opt(
                     "UPDATE mail_outbox_records 
-                 SET status = $1, 
-                     completed_at = CURRENT_TIMESTAMP, 
-                     error_code = NULL, 
-                     error_message = NULL
-                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING')
-                 RETURNING user_id, job_topic, trace_id",
-                    &[&status, &result.job_id],
+                  SET status = $1, 
+                      completed_at = CURRENT_TIMESTAMP, 
+                      error_code = NULL, 
+                      error_message = NULL
+                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+                  RETURNING user_id, job_topic, trace_id",
+                    &[&status, &job_id, &result.job_topic],
                 )
                 .await?
         } else if status == "PROCESSING" {
             pg_client
                 .query_opt(
                     "UPDATE mail_outbox_records 
-                 SET status = $1,
-                     error_code = NULL, 
-                     error_message = NULL
-                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING')
-                 RETURNING user_id, job_topic, trace_id",
-                    &[&status, &result.job_id],
+                  SET status = $1,
+                      error_code = NULL, 
+                      error_message = NULL
+                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+                  RETURNING user_id, job_topic, trace_id",
+                    &[&status, &job_id, &result.job_topic],
                 )
                 .await?
         } else {
             pg_client
                 .query_opt(
                     "UPDATE mail_outbox_records 
-                 SET status = $1, 
-                     completed_at = CURRENT_TIMESTAMP, 
-                     error_code = $2, 
-                     error_message = $3
-                 WHERE event_id = $4 AND status IN ('PENDING', 'PROCESSING')
-                 RETURNING user_id, job_topic, trace_id",
-                    &[&status, &error_code, &error_message, &result.job_id],
+                  SET status = $1, 
+                      completed_at = CURRENT_TIMESTAMP, 
+                      error_code = $2, 
+                      error_message = $3
+                  WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
+                  RETURNING user_id, job_topic, trace_id",
+                    &[&status, &error_code, &error_message, &job_id, &result.job_topic],
                 )
                 .await?
         };
 
         if let Some(row) = row_opt {
             Logger::job_log(
-                &result.job_id,
-                "unknown",
+                &job_id,
+                &result.job_topic,
                 result.attempt,
                 "result_consumer.update",
                 &format!("Cập nhật thành công DB -> Trạng thái {}", status),
@@ -259,61 +288,83 @@ impl ResultConsumer {
             // Phân tích dữ liệu outbox record vừa được cập nhật
             let user_id: String = row.get(0);
             let job_topic: String = row.get(1);
-            let trace_id: String = row.get::<_, Option<String>>(2).unwrap_or_default();
+            // Đọc trace_id kiểu nhị phân BYTEA (Option<Vec<u8>>) từ DB để tiết kiệm tài nguyên
+            let trace_id_bytes = row.get::<_, Option<Vec<u8>>>(2).unwrap_or_default();
+            // Convert sang chuỗi hex 32 ký tự để tương thích với luồng logs/traces tiếp theo
+            let trace_id = if trace_id_bytes.is_empty() {
+                String::new()
+            } else {
+                trace_id_bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>()
+            };
 
             // Thiết lập scope trace_id và gửi thông báo real-time qua OTel span
             let trace_id_clone = trace_id.clone();
-            let result_job_id = result.job_id.clone();
+            let result_job_id = job_id.clone();
             let result_message = result.message.clone();
             let user_id_clone = user_id.clone();
             let status_clone = status.clone();
             let job_topic_clone = job_topic.clone();
 
-            crate::observability::otel::CURRENT_TRACE_ID.scope(trace_id_clone, async move {
-                use opentelemetry::trace::{Tracer, Span, TraceContextExt};
+            crate::observability::otel::CURRENT_TRACE_ID
+                .scope(trace_id_clone, async move {
+                    use opentelemetry::trace::{Span, TraceContextExt, Tracer};
 
-                // Phân tích trace context cha từ traceparent lưu trong DB
-                let cx = if let Some(parent_ctx) = crate::observability::otel::OtelTracer::parse_traceparent(&trace_id) {
-                    opentelemetry::Context::current().with_remote_span_context(parent_ctx)
-                } else {
-                    opentelemetry::Context::current()
-                };
+                    // Phân tích trace context cha từ traceparent lưu trong DB
+                    let cx = if let Some(parent_ctx) =
+                        crate::observability::otel::OtelTracer::parse_traceparent(&trace_id)
+                    {
+                        opentelemetry::Context::current().with_remote_span_context(parent_ctx)
+                    } else {
+                        opentelemetry::Context::current()
+                    };
 
-                // Bắt đầu Span trong OTel/Tempo
-                let tracer = opentelemetry::global::tracer("job-proxy");
-                let mut span = tracer.start_with_context(format!("result.notify.{}", job_topic_clone), &cx);
+                    // Bắt đầu Span trong OTel/Tempo
+                    let tracer = opentelemetry::global::tracer("job-proxy");
+                    let mut span = tracer
+                        .start_with_context(format!("result.notify.{}", job_topic_clone), &cx);
 
-                span.set_attribute(opentelemetry::KeyValue::new("job_id", result_job_id.clone()));
-                span.set_attribute(opentelemetry::KeyValue::new("user_id", user_id_clone.clone()));
+                    span.set_attribute(opentelemetry::KeyValue::new(
+                        "job_id",
+                        result_job_id.clone(),
+                    ));
+                    span.set_attribute(opentelemetry::KeyValue::new(
+                        "user_id",
+                        user_id_clone.clone(),
+                    ));
 
-                // Lấy user_id trực tiếp từ cột DB. Nếu có, tiến hành phát sự kiện thông báo real-time.
-                if !user_id_clone.is_empty() {
-                    let notify_res = JobNotifier::notify_realtime(
-                        &result_job_id,
-                        &user_id_clone,
-                        result.attempt,
-                        &status_clone,
-                        &job_topic_clone,
-                        &result_message,
-                        &trace_id,
-                        redis_conn,
-                    ).await;
+                    // Lấy user_id trực tiếp từ cột DB. Nếu có, tiến hành phát sự kiện thông báo real-time.
+                    if !user_id_clone.is_empty() {
+                        let notify_res = JobNotifier::notify_realtime(
+                            &result_job_id,
+                            &user_id_clone,
+                            result.attempt,
+                            &status_clone,
+                            &job_topic_clone,
+                            &result_message,
+                            &trace_id,
+                            redis_conn,
+                        )
+                        .await;
 
-                    if let Err(e) = notify_res {
-                        span.record_error(e.as_ref());
-                        return Err(e);
+                        if let Err(e) = notify_res {
+                            span.record_error(e.as_ref());
+                            return Err(e);
+                        }
                     }
-                }
 
-                Ok(())
-            }).await?;
+                    Ok(())
+                })
+                .await?;
         } else {
             Logger::job_log(
-                &result.job_id,
-                "unknown",
+                &job_id,
+                &result.job_topic,
                 result.attempt,
                 "result_consumer.update_skip",
-                "Không thể cập nhật Job hoặc không tìm thấy bản ghi phù hợp (có thể đã hoàn thành trước đó)",
+                "Không thể cập nhật Job hoặc không tìm thấy bản ghi phù hợp (có thể đã hoàn thành trước đó hoặc lệch topic)",
             );
         }
 

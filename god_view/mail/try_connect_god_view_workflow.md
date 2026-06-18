@@ -142,7 +142,7 @@ graph TD
   - **Admission Control**: Kiểm tra số worker hiện tại có vượt ngưỡng `max_workers` hay không trước khi kéo task.
   - **Distributed Lease Lock**: Phải chiếm hữu thành công lock `locks:job:<job_id>` trên Redis nội bộ để ngăn cản việc chạy trùng lặp ở cụm HA.
   - **Security isolation**: Không sử dụng System Root Certificates (`CertificateStore::None`). Chỉ tin tưởng CA cert đính kèm của client.
-  - **Thread-Protection**: Khóa cứng timeout kết nối SMTP là 5 giây trong thư viện `lettre`. Tổng thời hạn watchdog tối đa của job (lease duration) là 90 giây.
+  - **Thread-Protection**: Khóa cứng timeout kết nối SMTP là 5 giây trong thư viện `lettre`. Tổng thời hạn thực thi tối đa được giám sát bởi Watchdog (max execution limit) là 90 giây.
 - **Mã nguồn thực thi (Code Callsites & Implementation)**:
   - **Dataplane Job Runner**: [runner.rs](file:///home/phucle/Desktop/New/dataplane/src/job_lifecycle/runner.rs) $\rightarrow$ Hàm `run_job` (~L43-L211) quản lý vòng đời chạy tác vụ ở Dataplane, kiểm tra Worker pool admission, giành Distributed Lock và gửi kết quả về Redis.
   - **SMTP Handshake Executor**: [test_connection.rs](file:///home/phucle/Desktop/New/dataplane/src/executor/mail/test_connection.rs) $\rightarrow$ Phương thức `execute` (~L58-L248) thực thi logic bắt tay SMTP thực tế, cấu hình TLS/mTLS, và giới hạn kết nối 5s.
@@ -250,8 +250,8 @@ The transient connection test job is written to the `mail_outbox_records` table 
 
 | DTO Field / Context Source | Entity / Protobuf Field | DB Model Field (`db` Tag) | Database Column |
 | :--- | :--- | :--- | :--- |
-| Generated `uuid.NewV7()` | `EventID` | `EventID` (`event_id`) | `event_id` |
-| `ctx.Value(constant.ZoneIDCtxKey)` | `ZoneID` | `ZoneID` (`zone_id`) | `zone_id` |
+| Generated `uuid.NewV7()` | `EventID` | `EventID` (`event_id`) | `event_id` (UUID) |
+| `ctx.Value(constant.ZoneIDCtxKey)` | `ZoneID` | `ZoneID` (`zone_id`) | `zone_id` (UUID) |
 | Static String | `JobTopic` (`"mail.test_connection"`) | `JobTopic` (`job_topic`) | `job_topic` |
 | Form DTO Params | `SmtpTestConfig` Protobuf payload | `Payload` (`payload`) | `payload` |
 | `ctx.Value(ContextKeyUserID)` | `UserID` | `UserID` (`user_id`) | `user_id` |
@@ -259,7 +259,7 @@ The transient connection test job is written to the `mail_outbox_records` table 
 | Static Version | `JobVersion` (`1`) | `JobVersion` (`job_version`) | `job_version` |
 | Static Identifier | `ResourceID` (`"transient_test"`) | `ResourceID` (`resource_id`) | `resource_id` |
 | Static Schema | `PayloadSchemaVersion` (`1`) | `PayloadSchemaVersion` (`payload_schema_version`) | `payload_schema_version` |
-| `trace.SpanContextFromContext` | `TraceID` | `TraceID` (`trace_id`) | `trace_id` (nullable) |
+| `trace.SpanContextFromContext` | `TraceID` | `TraceID` (`trace_id`) | `trace_id` (BYTEA, 16 bytes raw binary) |
 | Static Timeout Option | `Idle` (`90`) | `Idle` (`idle`) | `idle` (nullable) |
 | System Time (when completed) | `CompletedAt` | `CompletedAt` (`completed_at`) | `completed_at` (nullable) |
 | Dataplane Error (on failure) | `ErrorCode` | `ErrorCode` (`error_code`) | `error_code` (nullable) |
@@ -290,7 +290,7 @@ sequenceDiagram
     DP->>RDS_RES: Push Job Result to result stream (XADD)
     
     RDS_RES->>JP_RC: Consume result payload (XREADGROUP)
-    Note over JP_RC: Parse JSON & perform atomic update
+    Note over JP_RC: Decode Protobuf & perform atomic update
     JP_RC->>DB: UPDATE mail_outbox_records SET status = SUCCEEDED/FAILED, completed_at = CURRENT_TIMESTAMP WHERE event_id = <job_id>
     JP_RC->>RDS_RES: Acknowledge message (XACK)
 ```
@@ -385,10 +385,10 @@ stateDiagram-v2
 
 - **Xung đột: Tranh Chấp Thực Thi Song Song (Double Execution)**
   - *Rủi ro*: Trong cụm HA, hai node Dataplane cùng kéo một job từ Redis Stream cùng một lúc và chạy handshake đồng thời, dẫn đến kết quả sai lệch và tốn tài nguyên.
-  - *Giải pháp*: Dataplane phải chiếm hữu khóa phân phối `locks:job:<job_id>` trên Redis nội bộ bằng lệnh `SETNX` (với thời gian thuê lease duration là 90 giây) trước khi thực thi. Nếu không chiếm được khóa, task sẽ bị bỏ qua lập tức.
+  - *Giải pháp*: Dataplane phải chiếm hữu khóa phân phối `locks:job:<job_id>` trên Redis nội bộ bằng lệnh `SETNX` với TTL mặc định ban đầu là 30 giây trước khi thực thi. Trong lúc job chạy bình thường, một tiến trình ngầm Watchdog định kỳ mỗi 10 giây sẽ tự động gia hạn (renew) khóa này lên lại 30 giây (auto-renewal lease). Nếu không chiếm được khóa ban đầu, task sẽ bị bỏ qua lập tức.
 - **Xung đột: Worker Sập Giữa Chừng (Orphan Worker Crash)**
   - *Rủi ro*: Worker đang kết nối SMTP thì bị crash (OOM, Hardware failure) làm cho khóa phân phối bị treo và trạng thái DB mãi mãi ở `PROCESSING`.
-  - *Giải pháp*: Khóa phân phối Redis có cấu hình TTL tự giải phóng (`idle` 90s). Một tiến trình quét độc lập (Orphan Job Reclaimer) sẽ thu hồi và đưa job trở lại hàng đợi để chạy lại hoặc đánh dấu thất bại nếu vượt quá số lần thử tối đa.
+  - *Giải pháp*: Khóa phân phối Redis có cấu hình TTL tự động giải phóng (mặc định 30 giây). Nếu Worker bị sập, watchdog dừng hoạt động, khóa sẽ tự giải phóng sau tối đa 30 giây, cho phép hệ thống thu hồi hoặc chạy lại một cách an toàn mà không bị treo vĩnh viễn.
 
 ### 4. Phase 4: Feedback Callback & Notification
 
@@ -411,17 +411,117 @@ graph LR
     Grafana --> VT["🕸️ VictoriaTraces (Jaeger API Tracing)"]
 ```
 
+Dưới đây là sơ đồ chi tiết mô tả luồng di chuyển, chuyển đổi (giữa raw binary bytes và hex string), lưu trữ và kế thừa của `trace_id` xuyên suốt các thành phần hệ thống:
+
+```mermaid
+graph TD
+    %% Định nghĩa các lớp màu sắc dễ phân biệt
+    classDef step fill:#1e1e24,stroke:#3b3b4f,stroke-width:1px,color:#e0e0e0;
+    classDef highlight fill:#1a233a,stroke:#268bd2,stroke-width:2px,color:#268bd2;
+    classDef database fill:#142217,stroke:#2aa198,stroke-width:1px,color:#2aa198;
+    classDef queue fill:#281829,stroke:#d33682,stroke-width:1px,color:#d33682;
+
+    subgraph SG_CP ["⚙️ Controlplane"]
+        Start(["🛡️ Envoy Proxy"]) -->|"1. HTTP Req + traceparent"| CP_OTel["OTel HTTP Middleware"]:::step
+        CP_OTel -->|"2. Inject SpanContext"| CP_SVC["endpoint_service_impl.go"]:::step
+    end
+
+    subgraph SG_DB_CDC ["💾 Storage & CDC"]
+        CP_SVC -->|"3. Convert raw bytes"| DB_Write[("PostgreSQL: outbox_records")]:::database
+        DB_Write -->|"4. BYTEA format"| WAL_Event{{"WAL Event"}}:::step
+        WAL_Event -->|"5. logical replication"| JP_CDC["Job-Proxy CDC (mod.rs)"]:::step
+    end
+
+    subgraph SG_QUEUE_JOBS ["📥 jobs:zone Broker"]
+        JP_CDC -->|"6. Raw binary"| Redis_Job[("Redis Stream: jobs:zone")]:::queue
+    end
+
+    subgraph SG_DP ["🚀 Dataplane Worker"]
+        Redis_Job -->|"7. XREADGROUP"| DP_Query["Ingestion (query.rs)"]:::step
+        DP_Query -->|"8. Hex string"| DP_Runner["Job Runner"]:::step
+        DP_Runner -->|"9. Thread-Local Scope"| DP_Exec["Workload Executor"]:::step
+        DP_Exec -->|"10. Inherit context"| DP_Reporter["Reporter (result.rs)"]:::step
+    end
+
+    subgraph SG_QUEUE_RES ["📤 job_results Broker"]
+        DP_Reporter -->|"11. Protobuf bytes"| Redis_Res[("Redis Stream: job_results")]:::queue
+    end
+
+    subgraph SG_CONSUMER ["🔄 Result & Notification"]
+        Redis_Res -->|"12. XREADGROUP"| JP_Consumer["Result Consumer"]:::step
+        JP_Consumer -->|"13. UPDATE DB status"| DB_Update[("PostgreSQL: UPDATE outbox")]:::database
+        DB_Update -->|"14. RETURNING trace_id"| JP_Notifier["Notifier"]:::step
+        JP_Notifier -->|"15. WS Broadcast"| UI_WS(["WS Client / UI Browser"]):::highlight
+    end
+
+    class Start highlight;
+```
+
+### 📋 Bản đồ phân bố trường `trace_id` trong hệ thống
+
+- **PostgreSQL**: Cột `trace_id` thuộc bảng `mail.mail_outbox_records` có kiểu dữ liệu là **`BYTEA`** (lưu trữ nhị phân 16-byte tối ưu).
+
+- **Redis Stream (`jobs:<zone_id>`)**: Lưu dưới dạng cặp key-value thô, trường `"trace_id"` chứa **mảng bytes nhị phân 16-byte thô** (đẩy trực tiếp qua driver Redis).
+- **Redis Stream (`job_results_stream`)**: Nằm bên trong gói tin nhị phân Protobuf (`JobExecutionResultProto`), trường `trace_id` định dạng **`bytes`** (được mã hóa/giải mã cực nhanh bằng thư viện `prost`).
+- **Dataplane Memory / Logger**: Được lưu trữ dưới dạng chuỗi **Hex string 32 ký tự** trong Thread-Local Variable (`CURRENT_TRACE_ID`) của Tokio task, tự động đính kèm vào mọi Span của OpenTelemetry và dòng ghi nhật ký (`Logger::job_log`).
+- **UI Browser Client**: Nhận chuỗi **Hex string 32 ký tự** qua WebSocket từ Centrifugo để đối chiếu logs hoặc hiển thị chi tiết vết gỡ lỗi.
+
+### 🔍 Hướng dẫn trích xuất và truy vấn theo Trace ID (Trace ID Extraction & Query Guide)
+
+Để theo vết (trace) lỗi hệ thống một cách hiệu quả, USA/SRE thực hiện theo các bước sau để lấy Trace ID và thực thi truy vấn trên Grafana:
+
+#### 1. Phân biệt Trace ID và Request ID
+
+- **Trace ID (Định danh vết thực thi)**: Chuỗi hex 32 ký tự (W3C standard), dùng để liên kết dòng vết xử lý phân tán qua các hệ thống microservices (Controlplane, Job-Proxy, Dataplane).
+
+- **Request ID (Định danh yêu cầu HTTP)**: Chuỗi UUID được Envoy gán vào header phản hồi `X-Request-ID` để theo dõi vòng đời của một yêu cầu HTTP riêng lẻ tại Edge API Gateway.
+
+> [!WARNING]
+> **Trace ID và Request ID là hai giá trị khác nhau**. Để tìm kiếm dấu vết phân tán (Spans/Gantt Chart) trên VictoriaTraces hoặc logs tập trung qua các container khác nhau, bạn phải dùng **Trace ID**.
+
+#### 2. Lấy thông tin Trace ID ở đâu?
+
+- **Từ Database (Postgres)**: Truy vấn cột `trace_id` của bảng outbox bằng SQL. Vì cột `trace_id` được lưu dưới dạng nhị phân (`BYTEA`), hãy dùng hàm `encode` để lấy ra chuỗi hex 32 ký tự sạch sẽ:
+
+    ```sql
+    SELECT event_id, encode(trace_id, 'hex') AS trace_id, status 
+    FROM mail.mail_outbox_records 
+    WHERE user_id = 'e2e-user-...' 
+    ORDER BY id DESC LIMIT 1;
+    ```
+
+- **Từ logs của Controlplane**: Khi tìm thấy log lỗi của Controlplane theo `Request ID` (hoặc `X-Request-ID`), thông tin JSON của dòng log đó sẽ hiển thị trường `trace_id` tương ứng.
+
+#### 3. Truy vấn dấu vết logs (VictoriaLogs)
+
+Sau khi có được `trace_id`, dán vào thanh tìm kiếm Logs của Grafana (sử dụng ngôn ngữ **LogsQL**):
+
+```sql
+# Tìm kiếm toàn bộ log sinh ra ở tất cả các container tham gia xử lý job này
+container_name:~"controlplane-dev-.*|aurora-job-proxy|dataplane-.*" AND "trace_id" AND "<trace_id>"
+```
+
+> [!NOTE]
+> Nhờ cơ chế lưu trữ ngữ cảnh Task-Local (`CURRENT_TRACE_ID`) tại Dataplane và OTel Middleware tại Controlplane, mọi dòng log ghi nhận trong luồng xử lý của Job này sẽ được tự động gắn kèm `"trace_id":"<trace_id>"`, giúp gom đầy đủ nhật ký mà không bị thất lạc.
+
+#### 4. Truy vết sơ đồ Gantt-chart Spans (VictoriaTraces / Jaeger)
+
+- Mở Panel **Explore** trên Grafana, lựa chọn Data Source là **VictoriaTraces** (hoặc Jaeger).
+
+- Chọn chế độ tìm kiếm bằng **Trace ID** và điền chuỗi hex 32 ký tự vào.
+- Nhấn **Run Query** để trực quan hóa toàn bộ dòng thời gian xử lý (Gantt Chart) từ Controlplane $\rightarrow$ Job-Proxy $\rightarrow$ Dataplane thực thi handshake mạng $\rightarrow$ cập nhật kết quả.
+
 ---
 
 ### 📝 1. Logs (VictoriaLogs)
 
 USA có thể truy vấn các dòng log tương ứng với từng giai đoạn xử lý bằng ngôn ngữ **LogsQL** của VictoriaLogs:
 
-#### Truy vết toàn bộ vòng đời của một Request thông qua Trace ID / Request ID
+#### Truy vết toàn bộ vòng đời của một Request thông qua Trace ID
 
 ```sql
-# Tìm kiếm tất cả logs liên quan đến một trace_id hoặc request_id cụ thể qua các container chính
-container_name:~"controlplane-dev-.*|aurora-job-proxy|dataplane-.*" AND "<trace_id>"
+# Tìm kiếm tất cả logs liên quan đến một trace_id cụ thể qua các container chính
+container_name:~"controlplane-dev-.*|aurora-job-proxy|dataplane-.*" AND "trace_id" AND "<trace_id>"
 ```
 
 #### Logs tại Controlplane (Phase 1)

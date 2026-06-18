@@ -62,6 +62,8 @@ impl JobRunner {
         let job_id_clone = payload.job_id.clone();
         let job_version = payload.job_version;
         let attempt = payload.attempt;
+        let job_topic_for_registry = payload.job_topic.clone();
+        let trace_id_for_registry = payload.trace_id.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -112,6 +114,8 @@ impl JobRunner {
                     result_status: "PROCESSING".to_string(),
                     error_code: None,
                     message: "Job execution started on dataplane worker".to_string(),
+                    job_topic: payload.job_topic.clone(),
+                    trace_id: payload.trace_id.clone(),
                 };
                 let _ = JobResultReporter::report_outcome(
                     redis_job.client(),
@@ -135,6 +139,8 @@ impl JobRunner {
                     job_id.clone(),
                     payload.job_version,
                     payload.attempt,
+                    payload.job_topic.clone(),
+                    payload.trace_id.clone(),
                     exec_res,
                 );
 
@@ -203,6 +209,8 @@ impl JobRunner {
             job_id_clone,
             job_version,
             attempt,
+            job_topic_for_registry,
+            trace_id_for_registry,
         );
 
         // Kích hoạt tác vụ chạy sau khi đã đăng ký thành công

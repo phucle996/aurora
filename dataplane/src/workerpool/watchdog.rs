@@ -26,6 +26,8 @@ pub struct ActiveLockInfo {
     pub job_id: String,
     pub job_version: u32,
     pub attempt: u32,
+    pub job_topic: String,
+    pub trace_id: String,
 }
 
 /// Registry luồng an toàn (Thread-Safe) lưu trữ các lock key đang hoạt động
@@ -51,6 +53,8 @@ impl ActiveLockRegistry {
         job_id: String,
         job_version: u32,
         attempt: u32,
+        job_topic: String,
+        trace_id: String,
     ) {
         if let Ok(mut w) = self.locks.write() {
             w.insert(
@@ -62,6 +66,8 @@ impl ActiveLockRegistry {
                     job_id,
                     job_version,
                     attempt,
+                    job_topic,
+                    trace_id,
                 },
             );
         } else {
@@ -87,7 +93,7 @@ impl ActiveLockRegistry {
     }
 
     /// Lấy bản sao danh sách để kiểm tra và gia hạn hàng loạt
-    pub fn get_all_active_locks(&self) -> Vec<(String, Instant, Duration, tokio::task::AbortHandle, String, u32, u32)> {
+    pub fn get_all_active_locks(&self) -> Vec<(String, Instant, Duration, tokio::task::AbortHandle, String, u32, u32, String, String)> {
         if let Ok(r) = self.locks.read() {
             r.iter()
                 .map(|(k, v)| {
@@ -99,6 +105,8 @@ impl ActiveLockRegistry {
                         v.job_id.clone(),
                         v.job_version,
                         v.attempt,
+                        v.job_topic.clone(),
+                        v.trace_id.clone(),
                     )
                 })
                 .collect()
@@ -132,7 +140,7 @@ pub async fn start_watchdog_loop(
         let mut keys_to_renew = Vec::new();
         let now = Instant::now();
 
-        for (lock_key, started_at, max_limit, abort_handle, job_id, job_version, attempt) in active_locks {
+        for (lock_key, started_at, max_limit, abort_handle, job_id, job_version, attempt, job_topic, trace_id) in active_locks {
             let elapsed = now.duration_since(started_at);
             if elapsed >= max_limit {
                 // Tác vụ đã vượt quá hạn mức tối đa cho phép chạy (TIMEOUT)
@@ -161,6 +169,8 @@ pub async fn start_watchdog_loop(
                         result_status: "FAILED".to_string(),
                         error_code: Some("EXECUTION_TIMEOUT".to_string()),
                         message: "Job execution aborted by watchdog due to timeout".to_string(),
+                        job_topic,
+                        trace_id,
                     };
                     let _ = JobResultReporter::report_outcome(&client_clone, &timeout_report).await;
                 });
@@ -222,6 +232,8 @@ mod tests {
             "test_abort_id".to_string(),
             1,
             0,
+            "test_topic".to_string(),
+            "test_trace_id".to_string(),
         );
 
         // Start watchdog loop in background with a fast interval (100ms)
