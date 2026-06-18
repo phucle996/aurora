@@ -24,16 +24,15 @@ func InitZoneAuth(registry *cacheengine.CacheRegistry) {
 	zoneL1Registry.Store(registry)
 }
 
-type zoneIDCtxKey struct{}
-
 // ContextWithZoneID chèn Zone ID đã xác thực vào Go context để tầng Service sử dụng.
+// Sử dụng constant.ZoneIDCtxKey để đảm bảo các tầng khác có thể tự trích xuất mà không bị coupling.
 func ContextWithZoneID(ctx context.Context, id uuid.UUID) context.Context {
-	return context.WithValue(ctx, zoneIDCtxKey{}, id)
+	return context.WithValue(ctx, constant.ZoneIDCtxKey, id)
 }
 
-// GetZoneID trích xuất Zone ID từ Go context.
+// GetZoneID trích xuất Zone ID đã xác thực từ Go context.
 func GetZoneID(ctx context.Context) (uuid.UUID, bool) {
-	id, ok := ctx.Value(zoneIDCtxKey{}).(uuid.UUID)
+	id, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	return id, ok
 }
 

@@ -25,3 +25,10 @@ const (
 	ContextKeyHeaderDeviceName     = "header.device_name"
 	ContextKeyHeaderClientDeviceID = "header.client_device_id"
 )
+
+// ZoneIDCtxKeyType là kiểu dữ liệu riêng cho context key của ZoneID.
+type ZoneIDCtxKeyType struct{}
+
+// ZoneIDCtxKey là instance duy nhất dùng làm key cho Zone ID trong context.
+var ZoneIDCtxKey = ZoneIDCtxKeyType{}
+

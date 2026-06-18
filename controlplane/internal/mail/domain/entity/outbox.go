@@ -10,21 +10,20 @@ import (
 type OutboxStatus string
 
 const (
-	// OutboxStatusPending: Công việc mới được tạo, chờ xử lý/CDC đẩy đi
+	// OutboxStatusPending: Trạng thái ban đầu khi công việc (connection test) vừa được khởi tạo và ghi nhận bền vững vào DB.
 	OutboxStatusPending OutboxStatus = "PENDING"
-	// OutboxStatusPublished: Công việc đã được chuyển tiếp sang hàng đợi Redis Stream thành công
-	OutboxStatusPublished OutboxStatus = "PUBLISHED"
-	// OutboxStatusProcessing: Công việc đang trong quá trình thực thi bởi worker
+
+	// OutboxStatusProcessing: Đánh dấu công việc đã được Dataplane Worker đón nhận từ Redis Stream và đang chạy kiểm tra bắt tay SMTP.
 	OutboxStatusProcessing OutboxStatus = "PROCESSING"
-	// OutboxStatusCompleted: Công việc đã hoàn thành (tương thích phiên bản cũ)
-	OutboxStatusCompleted OutboxStatus = "COMPLETED"
-	// OutboxStatusSucceeded: Công việc đã hoàn thành thành công và xác nhận kết quả
+
+	// OutboxStatusSucceeded: Kết quả kiểm tra SMTP Handshake thành công hoàn toàn (Trạng thái cuối cùng).
 	OutboxStatusSucceeded OutboxStatus = "SUCCEEDED"
-	// OutboxStatusFailed: Công việc xử lý thất bại (quá số lần retry hoặc lỗi không thể phục hồi)
+
+	// OutboxStatusFailed: Kết quả kiểm tra thất bại do cấu hình sai, kết nối lỗi hoặc quá thời gian Timeout (Trạng thái cuối cùng).
 	OutboxStatusFailed OutboxStatus = "FAILED"
 )
 
-// MailOutboxRecord định nghĩa cấu trúc của bản ghi sự kiện Outbox dùng cho việc giao tiếp phi tập trung (CDC)
+// MailOutboxRecord định nghĩa cấu trúc của bản ghi sự kiện Outbox dùng cho việc giao tiếp phi tập trung (CDC).
 type MailOutboxRecord struct {
 	// ID: Khóa chính tự tăng (BIGSERIAL) giúp tối ưu đánh chỉ mục vật lý và xác định thứ tự tuần tự trong Postgres
 	ID int64
@@ -39,7 +38,7 @@ type MailOutboxRecord struct {
 	// UserID: ID của người dùng thực hiện yêu cầu (có thể là UUID hoặc định danh của hệ thống/SRE
 	// Do đó sử dụng kiểu string) để phục vụ thông báo real-time qua CDC
 	UserID string
-	// Status: Trạng thái xử lý sự kiện (PENDING, PUBLISHED, PROCESSING, COMPLETED, SUCCEEDED, FAILED)
+	// Status: Trạng thái xử lý sự kiện (PENDING, PROCESSING, SUCCEEDED, FAILED)
 	Status OutboxStatus
 	// CompletedAt: Thời điểm công việc hoàn tất xử lý (succeeded hoặc failed)
 	CompletedAt *time.Time

@@ -98,7 +98,7 @@ func TestTryConnectE2E(t *testing.T) {
 			if err == nil {
 				found = true
 				t.Logf("Found outbox record! EventID: %s, Current Status: %s", eventIDStr, dbStatus)
-				if dbStatus == "FAILED" || dbStatus == "SUCCEEDED" || dbStatus == "COMPLETED" {
+				if dbStatus == "FAILED" || dbStatus == "SUCCEEDED" {
 					goto Done
 				}
 			}

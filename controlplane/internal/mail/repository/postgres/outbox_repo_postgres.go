@@ -13,12 +13,9 @@ import (
 )
 
 type MailOutboxRepoImpl struct {
-	db                 *pgxpool.Pool
-	schema             string
-	saveQuery          string
-	fetchPendingQuery  string
-	markPublishedQuery string
-	markFailedQuery    string
+	db        *pgxpool.Pool
+	schema    string
+	saveQuery string
 }
 
 func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterface.MailOutboxRepository {
@@ -33,25 +30,6 @@ func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInter
 			)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id
-		`, schema),
-		fetchPendingQuery: fmt.Sprintf(`
-			SELECT id, event_id, zone_id, job_topic, payload, user_id, status,
-			       job_version, resource_id, payload_schema_version, trace_id, idle
-			FROM %s.mail_outbox_records
-			WHERE status = 'PENDING'
-			ORDER BY id ASC
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		`, schema),
-		markPublishedQuery: fmt.Sprintf(`
-			UPDATE %s.mail_outbox_records
-			SET status = 'PUBLISHED', completed_at = NOW()
-			WHERE id = $1
-		`, schema),
-		markFailedQuery: fmt.Sprintf(`
-			UPDATE %s.mail_outbox_records
-			SET status = 'FAILED', error_message = $2, completed_at = NOW()
-			WHERE id = $1
 		`, schema),
 	}
 }
@@ -81,48 +59,3 @@ func (r *MailOutboxRepoImpl) Create(ctx context.Context, record *mailEntity.Mail
 	return err
 }
 
-func (r *MailOutboxRepoImpl) FetchPendingForUpdate(ctx context.Context, limit int) ([]*mailEntity.MailOutboxRecord, error) {
-	rows, err := r.db.Query(ctx, r.fetchPendingQuery, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var records []*mailEntity.MailOutboxRecord
-	for rows.Next() {
-		var model mailModel.MailOutboxRecord
-		// Quét dữ liệu trực tiếp vào struct DB Model bao gồm cả payload và user_id
-		err := rows.Scan(
-			&model.ID,
-			&model.EventID,
-			&model.ZoneID,
-			&model.JobTopic,
-			&model.Payload,
-			&model.UserID,
-			&model.Status,
-			&model.JobVersion,
-			&model.ResourceID,
-			&model.PayloadSchemaVersion,
-			&model.TraceID,
-			&model.Idle,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		// Chuyển đổi DB Model thành Domain Entity trước khi trả về tầng Service
-		entity := mailModel.OutboxModelToEntity(model)
-		records = append(records, &entity)
-	}
-	return records, rows.Err()
-}
-
-func (r *MailOutboxRepoImpl) MarkPublished(ctx context.Context, id int64) error {
-	_, err := r.db.Exec(ctx, r.markPublishedQuery, id)
-	return err
-}
-
-func (r *MailOutboxRepoImpl) MarkFailed(ctx context.Context, id int64, reason string) error {
-	_, err := r.db.Exec(ctx, r.markFailedQuery, id, reason)
-	return err
-}

@@ -390,7 +390,10 @@ func (h *EndpointHandler) TryConnect(c *gin.Context) {
 
 	err := h.svc.TestConnectionRaw(ctx, testReq)
 	if err != nil {
-		if errors.Is(err, mailTaxonomy.ErrInvalidArgument) {
+		if errors.Is(err, mailTaxonomy.ErrZoneNotFound) {
+			logger.HandlerWarn(c, op, err, "TestConnectionRaw failed: zone not found in context")
+			apires.RespondBadRequest(c, "Zone not found")
+		} else if errors.Is(err, mailTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "TestConnectionRaw failed: invalid argument")
 			apires.RespondBadRequest(c, "Invalid request")
 		} else {

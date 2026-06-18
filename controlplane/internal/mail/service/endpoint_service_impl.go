@@ -9,7 +9,6 @@ import (
 	"context"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	"controlplane/internal/http/middleware"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -60,7 +59,8 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	ctx context.Context,
 	params mailEntity.CreateEndpointParams,
 ) error {
-	zoneUUID, ok := middleware.GetZoneID(ctx)
+	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
+	zoneUUID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneUUID == uuid.Nil {
 		mailMetrics.IncEndpointOperations("create", "global", mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
@@ -146,7 +146,8 @@ func (s *endpointServiceImpl) CreateEndpoint(
 }
 
 func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*mailEntity.Endpoint, error) {
-	zoneID, _ := middleware.GetZoneID(ctx)
+	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
+	zoneID, _ := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 
 	var ent *mailEntity.Endpoint
 	var err error
@@ -190,7 +191,8 @@ func (s *endpointServiceImpl) ListEndpoints(
 	cursor string,
 	limit int,
 ) ([]*mailEntity.Endpoint, string, error) {
-	zoneID, _ := middleware.GetZoneID(ctx)
+	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
+	zoneID, _ := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 
 	var list []*mailEntity.Endpoint
 	var nextCursor string
@@ -235,7 +237,7 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	params mailEntity.UpdateEndpointParams,
 ) (*mailEntity.Endpoint, error) {
 	if params.ZoneID == uuid.Nil {
-		resolved, ok := middleware.GetZoneID(ctx)
+		resolved, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 		if !ok || resolved == uuid.Nil {
 			mailMetrics.IncEndpointOperations("update", "global", mailTaxonomy.OutcomeInvalidArgument)
 			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required for update operation"), mailTaxonomy.OutcomeInvalidArgument)
@@ -329,7 +331,8 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 }
 
 func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, id uuid.UUID) error {
-	zoneID, ok := middleware.GetZoneID(ctx)
+	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
+	zoneID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneID == uuid.Nil {
 		mailMetrics.IncEndpointOperations("create", "global", mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
@@ -345,7 +348,8 @@ func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, id uuid.UUID) 
 }
 
 func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) error {
-	zoneUUID, ok := middleware.GetZoneID(ctx)
+	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
+	zoneUUID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneUUID == uuid.Nil {
 		mailMetrics.IncEndpointOperations("test_connection", "global", mailTaxonomy.OutcomeInvalidArgument)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to test endpoint connection"), mailTaxonomy.OutcomeInvalidArgument)
@@ -362,10 +366,11 @@ func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) 
 }
 
 func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEntity.TestConnection) error {
-	// Trích xuất ZoneID đã được middleware UserZoneAuth phân giải và inject vào Go context
-	zoneID, ok := middleware.GetZoneID(ctx)
+	// Trích xuất trực tiếp ZoneID từ Go standard context bằng khóa dùng chung constant.ZoneIDCtxKey.
+	// Điều này giúp tầng Service tự lấy thông tin độc lập mà không cần import hay phụ thuộc vào HTTP middleware.
+	zoneID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneID == uuid.Nil {
-		return mailTaxonomy.ErrInvalidArgument
+		return mailTaxonomy.ErrZoneNotFound
 	}
 
 	switch req.TLSMode {

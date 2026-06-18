@@ -10,17 +10,16 @@ import (
 type IamOutboxStatus string
 
 const (
-	// IamOutboxStatusPending: Công việc mới được tạo, chờ CDC đẩy đi
+	// IamOutboxStatusPending: Trạng thái ban đầu khi sự kiện IAM được ghi nhận vào Outbox Table.
 	IamOutboxStatusPending IamOutboxStatus = "PENDING"
-	// IamOutboxStatusPublished: Công việc đã được chuyển tiếp sang hàng đợi thành công
-	IamOutboxStatusPublished IamOutboxStatus = "PUBLISHED"
-	// IamOutboxStatusProcessing: Công việc đang được thực thi ở Dataplane
+
+	// IamOutboxStatusProcessing: Trạng thái khi Dataplane bắt đầu tiêu thụ và thực thi sự kiện IAM.
 	IamOutboxStatusProcessing IamOutboxStatus = "PROCESSING"
-	// IamOutboxStatusCompleted: Công việc hoàn tất (phục vụ tương thích ngược)
-	IamOutboxStatusCompleted IamOutboxStatus = "COMPLETED"
-	// IamOutboxStatusSucceeded: Công việc hoàn tất thành công
+
+	// IamOutboxStatusSucceeded: Sự kiện IAM đã được thực thi thành công hoàn tất (Terminal State).
 	IamOutboxStatusSucceeded IamOutboxStatus = "SUCCEEDED"
-	// IamOutboxStatusFailed: Công việc xử lý thất bại sau khi hết số lần retry
+
+	// IamOutboxStatusFailed: Sự kiện IAM thất bại do lỗi xử lý hoặc hết số lần thử lại (Terminal State).
 	IamOutboxStatusFailed IamOutboxStatus = "FAILED"
 )
 

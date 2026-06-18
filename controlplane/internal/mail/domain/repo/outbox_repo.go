@@ -6,8 +6,6 @@ import (
 )
 
 type MailOutboxRepository interface {
+	// Create lưu trữ bản ghi Outbox mới vào database để CDC trích xuất phát tán
 	Create(ctx context.Context, record *mailEntity.MailOutboxRecord) error
-	FetchPendingForUpdate(ctx context.Context, limit int) ([]*mailEntity.MailOutboxRecord, error)
-	MarkPublished(ctx context.Context, id int64) error
-	MarkFailed(ctx context.Context, id int64, reason string) error
 }

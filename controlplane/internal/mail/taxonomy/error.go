@@ -4,6 +4,7 @@ import "errors"
 
 var (
 	ErrInvalidArgument       = errors.New("mail: invalid argument")
+	ErrZoneNotFound          = errors.New("mail: zone not found")
 	ErrConsumerNotFound      = errors.New("mail: consumer not found")
 	ErrTemplateNotFound      = errors.New("mail: template not found")
 	ErrTemplateSyntax        = errors.New("mail: template syntax error")

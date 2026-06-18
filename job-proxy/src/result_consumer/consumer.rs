@@ -203,8 +203,10 @@ impl ResultConsumer {
             Some(result.message.clone())
         };
 
-        // Thực hiện cập nhật DB nguyên tử (Atomic Update) tránh xung đột trạng thái
-        // Lấy lại user_id, job_topic và trace_id bằng mệnh đề RETURNING để tạo sự kiện real-time
+        // Thực hiện cập nhật DB nguyên tử (Atomic Update) tránh xung đột trạng thái.
+        // Hỗ trợ môi trường phân tán HA: Chỉ cập nhật trạng thái khi bản ghi Outbox
+        // đang ở trạng thái chưa hoàn tất (PENDING hoặc PROCESSING). Loại bỏ hoàn toàn PUBLISHED.
+        // Lấy lại user_id, job_topic và trace_id bằng mệnh đề RETURNING để tạo sự kiện real-time.
         let row_opt = if status == "SUCCEEDED" {
             pg_client
                 .query_opt(
@@ -213,7 +215,7 @@ impl ResultConsumer {
                      completed_at = CURRENT_TIMESTAMP, 
                      error_code = NULL, 
                      error_message = NULL
-                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING')
                  RETURNING user_id, job_topic, trace_id",
                     &[&status, &result.job_id],
                 )
@@ -225,7 +227,7 @@ impl ResultConsumer {
                  SET status = $1,
                      error_code = NULL, 
                      error_message = NULL
-                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 WHERE event_id = $2 AND status IN ('PENDING', 'PROCESSING')
                  RETURNING user_id, job_topic, trace_id",
                     &[&status, &result.job_id],
                 )
@@ -238,7 +240,7 @@ impl ResultConsumer {
                      completed_at = CURRENT_TIMESTAMP, 
                      error_code = $2, 
                      error_message = $3
-                 WHERE event_id = $4 AND status IN ('PENDING', 'PROCESSING', 'PUBLISHED')
+                 WHERE event_id = $4 AND status IN ('PENDING', 'PROCESSING')
                  RETURNING user_id, job_topic, trace_id",
                     &[&status, &error_code, &error_message, &result.job_id],
                 )
