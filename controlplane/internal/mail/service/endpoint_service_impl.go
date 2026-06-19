@@ -1,6 +1,8 @@
 // ============================================================================
 // 📂 PHÂN HỆ: controlplane/internal/mail/service/endpoint_service_impl.go
 //            Đặc Tả Nghiệp Vụ Quản Trị Mail Endpoint Cấp Hạ Tầng (Tier-0)
+//            Tham chiếu God View: god_view/mail/create_endpoint_god_view_workflow.md
+//                                god_view/mail/try_connect_god_view_workflow.md
 // ============================================================================
 
 package mailSvcImpl
@@ -26,12 +28,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type zoneCodeCtxKey struct{}
-
-func WithZoneCode(ctx context.Context, code string) context.Context {
-	return context.WithValue(ctx, zoneCodeCtxKey{}, strings.ToLower(strings.TrimSpace(code)))
-}
-
 type endpointServiceImpl struct {
 	cfg          *config.Config
 	endpointRepo mailRepoInterface.EndpointRepository
@@ -54,15 +50,18 @@ func NewEndpointService(
 	}
 }
 
-func (s *endpointServiceImpl) CreateEndpoint(
-	ctx context.Context,
-	params *mailEntity.CreateEndpointParams,
-) error {
+func (s *endpointServiceImpl) CreateEndpoint(ctx context.Context, params *mailEntity.CreateEndpoint) error {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
 	zoneUUID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneUUID == uuid.Nil {
-		mailMetrics.IncEndpointOperations("create", "global", mailTaxonomy.OutcomeInvalidArgument)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
+		outcome = mailMetrics.OutcomeFailure
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), outcome)
 	}
 	params.ZoneID = zoneUUID
 
@@ -70,26 +69,26 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	switch params.TLSMode {
 	case mailEntity.TLSModeTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" {
-			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
-			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
+			outcome = mailMetrics.OutcomeFailure
+			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), outcome)
 		}
 	case mailEntity.TLSModeMTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
-			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
-			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
+			outcome = mailMetrics.OutcomeFailure
+			return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), outcome)
 		}
 	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
-		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
+		outcome = mailMetrics.OutcomeFailure
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), outcome)
 	}
 
 	// Tạo UUID v7 định danh cho Mail Endpoint mới trực tiếp tại Service layer
 	newID, err := uuid.NewV7()
 	if err != nil {
-		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, outcome)
 	}
 	params.ID = newID
 
@@ -119,8 +118,8 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	// Tạo eventID cho Outbox record
 	eventID, err := uuid.NewV7()
 	if err != nil {
-		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, outcome)
 	}
 
 	// 1. Chuẩn bị thông tin đồng bộ sang protobuf
@@ -153,8 +152,8 @@ func (s *endpointServiceImpl) CreateEndpoint(
 	// 2. Tuần tự hóa cấu hình sang nhị phân bằng Protobuf
 	payloadBytes, err := proto.Marshal(syncConfig)
 	if err != nil {
-		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, outcome)
 	}
 
 	// 3. Trích xuất Trace ID thực tế dạng nhị phân từ context
@@ -185,22 +184,33 @@ func (s *endpointServiceImpl) CreateEndpoint(
 		Idle:                 90, // Hạn mức timeout 90 giây cho kết nối
 	}
 
-	// 6. Ghi đồng thời vào endpoint và outbox record thông qua Repo (Repository layer tự quản lý transaction)
+	// 6. Ghi đồng thời vào endpoint và outbox record thông qua Repo (đo lường latency DB Downstream)
+	startRepo := time.Now()
 	if err := s.endpointRepo.Create(ctx, ent, outboxRecord); err != nil {
-		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "CreateEndpoint", mailMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, outcome)
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "CreateEndpoint", mailMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
-	mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.Success)
 	return nil
 }
 
 func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*mailEntity.Endpoint, error) {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
 	zoneID, _ := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 
 	var ent *mailEntity.Endpoint
 	var err error
+
+	// Đo lường thời gian gọi Downstream Repository DB
+	startRepo := time.Now()
 	if zoneID == uuid.Nil {
 		ent, err = s.endpointRepo.GetGlobalByID(ctx, id)
 	} else {
@@ -208,12 +218,12 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*m
 	}
 
 	if err != nil {
-		mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.OutcomeNotFound)
-		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "GetEndpoint", mailMetrics.OutcomePreConditionFailed, time.Since(startRepo), err)
+		outcome = mailMetrics.OutcomePreConditionFailed
+		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, outcome)
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "GetEndpoint", mailMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
-	// Thông tin nhạy cảm password và client_key_pem được lưu trữ plain text thô, không cần giải mã.
-	mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.Success)
 	return ent, nil
 }
 
@@ -222,6 +232,12 @@ func (s *endpointServiceImpl) ListEndpoints(
 	cursor string,
 	limit int,
 ) ([]*mailEntity.Endpoint, string, error) {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
 	zoneID, _ := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 
@@ -229,6 +245,8 @@ func (s *endpointServiceImpl) ListEndpoints(
 	var nextCursor string
 	var err error
 
+	// Đo lường thời gian gọi Downstream Repository DB
+	startRepo := time.Now()
 	if zoneID == uuid.Nil {
 		list, nextCursor, err = s.endpointRepo.ListGlobal(ctx, cursor, limit)
 	} else {
@@ -236,12 +254,12 @@ func (s *endpointServiceImpl) ListEndpoints(
 	}
 
 	if err != nil {
-		mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return nil, "", apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "ListEndpoints", mailMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return nil, "", apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, outcome)
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "ListEndpoints", mailMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
-	// Không cần thực hiện giải mã credentials vì được lưu trữ dạng plain text thô
-	mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.Success)
 	return list, nextCursor, nil
 }
 
@@ -249,38 +267,48 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	ctx context.Context,
 	params mailEntity.UpdateEndpointParams,
 ) (*mailEntity.Endpoint, error) {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	if params.ZoneID == uuid.Nil {
 		resolved, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 		if !ok || resolved == uuid.Nil {
-			mailMetrics.IncEndpointOperations("update", "global", mailTaxonomy.OutcomeInvalidArgument)
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required for update operation"), mailTaxonomy.OutcomeInvalidArgument)
+			outcome = mailMetrics.OutcomeFailure
+			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required for update operation"), outcome)
 		}
 		params.ZoneID = resolved
 	}
 
+	// Đo lường Downstream Repository cho thao tác truy vấn Endpoint hiện tại
+	startRepo1 := time.Now()
 	existing, err := s.endpointRepo.GetByID(ctx, params.ZoneID, params.ID)
 	if err != nil || existing == nil {
-		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeNotFound)
-		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, fmt.Errorf("endpoint not found"), mailTaxonomy.OutcomeNotFound)
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "GetByID", mailMetrics.OutcomePreConditionFailed, time.Since(startRepo1), err)
+		outcome = mailMetrics.OutcomePreConditionFailed
+		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, fmt.Errorf("endpoint not found"), outcome)
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "GetByID", mailMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	// Xác thực các chứng chỉ TLS dựa vào TLSMode
 	switch params.TLSMode {
 	case mailEntity.TLSModeTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" {
-			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), mailTaxonomy.OutcomeInvalidArgument)
+			outcome = mailMetrics.OutcomeFailure
+			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'tls' requires ca_cert_pem"), outcome)
 		}
 	case mailEntity.TLSModeMTLS:
 		if strings.TrimSpace(params.CACertPEM) == "" || strings.TrimSpace(params.ClientCertPEM) == "" || strings.TrimSpace(params.ClientKeyPEM) == "" {
-			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
-			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), mailTaxonomy.OutcomeInvalidArgument)
+			outcome = mailMetrics.OutcomeFailure
+			return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("tls mode 'mtls' requires ca_cert_pem, client_cert_pem, and client_key_pem"), outcome)
 		}
 	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
-		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeInvalidArgument)
-		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
+		outcome = mailMetrics.OutcomeFailure
+		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), outcome)
 	}
 
 	// Cập nhật các trường phẳng
@@ -308,77 +336,107 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	now := time.Now().UTC()
 	existing.UpdatedAt = &now
 
+	// Đo lường Downstream Repository cho thao tác cập nhật cấu hình Endpoint
+	startRepo2 := time.Now()
 	if err := s.endpointRepo.Update(ctx, existing); err != nil {
-		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "UpdateEndpoint", mailMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, outcome)
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "UpdateEndpoint", mailMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
-	mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.Success)
 	return existing, nil
 }
 
 func (s *endpointServiceImpl) DeleteEndpoint(ctx context.Context, id uuid.UUID) error {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
 	zoneID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneID == uuid.Nil {
-		mailMetrics.IncEndpointOperations("create", "global", mailTaxonomy.OutcomeInvalidArgument)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to create endpoint"), mailTaxonomy.OutcomeInvalidArgument)
+		outcome = mailMetrics.OutcomeFailure
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to delete endpoint"), outcome)
 	}
 
+	// Đo lường Downstream Repository cho thao tác xóa Endpoint
+	startRepo := time.Now()
 	if err := s.endpointRepo.Delete(ctx, zoneID, id); err != nil {
-		mailMetrics.IncEndpointOperations("delete", zoneID.String(), mailTaxonomy.OutcomeDatabaseError)
-		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeDatabaseError)
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "DeleteEndpoint", mailMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		outcome = mailMetrics.OutcomeFailureUnknown
+		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, outcome)
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "DeleteEndpoint", mailMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
-	mailMetrics.IncEndpointOperations("delete", zoneID.String(), mailTaxonomy.Success)
 	return nil
 }
 
 func (s *endpointServiceImpl) TestConnection(ctx context.Context, id uuid.UUID) error {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
 	zoneUUID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneUUID == uuid.Nil {
-		mailMetrics.IncEndpointOperations("test_connection", "global", mailTaxonomy.OutcomeInvalidArgument)
-		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to test endpoint connection"), mailTaxonomy.OutcomeInvalidArgument)
+		outcome = mailMetrics.OutcomeFailure
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("mail service: zone is required to test endpoint connection"), outcome)
 	}
 
+	// Nhận Endpoint bằng GetEndpoint (tự động ghi nhận log metrics ở method đó)
 	_, err := s.GetEndpoint(ctx, id)
 	if err != nil {
-		mailMetrics.IncEndpointOperations("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeNotFound)
-		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
+		outcome = mailMetrics.OutcomePreConditionFailed
+		return apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, outcome)
 	}
 
-	mailMetrics.IncEndpointOperations("test_connection", zoneUUID.String(), mailTaxonomy.OutcomeDatabaseError)
-	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: connection test is not implemented"), mailTaxonomy.OutcomeDatabaseError)
+	// Chức năng TestConnection chưa triển khai thực tế trên CP (đẩy bất đồng bộ qua outbox)
+	outcome = mailMetrics.OutcomeFailureUnknown
+	return apperr.Wrap(mailTaxonomy.ErrEndpointAuthFailed, fmt.Errorf("mail service: connection test is not implemented"), outcome)
 }
 
 func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEntity.TestConnection) error {
+	// Ghi nhận Service Call bằng cơ chế defer trên context
+	var outcome = mailMetrics.OutcomeSuccess
+	defer func() {
+		mailMetrics.ServiceCall(ctx, outcome)
+	}()
+
 	// Trích xuất trực tiếp ZoneID từ Go standard context bằng khóa dùng chung constant.ZoneIDCtxKey.
-	// Điều này giúp tầng Service tự lấy thông tin độc lập mà không cần import hay phụ thuộc vào HTTP middleware.
 	zoneID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
 	if !ok || zoneID == uuid.Nil {
+		outcome = mailMetrics.OutcomePreConditionFailed
 		return mailTaxonomy.ErrZoneNotFound
 	}
 
 	switch req.TLSMode {
 	case mailEntity.TLSModeTLS:
 		if req.CACertPEM == nil || *req.CACertPEM == "" {
+			outcome = mailMetrics.OutcomeFailure
 			return mailTaxonomy.ErrInvalidArgument
 		}
 	case mailEntity.TLSModeMTLS:
 		if req.CACertPEM == nil || *req.CACertPEM == "" ||
 			req.ClientCertPEM == nil || *req.ClientCertPEM == "" ||
 			req.ClientKeyPEM == nil || *req.ClientKeyPEM == "" {
+			outcome = mailMetrics.OutcomeFailure
 			return mailTaxonomy.ErrInvalidArgument
 		}
 	case mailEntity.TLSModeNone, mailEntity.TLSModeStartTLS, "":
 		// OK
 	default:
+		outcome = mailMetrics.OutcomeFailure
 		return mailTaxonomy.ErrInvalidArgument
 	}
 
 	eventID, err := uuid.NewV7()
 	if err != nil {
+		outcome = mailMetrics.OutcomeFailureUnknown
 		return err
 	}
 
@@ -404,20 +462,21 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 		smtpConfig.ClientKeyPem = req.ClientKeyPEM
 	}
 
-	// Tuần tự hóa cấu hình sang nhị phân cực nhanh bằng Protobuf (triệt tiêu dynamic allocation)
+	// Tuần tự hóa cấu hình sang nhị phân bằng Protobuf
 	payloadBytes, err := proto.Marshal(smtpConfig)
 	if err != nil {
+		outcome = mailMetrics.OutcomeFailureUnknown
 		return err
 	}
 
-	// Trích xuất Trace ID thực tế dạng nhị phân 16-byte từ context để tối ưu hóa lưu trữ cột BYTEA trong DB
+	// Trích xuất Trace ID thực tế dạng nhị phân 16-byte từ context
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
 		tid := spanCtx.TraceID()
 		traceID = tid[:]
 	}
 
-	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh (lưu UserID riêng biệt ở cột DB)
+	// Khởi tạo thực thể MailOutboxRecord hoàn chỉnh
 	record := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
 		ZoneID:               zoneID,
@@ -432,10 +491,14 @@ func (s *endpointServiceImpl) TestConnectionRaw(ctx context.Context, req mailEnt
 		Idle:                 90, // Hạn mức timeout 90 giây cho kết nối test
 	}
 
-	// Lưu bản ghi outbox trực tiếp vào cơ sở dữ liệu Postgres
+	// Lưu bản ghi outbox trực tiếp vào cơ sở dữ liệu Postgres (đo lường latency DB Downstream)
+	startRepo := time.Now()
 	if err := s.outboxRepo.Create(ctx, record); err != nil {
+		mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "CreateOutbox", mailMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		outcome = mailMetrics.OutcomeFailureUnknown
 		return err
 	}
+	mailMetrics.Downstream(ctx, mailMetrics.KindRepo, "CreateOutbox", mailMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
 	return nil
 }

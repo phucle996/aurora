@@ -37,9 +37,9 @@ type Endpoint struct {
 	UpdatedAt      *time.Time
 }
 
-// CreateEndpointParams groups the inputs required to construct a new Endpoint.
-type CreateEndpointParams struct {
-	ID             uuid.UUID // ID của endpoint được sinh trước ở tầng Handler
+// this struct using for create endpoint service layer
+type CreateEndpoint struct {
+	ID             uuid.UUID
 	ZoneID         uuid.UUID
 	Name           string
 	Host           string
