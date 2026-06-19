@@ -126,7 +126,7 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.Failure {
+	if appErr.Outcome != "failure_unknown" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {

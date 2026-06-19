@@ -39,8 +39,8 @@ func TestTryConnectE2E(t *testing.T) {
 	defer dbPool.Close()
 
 	// 3. Khởi tạo service với real repositories
-	repo := mailRepoImpl.NewEndpointRepository(dbPool, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(dbPool, cfg)
+	repo := mailRepoImpl.NewEndpointRepository(dbPool, cfg, outboxRepo)
 
 	l1Cache := cacheengine.NewShardedCache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)

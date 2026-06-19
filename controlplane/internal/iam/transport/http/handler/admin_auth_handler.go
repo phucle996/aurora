@@ -52,7 +52,9 @@ func NewAdminAuthHandler(cfg *config.Config,
 // @Router /admin/auth/login [post]
 func (h *AdminAuthHandler) Login(c *gin.Context) {
 	const op = "iam.admin_auth.login"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	// Khởi tạo context với timeout và tiêm tên operation vào context
+	ctx := constant.WithOperation(c.Request.Context(), "admin_login")
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var request iamReq.AdminLoginRequest
@@ -207,7 +209,9 @@ func (h *AdminAuthHandler) Session(c *gin.Context) {
 // @Router /admin/auth/refresh [post]
 func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 	const op = "iam.admin_auth.refresh"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	// Khởi tạo context với timeout và tiêm tên operation vào context
+	ctx := constant.WithOperation(c.Request.Context(), "admin_refresh")
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	// Lấy zone_code từ query parameter trước
@@ -326,7 +330,9 @@ func (h *AdminAuthHandler) Refresh(c *gin.Context) {
 // @Router /admin/auth/logout [post]
 func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	const op = "iam.admin_auth.logout"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	// Khởi tạo context với timeout và tiêm tên operation vào context
+	ctx := constant.WithOperation(c.Request.Context(), "admin_logout")
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	accessKey, _ := c.Cookie(cookie.AccessKeyName)
@@ -468,7 +474,9 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 // @Router /admin/auth/rotate-key [post]
 func (h *AdminAuthHandler) RotateKey(c *gin.Context) {
 	const op = "iam.admin_auth.rotate_key"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	// Khởi tạo context với timeout và tiêm tên operation vào context
+	ctx := constant.WithOperation(c.Request.Context(), "admin_key_rotation")
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := h.svc.RotateAdminAPIKeyEmergency(ctx); err != nil {
 		if errors.Is(err, iamTaxonomy.ErrPreconditionFailed) {

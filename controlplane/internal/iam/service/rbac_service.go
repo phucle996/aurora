@@ -47,23 +47,22 @@ func getActorLevel(ctx context.Context) (int, error) {
 }
 
 func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, err error) {
-	workflow := "rbac_list_roles"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -75,10 +74,10 @@ func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, e
 	startRepo := time.Now()
 	repoRoles, err := s.repo.ListRoles(ctx)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "ListRoles", iamTaxonomy.Failure, time.Since(startRepo), err)
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "ListRoles", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "ListRoles", iamTaxonomy.Success, time.Since(startRepo), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "ListRoles", iamMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
 	var out []*iamEntity.Role
 	for _, r := range repoRoles {
@@ -90,23 +89,22 @@ func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, e
 }
 
 func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity.RoleWithPermissions, err error) {
-	workflow := "rbac_get_role"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -119,13 +117,13 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 	role, err := s.repo.GetRoleByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo), err)
 			return nil, iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo), err)
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
 	if role.RoleLevel <= actorLevel {
 		return nil, iamTaxonomy.ErrActionNotAllowed
@@ -135,35 +133,34 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 	roleWithPerms, err := s.repo.GetRoleByCode(ctx, role.Code)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByCode", "role_not_found", time.Since(startRepo2), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByCode", "role_not_found", time.Since(startRepo2), err)
 			return nil, iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByCode", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByCode", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByCode", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByCode", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	return roleWithPerms, nil
 }
 
 func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err error) {
-	workflow := "rbac_create_role"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -178,32 +175,31 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err
 	startRepo := time.Now()
 	err = s.repo.CreateRole(ctx, role)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "CreateRole", iamTaxonomy.Failure, time.Since(startRepo), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CreateRole", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "CreateRole", iamTaxonomy.Success, time.Since(startRepo), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CreateRole", iamMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
 	return nil
 }
 
 func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err error) {
-	workflow := "rbac_update_role"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -216,13 +212,13 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 	existing, err := s.repo.GetRoleByID(ctx, role.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo1), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo1), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	if existing.IsSystem || existing.IsProtected {
 		return iamTaxonomy.ErrActionNotAllowed
@@ -234,32 +230,31 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 	startRepo2 := time.Now()
 	err = s.repo.UpdateRole(ctx, role)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "UpdateRole", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "UpdateRole", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "UpdateRole", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "UpdateRole", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	return nil
 }
 
 func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) {
-	workflow := "rbac_delete_role"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -272,13 +267,13 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) 
 	existing, err := s.repo.GetRoleByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo1), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo1), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	if existing.IsSystem || existing.IsProtected {
 		return iamTaxonomy.ErrActionNotAllowed
@@ -290,63 +285,61 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) 
 	startRepo2 := time.Now()
 	err = s.repo.DeleteRole(ctx, id)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "DeleteRole", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRole", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "DeleteRole", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRole", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	return nil
 }
 
 func (s *RbacService) ListPermissions(ctx context.Context) (perms []*iamEntity.Permission, err error) {
-	workflow := "rbac_list_permissions"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	startRepo := time.Now()
 	permissions, err := s.repo.ListPermissions(ctx)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "ListPermissions", iamTaxonomy.Failure, time.Since(startRepo), err)
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "ListPermissions", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "ListPermissions", iamTaxonomy.Success, time.Since(startRepo), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "ListPermissions", iamMetrics.OutcomeSuccess, time.Since(startRepo), nil)
 
 	return permissions, nil
 }
 
 func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.UUID) (err error) {
-	workflow := "rbac_assign_permission"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -359,13 +352,13 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo1), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo1), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	if role.IsSystem || role.IsProtected {
 		return iamTaxonomy.ErrActionNotAllowed
@@ -378,13 +371,13 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 	err = s.repo.AssignPermission(ctx, roleID, permID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-			iamMetrics.Downstream("repo", workflow, "AssignPermission", "permission_not_found", time.Since(startRepo2), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AssignPermission", "permission_not_found", time.Since(startRepo2), err)
 			return iamTaxonomy.ErrPermissionNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "AssignPermission", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AssignPermission", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "AssignPermission", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AssignPermission", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	// ------------------------------------------------------------------------
 	// 🔄 ĐỒNG BỘ HÓA CACHE L1 + FANOUT (COPY-ON-WRITE)
@@ -399,9 +392,9 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 			cacheKey := "rbac_role:" + role.Code
 			_, fanoutErr := s.cacheEngine.Fanout.Publish(ctx, cacheKey, payloadBytes)
 			if fanoutErr != nil {
-				iamMetrics.Downstream("fanout", workflow, "Publish", iamTaxonomy.Failure, time.Since(startFanout), fanoutErr)
+				iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeFailureUnknown, time.Since(startFanout), fanoutErr)
 			} else {
-				iamMetrics.Downstream("fanout", workflow, "Publish", iamTaxonomy.Success, time.Since(startFanout), nil)
+				iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeSuccess, time.Since(startFanout), nil)
 			}
 		}
 	}
@@ -410,23 +403,22 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 }
 
 func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.UUID) (err error) {
-	workflow := "rbac_revoke_permission"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -439,13 +431,13 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo1), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo1), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	if role.IsSystem || role.IsProtected {
 		return iamTaxonomy.ErrActionNotAllowed
@@ -458,13 +450,13 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 	err = s.repo.RevokePermission(ctx, roleID, permID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-			iamMetrics.Downstream("repo", workflow, "RevokePermission", "permission_not_found", time.Since(startRepo2), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokePermission", "permission_not_found", time.Since(startRepo2), err)
 			return iamTaxonomy.ErrPermissionNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "RevokePermission", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokePermission", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "RevokePermission", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokePermission", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	// ------------------------------------------------------------------------
 	// 🔄 ĐỒNG BỘ HÓA CACHE L1 + FANOUT (COPY-ON-WRITE)
@@ -479,9 +471,9 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 			cacheKey := "rbac_role:" + role.Code
 			_, fanoutErr := s.cacheEngine.Fanout.Publish(ctx, cacheKey, payloadBytes)
 			if fanoutErr != nil {
-				iamMetrics.Downstream("fanout", workflow, "Publish", iamTaxonomy.Failure, time.Since(startFanout), fanoutErr)
+				iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeFailureUnknown, time.Since(startFanout), fanoutErr)
 			} else {
-				iamMetrics.Downstream("fanout", workflow, "Publish", iamTaxonomy.Success, time.Since(startFanout), nil)
+				iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeSuccess, time.Since(startFanout), nil)
 			}
 		}
 	}
@@ -490,23 +482,22 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 }
 
 func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) (err error) {
-	workflow := "rbac_assign_user_role"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -519,13 +510,13 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo1), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo1), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	if role.RoleLevel <= actorLevel {
 		return iamTaxonomy.ErrActionNotAllowed
@@ -534,49 +525,48 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 	startRepo2 := time.Now()
 	err = s.repo.AssignUserRole(ctx, userID, roleID, scopeType, tenantID, workspaceID, expiresAt)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "AssignUserRole", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AssignUserRole", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "AssignUserRole", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AssignUserRole", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	// Invalidate Cache cho User trong môi trường HA (Inline)
 	cacheKey := "rbac:user:permissions:" + userID.String()
 	startL2 := time.Now()
 	if deleteErr := s.cacheEngine.L2.Delete(ctx, cacheKey); deleteErr != nil {
-		iamMetrics.Downstream("cache-engine-l2", workflow, "Delete", iamTaxonomy.Failure, time.Since(startL2), deleteErr)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "Delete", iamMetrics.OutcomeFailureUnknown, time.Since(startL2), deleteErr)
 	} else {
-		iamMetrics.Downstream("cache-engine-l2", workflow, "Delete", iamTaxonomy.Success, time.Since(startL2), nil)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "Delete", iamMetrics.OutcomeSuccess, time.Since(startL2), nil)
 	}
 
 	if s.cacheEngine.Fanout != nil {
 		startFanout := time.Now()
 		if _, pubErr := s.cacheEngine.Fanout.Publish(ctx, cacheKey, nil); pubErr != nil {
-			iamMetrics.Downstream("cache-engine-fanout", workflow, "Publish", iamTaxonomy.Failure, time.Since(startFanout), pubErr)
+			iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeFailureUnknown, time.Since(startFanout), pubErr)
 		} else {
-			iamMetrics.Downstream("cache-engine-fanout", workflow, "Publish", iamTaxonomy.Success, time.Since(startFanout), nil)
+			iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeSuccess, time.Since(startFanout), nil)
 		}
 	}
 	return nil
 }
 
 func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) (err error) {
-	workflow := "rbac_revoke_user_role"
 	defer func() {
-		outcome := iamTaxonomy.Success
+		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-				outcome = iamTaxonomy.InvalidArgument
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-				outcome = "action_not_allowed"
+				outcome = iamMetrics.OutcomePreConditionFailed
 			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-				outcome = "role_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
-				outcome = "permission_not_found"
+				outcome = iamMetrics.OutcomeFailure
 			} else {
-				outcome = iamTaxonomy.Failure
+				outcome = iamMetrics.OutcomeFailureUnknown
 			}
 		}
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
@@ -589,13 +579,13 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UU
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-			iamMetrics.Downstream("repo", workflow, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
 			return iamTaxonomy.ErrRoleNotFound
 		}
-		iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Failure, time.Since(startRepo1), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "GetRoleByID", iamTaxonomy.Success, time.Since(startRepo1), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeSuccess, time.Since(startRepo1), nil)
 
 	if role.RoleLevel <= actorLevel {
 		return iamTaxonomy.ErrActionNotAllowed
@@ -604,26 +594,26 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UU
 	startRepo2 := time.Now()
 	err = s.repo.RevokeUserRole(ctx, userID, roleID)
 	if err != nil {
-		iamMetrics.Downstream("repo", workflow, "RevokeUserRole", iamTaxonomy.Failure, time.Since(startRepo2), err)
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeUserRole", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "RevokeUserRole", iamTaxonomy.Success, time.Since(startRepo2), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeUserRole", iamMetrics.OutcomeSuccess, time.Since(startRepo2), nil)
 
 	// Invalidate Cache cho User trong môi trường HA (Inline)
 	cacheKey := "rbac:user:permissions:" + userID.String()
 	startL2 := time.Now()
 	if deleteErr := s.cacheEngine.L2.Delete(ctx, cacheKey); deleteErr != nil {
-		iamMetrics.Downstream("cache-engine-l2", workflow, "Delete", iamTaxonomy.Failure, time.Since(startL2), deleteErr)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "Delete", iamMetrics.OutcomeFailureUnknown, time.Since(startL2), deleteErr)
 	} else {
-		iamMetrics.Downstream("cache-engine-l2", workflow, "Delete", iamTaxonomy.Success, time.Since(startL2), nil)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "Delete", iamMetrics.OutcomeSuccess, time.Since(startL2), nil)
 	}
 
 	if s.cacheEngine.Fanout != nil {
 		startFanout := time.Now()
 		if _, pubErr := s.cacheEngine.Fanout.Publish(ctx, cacheKey, nil); pubErr != nil {
-			iamMetrics.Downstream("cache-engine-fanout", workflow, "Publish", iamTaxonomy.Failure, time.Since(startFanout), pubErr)
+			iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeFailureUnknown, time.Since(startFanout), pubErr)
 		} else {
-			iamMetrics.Downstream("cache-engine-fanout", workflow, "Publish", iamTaxonomy.Success, time.Since(startFanout), nil)
+			iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineFanout, "Publish", iamMetrics.OutcomeSuccess, time.Since(startFanout), nil)
 		}
 	}
 	return nil

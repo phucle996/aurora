@@ -22,7 +22,7 @@
 //     Khi request `Refresh` được gửi lên, hệ thống sẽ sinh ra cặp Access & Refresh Token mới,
 //     đồng thời vô hiệu hóa Refresh Token cũ ngay lập tức bằng phương thức `RotateRefreshToken` của repository.
 //   - **Phân tách lỗi & Telemetry**: Mọi lỗi xảy ra đều được đóng gói dạng `apperr.Wrap` cùng taxonomy
-//     tương ứng (ví dụ: `iamTaxonomy.InvalidSession` hoặc `iamTaxonomy.Failure`) để đảm bảo tính nhất quán
+//     tương ứng (ví dụ: `iamMetrics.OutcomeInvalidCredential` hoặc `iamMetrics.OutcomeFailureUnknown`) để đảm bảo tính nhất quán
 //     cho hệ thống giám sát và không để lộ thông tin chi tiết về cơ sở dữ liệu cho Client.
 //
 // ======================================================================================================
@@ -76,10 +76,10 @@ func NewRefreshTokenService(
 func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken string) (result *iamEntity.RefreshTokenResult, err error) {
 	const workflow = "refresh_token"
 
-	refreshOutcome := iamTaxonomy.Success
+	refreshOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
 		// Ghi nhận metrics cuộc gọi dịch vụ refresh token phục vụ đo lường hệ thống
-		iamMetrics.ServiceCall(workflow, string(refreshOutcome))
+		iamMetrics.ServiceCall(ctx, refreshOutcome)
 	}()
 
 	// ==========================================================================
@@ -90,13 +90,13 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	refreshContext, ctxErr := s.repo.LoadRefreshContextByHash(ctx, security.HashTokenSHA256(rawRefreshToken))
 	if ctxErr != nil {
 		if errors.Is(ctxErr, iamTaxonomy.ErrNotFound) {
-			iamMetrics.Downstream("repo", workflow, "LoadRefreshContextByHash", iamTaxonomy.InvalidSession, time.Since(startLoad), ctxErr)
-			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, ctxErr, iamTaxonomy.InvalidSession)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoadRefreshContextByHash", iamMetrics.OutcomeInvalidCredential, time.Since(startLoad), ctxErr)
+			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, ctxErr, iamMetrics.OutcomeInvalidCredential)
 		}
-		iamMetrics.Downstream("repo", workflow, "LoadRefreshContextByHash", iamTaxonomy.FailureUnknown, time.Since(startLoad), ctxErr)
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, ctxErr, iamTaxonomy.FailureUnknown)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoadRefreshContextByHash", iamMetrics.OutcomeFailureUnknown, time.Since(startLoad), ctxErr)
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, ctxErr, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "LoadRefreshContextByHash", iamTaxonomy.Success, time.Since(startLoad), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoadRefreshContextByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
 
 	// ==========================================================================
 	// BƯỚC 2: KIỂM TRA TRẠNG THÁI HIỆU LỰC CỦA PHIÊN, USER VÀ THIẾT BỊ
@@ -104,26 +104,26 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	session := &refreshContext.Session
 	// Kiểm tra xem token đã quá hạn sử dụng hay chưa
 	if time.Now().UTC().After(session.ExpiresAt) {
-		refreshOutcome = iamTaxonomy.InvalidSession
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.InvalidSession)
+		refreshOutcome = iamMetrics.OutcomeInvalidCredential
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 	trackedDeviceID := *session.DeviceID
 
 	user := &refreshContext.User
 	// Xác nhận tài khoản người dùng có tồn tại hợp lệ
 	if user.ID == (uuid.UUID{}) {
-		refreshOutcome = iamTaxonomy.InvalidSession
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.InvalidSession)
+		refreshOutcome = iamMetrics.OutcomeInvalidCredential
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 	// Kiểm tra trạng thái tài khoản để ngăn chặn các phiên của user bị treo/vô hiệu hóa/đang chờ kích hoạt
 	if user.Status == iamEntity.UserStatusPendingActive || user.Status == iamEntity.UserStatusSuspended || user.Status == iamEntity.UserStatusDisabled {
-		refreshOutcome = iamTaxonomy.InvalidSession
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.InvalidSession)
+		refreshOutcome = iamMetrics.OutcomeInvalidCredential
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 	// Kiểm tra trạng thái thiết bị có bị thu hồi quyền truy cập (Revoked) hay không
 	if refreshContext.Device == nil || refreshContext.Device.Status == iamEntity.DeviceStatusRevoked {
-		refreshOutcome = iamTaxonomy.InvalidSession
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.InvalidSession)
+		refreshOutcome = iamMetrics.OutcomeInvalidCredential
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 
 	now := time.Now().UTC()
@@ -134,16 +134,16 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	// Tạo mới Token ID sử dụng UUIDv7 đóng vai trò JTI Claim
 	accessJTI, idErr := uuid.NewV7()
 	if idErr != nil {
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamTaxonomy.Failure)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	// Sinh ngẫu nhiên access key để làm định danh phiên làm việc mới
 	accessKey := uuid.NewString()
 	// Sinh ngẫu nhiên access secret dài 32 bytes có tính mật mã bảo mật cao
 	accessSecret, secretErr := security.GenerateToken(32)
 	if secretErr != nil {
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamTaxonomy.Failure)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	accessExpiresAt := now.Add(s.cfg.Security.AccessSecretTTL)
 
@@ -153,17 +153,17 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	startCache := time.Now()
 	val, err := s.cacheEngine.GetOrLoad(ctx, "access_secret", "")
 	if err != nil {
-		iamMetrics.Downstream("cache-engine", "refresh_token", "GetOrLoad", iamTaxonomy.Failure, time.Since(startCache), err)
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetOrLoad", iamMetrics.OutcomeFailureUnknown, time.Since(startCache), err)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	secrets, ok := val.(*coreEntity.RuntimeSecrets)
 	if !ok || secrets == nil {
-		iamMetrics.Downstream("cache-engine", "refresh_token", "GetOrLoad", iamTaxonomy.Failure, time.Since(startCache), errors.New("invalid runtime secrets type"))
-		refreshOutcome = iamTaxonomy.Failure
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetOrLoad", iamMetrics.OutcomeFailureUnknown, time.Since(startCache), errors.New("invalid runtime secrets type"))
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("invalid runtime secrets type"), refreshOutcome)
 	}
-	iamMetrics.Downstream("cache-engine", "refresh_token", "GetOrLoad", iamTaxonomy.Success, time.Since(startCache), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetOrLoad", iamMetrics.OutcomeSuccess, time.Since(startCache), nil)
 
 	// ==========================================================================
 	// BƯỚC 5: KÝ JWT ACCESS TOKEN MỚI
@@ -179,8 +179,8 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 		ExpiresAt: accessExpiresAt.Unix(),
 	}, secrets.Active.Secret)
 	if accessErr != nil {
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamTaxonomy.Failure)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// ==========================================================================
@@ -188,13 +188,13 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	// ==========================================================================
 	rawNextRefreshToken, refreshErr := security.GenerateToken(43)
 	if refreshErr != nil {
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshErr, iamTaxonomy.Failure)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	nextRefreshID, refreshIDErr := uuid.NewV7()
 	if refreshIDErr != nil {
-		refreshOutcome = iamTaxonomy.UuidGenerateFail
-		return nil, apperr.Wrap(iamTaxonomy.ErrUuidGenerateFailed, refreshIDErr, iamTaxonomy.UuidGenerateFail)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrUuidGenerateFailed, refreshIDErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	nextRefreshExpiresAt := now.Add(s.cfg.Security.RefreshTokenTTL)
 	nextRefreshToken := iamEntity.RefreshToken{
@@ -215,15 +215,15 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	startRotate := time.Now()
 	if rotateErr := s.repo.RotateRefreshToken(ctx, *session, nextRefreshToken); rotateErr != nil {
 		if errors.Is(rotateErr, iamTaxonomy.ErrInvalidSession) || errors.Is(rotateErr, pgx.ErrNoRows) {
-			iamMetrics.Downstream("repo", workflow, "RotateRefreshToken", iamTaxonomy.InvalidSession, time.Since(startRotate), rotateErr)
-			refreshOutcome = iamTaxonomy.InvalidSession
-			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, rotateErr, iamTaxonomy.InvalidSession)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RotateRefreshToken", iamMetrics.OutcomeInvalidCredential, time.Since(startRotate), rotateErr)
+			refreshOutcome = iamMetrics.OutcomeInvalidCredential
+			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, rotateErr, iamMetrics.OutcomeInvalidCredential)
 		}
-		iamMetrics.Downstream("repo", workflow, "RotateRefreshToken", iamTaxonomy.Failure, time.Since(startRotate), rotateErr)
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, rotateErr, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RotateRefreshToken", iamMetrics.OutcomeFailureUnknown, time.Since(startRotate), rotateErr)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, rotateErr, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("repo", workflow, "RotateRefreshToken", iamTaxonomy.Success, time.Since(startRotate), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RotateRefreshToken", iamMetrics.OutcomeSuccess, time.Since(startRotate), nil)
 
 	// ==========================================================================
 	// BƯỚC 8: ĐỒNG BỘ TRẠNG THÁI RUNTIME CỦA THIẾT BỊ VÀO REDIS CACHE ENGINE L2
@@ -237,8 +237,8 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	}
 	payload, marshalErr := json.Marshal(sessionRecord)
 	if marshalErr != nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, marshalErr, iamTaxonomy.FailureUnknown)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, marshalErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	sessionKey := "iam:user_access_session:" + user.ID.String() + ":" + accessKey
@@ -254,11 +254,11 @@ func (s *RefreshTokenService) Refresh(ctx context.Context, rawRefreshToken strin
 	_, setErr := pipe.Exec(ctx)
 
 	if setErr != nil {
-		iamMetrics.Downstream("cache-engine", workflow, "setTrinityToken", iamTaxonomy.Failure, time.Since(startSetRuntime), setErr)
-		refreshOutcome = iamTaxonomy.Failure
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamTaxonomy.Failure)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "setTrinityToken", iamMetrics.OutcomeFailureUnknown, time.Since(startSetRuntime), setErr)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("cache-engine", workflow, "setTrinityToken", iamTaxonomy.Success, time.Since(startSetRuntime), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "setTrinityToken", iamMetrics.OutcomeSuccess, time.Since(startSetRuntime), nil)
 
 	// Trả về bộ kết quả làm mới phiên thành công cho Client
 	return &iamEntity.RefreshTokenResult{

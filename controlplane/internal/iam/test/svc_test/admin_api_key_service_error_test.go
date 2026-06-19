@@ -82,7 +82,7 @@ func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.InvalidArgument {
+	if appErr.Outcome != "failure" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
@@ -101,7 +101,7 @@ func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.InvalidArgument {
+	if appErr.Outcome != "failure" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 }
@@ -122,7 +122,7 @@ func TestAdminLogoutLoadRuntimeErrorWrapsCause(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.FailureUnknown {
+	if appErr.Outcome != "failure_unknown" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {
@@ -148,7 +148,7 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.GetL2CacheFail {
+	if appErr.Outcome != "failure_unknown" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {

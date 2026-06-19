@@ -55,7 +55,8 @@ func (h *EndpointHandler) Create(c *gin.Context) {
 		clientKey = strings.TrimSpace(*req.ClientKeyPEM)
 	}
 
-	params := mailEntity.CreateEndpointParams{
+	// Khởi tạo các tham số truyền xuống Service Layer
+	params := &mailEntity.CreateEndpointParams{
 		Name:           strings.TrimSpace(req.Name),
 		Host:           strings.TrimSpace(req.Host),
 		Port:           req.Port,
@@ -71,6 +72,7 @@ func (h *EndpointHandler) Create(c *gin.Context) {
 		ClientKeyPEM:   clientKey,
 	}
 
+	// Gọi service để lưu trữ và sinh ID trong transaction
 	err := h.svc.CreateEndpoint(ctx, params)
 	if err != nil {
 		if errors.Is(err, mailTaxonomy.ErrInvalidArgument) {
@@ -82,7 +84,11 @@ func (h *EndpointHandler) Create(c *gin.Context) {
 		return
 	}
 
-	apires.RespondCreated(c, nil, "created")
+	// Trả về HTTP 201 Created cùng với ID do Service Layer sinh ra
+	apires.RespondCreated(c, gin.H{
+		"id":     params.ID.String(),
+		"status": "initializing",
+	}, "created")
 }
 
 // Get godoc

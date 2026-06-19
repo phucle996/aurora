@@ -3,6 +3,7 @@ package mailTaxonomy
 import "errors"
 
 var (
+	ErrZeroRowsAffected      = errors.New("mail: zero rows affected")
 	ErrInvalidArgument       = errors.New("mail: invalid argument")
 	ErrZoneNotFound          = errors.New("mail: zone not found")
 	ErrConsumerNotFound      = errors.New("mail: consumer not found")

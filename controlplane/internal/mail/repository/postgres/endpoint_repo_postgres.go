@@ -13,31 +13,45 @@ import (
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailModel "controlplane/internal/mail/model"
+	mailTaxonomy "controlplane/internal/mail/taxonomy"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Định nghĩa context key dùng cho truyền tải transaction nội bộ trong package postgres
+type txKey struct{}
+
+// QueryExecutor đại diện cho một đối tượng thực thi truy vấn SQL (có thể là pgxpool.Pool hoặc pgx.Tx)
+type QueryExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // endpointRepoPostgres triển khai mailRepoInterface.EndpointRepository sử dụng Static Statement để tối ưu hot path.
 type endpointRepoPostgres struct {
-	db                 *pgxpool.Pool // Kết nối cơ sở dữ liệu Postgres thread-safe
-	schema             string        // Tên schema SQL động được cấu hình
-	createQuery        string        // Câu lệnh tạo mới endpoint
-	getByIDQuery       string        // Câu lệnh lấy chi tiết endpoint theo zone
-	getGlobalByIDQuery string        // Câu lệnh lấy chi tiết endpoint toàn cầu
-	listGlobalQuery    string        // Câu lệnh lấy danh sách endpoint toàn cầu bằng cursor
-	listByZoneQuery    string        // Câu lệnh lấy danh sách endpoint theo zone bằng cursor
-	updateQuery        string        // Câu lệnh cập nhật endpoint
-	deleteQuery        string        // Câu lệnh xóa endpoint
+	db                 *pgxpool.Pool                          // Kết nối cơ sở dữ liệu Postgres thread-safe
+	schema             string                                 // Tên schema SQL động được cấu hình
+	outboxRepo         mailRepoInterface.MailOutboxRepository // Repository cho mail outbox records
+	createQuery        string                                 // Câu lệnh tạo mới endpoint
+	getByIDQuery       string                                 // Câu lệnh lấy chi tiết endpoint theo zone
+	getGlobalByIDQuery string                                 // Câu lệnh lấy chi tiết endpoint toàn cầu
+	listGlobalQuery    string                                 // Câu lệnh lấy danh sách endpoint toàn cầu bằng cursor
+	listByZoneQuery    string                                 // Câu lệnh lấy danh sách endpoint theo zone bằng cursor
+	updateQuery        string                                 // Câu lệnh cập nhật endpoint
+	deleteQuery        string                                 // Câu lệnh xóa endpoint
 }
 
 // NewEndpointRepository khởi tạo một đối tượng EndpointRepository mới cho Postgres và biên dịch sẵn SQL statements.
-func NewEndpointRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterface.EndpointRepository {
+func NewEndpointRepository(db *pgxpool.Pool, cfg *config.Config, outboxRepo mailRepoInterface.MailOutboxRepository) mailRepoInterface.EndpointRepository {
 	schema := cfg.SchemaSQL.Mail
 	return &endpointRepoPostgres{
-		db:     db,
-		schema: schema,
+		db:         db,
+		schema:     schema,
+		outboxRepo: outboxRepo,
 		createQuery: fmt.Sprintf(`
 			INSERT INTO %s.mail_endpoints (
 				id,
@@ -183,15 +197,20 @@ func NewEndpointRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterfa
 	}
 }
 
-// Create chèn thêm một mail endpoint mới với đầy đủ các cột phẳng.
-func (r *endpointRepoPostgres) Create(ctx context.Context, e *mailEntity.Endpoint) error {
-	if e == nil {
-		return fmt.Errorf("mail repo: thực thể endpoint entity không được phép nil")
+// Create chèn thêm một mail endpoint mới và ghi outbox record đồng bộ trong cùng một transaction ở repo layer.
+func (r *endpointRepoPostgres) Create(ctx context.Context, e *mailEntity.Endpoint, outbox *mailEntity.MailOutboxRecord) error {
+	// Bắt đầu một database transaction
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("mail repo: không thể khởi tạo transaction: %w", err)
 	}
+	// Đảm bảo rollback khi hàm thoát với lỗi hoặc panic
+	defer tx.Rollback(ctx)
 
 	dbModel := mailModel.EndpointEntityToModel(*e)
 
-	result, err := r.db.Exec(ctx, r.createQuery,
+	// Thực thi chèn endpoint sử dụng transaction
+	result, err := tx.Exec(ctx, r.createQuery,
 		dbModel.ID.String(),
 		dbModel.ZoneID.String(),
 		dbModel.Name,
@@ -212,11 +231,22 @@ func (r *endpointRepoPostgres) Create(ctx context.Context, e *mailEntity.Endpoin
 		dbModel.UpdatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("mail repo: không thể lưu endpoint %s: %w", e.ID.String(), err)
+		return err
 	}
 
 	if result.RowsAffected() == 0 {
-		return fmt.Errorf("mail repo: không thể lưu endpoint %s: zero rows affected", e.ID.String())
+		return mailTaxonomy.ErrZeroRowsAffected
+	}
+
+	// Đưa transaction vào context và gọi outboxRepo.Create để lưu trữ outbox
+	txCtx := context.WithValue(ctx, txKey{}, tx)
+	if err := r.outboxRepo.Create(txCtx, outbox); err != nil {
+		return err
+	}
+
+	// Commit giao dịch
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("mail repo: không thể commit transaction: %w", err)
 	}
 
 	return nil

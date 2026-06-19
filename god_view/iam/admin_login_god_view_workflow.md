@@ -218,19 +218,22 @@ sequenceDiagram
 📌 **Mã nguồn định nghĩa tại:** [admin_auth_request.go](file:///home/phucle/Desktop/New/controlplane/internal/iam/transport/http/dto/req/admin_auth_request.go)
 
 ##### Request DTO: `iamReq.AdminLoginRequest`
+
 ```go
 type AdminLoginRequest struct {
-	AdminAPIKey     string `json:"admin_api_key" binding:"required,min=16"`
-	MFAMethod       string `json:"mfa_method" binding:"required,oneof=totp recovery_code"`
-	MFACode         string `json:"mfa_code" binding:"required,min=6"`
-	DevicePublicKey string `json:"device_public_key" binding:"required,min=16"`
-	ZoneCode        string `json:"zone_code" binding:"required,min=3"`
+ AdminAPIKey     string `json:"admin_api_key" binding:"required,min=16"`
+ MFAMethod       string `json:"mfa_method" binding:"required,oneof=totp recovery_code"`
+ MFACode         string `json:"mfa_code" binding:"required,min=6"`
+ DevicePublicKey string `json:"device_public_key" binding:"required,min=16"`
+ ZoneCode        string `json:"zone_code" binding:"required,min=3"`
 }
 ```
 
 ##### Response DTO: `apires.RespondSuccess` (JSON)
-*   HTTP Status: `200 OK`
-*   Payload: `{"message": "Admin login successful", "data": null}`
+
+- HTTP Status: `200 OK`
+
+- Payload: `{"message": "Admin login successful", "data": null}`
 
 ---
 
@@ -239,27 +242,29 @@ type AdminLoginRequest struct {
 📌 **Mã nguồn định nghĩa tại:** [admin.go](file:///home/phucle/Desktop/New/controlplane/internal/iam/domain/entity/admin.go)
 
 ##### Input Entity: `iamEntity.AdminLoginRequest`
+
 ```go
 type AdminLoginRequest struct {
-	RawAPIKey       string
-	MFAMethod       MFAType // totp | recovery_code
-	MFACode         string
-	DevicePublicKey string
-	DeviceName      string
-	ClientDeviceID  uuid.UUID
-	ZoneCode        string
+ RawAPIKey       string
+ MFAMethod       MFAType // totp | recovery_code
+ MFACode         string
+ DevicePublicKey string
+ DeviceName      string
+ ClientDeviceID  uuid.UUID
+ ZoneCode        string
 }
 ```
 
 ##### Output Entity: `iamEntity.AdminLoginResult`
+
 ```go
 type AdminLoginResult struct {
-	AdminAPIToken            string    // JWT Token (Mảnh 1)
-	AccessKey                string    // UUIDv7 Access Key (Mảnh 2)
-	AccessSecret             string    // 64-byte plaintext Access Secret (Mảnh 3)
-	ClientDeviceID           uuid.UUID // UUID định danh thiết bị
-	ClientDeviceIDProvenance string    // "client" hoặc "server-bootstrap"
-	ExpiresAt                time.Time // Thời điểm hết hạn phiên
+ AdminAPIToken            string    // JWT Token (Mảnh 1)
+ AccessKey                string    // UUIDv7 Access Key (Mảnh 2)
+ AccessSecret             string    // 64-byte plaintext Access Secret (Mảnh 3)
+ ClientDeviceID           uuid.UUID // UUID định danh thiết bị
+ ClientDeviceIDProvenance string    // "client" hoặc "server-bootstrap"
+ ExpiresAt                time.Time // Thời điểm hết hạn phiên
 }
 ```
 
@@ -267,12 +272,15 @@ type AdminLoginResult struct {
 
 #### 3. Headers & Cookies
 
-##### Đọc từ Client Request (Headers & Cookies):
-*   **Header `X-Device-Hostname` / `X-Device-Name`**: Dùng để lấy tên máy tính của SRE Admin (Device Name).
-*   **Header `X-Client-Device-Id`** hoặc **Cookie `client_device_id`**: Định danh thiết bị thô gửi từ client.
-*   **Cookie `zone_code`** (trong middleware): Đọc thông tin phân vùng hiện tại.
+##### Đọc từ Client Request (Headers & Cookies)
 
-##### Thiết lập ở Server Response (Cookies Set-Cookie):
+- **Header `X-Device-Hostname` / `X-Device-Name`**: Dùng để lấy tên máy tính của SRE Admin (Device Name).
+
+- **Header `X-Client-Device-Id`** hoặc **Cookie `client_device_id`**: Định danh thiết bị thô gửi từ client.
+- **Cookie `zone_code`** (trong middleware): Đọc thông tin phân vùng hiện tại.
+
+##### Thiết lập ở Server Response (Cookies Set-Cookie)
+
 Tất cả các cookies (ngoại trừ `zone_code`) đều được thiết lập với các cờ bảo mật: `HttpOnly = true`, `Secure = true` (nếu HTTPS/Proxy), `SameSite = Lax`, và giới hạn truy cập tại đường dẫn `Path = "/admin"`.
 
 | Tên Cookie | Giá Trị Lưu Trữ | Thời Gian Hết Hạn (Expires) |
@@ -290,6 +298,7 @@ Tất cả các cookies (ngoại trừ `zone_code`) đều được thiết lậ
 📌 **Mã nguồn tương tác tại:** [admin_api_key_repo.go](file:///home/phucle/Desktop/New/controlplane/internal/iam/repository/admin_api_key_repo.go)
 
 ##### A. Bảng `iam.admin_devices` (Lưu trữ và binding thiết bị vật lý Ed25519)
+
 ```sql
 CREATE TABLE iam.admin_devices (
     id UUID PRIMARY KEY,
@@ -310,6 +319,7 @@ CREATE TABLE iam.admin_devices (
 ```
 
 ##### B. Bảng `iam.admin_recovery_codes` (Mã khôi phục MFA khẩn cấp một lần)
+
 ```sql
 CREATE TABLE iam.admin_recovery_codes (
     id UUID PRIMARY KEY,
@@ -320,6 +330,7 @@ CREATE TABLE iam.admin_recovery_codes (
 ```
 
 ##### C. Bảng `iam.admin_api_keys` (Danh sách API Keys hợp lệ)
+
 ```sql
 CREATE TABLE iam.admin_api_keys (
     id UUID PRIMARY KEY,
@@ -331,6 +342,7 @@ CREATE TABLE iam.admin_api_keys (
 ```
 
 ##### D. Bảng `iam.admin_2fa_settings` (Cấu hình khóa bí mật TOTP Admin)
+
 ```sql
 CREATE TABLE iam.admin_2fa_settings (
     id UUID PRIMARY KEY,                  -- Thường là uuid.Nil
@@ -411,48 +423,83 @@ stateDiagram-v2
 
 ### 1. Prometheus Metrics Đặc Tả Đo Đạc Downstream
 
-#### A. Đo Đạc Tầng Cơ Sở Dữ Liệu (PostgreSQL Downstream)
-*   **`go_db_queries_total{db_instance="iam", table="admin_devices" | "admin_recovery_codes" | "admin_api_keys", operation="select" | "insert" | "update"}`**: Tổng số truy vấn SQL gửi xuống database phân theo bảng và loại thao tác.
-*   **`go_db_query_duration_seconds_bucket{db_instance="iam", table="..."}`**: Histogram đo độ trễ (latency RTT) của các truy vấn SQL xuống PostgreSQL.
-*   **`go_db_errors_total{db_instance="iam", table="...", error_code="unique_violation" | "connection_timeout" | "foreign_key_violation"}`**: Tổng số lỗi phát sinh từ database downstream.
+#### 📌 Quy Ước Đo Lường Telemetry (Metrics Conventions)
 
-#### B. Đo Đạc Tầng Bộ Nhớ Đệm (Redis L2 Downstream)
-*   **`redis_commands_total{cache_instance="l2", command="set" | "setnx" | "evalsha" | "get"}`**: Tổng số lệnh Redis được gọi.
-*   **`redis_command_duration_seconds_bucket{cache_instance="l2", command="..."}`**: Histogram đo độ trễ RTT của các lệnh Redis downstream (đặc biệt quan trọng với LUA locks và SetNX replay).
-*   **`redis_command_errors_total{cache_instance="l2", command="..."}`**: Tổng số lỗi kết nối hoặc thực thi lệnh trên Redis Cluster.
+Để chuẩn hóa việc đo lường, giám sát hiệu năng và phát hiện sự cố (observability) trên toàn bộ phân hệ IAM trong môi trường HA/Cloud-Native, các chỉ số metrics được quy hoạch và thu thập dựa trên hai nhóm chính dưới đây:
+
+##### 1. Đo lường Luồng Nghiệp Vụ (Service Calls)
+
+| Tiêu chí (Aspect) | Đặc tả chi tiết (Specification) |
+| :--- | :--- |
+| **Mục đích** | Đo lường tổng thể kết quả và tần suất thực thi của một nghiệp vụ/workflow từ đầu đến cuối (ví dụ: đăng nhập Admin, xoay vòng API Key, dọn dẹp thiết bị). |
+| **Khi nào thu thập** | Kích hoạt tại thời điểm kết thúc xử lý nghiệp vụ (thường sử dụng khối lệnh trì hoãn `defer` ở tầng Service để đảm bảo ghi nhận trong mọi trường hợp thành công hoặc lỗi/thoát sớm). |
+| **Tên Metrics & Labels** | `iam_service_calls_total{op, outcome}` (Counter) |
+| **Nhãn phân vùng (Labels Guide)** | - `op`: Tên nghiệp vụ/workflow thực thi (lấy động từ context).<br>- `outcome`: Kết quả xử lý nghiệp vụ. |
+| **Các loại Outcome (Outcomes)** | - `success`: Nghiệp vụ thành công trọn vẹn.<br>- `failure`: Lỗi nghiệp vụ thông thường (handled logic/validation).<br>- `failure_unknown`: Lỗi hệ thống không lường trước, lỗi hạ tầng không xuất phát từ business (ví dụ lỗi kết nối DB, Redis down, panic, type mismatch).<br>- `precondition_failed`: Điều kiện tiên quyết không đạt (MFA, chưa kích hoạt...).<br>- `invalid_credential`: Sai thông tin xác thực.<br>- `lock_busy`: Tài nguyên bị khóa bởi replica khác trong HA. |
+
+##### 2. Đo lường Thành Phần Phụ Thuộc (Downstream Calls)
+
+| Tiêu chí (Aspect) | Đặc tả chi tiết (Specification) |
+| :--- | :--- |
+| **Mục đích** | Giám sát chi tiết hiệu năng (Latency) và độ tin cậy (Error Rate) của từng lượt call tới repo, outside app call kể cả cache engine L2. |
+| **Khi nào thu thập** | Ngay sau khi downstream call kết thúc (cả khi thành công hoặc có lỗi). |
+| **Tên Metrics & Labels** | - `iam_downstream_calls_total{op, kind, destination, outcome}` (Counter)<br>- `iam_downstream_call_duration_seconds{op, kind, destination, outcome}` (Histogram) |
+| **Nhãn phân vùng (Labels Guide)** | - `op`: Tên workflow cha thực thi (lấy động từ context).<br>- `kind`: Phân loại downstream (`repo`, `cache-engine-l1`, `cache-engine-l2`, `cache-engine-fanout`, `cache-engine-execute`, `telegram`...).<br>- `destination`: Tên hàm/phương thức thực thi cụ thể (`GetActiveAdminAPIKey`, `SendMessage`, `checkPresence`...).<br>- `outcome`: Kết quả cuộc gọi (`success`, `failure`, `lock_busy`, `telegram_send_fail`...). |
+| **Các loại Downstream (Kinds)** | - `repo`: Các cuộc gọi tới Database PostgreSQL repository.<br>- `cache-engine-l1`: Gọi L1 Registry chung (GetOrLoad).<br>- `cache-engine-l2`: Thao tác trực tiếp/pipeline trên Redis L2 Cache.<br>- `cache-engine-fanout`: Kênh Pub/Sub đồng bộ hóa cache L1 giữa các replica.<br>- `cache-engine-execute`: Chạy phân tán lock LUA script qua Redis Lua Engine.<br>- `telegram`: Các cuộc gọi gửi cảnh báo tới Telegram channel. |
+
+| **Cơ chế hoạt động** | Đo lường latency thực thi bằng `time.Since(start)` và ghi nhận kết quả kết hợp với context hiện tại để OpenTelemetry liên kết TraceID qua Exemplar. |
+
+##### 3. Đo lường Bộ Nhớ Đệm L1 (L1 Cache Calls - Tự Động)
+
+| Tiêu chí (Aspect) | Đặc tả chi tiết (Specification) |
+| :--- | :--- |
+| **Mục đích** | Tự động đo lường hiệu quả (Hit/Miss Rate) và tần suất thao tác trên bộ nhớ đệm L1 (In-Memory Cache). |
+| **Khi nào thu thập** | Khi có bất kỳ thao tác truy xuất/cập nhật nào trên L1 Cache thông qua telemetry decorator. |
+| **Tên Metrics & Labels** | `aurora_controlplane_cache_l1_operations_total{operation, cache_name, outcome}` (Counter) |
+| **Các L1 Key & Namespace Trong Luồng** | - `access_secret`: Đọc khóa ký bí mật JWT Access Token.<br>- `admin_api_key`: Truy xuất danh sách khóa API Key quản trị.<br>- `admin_api_key_active`: Truy xuất khóa API Key quản trị đang kích hoạt.<br>- `admin_2fa_secret`: Đọc cấu hình khóa bí mật 2FA của Admin.<br>- `rbac_role:<role_code>`: Chứa thông tin phân quyền vai trò hệ thống.<br>- `zone_by_code:<zone_code>`: Lưu thông tin phân vùng hạ tầng của Admin. |
+| **Cơ chế hoạt động** | Gói `cacheengine` bao bọc L1 Cache bằng decorator `telemetryL1Cache` để tự động tăng counter phân theo Namespace (`cache_name`) và kết quả truy xuất (`outcome`). |
 
 ---
 
 ### 2. Thư Viện Truy Vấn PromQL Giám Sát Sức Khỏe Downstream
 
 #### 📈 Đo tỷ lệ lỗi (Error Rate) của Database Downstream (bảng `admin_devices` & `admin_recovery_codes`)
+
 ```promql
 sum(rate(go_db_errors_total{db_instance="iam"}[5m])) 
 / 
 sum(rate(go_db_queries_total{db_instance="iam"}[5m])) * 100
 ```
-*   *Mức cảnh báo (Warning)*: $> 1\%$ trong 2 phút liên tiếp.
-*   *Mức nghiêm trọng (Critical)*: $> 5\%$ trong 1 phút liên tiếp (nguy cơ mất kết nối PostgreSQL DB).
+
+- *Mức cảnh báo (Warning)*: $> 1\%$ trong 2 phút liên tiếp.
+
+- *Mức nghiêm trọng (Critical)*: $> 5\%$ trong 1 phút liên tiếp (nguy cơ mất kết nối PostgreSQL DB).
 
 #### 📈 Độ trễ P99 của truy vấn Database Upsert Device Binding
+
 ```promql
 histogram_quantile(0.99, sum(rate(go_db_query_duration_seconds_bucket{db_instance="iam", table="admin_devices", operation="insert"}[5m])) by (le))
 ```
-*   *Ngưỡng tối ưu (SLA)*: $< 50\text{ms}$ ở môi trường HA.
+
+- *Ngưỡng tối ưu (SLA)*: $< 50\text{ms}$ ở môi trường HA.
 
 #### 📈 Độ trễ P99 của lệnh Redis LUA Lock (`evalsha` chống double-consume)
+
 ```promql
 histogram_quantile(0.99, sum(rate(redis_command_duration_seconds_bucket{cache_instance="l2", command="evalsha"}[5m])) by (le))
 ```
-*   *Ngưỡng tối ưu (SLA)*: $< 10\text{ms}$.
+
+- *Ngưỡng tối ưu (SLA)*: $< 10\text{ms}$.
 
 #### 📈 Tỷ lệ lỗi (Error Rate) kết nối Redis L2 Cluster
+
 ```promql
 sum(rate(redis_command_errors_total{cache_instance="l2"}[5m])) 
 / 
 sum(rate(redis_commands_total{cache_instance="l2"}[5m])) * 100
 ```
-*   *Mức nghiêm trọng (Critical)*: $> 2\%$ trong 1 phút (Redis Cluster failover hoặc network partition).
+
+- *Mức nghiêm trọng (Critical)*: $> 2\%$ trong 1 phút (Redis Cluster failover hoặc network partition).
 
 ---
 
@@ -478,6 +525,7 @@ _stream:{app="controlplane"} AND "redis" AND ("connection refused" OR "redis: ni
 Toàn bộ các Span trong vòng đời request đăng nhập được liên kết chặt chẽ thông qua OpenTelemetry (OTel).
 
 #### A. Cấu Trúc Cây Span (Span Tree Hierarchy)
+
 ```
 POST /admin/auth/login [Root Span - Gin OTel Middleware]
  ├── Check Active API Key [Child Span - Service]
@@ -491,6 +539,7 @@ POST /admin/auth/login [Root Span - Gin OTel Middleware]
 ```
 
 #### B. Phục Hồi & Liên Kết Trực Quan (Logs-to-Traces Correlation)
+
 1. **Trace context propagation**: Context trace được truyền qua header tiêu chuẩn W3C `traceparent` (ví dụ: `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`).
 2. **Derived Fields (VictoriaLogs -> Jaeger)**:
    - Các dòng logs ghi nhận từ `controlplane` bắt buộc serialize kèm trường `trace_id`.

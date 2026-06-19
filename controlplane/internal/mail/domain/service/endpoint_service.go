@@ -8,7 +8,7 @@ import (
 )
 
 type EndpointService interface {
-	CreateEndpoint(ctx context.Context, params mailEntity.CreateEndpointParams) error
+	CreateEndpoint(ctx context.Context, params *mailEntity.CreateEndpointParams) error
 	GetEndpoint(ctx context.Context, id uuid.UUID) (*mailEntity.Endpoint, error)
 	ListEndpoints(ctx context.Context, cursor string, limit int) ([]*mailEntity.Endpoint, string, error)
 	UpdateEndpoint(ctx context.Context, params mailEntity.UpdateEndpointParams) (*mailEntity.Endpoint, error)

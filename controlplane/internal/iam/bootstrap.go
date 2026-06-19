@@ -10,6 +10,7 @@ import (
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 	"errors"
 )
@@ -145,7 +146,7 @@ func (m *IAMModule) runAdminRotationScheduler(ctx context.Context) {
 		retry := backoffSchedule[attempt]
 		reason := "rotate_fail"
 		// Phân loại reason từ outcome trong AppError để log vận hành chính xác
-		if appErr, ok := apperr.As(err); ok && appErr.Outcome == iamTaxonomy.TelegramSendFail {
+		if appErr, ok := apperr.As(err); ok && appErr.Outcome == iamMetrics.OutcomeFailureUnknown {
 			reason = "rotate_delivery_fail"
 		}
 		logger.SysWarnFields(op, "rotation scheduler tick failed", err, logger.Fields{"run_id": runID, "attempt": attempt + 1, "reason": reason, "result": "retry", "retry_in": retry.String()})
@@ -161,6 +162,7 @@ func (m *IAMModule) runAdminRotationScheduler(ctx context.Context) {
 // Tick mỗi 60s, tối đa 100 user/batch.
 func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 	const op = "iam.device_cap.reconciler"
+	ctx = constant.WithOperation(ctx, "device_cap_reconcile")
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	// initial jitter 0-30s để các replica không cùng tick ngay sau restart
 	initialDelay := time.Duration(rng.Intn(30000)) * time.Millisecond
@@ -181,14 +183,14 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 
 			processed, err := m.deviceSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
-				iamMetrics.ServiceCall("device_cap_reconcile", "error")
+				iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeFailureUnknown)
 				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})
 				continue
 			}
 			if processed > 0 {
 				logger.SysInfoFields(op, "reconcile fixed drift", logger.Fields{"processed_users": processed})
 			}
-			iamMetrics.ServiceCall("device_cap_reconcile", "success")
+			iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 		}
 	}
 }

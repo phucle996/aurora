@@ -9,7 +9,6 @@ import (
 	"context"
 	"sync"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -23,9 +22,10 @@ var (
 )
 
 // ensureInit khởi tạo OTel instruments cho Mail metrics.
-func ensureInit() {
+// Thay đổi sang Init(meterProvider) để được gọi tường minh từ observability/otel.
+func Init(meterProvider metric.MeterProvider) {
 	initOnce.Do(func() {
-		meter := otel.Meter("aurora-controlplane.mail")
+		meter := meterProvider.Meter("aurora-controlplane.mail")
 
 		jobsEnqueuedCounter, _ = meter.Int64Counter(
 			"mail_jobs_enqueued_total",
@@ -44,7 +44,7 @@ func ensureInit() {
 
 // IncJobsEnqueued tăng số lượng mail jobs enqueued.
 func IncJobsEnqueued(tenantID, status string) {
-	ensureInit()
+	// Kiểm tra nil nhanh chóng thay vì gọi ensureInit() trên hot path
 	if jobsEnqueuedCounter != nil {
 		jobsEnqueuedCounter.Add(context.Background(), 1, metric.WithAttributes(
 			attribute.String("tenant_id", tenantID),
@@ -55,7 +55,7 @@ func IncJobsEnqueued(tenantID, status string) {
 
 // IncConsumerMessagesProcessed tăng số lượng messages được xử lý bởi mail consumers.
 func IncConsumerMessagesProcessed(tenantID, consumerID, sourceType, status string) {
-	ensureInit()
+	// Kiểm tra nil nhanh chóng thay vì gọi ensureInit() trên hot path
 	if consumerMessagesProcessedCounter != nil {
 		consumerMessagesProcessedCounter.Add(context.Background(), 1, metric.WithAttributes(
 			attribute.String("tenant_id", tenantID),
@@ -68,7 +68,7 @@ func IncConsumerMessagesProcessed(tenantID, consumerID, sourceType, status strin
 
 // IncEndpointOperations ghi nhận hoạt động nghiệp vụ trên Mail Endpoint.
 func IncEndpointOperations(operation, zoneID, outcome string) {
-	ensureInit()
+	// Kiểm tra nil nhanh chóng thay vì gọi ensureInit() trên hot path
 	if endpointOperationsCounter != nil {
 		endpointOperationsCounter.Add(context.Background(), 1, metric.WithAttributes(
 			attribute.String("operation", operation),

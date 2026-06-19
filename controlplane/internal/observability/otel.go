@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	iamMetrics "controlplane/internal/iam/metrics"
+	mailMetrics "controlplane/internal/mail/metrics"
 	"controlplane/pkg/constant"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -116,6 +119,16 @@ func InitOTel(ctx context.Context, cfg *OTelConfig, serviceName string) (*OTel, 
 			otel.SetMeterProvider(meterProvider)
 		}
 	}
+
+	// [3] INITIALIZE MODULE METRICS MANUALLY
+	// Khởi tạo các metrics của từng phân hệ một lần duy nhất lúc khởi động app.
+	// Sử dụng MeterProvider được chỉ định (hoặc fallback về global provider).
+	var mp metric.MeterProvider = otel.GetMeterProvider()
+	if meterProvider != nil {
+		mp = meterProvider
+	}
+	iamMetrics.Init(mp)
+	mailMetrics.Init(mp)
 
 	propagator := propagation.TraceContext{}
 	otel.SetTextMapPropagator(propagator)

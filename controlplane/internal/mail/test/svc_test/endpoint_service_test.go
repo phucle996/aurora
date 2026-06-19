@@ -38,8 +38,8 @@ func TestEndpointServiceCRUD(t *testing.T) {
 		return zoneID.String(), nil
 	})
 
-	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
+	repo := mailRepoImpl.NewEndpointRepository(db, cfg, outboxRepo)
 	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, registry)
 	ctx := context.Background()
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
@@ -59,7 +59,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 		Weight:         1,
 	}
 
-	err := service.CreateEndpoint(ctx, createParams)
+	err := service.CreateEndpoint(ctx, &createParams)
 	if err != nil {
 		t.Fatalf("create endpoint failed: %v", err)
 	}
@@ -159,8 +159,8 @@ func TestEndpointServiceTestConnectionRaw(t *testing.T) {
 	l1Cache := cacheengine.NewShardedCache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
 
-	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
+	repo := mailRepoImpl.NewEndpointRepository(db, cfg, outboxRepo)
 	service := mailSvcImpl.NewEndpointService(cfg, repo, outboxRepo, registry)
 	ctx := context.Background()
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)

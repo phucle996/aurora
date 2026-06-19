@@ -82,10 +82,8 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	// dùng wrap của apperr để wrap lỗi kèm outcome - nếu có outcome để map log ở handler với metrics label
 	// nếu không có outcome thì trả err như bình thường
 
-	const workflow = "admin_key_rotation"
-
-	var outcome = iamTaxonomy.Success
-	defer func() { iamMetrics.ServiceCall(workflow, outcome) }()
+	var outcome = iamMetrics.OutcomeSuccess
+	defer func() { iamMetrics.ServiceCall(ctx, outcome) }()
 
 	// ==========================================================================
 	// BƯỚC 1: ACQUIRE ROTATION LOCK TOÀN CỤC ĐỂ CHỐNG THỰC THI ĐỒNG THỜI (RACE CONDITION)
@@ -96,21 +94,21 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	if err != nil {
 		// đo metrics số lần call bị lock chặn
 		if errors.Is(err, iamTaxonomy.ErrLockAlreadyHeld) {
-			iamMetrics.Downstream("repo", workflow, "AcquireRotationLock", iamTaxonomy.LockBusy, time.Since(lockStart), err)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AcquireRotationLock", iamMetrics.OutcomeLockBusy, time.Since(lockStart), err)
 			// Lock bận tức là tiền đề không thỏa mãn cho lượt xoay tiếp theo
-			outcome = iamTaxonomy.LockBusy
+			outcome = iamMetrics.OutcomeLockBusy
 			return apperr.Wrap(iamTaxonomy.ErrPreconditionFailed, err, outcome)
 		}
 
 		// Lỗi lock không mong đợi -> trả lỗi 500 ErrInternalError
-		iamMetrics.Downstream("repo", workflow, "AcquireRotationLock", iamTaxonomy.LockUnknownError, time.Since(lockStart), err)
-		outcome = iamTaxonomy.LockUnknownError
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AcquireRotationLock", iamMetrics.OutcomeFailureUnknown, time.Since(lockStart), err)
+		outcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, outcome)
 	}
 	// luôn release lock sau khi hoàn thành hoặc xảy ra lỗi để tránh deadlock
 	defer lock.Release(ctx)
 	// lock thành công => đo metrics
-	iamMetrics.Downstream("repo", workflow, "AcquireRotationLock", iamTaxonomy.LockRelease, time.Since(lockStart), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AcquireRotationLock", iamMetrics.OutcomeSuccess, time.Since(lockStart), nil)
 
 	// ==========================================================================
 	// BƯỚC 2: SINH NGẪU NHIÊN API KEY MỚI (PLAINTEXT)
@@ -119,7 +117,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
 		// đo metrics số lần sinh token thất bại
-		outcome = iamTaxonomy.TokenGenerateFail
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// Sinh token ngẫu nhiên thất bại là lỗi phát hành token nội bộ -> ErrInternalError
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, outcome)
 	}
@@ -138,9 +136,9 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	// đo metrics số lần gửi telegram thất bại
 	telegramStart := time.Now()
 	if sendErr := s.telegram.SendMessage(msg); sendErr != nil {
-		iamMetrics.Downstream("telegram", workflow, "SendMessage", iamTaxonomy.TelegramSendFail, time.Since(telegramStart), sendErr)
+		iamMetrics.Downstream(ctx, iamMetrics.KindTelegram, "SendMessage", iamMetrics.OutcomeFailureUnknown, time.Since(telegramStart), sendErr)
 		// Telegram thông báo lỗi là sự cố hạ tầng kết nối -> ErrInternalError
-		outcome = iamTaxonomy.TelegramSendFail
+		outcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, sendErr, outcome)
 	}
 
@@ -150,7 +148,7 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	newID, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
 		// đo metrics số lần sinh uuid thất bại
-		outcome = iamTaxonomy.UuidGenerateFail
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// UUID sinh ra thất bại trả lỗi ErrInternalError
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, outcome)
 	}
@@ -168,9 +166,9 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	// đo metrics số lần call repo thất bại
 	start := time.Now()
 	if err := s.repo.PrepareNextAdminAPIKey(ctx, apiKeyEntity); err != nil {
-		iamMetrics.Downstream("repo", workflow, "PrepareNextAdminAPIKey", iamTaxonomy.Failure, time.Since(start), err)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "PrepareNextAdminAPIKey", iamMetrics.OutcomeFailureUnknown, time.Since(start), err)
 		// Database Prepare API Key lỗi là lỗi kết nối hệ thống -> ErrInternalError
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, outcome)
 	}
 
@@ -179,9 +177,9 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 	err = s.cacheEngine.L2.Delete(ctx, "iam:admin_key_rotation:required")
 	if err != nil {
 		// đo metrics số lần xóa cờ thất bại
-		iamMetrics.Downstream("cache-engine-l2-delete", workflow, "DeleteRotationRequired", iamTaxonomy.Failure, time.Since(start), err)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "DeleteRotationRequired", iamMetrics.OutcomeFailureUnknown, time.Since(start), err)
 		// Lỗi Redis Delete trả ErrInternalError
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, outcome)
 	}
 
@@ -195,13 +193,14 @@ func (s *AdminAPIKeyService) RotateAdminAPIKeyEmergency(ctx context.Context) err
 // - được scheduler gọi định kỳ (poll trigger),
 // - no-op khi rotationTrigger không được wire hoặc trigger chưa bật.
 func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Context) error {
+	// Tiêm operation name vào context để service/repo calls bên dưới nhận diện đúng workflow
+	ctx = constant.WithOperation(ctx, "admin_key_rotation_trigger")
 
-	workflow := "admin-key-rotation-trigger"
-	var outcome = iamTaxonomy.Success
+	var outcome = iamMetrics.OutcomeSuccess
 	var runMetric bool
 	defer func() {
 		if runMetric {
-			iamMetrics.ServiceCall(workflow, outcome)
+			iamMetrics.ServiceCall(ctx, outcome)
 		}
 	}()
 
@@ -212,8 +211,8 @@ func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Conte
 	_, _, required, err := s.cacheEngine.L2.Get(ctx, "iam:admin_key_rotation:required")
 	if err != nil {
 		runMetric = true
-		outcome = iamTaxonomy.Failure
-		iamMetrics.Downstream("cache-engine-l2-get", workflow, "GetRotationRequired", iamTaxonomy.Failure, time.Since(l2Start), err)
+		outcome = iamMetrics.OutcomeFailureUnknown
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetRotationRequired", iamMetrics.OutcomeFailureUnknown, time.Since(l2Start), err)
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, outcome)
 	}
 
@@ -234,7 +233,7 @@ func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Conte
 	//    và phân loại sai ranh giới hạ tầng (gán nhãn kind = "repo").
 	runMetric = true
 	if err := s.RotateAdminAPIKeyEmergency(ctx); err != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		if appErr, ok := apperr.As(err); ok {
 			outcome = appErr.Outcome
 		}
@@ -247,10 +246,11 @@ func (s *AdminAPIKeyService) TryProcessAdminKeyRotationTrigger(ctx context.Conte
 // Bootstrap khởi tạo Admin API Key và các thiết lập bảo mật đầu tiên cho toàn bộ hệ thống.
 // Quy trình này thiết lập các khóa truy cập, cơ chế xác thực hai lớp (TOTP), và mã khôi phục khẩn cấp.
 func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
-	workflow := "admin-key-bootstrap"
-	var outcome = iamTaxonomy.Success
+	// Tiêm operation name vào context để service/repo calls bên dưới nhận diện đúng workflow
+	ctx = constant.WithOperation(ctx, "admin_key_bootstrap")
+	var outcome = iamMetrics.OutcomeSuccess
 	defer func() {
-		iamMetrics.ServiceCall(workflow, outcome)
+		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
 	// ==========================================================
@@ -259,19 +259,19 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	lockStart := time.Now()
 	lock, err := s.repo.AcquireBootstrapLock(ctx)
 	if err != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// lock thất bại => đo metrics lỗi
-		iamMetrics.Downstream("repo-lock", workflow, "AcquireBootstrapLock", iamTaxonomy.Failure, time.Since(lockStart), err)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AcquireBootstrapLock", iamMetrics.OutcomeFailureUnknown, time.Since(lockStart), err)
 		if errors.Is(err, iamTaxonomy.ErrLockAlreadyHeld) {
 			// Lock bận tức là có tiến trình bootstrap song song khác đang chạy
-			return apperr.Wrap(iamTaxonomy.ErrLockAlreadyHeld, err, iamTaxonomy.Failure)
+			return apperr.Wrap(iamTaxonomy.ErrLockAlreadyHeld, err, iamMetrics.OutcomeFailureUnknown)
 		}
 		// Lỗi kết nối DB khi lấy lock -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	defer lock.Release(ctx)
 	// lock thành công => đo metrics
-	iamMetrics.Downstream("repo-lock", workflow, "AcquireBootstrapLock", iamTaxonomy.Success, time.Since(lockStart), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "AcquireBootstrapLock", iamMetrics.OutcomeSuccess, time.Since(lockStart), nil)
 
 	// ==========================================================
 	// BƯỚC 2: KIỂM TRA TIỀN ĐỀ ĐIỀU KIỆN (PRECONDITION)
@@ -281,22 +281,22 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	precondStart := time.Now()
 	active, err := s.repo.GetActiveAdminAPIKey(ctx)
 	if err != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// nếu repo lỗi => trả về lỗi và ghi metrics downstream thất bại
-		iamMetrics.Downstream("repo", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Failure, time.Since(precondStart), err)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetActiveAdminAPIKey", iamMetrics.OutcomeFailureUnknown, time.Since(precondStart), err)
 		// Lỗi truy vấn database là lỗi kết nối hệ thống -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	// nếu active không nil => đã có key => trả về lỗi và ghi metrics downstream thất bại
 	if active != nil {
-		outcome = iamTaxonomy.PreConditionFailed
+		outcome = iamMetrics.OutcomePreConditionFailed
 		// đo metrics tiền đề đã có active key
-		iamMetrics.Downstream("repo", workflow, "GetActiveAdminAPIKey", iamTaxonomy.PreConditionFailed, time.Since(precondStart), iamTaxonomy.ErrActionNotAllowed)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetActiveAdminAPIKey", iamMetrics.OutcomePreConditionFailed, time.Since(precondStart), iamTaxonomy.ErrActionNotAllowed)
 		// Hệ thống đã được khởi tạo từ trước, không được phép bootstrap lại
-		return apperr.Wrap(iamTaxonomy.ErrPreconditionFailed, errors.New("admin API key already exists in system"), iamTaxonomy.PreConditionFailed)
+		return apperr.Wrap(iamTaxonomy.ErrPreconditionFailed, errors.New("admin API key already exists in system"), iamMetrics.OutcomePreConditionFailed)
 	}
 	// hoàn tất pre-condition thành công => ghi metrics
-	iamMetrics.Downstream("repo", workflow, "GetActiveAdminAPIKey", iamTaxonomy.PreConditionSuccess, time.Since(precondStart), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetActiveAdminAPIKey", iamMetrics.OutcomeSuccess, time.Since(precondStart), nil)
 
 	// ==========================================================
 	// BƯỚC 3: TẠO ADMIN API KEY VÀ DỮ LIỆU CẦN THIẾT
@@ -305,9 +305,9 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	// Tạo ngẫu nhiên Admin API key nguyên bản (plaintext) và mã hóa SHA256 để lưu DB
 	plainKey, err := security.GenerateToken(48)
 	if err != nil {
-		outcome = iamTaxonomy.TokenGenerateFail
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// Sinh token ngẫu nhiên thất bại là lỗi phát hành token nội bộ -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.TokenGenerateFail)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// hash token nahanh inmemory nên không cần metrics
@@ -322,15 +322,15 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	// trả lỗi để caller log ra là được
 	totpResult, err := security.GenerateTOTP("controlplane-admin", "admin@system")
 	if err != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// Sinh TOTP lỗi trả ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	secretCipher, err := security.EncryptSecret(totpResult.Secret)
 	if err != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// Mã hóa secret lỗi trả ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// ==========================================================
@@ -345,9 +345,9 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	for i := 0; i < 8; i++ {
 		code, genErr := security.GenerateRecoveryCode(24)
 		if genErr != nil {
-			outcome = iamTaxonomy.Failure
+			outcome = iamMetrics.OutcomeFailureUnknown
 			// Sinh recovery code lỗi trả ErrInternalError
-			return apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamTaxonomy.Failure)
+			return apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamMetrics.OutcomeFailureUnknown)
 		}
 		recoveryPlains = append(recoveryPlains, code)
 		recoveryHashes = append(recoveryHashes, security.HashRecoveryCode(code))
@@ -368,14 +368,14 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	start := time.Now()
 	_, err = s.repo.Bootstrap(ctx, payload)
 	if err != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// nếu repo lỗi => trả về lỗi và ghi metrics downstream thất bại
-		iamMetrics.Downstream("repo", workflow, "Bootstrap", iamTaxonomy.Failure, time.Since(start), err)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "Bootstrap", iamMetrics.OutcomeFailureUnknown, time.Since(start), err)
 		// Lỗi ghi DB khi bootstrap là lỗi kết nối hệ thống -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	// nếu repo thành công => ghi metrics
-	iamMetrics.Downstream("repo", workflow, "Bootstrap", iamTaxonomy.Success, time.Since(start), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "Bootstrap", iamMetrics.OutcomeSuccess, time.Since(start), nil)
 
 	// ==========================================================
 	// BƯỚC 7: THÔNG BÁO TOÀN BỘ THÔNG TIN BẢO MẬT NGUYÊN BẢN
@@ -415,13 +415,13 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 		if sendErr := s.telegram.SendMessage(msg); sendErr == nil {
 			// nếu send success => return
 			// ghi metrics
-			iamMetrics.Downstream("telegram", workflow, "SendMessage", iamTaxonomy.Success, time.Since(start), nil)
+			iamMetrics.Downstream(ctx, iamMetrics.KindTelegram, "SendMessage", iamMetrics.OutcomeSuccess, time.Since(start), nil)
 			return nil
 		} else {
 			// nếu send fail => lưu lỗi
 			notifyErr = sendErr
 			// ghi metrics
-			iamMetrics.Downstream("telegram", workflow, "SendMessage", iamTaxonomy.Failure, time.Since(start), notifyErr)
+			iamMetrics.Downstream(ctx, iamMetrics.KindTelegram, "SendMessage", iamMetrics.OutcomeFailureUnknown, time.Since(start), notifyErr)
 		}
 		// nếu không phải lần cuối thì wait
 		if i < len(backoff)-1 {
@@ -434,15 +434,15 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 	// Nếu SRE không nhận được tin nhắn bảo mật đầu tiên, buộc phải xóa bỏ toàn bộ dữ liệu vừa bootstrap ở DB.
 	// ==========================================================
 	if rbErr := s.repo.RollbackBootstrap(ctx, payload); rbErr != nil {
-		outcome = iamTaxonomy.Failure
+		outcome = iamMetrics.OutcomeFailureUnknown
 		// ghi metrics
-		iamMetrics.Downstream("repo", workflow, "RollbackBootstrap", iamTaxonomy.Failure, time.Since(start), rbErr)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RollbackBootstrap", iamMetrics.OutcomeFailureUnknown, time.Since(start), rbErr)
 		// Lỗi rollback là lỗi kết nối hệ thống -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, rbErr, iamTaxonomy.Failure)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, rbErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	// ghi metrics
-	iamMetrics.Downstream("repo", workflow, "RollbackBootstrap", iamTaxonomy.Success, time.Since(start), nil)
-	outcome = iamTaxonomy.TelegramSendFail
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RollbackBootstrap", iamMetrics.OutcomeSuccess, time.Since(start), nil)
+	outcome = iamMetrics.OutcomeFailureUnknown
 	return nil
 }
 
@@ -460,9 +460,8 @@ func (s *AdminAPIKeyService) Bootstrap(ctx context.Context) error {
 // - expires_at.
 func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
 
-	workflow := "admin_login"
-	loginOutcome := iamTaxonomy.Success
-	defer func() { iamMetrics.ServiceCall(workflow, loginOutcome) }()
+	loginOutcome := iamMetrics.OutcomeSuccess
+	defer func() { iamMetrics.ServiceCall(ctx, loginOutcome) }()
 
 	// ========================================================
 	//  BƯỚC 0: PHÒNG CHỐNG TRANH CHẤP ĐỒNG THỜI (CONCURRENCY LOCKING)
@@ -486,17 +485,19 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	`
 	res, err := s.cacheEngine.Exec.Execute(ctx, lockScript, []string{lockKey}, ownerToken, int64(5000))
 	if err != nil {
-		loginOutcome = iamTaxonomy.LockBusy
-		iamMetrics.Downstream("l2-exec", workflow, "ExecuteLock", iamTaxonomy.LockBusy, time.Since(startLock), err)
+		loginOutcome = iamMetrics.OutcomeLockBusy
+		// Ghi nhận chỉ số downstream với nhãn chuẩn cache-engine-l2 (Redis Distributed Lock)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineExcute, "ExecuteLock", iamMetrics.OutcomeLockBusy, time.Since(startLock), err)
 		// Trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.LockBusy)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeLockBusy)
 	}
 
-	iamMetrics.Downstream("l2-exec", workflow, "ExecuteLock", iamTaxonomy.Success, time.Since(startLock), nil)
+	// Ghi nhận thành công downstream cho cache-engine-l2
+	iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineExcute, "ExecuteLock", iamMetrics.OutcomeSuccess, time.Since(startLock), nil)
 	if valInt, ok := res.(int64); !ok || valInt != 1 {
-		loginOutcome = iamTaxonomy.LockBusy
+		loginOutcome = iamMetrics.OutcomeLockBusy
 		// Lock bận trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("login lock already held for this device/key"), iamTaxonomy.LockBusy)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("login lock already held for this device/key"), iamMetrics.OutcomeLockBusy)
 	}
 	defer func() {
 		unlockScript := `
@@ -533,8 +534,8 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}
 
 	if keyErr != nil {
-		loginOutcome = iamTaxonomy.InvalidArgument
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, keyErr, iamTaxonomy.InvalidArgument)
+		loginOutcome = iamMetrics.OutcomeFailure
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, keyErr, iamMetrics.OutcomeFailure)
 	}
 
 	/// ========================================================
@@ -544,23 +545,25 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	now := time.Now()
 	val, err := s.cacheEngine.GetOrLoad(ctx, "admin_api_key_active", "")
 	if err != nil {
-		loginOutcome = iamTaxonomy.Failure
-		iamMetrics.Downstream("cacheEngine", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Failure, time.Since(now), err)
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
+		// Ghi nhận lỗi downstream với nhãn chuẩn cache-engine (L1 Cache)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetActiveAdminAPIKey", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
 		// Trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	iamMetrics.Downstream("cacheEngine", workflow, "GetActiveAdminAPIKey", iamTaxonomy.Success, time.Since(now), nil)
+	// Ghi nhận thành công downstream cho cache-engine (L1 Cache)
+	iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetActiveAdminAPIKey", iamMetrics.OutcomeSuccess, time.Since(now), nil)
 
 	active, ok := val.(*iamEntity.AdminAPIKey)
 	if !ok || active == nil {
-		loginOutcome = iamTaxonomy.InvalidCredential
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("api key not found"), iamTaxonomy.InvalidCredential)
+		loginOutcome = iamMetrics.OutcomeInvalidCredential
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("api key not found"), iamMetrics.OutcomeInvalidCredential)
 	}
 	// Thực hiện băm SHA256 API Key của Client gửi lên và đối khớp trực tiếp với KeyHash được cấu hình bảo mật.
 	if active.KeyHash != security.HashTokenSHA256(req.RawAPIKey) {
-		loginOutcome = iamTaxonomy.InvalidCredential
-		iamMetrics.Downstream("repo", workflow, "HashTokenSHA256", iamTaxonomy.InvalidCredential, time.Since(now), nil)
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("hash api key not match"), iamTaxonomy.InvalidCredential)
+		loginOutcome = iamMetrics.OutcomeInvalidCredential
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "HashTokenSHA256", iamMetrics.OutcomeInvalidCredential, time.Since(now), nil)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("hash api key not match"), iamMetrics.OutcomeInvalidCredential)
 	}
 
 	if req.ClientDeviceID != uuid.Nil {
@@ -580,8 +583,8 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 			}
 		} else if !errors.Is(err, iamTaxonomy.ErrNotFound) {
 			// Lỗi truy vấn database thực sự sẽ trả ErrInternalError
-			loginOutcome = iamTaxonomy.Failure
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 		}
 	}
 
@@ -593,16 +596,16 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	case iamEntity.MFATypeTOTP:
 		val, err := s.cacheEngine.GetOrLoad(ctx, "admin_2fa_secret", "")
 		if err != nil {
-			loginOutcome = iamTaxonomy.GetL1CacheFail
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			// Trả ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.GetL1CacheFail)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 		}
 
 		// secret đã decrypted từ cache trước đó, do đó ta có thể dùng trực tiếp mà không cần trim space
 		secret, ok := val.(string)
 		if !ok {
-			loginOutcome = iamTaxonomy.InvalidCredential
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("2fa secret not found or empty"), iamTaxonomy.InvalidCredential)
+			loginOutcome = iamMetrics.OutcomeInvalidCredential
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidCredential, errors.New("2fa secret not found or empty"), iamMetrics.OutcomeInvalidCredential)
 		}
 
 		// Thực hiện giải mã cryptographic secret và đối khớp mã TOTP với chu kỳ 30 giây và sai số lệch giờ cho phép (Skew) là 1 chu kỳ.
@@ -613,12 +616,12 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 			Algorithm: otp.AlgorithmSHA1,
 		})
 		if totpErr != nil {
-			loginOutcome = iamTaxonomy.Failure
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, totpErr, iamTaxonomy.Failure)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, totpErr, iamMetrics.OutcomeFailureUnknown)
 		}
 		if !okTOTP {
-			loginOutcome = iamTaxonomy.Failure
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp passcode mismatch"), iamTaxonomy.Failure)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp passcode mismatch"), iamMetrics.OutcomeFailureUnknown)
 		}
 
 		// Chống Replay TOTP bằng cơ chế Blacklist/Consume ngắn hạn trong Redis
@@ -626,13 +629,13 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		rdb := s.cacheEngine.L2.Client()
 		setOk, setErr := rdb.SetNX(ctx, totpKey, "1", 90*time.Second).Result()
 		if setErr != nil {
-			loginOutcome = iamTaxonomy.Failure
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			// Redis SetNX lỗi -> ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, setErr, iamTaxonomy.Failure)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, setErr, iamMetrics.OutcomeFailureUnknown)
 		}
 		if !setOk {
-			loginOutcome = iamTaxonomy.Failure
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp passcode already consumed"), iamTaxonomy.Failure)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp passcode already consumed"), iamMetrics.OutcomeFailureUnknown)
 		}
 
 		// nếu là mã khôi phục => thực hiện xác thực mã khôi phục
@@ -656,16 +659,18 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		now := time.Now()
 		res, err := s.cacheEngine.Exec.Execute(ctx, lockScript, []string{lockKey}, ownerToken, int64(5000))
 		if err != nil {
-			loginOutcome = iamTaxonomy.Failure
-			iamMetrics.Downstream("cacheEngine", workflow, "Exec.Execute", iamTaxonomy.Failure, time.Since(now), err)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			// Ghi nhận lỗi downstream với nhãn chuẩn cache-engine-l2 cho phân tán lock
+			iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineExcute, "Exec.Execute", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
 			// Redis Exec lock lỗi -> ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.Failure)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 		}
 		if valInt, ok := res.(int64); !ok || valInt != 1 {
-			loginOutcome = iamTaxonomy.LockBusy
-			iamMetrics.Downstream("cacheEngine", workflow, "Exec.Execute", iamTaxonomy.LockBusy, time.Since(now), nil)
+			loginOutcome = iamMetrics.OutcomeLockBusy
+			// Ghi nhận lock bận với nhãn chuẩn cache-engine-l2
+			iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineExcute, "Exec.Execute", iamMetrics.OutcomeLockBusy, time.Since(now), nil)
 			// Lock bận là lỗi xung đột concurrency hệ thống -> ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("recovery consume lock already held"), iamTaxonomy.LockBusy)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("recovery consume lock already held"), iamMetrics.OutcomeLockBusy)
 		}
 		defer func() {
 
@@ -683,21 +688,21 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		// Thực hiện tiêu hủy mã khôi phục trong Database (chỉ cho phép sử dụng duy nhất một lần).
 		now = time.Now()
 		if consumeErr := s.repo.ConsumeRecoveryCode(ctx, codeHash, now); consumeErr != nil {
-			loginOutcome = iamTaxonomy.Failure
-			iamMetrics.Downstream("repo", workflow, "ConsumeRecoveryCode", iamTaxonomy.Failure, time.Since(now), consumeErr)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "ConsumeRecoveryCode", iamMetrics.OutcomeFailureUnknown, time.Since(now), consumeErr)
 			if errors.Is(consumeErr, iamTaxonomy.ErrNotFound) || errors.Is(consumeErr, iamTaxonomy.ErrRecoveryCodeInvalid) {
 				// Mã không tồn tại hoặc đã sử dụng trước đó
-				return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, consumeErr, iamTaxonomy.Failure)
+				return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, consumeErr, iamMetrics.OutcomeFailureUnknown)
 			}
 			// Các lỗi DB khác trả ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, consumeErr, iamTaxonomy.Failure)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, consumeErr, iamMetrics.OutcomeFailureUnknown)
 		}
 
 		/// nếu không tồn tại method hợp lệ
 	default:
 		// Từ chối nếu phương thức MFA không thuộc các loại được hỗ trợ.
-		loginOutcome = iamTaxonomy.Failure
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("MFA method not supported"), iamTaxonomy.Failure)
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("MFA method not supported"), iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// =======================================================================
@@ -709,20 +714,20 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		// Gọi L1 cache registry để dịch zone_code thành zone_id
 		val, err := s.cacheEngine.GetOrLoad(ctx, "zone_by_code", req.ZoneCode)
 		if err != nil {
-			loginOutcome = iamTaxonomy.GetL1CacheFail
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			// Cache L1 lỗi là lỗi hệ thống 500 -> ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.GetL1CacheFail)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 		}
 		resolvedZoneID, ok := val.(string)
 		if !ok || resolvedZoneID == "" {
-			loginOutcome = iamTaxonomy.InvalidArgument
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, errors.New("zone id resolved is empty"), iamTaxonomy.InvalidArgument)
+			loginOutcome = iamMetrics.OutcomeFailure
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, errors.New("zone id resolved is empty"), iamMetrics.OutcomeFailure)
 		}
 
 		// Đảm bảo resolvedZoneID là dạng UUID hợp lệ
 		if _, parseErr := uuid.Parse(resolvedZoneID); parseErr != nil {
-			loginOutcome = iamTaxonomy.InvalidArgument
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, parseErr, iamTaxonomy.InvalidArgument)
+			loginOutcome = iamMetrics.OutcomeFailure
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, parseErr, iamMetrics.OutcomeFailure)
 		}
 		zoneID = resolvedZoneID
 	}
@@ -734,16 +739,16 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// Sinh mã UUIDv7 ngẫu nhiên cho Access Key để định danh phiên làm việc hiện tại
 	accessKey, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
-		loginOutcome = iamTaxonomy.UuidGenerateFail
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// UUID v7 sinh lỗi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamTaxonomy.UuidGenerateFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	// Sinh khóa bí mật Access Secret ngẫu nhiên dài 64 bytes có tính mật mã bảo mật cao
 	accessSecret, genErr := security.GenerateToken(64)
 	if genErr != nil {
-		loginOutcome = iamTaxonomy.TokenGenerateFail
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// GenerateToken fail trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamTaxonomy.TokenGenerateFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 6: ĐĂNG KÝ VÀ LIÊN KẾT THIẾT BỊ VẬT LÝ VỚI DATABASE ---
@@ -771,44 +776,44 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	if bindErr != nil {
 		// nếu thiết bị đã từng bị thu hồi từ trước đó => báo lỗi
 		if errors.Is(bindErr, iamTaxonomy.ErrDeviceRevoked) {
-			loginOutcome = iamTaxonomy.Failure
-			iamMetrics.Downstream("repo", workflow, "UpsertAdminDeviceBinding", iamTaxonomy.Failure, time.Since(timeDeviceBinding), bindErr)
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(bindErr, bindErr, iamTaxonomy.Failure)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "UpsertAdminDeviceBinding", iamMetrics.OutcomeFailureUnknown, time.Since(timeDeviceBinding), bindErr)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(bindErr, bindErr, iamMetrics.OutcomeFailureUnknown)
 		}
 		// nếu thiết bị bị cách ly từ trước đó => báo lỗi
 		if errors.Is(bindErr, iamTaxonomy.ErrDeviceQuarantined) {
-			loginOutcome = iamTaxonomy.Failure
-			iamMetrics.Downstream("repo", workflow, "UpsertAdminDeviceBinding", iamTaxonomy.Failure, time.Since(timeDeviceBinding), bindErr)
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(bindErr, bindErr, iamTaxonomy.Failure)
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "UpsertAdminDeviceBinding", iamMetrics.OutcomeFailureUnknown, time.Since(timeDeviceBinding), bindErr)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(bindErr, bindErr, iamMetrics.OutcomeFailureUnknown)
 		}
 		// các lỗi khác => báo lỗi
-		loginOutcome = iamTaxonomy.FailureUnknown
-		iamMetrics.Downstream("repo", workflow, "UpsertAdminDeviceBinding", iamTaxonomy.FailureUnknown, time.Since(timeDeviceBinding), bindErr)
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "UpsertAdminDeviceBinding", iamMetrics.OutcomeFailureUnknown, time.Since(timeDeviceBinding), bindErr)
 		// Lỗi ghi DB không mong đợi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, bindErr, iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, bindErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 7: KÝ SỐ MẬT MÃ ACCESS TOKEN JWT (PRACTICAL FAIL-FAST) ---
 	// Sinh Token ID duy nhất sử dụng UUIDv7 để phục vụ JTI Claim giúp định danh chính xác JWT.
 	adminJTI, jtiErr := uuid.NewV7()
 	if jtiErr != nil {
-		loginOutcome = iamTaxonomy.UuidGenerateFail
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// UUID v7 sinh lỗi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, jtiErr, iamTaxonomy.UuidGenerateFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, jtiErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// Ký admin_api token sử dụng CacheRegistry và coreEntity.RuntimeSecrets
 	val, err = s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
 	if err != nil {
-		loginOutcome = iamTaxonomy.GetL1CacheFail
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// Cache L1 lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.GetL1CacheFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	secrets, ok := val.(*coreEntity.RuntimeSecrets)
 	if !ok || secrets == nil {
-		loginOutcome = iamTaxonomy.FailureUnknown
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// Secrets cấu hình sai -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamMetrics.OutcomeFailureUnknown)
 	}
 
 	adminAPIToken, signErr := security.SignWithSecret(security.Claims{
@@ -821,9 +826,9 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		ZoneID:    zoneID,
 	}, secrets.Active.Secret)
 	if signErr != nil {
-		loginOutcome = iamTaxonomy.TokenGenerateFail
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// JWT Sign lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, signErr, iamTaxonomy.TokenGenerateFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, signErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 8: THIẾT LẬP VÀ LIÊN KẾT PHIÊN LÀM VIỆC TRONG REDIS ---
@@ -841,10 +846,11 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 
 	// Lưu trữ session được phân vùng theo cả Access Key và Zone ID (Zone-scoped)
 	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey.String()+":"+zoneID, session, 1, s.cfg.Security.AdminSessionTTL); err != nil {
-		loginOutcome = iamTaxonomy.SetAccessSessionFail
-		iamMetrics.Downstream("cacheEngine", workflow, "L2.Set", iamTaxonomy.SetAccessSessionFail, time.Since(now), err)
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
+		// Ghi nhận lỗi set session với nhãn chuẩn cache-engine-l2
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "L2.Set", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
 		// Set access session lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.SetAccessSessionFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 9: TRẢ VỀ KẾT QUẢ ĐĂNG NHẬP THÀNH CÔNG ---
@@ -864,11 +870,10 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	// --- KHỞI TẠO ĐO LƯỜNG TELEMETRY & METRICS ---
 
-	workflow := "admin_refresh"
-	refreshOutcome := iamTaxonomy.Success
+	refreshOutcome := iamMetrics.OutcomeSuccess
 
 	defer func() {
-		iamMetrics.ServiceCall(workflow, refreshOutcome)
+		iamMetrics.ServiceCall(ctx, refreshOutcome)
 	}()
 
 	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY VÀ ZONE ID TỪ GO CONTEXT ---
@@ -880,7 +885,7 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		zoneID = ident.ZoneID
 	}
 	if strings.TrimSpace(accessKey) == "" {
-		refreshOutcome = iamTaxonomy.InvalidArgument
+		refreshOutcome = iamMetrics.OutcomeFailure
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
 	}
 	if zoneID == "" {
@@ -896,14 +901,14 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		// Gọi L1 cache để phân giải zone_code -> zone_id (UUID)
 		val, err := s.cacheEngine.GetOrLoad(ctx, "zone_by_code", zoneCode)
 		if err != nil {
-			refreshOutcome = iamTaxonomy.GetL1CacheFail
+			refreshOutcome = iamMetrics.OutcomeFailureUnknown
 			// Lỗi Cache L1 -> ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.GetL1CacheFail)
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 		}
 		zoneIDStr, ok := val.(string)
 		if !ok || zoneIDStr == "" {
-			refreshOutcome = iamTaxonomy.ZoneUnavailable
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrZoneUnavailable, fmt.Errorf("invalid zone ID resolved from code: %s", zoneCode), iamTaxonomy.ZoneUnavailable)
+			refreshOutcome = iamMetrics.OutcomeFailureUnknown
+			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrZoneUnavailable, fmt.Errorf("invalid zone ID resolved from code: %s", zoneCode), iamMetrics.OutcomeFailureUnknown)
 		}
 		resolvedZoneID = zoneIDStr
 	}
@@ -914,15 +919,15 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 	// Thực hiện truy vấn session key có chứa zoneID để đảm bảo phân vùng bảo mật
 	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	if err != nil {
-		iamMetrics.Downstream("sessionCache", workflow, "GetAccessSession", iamTaxonomy.GetL2CacheFail, time.Since(now), err)
-		refreshOutcome = iamTaxonomy.GetL2CacheFail
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetAccessSession", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Lỗi Cache L2 -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.GetL2CacheFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	if !exists {
-		iamMetrics.Downstream("sessionCache", workflow, "GetAccessSession", iamTaxonomy.InvalidSession, time.Since(now), err)
-		refreshOutcome = iamTaxonomy.InvalidSession
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.InvalidSession)
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetAccessSession", iamMetrics.OutcomeInvalidCredential, time.Since(now), err)
+		refreshOutcome = iamMetrics.OutcomePreConditionFailed
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 
 	var runtimeRecord struct {
@@ -937,10 +942,10 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		LastSeenUserAgent string `json:"last_seen_user_agent"`
 	}
 	if err := json.Unmarshal(payload, &runtimeRecord); err != nil {
-		iamMetrics.Downstream("sessionCache", workflow, "GetAccessSession", iamTaxonomy.GetL2CacheFail, time.Since(now), err)
-		refreshOutcome = iamTaxonomy.GetL2CacheFail
+		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetAccessSession", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Lỗi Unmarshal -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.GetL2CacheFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 4: THỰC THI SO SÁNH & GIA HẠN PHIÊN (COMPARE-AND-SWAP / Touch) ---
@@ -997,15 +1002,15 @@ return 1
 	resVal, casErr := s.cacheEngine.Exec.Execute(ctx, casLua, []string{dataKey, versionKey},
 		runtimeRecord.Version, 10, time.Now().UTC().Unix(), ipValue, uaValue)
 	if casErr != nil {
-		refreshOutcome = iamTaxonomy.GetL2CacheFail
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Exec lock/touch lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, casErr, iamTaxonomy.GetL2CacheFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, casErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	resInt, _ := resVal.(int64)
 	if resInt != 1 {
-		refreshOutcome = iamTaxonomy.InvalidArgument
+		refreshOutcome = iamMetrics.OutcomeFailure
 		// CAS thất bại tức là phiên làm việc không hợp lệ (đã bị xoay/hết hạn hoặc version không khớp)
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamTaxonomy.InvalidArgument)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeFailure)
 	}
 
 	now = time.Now().UTC()
@@ -1014,26 +1019,26 @@ return 1
 	// Sinh mới access key (UUID v7)
 	accessKeyNewUUID, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// UUID sinh lỗi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamMetrics.OutcomeFailureUnknown)
 	}
 	accessKeyNew := accessKeyNewUUID.String()
 
 	// Sinh mới access secret thô (48 bytes)
 	accessSecretNew, genErr := security.GenerateToken(48)
 	if genErr != nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// GenerateToken fail trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// Sinh mới token JTI (UUID v7)
 	tokenJTINewUUID, uuidErr := uuid.NewV7()
 	if uuidErr != nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// UUID sinh lỗi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 7: THIẾT LẬP PHIÊN LÀM VIỆC MỚI VÀO REDIS CACHE ---
@@ -1051,23 +1056,23 @@ return 1
 
 	// Lưu phiên mới đã phân vùng theo resolvedZoneID
 	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKeyNew+":"+resolvedZoneID, sessionNew, 1, s.cfg.Security.AdminSessionTTL); err != nil {
-		refreshOutcome = iamTaxonomy.SetAccessSessionFail
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Set access session thất bại trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.SetAccessSessionFail)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// --- BƯỚC 8: KÝ LẠI TOKEN JWT MỚI VỚI ZONEID MỤC TIÊU ---
 	valNew, errNew := s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
 	if errNew != nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Cache L1 lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errNew, iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errNew, iamMetrics.OutcomeFailureUnknown)
 	}
 	secretsNew, okNew := valNew.(*coreEntity.RuntimeSecrets)
 	if !okNew || secretsNew == nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Cấu hình secrets lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamMetrics.OutcomeFailureUnknown)
 	}
 
 	adminAPITokenNew, signErr := security.SignWithSecret(security.Claims{
@@ -1081,9 +1086,9 @@ return 1
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
 	}, secretsNew.Active.Secret)
 	if signErr != nil {
-		refreshOutcome = iamTaxonomy.FailureUnknown
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		// Ký JWT lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, signErr, iamTaxonomy.FailureUnknown)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, signErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	trackedUUID, _ := uuid.Parse(runtimeRecord.TrackedDeviceID)
@@ -1115,7 +1120,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
 	if err != nil {
 		// Cache L2 lỗi -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.FailureUnknown)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	var runtimeRecord *struct {
@@ -1153,7 +1158,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 	// Thực hiện xóa session khỏi Redis trước để đảm bảo phiên chạy bị vô hiệu hóa ngay lập tức.
 	if err := s.cacheEngine.L2.Delete(ctx, "admin_access_session:"+accessKey+":"+zoneID); err != nil {
 		// Cache L2 xóa lỗi -> ErrInternalError
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamTaxonomy.FailureUnknown)
+		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// 3. CẬP NHẬT TRẠNG THÁI THIẾT BỊ BẤT ĐỒNG BỘ (ASYNCHRONOUS DB FLUSH)

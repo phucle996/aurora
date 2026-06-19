@@ -1,23 +1,3 @@
-// ============================================================================
-// 📂 MODULE: controlplane/internal/iam/metrics/metrics.go
-//            Điểm Đo Lường Trung Tâm Của Module IAM (OTel Metrics)
-// ============================================================================
-//
-// 📊 METRICS GRAPH TREE:
-//   aurora_controlplane
-//   └── iam
-//       ├── service_calls_total  [Counter]   — Đếm số lần gọi service IAM
-//       └── downstream_duration_seconds [Histogram] — Đo latency downstream
-//
-// 🔌 ĐIỂM KẾT NỐI:
-//   • Sử dụng otel.Meter() global, lazy init qua sync.Once.
-//   • Không cần callback RegisterModuleMetrics như Prometheus cũ.
-//
-// 🎯 NGUYÊN TẮC:
-//   • 1 Counter + 1 Histogram cho toàn module IAM (Rule of Two).
-//   • Tất cả hàm Observe safe khi instrument nil (unit test / chưa init).
-// ============================================================================
-
 package iamMetrics
 
 import (
@@ -25,10 +5,38 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel"
+	"controlplane/pkg/constant"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// ──────────────────────────────────────────────────────────────────────────────
+// STANDARDIZED DOWNSTREAM KINDS (Các loại Downstream được chuẩn hóa theo God View)
+// ──────────────────────────────────────────────────────────────────────────────
+
+const (
+	KindRepo              = "repo"
+	KindCacheEngineL1     = "cache-engine-l1"
+	KindCacheEngineL2     = "cache-engine-l2"
+	KindCacheEngineFanout = "cache-engine-fanout"
+	KindCacheEngineExcute = "cache-engine-execute"
+	KindTelegram          = "telegram"
+)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// STANDARDIZED SERVICE CALL OUTCOMES (Các loại Outcome được chuẩn hóa theo God View)
+// ──────────────────────────────────────────────────────────────────────────────
+
+const (
+	OutcomeSuccess            = "success"
+	OutcomeFailure            = "failure"
+	OutcomeFailureUnknown     = "failure_unknown"
+	OutcomePreConditionFailed = "precondition_failed"
+	OutcomeInvalidCredential  = "invalid_credential"
+	OutcomeLockBusy           = "lock_busy"
+)
+
 
 // ──────────────────────────────────────────────────────────────────────────────
 // OTel INSTRUMENT VARIABLES (lazy init qua sync.Once)
@@ -45,16 +53,17 @@ var (
 	initOnce sync.Once
 )
 
-// ensureInit khởi tạo OTel instruments một cách an toàn đa luồng.
-// Sử dụng Global MeterProvider (đã được app.go bootstrap thiết lập trước).
-func ensureInit() {
+// Init khởi tạo các OTel instruments một cách tường minh từ observability/otel.
+// Giúp kiểm soát thứ tự bootup và loại bỏ hoàn toàn lock/sync ở hot path.
+func Init(meterProvider metric.MeterProvider) {
 	initOnce.Do(func() {
-		meter := otel.Meter("aurora-controlplane.iam")
+		meter := meterProvider.Meter("aurora-controlplane.iam")
 
-		// Counter: đếm tổng số lần gọi service IAM theo workflow và result
+		// Counter: đếm tổng số lần gọi service IAM theo op (operation) và outcome
+		// Sử dụng nhãn 'op' để đồng bộ với context và 'outcome' thay cho 'result' cũ
 		serviceCallsCounter, _ = meter.Int64Counter(
 			"aurora_controlplane_iam_service_calls_total",
-			metric.WithDescription("Total IAM service calls, partitioned by workflow and result outcome."),
+			metric.WithDescription("Total IAM service calls, partitioned by op and outcome."),
 		)
 
 		// Histogram: đo latency downstream IAM (DB, Redis, Crypto)
@@ -70,34 +79,44 @@ func ensureInit() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // ServiceCall ghi nhận một lần gọi service IAM.
-// Callsite tự truyền đầy đủ label values.
-func ServiceCall(workflow, result string) {
-	ensureInit()
+// Lấy thông tin workflow (op) trực tiếp từ Go context thay vì truyền cứng.
+func ServiceCall(ctx context.Context, outcome string) {
+	// Chỉ kiểm tra con trỏ khác nil thay vì gọi ensureInit() liên tục
 	if serviceCallsCounter != nil {
-		serviceCallsCounter.Add(context.Background(), 1,
+		// Trích xuất tên operation từ context
+		op := constant.GetOperation(ctx)
+
+		// Ghi nhận counter, truyền ctx để OTel có thể đính kèm Trace ID dưới dạng Exemplar.
+		// Nhãn được đổi tên từ 'workflow' sang 'op' và 'result' sang 'outcome' để tăng tính nhất quán.
+		serviceCallsCounter.Add(ctx, 1,
 			metric.WithAttributes(
-				attribute.String("workflow", workflow),
-				attribute.String("result", result),
+				attribute.String("op", op),
+				attribute.String("outcome", outcome),
 			),
 		)
 	}
 }
 
 // Downstream ghi nhận latency của một tác vụ downstream IAM.
-// Callsite tự truyền đầy đủ label values.
-func Downstream(kind, workflow, destination, result string, duration time.Duration, err error) {
-	ensureInit()
+// Lấy thông tin workflow (op) trực tiếp từ Go context thay vì truyền cứng.
+func Downstream(ctx context.Context, kind, destination, outcome string, duration time.Duration, err error) {
+	// Chỉ kiểm tra con trỏ khác nil thay vì gọi ensureInit() liên tục
 	if downstreamDuration != nil {
 		status := "ok"
 		if err != nil {
 			status = "error"
 		}
-		downstreamDuration.Record(context.Background(), duration.Seconds(),
+		// Trích xuất tên operation từ context
+		op := constant.GetOperation(ctx)
+
+		// Ghi nhận latency histogram, truyền ctx để hỗ trợ Trace Exemplar.
+		// Áp dụng nhãn 'op' cho operation cha và 'outcome' cho kết quả của downstream call.
+		downstreamDuration.Record(ctx, duration.Seconds(),
 			metric.WithAttributes(
 				attribute.String("kind", kind),
-				attribute.String("workflow", workflow),
+				attribute.String("op", op),
 				attribute.String("destination", destination),
-				attribute.String("result", result),
+				attribute.String("outcome", outcome),
 				attribute.String("status", status),
 			),
 		)

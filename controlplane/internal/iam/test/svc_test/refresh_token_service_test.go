@@ -147,7 +147,7 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.InvalidSession {
+	if appErr.Outcome != "invalid_credential" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, iamTaxonomy.ErrNotFound) {
@@ -201,7 +201,7 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.InvalidSession {
+	if appErr.Outcome != "invalid_credential" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, iamTaxonomy.ErrNotFound) {
@@ -259,7 +259,7 @@ func TestRefreshTokenServiceRotateError(t *testing.T) {
 	if !ok || appErr == nil {
 		t.Fatalf("expected app error envelope")
 	}
-	if appErr.Outcome != iamTaxonomy.Failure {
+	if appErr.Outcome != "failure_unknown" {
 		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
 	}
 	if !errors.Is(appErr.Cause, raw) {

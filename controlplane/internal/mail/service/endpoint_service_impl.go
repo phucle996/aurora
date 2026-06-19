@@ -15,7 +15,6 @@ import (
 	mailMetrics "controlplane/internal/mail/metrics"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
-	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
 	"fmt"
@@ -57,7 +56,7 @@ func NewEndpointService(
 
 func (s *endpointServiceImpl) CreateEndpoint(
 	ctx context.Context,
-	params mailEntity.CreateEndpointParams,
+	params *mailEntity.CreateEndpointParams,
 ) error {
 	// Trích xuất trực tiếp ZoneID từ context bằng khóa dùng chung
 	zoneUUID, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
@@ -86,35 +85,16 @@ func (s *endpointServiceImpl) CreateEndpoint(
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, fmt.Errorf("invalid tls_mode: %s", params.TLSMode), mailTaxonomy.OutcomeInvalidArgument)
 	}
 
-	// Mã hóa password nhạy cảm
-	var encryptedPassword string
-	if params.Password != "" {
-		enc, err := security.EncryptSecret(params.Password)
-		if err != nil {
-			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
-			return apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-		}
-		encryptedPassword = enc
-	}
-
-	// Mã hóa client_key_pem nhạy cảm
-	var encryptedClientKey string
-	if params.ClientKeyPEM != "" {
-		enc, err := security.EncryptSecret(params.ClientKeyPEM)
-		if err != nil {
-			mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
-			return apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-		}
-		encryptedClientKey = enc
-	}
-
+	// Tạo UUID v7 định danh cho Mail Endpoint mới trực tiếp tại Service layer
 	newID, err := uuid.NewV7()
 	if err != nil {
 		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
+	params.ID = newID
 
 	now := time.Now().UTC()
+	// Tạo entity Endpoint. Password và client_key_pem lưu trữ dưới dạng text thô theo God View SoT.
 	ent := &mailEntity.Endpoint{
 		ID:             newID,
 		ZoneID:         params.ZoneID,
@@ -122,7 +102,7 @@ func (s *endpointServiceImpl) CreateEndpoint(
 		Host:           params.Host,
 		Port:           params.Port,
 		Username:       params.Username,
-		Password:       encryptedPassword,
+		Password:       params.Password,
 		TLSMode:        params.TLSMode,
 		Status:         params.Status,
 		MaxConnections: params.MaxConnections,
@@ -130,13 +110,83 @@ func (s *endpointServiceImpl) CreateEndpoint(
 		Weight:         params.Weight,
 		CACertPEM:      params.CACertPEM,
 		ClientCertPEM:  params.ClientCertPEM,
-		ClientKeyPEM:   encryptedClientKey,
+		ClientKeyPEM:   params.ClientKeyPEM,
 		IsActive:       true,
 		CreatedAt:      &now,
 		UpdatedAt:      &now,
 	}
 
-	if err := s.endpointRepo.Create(ctx, ent); err != nil {
+	// Tạo eventID cho Outbox record
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+	}
+
+	// 1. Chuẩn bị thông tin đồng bộ sang protobuf
+	syncConfig := &mailproto.SmtpEndpointSync{
+		Id:             ent.ID.String(),
+		ZoneId:         ent.ZoneID.String(),
+		Name:           ent.Name,
+		Host:           ent.Host,
+		Port:           int32(ent.Port),
+		Username:       ent.Username,
+		Password:       ent.Password, // lưu thô
+		TlsMode:        string(ent.TLSMode),
+		Status:         ent.Status,
+		MaxConnections: int32(ent.MaxConnections),
+		Priority:       int32(ent.Priority),
+		Weight:         int32(ent.Weight),
+		IsActive:       ent.IsActive,
+		UpdatedAt:      ent.UpdatedAt.UnixNano() / int64(time.Millisecond),
+	}
+	if ent.CACertPEM != "" {
+		syncConfig.CaCertPem = &ent.CACertPEM
+	}
+	if ent.ClientCertPEM != "" {
+		syncConfig.ClientCertPem = &ent.ClientCertPEM
+	}
+	if ent.ClientKeyPEM != "" {
+		syncConfig.ClientKeyPem = &ent.ClientKeyPEM
+	}
+
+	// 2. Tuần tự hóa cấu hình sang nhị phân bằng Protobuf
+	payloadBytes, err := proto.Marshal(syncConfig)
+	if err != nil {
+		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
+		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
+	}
+
+	// 3. Trích xuất Trace ID thực tế dạng nhị phân từ context
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	// 4. Trích xuất User ID từ context được middleware inject từ token xác thực
+	var userIDStr string
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		userIDStr = ident.UserID
+	}
+
+	// 5. Khởi tạo thực thể MailOutboxRecord
+	outboxRecord := &mailEntity.MailOutboxRecord{
+		EventID:              eventID,
+		ZoneID:               ent.ZoneID,
+		JobTopic:             "mail.create_endpoint",
+		Payload:              payloadBytes,
+		UserID:               userIDStr,
+		Status:               mailEntity.OutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           ent.ID.String(),
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 90, // Hạn mức timeout 90 giây cho kết nối
+	}
+
+	// 6. Ghi đồng thời vào endpoint và outbox record thông qua Repo (Repository layer tự quản lý transaction)
+	if err := s.endpointRepo.Create(ctx, ent, outboxRecord); err != nil {
 		mailMetrics.IncEndpointOperations("create", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
@@ -162,26 +212,7 @@ func (s *endpointServiceImpl) GetEndpoint(ctx context.Context, id uuid.UUID) (*m
 		return nil, apperr.Wrap(mailTaxonomy.ErrEndpointNotFound, err, mailTaxonomy.OutcomeNotFound)
 	}
 
-	// Giải mã password nhạy cảm
-	if ent.Password != "" {
-		dec, err := security.DecryptSecret(ent.Password)
-		if err != nil {
-			mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
-			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-		}
-		ent.Password = dec
-	}
-
-	// Giải mã client_key_pem nhạy cảm
-	if ent.ClientKeyPEM != "" {
-		dec, err := security.DecryptSecret(ent.ClientKeyPEM)
-		if err != nil {
-			mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
-			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-		}
-		ent.ClientKeyPEM = dec
-	}
-
+	// Thông tin nhạy cảm password và client_key_pem được lưu trữ plain text thô, không cần giải mã.
 	mailMetrics.IncEndpointOperations("get", zoneID.String(), mailTaxonomy.Success)
 	return ent, nil
 }
@@ -209,25 +240,7 @@ func (s *endpointServiceImpl) ListEndpoints(
 		return nil, "", apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
 	}
 
-	for _, ent := range list {
-		if ent.Password != "" {
-			dec, err := security.DecryptSecret(ent.Password)
-			if err != nil {
-				mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
-				return nil, "", apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-			}
-			ent.Password = dec
-		}
-		if ent.ClientKeyPEM != "" {
-			dec, err := security.DecryptSecret(ent.ClientKeyPEM)
-			if err != nil {
-				mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.OutcomeCryptoError)
-				return nil, "", apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-			}
-			ent.ClientKeyPEM = dec
-		}
-	}
-
+	// Không cần thực hiện giải mã credentials vì được lưu trữ dạng plain text thô
 	mailMetrics.IncEndpointOperations("list", zoneID.String(), mailTaxonomy.Success)
 	return list, nextCursor, nil
 }
@@ -284,24 +297,12 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	existing.ClientCertPEM = params.ClientCertPEM
 	existing.IsActive = params.IsActive
 
-	// Xử lý mã hóa password nếu được cung cấp mới (hoặc không trống)
+	// Password và client_key_pem được cập nhật dạng plain text thô theo God View SoT
 	if params.Password != "" {
-		enc, err := security.EncryptSecret(params.Password)
-		if err != nil {
-			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
-			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-		}
-		existing.Password = enc
+		existing.Password = params.Password
 	}
-
-	// Xử lý mã hóa client_key_pem nếu được cung cấp mới (hoặc không trống)
 	if params.ClientKeyPEM != "" {
-		enc, err := security.EncryptSecret(params.ClientKeyPEM)
-		if err != nil {
-			mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeCryptoError)
-			return nil, apperr.Wrap(mailTaxonomy.ErrEnvelopeDecryptFailed, err, mailTaxonomy.OutcomeCryptoError)
-		}
-		existing.ClientKeyPEM = enc
+		existing.ClientKeyPEM = params.ClientKeyPEM
 	}
 
 	now := time.Now().UTC()
@@ -310,20 +311,6 @@ func (s *endpointServiceImpl) UpdateEndpoint(
 	if err := s.endpointRepo.Update(ctx, existing); err != nil {
 		mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.OutcomeDatabaseError)
 		return nil, apperr.Wrap(mailTaxonomy.ErrInvalidArgument, err, mailTaxonomy.OutcomeDatabaseError)
-	}
-
-	// Giải mã password nhạy cảm để trả về thực thể sạch
-	if existing.Password != "" {
-		dec, err := security.DecryptSecret(existing.Password)
-		if err == nil {
-			existing.Password = dec
-		}
-	}
-	if existing.ClientKeyPEM != "" {
-		dec, err := security.DecryptSecret(existing.ClientKeyPEM)
-		if err == nil {
-			existing.ClientKeyPEM = dec
-		}
 	}
 
 	mailMetrics.IncEndpointOperations("update", params.ZoneID.String(), mailTaxonomy.Success)

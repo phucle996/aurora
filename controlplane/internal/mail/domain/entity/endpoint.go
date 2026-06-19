@@ -39,6 +39,7 @@ type Endpoint struct {
 
 // CreateEndpointParams groups the inputs required to construct a new Endpoint.
 type CreateEndpointParams struct {
+	ID             uuid.UUID // ID của endpoint được sinh trước ở tầng Handler
 	ZoneID         uuid.UUID
 	Name           string
 	Host           string

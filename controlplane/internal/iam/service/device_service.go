@@ -116,7 +116,7 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, 
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning", ip, userAgent)
-	iamMetrics.ServiceCall("audit_publish", "db")
+	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 	return nil
 }
 
@@ -133,7 +133,7 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDe
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning", ip, userAgent)
-	iamMetrics.ServiceCall("audit_publish", "db")
+	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 	return affected, nil
 }
 
@@ -215,9 +215,9 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 	lockToken := ""
 	ok, lockErr := rdb.SetNX(ctx, lockKey, ownerToken, 2*time.Second).Result()
 	if lockErr != nil {
-		iamMetrics.ServiceCall("device_cap_lock", "skip")
+		iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeLockBusy)
 	} else if !ok {
-		iamMetrics.ServiceCall("device_cap_lock", "skip")
+		iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeLockBusy)
 		return
 	} else {
 		lockToken = ownerToken
@@ -306,7 +306,7 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 		}
 	}
 
-	iamMetrics.ServiceCall("device_cap_evict", "evicted")
+	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 	extras := map[string]string{
 		"reason":        "cap_exceeded",
 		"evicted_count": strconv.Itoa(len(evicted)),
@@ -333,7 +333,9 @@ func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		op := constant.GetOperation(ctx)
+		bgCtx = constant.WithOperation(bgCtx, op)
 		_ = s.deviceRepo.InsertAuditEvent(bgCtx, &userID, event, severity, ip, userAgent)
-		iamMetrics.ServiceCall("audit_publish", "db")
+		iamMetrics.ServiceCall(bgCtx, iamMetrics.OutcomeSuccess)
 	}()
 }

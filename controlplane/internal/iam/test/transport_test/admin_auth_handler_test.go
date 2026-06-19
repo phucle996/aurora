@@ -145,7 +145,7 @@ func TestAdminAuthHandlerLoginUnauthorizedWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp mismatch"), iamTaxonomy.InvalidCredential)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrMFAInvalid, errors.New("totp mismatch"), "invalid_credential")
 	}})
 	r.POST("/admin/auth/login", h.Login)
 
@@ -176,7 +176,7 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := newAdminAuthHandler(&adminAuthServiceStub{loginFn: func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error) {
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), iamTaxonomy.Failure)
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("db timeout"), "failure_unknown")
 	}})
 	r.POST("/admin/auth/login", h.Login)
 

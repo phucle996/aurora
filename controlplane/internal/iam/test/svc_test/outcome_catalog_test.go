@@ -3,7 +3,7 @@ package svc_test
 import (
 	"testing"
 
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamMetrics "controlplane/internal/iam/metrics"
 )
 
 func assertOutcomeSet(t *testing.T, name string, values []string) {
@@ -22,23 +22,11 @@ func assertOutcomeSet(t *testing.T, name string, values []string) {
 
 func TestOutcomeCatalog(t *testing.T) {
 	assertOutcomeSet(t, "core_outcomes", []string{
-		iamTaxonomy.Success,
-		iamTaxonomy.Failure,
-		iamTaxonomy.FailureUnknown,
-		iamTaxonomy.InvalidArgument,
-		iamTaxonomy.InvalidCredential,
-		iamTaxonomy.InvalidSession,
-		iamTaxonomy.PreConditionFailed,
-		iamTaxonomy.PreConditionSuccess,
-		iamTaxonomy.LockBusy,
-		iamTaxonomy.LockUnknownError,
-		iamTaxonomy.TokenGenerateFail,
-		iamTaxonomy.TokenGenerateSuccess,
-		iamTaxonomy.TelegramSendFail,
-		iamTaxonomy.UuidGenerateFail,
-		iamTaxonomy.SetAccessSessionFail,
-		iamTaxonomy.ZoneUnavailable,
-		iamTaxonomy.GetL1CacheFail,
-		iamTaxonomy.GetL2CacheFail,
+		iamMetrics.OutcomeSuccess,
+		iamMetrics.OutcomeFailure,
+		iamMetrics.OutcomeFailureUnknown,
+		iamMetrics.OutcomePreConditionFailed,
+		iamMetrics.OutcomeInvalidCredential,
+		iamMetrics.OutcomeLockBusy,
 	})
 }

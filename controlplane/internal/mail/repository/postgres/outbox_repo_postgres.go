@@ -9,6 +9,7 @@ import (
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailModel "controlplane/internal/mail/model"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,11 +35,22 @@ func NewMailOutboxRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInter
 	}
 }
 
+// getExecutor trích xuất pgx.Tx từ context nếu có (cho chạy chung transaction), ngược lại fallback về db pool
+func (r *MailOutboxRepoImpl) getExecutor(ctx context.Context) QueryExecutor {
+	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return tx
+	}
+	return r.db
+}
+
 func (r *MailOutboxRepoImpl) Create(ctx context.Context, record *mailEntity.MailOutboxRecord) error {
 	// Chuyển đổi từ Domain Entity sang DB Model để tách biệt logic nghiệp vụ khỏi tầng lưu trữ
 	model := mailModel.OutboxEntityToModel(*record)
 
-	err := r.db.QueryRow(ctx, r.saveQuery,
+	// Lấy executor (giao dịch hoạt động hoặc db pool)
+	executor := r.getExecutor(ctx)
+
+	err := executor.QueryRow(ctx, r.saveQuery,
 		model.EventID,
 		model.ZoneID,
 		model.JobTopic,

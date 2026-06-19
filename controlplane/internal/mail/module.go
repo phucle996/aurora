@@ -135,13 +135,13 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if gatewayRepo == nil {
 		return nil, errors.New("mail module: failed to construct gateway repository")
 	}
-	endpointRepo := mailRepoImpl.NewEndpointRepository(db, cfg)
-	if endpointRepo == nil {
-		return nil, errors.New("mail module: failed to construct endpoint repository")
-	}
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
 	if outboxRepo == nil {
 		return nil, errors.New("mail module: failed to construct outbox repository")
+	}
+	endpointRepo := mailRepoImpl.NewEndpointRepository(db, cfg, outboxRepo)
+	if endpointRepo == nil {
+		return nil, errors.New("mail module: failed to construct endpoint repository")
 	}
 
 	// ------------------------------------------------------------------------

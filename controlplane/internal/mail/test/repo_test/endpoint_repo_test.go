@@ -19,7 +19,8 @@ func TestEndpointRepoPostgres(t *testing.T) {
 	testutil.PrepareMailSchema(t, cfg, db)
 	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 
-	repo := mailRepoImpl.NewEndpointRepository(db, cfg)
+	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
+	repo := mailRepoImpl.NewEndpointRepository(db, cfg, outboxRepo)
 	ctx := context.Background()
 
 	zoneID := uuid.New()
@@ -49,8 +50,22 @@ func TestEndpointRepoPostgres(t *testing.T) {
 		UpdatedAt:      &now,
 	}
 
+	outboxRecord := &mailEntity.MailOutboxRecord{
+		EventID:              uuid.New(),
+		ZoneID:               zoneID,
+		JobTopic:             "mail.create_endpoint",
+		Payload:              []byte(`{"dummy": "data"}`),
+		UserID:               "test-user",
+		Status:               mailEntity.OutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           endpointID.String(),
+		PayloadSchemaVersion: 1,
+		TraceID:              []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		Idle:                 90,
+	}
+
 	// Persist
-	if err := repo.Create(ctx, endpoint); err != nil {
+	if err := repo.Create(ctx, endpoint, outboxRecord); err != nil {
 		t.Fatalf("create endpoint failed: %v", err)
 	}
 
