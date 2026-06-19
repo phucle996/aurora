@@ -56,7 +56,7 @@ func (h *EndpointHandler) Create(c *gin.Context) {
 	}
 
 	// Khởi tạo các tham số truyền xuống Service Layer
-	params := &mailEntity.CreateEndpointParams{
+	params := &mailEntity.CreateEndpoint{
 		Name:           strings.TrimSpace(req.Name),
 		Host:           strings.TrimSpace(req.Host),
 		Port:           req.Port,

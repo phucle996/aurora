@@ -152,10 +152,31 @@ impl RedisSubscriber {
                                                         let event_title = event.title.clone();
                                                         let event_message = event.message.clone();
                                                         let event_created_at = event.created_at;
+                                                        let event_type = event.event_type.clone();
                                                         let client = self.client.clone();
 
                                                         // Thực thi xử lý nghiệp vụ đẩy tin trong phạm vi Trace Context
                                                         crate::observability::otel::CURRENT_TRACE.scope(trace_ctx, async move {
+                                                            use opentelemetry::trace::{Span, Tracer};
+
+                                                            // Lấy Trace Context hiện tại từ task-local
+                                                            let trace_ctx_opt = crate::observability::otel::OtelTracer::get_current_trace();
+                                                            let tracer = opentelemetry::global::tracer("notification-service");
+
+                                                            let cx = if let Some(ref tc) = trace_ctx_opt {
+                                                                tc.get_otel_context()
+                                                            } else {
+                                                                opentelemetry::Context::current()
+                                                            };
+
+                                                            // Tạo OTel Span để đồng bộ distributed tracing
+                                                            let mut span = tracer.start_with_context(
+                                                                format!("notification.publish.{}", event_type),
+                                                                &cx,
+                                                            );
+                                                            span.set_attribute(opentelemetry::KeyValue::new("job_id", event_job_id.clone()));
+                                                            span.set_attribute(opentelemetry::KeyValue::new("user_id", event_user_id.clone()));
+
                                                             Logger::sys_info(
                                                                 "redis.subscriber",
                                                                 &format!("Successfully decoded job event {} for user: {}", event_job_id, event_user_id),
@@ -212,6 +233,7 @@ impl RedisSubscriber {
                                                                     }
                                                                 }
                                                                 Err(pub_err) => {
+                                                                    span.record_error(&pub_err);
                                                                     MetricsManager::record_centrifugo_publish("failed");
                                                                     Logger::sys_error(
                                                                         "redis.subscriber",

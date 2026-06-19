@@ -114,8 +114,14 @@ impl CdcStreamer {
                             let mut offset = 1;
                             if let Ok(relation_id) = read_u32(&data, &mut offset) {
                                 if let Some(rel) = relation_map.get(&relation_id) {
-                                    // Chỉ xử lý bản ghi thuộc bảng mail_outbox_records
-                                    if rel.relation_name == "mail_outbox_records" {
+                                    // Kiểm tra xem tên bảng này có nằm trong danh sách cdc_sources hay không
+                                    let is_monitored = self.config.cdc_sources.iter().any(|source| {
+                                        let parts: Vec<&str> = source.split('.').collect();
+                                        let table_name = if parts.len() == 2 { parts[1] } else { parts[0] };
+                                        rel.relation_name == table_name
+                                    });
+
+                                    if is_monitored {
                                         let fields = parse_insert_message(&data, &rel.columns)
                                             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                                         

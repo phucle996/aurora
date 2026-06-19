@@ -29,6 +29,10 @@ pub struct Config {
     pub otel_exporter_otlp_endpoint: String,
     /// Định danh vùng (zone_id) để đánh nhãn metrics/traces
     pub zone_id: String,
+    /// Danh sách các bảng outbox cần theo dõi CDC (ví dụ: mail.mail_outbox_records)
+    pub cdc_sources: Vec<String>,
+    /// Số lần thử lại tối đa khi thiết lập hạ tầng Logical Replication trước khi tắt ứng dụng
+    pub max_setup_retries: u32,
 }
 
 impl Config {
@@ -67,6 +71,21 @@ impl Config {
         // Đọc zone_id từ biến môi trường (mặc định là unknown)
         let zone_id = env::var("ZONE_ID").unwrap_or_else(|_| "unknown".to_string());
 
+        // Đọc danh sách các bảng CDC phân cách bởi dấu phẩy
+        let cdc_sources_raw = env::var("CDC_SOURCES")
+            .unwrap_or_else(|_| "mail.mail_outbox_records".to_string());
+        let cdc_sources = cdc_sources_raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<String>>();
+
+        // Đọc giới hạn số lần retry khi setup hạ tầng replication
+        let max_setup_retries = env::var("MAX_SETUP_RETRIES")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<u32>()
+            .unwrap_or(10);
+
         Ok(Self {
             database_url,
             redis_url,
@@ -80,6 +99,8 @@ impl Config {
             controlplane_grpc_domain,
             otel_exporter_otlp_endpoint,
             zone_id,
+            cdc_sources,
+            max_setup_retries,
         })
     }
 }

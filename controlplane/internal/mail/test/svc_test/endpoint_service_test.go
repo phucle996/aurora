@@ -45,7 +45,7 @@ func TestEndpointServiceCRUD(t *testing.T) {
 	ctx = middleware.ContextWithZoneID(ctx, zoneID)
 
 	// 1. Create Endpoint.
-	createParams := mailEntity.CreateEndpointParams{
+	createParams := mailEntity.CreateEndpoint{
 		ZoneID:         zoneID,
 		Name:           "Production SendGrid Server",
 		Host:           "smtp.sendgrid.net",

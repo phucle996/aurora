@@ -22,13 +22,19 @@ pub struct TraceContext {
 }
 
 impl TraceContext {
-    /// Phân tích cú pháp chuỗi traceparent W3C (ví dụ: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01)
+    /// Phân tích cú pháp chuỗi traceparent W3C hoặc chuỗi trace_id thô 32 ký tự hex
     pub fn parse(traceparent: &str) -> Option<Self> {
         let parts: Vec<&str> = traceparent.split('-').collect();
         if parts.len() >= 4 && parts[0] == "00" {
             Some(Self {
                 trace_id: parts[1].to_string(),
                 span_id: parts[2].to_string(),
+            })
+        } else if traceparent.len() == 32 {
+            // Trường hợp nhận chuỗi trace_id thô 32 ký tự hex từ Outbox DB hoặc các thành phần CDC
+            Some(Self {
+                trace_id: traceparent.to_string(),
+                span_id: "00f067aa0ba902b7".to_string(), // Sử dụng Span ID mặc định
             })
         } else {
             None
@@ -48,6 +54,28 @@ impl TraceContext {
     /// Tạo chuỗi định dạng traceparent chuẩn W3C để truyền đi qua HTTP/gRPC headers
     pub fn to_traceparent(&self) -> String {
         format!("00-{}-{}-01", self.trace_id, self.span_id)
+    }
+
+    /// Chuyển đổi thông tin Trace Context nội bộ thành opentelemetry::Context để liên kết các Span
+    pub fn get_otel_context(&self) -> opentelemetry::Context {
+        use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceContextExt};
+
+        let trace_id = TraceId::from_hex(&self.trace_id).ok();
+        let span_id = SpanId::from_hex(&self.span_id).ok();
+
+        if let (Some(tid), Some(sid)) = (trace_id, span_id) {
+            let span_context = SpanContext::new(
+                tid,
+                sid,
+                TraceFlags::SAMPLED,
+                true,
+                opentelemetry::trace::TraceState::default(),
+            );
+            // Kế thừa Span context từ remote parent trace
+            opentelemetry::Context::current().with_remote_span_context(span_context)
+        } else {
+            opentelemetry::Context::current()
+        }
     }
 }
 

@@ -55,6 +55,22 @@ pub async fn handle_connect(
 
     // Thực thi toàn bộ quá trình xác thực trong phạm vi Trace Context
     let response = crate::observability::otel::CURRENT_TRACE.scope(trace_ctx, async move {
+        use opentelemetry::trace::{Span, Tracer};
+
+        // Lấy Trace Context hiện tại từ task-local
+        let trace_ctx_opt = crate::observability::otel::OtelTracer::get_current_trace();
+        let tracer = opentelemetry::global::tracer("notification-service");
+
+        let cx = if let Some(ref tc) = trace_ctx_opt {
+            tc.get_otel_context()
+        } else {
+            opentelemetry::Context::current()
+        };
+
+        // Khởi tạo Span cho cuộc gọi Connect
+        let mut _span = tracer.start_with_context("http.connect", &cx);
+        _span.set_attribute(opentelemetry::KeyValue::new("client_id", payload.client.clone()));
+
         Logger::sys_info(
             "http.connect_attempt",
             &format!(
