@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub async fn dispatch_mail_job(
     action: &str,
     payload: JobPayload,
-    _worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
+    worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
     redis_mgr: Arc<crate::infra::redis::RedisClientManager>,
     zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
@@ -34,6 +34,7 @@ pub async fn dispatch_mail_job(
             let exec = super::send::MailSendExecutor::new(
                 redis_mgr,
                 zone_id.to_string(),
+                worker_pool.lmtp_pool.clone(),
             );
             exec.execute(payload).await
         }

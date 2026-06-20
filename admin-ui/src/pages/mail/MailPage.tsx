@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Activity, CalendarDays, ChevronDown, Link2, Server, Users } from 'lucide-react'
+import { Activity, CalendarDays, ChevronDown, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { usePageMeta } from '@/lib/page-meta'
 import { cn } from '@/lib/utils'
@@ -12,18 +12,14 @@ import { useZoneStore } from '@/hooks/useZoneStore'
 // Nhập các tab nghiệp vụ chi tiết đã được module hóa
 import { OverviewTab } from './tabs/OverviewTab'
 import { ConsumersTab } from './tabs/ConsumersTab'
-import { GatewaysTab } from './tabs/GatewaysTab'
-import { EndpointsTab } from './tabs/EndpointsTab'
 
-// Khai báo các loại tab được hỗ trợ trong Mail Page
-type TabKey = 'overview' | 'consumers' | 'gateways' | 'endpoints'
+// Khai báo các loại tab được hỗ trợ trong Mail Page (sau khi đã loại bỏ Gateways và Endpoints)
+type TabKey = 'overview' | 'consumers'
 
 // Cấu hình các Tabs hiển thị ở menu điều hướng bao gồm icon và mô tả
 const tabs: Array<{ key: TabKey; label: string; description: string; icon: ReactNode }> = [
   { key: 'overview', label: 'Overview', description: 'Mail overview', icon: <Activity className="size-4" /> },
   { key: 'consumers', label: 'Consumers', description: 'Mail consumers & usage', icon: <Users className="size-4" /> },
-  { key: 'gateways', label: 'Gateways', description: 'Mail gateways & routing', icon: <Server className="size-4" /> },
-  { key: 'endpoints', label: 'Endpoints', description: 'Mail endpoints & targets', icon: <Link2 className="size-4" /> },
 ]
 
 /**
@@ -37,9 +33,7 @@ export default function MailPage() {
   // Xác định tab đang hoạt động hiện tại (đọc từ Hash URL nếu có để phục vụ deeplinking tiện lợi)
   const [active, setActive] = useState<TabKey>(() => {
     const hash = window.location.hash
-    if (hash === '#endpoints') return 'endpoints'
     if (hash === '#consumers') return 'consumers'
-    if (hash === '#gateways') return 'gateways'
     return 'overview'
   })
 
@@ -63,27 +57,54 @@ export default function MailPage() {
   }, [dateRange])
 
   return (
-    <div className="min-w-0 space-y-4 pb-8">
-      {/* Header chính và Bộ lọc */}
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="space-y-1">
-          <h1 className="aurora-page-title text-foreground">Mail Admin</h1>
-          <p className="aurora-page-subtitle">
+    <div className="min-w-0 space-y-6 pb-8">
+      {/* Header chính tích hợp Bộ chọn Tab và Bộ lọc khoảng thời gian theo phong cách Segmented Control */}
+      <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between border-b border-border/40 pb-5">
+        <div className="space-y-1.5">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">Mail Admin</h1>
+          <p className="text-xs text-muted-foreground max-w-2xl">
             Platform-wide visibility for Mail delivery, routing, and infrastructure health across all organizations.
           </p>
         </div>
         
-        {/* Bộ lọc Khoảng thời gian hiển thị ở góc bên phải (khi tab yêu cầu) */}
-        {showsDateRangeFilter ? (
-          <div className="flex flex-wrap items-center gap-3">
+        {/* Nhóm điều khiển nằm bên phải trên desktop */}
+        <div className="flex flex-wrap items-center gap-3 self-start md:self-auto">
+          {/* Menu Tab được thiết kế dưới dạng Segmented Control siêu gọn nhẹ */}
+          <div className="inline-flex items-center p-0.5 bg-muted/40 border border-border/60 rounded-lg backdrop-blur-md shadow-sm">
+            {tabs.map((tab) => {
+              const isActive = active === tab.key
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => {
+                    setActive(tab.key)
+                    window.location.hash = tab.key
+                  }}
+                  className={cn(
+                    'relative flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-md transition-all duration-200 cursor-pointer select-none',
+                    isActive
+                      ? 'bg-background text-foreground shadow-sm border border-border/40 font-semibold'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-muted-foreground/5',
+                  )}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Bộ chọn khoảng thời gian (chỉ hiện khi tab hiện tại yêu cầu) */}
+          {showsDateRangeFilter ? (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" className="h-10 min-w-44 justify-between gap-3 border-border/80 bg-card px-4 aurora-filter-text shadow-sm cursor-pointer">
-                  <span className="flex items-center gap-2">
-                    <CalendarDays className="size-4" />
+                <Button variant="outline" className="h-8 min-w-40 justify-between gap-2 border-border/80 bg-card/60 px-3 text-xs shadow-sm cursor-pointer hover:bg-accent hover:text-accent-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <CalendarDays className="size-3.5 text-muted-foreground" />
                     {dateRangeLabel}
                   </span>
-                  <ChevronDown className="size-4 text-muted-foreground" />
+                  <ChevronDown className="size-3.5 text-muted-foreground" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0" align="end">
@@ -97,36 +118,7 @@ export default function MailPage() {
                 />
               </PopoverContent>
             </Popover>
-          </div>
-        ) : null}
-      </div>
-
-      {/* Menu các Tab điều hướng */}
-      <div className="rounded-xl border border-border bg-card p-1 shadow-sm">
-        <div className="grid grid-cols-2 gap-1 lg:grid-cols-4">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => {
-                setActive(tab.key)
-                window.location.hash = tab.key
-              }}
-              className={cn(
-                'flex items-center gap-3 rounded-lg px-4 py-3 text-left transition-colors cursor-pointer',
-                active === tab.key ? 'bg-primary/5 text-primary ring-1 ring-primary/15' : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground',
-              )}
-            >
-              {/* Vùng vẽ Icon tương ứng với Tab */}
-              <span className={cn('inline-flex size-8 items-center justify-center rounded-full', active === tab.key ? 'bg-primary/10' : 'bg-muted')}>
-                {tab.icon}
-              </span>
-              <span>
-                <span className="aurora-tab-label">{tab.label}</span>
-                <span className="aurora-tab-description">{tab.description}</span>
-              </span>
-            </button>
-          ))}
+          ) : null}
         </div>
       </div>
 
@@ -134,8 +126,6 @@ export default function MailPage() {
       <div className="transition-all duration-300 ease-in-out">
         {active === 'overview' && <OverviewTab zoneID={activeZone} dateRange={dateRange} />}
         {active === 'consumers' && <ConsumersTab zoneID={activeZone} dateRange={dateRange} />}
-        {active === 'gateways' && <GatewaysTab zoneID={activeZone} />}
-        {active === 'endpoints' && <EndpointsTab zoneCode={activeZone} />}
       </div>
     </div>
   )

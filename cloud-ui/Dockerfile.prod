@@ -1,0 +1,43 @@
+# ============================================================================
+# 🐳 STAGE 1: BUILDER - BIÊN DỊCH VÀ XÂY DỰNG ỨNG DỤNG NEXT.JS
+# ============================================================================
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Sao chép file package.json và package-lock.json để tận dụng cache Docker layer
+COPY package*.json ./
+
+# Cài đặt toàn bộ dependencies bao gồm cả devDependencies phục vụ cho quá trình build
+RUN npm install --legacy-peer-deps
+
+# Sao chép mã nguồn ứng dụng (ngoại trừ các đường dẫn trong .dockerignore)
+COPY . .
+
+# Biên dịch ứng dụng Next.js ở chế độ Production
+RUN npm run build
+
+# ============================================================================
+# 🐳 STAGE 2: RUNNER - CONTAINER VẬN HÀNH THỰC TẾ SIÊU NHẸ
+# ============================================================================
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Thiết lập môi trường chạy là production
+ENV NODE_ENV=production
+
+# Sao chép các tệp node_modules đã cài đặt từ builder
+COPY --from=builder /app/node_modules ./node_modules
+# Sao chép file package.json để chạy lệnh script start
+COPY --from=builder /app/package*.json ./
+# Sao chép thư mục build của Next.js (.next)
+COPY --from=builder /app/.next ./.next
+# Sao chép các assets tĩnh trong thư mục public
+COPY --from=builder /app/public ./public
+
+# Expose port 3000 phục vụ truy cập
+EXPOSE 3000
+
+# Khởi chạy Next.js Server ở chế độ production
+CMD ["npm", "run", "start"]

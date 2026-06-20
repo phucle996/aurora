@@ -165,8 +165,6 @@ services:
         condition: service_started
       controlplane3:
         condition: service_started
-      runbook-web:
-        condition: service_started
     restart: unless-stopped
 
   # ============================================================================
@@ -593,18 +591,10 @@ services:
   # Phục vụ lập trình viên quản trị hệ thống, khách hàng Cloud, và quy trình xử lý sự cố.
 
   cloud-ui:
-    image: node:20-alpine
+    build:
+      context: ../cloud-ui
+      dockerfile: Dockerfile.prod
     container_name: cloud-ui-dev
-    working_dir: /workspace
-    volumes:
-      - ../cloud-ui:/workspace
-      - cloud_ui_node_modules:/workspace/node_modules
-    command: [ "sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --hostname 0.0.0.0 --port 3000" ]
-    ports:
-      - "3000:3000" # Cổng truy cập của Cloud Console UI dành cho Tenants
-    environment:
-      # Bật chế độ Polling giám sát file thay đổi trong container chạy trên nền Linux/WSL
-      CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
 
   admin-ui:
@@ -628,20 +618,6 @@ services:
     container_name: admin-ui-nginx
     ports:
       - "5175:5173" # Chạy trên cổng 5175 ngoài máy host để tránh trùng port 5173 dev
-    restart: unless-stopped
-
-  runbook-web:
-    image: node:20-alpine
-    container_name: runbook-web-dev
-    working_dir: /workspace
-    volumes:
-      - ../runbook-web:/workspace
-      - runbook_web_node_modules:/workspace/node_modules
-    command: [ "sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --port 5173" ]
-    ports:
-      - "5174:5173" # Giao diện quản lý quy trình xử lý sự cố tự động (SRE Runbooks)
-    environment:
-      CHOKIDAR_USEPOLLING: "true"
     restart: unless-stopped
 
   job-proxy:
@@ -775,9 +751,7 @@ volumes:
 
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
 
-  cloud_ui_node_modules:
   admin_ui_node_modules:
-  runbook_web_node_modules: # Ổ đĩa lưu trữ hàng đợi công việc Redis Job
 
   controlplane_redis_job_data: # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 1
 

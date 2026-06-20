@@ -89,6 +89,11 @@ pub struct Config {
     // Cấu hình giới hạn số lượng Worker chạy đồng thời (max concurrency limit).
     // Được nạp tĩnh qua biến môi trường để tối ưu hóa hiệu năng, loại bỏ overengineering của PolicyEngine.
     pub max_workers: usize,
+
+    /// Địa chỉ Stalwart host LMTP để gửi mail nội bộ
+    pub stalwart_lmtp_host: String,
+    /// Cổng kết nối Stalwart LMTP (thường là 24)
+    pub stalwart_lmtp_port: u16,
 }
 
 impl Config {
@@ -148,6 +153,14 @@ impl Config {
                 .unwrap_or_else(|_| "100".to_string())
                 .parse::<usize>()
                 .unwrap_or(100),
+
+            // Nạp thông tin cấu hình gửi nhận email Stalwart LMTP
+            stalwart_lmtp_host: env::var("STALWART_LMTP_HOST")
+                .unwrap_or_else(|_| "stalwart-mail".to_string()),
+            stalwart_lmtp_port: env::var("STALWART_LMTP_PORT")
+                .ok()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(24),
         }
     }
 }

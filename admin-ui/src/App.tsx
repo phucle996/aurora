@@ -22,8 +22,6 @@ const DashboardPage = lazy(() => import('@/pages/dashboard/Dashboard'))
 const HypervisorPage = lazy(() => import('@/pages/hypervisor/Hypervisor'))
 const DetailHypervisorPage = lazy(() => import('@/pages/hypervisor/DetailHypervisor'))
 const MailPage = lazy(() => import('@/pages/mail/MailPage'))
-const NewMailEndpointPage = lazy(() => import('@/pages/mail/NewMailEndpoint'))
-const EditMailEndpointPage = lazy(() => import('@/pages/mail/EditMailEndpoint'))
 const DeliveryAttemptsPage = lazy(() => import('@/pages/mail/DeliveryAttempts'))
 const RuntimeStatusPage = lazy(() => import('@/pages/mail/RuntimeStatus'))
 const ZoneManagementPage = lazy(() => import('@/pages/zone/ZoneManagement'))
@@ -246,17 +244,6 @@ const mailRoute = createRoute({
   component: withAdminSession(MailPage),
 })
 
-const newMailEndpointRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/mail/endpoints/new',
-  component: withAdminSession(NewMailEndpointPage),
-})
-
-const editMailEndpointRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/mail/endpoints/$id/edit',
-  component: withAdminSession(EditMailEndpointPage),
-})
 
 const deliveryAttemptsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -292,8 +279,6 @@ const routeTree = rootRoute.addChildren([
   hypervisorRoute,
   detailHypervisorRoute,
   mailRoute,
-  newMailEndpointRoute,
-  editMailEndpointRoute,
   deliveryAttemptsRoute,
   runtimeStatusRoute,
   resourcePlatformRoute,

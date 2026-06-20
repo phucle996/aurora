@@ -5,66 +5,260 @@ use crate::observability::logger::Logger;
 use async_trait::async_trait;
 use prost::Message;
 use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio::io::BufReader;
+use tokio::sync::Mutex as TokioMutex;
 
 pub mod mail_proto {
     include!(concat!(env!("OUT_DIR"), "/mail.rs"));
 }
 
 /// ============================================================================
-/// 📂 MODULE: executor/mail/send.rs - BỘ THỰC THI GỬI EMAIL TRỰC TIẾP QUA STALWART
+/// 📂 KẾT NỐI LMTP DUY TRÌ TRẠNG THÁI GỬI MAIL ĐẾN STALWART
 /// ============================================================================
-///
-/// 📌 VAI TRÒ (ROLE):
-///   - Đắp thông tin và gửi email trực tiếp đến Stalwart Cluster qua giao thức LMTP (cổng 24).
-///   - Tích hợp cơ chế tự động thử lại (retry) tối đa 3 lần nếu gặp sự cố mạng tạm thời.
-///   - Loại bỏ hoàn toàn sự phụ thuộc vào SMTP Gateway và Endpoint Registry cũ.
-///
+pub struct LmtpConnection {
+    pub reader: BufReader<TcpStream>,
+}
 
-// Cấu trúc bộ thực thi nhiệm vụ gửi mail với các dependency cần thiết
+impl LmtpConnection {
+    /// Thực hiện kết nối TCP và bắt tay LHLO ban đầu đến Stalwart
+    pub async fn connect(host: &str, port: u16) -> Result<Self, String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        // Thiết lập kết nối TCP Socket đến Stalwart LMTP Service
+        let stream = TcpStream::connect(format!("{}:{}", host, port))
+            .await
+            .map_err(|e| format!("Kết nối đến Stalwart LMTP {}:{}: {} thất bại", host, port, e))?;
+
+        let mut reader = BufReader::new(stream);
+
+        // Đọc mã phản hồi chào mừng từ Stalwart (kỳ vọng 220)
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("220") {
+            return Err(format!("Chào mừng từ LMTP không hợp lệ: {}", line.trim()));
+        }
+
+        // Gửi lệnh LHLO kèm hostname để định danh phiên làm việc LMTP
+        line.clear();
+        let hostname = crate::config::get_node_hostname();
+        reader
+            .get_mut()
+            .write_all(format!("LHLO {}\r\n", hostname).as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        reader.get_mut().flush().await.map_err(|e| e.to_string())?;
+
+        // Đọc phản hồi từ LHLO (phản hồi nhiều dòng, kết thúc bằng dòng chứa mã 250 kèm dấu cách)
+        loop {
+            line.clear();
+            reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| e.to_string())?;
+            if line.starts_with("250 ") {
+                break;
+            } else if !line.starts_with("250-") {
+                return Err(format!("Bắt tay LHLO thất bại: {}", line.trim()));
+            }
+        }
+
+        Ok(Self { reader })
+    }
+
+    /// Gửi một email qua kết nối LMTP hiện có
+    pub async fn send_mail(
+        &mut self,
+        sender: &str,
+        recipient: &str,
+        email_bytes: &[u8],
+    ) -> Result<String, String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let mut line = String::new();
+
+        // 1. MAIL FROM giao thức LMTP
+        self.reader
+            .get_mut()
+            .write_all(format!("MAIL FROM:<{}>\r\n", sender).as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        self.reader.get_mut().flush().await.map_err(|e| e.to_string())?;
+        self.reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("250") {
+            return Err(format!("MAIL FROM bị từ chối: {}", line.trim()));
+        }
+
+        // 2. RCPT TO giao thức LMTP
+        line.clear();
+        self.reader
+            .get_mut()
+            .write_all(format!("RCPT TO:<{}>\r\n", recipient).as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        self.reader.get_mut().flush().await.map_err(|e| e.to_string())?;
+        self.reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("250") {
+            let _ = self.reset().await;
+            return Err(format!("RCPT TO bị từ chối: {}", line.trim()));
+        }
+
+        // 3. Khởi tạo lệnh DATA
+        line.clear();
+        self.reader
+            .get_mut()
+            .write_all(b"DATA\r\n")
+            .await
+            .map_err(|e| e.to_string())?;
+        self.reader.get_mut().flush().await.map_err(|e| e.to_string())?;
+        self.reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("354") {
+            let _ = self.reset().await;
+            return Err(format!("DATA bị từ chối: {}", line.trim()));
+        }
+
+        // 4. Stream nội dung MIME của email
+        self.reader
+            .get_mut()
+            .write_all(email_bytes)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !email_bytes.ends_with(b"\r\n") {
+            self.reader
+                .get_mut()
+                .write_all(b"\r\n")
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.reader
+            .get_mut()
+            .write_all(b".\r\n")
+            .await
+            .map_err(|e| e.to_string())?;
+        self.reader.get_mut().flush().await.map_err(|e| e.to_string())?;
+
+        // 5. Kiểm chứng phản hồi xử lý email từ Stalwart (kỳ vọng 250)
+        line.clear();
+        self.reader
+            .read_line(&mut line)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !line.starts_with("250") {
+            return Err(format!("Không thể gửi email thành công sau lệnh DATA: {}", line.trim()));
+        }
+
+        Ok(line.trim().to_string())
+    }
+
+    /// Lệnh RSET để khôi phục trạng thái kết nối khi giao dịch email thất bại nửa chừng
+    async fn reset(&mut self) -> Result<(), String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let mut line = String::new();
+        self.reader.get_mut().write_all(b"RSET\r\n").await.map_err(|e| e.to_string())?;
+        self.reader.get_mut().flush().await.map_err(|e| e.to_string())?;
+        self.reader.read_line(&mut line).await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+/// ============================================================================
+/// 📂 POOL QUẢN LÝ CÁC KẾT NỐI LMTP ĐẾN STALWART CLUSTER
+/// ============================================================================
+pub struct LmtpConnectionPool {
+    host: String,
+    port: u16,
+    connections: TokioMutex<Vec<LmtpConnection>>,
+}
+
+impl LmtpConnectionPool {
+    /// Tạo mới một connection pool cho Stalwart
+    pub fn new(host: String, port: u16) -> Self {
+        Self {
+            host,
+            port,
+            connections: TokioMutex::new(Vec::new()),
+        }
+    }
+
+    /// Lấy ra kết nối LMTP rảnh rỗi từ pool hoặc mở kết nối mới
+    pub async fn get(&self) -> Result<LmtpConnection, String> {
+        let mut conns = self.connections.lock().await;
+        if let Some(conn) = conns.pop() {
+            Ok(conn)
+        } else {
+            LmtpConnection::connect(&self.host, self.port).await
+        }
+    }
+
+    /// Trả kết nối về lại pool để tái sử dụng
+    pub async fn put(&self, conn: LmtpConnection) {
+        let mut conns = self.connections.lock().await;
+        conns.push(conn);
+    }
+}
+
+/// ============================================================================
+/// 📂 BỘ THỰC THI GỬI EMAIL THÔNG QUA STALWART LMTP CONNECTION POOL
+/// ============================================================================
 pub struct MailSendExecutor {
     _redis_mgr: Arc<RedisClientManager>,
     _zone_id: String,
+    lmtp_pool: Arc<LmtpConnectionPool>,
 }
 
 impl MailSendExecutor {
-    // Khởi tạo một đối tượng MailSendExecutor mới
+    /// Khởi tạo một đối tượng MailSendExecutor mới tích hợp Connection Pool
     pub fn new(
         redis_mgr: Arc<RedisClientManager>,
         zone_id: String,
+        lmtp_pool: Arc<LmtpConnectionPool>,
     ) -> Self {
         Self {
             _redis_mgr: redis_mgr,
             _zone_id: zone_id,
+            lmtp_pool,
         }
     }
 }
 
 #[async_trait]
 impl Executor for MailSendExecutor {
-    // Thực thi nghiệp vụ gửi mail transactional
+    /// Thực thi nghiệp vụ gửi mail transactional bằng cách tái sử dụng kết nối LMTP từ pool
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
-        // 1. Giải mã email config từ protobuf payload
+        // 1. Giải mã cấu hình gửi email từ Protobuf payload
         let mail_config = match mail_proto::SendMailConfig::decode(payload.payload.as_slice()) {
             Ok(c) => c,
             Err(e) => {
                 return Err(ExecutorError::ExecutionFailed(format!(
-                    "Failed to decode SendMailConfig: {}",
+                    "Lỗi giải mã SendMailConfig: {}",
                     e
                 )));
             }
         };
 
-        // Trích xuất sender từ template_variables hoặc mặc định
+        // Lấy địa chỉ người gửi (sender) từ template_variables hoặc fallback
         let sender_addr = mail_config.template_variables.get("from")
             .or_else(|| mail_config.template_variables.get("sender"))
             .map(|s| s.as_str())
             .unwrap_or("noreply@aurora.system");
         let sender_mailbox: lettre::message::Mailbox = sender_addr.parse().unwrap_or_else(|_| "noreply@aurora.system".parse().unwrap());
 
-        // 2. Dựng email message bằng lettre để lấy định dạng MIME chuẩn
+        // 2. Dựng MIME Message bằng Lettre builder để chuẩn hóa định dạng email
         let email = match lettre::Message::builder()
             .from(sender_mailbox.clone())
-            .to(mail_config.to.parse().map_err(|e| ExecutorError::ExecutionFailed(format!("Invalid recipient address: {}", e)))?)
+            .to(mail_config.to.parse().map_err(|e| ExecutorError::ExecutionFailed(format!("Địa chỉ người nhận không hợp lệ: {}", e)))?)
             .subject(mail_config.subject.clone())
             .header(lettre::message::header::ContentType::TEXT_HTML)
             .body(mail_config.body_html.clone())
@@ -72,7 +266,7 @@ impl Executor for MailSendExecutor {
             Ok(m) => m,
             Err(e) => {
                 return Err(ExecutorError::ExecutionFailed(format!(
-                    "Failed to construct MIME Message for LMTP stream: {}",
+                    "Dựng MIME Message cho LMTP stream thất bại: {}",
                     e
                 )));
             }
@@ -81,33 +275,40 @@ impl Executor for MailSendExecutor {
         let email_bytes = email.formatted();
         let stuffed_bytes = dot_stuffing(&email_bytes);
 
-        // 3. Đọc thông tin kết nối Stalwart từ biến môi trường (Cloud Native Defaults)
-        let host = std::env::var("STALWART_LMTP_HOST").unwrap_or_else(|_| "stalwart-mail".to_string());
-        let port = std::env::var("STALWART_LMTP_PORT")
-            .ok()
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(24);
-
         Logger::sys_info(
             "executor.mail.send",
-            &format!("Routing via Stalwart LMTP to {}:{}...", host, port),
+            &format!("Bắt đầu gửi email thông qua Stalwart LMTP Connection Pool (đang gửi tới {})...", mail_config.to),
         );
 
-        // 4. Thử kết nối và gửi trực tiếp qua LMTP (retry tối đa 3 lần để đảm bảo HA)
+        // 3. Thực hiện gửi mail có hỗ trợ kết nối lại & thử lại tối đa 3 lần
         let mut attempts = 0;
         let mut last_error = String::new();
         while attempts < 3 {
-            match send_via_lmtp(&host, port, sender_addr, &mail_config.to, &stuffed_bytes).await {
+            // Lấy một kết nối từ pool (hoặc mở mới)
+            let mut conn = match self.lmtp_pool.get().await {
+                Ok(c) => c,
+                Err(e) => {
+                    last_error = e;
+                    attempts += 1;
+                    continue;
+                }
+            };
+
+            // Gửi email qua kết nối này
+            match conn.send_mail(sender_addr, &mail_config.to, &stuffed_bytes).await {
                 Ok(success_msg) => {
+                    // Trả kết nối hoạt động tốt về lại pool
+                    self.lmtp_pool.put(conn).await;
                     return Ok(ExecutionResult {
-                        message: success_msg,
+                        message: format!("LMTP delivery succeeded: {}", success_msg),
                     });
                 }
                 Err(e) => {
+                    // Khi có lỗi xảy ra, không trả kết nối về pool nữa (drop kết nối bị hỏng)
                     Logger::sys_warn(
                         "executor.mail.send",
-                        &format!("LMTP delivery attempt {} failed: {}", attempts + 1, e),
-                        "LMTP_ATTEMPT_FAILED",
+                        &format!("Thử gửi LMTP lần {} thất bại: {}. Đang đóng kết nối lỗi.", attempts + 1, e),
+                        "LMTP_CONNECTION_ERROR",
                     );
                     last_error = e;
                     attempts += 1;
@@ -119,13 +320,13 @@ impl Executor for MailSendExecutor {
         }
 
         Err(ExecutorError::ExecutionFailed(format!(
-            "Failed to send email to Stalwart after 3 attempts. Last error: {}",
+            "Gửi email đến Stalwart thất bại sau 3 lần thử. Lỗi cuối cùng: {}",
             last_error
         )))
     }
 }
 
-/// Thực hiện cơ chế dot-stuffing cho giao thức LMTP/SMTP (thêm dấu chấm nếu dòng bắt đầu bằng dấu chấm)
+/// Thực hiện dot-stuffing cho giao thức LMTP/SMTP (thêm dấu chấm nếu dòng bắt đầu bằng dấu chấm)
 fn dot_stuffing(content: &[u8]) -> Vec<u8> {
     let mut stuffed = Vec::new();
     let mut at_line_start = true;
@@ -137,142 +338,4 @@ fn dot_stuffing(content: &[u8]) -> Vec<u8> {
         at_line_start = b == b'\n';
     }
     stuffed
-}
-
-/// Gửi email qua kết nối LMTP (cổng 24) tới Stalwart Mail Server
-async fn send_via_lmtp(
-    host: &str,
-    port: u16,
-    sender: &str,
-    recipient: &str,
-    email_bytes: &[u8],
-) -> Result<String, String> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::TcpStream;
-
-    // 1. Kết nối TCP tới LMTP Server
-    let stream = TcpStream::connect(format!("{}:{}", host, port))
-        .await
-        .map_err(|e| format!("Failed to connect to LMTP server {}:{}: {}", host, port, e))?;
-
-    let mut reader = BufReader::new(stream);
-
-    // Đọc dòng chào mừng (e.g. "220 ...")
-    let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !line.starts_with("220") {
-        return Err(format!("Invalid LMTP welcome response: {}", line.trim()));
-    }
-
-    // 2. Gửi lệnh LHLO (LMTP HELO)
-    line.clear();
-    let hostname = crate::config::get_node_hostname();
-    reader
-        .get_mut()
-        .write_all(format!("LHLO {}\r\n", hostname).as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    reader.get_mut().flush().await.map_err(|e| e.to_string())?;
-
-    // Đọc phản hồi LHLO (250 OK, có thể nhiều dòng)
-    loop {
-        line.clear();
-        reader
-            .read_line(&mut line)
-            .await
-            .map_err(|e| e.to_string())?;
-        if line.starts_with("250 ") {
-            break;
-        } else if !line.starts_with("250-") {
-            return Err(format!("LHLO handshake failed: {}", line.trim()));
-        }
-    }
-
-    // 3. Gửi lệnh MAIL FROM
-    line.clear();
-    reader
-        .get_mut()
-        .write_all(format!("MAIL FROM:<{}>\r\n", sender).as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    reader.get_mut().flush().await.map_err(|e| e.to_string())?;
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !line.starts_with("250") {
-        return Err(format!("MAIL FROM rejected: {}", line.trim()));
-    }
-
-    // 4. Gửi lệnh RCPT TO
-    line.clear();
-    reader
-        .get_mut()
-        .write_all(format!("RCPT TO:<{}>\r\n", recipient).as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    reader.get_mut().flush().await.map_err(|e| e.to_string())?;
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !line.starts_with("250") {
-        return Err(format!("RCPT TO rejected: {}", line.trim()));
-    }
-
-    // 5. Gửi lệnh DATA
-    line.clear();
-    reader
-        .get_mut()
-        .write_all(b"DATA\r\n")
-        .await
-        .map_err(|e| e.to_string())?;
-    reader.get_mut().flush().await.map_err(|e| e.to_string())?;
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !line.starts_with("354") {
-        return Err(format!("DATA command rejected: {}", line.trim()));
-    }
-
-    // 6. Gửi dữ liệu email (MIME) thô
-    reader
-        .get_mut()
-        .write_all(email_bytes)
-        .await
-        .map_err(|e| e.to_string())?;
-    // Đảm bảo kết thúc DATA block bằng CRLF.CRLF
-    if !email_bytes.ends_with(b"\r\n") {
-        reader
-            .get_mut()
-            .write_all(b"\r\n")
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    reader
-        .get_mut()
-        .write_all(b".\r\n")
-        .await
-        .map_err(|e| e.to_string())?;
-    reader.get_mut().flush().await.map_err(|e| e.to_string())?;
-
-    // Đọc phản hồi sau DATA (250 OK cho mỗi recipient)
-    line.clear();
-    reader
-        .read_line(&mut line)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !line.starts_with("250") {
-        return Err(format!("Delivery failed after DATA input: {}", line.trim()));
-    }
-
-    // 7. Gửi lệnh QUIT
-    let _ = reader.get_mut().write_all(b"QUIT\r\n").await;
-    let _ = reader.get_mut().flush().await;
-
-    Ok(format!("LMTP delivery succeeded: {}", line.trim()))
 }
