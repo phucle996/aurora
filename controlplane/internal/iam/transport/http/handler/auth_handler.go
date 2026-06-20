@@ -15,7 +15,6 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
 	cookie "controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
@@ -303,29 +302,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 // Session godoc
 // @Summary User session bootstrap
-// @Description Trả về trạng thái authenticated khi access cookie + device fragment hợp lệ.
 // @Tags auth
 // @Produce json
 // @Success 200 {object} map[string]interface{} "authenticated"
-// @Failure 401 {object} map[string]interface{} "unauthorized"
-// @Failure 503 {object} map[string]interface{} "authentication temporarily unavailable"
 // @Router /api/v1/auth/session [get]
 func (h *AuthHandler) Session(c *gin.Context) {
 	const op = "iam.auth.session"
 
-	var userID string
-	var accessKey string
-	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		userID = ident.UserID
-		accessKey = ident.AccessKey
-	}
-
-	if strings.TrimSpace(userID) == "" || strings.TrimSpace(accessKey) == "" {
-		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidCredentials, "session invalid auth context")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
+	logger.HandlerInfo(c, op, "user session authenticated")
 	apires.RespondSuccess(c, gin.H{"authenticated": true}, "ok")
 }
 

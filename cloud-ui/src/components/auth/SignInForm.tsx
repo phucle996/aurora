@@ -64,7 +64,7 @@ export default function SignInForm() {
     const normalizedUsername = username.trim().toLowerCase();
     const normalizedPassword = password;
     if (normalizedUsername.length < 3 || normalizedPassword.length < 8) {
-      setErrorMessage("Thông tin đăng nhập không hợp lệ (Tên đăng nhập từ 3 ký tự, mật khẩu từ 8 ký tự).");
+      setErrorMessage("Thông tin đăng nhập không hợp lệ.");
       return;
     }
 
@@ -110,16 +110,16 @@ export default function SignInForm() {
       }
       const apiError = error as APIError;
       if (apiError?.status === 401 || apiError?.status === 403) {
-          setErrorMessage("Thông tin đăng nhập không đúng hoặc tài khoản chưa khả dụng.");
-          return;
+        setErrorMessage("Thông tin đăng nhập không đúng hoặc tài khoản chưa khả dụng.");
+        return;
       }
       if (apiError?.status === 429) {
-          setErrorMessage("Quá nhiều lần thử. Vui lòng thử lại sau.");
-          return;
+        setErrorMessage("Quá nhiều lần thử. Vui lòng thử lại sau.");
+        return;
       }
       if (apiError?.status === 503) {
-          setErrorMessage("Hệ thống xác thực tạm thời không khả dụng.");
-          return;
+        setErrorMessage("Hệ thống xác thực tạm thời không khả dụng.");
+        return;
       }
       setErrorMessage("Đăng nhập thất bại. Vui lòng thử lại.");
     } finally {

@@ -13,7 +13,7 @@ export class UserUnauthorizedError extends Error {
 
 export async function getUserSession(signal?: AbortSignal): Promise<UserSession> {
   try {
-    await fetchJSON<{ data?: { authenticated?: boolean } }>("/api/v1/auth/session", {
+    await fetchJSON<{ data?: { authenticated?: boolean } }>("/bff/auth/session", {
       method: "GET",
       signal,
     });

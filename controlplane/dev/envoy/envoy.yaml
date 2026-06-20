@@ -93,6 +93,8 @@ static_resources:
                       domains:
                         - "controlplane.aurora.local"
                         - "controlplane.aurora.local:443"
+                        - "envoy"
+                        - "envoy:8443"
                       typed_per_filter_config:
                         envoy.filters.http.cors:
                           "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy

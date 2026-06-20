@@ -193,6 +193,7 @@ func (h *AdminAuthHandler) Login(c *gin.Context) {
 // @Failure 500 {object} map[string]interface{} "internal_error"
 // @Router /admin/auth/session [get]
 func (h *AdminAuthHandler) Session(c *gin.Context) {
+	logger.HandlerInfo(c, "admin_session", "admin session authenticated")
 	apires.RespondSuccess(c, map[string]any{"authenticated": true}, "ok")
 }
 

@@ -595,6 +595,8 @@ services:
       context: ../cloud-ui
       dockerfile: Dockerfile.prod
     container_name: cloud-ui-dev
+    environment:
+      - NEXT_PUBLIC_CONTROLPLANE_URL=https://envoy:8443
     restart: unless-stopped
 
   admin-ui:

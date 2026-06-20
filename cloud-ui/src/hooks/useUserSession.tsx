@@ -74,13 +74,21 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
 
     // [COMMENT]: Đọc nhanh trạng thái từ localStorage sau khi Client đã mount để tránh lỗi Hydration Mismatch.
     // Nếu có session cached, set ngay trạng thái để giao diện chuyển đổi mượt mà.
+    let isInitiallyAuthenticated = false;
     if (typeof window !== "undefined") {
       const cached = window.localStorage.getItem("iam.user.authenticated");
       if (cached === "true") {
         setState({ status: "authenticated", session: { authenticated: true } });
-      } else if (cached === "false") {
+        isInitiallyAuthenticated = true;
+      } else {
         setState({ status: "unauthenticated" });
       }
+    }
+
+    // [COMMENT]: Nếu localStorage chỉ ra user CHƯA từng đăng nhập thành công (hoặc đã đăng xuất),
+    // bỏ qua bước kiểm tra session ở background để tránh tạo các cuộc gọi 401 làm đầy tab DevTools Network.
+    if (!isInitiallyAuthenticated) {
+      return;
     }
 
     const controller = new AbortController();
