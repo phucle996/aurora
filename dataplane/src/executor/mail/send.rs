@@ -1,4 +1,3 @@
-use crate::executor::mail::registry::{fetch_l2_endpoint_config, mail_proto, MailServerPool};
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
 use crate::infra::redis::RedisClientManager;
 use crate::job_lifecycle::message::JobPayload;
@@ -7,35 +6,35 @@ use async_trait::async_trait;
 use prost::Message;
 use std::sync::Arc;
 
+pub mod mail_proto {
+    include!(concat!(env!("OUT_DIR"), "/mail.rs"));
+}
+
 /// ============================================================================
-/// 📂 MODULE: executor/mail/send.rs - BỘ THỰC THI GỬI EMAIL NGHIỆP VỤ
+/// 📂 MODULE: executor/mail/send.rs - BỘ THỰC THI GỬI EMAIL TRỰC TIẾP QUA STALWART
 /// ============================================================================
 ///
 /// 📌 VAI TRÒ (ROLE):
-///   - Thực hiện gửi email thông qua việc định tuyến động qua các SMTP Endpoint khỏe mạnh.
-///   - Hỗ trợ cơ chế tự động chuyển vùng dự phòng (Failover) tối đa 3 lần nếu xảy ra lỗi.
-///   - Hỗ trợ định tuyến lai (Hybrid Routing): Tự động phát hiện Stalwart Mail Server
-///     và stream trực tiếp email qua cổng LMTP nội bộ (cổng 24) không qua SMTP Actor.
+///   - Đắp thông tin và gửi email trực tiếp đến Stalwart Cluster qua giao thức LMTP (cổng 24).
+///   - Tích hợp cơ chế tự động thử lại (retry) tối đa 3 lần nếu gặp sự cố mạng tạm thời.
+///   - Loại bỏ hoàn toàn sự phụ thuộc vào SMTP Gateway và Endpoint Registry cũ.
 ///
 
 // Cấu trúc bộ thực thi nhiệm vụ gửi mail với các dependency cần thiết
 pub struct MailSendExecutor {
-    mail_server_pool: Arc<MailServerPool>,
-    redis_mgr: Arc<RedisClientManager>,
-    zone_id: String,
+    _redis_mgr: Arc<RedisClientManager>,
+    _zone_id: String,
 }
 
 impl MailSendExecutor {
     // Khởi tạo một đối tượng MailSendExecutor mới
     pub fn new(
-        mail_server_pool: Arc<MailServerPool>,
         redis_mgr: Arc<RedisClientManager>,
         zone_id: String,
     ) -> Self {
         Self {
-            mail_server_pool,
-            redis_mgr,
-            zone_id,
+            _redis_mgr: redis_mgr,
+            _zone_id: zone_id,
         }
     }
 }
@@ -62,243 +61,65 @@ impl Executor for MailSendExecutor {
             .unwrap_or("noreply@aurora.system");
         let sender_mailbox: lettre::message::Mailbox = sender_addr.parse().unwrap_or_else(|_| "noreply@aurora.system".parse().unwrap());
 
-        // 2. Xác định endpoint ID đích
-        let mut target_endpoint_id = if !payload.resource_id.is_empty() && payload.resource_id != "verify_account" {
-            Some(payload.resource_id.clone())
-        } else {
-            None
-        };
-
-        // Nếu là email hệ thống hoặc resource_id rỗng -> Tìm kiếm một Stalwart endpoint trong L1/L2 Pool
-        if target_endpoint_id.is_none() {
-            let endpoint_ids: Vec<String> = {
-                let meta = self.mail_server_pool.server_metadata.read().await;
-                meta.keys().cloned().collect()
-            };
-            for id in endpoint_ids {
-                if let Ok(cfg) = fetch_l2_endpoint_config(&self.redis_mgr, &self.zone_id, &id).await {
-                    let is_stalwart = cfg.port == 24 
-                        || cfg.host.contains("stalwart") 
-                        || cfg.name.to_lowercase().contains("stalwart");
-                    if is_stalwart {
-                        Logger::sys_info(
-                            "executor.mail.send",
-                            &format!("System Mail: Automatically matched Stalwart Endpoint ID: {}", id),
-                        );
-                        target_endpoint_id = Some(id);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Nếu vẫn không tìm thấy Stalwart Endpoint và đây là email hệ thống/fallback -> Thử lấy endpoint ngẫu nhiên có trọng số
-        let endpoint_id = match target_endpoint_id {
-            Some(id) => id,
-            None => {
-                match self.mail_server_pool.select_endpoint_weighted_random().await {
-                    Ok(id) => {
-                        Logger::sys_info(
-                            "executor.mail.send",
-                            &format!("Stalwart endpoint not explicitly found. Falling back to weighted random endpoint: {}", id),
-                        );
-                        id
-                    }
-                    Err(e) => {
-                        return Err(ExecutorError::ExecutionFailed(format!(
-                            "No mail endpoints available in pool to route mail job: {}",
-                            e
-                        )));
-                    }
-                }
+        // 2. Dựng email message bằng lettre để lấy định dạng MIME chuẩn
+        let email = match lettre::Message::builder()
+            .from(sender_mailbox.clone())
+            .to(mail_config.to.parse().map_err(|e| ExecutorError::ExecutionFailed(format!("Invalid recipient address: {}", e)))?)
+            .subject(mail_config.subject.clone())
+            .header(lettre::message::header::ContentType::TEXT_HTML)
+            .body(mail_config.body_html.clone())
+        {
+            Ok(m) => m,
+            Err(e) => {
+                return Err(ExecutorError::ExecutionFailed(format!(
+                    "Failed to construct MIME Message for LMTP stream: {}",
+                    e
+                )));
             }
         };
 
-        // 3. Thực hiện vòng lặp gửi qua Endpoint (Failover tối đa 3 lần cho dynamic pool)
+        let email_bytes = email.formatted();
+        let stuffed_bytes = dot_stuffing(&email_bytes);
+
+        // 3. Đọc thông tin kết nối Stalwart từ biến môi trường (Cloud Native Defaults)
+        let host = std::env::var("STALWART_LMTP_HOST").unwrap_or_else(|_| "stalwart-mail".to_string());
+        let port = std::env::var("STALWART_LMTP_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(24);
+
+        Logger::sys_info(
+            "executor.mail.send",
+            &format!("Routing via Stalwart LMTP to {}:{}...", host, port),
+        );
+
+        // 4. Thử kết nối và gửi trực tiếp qua LMTP (retry tối đa 3 lần để đảm bảo HA)
         let mut attempts = 0;
-        let mut current_endpoint_id = endpoint_id;
-        let mut last_error = "Unknown error".to_string();
-
+        let mut last_error = String::new();
         while attempts < 3 {
-            // Lấy cấu hình chi tiết từ Redis L2 Cache
-            let config = match fetch_l2_endpoint_config(&self.redis_mgr, &self.zone_id, &current_endpoint_id).await {
-                Ok(cfg) => cfg,
+            match send_via_lmtp(&host, port, sender_addr, &mail_config.to, &stuffed_bytes).await {
+                Ok(success_msg) => {
+                    return Ok(ExecutionResult {
+                        message: success_msg,
+                    });
+                }
                 Err(e) => {
-                    Logger::sys_error(
+                    Logger::sys_warn(
                         "executor.mail.send",
-                        &format!("Failed to fetch L2 config for endpoint {}: {}", current_endpoint_id, e),
-                        "L2_CONFIG_FETCH_FAILED",
+                        &format!("LMTP delivery attempt {} failed: {}", attempts + 1, e),
+                        "LMTP_ATTEMPT_FAILED",
                     );
+                    last_error = e;
                     attempts += 1;
-                    // Lấy endpoint khác từ pool để retry
-                    if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                        current_endpoint_id = id;
-                    }
-                    continue;
-                }
-            };
-
-            // Kiểm tra xem có phải là Stalwart (cổng 24 hoặc chứa chữ stalwart)
-            let is_stalwart = config.port == 24 
-                || config.host.contains("stalwart") 
-                || config.name.to_lowercase().contains("stalwart");
-
-            if is_stalwart {
-                Logger::sys_info(
-                    "executor.mail.send",
-                    &format!("Routing via Stalwart LMTP to {}:{}...", config.host, config.port),
-                );
-
-                // Dựng email message bằng lettre để lấy định dạng MIME chuẩn
-                let email = match lettre::Message::builder()
-                    .from(sender_mailbox.clone())
-                    .to(mail_config.to.parse().map_err(|e| ExecutorError::ExecutionFailed(format!("Invalid recipient address: {}", e)))?)
-                    .subject(mail_config.subject.clone())
-                    .header(lettre::message::header::ContentType::TEXT_HTML)
-                    .body(mail_config.body_html.clone())
-                {
-                    Ok(m) => m,
-                    Err(e) => {
-                        return Err(ExecutorError::ExecutionFailed(format!(
-                            "Failed to construct MIME Message for LMTP stream: {}",
-                            e
-                        )));
-                    }
-                };
-
-                let email_bytes = email.formatted();
-                let stuffed_bytes = dot_stuffing(&email_bytes);
-
-                match send_via_lmtp(&config.host, config.port as u16, sender_addr, &mail_config.to, &stuffed_bytes).await {
-                    Ok(success_msg) => {
-                        self.mail_server_pool.record_success(&current_endpoint_id).await;
-                        return Ok(ExecutionResult {
-                            message: format!("LMTP Relay through Endpoint {}: {}", current_endpoint_id, success_msg),
-                        });
-                    }
-                    Err(e) => {
-                        Logger::sys_error(
-                            "executor.mail.send",
-                            &format!("LMTP delivery failed on Stalwart endpoint {}: {}", current_endpoint_id, e),
-                            "LMTP_DELIVERY_ERROR",
-                        );
-                        self.mail_server_pool.record_failure(&current_endpoint_id, Some(self.redis_mgr.clone()), &self.zone_id).await;
-                        last_error = e;
-                        attempts += 1;
-                        // Thử lấy endpoint ngẫu nhiên tiếp theo nếu có thể
-                        if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                            current_endpoint_id = id;
-                        }
-                        continue;
-                    }
-                }
-            } else {
-                // Định tuyến qua SMTP Actor thông thường
-                Logger::sys_info(
-                    "executor.mail.send",
-                    &format!("Routing via SMTP Actor for Endpoint {} ({}:{})...", current_endpoint_id, config.host, config.port),
-                );
-
-                let tx = match self
-                    .mail_server_pool
-                    .get_or_create_actor(&current_endpoint_id, &self.zone_id, &self.redis_mgr)
-                    .await
-                {
-                    Ok(sender) => sender,
-                    Err(e) => {
-                        Logger::sys_error(
-                            "executor.mail.send",
-                            &format!("Failed to retrieve/create SMTP Actor for endpoint {}: {}", current_endpoint_id, e),
-                            "SMTP_ACTOR_CREATION_FAILED",
-                        );
-                        self.mail_server_pool.record_failure(&current_endpoint_id, Some(self.redis_mgr.clone()), &self.zone_id).await;
-                        last_error = e;
-                        attempts += 1;
-                        if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                            current_endpoint_id = id;
-                        }
-                        continue;
-                    }
-                };
-
-                let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-                let msg = crate::executor::mail::registry::MailActorMessage::SendEmail {
-                    payload: payload.payload.clone(),
-                    response_tx,
-                };
-
-                if let Err(e) = tx.send(msg).await {
-                    Logger::sys_error(
-                        "executor.mail.send",
-                        &format!("Failed to dispatch email task to Actor {}: {}", current_endpoint_id, e),
-                        "ACTOR_SEND_ERROR",
-                    );
-                    self.mail_server_pool.record_failure(&current_endpoint_id, Some(self.redis_mgr.clone()), &self.zone_id).await;
-                    last_error = e.to_string();
-                    attempts += 1;
-                    if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                        current_endpoint_id = id;
-                    }
-                    continue;
-                }
-
-                // Đợi kết quả phản hồi từ Actor SMTP với thời gian chờ Timeout 15s để chống treo thread
-                match tokio::time::timeout(tokio::time::Duration::from_secs(15), response_rx).await {
-                    Ok(Ok(Ok(success_msg))) => {
-                        self.mail_server_pool.record_success(&current_endpoint_id).await;
-                        return Ok(ExecutionResult {
-                            message: format!("SMTP Delivery: {}", success_msg),
-                        });
-                    }
-                    Ok(Ok(Err(delivery_err))) => {
-                        Logger::sys_error(
-                            "executor.mail.send",
-                            &format!("SMTP Actor delivery error for endpoint {}: {}", current_endpoint_id, delivery_err),
-                            "SMTP_DELIVERY_FAILED",
-                        );
-                        self.mail_server_pool.record_failure(&current_endpoint_id, Some(self.redis_mgr.clone()), &self.zone_id).await;
-                        last_error = delivery_err;
-                        attempts += 1;
-                        if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                            current_endpoint_id = id;
-                        }
-                        continue;
-                    }
-                    Ok(Err(_)) => {
-                        Logger::sys_error(
-                            "executor.mail.send",
-                            &format!("Oneshot channel closed while waiting for SMTP Actor response on endpoint {}", current_endpoint_id),
-                            "ONESHOT_CLOSED",
-                        );
-                        self.mail_server_pool.record_failure(&current_endpoint_id, Some(self.redis_mgr.clone()), &self.zone_id).await;
-                        last_error = "Oneshot channel closed".to_string();
-                        attempts += 1;
-                        if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                            current_endpoint_id = id;
-                        }
-                        continue;
-                    }
-                    Err(_) => {
-                        Logger::sys_error(
-                            "executor.mail.send",
-                            &format!("SMTP Actor response timed out after 15s on endpoint {}", current_endpoint_id),
-                            "SMTP_TIMEOUT",
-                        );
-                        self.mail_server_pool.record_failure(&current_endpoint_id, Some(self.redis_mgr.clone()), &self.zone_id).await;
-                        last_error = "Timeout waiting for Actor response".to_string();
-                        attempts += 1;
-                        if let Ok(id) = self.mail_server_pool.select_endpoint_weighted_random().await {
-                            current_endpoint_id = id;
-                        }
-                        continue;
+                    if attempts < 3 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     }
                 }
             }
         }
 
-        // Nếu vượt quá 3 lần thử mà vẫn thất bại, trả về lỗi chi tiết
         Err(ExecutorError::ExecutionFailed(format!(
-            "Failed to send email after 3 failover attempts. Last error: {}",
+            "Failed to send email to Stalwart after 3 attempts. Last error: {}",
             last_error
         )))
     }

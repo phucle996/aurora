@@ -299,36 +299,7 @@ impl ResultConsumer {
             };
             let resource_id = row.get::<_, Option<String>>(3).unwrap_or_default();
 
-            // [COMMENT]: Cập nhật trạng thái mail endpoint sang active nếu sync thành công
-            if status == "SUCCEEDED" && (job_topic == "mail.create_endpoint" || job_topic == "mail.sync_endpoint") {
-                if !resource_id.is_empty() {
-                    let update_endpoint_res = pg_client
-                        .execute(
-                            "UPDATE mail_endpoints SET status = 'active' WHERE id = $1",
-                            &[&resource_id],
-                        )
-                        .await;
-                    
-                    match update_endpoint_res {
-                        Ok(rows_updated) => {
-                            Logger::sys_info(
-                                "result_consumer.update_endpoint",
-                                &format!(
-                                    "Successfully set mail_endpoint {} status to 'active' (rows affected: {})",
-                                    resource_id, rows_updated
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            Logger::sys_error(
-                                "result_consumer.update_endpoint",
-                                &format!("Failed to update status for mail_endpoint {}: {}", resource_id, e),
-                                "DB_UPDATE_ERROR",
-                            );
-                        }
-                    }
-                }
-            }
+
 
             // Thiết lập scope trace_id và gửi thông báo real-time qua OTel span
             let trace_id_clone = trace_id.clone();

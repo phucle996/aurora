@@ -53,7 +53,7 @@ import (
 	"controlplane/internal/config"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
-	mailRepoImpl "controlplane/internal/mail/repository/postgres"
+	mailRepoImpl "controlplane/internal/mail/repository"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailHandler "controlplane/internal/mail/transport/http/handler"
 	"controlplane/internal/security/ratelimit"
@@ -71,21 +71,15 @@ type Module struct {
 	// 1) Repositories
 	ConsumerRepo mailRepoInterface.ConsumerRepository
 	TemplateRepo mailRepoInterface.TemplateRepository
-	GatewayRepo  mailRepoInterface.GatewayRepository
-	EndpointRepo mailRepoInterface.EndpointRepository
 	OutboxRepo   mailRepoInterface.MailOutboxRepository
 
 	// 2) Services
 	ConsumerService mailSvcInterface.ConsumerService
 	TemplateService mailSvcInterface.TemplateService
-	GatewayService  mailSvcInterface.GatewayService
-	EndpointService mailSvcInterface.EndpointService
 
 	// 3) Handlers
 	ConsumerHandler *mailHandler.ConsumerHandler
 	TemplateHandler *mailHandler.TemplateHandler
-	GatewayHandler  *mailHandler.GatewayHandler
-	EndpointHandler *mailHandler.EndpointHandler
 
 	// 5) Security
 	RateLimiter *ratelimit.Bucket
@@ -131,17 +125,9 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if templateRepo == nil {
 		return nil, errors.New("mail module: failed to construct template repository")
 	}
-	gatewayRepo := mailRepoImpl.NewGatewayRepository(db, cfg)
-	if gatewayRepo == nil {
-		return nil, errors.New("mail module: failed to construct gateway repository")
-	}
 	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
 	if outboxRepo == nil {
 		return nil, errors.New("mail module: failed to construct outbox repository")
-	}
-	endpointRepo := mailRepoImpl.NewEndpointRepository(db, cfg, outboxRepo)
-	if endpointRepo == nil {
-		return nil, errors.New("mail module: failed to construct endpoint repository")
 	}
 
 	// ------------------------------------------------------------------------
@@ -156,14 +142,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	templateSvc := mailSvcImpl.NewTemplateService(cfg, templateRepo)
 	if templateSvc == nil {
 		return nil, errors.New("mail module: failed to construct template service")
-	}
-	gatewaySvc := mailSvcImpl.NewGatewayService(cfg, gatewayRepo)
-	if gatewaySvc == nil {
-		return nil, errors.New("mail module: failed to construct gateway service")
-	}
-	endpointSvc := mailSvcImpl.NewEndpointService(cfg, endpointRepo, outboxRepo, cacheEngine)
-	if endpointSvc == nil {
-		return nil, errors.New("mail module: failed to construct endpoint service")
 	}
 	// Đã decommissioning OutboxPoller cũ, việc chuyển tiếp dữ liệu qua Redis Stream
 	// giờ đây do job-proxy chạy ngầm đọc trực tiếp từ logical replication WAL stream.
@@ -181,31 +159,17 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 	if templateHandler == nil {
 		return nil, errors.New("mail module: failed to construct template HTTP handler")
 	}
-	gatewayHandler := mailHandler.NewGatewayHandler(gatewaySvc)
-	if gatewayHandler == nil {
-		return nil, errors.New("mail module: failed to construct gateway HTTP handler")
-	}
-	endpointHandler := mailHandler.NewEndpointHandler(endpointSvc)
-	if endpointHandler == nil {
-		return nil, errors.New("mail module: failed to construct endpoint HTTP handler")
-	}
 
 	return &Module{
 		enabled:         true,
 		cfg:             cfg,
 		ConsumerRepo:    consumerRepo,
 		TemplateRepo:    templateRepo,
-		GatewayRepo:     gatewayRepo,
-		EndpointRepo:    endpointRepo,
 		OutboxRepo:      outboxRepo,
 		ConsumerService: consumerSvc,
 		TemplateService: templateSvc,
-		GatewayService:  gatewaySvc,
-		EndpointService: endpointSvc,
 		ConsumerHandler: consumerHandler,
 		TemplateHandler: templateHandler,
-		GatewayHandler:  gatewayHandler,
-		EndpointHandler: endpointHandler,
 		RateLimiter:     rateLimiter,
 	}, nil
 }

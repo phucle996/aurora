@@ -1,5 +1,3 @@
-use futures_util::StreamExt;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -34,7 +32,6 @@ pub struct AppContainer {
     // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
-    pub mail_server_pool: Arc<crate::executor::mail::registry::MailServerPool>,
 }
 
 impl AppContainer {
@@ -49,7 +46,6 @@ impl AppContainer {
                 active_lock_registry: Arc::new(
                     crate::workerpool::watchdog::ActiveLockRegistry::new(),
                 ),
-                mail_server_pool: Arc::new(crate::executor::mail::registry::MailServerPool::new()),
             },
             boot.worker_signal_rx,
         )
@@ -59,112 +55,6 @@ impl AppContainer {
     pub async fn start(&self, mut worker_signal_rx: mpsc::Receiver<WorkerSignal>) {
         // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
         crate::observability::resource::ResourceMonitor::start_monitor();
-
-        // 0a-2. Khởi động đồng bộ Bootstrap & Pub/Sub listener cho Mail Server Pool
-        let redis_internal = self.redis_internal_zone.clone();
-        let mail_server_pool = self.mail_server_pool.clone();
-        let zone_id = self.config.zone_id.clone();
-
-        tokio::spawn(async move {
-            let key = format!("mail:zone:{}:server_pool", zone_id);
-            let sub_channel = format!("mail:zone:{}:endpoint_events", zone_id);
-
-            // 1. Thực hiện kéo nhanh danh sách từ L2 Cache (Redis Hash)
-            if let Ok(mut conn) = redis_internal
-                .client()
-                .get_multiplexed_async_connection()
-                .await
-            {
-                let pool_raw: Result<HashMap<String, String>, _> =
-                    redis::cmd("HGETALL").arg(&key).query_async(&mut conn).await;
-
-                match pool_raw {
-                    Ok(raw_map) if !raw_map.is_empty() => {
-                        Logger::sys_info(
-                            "mail.bootstrap",
-                            &format!(
-                                "Found {} SMTP endpoints in Redis L2. Populating L1 RAM pool...",
-                                raw_map.len()
-                            ),
-                        );
-                        for (endpoint_id, json_str) in raw_map {
-                            if let Ok(meta) = serde_json::from_str::<
-                                crate::executor::mail::registry::EndpointMetadata,
-                            >(&json_str)
-                            {
-                                mail_server_pool.update_metadata(endpoint_id, meta).await;
-                            }
-                        }
-                    }
-                    _ => {
-                        // Redis rỗng -> Thực hiện gửi yêu cầu BOOTSTRAP qua Pub/Sub
-                        Logger::sys_info(
-                            "mail.bootstrap",
-                            &format!("Redis L2 pool is empty. Triggering bootstrap request for zone {}...", zone_id),
-                        );
-                        let bootstrap_channel = format!("mail:zone:{}:bootstrap_request", zone_id);
-                        let payload = serde_json::json!({ "zone_id": zone_id });
-                        if let Ok(payload_str) = serde_json::to_string(&payload) {
-                            let _: Result<(), _> = redis::cmd("PUBLISH")
-                                .arg(&bootstrap_channel)
-                                .arg(&payload_str)
-                                .query_async(&mut conn)
-                                .await;
-                        }
-                    }
-                }
-            }
-
-            // 2. Chạy luồng lắng nghe sự kiện Pub/Sub liên tục để cập nhật trạng thái
-            if let Ok(mut pubsub) = redis_internal.client().get_async_pubsub().await {
-                if let Ok(_) = pubsub.subscribe(&sub_channel).await {
-                    Logger::sys_info(
-                        "mail.pubsub",
-                        &format!("Subscribed to endpoint events channel: {}", sub_channel),
-                    );
-                    let mut stream = pubsub.on_message();
-                    while let Some(msg) = stream.next().await {
-                        let payload_res: Result<String, redis::RedisError> = msg.get_payload();
-                        if let Ok(raw) = payload_res {
-                            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&raw) {
-                                let event_type = event["event_type"].as_str().unwrap_or("");
-                                let endpoint_id = event["endpoint_id"].as_str().unwrap_or("");
-                                if !endpoint_id.is_empty() {
-                                    match event_type {
-                                        "update" | "sync" => {
-                                            if let Ok(meta) = serde_json::from_value::<
-                                                crate::executor::mail::registry::EndpointMetadata,
-                                            >(
-                                                event["metadata"].clone()
-                                            ) {
-                                                mail_server_pool
-                                                    .update_metadata(endpoint_id.to_string(), meta)
-                                                    .await;
-                                                Logger::sys_info(
-                                                    "mail.pubsub",
-                                                    &format!("Updated metadata for endpoint {} via PubSub", endpoint_id),
-                                                );
-                                            }
-                                        }
-                                        "delete" | "disabled" => {
-                                            mail_server_pool.remove_endpoint(endpoint_id).await;
-                                            Logger::sys_info(
-                                                "mail.pubsub",
-                                                &format!(
-                                                    "Removed endpoint {} from L1 RAM via PubSub",
-                                                    endpoint_id
-                                                ),
-                                            );
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
 
         // 0b. Khởi tạo OpenTelemetry (Traces & Metrics) kết nối tới OTel Collector
         crate::observability::otel::OtelTracer::init(&self.config);
@@ -218,7 +108,6 @@ impl AppContainer {
                 self.active_lock_registry.clone(),
                 rx_shared.clone(),
                 active_jobs.clone(),
-                self.mail_server_pool.clone(),
             )
             .await;
 
@@ -230,7 +119,6 @@ impl AppContainer {
         let active_lock_registry_scale = self.active_lock_registry.clone();
         let rx_scale = rx_shared.clone();
         let active_jobs_scale = active_jobs.clone();
-        let mail_server_pool_scale = self.mail_server_pool.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -298,7 +186,6 @@ impl AppContainer {
                     // Scale Up: Spawn thêm worker
                     for i in 1..=target_count {
                         if !active_ids.contains(&i) {
-                            let mail_pool_scale = mail_server_pool_scale.clone();
                             worker_pool_scale
                                 .spawn_worker(
                                     i,
@@ -308,7 +195,6 @@ impl AppContainer {
                                     active_lock_registry_scale.clone(),
                                     rx_scale.clone(),
                                     active_jobs_scale.clone(),
-                                    mail_pool_scale,
                                 )
                                 .await;
                         }

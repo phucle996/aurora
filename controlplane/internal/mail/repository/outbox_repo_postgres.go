@@ -70,4 +70,3 @@ func (r *MailOutboxRepoImpl) Create(ctx context.Context, record *mailEntity.Mail
 	}
 	return err
 }
-

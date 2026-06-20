@@ -196,7 +196,6 @@ impl JobConsumer {
     pub async fn dispatch_workload(
         payload: JobPayload,
         worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
-        mail_server_pool: Arc<crate::executor::mail::registry::MailServerPool>,
         redis_mgr: Arc<crate::infra::redis::RedisClientManager>,
         zone_id: &str,
     ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
@@ -227,7 +226,6 @@ impl JobConsumer {
                     action,
                     payload,
                     worker_pool,
-                    mail_server_pool,
                     redis_mgr,
                     zone_id,
                 ).await
