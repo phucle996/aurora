@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,7 +23,10 @@ import (
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/id"
+
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -38,7 +40,7 @@ const (
 
 type AuthService struct {
 	repo       iamRepoInterface.AuthRepository
-	refreshSvc iamSvcInterface.RefreshTokenService
+	refreshSvc iamSvcInterface.SessionRefreshService
 	deviceSvc  iamSvcInterface.DeviceService
 	registry   *cacheengine.CacheRegistry
 	ott        iamSvcInterface.OneTimeTokenService
@@ -48,7 +50,7 @@ type AuthService struct {
 
 func NewAuthService(cfg *config.Config,
 	repo iamRepoInterface.AuthRepository,
-	refreshSvc iamSvcInterface.RefreshTokenService,
+	refreshSvc iamSvcInterface.SessionRefreshService,
 	deviceSvc iamSvcInterface.DeviceService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
@@ -305,15 +307,28 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	// Runtime cache chỉ phục vụ flush heuristic. Cache read lỗi thì fallback DB path.
 	clientDeviceProvenance := "client"
 	if req.ClientDeviceID == uuid.Nil {
-		req.ClientDeviceID = uuid.New()
-		clientDeviceProvenance = "server-bootstrap"
+		// [COMMENT]: Gọi deviceSvc để phân giải (resolve) client_device_id từ public key của thiết bị gửi lên.
+		// Tránh việc gọi trực tiếp repository ở tầng auth service nhằm giữ đúng ranh giới kiến trúc (architectural boundaries).
+		matchedClientDeviceID, resolveErr := s.deviceSvc.ResolveClientDeviceID(ctx, user.ID, req.DevicePublicKey)
+		if resolveErr == nil && matchedClientDeviceID != "" {
+			parsedID, parseErr := uuid.Parse(matchedClientDeviceID)
+			if parseErr == nil {
+				req.ClientDeviceID = parsedID
+				clientDeviceProvenance = "server-recovery"
+			}
+		}
+
+		// [COMMENT]: Chỉ sinh mới client_device_id khi đây là thiết bị mới chưa từng đăng ký khóa trước đó.
+		if req.ClientDeviceID == uuid.Nil {
+			req.ClientDeviceID = uuid.New()
+			clientDeviceProvenance = "server-bootstrap"
+		}
 	}
 	clientDeviceID := req.ClientDeviceID.String()
 
 	rdb := s.registry.L2.Client()
 	userIDStr := user.ID.String()
 	indexKey := "iam:user_access_index:" + userIDStr
-
 
 	// RegisterLoginDevice qua DeviceService là DB SoT để lấy tracked device persistent.
 	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, buildLoginDevice(user.ID, req.DevicePublicKey, req.IP, req.UserAgent, now, req.DeviceName, clientDeviceID))
@@ -376,37 +391,19 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, fmt.Errorf("%w: failed to sign access token: %v", iamTaxonomy.ErrAuthenticationUnavailable, accessErr)
 	}
 
-	rawRefresh, refreshErr := security.GenerateToken(43)
-	if refreshErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to generate refresh token: %v", iamTaxonomy.ErrAuthenticationUnavailable, refreshErr)
-	}
-	refreshID, refreshIDErr := uuid.NewV7()
-	if refreshIDErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to generate refresh ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, refreshIDErr)
-	}
-	familyID, familyErr := uuid.NewV7()
-	if familyErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to generate family ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, familyErr)
-	}
-	refreshExp := now.Add(s.cfg.Security.RefreshTokenTTL)
-
-	// Persist refresh session trước khi ghi runtime để tránh token mồ côi.
-	rt := &iamEntity.RefreshToken{
-		ID:            refreshID,
-		UserID:        user.ID,
-		DeviceID:      &trackedDeviceID,
-		TokenHash:     security.HashTokenSHA256(rawRefresh),
-		TokenFamilyID: familyID,
-		TenantID:      nil,
-		IssuedAt:      now,
-		ExpiresAt:     refreshExp,
-	}
-	if persistErr := s.repo.CreateRefreshTokenSession(ctx, *rt); persistErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to persist refresh session: %v", iamTaxonomy.ErrAuthenticationUnavailable, persistErr)
+	// [COMMENT]: Chỉ cấp refresh token khi người dùng chọn "trusted device in 30 days".
+	// Nếu không tin tưởng thiết bị, chỉ cấp access token với TTL 30 phút – hết hạn là logout.
+	var rawRefresh string
+	var refreshExp time.Time
+	if req.TrustDevice {
+		var refreshErr error
+		// Ủy quyền hoàn toàn việc tạo và lưu trữ session refresh token cho SessionRefreshService.
+		// AuthService chỉ nhận lại kết quả token thô và thời điểm hết hạn.
+		rawRefresh, refreshExp, refreshErr = s.refreshSvc.CreateUserOpaqueSession(ctx, user.ID, trackedDeviceID)
+		if refreshErr != nil {
+			loginOutcome = iamMetrics.OutcomeFailureUnknown
+			return nil, refreshErr
+		}
 	}
 
 	// Runtime write lỗi: rollback theo callsite policy bằng revoke refresh token.
@@ -417,7 +414,12 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		LastSeenAt:       now.Unix(), // Middleware sẽ cập nhật lsa realtime sau mỗi request xác thực
 	}
 	var setErr error
-	if payload, marshalErr := json.Marshal(sessionRecord); marshalErr != nil {
+	pb := &iamproto.UserAccessSession{
+		Ash:  sessionRecord.AccessSecretHash,
+		Tdid: sessionRecord.TrackedDeviceID,
+		Lsa:  sessionRecord.LastSeenAt,
+	}
+	if payload, marshalErr := proto.Marshal(pb); marshalErr != nil {
 		setErr = marshalErr
 	} else {
 		key := "iam:user_access_session:" + userIDStr + ":" + accessKey
@@ -428,7 +430,8 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		_, setErr = pipe.Exec(ctx)
 	}
 	if setErr != nil {
-		if s.refreshSvc != nil {
+		// [COMMENT]: Nếu runtime write lỗi và đã cấp refresh token, rollback bằng revoke để tránh token mồ côi.
+		if req.TrustDevice && s.refreshSvc != nil {
 			_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
 		}
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
@@ -502,21 +505,31 @@ func cleanOptionalString(value *string) *string {
 	return &cleaned
 }
 
-func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey string, accessSecret string) error {
+func (s *AuthService) Logout(ctx context.Context) error {
+	var userIDStr string
+	var accessKey string
+	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
+		userIDStr = ident.UserID
+		accessKey = ident.AccessKey
+	}
+	userIDStr = strings.TrimSpace(userIDStr)
 	accessKey = strings.TrimSpace(accessKey)
-	if accessKey == "" {
-		return fmt.Errorf("%w: missing access key", iamTaxonomy.ErrInvalidArgument)
+	if userIDStr == "" || accessKey == "" {
+		return fmt.Errorf("%w: missing userID or access key in context", iamTaxonomy.ErrInvalidArgument)
+	}
+	userID, parseErr := uuid.Parse(userIDStr)
+	if parseErr != nil {
+		return fmt.Errorf("%w: invalid user id in context: %v", iamTaxonomy.ErrInvalidArgument, parseErr)
 	}
 
 	rdb := s.registry.L2.Client()
-	userIDStr := userID.String()
 
 	// 1. Đọc runtime record để lấy trackedDeviceID + dirty state trước khi xoá.
-	var runtimeRecord *iamEntity.UserAccessSession
+	var runtimeRecord *iamproto.UserAccessSession
 	key := "iam:user_access_session:" + userIDStr + ":" + accessKey
 	if raw, getErr := rdb.Get(ctx, key).Result(); getErr == nil {
-		var record iamEntity.UserAccessSession
-		if json.Unmarshal([]byte(raw), &record) == nil {
+		var record iamproto.UserAccessSession
+		if proto.Unmarshal([]byte(raw), &record) == nil {
 			runtimeRecord = &record
 		}
 	}
@@ -534,14 +547,13 @@ func (s *AuthService) Logout(ctx context.Context, userID uuid.UUID, accessKey st
 		bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
-			if deviceUUID, parseErr := uuid.Parse(runtimeRecord.TrackedDeviceID); parseErr == nil {
+		if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.Tdid) != "" {
+			if deviceUUID, parseErr := uuid.Parse(runtimeRecord.Tdid); parseErr == nil {
 				_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(bgCtx, userID, deviceUUID)
 			}
 		} else {
 			_ = s.refreshSvc.RevokeRefreshTokensByUserID(bgCtx, userID, nil)
 		}
-
 	}()
 
 	return nil
@@ -552,71 +564,6 @@ func cleanString(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
-}
-
-// VerifyAdminTrinitySession xác thực thông tin đăng nhập của Admin/SRE qua gRPC
-func (s *AuthService) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
-	// [ignoring loop detection]
-	// Bước 1: Truy xuất danh sách key ký mã hóa cho Admin từ cache registry
-	val, err := s.registry.GetOrLoad(ctx, "admin_api_key", "")
-	if err != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for admin")
-	}
-
-	// Bước 2: Giải mã JWT lần lượt bằng active rồi standby key
-	var claims security.Claims
-	parsed := false
-	for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
-		parsedClaims, parseErr := security.Parse(token, candidate.Secret)
-		if parseErr == nil {
-			claims = parsedClaims
-			parsed = true
-			break
-		}
-	}
-	if !parsed {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	// Bước 3: Đối chiếu access_key trong token với access_key client cung cấp
-	if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	// Bước 4: Kiểm tra tính hoạt động của session từ Redis L2 cache
-	// Sử dụng Zone ID từ claims để định tuyến phân vùng chính xác
-	zoneID := strings.TrimSpace(claims.ZoneID)
-	if zoneID == "" {
-		// Fallback về global nếu không tìm thấy phân vùng trong claims
-		zoneID = "global"
-	}
-	payload, _, exists, err := s.registry.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
-	if err != nil || !exists {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
-	}
-
-	var session struct {
-		AccessSecretHash string `json:"access_secret_hash"`
-	}
-	if err := json.Unmarshal(payload, &session); err != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
-	}
-
-	// So sánh SHA256 hash của access_secret nhận được
-	incomingHash := security.HashTokenSHA256(accessSecret)
-	if session.AccessSecretHash != incomingHash {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	return &iamEntity.VerifySessionResult{
-		Valid:  true,
-		UserID: claims.Subject,
-		Role:   "SRE",
-	}, nil
 }
 
 // VerifyUserTrinitySession xác thực thông tin đăng nhập của End-User thông thường qua gRPC
@@ -659,16 +606,16 @@ func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string
 		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
 
-	var session struct {
-		AccessSecretHash string `json:"access_secret_hash"`
-	}
-	if err := json.Unmarshal(payload, &session); err != nil {
+	var pb iamproto.UserAccessSession
+	err = proto.Unmarshal(payload, &pb)
+	if err != nil {
 		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}
+	ash := pb.Ash
 
 	// So sánh SHA256 hash của access_secret nhận được
 	incomingHash := security.HashTokenSHA256(accessSecret)
-	if session.AccessSecretHash != incomingHash {
+	if ash != incomingHash {
 		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 

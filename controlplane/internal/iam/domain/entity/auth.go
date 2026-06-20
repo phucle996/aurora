@@ -46,6 +46,7 @@ type LoginRequest struct {
 	Username        string
 	Password        string
 	DevicePublicKey string
+	TrustDevice     bool
 	IP              *string
 	UserAgent       *string
 	DeviceName      string

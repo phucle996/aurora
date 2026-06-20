@@ -223,3 +223,41 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 	}
 	return &ctxOut, nil
 }
+
+// CreateRefreshTokenSession lưu trực tiếp một thực thể RefreshToken mới vào bảng database refresh_tokens.
+// Đây là hàm hỗ trợ cho flow Login ban đầu khi chọn trust_device, giảm thiểu logic trung gian.
+func (r *RefreshTokenRepository) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
+	// Khởi tạo câu lệnh INSERT chèn trực tiếp dòng dữ liệu phiên làm việc
+	query := fmt.Sprintf(`
+		INSERT INTO %s.refresh_tokens (
+			id,
+			user_id,
+			device_id,
+			token_hash,
+			token_family_id,
+			tenant_id,
+			issued_at,
+			expires_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, r.schema)
+
+	// Thực thi câu lệnh SQL với các tham số truyền vào
+	if _, err := r.db.Exec(
+		ctx,
+		query,
+		token.ID,
+		token.UserID,
+		token.DeviceID,
+		token.TokenHash,
+		token.TokenFamilyID,
+		token.TenantID,
+		token.IssuedAt,
+		token.ExpiresAt,
+	); err != nil {
+		return fmt.Errorf("iam repo: create refresh token session: %w", err)
+	}
+
+	return nil
+}
+

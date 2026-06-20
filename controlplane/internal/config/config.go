@@ -26,16 +26,15 @@ import (
 
 // Config là cấu trúc cấu hình gốc gom nhóm tất cả các cấu hình thành phần.
 type Config struct {
-	App        AppCfg
-	Security   SecurityCfg
-	Psql       PsqlCfg
-	Redis      RedisCfg
-	RedisJob   RedisCfg
-	GRPC       GRPCCfg
-	Telegram   TelegramCfg
-	OTel       OTelCfg
-	SchemaSQL  SchemaSQLCfg
-	Agent      AgentCfg
+	App       AppCfg
+	Security  SecurityCfg
+	Psql      PsqlCfg
+	Redis     RedisCfg
+	RedisJob  RedisCfg
+	GRPC      GRPCCfg
+	Telegram  TelegramCfg
+	OTel      OTelCfg
+	SchemaSQL SchemaSQLCfg
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -142,20 +141,11 @@ type GRPCCfg struct {
 	ClientCACertPath string
 }
 
-
-
 // SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
 	Core string
 	IAM  string
 	Mail string
-}
-
-// AgentCfg chứa cấu hình cấp phát chứng chỉ mTLS cho các Agent kết nối vào gRPC Server.
-type AgentCfg struct {
-	CACertPath string
-	CAKeyPath  string
-	CertTTL    time.Duration
 }
 
 // LoadConfig đọc cấu hình từ environment variables của hệ thống.
@@ -183,15 +173,15 @@ func LoadConfig() *Config {
 
 		Security: SecurityCfg{
 			RuntimeMasterKey:          strings.TrimSpace(getEnv("SECURITY_RUNTIME_MASTER_KEY", "")),
-			AccessSecretTTL:           15 * time.Minute,
+			AccessSecretTTL:           30 * time.Minute,
 			OneTimeTokenTTL:           15 * time.Minute,
-			RefreshTokenTTL:           168 * time.Hour,
+			RefreshTokenTTL:           30 * 24 * time.Hour,
 			AdminAPITokenTTL:          15 * 24 * time.Hour,
-			DeviceActiveTTL:           168 * time.Hour,
+			DeviceActiveTTL:           30 * 24 * time.Hour,
 			AdminSessionTTL:           30 * time.Minute,
 			AdminTrustedDeviceTTL:     30 * 24 * time.Hour,
 			OAuthAuthorizationCodeTTL: 5 * time.Minute,
-			SecretCacheTTL:            30 * time.Second,
+			SecretCacheTTL:            300 * time.Second,
 		},
 		Psql: PsqlCfg{
 			Host:          getEnv("PSQL_HOST", "localhost"),
@@ -280,11 +270,6 @@ func LoadConfig() *Config {
 			Core: "core",
 			IAM:  "iam",
 			Mail: "mail",
-		},
-		Agent: AgentCfg{
-			CACertPath: getEnv("AGENT_CA_CERT_PATH", ""),
-			CAKeyPath:  getEnv("AGENT_CA_KEY_PATH", ""),
-			CertTTL:    8760 * time.Hour,
 		},
 	}
 }

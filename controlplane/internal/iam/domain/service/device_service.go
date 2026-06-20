@@ -32,4 +32,5 @@ type DeviceService interface {
 	EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string)
 	ReconcileDeviceCap(ctx context.Context, batch int) (int, error)
 	PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string)
+	ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
 }

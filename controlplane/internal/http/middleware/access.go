@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,12 +42,14 @@ import (
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
 	middlewareMetrics "controlplane/internal/http/middleware/metrics"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 // accessMiddleware nắm giữ dependency runtime cho middleware Access.
@@ -271,12 +274,17 @@ func Access(opts ...AccessOption) gin.HandlerFunc {
 		}
 		middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "hit")
 
-		var record userAccessSession
-		if jsonErr := json.Unmarshal(rawPayload, &record); jsonErr != nil {
+		var pb iamproto.UserAccessSession
+		if err := proto.Unmarshal(rawPayload, &pb); err != nil {
 			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "invalid_session_payload")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
+		}
+		record := userAccessSession{
+			AccessSecretHash: pb.Ash,
+			TrackedDeviceID:  pb.Tdid,
+			LastSeenAt:       pb.Lsa,
 		}
 
 		// Đối khớp access_secret cookie với hash lưu trong Redis
@@ -321,6 +329,15 @@ func Access(opts ...AccessOption) gin.HandlerFunc {
 		// Tiêm Identity vào Go standard context
 		goCtx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
 		c.Request = c.Request.WithContext(goCtx)
+
+		// [COMMENT]: Gửi header X-Session-Expires-In (giây) để Frontend biết session còn sống bao lâu.
+		// Frontend dùng giá trị này để tự động gọi trinity-refresh khi ≤ 900s còn lại.
+		ttlCtx, ttlCancel := context.WithTimeout(c.Request.Context(), 50*time.Millisecond)
+		ttlResult, ttlErr := registry.L2.Client().TTL(ttlCtx, sessionKey).Result()
+		ttlCancel()
+		if ttlErr == nil && ttlResult > 0 {
+			c.Header("X-Session-Expires-In", fmt.Sprintf("%d", int64(ttlResult.Seconds())))
+		}
 
 		c.Next()
 

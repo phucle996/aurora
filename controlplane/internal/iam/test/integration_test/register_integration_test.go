@@ -174,8 +174,10 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, nil, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
+	registerSvc := iamSvcImpl.NewAuthService(cfg, repo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("login_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Login User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -184,8 +186,8 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
-	result, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	result, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}

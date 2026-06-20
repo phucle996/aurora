@@ -92,6 +92,7 @@ graph LR
     - Recovery Code: Lock distributed chống double-consume (NX PX 5s qua LUA Script) và cập nhật soft-delete code trong PostgreSQL.
   - **Self-Healing Key Rotation**: Nếu ClientDeviceID đã tồn tại nhưng gửi khóa công khai Ed25519 khác (do browser dọn dẹp IndexedDB), ghi đè (luân chuyển) khóa công khai mới trực tiếp vào dòng cũ bằng SQL `ON CONFLICT DO UPDATE` thay vì block đăng nhập.
   - **Zone-scoped Isolation**: Session key lưu Redis bắt buộc dạng `admin_access_session:<accessKey>:<zoneID>`. Bất kỳ sự thay đổi trái phép zoneID nào trong token JWT đều dẫn đến cache miss trên Redis L2.
+  - **Protobuf Binary Serialization**: Session payload lưu trong Redis sử dụng 100% Protocol Buffers binary để tối ưu hóa CPU (tránh reflection) và giảm thiểu tối đa dung lượng mạng, không còn duy trì và giải mã định dạng JSON thô.
   - **Secure Cookie**: Tất cả các cookies (trừ `zone_code`) bắt buộc có thuộc tính `Secure`, `HttpOnly`, `SameSite=Lax` và giới hạn Path `/admin`.
 - **Mã nguồn thực thi (Code Callsites)**:
   - **Trang Login UI**: [Login.tsx](file:///home/phucle/Desktop/New/admin-ui/src/pages/auth/Login.tsx) $\rightarrow$ Hàm `onSubmit` (~L75-L137).

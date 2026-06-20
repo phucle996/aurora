@@ -63,12 +63,24 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.AuthHandler.Login,
 	)
 
-	// 3) Làm mới Token (Refresh): Yêu cầu định danh qua Access Guard & Rate Limit
+	// 3) Opaque Refresh Token (Kiểu 2): Tái cấp phát phiên mới khi trinity đã hết hạn.
+	// Route này KHÔNG yêu cầu Access middleware vì trinity đã chết. Chỉ cần cookie refresh_token.
+	// Use case: user đóng browser, hôm sau quay lại → trinity hết hạn nhưng refresh token (30 ngày) còn sống.
 	router.POST("/api/v1/auth/refresh",
-		middleware.Access(),
-		middleware.ZoneRequired(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/refresh"),
 		module.RefreshTokenHandler.Refresh,
+	)
+
+	// 3b) Trinity Refresh (Kiểu 1): Gia hạn phiên đang dùng khi session sắp hết (≤ 900s).
+	// Route này YÊU CẦU Access middleware vì trinity phải còn sống trong Redis.
+	// Frontend tự động gọi khi nhận X-Session-Expires-In ≤ 900.
+	router.POST("/api/v1/auth/trinity-refresh",
+		middleware.Access(
+			middleware.WithInjectAccessKey(),
+			middleware.WithInjectAccessSecret(),
+		),
+		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/trinity-refresh"),
+		module.RefreshTokenHandler.TrinityRefresh,
 	)
 
 	// 4) Lấy thông tin phiên làm việc hiện tại
@@ -80,7 +92,10 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 5) Đăng xuất tài khoản
 	router.POST("/api/v1/auth/logout",
-		middleware.Access(),
+		middleware.Access(
+			middleware.WithInjectAccessKey(),
+			middleware.WithInjectAccessSecret(),
+		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/logout"),
 		module.AuthHandler.Logout,
 	)
@@ -150,7 +165,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		),
 		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/refresh"),
-		module.AdminAuthHandler.Refresh,
+		module.RefreshTokenHandler.AdminRefresh,
 	)
 
 	// 14) Xoay vòng khoá bảo mật Admin (Rotate Key) - HÀNH ĐỘNG CỰC KỲ NHẠY CẢM:

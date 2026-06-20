@@ -4,6 +4,7 @@ export type LoginRequest = {
   username: string;
   password: string;
   device_public_key: string;
+  trust_device: boolean;
 };
 
 export type RegisterRequest = {
@@ -38,7 +39,25 @@ export async function register(
   });
 }
 
+// [COMMENT]: Gọi logout endpoint để xoá runtime session trong Redis + revoke refresh token trong DB.
+// Best-effort: nếu thất bại (network error, 401) vẫn tiếp tục clear client state.
+export async function logout(
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  try {
+    await fetchJSON<void>("/api/v1/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      signal: options.signal,
+    });
+  } catch {
+    // [COMMENT]: Logout thất bại ở server nhưng client vẫn cần clear local state.
+    // Không throw — caller sẽ tự clear localStorage và redirect.
+  }
+}
+
 export const authAPI = {
   login,
   register,
+  logout,
 };

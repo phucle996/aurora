@@ -12,7 +12,8 @@ type RegisterRequest struct {
 }
 
 type LoginRequest struct {
-	Username        string `json:"username" binding:"required,min=6"`
-	Password        string `json:"password" binding:"required,min=8"`
+	Username        string `json:"username" binding:"required"`
+	Password        string `json:"password" binding:"required"`
 	DevicePublicKey string `json:"device_public_key" binding:"required,min=16"`
+	TrustDevice     bool   `json:"trust_device"`
 }

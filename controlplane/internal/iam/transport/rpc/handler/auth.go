@@ -6,16 +6,20 @@ import (
 	"controlplane/internal/iam/transport/rpc/proto"
 )
 
-// AuthGRPCHandler là thin gRPC transport handler, nhận request và ủy quyền xử lý cho AuthService
+// AuthGRPCHandler là thin gRPC transport handler, nhận request và ủy quyền xử lý cho các service tương ứng.
 type AuthGRPCHandler struct {
 	iamproto.UnimplementedAuthServiceServer
-	authService iamSvcInterface.AuthService // Tầng nghiệp vụ xử lý chính
+	authService        iamSvcInterface.AuthService        // Tầng nghiệp vụ xử lý chính cho User
+	adminAPIKeyService iamSvcInterface.AdminAPIKeyService // Tầng nghiệp vụ xử lý chính cho Admin
 }
 
 // NewAuthGRPCHandler khởi tạo mới một AuthGRPCHandler
-func NewAuthGRPCHandler(authService iamSvcInterface.AuthService) *AuthGRPCHandler {
+func NewAuthGRPCHandler(authService iamSvcInterface.AuthService, adminAPIKeyService iamSvcInterface.AdminAPIKeyService) *AuthGRPCHandler {
 	// [ignoring loop detection]
-	return &AuthGRPCHandler{authService: authService}
+	return &AuthGRPCHandler{
+		authService:        authService,
+		adminAPIKeyService: adminAPIKeyService,
+	}
 }
 
 // VerifyAdminTrinityToken tiếp nhận và xử lý yêu cầu xác thực Admin qua gRPC
@@ -25,8 +29,8 @@ func (h *AuthGRPCHandler) VerifyAdminTrinityToken(ctx context.Context, req *iamp
 		return &iamproto.VerifyAdminTrinityTokenResponse{Valid: false}, nil
 	}
 
-	// 2. Gọi hàm nghiệp vụ tại AuthService để xác thực phiên
-	res, err := h.authService.VerifyAdminTrinitySession(ctx, req.AdminApiToken, req.AccessKey, req.AccessSecret)
+	// 2. Gọi hàm nghiệp vụ tại AdminAPIKeyService để xác thực phiên
+	res, err := h.adminAPIKeyService.VerifyAdminTrinitySession(ctx, req.AdminApiToken, req.AccessKey, req.AccessSecret)
 	if err != nil {
 		return &iamproto.VerifyAdminTrinityTokenResponse{Valid: false}, nil
 	}

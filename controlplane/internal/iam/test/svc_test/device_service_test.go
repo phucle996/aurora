@@ -86,6 +86,10 @@ func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Co
 	return 0, nil
 }
 
+func (m *refreshRepoMock) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
+	return nil
+}
+
 func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error) {
 	return m.revokeFn(ctx, userID, &deviceID)
 }

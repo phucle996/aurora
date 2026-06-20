@@ -2,6 +2,8 @@ package iamSvcImpl
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -338,4 +340,23 @@ func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid
 		_ = s.deviceRepo.InsertAuditEvent(bgCtx, &userID, event, severity, ip, userAgent)
 		iamMetrics.ServiceCall(bgCtx, iamMetrics.OutcomeSuccess)
 	}()
+}
+
+func (s *DeviceService) ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+	// [COMMENT]: Tính toán vân tay (fingerprint) của khóa công khai thiết bị để tra cứu.
+	fp := sha256.Sum256([]byte(devicePublicKey))
+	fingerprint := hex.EncodeToString(fp[:])
+
+	// [COMMENT]: Truy vấn danh sách thiết bị của user từ repository để tìm thiết bị trùng khớp vân tay khóa.
+	// Hạn chế limit = 100 để bảo đảm an toàn cho các truy vấn danh sách thiết bị lớn.
+	devices, err := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
+	if err != nil {
+		return "", err
+	}
+	for _, dev := range devices {
+		if dev.PublicKeyFingerprint == fingerprint && dev.ClientDeviceID != nil {
+			return *dev.ClientDeviceID, nil
+		}
+	}
+	return "", nil
 }

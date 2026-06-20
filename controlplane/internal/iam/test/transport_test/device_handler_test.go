@@ -56,6 +56,9 @@ func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (
 	return 0, nil
 }
 func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {}
+func (s *deviceServiceStub) ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+	return "", nil
+}
 
 var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 

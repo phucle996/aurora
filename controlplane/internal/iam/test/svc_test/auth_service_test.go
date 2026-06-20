@@ -127,9 +127,60 @@ func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (
 }
 func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
 }
+func (s *deviceServiceStub) ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+	return "", nil
+}
+
+type sessionRefreshServiceStub struct {
+	createUserOpaqueSessionFn func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
+}
+
+var _ iamSvcInterface.SessionRefreshService = (*sessionRefreshServiceStub)(nil)
+
+func (s *sessionRefreshServiceStub) CreateUserOpaqueSession(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+	if s.createUserOpaqueSessionFn != nil {
+		return s.createUserOpaqueSessionFn(ctx, userID, deviceID)
+	}
+	return "mock-refresh-token", time.Now().UTC().Add(24 * time.Hour), nil
+}
+
+func (s *sessionRefreshServiceStub) RefreshUserOpaque(ctx context.Context, rawRefreshToken string) (*iamEntity.RefreshTokenResult, error) {
+	return nil, nil
+}
+
+func (s *sessionRefreshServiceStub) RefreshUserTrinity(ctx context.Context, userID uuid.UUID, oldAccessKey, oldAccessSecret string) (*iamEntity.TrinityRefreshResult, error) {
+	return nil, nil
+}
+
+func (s *sessionRefreshServiceStub) RefreshAdminTrinity(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
+	return iamEntity.AdminLoginResult{}, nil
+}
+
+func (s *sessionRefreshServiceStub) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error {
+	return nil
+}
+
+func (s *sessionRefreshServiceStub) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error {
+	return nil
+}
 
 func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
-	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, nil, &deviceServiceStub{}, registry, nil, nil)
+	refreshStub := &sessionRefreshServiceStub{
+		createUserOpaqueSessionFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+			token := iamEntity.RefreshToken{
+				ID:            uuid.New(),
+				UserID:        userID,
+				DeviceID:      &deviceID,
+				TokenHash:     "mock-hash",
+				TokenFamilyID: uuid.New(),
+				IssuedAt:      time.Now().UTC(),
+				ExpiresAt:     time.Now().UTC().Add(24 * time.Hour),
+			}
+			err := repo.CreateRefreshTokenSession(ctx, token)
+			return "mock-refresh-token", token.ExpiresAt, err
+		},
+	}
+	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, refreshStub, &deviceServiceStub{}, registry, nil, nil)
 }
 
 func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
@@ -381,7 +432,7 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 		},
 	}, makeTestRegistry("secret-key", nil))
 
-	result, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	result, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}

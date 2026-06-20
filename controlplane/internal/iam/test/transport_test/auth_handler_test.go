@@ -20,7 +20,6 @@ import (
 	constant "controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // authServiceStub là mock service để kiểm thử hành vi của handler độc lập
@@ -36,7 +35,7 @@ func (s *authServiceStub) RegisterAccount(ctx context.Context, user iamEntity.Us
 	return s.err
 }
 
-func (s *authServiceStub) Logout(ctx context.Context, userID uuid.UUID, accessKey string, accessSecret string) error {
+func (s *authServiceStub) Logout(ctx context.Context) error {
 	return nil
 }
 
@@ -44,13 +43,12 @@ func (s *authServiceStub) Login(ctx context.Context, req iamEntity.LoginRequest)
 	return s.loginResult, s.loginErr
 }
 
-func (s *authServiceStub) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
-	return nil, nil
-}
 
 func (s *authServiceStub) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
 	return nil, nil
 }
+
+
 
 func newAuthHandler(service iamSvcInterface.AuthService) *handler.AuthHandler {
 	cfg := config.LoadConfig()

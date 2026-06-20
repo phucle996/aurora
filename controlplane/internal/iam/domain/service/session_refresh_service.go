@@ -1,0 +1,29 @@
+package iamSvcInterface
+
+import (
+	"context"
+	"time"
+
+	iamEntity "controlplane/internal/iam/domain/entity"
+	"github.com/google/uuid"
+)
+
+// SessionRefreshService quản lý tất cả các hoạt động làm mới/gia hạn phiên làm việc
+// của cả End-User và SRE Admin nhằm tối ưu hóa hiệu năng, giảm tải (de-bloat) cho các service khác.
+type SessionRefreshService interface {
+	// CreateUserOpaqueSession tạo mới một session refresh token đục (opaque) khi đăng nhập thành công trên thiết bị tin cậy.
+	CreateUserOpaqueSession(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
+
+	// 1. Opaque Refresh Token (Kiểu 2) cho End-User — phục hồi session qua DB Postgres
+	RefreshUserOpaque(ctx context.Context, rawRefreshToken string) (*iamEntity.RefreshTokenResult, error)
+
+	// 2. Trinity Refresh (Kiểu 1) cho End-User — sliding session qua Redis L2
+	RefreshUserTrinity(ctx context.Context, userID uuid.UUID, oldAccessKey, oldAccessSecret string) (*iamEntity.TrinityRefreshResult, error)
+
+	// 3. Trinity Refresh cho SRE Admin — sliding session qua Redis L2 kèm CAS versioning
+	RefreshAdminTrinity(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
+
+	// Các phương thức phụ trợ thu hồi refresh token của user
+	RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error
+	RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error
+}

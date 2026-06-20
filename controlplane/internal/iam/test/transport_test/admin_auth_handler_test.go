@@ -24,8 +24,7 @@ import (
 
 type adminAuthServiceStub struct {
 	loginFn   func(ctx context.Context, req iamEntity.AdminLoginRequest) (iamEntity.AdminLoginResult, error)
-	refreshFn func(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
-	logoutFn  func(ctx context.Context, accessKey string, ip *string, userAgent *string) error
+	logoutFn  func(ctx context.Context, ip *string, userAgent *string) error
 	rotateFn  func(ctx context.Context) error
 }
 
@@ -38,18 +37,13 @@ func (s *adminAuthServiceStub) AdminLogin(ctx context.Context, req iamEntity.Adm
 	}
 	return iamEntity.AdminLoginResult{}, nil
 }
-func (s *adminAuthServiceStub) AdminLogout(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
+func (s *adminAuthServiceStub) AdminLogout(ctx context.Context, ip *string, userAgent *string) error {
 	if s.logoutFn != nil {
-		return s.logoutFn(ctx, accessKey, ip, userAgent)
+		return s.logoutFn(ctx, ip, userAgent)
 	}
 	return nil
 }
-func (s *adminAuthServiceStub) RefreshAdminSession(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
-	if s.refreshFn != nil {
-		return s.refreshFn(ctx, zoneCode, ip, userAgent)
-	}
-	return iamEntity.AdminLoginResult{}, nil
-}
+
 func (s *adminAuthServiceStub) RotateAdminAPIKeyEmergency(ctx context.Context) error {
 	if s.rotateFn != nil {
 		return s.rotateFn(ctx)
@@ -64,6 +58,9 @@ func (s *adminAuthServiceStub) FinalizeInactiveSessions(ctx context.Context, ina
 }
 func (s *adminAuthServiceStub) GetPublicKeyFromSession(ctx context.Context, accessKey string) (string, error) {
 	return "", nil
+}
+func (s *adminAuthServiceStub) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
+	return nil, nil
 }
 
 func newAdminAuthHandler(svc iamSvc.AdminAPIKeyService) *handler.AdminAuthHandler {
@@ -206,7 +203,11 @@ func TestAdminAuthHandlerLoginInternalWithAppError(t *testing.T) {
 func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
+	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, ip *string, userAgent *string) error {
+		var accessKey string
+		if ident, ok := ctx.Value(cookie.IdentityKey).(*cookie.Identity); ok && ident != nil {
+			accessKey = ident.AccessKey
+		}
 		if accessKey != "device-1" {
 			t.Fatalf("expected access key propagated")
 		}
@@ -218,7 +219,11 @@ func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 		}
 		return nil
 	}})
-	r.POST("/admin/auth/logout", h.Logout)
+	r.POST("/admin/auth/logout", func(c *gin.Context) {
+		ident := &cookie.Identity{AccessKey: "device-1"}
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), cookie.IdentityKey, ident))
+		c.Next()
+	}, h.Logout)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-1"})
@@ -245,10 +250,14 @@ func TestAdminAuthHandlerLogoutClearsThreeCookies(t *testing.T) {
 func TestAdminAuthHandlerLogoutInternalError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
+	h := newAdminAuthHandler(&adminAuthServiceStub{logoutFn: func(ctx context.Context, ip *string, userAgent *string) error {
 		return errors.New("boom")
 	}})
-	r.POST("/admin/auth/logout", h.Logout)
+	r.POST("/admin/auth/logout", func(c *gin.Context) {
+		ident := &cookie.Identity{AccessKey: "device-1"}
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), cookie.IdentityKey, ident))
+		c.Next()
+	}, h.Logout)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-1"})
@@ -305,90 +314,4 @@ func TestAdminAuthHandlerSessionAuthenticated(t *testing.T) {
 	}
 }
 
-func TestAdminAuthHandlerRefreshMissingZoneCode(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	h := newAdminAuthHandler(&adminAuthServiceStub{})
-	r.POST("/admin/auth/refresh", h.Refresh)
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/auth/refresh", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 got %d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "zone_code query parameter is required") {
-		t.Fatalf("expected missing parameter error message, got: %s", w.Body.String())
-	}
-}
-
-func TestAdminAuthHandlerRefreshSuccess(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	refreshCalled := false
-	h := newAdminAuthHandler(&adminAuthServiceStub{refreshFn: func(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
-		refreshCalled = true
-		if zoneCode != "vn-hn-1" {
-			t.Fatalf("expected zoneCode propagated, got %s", zoneCode)
-		}
-		return iamEntity.AdminLoginResult{
-			AdminAPIToken: "new-token",
-			AccessKey:     "new-device-1",
-			AccessSecret:  "new-secret-1",
-			ExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
-		}, nil
-	}})
-	r.POST("/admin/auth/refresh", h.Refresh)
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/auth/refresh?zone_code=vn-hn-1", nil)
-	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-1"})
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 got %d", w.Code)
-	}
-	if !refreshCalled {
-		t.Fatalf("expected service refresh function to be called")
-	}
-}
-
-func TestAdminAuthHandlerRefreshFallbackToCookie(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	refreshCalled := false
-
-	// Khởi tạo handler với stub service
-	h := newAdminAuthHandler(&adminAuthServiceStub{refreshFn: func(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
-		refreshCalled = true
-		// Kiểm tra xem zoneCode có được fallback lấy từ cookie hay không
-		if zoneCode != "vn-hn-2" {
-			t.Fatalf("expected zoneCode resolved from cookie, got %s", zoneCode)
-		}
-		return iamEntity.AdminLoginResult{
-			AdminAPIToken: "new-token-2",
-			AccessKey:     "new-device-2",
-			AccessSecret:  "new-secret-2",
-			ExpiresAt:     time.Now().UTC().Add(10 * time.Minute),
-		}, nil
-	}})
-	r.POST("/admin/auth/refresh", h.Refresh)
-
-	// Gửi request POST tới /admin/auth/refresh KHÔNG mang query parameter zone_code
-	req := httptest.NewRequest(http.MethodPost, "/admin/auth/refresh", nil)
-	// Đính kèm cookie zone_code và access_key
-	req.AddCookie(&http.Cookie{Name: cookie.ZoneCodeName, Value: "vn-hn-2"})
-	req.AddCookie(&http.Cookie{Name: cookie.AccessKeyName, Value: "device-2"})
-
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	// Đảm bảo request thành công (200 OK) nhờ fallback cookie
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 got %d, body: %s", w.Code, w.Body.String())
-	}
-	if !refreshCalled {
-		t.Fatalf("expected service refresh function to be called")
-	}
-}

@@ -26,7 +26,8 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -35,14 +36,13 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
-	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, makeIntegrationRegistry(rdb))
-	refreshResult, err := refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
+	refreshResult, err := refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 		t.Fatalf("expected 1 refresh token row after rotate, got %d", count)
 	}
 
-	_, err = refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
+	_, err = refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected old refresh token to be invalid, got %v", err)
 	}
@@ -81,7 +81,8 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_pending")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -90,8 +91,8 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
-	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
@@ -99,8 +100,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("deactivate user: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, makeIntegrationRegistry(rdb))
-	_, err = refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
+	_, err = refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected invalid session for blocked user, got %v", err)
 	}
@@ -125,7 +125,8 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
 	username, email := testutil.UniqueIdentity("refresh_claims")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Claims User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -134,14 +135,13 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
-	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshSvc := iamSvcImpl.NewRefreshTokenService(cfg, refreshRepo, makeIntegrationRegistry(rdb))
-	refreshResult, err := refreshSvc.Refresh(context.Background(), loginResult.RefreshToken)
+	refreshResult, err := refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)
 	}

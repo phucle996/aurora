@@ -3,9 +3,7 @@ package iamHandler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -198,128 +196,6 @@ func (h *AdminAuthHandler) Session(c *gin.Context) {
 	apires.RespondSuccess(c, map[string]any{"authenticated": true}, "ok")
 }
 
-// Refresh godoc
-// @Summary Admin refresh session
-// @Description Làm mới admin session bằng cookie runtime hiện có và cập nhật thời hạn phiên.
-// @Tags admin-auth
-// @Produce json
-// @Success 200 {object} map[string]interface{} "ok"
-// @Failure 401 {object} map[string]interface{} "unauthorized"
-// @Failure 500 {object} map[string]interface{} "internal_error"
-// @Router /admin/auth/refresh [post]
-func (h *AdminAuthHandler) Refresh(c *gin.Context) {
-	const op = "iam.admin_auth.refresh"
-	// Khởi tạo context với timeout và tiêm tên operation vào context
-	ctx := constant.WithOperation(c.Request.Context(), "admin_refresh")
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Lấy zone_code từ query parameter trước
-	zoneCode := strings.TrimSpace(c.Query("zone_code"))
-	if zoneCode == "" {
-		// Nếu query param rỗng, fallback thử đọc từ Cookie (do browser tự đính kèm qua credentials)
-		if cookieVal, err := c.Cookie(cookie.ZoneCodeName); err == nil {
-			zoneCode = strings.TrimSpace(cookieVal)
-		}
-	}
-
-	// Nếu vẫn trống -> Trả lỗi 400 Bad Request
-	if zoneCode == "" {
-		logger.HandlerWarn(c, op, fmt.Errorf("missing zone_code query parameter and cookie"), "admin refresh rejected")
-		apires.RespondBadRequest(c, "zone_code query parameter is required")
-		return
-	}
-
-	logger.HandlerInfo(c, op, fmt.Sprintf("admin refresh session initiated for zone: %s", zoneCode))
-
-	var requestIP *string
-	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
-		requestIP = &ip
-	}
-	var userAgent *string
-	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
-		userAgent = &ua
-	}
-	result, err := h.svc.RefreshAdminSession(ctx, zoneCode, requestIP, userAgent)
-	if err != nil {
-		switch {
-		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
-			logger.HandlerWarn(c, op, err, "admin refresh unauthorized")
-			apires.RespondUnauthorized(c, "unauthorized")
-			return
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-			return
-		}
-	}
-
-	secure := isSecureRequest(c)
-	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-	maxAge := int(time.Until(result.ExpiresAt).Seconds())
-	http.SetCookie(c.Writer,
-		&http.Cookie{
-			Name:     cookie.AdminAPITokenName,
-			Value:    result.AdminAPIToken,
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  result.ExpiresAt,
-			MaxAge:   maxAge,
-		})
-	http.SetCookie(c.Writer,
-		&http.Cookie{Name: cookie.AccessKeyName,
-			Value:    result.AccessKey,
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  result.ExpiresAt,
-			MaxAge:   maxAge})
-	http.SetCookie(c.Writer,
-		&http.Cookie{Name: cookie.AccessSecretName,
-			Value:    result.AccessSecret,
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  result.ExpiresAt,
-			MaxAge:   maxAge})
-	http.SetCookie(c.Writer,
-		&http.Cookie{Name: cookie.ZoneCodeName,
-			Value:    zoneCode,
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  result.ExpiresAt,
-			MaxAge:   maxAge})
-
-	// Gia hạn Cookie định danh thiết bị dài hạn (365 ngày) tương tự như luồng Login
-	cdidExpires := time.Now().UTC().Add(365 * 24 * time.Hour)
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.ClientDeviceIDName,
-		Value:    result.ClientDeviceID.String(),
-		Path:     "/admin",
-		Domain:   domain,
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  cdidExpires,
-		MaxAge:   int(time.Until(cdidExpires).Seconds()),
-	})
-
-	logger.HandlerInfo(c, op, "admin refresh successful")
-
-	c.Header("X-Session-Expires-In", strconv.Itoa(maxAge))
-	apires.RespondSuccess(c, nil, "ok")
-}
-
 // Logout godoc
 // @Summary Admin logout
 // @Description Xóa runtime session admin: clear cookies admin_api_token, access_key, access_secret và cleanup runtime secret trong Redis.
@@ -335,66 +211,6 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	accessKey, _ := c.Cookie(cookie.AccessKeyName)
-	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		if ident.AccessKey != "" {
-			accessKey = ident.AccessKey
-		}
-	}
-	trimmedAccessKey := strings.TrimSpace(accessKey)
-	if trimmedAccessKey == "" {
-		// Nhánh 1: Client không có session key (chưa đăng nhập hoặc cookie đã mất).
-		// Không cần gọi backend thu hồi, chỉ cần xóa sạch cookie phía Client để đồng bộ trạng thái và trả về 204.
-		secure := isSecureRequest(c)
-		domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-		exp := time.Unix(0, 0)
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookie.AdminAPITokenName,
-			Value:    "",
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  exp,
-			MaxAge:   -1,
-		})
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookie.AccessKeyName,
-			Value:    "",
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  exp,
-			MaxAge:   -1,
-		})
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookie.AccessSecretName,
-			Value:    "",
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  exp,
-			MaxAge:   -1,
-		})
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookie.ZoneCodeName,
-			Value:    "",
-			Path:     "/admin",
-			Domain:   domain,
-			HttpOnly: true,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  exp,
-			MaxAge:   -1,
-		})
-		c.Status(http.StatusNoContent)
-		return
-	}
 	var requestIP *string
 	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
 		requestIP = &ip
@@ -403,14 +219,15 @@ func (h *AdminAuthHandler) Logout(c *gin.Context) {
 	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
 		userAgent = &ua
 	}
-	if err := h.svc.AdminLogout(ctx, trimmedAccessKey, requestIP, userAgent); err != nil {
+
+	err := h.svc.AdminLogout(ctx, requestIP, userAgent)
+	if err != nil && !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return
 	}
 
-	// Nhánh 2: Gọi backend thu hồi session thành công.
-	// Tiến hành xóa cookie phía Client để hoàn tất quá trình đăng xuất.
+	// Luôn thực hiện xóa cookie phía Client để hoàn tất quá trình đăng xuất.
 	secure := isSecureRequest(c)
 	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
 	exp := time.Unix(0, 0)

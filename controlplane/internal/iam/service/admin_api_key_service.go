@@ -28,7 +28,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -42,6 +41,7 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
@@ -51,6 +51,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+	"google.golang.org/protobuf/proto"
 )
 
 type AdminAPIKeyService struct {
@@ -575,7 +576,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 			//   - An toàn bảo mật: Do đăng nhập bắt buộc phải đi qua xác thực API Key và mã MFA (TOTP/Recovery Code) có độ
 			//     bảo mật cực cao, nếu hai yếu tố trên đúng thì danh tính SRE Admin đã được đảm bảo.
 			//   - Tính sẵn sàng & Tự phục hồi (Self-Healing): Khi khóa công khai gửi lên không khớp, ta ghi nhận log cảnh báo
-			//     nhưng cho phép đi tiếp. Sau khi verify MFA thành công, hàm repo.UpsertAdminDeviceBinding sẽ thực hiện GHI ĐÈ 
+			//     nhưng cho phép đi tiếp. Sau khi verify MFA thành công, hàm repo.UpsertAdminDeviceBinding sẽ thực hiện GHI ĐÈ
 			//     (overwrite/rotate) khóa công khai mới trực tiếp vào dòng của ClientDeviceID hiện tại thông qua mệnh đề ON CONFLICT DO UPDATE.
 			//     Quy trình này đảm bảo KHÔNG TẠO thiết bị mới trong database mà chỉ cập nhật khóa của thiết bị cũ.
 			if existingPubKey != canonicalPublicKey {
@@ -834,14 +835,22 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	// --- BƯỚC 8: THIẾT LẬP VÀ LIÊN KẾT PHIÊN LÀM VIỆC TRONG REDIS ---
 	// Khởi tạo bản ghi Live Runtime Session hoàn chỉnh trong Redis Cache sử dụng cacheEngine L2 Set.
 	now = time.Now().UTC()
-	session := map[string]interface{}{
-		"access_key":         accessKey.String(),
-		"access_secret_hash": security.HashTokenSHA256(accessSecret),
-		"tracked_device_id":  deviceBinding.ID.String(),
-		"device_public_key":  canonicalPublicKey,
-		"token_jti":          adminJTI.String(),
-		"version":            1,
-		"last_seen_at":       now.UTC().Unix(),
+	pbAdmin := &iamproto.AdminAccessSession{
+		AccessKey:         accessKey.String(),
+		AccessSecretHash:  security.HashTokenSHA256(accessSecret),
+		TrackedDeviceId:   deviceBinding.ID.String(),
+		DevicePublicKey:   canonicalPublicKey,
+		TokenJti:          adminJTI.String(),
+		Version:           1,
+		LastSeenAt:        now.UTC().Unix(),
+		LastSeenIp:        "",
+		LastSeenUserAgent: "",
+		LastSeenDirty:     false,
+	}
+	session, marshalErr := proto.Marshal(pbAdmin)
+	if marshalErr != nil {
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
+		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, marshalErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
 	// Lưu trữ session được phân vùng theo cả Access Key và Zone ID (Zone-scoped)
@@ -865,19 +874,12 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 	}, nil
 }
 
-// RefreshAdminSession cấp lại admin_api_token cho device đang active mà không
-// yêu cầu login lại bằng API key + MFA.
-func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
-	// --- KHỞI TẠO ĐO LƯỜNG TELEMETRY & METRICS ---
-
-	refreshOutcome := iamMetrics.OutcomeSuccess
-
-	defer func() {
-		iamMetrics.ServiceCall(ctx, refreshOutcome)
-	}()
-
-	// --- BƯỚC 1: TRÍCH XUẤT ACCESS KEY VÀ ZONE ID TỪ GO CONTEXT ---
-	// Trích xuất accessKey và zoneID trực tiếp từ Go standard context
+// AdminLogout thực hiện phế bỏ phiên làm việc của Admin ngay lập tức bằng cách xóa access key khỏi Redis Cache.
+// Để bảo toàn thông tin thiết bị cuối cùng mà không làm ảnh hưởng đến thời gian phản hồi (latency),
+// việc cập nhật thông tin thiết bị xuống Postgres Database được thực hiện bất đồng bộ (Asynchronous Background Flush)
+// dưới cơ chế bảo vệ cắt tải chủ động (Load Shedding) sử dụng context timeout 1 giây và chỉ ghi khi thực sự thay đổi (LastSeenDirty = true).
+func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, ip *string, userAgent *string) error {
+	// Trích xuất thông tin định danh Admin từ context
 	var accessKey string
 	var zoneID string
 	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
@@ -885,232 +887,7 @@ func (s *AdminAPIKeyService) RefreshAdminSession(ctx context.Context, zoneCode s
 		zoneID = ident.ZoneID
 	}
 	if strings.TrimSpace(accessKey) == "" {
-		refreshOutcome = iamMetrics.OutcomeFailure
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, refreshOutcome)
-	}
-	if zoneID == "" {
-		// Fallback về global nếu không tìm thấy thông tin phân vùng trong context
-		zoneID = "global"
-	}
-
-	// --- BƯỚC 2: PHÂN GIẢI MÃ PHÂN VÙNG THÀNH UUID QUA L1 CACHE REGISTRY ---
-	// [BUG FIX]: Khởi tạo mặc định là "global" thay vì chuỗi rỗng để đồng bộ với AdminLogin.
-	// Nếu để rỗng, middleware ZoneAuth sẽ nhận diện sai Admin thành User thường và trả 403.
-	resolvedZoneID := "global"
-	if !strings.EqualFold(zoneCode, "global") {
-		// Gọi L1 cache để phân giải zone_code -> zone_id (UUID)
-		val, err := s.cacheEngine.GetOrLoad(ctx, "zone_by_code", zoneCode)
-		if err != nil {
-			refreshOutcome = iamMetrics.OutcomeFailureUnknown
-			// Lỗi Cache L1 -> ErrInternalError
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
-		}
-		zoneIDStr, ok := val.(string)
-		if !ok || zoneIDStr == "" {
-			refreshOutcome = iamMetrics.OutcomeFailureUnknown
-			return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrZoneUnavailable, fmt.Errorf("invalid zone ID resolved from code: %s", zoneCode), iamMetrics.OutcomeFailureUnknown)
-		}
-		resolvedZoneID = zoneIDStr
-	}
-
-	// --- BƯỚC 3: TRUY VẤN VÀ KIỂM TRA PHIÊN LÀM VIỆC HIỆN TẠI TRONG REDIS ---
-
-	now := time.Now()
-	// Thực hiện truy vấn session key có chứa zoneID để đảm bảo phân vùng bảo mật
-	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
-	if err != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetAccessSession", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Lỗi Cache L2 -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
-	}
-	if !exists {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetAccessSession", iamMetrics.OutcomeInvalidCredential, time.Since(now), err)
-		refreshOutcome = iamMetrics.OutcomePreConditionFailed
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
-	}
-
-	var runtimeRecord struct {
-		AccessKey         string `json:"access_key"`
-		AccessSecretHash  string `json:"access_secret_hash"`
-		TrackedDeviceID   string `json:"tracked_device_id"`
-		DevicePublicKey   string `json:"device_public_key"`
-		TokenJTI          string `json:"token_jti"`
-		Version           int64  `json:"version"`
-		LastSeenAt        int64  `json:"last_seen_at"`
-		LastSeenIP        string `json:"last_seen_ip"`
-		LastSeenUserAgent string `json:"last_seen_user_agent"`
-	}
-	if err := json.Unmarshal(payload, &runtimeRecord); err != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "GetAccessSession", iamMetrics.OutcomeFailureUnknown, time.Since(now), err)
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Lỗi Unmarshal -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	// --- BƯỚC 4: THỰC THI SO SÁNH & GIA HẠN PHIÊN (COMPARE-AND-SWAP / Touch) ---
-	// Atomic CAS LUA Script trên Redis để kiểm chứng version và thiết lập trực tiếp TTL của phiên cũ về 10 giây.
-	// Việc thiết lập trực tiếp 10 giây ở đây giúp tối ưu hóa hiệu năng, loại bỏ hoàn toàn 1 lần ghi/RTT dư thừa xuống Redis ở cuối luồng.
-	ipValue := ""
-	if ip != nil {
-		ipValue = strings.TrimSpace(*ip)
-	}
-	uaValue := ""
-	if userAgent != nil {
-		uaValue = strings.TrimSpace(*userAgent)
-	}
-
-	// Xây dựng dataKey và versionKey chứa kèm zoneID để cô lập với các phân vùng khác
-	dataKey := "{admin_access_session:" + accessKey + ":" + zoneID + "}:data"
-	versionKey := "{admin_access_session:" + accessKey + ":" + zoneID + "}:version"
-
-	casLua := `
-local current_ver = redis.call('GET', KEYS[2])
-if not current_ver then
-  return 0
-end
-if tonumber(current_ver) ~= tonumber(ARGV[1]) then
-  return 0
-end
-
-local raw_data = redis.call('GET', KEYS[1])
-if not raw_data then
-  return 0
-end
-
-local obj = cjson.decode(raw_data)
-obj.version = tonumber(current_ver) + 1
-obj.last_seen_at = tonumber(ARGV[3])
-
-local newIp = ARGV[4]
-local newUA = ARGV[5]
-if newIp ~= '' and tostring(obj.last_seen_ip or '') ~= newIp then
-  obj.last_seen_ip = newIp
-  obj.last_seen_dirty = true
-end
-if newUA ~= '' and tostring(obj.last_seen_user_agent or '') ~= newUA then
-  obj.last_seen_user_agent = newUA
-  obj.last_seen_dirty = true
-end
-
-local payload = cjson.encode(obj)
-redis.call('SET', KEYS[1], payload, 'EX', tonumber(ARGV[2]))
-redis.call('SET', KEYS[2], tostring(obj.version), 'EX', tonumber(ARGV[2]))
-return 1
-`
-
-	resVal, casErr := s.cacheEngine.Exec.Execute(ctx, casLua, []string{dataKey, versionKey},
-		runtimeRecord.Version, 10, time.Now().UTC().Unix(), ipValue, uaValue)
-	if casErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Exec lock/touch lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, casErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	resInt, _ := resVal.(int64)
-	if resInt != 1 {
-		refreshOutcome = iamMetrics.OutcomeFailure
-		// CAS thất bại tức là phiên làm việc không hợp lệ (đã bị xoay/hết hạn hoặc version không khớp)
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeFailure)
-	}
-
-	now = time.Now().UTC()
-
-	// --- BƯỚC 5: SINH MỚI BỘ BA TRINITY CREDENTIALS (ACCESS KEY, SECRET, JTI) ---
-	// Sinh mới access key (UUID v7)
-	accessKeyNewUUID, uuidErr := uuid.NewV7()
-	if uuidErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// UUID sinh lỗi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	accessKeyNew := accessKeyNewUUID.String()
-
-	// Sinh mới access secret thô (48 bytes)
-	accessSecretNew, genErr := security.GenerateToken(48)
-	if genErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// GenerateToken fail trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, genErr, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	// Sinh mới token JTI (UUID v7)
-	tokenJTINewUUID, uuidErr := uuid.NewV7()
-	if uuidErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// UUID sinh lỗi trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, uuidErr, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	// --- BƯỚC 7: THIẾT LẬP PHIÊN LÀM VIỆC MỚI VÀO REDIS CACHE ---
-	sessionNew := map[string]interface{}{
-		"access_key":           accessKeyNew,
-		"access_secret_hash":   security.HashTokenSHA256(accessSecretNew),
-		"tracked_device_id":    runtimeRecord.TrackedDeviceID,
-		"device_public_key":    runtimeRecord.DevicePublicKey,
-		"token_jti":            tokenJTINewUUID.String(),
-		"version":              1,
-		"last_seen_at":         now.Unix(),
-		"last_seen_ip":         runtimeRecord.LastSeenIP,
-		"last_seen_user_agent": runtimeRecord.LastSeenUserAgent,
-	}
-
-	// Lưu phiên mới đã phân vùng theo resolvedZoneID
-	if err := s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKeyNew+":"+resolvedZoneID, sessionNew, 1, s.cfg.Security.AdminSessionTTL); err != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Set access session thất bại trả ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	// --- BƯỚC 8: KÝ LẠI TOKEN JWT MỚI VỚI ZONEID MỤC TIÊU ---
-	valNew, errNew := s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
-	if errNew != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Cache L1 lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errNew, iamMetrics.OutcomeFailureUnknown)
-	}
-	secretsNew, okNew := valNew.(*coreEntity.RuntimeSecrets)
-	if !okNew || secretsNew == nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Cấu hình secrets lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamMetrics.OutcomeFailureUnknown)
-	}
-
-	adminAPITokenNew, signErr := security.SignWithSecret(security.Claims{
-		// [BUG FIX]: Phải dùng "sre" để middleware ZoneAuth nhận diện đúng vai trò Admin (đồng bộ với AdminLogin).
-		Subject:   "sre",
-		AccessKey: accessKeyNew,
-		TokenID:   tokenJTINewUUID.String(),
-		TokenUse:  "admin_api",
-		ZoneID:    resolvedZoneID,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
-	}, secretsNew.Active.Secret)
-	if signErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		// Ký JWT lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, signErr, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	trackedUUID, _ := uuid.Parse(runtimeRecord.TrackedDeviceID)
-
-	return iamEntity.AdminLoginResult{
-		AdminAPIToken:  adminAPITokenNew,
-		AccessKey:      accessKeyNew,
-		AccessSecret:   accessSecretNew,
-		ClientDeviceID: trackedUUID,
-		ExpiresAt:      now.Add(s.cfg.Security.AdminSessionTTL),
-	}, nil
-}
-
-// AdminLogout thực hiện phế bỏ phiên làm việc của Admin ngay lập tức bằng cách xóa access key khỏi Redis Cache.
-// Để bảo toàn thông tin thiết bị cuối cùng mà không làm ảnh hưởng đến thời gian phản hồi (latency),
-// việc cập nhật thông tin thiết bị xuống Postgres Database được thực hiện bất đồng bộ (Asynchronous Background Flush)
-// dưới cơ chế bảo vệ cắt tải chủ động (Load Shedding) sử dụng context timeout 1 giây và chỉ ghi khi thực sự thay đổi (LastSeenDirty = true).
-func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, ip *string, userAgent *string) error {
-	// Trích xuất zoneID của Admin từ context định danh
-	var zoneID string
-	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		zoneID = ident.ZoneID
+		return iamTaxonomy.ErrInvalidSession
 	}
 	if zoneID == "" {
 		zoneID = "global"
@@ -1123,33 +900,10 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
-	var runtimeRecord *struct {
-		AccessKey         string `json:"access_key"`
-		AccessSecretHash  string `json:"access_secret_hash"`
-		TrackedDeviceID   string `json:"tracked_device_id"`
-		DevicePublicKey   string `json:"device_public_key"`
-		TokenJTI          string `json:"token_jti"`
-		Version           int64  `json:"version"`
-		LastSeenAt        int64  `json:"last_seen_at"`
-		LastSeenIP        string `json:"last_seen_ip"`
-		LastSeenUserAgent string `json:"last_seen_user_agent"`
-		LastSeenDirty     bool   `json:"last_seen_dirty"`
-	}
-
+	var runtimeRecord *iamproto.AdminAccessSession
 	if exists {
-		var rec struct {
-			AccessKey         string `json:"access_key"`
-			AccessSecretHash  string `json:"access_secret_hash"`
-			TrackedDeviceID   string `json:"tracked_device_id"`
-			DevicePublicKey   string `json:"device_public_key"`
-			TokenJTI          string `json:"token_jti"`
-			Version           int64  `json:"version"`
-			LastSeenAt        int64  `json:"last_seen_at"`
-			LastSeenIP        string `json:"last_seen_ip"`
-			LastSeenUserAgent string `json:"last_seen_user_agent"`
-			LastSeenDirty     bool   `json:"last_seen_dirty"`
-		}
-		if err := json.Unmarshal(payload, &rec); err == nil {
+		var rec iamproto.AdminAccessSession
+		if err := proto.Unmarshal(payload, &rec); err == nil {
 			runtimeRecord = &rec
 		}
 	}
@@ -1163,7 +917,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 
 	// 3. CẬP NHẬT TRẠNG THÁI THIẾT BỊ BẤT ĐỒNG BỘ (ASYNCHRONOUS DB FLUSH)
 	// Đẩy tác vụ ghi DB xuống một background goroutine để không block luồng phản hồi chính (Latency < 1ms).
-	if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceID) != "" {
+	if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.TrackedDeviceId) != "" {
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -1176,7 +930,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 			bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 			defer cancel()
 
-			runtimeIP := strings.TrimSpace(runtimeRecord.LastSeenIP)
+			runtimeIP := strings.TrimSpace(runtimeRecord.LastSeenIp)
 			runtimeUA := strings.TrimSpace(runtimeRecord.LastSeenUserAgent)
 			dirty := runtimeRecord.LastSeenDirty
 
@@ -1201,7 +955,7 @@ func (s *AdminAPIKeyService) AdminLogout(ctx context.Context, accessKey string, 
 					seenAtUnix = time.Now().UTC().Unix()
 				}
 				// Nuốt mọi lỗi ở luồng nền vì tác vụ đăng xuất chính đã hoàn thành thành công và để bảo vệ DB.
-				_ = s.repo.TouchAdminDeviceLastSeen(bgCtx, runtimeRecord.TrackedDeviceID, optionalStringPointer(runtimeIP), optionalStringPointer(runtimeUA), time.Unix(seenAtUnix, 0).UTC())
+				_ = s.repo.TouchAdminDeviceLastSeen(bgCtx, runtimeRecord.TrackedDeviceId, optionalStringPointer(runtimeIP), optionalStringPointer(runtimeUA), time.Unix(seenAtUnix, 0).UTC())
 			}
 		}()
 	}
@@ -1240,7 +994,7 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 		keyName := key
 		keyName = strings.TrimPrefix(keyName, "{admin_access_session:")
 		keyName = strings.TrimSuffix(keyName, "}:data")
-		
+
 		// Bóc tách accessKey và zoneID từ cấu hình key phân vùng dạng <accessKey>:<zoneID>
 		parts := strings.Split(keyName, ":")
 		if len(parts) != 2 {
@@ -1254,19 +1008,9 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 			continue
 		}
 
-		var record struct {
-			AccessKey         string `json:"access_key"`
-			AccessSecretHash  string `json:"access_secret_hash"`
-			TrackedDeviceID   string `json:"tracked_device_id"`
-			DevicePublicKey   string `json:"device_public_key"`
-			TokenJTI          string `json:"token_jti"`
-			Version           int64  `json:"version"`
-			LastSeenAt        int64  `json:"last_seen_at"`
-			LastSeenIP        string `json:"last_seen_ip"`
-			LastSeenUserAgent string `json:"last_seen_user_agent"`
-			LastSeenDirty     bool   `json:"last_seen_dirty"`
-		}
-		if err := json.Unmarshal(payload, &record); err != nil {
+		var record iamproto.AdminAccessSession
+		err = proto.Unmarshal(payload, &record)
+		if err != nil {
 			continue
 		}
 
@@ -1274,8 +1018,8 @@ func (s *AdminAPIKeyService) FinalizeInactiveSessions(ctx context.Context, inact
 			continue
 		}
 		// Finalize chỉ ghi last_seen nếu có delta đã track trong Redis runtime.
-		if strings.TrimSpace(record.TrackedDeviceID) != "" && record.LastSeenDirty {
-			_ = s.repo.TouchAdminDeviceLastSeen(ctx, record.TrackedDeviceID, optionalStringPointer(record.LastSeenIP),
+		if strings.TrimSpace(record.TrackedDeviceId) != "" && record.LastSeenDirty {
+			_ = s.repo.TouchAdminDeviceLastSeen(ctx, record.TrackedDeviceId, optionalStringPointer(record.LastSeenIp),
 				optionalStringPointer(record.LastSeenUserAgent), time.Unix(record.LastSeenAt, 0).UTC())
 		}
 		_ = s.cacheEngine.L2.Delete(ctx, "admin_access_session:"+accessKey+":"+zoneID)
@@ -1312,25 +1056,16 @@ func (s *AdminAPIKeyService) GetPublicKeyFromSession(ctx context.Context, access
 		return "", nil
 	}
 
-	var record struct {
-		AccessKey         string `json:"access_key"`
-		AccessSecretHash  string `json:"access_secret_hash"`
-		TrackedDeviceID   string `json:"tracked_device_id"`
-		DevicePublicKey   string `json:"device_public_key"`
-		TokenJTI          string `json:"token_jti"`
-		Version           int64  `json:"version"`
-		LastSeenAt        int64  `json:"last_seen_at"`
-		LastSeenIP        string `json:"last_seen_ip"`
-		LastSeenUserAgent string `json:"last_seen_user_agent"`
-	}
-	if err := json.Unmarshal(payload, &record); err != nil {
+	var record iamproto.AdminAccessSession
+	err = proto.Unmarshal(payload, &record)
+	if err != nil {
 		return "", err
 	}
 
 	if pubKey := strings.TrimSpace(record.DevicePublicKey); pubKey != "" {
 		return pubKey, nil
 	}
-	trackedDeviceID := strings.TrimSpace(record.TrackedDeviceID)
+	trackedDeviceID := strings.TrimSpace(record.TrackedDeviceId)
 	if trackedDeviceID == "" {
 		return "", nil
 	}
@@ -1341,7 +1076,75 @@ func (s *AdminAPIKeyService) GetPublicKeyFromSession(ctx context.Context, access
 
 	// Đồng bộ key ngược lại L2 Cache có chứa zoneID
 	record.DevicePublicKey = pubKey
-	_ = s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey+":"+zoneID, record, version, 30*time.Minute)
+	newPayload, marshalErr := proto.Marshal(&record)
+	if marshalErr == nil {
+		_ = s.cacheEngine.L2.Set(ctx, "admin_access_session:"+accessKey+":"+zoneID, newPayload, version, 30*time.Minute)
+	}
 
 	return pubKey, nil
+}
+
+// VerifyAdminTrinitySession xác thực thông tin đăng nhập của Admin/SRE qua gRPC.
+// Phương thức này kiểm tra JWT token dựa trên keys của Admin từ cache registry,
+// đối chiếu access_key và verify tính hoạt động của session trong Redis L2.
+func (s *AdminAPIKeyService) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
+	// Bước 1: Truy xuất danh sách key ký mã hóa cho Admin từ cache registry
+	val, err := s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
+	if err != nil {
+		return &iamEntity.VerifySessionResult{Valid: false}, err
+	}
+	secrets, ok := val.(*coreEntity.RuntimeSecrets)
+	if !ok || secrets == nil {
+		return &iamEntity.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for admin")
+	}
+
+	// Bước 2: Giải mã JWT lần lượt bằng active rồi standby key
+	var claims security.Claims
+	parsed := false
+	for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
+		parsedClaims, parseErr := security.Parse(token, candidate.Secret)
+		if parseErr == nil {
+			claims = parsedClaims
+			parsed = true
+			break
+		}
+	}
+	if !parsed {
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
+	}
+
+	// Bước 3: Đối chiếu access_key trong token với access_key client cung cấp
+	if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
+	}
+
+	// Bước 4: Kiểm tra tính hoạt động của session từ Redis L2 cache
+	// Sử dụng Zone ID từ claims để định tuyến phân vùng chính xác
+	zoneID := strings.TrimSpace(claims.ZoneID)
+	if zoneID == "" {
+		// Fallback về global nếu không tìm thấy phân vùng trong claims
+		zoneID = "global"
+	}
+	payload, _, exists, err := s.cacheEngine.L2.Get(ctx, "admin_access_session:"+accessKey+":"+zoneID)
+	if err != nil || !exists {
+		return &iamEntity.VerifySessionResult{Valid: false}, err
+	}
+
+	var session iamproto.AdminAccessSession
+	err = proto.Unmarshal(payload, &session)
+	if err != nil {
+		return &iamEntity.VerifySessionResult{Valid: false}, err
+	}
+
+	// So sánh SHA256 hash của access_secret nhận được
+	incomingHash := security.HashTokenSHA256(accessSecret)
+	if session.AccessSecretHash != incomingHash {
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
+	}
+
+	return &iamEntity.VerifySessionResult{
+		Valid:  true,
+		UserID: claims.Subject,
+		Role:   "SRE",
+	}, nil
 }

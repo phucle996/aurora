@@ -117,11 +117,15 @@ func (m *refreshTokenRepoMock) RotateRefreshToken(ctx context.Context, current i
 	return nil
 }
 
-func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.RefreshTokenService {
+func (m *refreshTokenRepoMock) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
+	return nil
+}
+
+func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.SessionRefreshService {
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
-	return iamSvcImpl.NewRefreshTokenService(cfg, repo, registry)
+	return iamSvcImpl.NewSessionRefreshService(cfg, repo, nil, registry)
 }
 
 
@@ -129,7 +133,7 @@ func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, nil
 	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -139,7 +143,7 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, iamTaxonomy.ErrNotFound
 	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -159,7 +163,7 @@ func TestRefreshTokenServiceInvalidSessionWhenExpired(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
 	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -176,7 +180,7 @@ func TestRefreshTokenServiceInvalidSessionWhenUserStatusBlocked(t *testing.T) {
 			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusDisabled}, nil
 		},
 	}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -193,7 +197,7 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 			return nil, pgx.ErrNoRows
 		},
 	}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -227,7 +231,7 @@ func TestRefreshTokenServiceAuthenticationUnavailable(t *testing.T) {
 			return &iamEntity.RefreshTokenDevice{ID: deviceID, Status: iamEntity.DeviceStatusRecognized}, nil
 		},
 	}, registry)
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
@@ -251,7 +255,7 @@ func TestRefreshTokenServiceRotateError(t *testing.T) {
 			return raw
 		},
 	}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Refresh(context.Background(), "raw-refresh")
+	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
@@ -297,7 +301,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 		},
 	}, makeTestRegistry("secret-key", nil))
 
-	result, err := svc.Refresh(context.Background(), "raw-refresh")
+	result, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}

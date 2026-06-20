@@ -47,9 +47,11 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 			last_seen_user_agent = EXCLUDED.last_seen_user_agent,
 			last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = EXCLUDED.updated_at
+		-- [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để tránh lỗi thư viện pgx
+		-- không thể giải mã (scan) định dạng nhị phân của kiểu dữ liệu inet vào biến con trỏ chuỗi (*string) của Go.
 		RETURNING id, user_id, device_name, device_type, os_name, browser_name, public_key, public_key_alg,
 		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
-		       last_seen_ip, last_seen_user_agent, last_seen_at, created_at, updated_at
+		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
 	`, r.schema)
 
 	item := iamModel.Device{}
@@ -79,10 +81,11 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 }
 
 func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error) {
+	// [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để pgx scan được vào Go *string.
 	query := fmt.Sprintf(`
 		SELECT id, user_id, device_name, device_type, os_name, browser_name, public_key, public_key_alg,
 		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
-		       last_seen_ip, last_seen_user_agent, last_seen_at, created_at, updated_at
+		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
 		FROM %s.devices
 		WHERE user_id = $1
 		ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
@@ -109,10 +112,11 @@ func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.
 }
 
 func (r *DeviceRepository) GetDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) (*iamEntity.Device, error) {
+	// [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để pgx scan được vào Go *string.
 	query := fmt.Sprintf(`
 		SELECT id, user_id, device_name, device_type, os_name, browser_name, public_key, public_key_alg,
 		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
-		       last_seen_ip, last_seen_user_agent, last_seen_at, created_at, updated_at
+		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
 		FROM %s.devices
 		WHERE id = $1 AND user_id = $2
 		LIMIT 1

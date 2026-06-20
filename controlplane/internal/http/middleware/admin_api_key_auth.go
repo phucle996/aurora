@@ -24,7 +24,6 @@ package middleware
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -33,12 +32,14 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/protobuf/proto"
 )
 
 // adminAPIKeyRotationTriggerTTL là TTL (khóa chặn) của cờ yêu cầu xoay vòng khóa.
@@ -229,10 +230,9 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			return
 		}
 
-		var session struct {
-			AccessSecretHash string `json:"access_secret_hash"`
-		}
-		if err := json.Unmarshal(payload, &session); err != nil {
+		session := &iamproto.AdminAccessSession{}
+		err = proto.Unmarshal(payload, session)
+		if err != nil {
 			if isLogout {
 				c.Next()
 				return

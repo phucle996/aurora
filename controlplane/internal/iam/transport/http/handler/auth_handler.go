@@ -211,6 +211,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Username:        username,
 		Password:        password,
 		DevicePublicKey: devicePublicKey,
+		TrustDevice:     request.TrustDevice,
 		IP:              requestIP,
 		UserAgent:       userAgent,
 		DeviceName:      deviceName,
@@ -369,36 +370,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	var userIDStr string
-	var accessKey string
-	var accessSecret string
-	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		userIDStr = ident.UserID
-		accessKey = ident.AccessKey
-		accessSecret = ident.AccessSecret
-	}
-
-	userIDStr = strings.TrimSpace(userIDStr)
-	if userIDStr == "" {
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	userID, parseErr := uuid.Parse(userIDStr)
-	if parseErr != nil {
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
-	accessKey = strings.TrimSpace(accessKey)
-	accessSecret = strings.TrimSpace(accessSecret)
-
-	// Cho phép logout dù thiếu accessKey/secret (best-effort clear cookies đã xong ở đầu).
-	if accessKey == "" {
-		c.Status(http.StatusNoContent)
-		return
-	}
-
-	if err := h.authSvc.Logout(ctx, userID, accessKey, accessSecret); err != nil {
+	if err := h.authSvc.Logout(ctx); err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal_error")
 		return

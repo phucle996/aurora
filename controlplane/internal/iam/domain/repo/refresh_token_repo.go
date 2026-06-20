@@ -9,6 +9,8 @@ import (
 )
 
 type RefreshTokenRepository interface {
+	// CreateRefreshTokenSession lưu trực tiếp một phiên làm việc refresh token mới vào database.
+	CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error
 	LoadRefreshContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error)
 	GetRefreshTokenUserByID(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error)

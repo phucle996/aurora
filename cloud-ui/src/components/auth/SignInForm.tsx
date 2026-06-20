@@ -10,6 +10,7 @@ import {
 } from "@/lib/security/deviceKey";
 import { useUserSession } from "@/hooks/useUserSession";
 import type { APIError } from "@/lib/api/fetcher";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import React, { useEffect, useRef, useState } from "react";
 
@@ -22,7 +23,15 @@ export default function SignInForm() {
   const [errorMessage, setErrorMessage] = useState("");
   const submitLockRef = useRef(false);
   const { setAuthenticated, status } = useUserSession();
+  const router = useRouter();
   const abortRef = useRef<AbortController | null>(null);
+
+  // [COMMENT]: Tự động chuyển hướng về trang chủ Dashboard nếu người dùng đã được xác thực trước đó.
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.push("/");
+    }
+  }, [status, router]);
 
   useEffect(() => {
     return () => {
@@ -30,16 +39,32 @@ export default function SignInForm() {
     };
   }, []);
 
+  // [COMMENT]: Hiển thị màn hình chờ (loading) khi hệ thống đang kiểm tra trạng thái phiên làm việc (status === "unknown").
+  if (status === "unknown") {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-900">
+        <div className="flex flex-col items-center space-y-4">
+          <div className="w-12 h-12 border-4 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+            Đang tải thông tin cấu hình...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const handleSignIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (isSubmitting || submitLockRef.current) {
       return;
     }
 
+    // [COMMENT]: Cho phép độ dài username ngắn hơn (như "root" có 4 ký tự) để tránh lỗi logic lockout tài khoản quản trị.
+    // Chỉ kiểm tra rỗng hoặc độ dài tối thiểu cơ bản của username và mật khẩu để khớp với backend.
     const normalizedUsername = username.trim().toLowerCase();
     const normalizedPassword = password;
-    if (normalizedUsername.length < 6 || normalizedPassword.length < 8) {
-      setErrorMessage("Thông tin đăng nhập không hợp lệ.");
+    if (normalizedUsername.length < 3 || normalizedPassword.length < 8) {
+      setErrorMessage("Thông tin đăng nhập không hợp lệ (Tên đăng nhập từ 3 ký tự, mật khẩu từ 8 ký tự).");
       return;
     }
 
@@ -73,6 +98,7 @@ export default function SignInForm() {
           username: normalizedUsername,
           password: normalizedPassword,
           device_public_key: devicePublicKey,
+          trust_device: isChecked,
         },
         { signal: controller.signal },
       );
@@ -203,7 +229,7 @@ export default function SignInForm() {
                   <div className="flex items-center gap-3">
                     <Checkbox checked={isChecked} onChange={setIsChecked} />
                     <span className="block font-normal text-gray-700 text-theme-sm dark:text-gray-400">
-                      Keep me logged in
+                      trusted device in 30 days
                     </span>
                   </div>
                   <Link
