@@ -94,7 +94,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.POST("/api/v1/auth/logout",
 		middleware.Access(
 			middleware.WithInjectAccessKey(),
-			middleware.WithInjectAccessSecret(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/logout"),
 		module.AuthHandler.Logout,

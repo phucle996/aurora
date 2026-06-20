@@ -43,11 +43,11 @@ function isAuthPath(path: string): boolean {
   return AUTH_PATHS.some((p) => path.includes(p));
 }
 
-// [COMMENT]: Gọi trinity-refresh (Kiểu 1) khi session sắp hết.
-// Không ném lỗi — best-effort, nếu thất bại thì chờ đến khi session chết rồi dùng Kiểu 2.
+// [COMMENT]: Gọi trinity-refresh (Kiểu 1) khi session sắp hết qua BFF.
+// Không gọi trực tiếp Control Plane để tránh lộ endpoint và thông tin máy chủ ở client DevTools.
 async function performTrinityRefresh(): Promise<void> {
   try {
-    const response = await fetch(`${controlplaneBaseURL}/api/v1/auth/trinity-refresh`, {
+    const response = await fetch("/bff/auth/trinity-refresh", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -63,11 +63,11 @@ async function performTrinityRefresh(): Promise<void> {
   }
 }
 
-// [COMMENT]: Gọi opaque refresh (Kiểu 2) khi trinity đã chết nhưng refresh_token cookie còn sống.
+// [COMMENT]: Gọi opaque refresh (Kiểu 2) khi trinity đã chết nhưng refresh_token cookie còn sống qua BFF.
 // Trả về true nếu phục hồi phiên thành công, false nếu cần redirect login.
 async function performOpaqueRefresh(): Promise<boolean> {
   try {
-    const response = await fetch(`${controlplaneBaseURL}/api/v1/auth/refresh`, {
+    const response = await fetch("/bff/auth/refresh", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -76,6 +76,67 @@ async function performOpaqueRefresh(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ============================================================================
+// 🛡️ XSSI RESPONSE WRAPPER (BỘ HOÀN TRẢ PHẢN HỒI CHỐNG XSSI CHO CLOUD UI)
+// ============================================================================
+// [COMMENT]: Lớp wrapper bao bọc đối tượng Response gốc từ trình duyệt nhằm tự động
+// phát hiện và cắt bỏ tiền tố bảo mật ")]}',\n" (XSSI prefix) trước khi thực hiện
+// phân tích cú pháp (parse) nội dung JSON.
+class XSSIResponse {
+  private readonly raw: Response;
+  private memoizedText: Promise<string> | null = null;
+
+  constructor(raw: Response) {
+    this.raw = raw;
+  }
+
+  // [COMMENT]: Đọc nội dung phản hồi thô dưới dạng text và cắt bỏ tiền tố XSSI
+  // nếu được trả về từ phía máy chủ để tránh lỗi JSON Syntax Error.
+  text(): Promise<string> {
+    if (this.memoizedText) return this.memoizedText;
+    this.memoizedText = this.raw.text().then((text) => {
+      // Backend thường ghi nhận tiền tố ")]}',\n" (6 ký tự)
+      if (text.startsWith(")]}',\n")) return text.slice(6);
+      // Phương án phòng ngự nếu không có ký tự xuống dòng (5 ký tự)
+      if (text.startsWith(")]}',")) return text.slice(5);
+      return text;
+    });
+    return this.memoizedText;
+  }
+
+  // [COMMENT]: Parse dữ liệu sang JSON sau khi đã lọc bỏ tiền tố bảo mật.
+  json(): Promise<unknown> {
+    return this.text().then((text) => JSON.parse(text));
+  }
+
+  // [COMMENT]: Uỷ quyền (delegate) các phương thức và thuộc tính tiêu chuẩn sang Response gốc.
+  arrayBuffer(): Promise<ArrayBuffer> { return this.raw.arrayBuffer(); }
+  blob(): Promise<Blob> { return this.raw.blob(); }
+  formData(): Promise<FormData> { return this.raw.formData(); }
+
+  get status(): number { return this.raw.status; }
+  get statusText(): string { return this.raw.statusText; }
+  get ok(): boolean { return this.raw.ok; }
+  get redirected(): boolean { return this.raw.redirected; }
+  get type(): ResponseType { return this.raw.type; }
+  get url(): string { return this.raw.url; }
+  get bodyUsed(): boolean { return this.raw.bodyUsed; }
+  get headers(): Headers { return this.raw.headers; }
+  get body(): ReadableStream<Uint8Array> | null { return this.raw.body as unknown as ReadableStream<Uint8Array> | null; }
+  bytes(): Promise<Uint8Array> {
+    if (typeof this.raw.bytes === "function") {
+      return this.raw.bytes();
+    }
+    throw new Error("Response.bytes is not supported in this environment");
+  }
+  clone(): XSSIResponse { return new XSSIResponse(this.raw.clone()); }
+}
+
+// [COMMENT]: Hàm tiện ích để bọc đối tượng Response gốc bằng XSSIResponse
+function wrapResponse(raw: Response): Response {
+  return new XSSIResponse(raw) as unknown as Response;
 }
 
 export async function fetchJSON<T>(
@@ -91,16 +152,19 @@ export async function fetchJSON<T>(
   } = options;
 
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  const response = await fetch(`${controlplaneBaseURL}${normalizedPath}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      ...(headers || {}),
-    },
-    credentials,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
+  // [COMMENT]: Thực hiện cuộc gọi HTTP gốc và bọc kết quả lại bằng wrapResponse để kích hoạt lọc XSSI.
+  const response = wrapResponse(
+    await fetch(`${controlplaneBaseURL}${normalizedPath}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(headers || {}),
+      },
+      credentials,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    })
+  );
 
   // =========================================================================
   // KIỂU 2: OPAQUE REFRESH — Session Recovery khi 401 + không phải auth path
@@ -117,17 +181,19 @@ export async function fetchJSON<T>(
     const recovered = await opaqueRefreshInFlight;
 
     if (recovered) {
-      // [COMMENT]: Phục hồi phiên thành công → retry request gốc 1 lần duy nhất.
-      const retryResponse = await fetch(`${controlplaneBaseURL}${normalizedPath}`, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          ...(headers || {}),
-        },
-        credentials,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal,
-      });
+      // [COMMENT]: Phục hồi phiên thành công → retry request gốc 1 lần duy nhất, kết quả cũng được lọc XSSI.
+      const retryResponse = wrapResponse(
+        await fetch(`${controlplaneBaseURL}${normalizedPath}`, {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            ...(headers || {}),
+          },
+          credentials,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal,
+        })
+      );
 
       if (retryResponse.ok || retryResponse.status === 204) {
         // [COMMENT]: Check X-Session-Expires-In trên response retry thành công.
