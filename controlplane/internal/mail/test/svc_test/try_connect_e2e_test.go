@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	otelTrace "go.opentelemetry.io/otel/trace"
 )
 
 func TestTryConnectE2E(t *testing.T) {
@@ -58,6 +59,24 @@ func TestTryConnectE2E(t *testing.T) {
 	uniqueUserID := fmt.Sprintf("e2e-user-%d", time.Now().UnixNano())
 	ident := &constant.Identity{UserID: uniqueUserID}
 	ctx = context.WithValue(ctx, constant.IdentityKey, ident)
+
+	// [COMMENT]: Khởi tạo trace ID và span ID giả lập cố định để đồng bộ hóa và dễ dàng kiểm tra E2E distributed tracing
+	traceIDHex := "fb100e26985cc00b3851cf65cd34e0e6"
+	spanIDHex := "00f067aa0ba902b7"
+	tID, err := otelTrace.TraceIDFromHex(traceIDHex)
+	if err != nil {
+		t.Fatalf("Failed to parse trace ID: %v", err)
+	}
+	sID, err := otelTrace.SpanIDFromHex(spanIDHex)
+	if err != nil {
+		t.Fatalf("Failed to parse span ID: %v", err)
+	}
+	spanCtx := otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
+		TraceID:    tID,
+		SpanID:     sID,
+		TraceFlags: otelTrace.FlagsSampled,
+	})
+	ctx = otelTrace.ContextWithSpanContext(ctx, spanCtx)
 
 	// 5. Khởi tạo tham số TestConnection (SMTP kết nối lỗi cố ý)
 	testReq := mailEntity.TestConnection{

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD033 -->
 # SRE Admin Authentication - Login Workflow God View
 
 > [!NOTE]
@@ -6,7 +7,7 @@
 
 ---
 
-## 🗺️ 1. Giới Thiệu
+## <a id="intro"></a>🗺️ 1. Giới Thiệu
 
 ### 👥 Tài Liệu Này Dành Cho Ai?
 
@@ -526,7 +527,7 @@ Toàn bộ các Span trong vòng đời request đăng nhập được liên k�
 
 #### A. Cấu Trúc Cây Span (Span Tree Hierarchy)
 
-```
+```text
 POST /admin/auth/login [Root Span - Gin OTel Middleware]
  ├── Check Active API Key [Child Span - Service]
  ├── Verify MFA (TOTP / Recovery Code) [Child Span - Service]

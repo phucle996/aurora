@@ -113,6 +113,7 @@ impl WorkerLifecycleManager {
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
         rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<crate::job_lifecycle::message::JobPayload>>>,
         active_jobs: Arc<std::sync::atomic::AtomicUsize>,
+        mail_server_pool: Arc<crate::executor::mail::registry::MailServerPool>,
     ) {
         let child_token = self.cancel_token.child_token();
 
@@ -128,6 +129,7 @@ impl WorkerLifecycleManager {
         
         let rx = rx.clone();
         let active_jobs = active_jobs.clone();
+        let mail_server_pool = mail_server_pool.clone();
         let stream_key = format!("jobs:{}", config.zone_id);
 
         tokio::spawn(async move {
@@ -162,6 +164,7 @@ impl WorkerLifecycleManager {
                             active_lock_registry.clone(),
                             active_jobs.clone(),
                             stream_key.clone(),
+                            mail_server_pool.clone(),
                         );
                     }
                     None => {

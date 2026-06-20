@@ -49,6 +49,7 @@ impl JobRunner {
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
         active_jobs: Arc<AtomicUsize>,
         stream_key: String,
+        mail_server_pool: Arc<crate::executor::mail::registry::MailServerPool>,
     ) {
         let lock_key = format!("locks:job:{}", payload.job_id);
         
@@ -64,6 +65,7 @@ impl JobRunner {
         let attempt = payload.attempt;
         let job_topic_for_registry = payload.job_topic.clone();
         let trace_id_for_registry = payload.trace_id.clone();
+        let mail_server_pool = mail_server_pool.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -87,7 +89,6 @@ impl JobRunner {
                 };
 
                 let mut span = tracer.start_with_context(format!("job.{}", payload.job_topic), &cx);
-
                 let job_id = payload.job_id.clone();
 
                 Logger::sys_info(
@@ -129,7 +130,17 @@ impl JobRunner {
                 // Thực thi định tuyến và gọi Executor nghiệp vụ, được giám sát bởi Watchdog bên ngoài
                 let payload_dispatch = payload.clone();
                 let worker_pool_dispatch = worker_pool.clone();
-                let exec_res = Ok(JobConsumer::dispatch_workload(payload_dispatch, worker_pool_dispatch).await);
+                let mail_pool_dispatch = mail_server_pool.clone();
+                let redis_internal_dispatch = redis_internal_zone.clone();
+                let zone_id = stream_key_clone.strip_prefix("jobs:").unwrap_or(&stream_key_clone).to_string();
+
+                let exec_res = Ok(JobConsumer::dispatch_workload(
+                    payload_dispatch,
+                    worker_pool_dispatch,
+                    mail_pool_dispatch,
+                    redis_internal_dispatch,
+                    &zone_id,
+                ).await);
 
                 let duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
                 let zone_id = stream_key_clone.strip_prefix("jobs:").unwrap_or(&stream_key_clone).to_string();

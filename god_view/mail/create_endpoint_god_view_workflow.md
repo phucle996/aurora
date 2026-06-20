@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD033 -->
 # Outbound Email System - Create Mail Endpoint Workflow God View
 
 > [!NOTE]
@@ -24,8 +25,9 @@ Tài liệu này được biên soạn đặc biệt cho **USA (Ultimate System 
 - Lưu trữ các trường cấu hình nhạy cảm như `password` và `client_key_pem` dưới dạng plain text thô tại tầng Controlplane trước khi ghi vào Database.
 - Thực thi ghi đồng thời thông tin Endpoint vật lý vào bảng `mail_endpoints` và một transactional Outbox job sync vào bảng `mail_outbox_records` trong **cùng một Database Transaction** (đảm bảo tính nguyên tử - Atomicity).
 - Trích xuất sự kiện phi chặn (non-blocking) qua PostgreSQL Logical Replication (CDC) bằng `job-proxy` và chuyển tiếp vào Redis Job Stream của Zone tương ứng.
-- **Lưu trữ L2 (Distributed Cache)**: Dataplane worker tại Zone đích consume sự kiện sync từ Redis Job Stream, ghi cấu hình Endpoint vào Redis Zone cục bộ (L2 Cache) để chia sẻ giữa các dataplane trong cùng zone (giữ nguyên trạng thái credentials thô dạng plain text).
-- **Lưu trữ L1 (In-Memory Cache)**: Dataplane worker nạp dữ liệu cấu hình vào bộ nhớ RAM (L1 Cache), khởi tạo/cập nhật Connection Pool, đồng thời broadcast sự kiện reload qua Redis Zone Pub/Sub để các instance Dataplane HA khác trong cùng zone cập nhật L1.
+- **Lưu trữ L2 (Distributed Cache)**: Dataplane worker tại Zone đích consume sự kiện sync từ Redis Job Stream, ghi cấu hình Endpoint vào Redis Zone cục bộ (L2 Cache) để chia sẻ giữa các dataplane trong cùng zone.
+- **Lưu trữ L1 (In-Memory Cache)**: Dataplane worker nạp dữ liệu định tuyến nhẹ (`weight`, `priority`, `max_connections`) vào RAM (L1 Cache) phục vụ thuật toán chọn tuyến tối ưu và kết xuất (render) email tức thì. Dữ liệu L1 được đồng bộ giữa các node HA thông qua Redis Zone Pub/Sub.
+- **Tầng gửi thư bất đồng bộ (Stalwart MTA Spool)**: Email sau khi được Dataplane định tuyến và render xong sẽ được chuyển tiếp trực tiếp qua **giao thức LMTP (Cổng 24)** tới **Stalwart Mail Server (MTA)**. Stalwart MTA tiếp nhận nhanh (< 1ms), lưu thư vào bộ đệm spool ghi đĩa cục bộ của nó và tự động xử lý gửi ra internet ngầm, giải phóng Dataplane khỏi việc chờ đợi kết nối SMTP vật lý mà không cần thêm hàng đợi Redis trung gian.
 
 ### 📍 Tính Năng Này Hoạt Động Ở Đâu?
 
@@ -73,7 +75,8 @@ graph TD
     RDS_NOTIF["⚡ Redis Stream (stream:job_notifications)"]
     NS["🔔 Notification Service (Axum/Rust)"]
     CF["📡 Centrifugo WebSocket Gateway"]
-    SMTP["📧 Target SMTP Server (External)"]
+    STW["📧 Stalwart Mail Server (MTA)"]
+    SMTP["📧 Destination SMTP Server (Gmail/Outlook...)"]
 
     %% Connections
     UI -- "1. POST /admin/mail/endpoints" --> CP
@@ -95,7 +98,8 @@ graph TD
     NS -- "14. HTTP POST Publish" --> CF
     CF -- "15. WebSocket Broadcast (Real-Time UI Update)" --> UI
     
-    DP1 -- "16. Connect & Send Emails" --> SMTP
+    DP1 -- "16. Render email & relay via LMTP (Port 24)" --> STW
+    STW -- "17. Deliver SMTP mail to Internet" --> SMTP
 
     %% Styling
     classDef ui fill:#2b5c8f,stroke:#000,stroke-width:1px,color:#fff;
@@ -256,49 +260,242 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant DB as PostgreSQL
-    participant JP as Job-Proxy (CDC Streamer)
-    participant RJ as Redis Job Stream (Stream)
+    participant WAL as PostgreSQL (WAL)
+    participant SLOT as pgoutput (Slot)
+    participant JP_CONN as pgwire (Replication Client)
+    participant JP_STR as CdcStreamer (Loop)
+    participant JP_MAP as relation_map (HashMap)
+    participant JP_PROC as CdcStreamer (process_insert)
+    participant RD as Redis (jobs:zone_id Stream)
 
-    Note over DB: WAL Event generated (INSERT mail_outbox_records)
-    DB->>JP: WAL replication event via pgoutput slot
-    Note over JP: CdcStreamer parses event_id, zone_id, payload, and trace_id
-    Note over JP: Link OTel trace scope using trace_id
-    JP->>RJ: Push sync task to zone stream (XADD jobs:zone_id)<br/>Payload: {job_id, job_topic, payload, trace_id}
-    JP->>DB: Update replication slot LSN (ACK WAL)
+    Note over WAL: INSERT transaction is committed<br/>WAL record is generated on disk
+    WAL->>SLOT: Decode WAL record change details
+    SLOT->>JP_CONN: Stream ReplicationEvent::XLogData via TCP stream (pgoutput format)
+    JP_CONN->>JP_STR: Receive raw binary message bytes
+    
+    alt Tag Byte = 'R' (Relation Definition)
+        JP_STR->>JP_STR: Parse relation info using parse_relation_message()
+        JP_STR->>JP_MAP: Cache table schema mapping (relation_id -> PgOutputRelation)
+        JP_MAP-->>JP_STR: Cache Updated
+    else Tag Byte = 'I' (Insert Event)
+        JP_STR->>JP_STR: Read relation_id (4 bytes)
+        JP_STR->>JP_MAP: Lookup PgOutputRelation by relation_id
+        JP_MAP-->>JP_STR: Return cached schema structure
+        JP_STR->>JP_STR: Check if table name matches config.cdc_sources
+        
+        alt If relation_name is monitored (e.g. mail_outbox_records)
+            JP_STR->>JP_STR: Decode field values using parse_insert_message()
+            JP_STR->>JP_PROC: Call process_insert(fields)
+            
+            Note over JP_PROC: 1. Extract event_id, zone_id, job_topic, payload, trace_id<br/>2. Decode trace_id bytea string -> 32-char hex trace_id
+            
+            JP_PROC->>RD: XADD jobs:zone_id *<br/>Payload: {event_id, job_topic, payload, trace_id, ...}
+            
+            alt Redis Write Success
+                RD-->>JP_PROC: Return generated Stream ID (e.g. "171879...-0")
+                JP_PROC->>JP_PROC: Log receipt step: cdc.recv_wal (Logger::job_log)
+                JP_PROC->>JP_PROC: Increment MetricsManager::inc_wal_records_read()
+                JP_PROC-->>JP_STR: Return Ok(())
+                JP_STR->>JP_CONN: Call client.update_applied_lsn(wal_end)
+                JP_CONN->>SLOT: Send Standby Status Update (ACK LSN position)
+                Note over SLOT: Advance slot LSN pointer on disk<br/>Release WAL segments safely
+            else Redis Write Failed (Network / OOM / Connection Lost)
+                RD-->>JP_PROC: Return Err(RedisError)
+                JP_PROC-->>JP_STR: Return Err(error)
+                Note over JP_STR: Abort run_replication_stream loop without calling update_applied_lsn
+                JP_STR->>JP_STR: Trigger reconnect loop (sleep 5s, reconnect to pg slot)
+                Note over SLOT: WAL remains unacknowledged.<br/>Re-streams from last ACKed LSN on reconnect.
+            end
+        else Relation is ignored
+            Note over JP_STR: Discard message and advance LSN to skip
+            JP_STR->>JP_CONN: Call client.update_applied_lsn(wal_end)
+        end
+    end
 ```
 
-#### Phase 3: Dataplane Execution & Lease Locking Sequence
+#### Phase 3: Dataplane Execution
 
 📌 **Kích hoạt từ:** `dataplane` active worker [runner.rs](file:///home/phucle/Desktop/New/dataplane/src/job_lifecycle/runner.rs)
+
+##### Phase 3.1: Macro-level Cluster Flow
+
+Sơ đồ phân phối tổng quan giữa các Node Dataplane trong cụm High Availability:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant RJ as Redis Job System (Stream)
-    participant DP1 as Dataplane 1 (Active)
+    participant DP1 as Dataplane 1 (Active Node)
     participant RZ as Redis Zone (L2 Cache)
     participant DP2 as Dataplane 2 (HA Node)
     participant DPN as Dataplane n (HA Node)
     participant RJ_RES as Redis Stream (job_results_stream)
 
-    RJ->>DP1: Consume sync task (XREADGROUP)
-    DP1->>RZ: Acquire Distributed Lease Lock (SET locks:job:<job_id> NX PX 15000)
-    Note over DP1: Active Node scope trace_id into context
-    DP1->>RZ: Write config to L2 Cache (HMSET mail:zone:zone_id:endpoints:endpoint_id)
-    DP1->>RZ: Broadcast Sync event (PUBLISH mail:zone:zone_id:endpoint_events)
-    DP1->>DP1: Initialize/Reload Connection Pool in L1 Memory (RAM)
-    DP1->>RJ_RES: Push sync result (XADD job_results_stream)<br/>Payload: {job_id, result_status, trace_id}
-    DP1->>RJ: Acknowledge task processing (XACK)
+    RJ->>DP1: IngestionDaemon consumes sync task (XREADGROUP jobs:zone_id)
+    DP1->>RZ: Acquire Distributed Lease Lock (SET locks:job:<job_id> NX PX 30000)
+    Note over DP1: If acquired, start JobRunner::run_job<br/>and scope trace_id into Context
+    DP1->>DP1: Register lock in ActiveLockRegistry (Watchdog extending lock key every 10s)
+    DP1->>DP1: Dispatch to SmtpSyncExecutor (sync_endpoint.rs)
+    Note over DP1: Decode SmtpEndpointSync Protobuf payload
     
-    RZ-->>DP2: Listen Sync event (SUBSCRIBE)
-    DP2->>RZ: Fetch config on event (HGETALL)
-    DP2->>DP2: Initialize/Reload Connection Pool in L1 Memory (RAM)
-
-    RZ-->>DPN: Listen Sync event (SUBSCRIBE)
-    DPN->>RZ: Fetch config on event (HGETALL)
-    DPN->>DPN: Initialize/Reload Connection Pool in L1 Memory (RAM)
+    DP1->>RZ: Write binary config (SET mail:zone:<zone_id>:endpoints:<endpoint_id>)
+    DP1->>RZ: Write routing metadata JSON (HSET mail:zone:<zone_id>:server_pool <endpoint_id> <metadata_json>)
+    DP1->>RZ: Broadcast sync event (PUBLISH mail:zone:<zone_id>:endpoint_events)
+    Note over DP1: Payload: {event_type: "sync", endpoint_id: <id>, metadata: <metadata>}
+    
+    DP1->>DP1: Reload L1 Cache (remove_endpoint & update_metadata in MailServerPool)
+    DP1->>RJ_RES: Report PROCESSING & outcome status (XADD job_results)
+    Note over DP1: ExecutionCleanupGuard is dropped:<br/>Deregister from Watchdog, DEL lease lock, decrement active_jobs
+    DP1->>RJ: Acknowledge stream message (XACK)
+    
+    Note over DP2, DPN: Pub/Sub Listener thread (app.rs) is subscribing to endpoint_events
+    RZ-->>DP2: Receive Sync event via Pub/Sub
+    Note over DP2: Directly parse metadata from Pub/Sub payload JSON
+    DP2->>DP2: Update local metadata cache (update_metadata in MailServerPool L1 RAM)
+    
+    RZ-->>DPN: Receive Sync event via Pub/Sub
+    Note over DPN: Directly parse metadata from Pub/Sub payload JSON
+    DPN->>DPN: Update local metadata cache (update_metadata in MailServerPool L1 RAM)
 ```
+
+##### Phase 3.2: Micro-level Single Node Flow
+
+Sơ đồ tuần tự chi tiết biểu diễn các thành phần nội bộ (Internal Components) bên trong một node Dataplane xử lý luồng đồng bộ:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant R_JOB as Redis Job Stream
+    participant ING as Ingestion Loop (JobConsumer)
+    participant RUN as Runner Task (JobRunner)
+    participant REG as ActiveLockRegistry
+    participant WD as Watchdog Loop
+    participant ROUT as Mail Router (delivery)
+    participant EXEC as SmtpSyncExecutor (sync_endpoint)
+    participant L1 as L1 Cache (MailServerPool)
+    participant R_ZONE as Redis Zone (L2 Cache)
+    
+    ING->>R_JOB: XREADGROUP jobs:zone_id
+    R_JOB-->>ING: Return JobPayload (Protobuf)
+    ING->>R_ZONE: SET locks:job:<job_id> NX PX 30000
+    R_ZONE-->>ING: Lock acquired successfully
+    ING->>RUN: Send payload via MPSC Channel
+    
+    Note over RUN: Spawn async task & scope trace_id to thread-local Context
+    RUN->>REG: register(lock_key)
+    Note over WD, REG: Background Watchdog loop runs every 10s:<br/>Reads active locks from Registry,<br/>extends Redis TTL via renew_lease_lock()
+    WD->>REG: check active locks
+    WD->>R_ZONE: renew_lease_lock()
+    
+    RUN->>R_JOB: Report PROCESSING status (XADD job_results)
+    RUN->>ROUT: dispatch_mail_job(action, payload)
+    ROUT->>EXEC: execute(payload)
+    
+    Note over EXEC: decode SmtpEndpointSync Protobuf bytes
+    EXEC->>R_ZONE: SET mail:zone:<zone_id>:endpoints:<endpoint_id> (binary config)
+    EXEC->>R_ZONE: HSET mail:zone:<zone_id>:server_pool <endpoint_id> <metadata_json>
+    EXEC->>R_ZONE: PUBLISH mail:zone:<zone_id>:endpoint_events <sync_event_json>
+    EXEC->>L1: remove_endpoint(endpoint_id) (Close old SMTP Actor connections)
+    EXEC->>L1: update_metadata(endpoint_id, metadata) (Save to L1 RAM)
+    EXEC-->>ROUT: Return Ok(ExecutionResult)
+    ROUT-->>RUN: Return Ok(ExecutionResult)
+    
+    RUN->>R_JOB: Report SUCCEEDED/FAILED status (XADD job_results)
+    
+    Note over RUN: ExecutionCleanupGuard drop triggers:
+    RUN->>REG: deregister(lock_key) (Stop Watchdog renewals)
+    RUN->>R_ZONE: release_lease_lock (DEL lock_key)
+    RUN->>R_JOB: XACK jobs:zone_id message
+```
+
+##### Phase 3.3: Giải thích kiến trúc & Tối ưu hóa trên Dataplane
+
+Để đạt được tiêu chuẩn **Cloud Native** và tính **High Availability (HA)** cao nhất, hệ thống phân tách bộ nhớ đệm thành L1 Cache (RAM cục bộ), L2 Cache (Redis Zone) và kênh truyền tin đồng bộ Pub/Sub theo sơ đồ so sánh dưới đây:
+
+| Thành phần | Cơ chế lưu trữ | Dữ liệu lưu trữ | Thời điểm Đọc / Ghi | Vai trò & T�##### Phase 3.4: Mô hình Định tuyến & Phát Thư Trực Tiếp (Direct LMTP Delivery)
+
+Nhằm tối ưu hóa hiệu năng, giải phóng hoàn toàn Dataplane khỏi việc chờ đợi kết nối SMTP vật lý ra ngoài internet, hệ thống áp dụng cơ chế kết xuất (render) và đẩy trực tiếp (MIME/EML stream) sang Stalwart MTA qua giao thức LMTP:
+
+> [!TIP]
+> **Cơ cấu phân tầng của Mô hình Direct LMTP:**
+>
+> - **Lớp Định tuyến & Render (Dataplane Node):** Định tuyến chọn Endpoint tối ưu từ RAM L1 và tiến hành render nội dung email thô (MIME) trong RAM. Tác vụ chạy bất đồng bộ phi chặn cực nhanh.
+> - **Lớp Chuyển tiếp (LMTP Connection):** Kết nối TCP nội bộ LMTP (cổng 24) truyền tải dòng email thô vừa render sang Stalwart.
+> - **Lớp Bộ đệm & Phát thư (Stalwart Spool):** Stalwart lưu email nhận được vào thư mục hàng gửi trên đĩa (disk spool queue) và tự động xử lý gửi ra internet ngầm.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Dataplane_Idle : Chờ job gửi mail (jobs:zone_id)
+    Dataplane_Idle --> Render_Mail : Nhận job từ Redis Stream
+    Render_Mail --> LMTP_Relay : Định tuyến & Render HTML/MIME hoàn tất
+    
+    state Stalwart_MTA_Delivery {
+        LMTP_Relay --> Write_Spool : Giao tiếp LMTP (Cổng 24) nội bộ
+        Write_Spool --> Deliver_Internet : Spool xuống đĩa và trả về 250 OK
+        Deliver_Internet --> [*] : Gửi ra Internet thành công
+    }
+    
+    LMTP_Relay --> Dataplane_ACK : Stalwart báo nhận thành công (250 OK)
+    Dataplane_ACK --> Dataplane_Idle : XACK và xóa job trên jobs:zone_id
+    
+    LMTP_Relay --> Job_Retry : Stalwart offline / Lỗi kết nối TCP LMTP
+    Job_Retry --> Dataplane_Idle : NFI (Không XACK) -> Job quay lại stream để thử lại
+```
+
+**Chi tiết Cơ chế vận hành:**
+
+1. **Băng thông phi chặn (Non-blocking Outbound):** Node Dataplane không trực tiếp mở kết nối SMTP ra ngoài internet. Nhờ đó, luồng xử lý job của Dataplane kết thúc cực nhanh (tổng thời gian render + gửi LMTP nội bộ < 2ms), giải phóng CPU/Worker cho các job khác.
+2. **LMTP Relay hiệu năng cao:** LMTP (Local Mail Transfer Protocol) được thiết kế riêng cho việc chuyển tiếp thư nội bộ cục bộ, bỏ qua lớp xác thực SMTP phức tạp và cơ chế đàm thoại bắt tay nặng nề, cho phép nạp trực tiếp luồng email thô vào MTA với tốc độ mạng nội bộ.
+3. **Bền vững dữ liệu (Fault Tolerance):** Nếu cụm Stalwart MTA sập hoặc quá tải đĩa cứng, kết nối LMTP sẽ thất bại. Dataplane phát hiện lỗi, từ chối XACK job và thả trôi job trên Redis Stream. Job sẽ tự động được gán lại cho node Dataplane khác hoặc thử lại sau khi Stalwart phục hồi.
+4. **Phân tách luồng gửi thư (Hybrid Routing Paths):**
+   - **Luồng gửi chính (Stalwart MTA Cluster):** Dataplane render email và đẩy trực tiếp qua LMTP vào Stalwart nội bộ. Toàn bộ phần hàng đợi gửi ra ngoài internet (Spool) được ủy nhiệm hoàn toàn cho Stalwart quản lý.
+   - **Luồng gửi ngoại vi (External Providers - SES, Sendgrid, Mailgun):** Chỉ khi gửi qua các SMTP Endpoint bên ngoài, Dataplane mới kích hoạt các Actor SMTP để đàm thoại SMTP trực tiếp đến Provider tương ứng.
+
+##### Phase 3.5: Nhánh xử lý L2 Cache Miss & Cơ chế Lazy Reload (Đối với External SMTP)
+
+Trong trường hợp cấu hình Endpoint bên ngoài bị mất tại Redis L2 Cache (ví dụ do Redis khởi động lại hoặc hết bộ nhớ dẫn đến eviction), khi Dataplane cần lấy credentials để kết nối SMTP ngoại vi, cơ chế **Lazy Reload** tự chữa lành (Self-Healing) sẽ được kích hoạt:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DP as Dataplane Node
+    participant R_ZONE as Redis Zone (L2 Cache)
+    participant JP as Job-Proxy (Control Ingestion)
+    participant DB as PostgreSQL
+    participant R_JOB as Redis Job Stream (jobs:zone_id)
+
+    DP->>R_ZONE: GET mail:zone:<zone_id>:endpoints:<endpoint_id>
+    R_ZONE-->>DP: Trả về Nil/None (Cache Miss)
+    
+    DP->>R_ZONE: PUBLISH mail:zone:<zone_id>:sync_request { "endpoint_id": "<id>" }
+    Note over DP: Báo lỗi tạm thời & đưa job gửi mail vào trạng thái Chờ (Pending)
+    
+    Note over JP: Job-Proxy lắng nghe kênh sync_request
+    R_ZONE-->>JP: Nhận yêu cầu Lazy Reload
+    JP->>DB: SELECT * FROM mail_endpoints WHERE id = <endpoint_id>
+    DB-->>JP: Trả về cấu hình SMTP chi tiết
+    JP->>JP: Đóng gói dữ liệu thành SmtpEndpointSync Protobuf
+    JP->>R_JOB: XADD jobs:zone_id * payload: SmtpEndpointSync (Action: sync_endpoint)
+    
+    Note over DP: Dataplane Node consume job sync_endpoint từ Redis
+    R_JOB->>DP: Consume & nạp lại Redis L2 Cache
+    
+    Note over DP: Dataplane thử lại (Retry) job gửi mail ban đầu
+    DP->>R_ZONE: GET mail:zone:<zone_id>:endpoints:<endpoint_id> (Cache Hit!)
+    R_ZONE-->>DP: Trả về binary config và kết nối SMTP Actor thành công
+```
+
+**Mô tả chi tiết luồng xử lý:**
+
+1. **Phát hiện Cache Miss:** Khi Dataplane cần đọc cấu hình Endpoint bên ngoài mà lệnh `GET` từ Redis L2 trả về rỗng, tiến trình xác định đây là sự cố thất lạc cache.
+2. **Yêu cầu Nạp lại (Lazy Reload Request):** Node phát tín hiệu yêu cầu nạp lại lên kênh Pub/Sub `mail:zone:<zone_id>:sync_request`. Đồng thời, tin nhắn gửi thư hiện tại tạm thời được giữ trong bộ nhớ và thử lại sau ít giây.
+3. **Đồng bộ tự động từ L0:** `job-proxy` nhận sự kiện, truy vấn PostgreSQL để lấy lại cấu hình gốc và đẩy job `sync_endpoint` vào Redis Job Stream của zone.
+4. **Tái nạp cache:** Node Dataplane consume job, ghi lại cấu hình vào Redis L2. Lần thử lại tiếp theo của Dataplane sẽ truy xuất thành công cấu hình mới và tiến hành gửi thư qua SMTP Actor bình thường.
+
+📌 **Phạm vi áp dụng của Lazy Reload:**
+
+- **Dành cho các SMTP Endpoint bên ngoài (External Providers - SES, Sendgrid, Mailgun):** Do số lượng và cấu hình chứng chỉ/credentials của bên thứ 3 có thể rất lớn và thay đổi liên tục, cơ chế Lazy Reload giúp hệ thống không cần nạp sẵn tất cả credentials nhạy cảm lên RAM L1/L2 của các Node Dataplane, tránh quá tải tài nguyên RAM khi chưa dùng đến.
+- **Đối với cụm Stalwart Mail Server nội bộ:** Thông số kết nối nội bộ được nạp sẵn khi khởi động cụm. Dataplane chỉ đùn dữ liệu email thô đã render trực tiếp sang cổng LMTP mà không cần nạp đi nạp lại credentials, tối ưu tuyệt đối thông lượng gửi thư chính.
 
 #### Phase 4: Feedback Callback & Real-Time Notification Sequence
 
@@ -358,16 +555,16 @@ Lưu trữ thông tin cấu hình vật lý. Các trường nhạy cảm hiện 
 | `username` | `VARCHAR(255)` | `NULL` | Tài khoản đăng nhập SMTP |
 | `password` | `TEXT` | `NULL` | Mật khẩu SMTP. Hiện tại lưu dưới dạng plain text |
 | `tls_mode` | `mail_tls_mode` | `NOT NULL` | none, starttls, tls, mtls |
-| `status` | `mail_endpoint_status`| `NOT NULL` | planned, active, disabled |
-| `max_connections`| `INT` | `NOT NULL (Default 10)`| Giới hạn Connection Pool |
-| `priority` | `INT` | `NOT NULL (Default 100)`| Độ ưu tiên định tuyến |
-| `weight` | `INT` | `NOT NULL (Default 1)`| Trọng số phục vụ thuật toán load balancing |
+| `status` | `mail_endpoint_status` | `NOT NULL` | planned, active, disabled |
+| `max_connections` | `INT` | `NOT NULL (Default 10)` | Giới hạn Connection Pool |
+| `priority` | `INT` | `NOT NULL (Default 100)` | Độ ưu tiên định tuyến |
+| `weight` | `INT` | `NOT NULL (Default 1)` | Trọng số phục vụ thuật toán load balancing |
 | `ca_cert_pem` | `TEXT` | `NULL` | CA certificate block dạng PEM |
-| `client_cert_pem`| `TEXT` | `NULL` | Client certificate block dạng PEM |
+| `client_cert_pem` | `TEXT` | `NULL` | Client certificate block dạng PEM |
 | `client_key_pem` | `TEXT` | `NULL` | Client private key block. Hiện tại lưu dưới dạng plain text |
-| `is_active` | `BOOLEAN` | `NOT NULL (Default TRUE)`| Cờ kích hoạt nhanh |
-| `created_at` | `TIMESTAMP WITH TZ` | `NOT NULL DEFAULT NOW()`| Thời điểm khởi tạo |
-| `updated_at` | `TIMESTAMP WITH TZ` | `NOT NULL DEFAULT NOW()`| Thời điểm cập nhật gần nhất |
+| `is_active` | `BOOLEAN` | `NOT NULL (Default TRUE)` | Cờ kích hoạt nhanh |
+| `created_at` | `TIMESTAMP WITH TZ` | `NOT NULL DEFAULT NOW()` | Thời điểm khởi tạo |
+| `updated_at` | `TIMESTAMP WITH TZ` | `NOT NULL DEFAULT NOW()` | Thời điểm cập nhật gần nhất |
 
 #### 2. Bảng `mail_outbox_records` (Transactional Outbox)
 
@@ -434,9 +631,9 @@ stateDiagram-v2
 
 | Trạng Thái Đầu | Sự Kiện (Trigger) | Trạng Thái Đích | Hành Động Thực Thi | Kiểm Soát Điều Kiện (Guard) |
 | :--- | :--- | :--- | :--- | :--- |
-| **`L2_MISS`** | Dataplane consume từ Redis Job Stream | **`L2_HIT_L1_MISS`**| Dataplane ghi Hash vào Redis L2 Zone, Publish event `SYNC` | Không có |
+| **`L2_MISS`** | Dataplane consume từ Redis Job Stream | **`L2_HIT_L1_MISS`** | Dataplane ghi Hash vào Redis L2 Zone, Publish event `SYNC` | Không có |
 | **`L2_HIT_L1_MISS`** | Nhận event `SYNC` (via Zone PubSub) hoặc Gửi mail (Cache miss) | **`L1_ACTIVE`** | Dataplane đọc L2 Redis Zone, giải mã credentials, khởi tạo Connection Pool và đưa vào RAM (L1) | `updated_at` (L2) >= `updated_at` (L1) |
-| **`L1_ACTIVE`** | DB Endpoint Update (Dataplane consume sync) | **`L2_HIT_L1_MISS`**| Dataplane ghi đè L2 Redis Zone. Các node hủy Connection Pool cũ, dọn RAM L1. | Phải drain toàn bộ active TCP connections trước khi giải phóng pool |
+| **`L1_ACTIVE`** | DB Endpoint Update (Dataplane consume sync) | **`L2_HIT_L1_MISS`** | Dataplane ghi đè L2 Redis Zone. Các node hủy Connection Pool cũ, dọn RAM L1. | Phải drain toàn bộ active TCP connections trước khi giải phóng pool |
 | **`L1_ACTIVE`** / **`L2_HIT_L1_MISS`** | DB Endpoint Delete (Dataplane consume delete) | **`L2_MISS`** | Xóa Hash L2 Redis Zone, các node hủy pool L1, dọn sạch RAM | Không có |
 
 ---

@@ -196,6 +196,9 @@ impl JobConsumer {
     pub async fn dispatch_workload(
         payload: JobPayload,
         worker_pool: Arc<crate::workerpool::lifecycle::WorkerLifecycleManager>,
+        mail_server_pool: Arc<crate::executor::mail::registry::MailServerPool>,
+        redis_mgr: Arc<crate::infra::redis::RedisClientManager>,
+        zone_id: &str,
     ) -> Result<crate::executor::ExecutionResult, crate::executor::ExecutorError> {
         Logger::sys_info(
             "job.ingestion",
@@ -206,20 +209,28 @@ impl JobConsumer {
         );
 
         let topic = payload.job_topic.clone();
-        let parts: Vec<&str> = topic.split('.').collect();
-        if parts.len() != 2 {
-            return Err(crate::executor::ExecutorError::ExecutionFailed(format!(
-                "Invalid job topic format: {}",
-                topic
-            )));
-        }
-
-        let workload = parts[0];
-        let action = parts[1];
+        let first_dot = match topic.find('.') {
+            Some(idx) => idx,
+            None => {
+                return Err(crate::executor::ExecutorError::ExecutionFailed(format!(
+                    "Invalid job topic format: {}",
+                    topic
+                )));
+            }
+        };
+        let (workload, rest) = topic.split_at(first_dot);
+        let action = &rest[1..];
 
         match workload {
             "mail" => {
-                crate::executor::mail::dispatch_mail_job(action, payload, worker_pool).await
+                crate::executor::mail::dispatch_mail_job(
+                    action,
+                    payload,
+                    worker_pool,
+                    mail_server_pool,
+                    redis_mgr,
+                    zone_id,
+                ).await
             }
             "vps" => {
                 crate::executor::hypervisor::dispatch_vps_job(action, payload).await

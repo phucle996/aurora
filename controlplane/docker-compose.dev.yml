@@ -694,6 +694,8 @@ services:
     environment:
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       # OpenTelemetry: Kết nối Centrifugo tới OTel Collector để sinh spans phục vụ distributed tracing E2E
+      - CENTRIFUGO_OPENTELEMETRY=1
+      - CENTRIFUGO_OPENTELEMETRY_API=1
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4318
       - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
     depends_on:
@@ -739,7 +741,25 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  stalwart:
+    image: stalwartlabs/stalwart:v0.16.9
+    container_name: controlplane-stalwart
+    restart: unless-stopped
+    ports:
+      - "8085:8080"   # Admin HTTP API & Web UI (Dành cho dev cấu hình)
+      # Lưu ý: Các cổng 25, 465, 587 không cần map ra ngoài host vì Dataplane 
+      # và Stalwart giao tiếp nội bộ trong mạng Docker Network.
+    environment:
+      - STALWART_RECOVERY_ADMIN=admin:your-secure-password
+    volumes:
+      - controlplane_stalwart_etc:/etc/stalwart
+      - controlplane_stalwart_data:/var/lib/stalwart
+
 volumes:
+  # Thư mục lưu cấu hình và dữ liệu của Stalwart Mail Server
+  controlplane_stalwart_etc:
+  controlplane_stalwart_data:
+
   # Caching thư viện Golang cho cụm Controlplane
   controlplane_go_mod: # Thư mục chứa tệp dữ liệu vật lý của PostgreSQL
 

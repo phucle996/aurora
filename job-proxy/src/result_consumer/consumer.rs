@@ -236,6 +236,7 @@ impl ResultConsumer {
         // đang ở trạng thái chưa hoàn tất (PENDING hoặc PROCESSING). Loại bỏ hoàn toàn PUBLISHED.
         // Lấy lại user_id, job_topic và trace_id bằng mệnh đề RETURNING để tạo sự kiện real-time.
         // Thêm kiểm tra topic khớp với database để tăng cường tính nhất quán bảo mật dữ liệu.
+        // [COMMENT]: Loại bỏ ép kiểu ::uuid vì cột event_id trong DB là character varying(64).
         let row_opt = if status == "SUCCEEDED" {
             pg_client
                 .query_opt(
@@ -244,8 +245,8 @@ impl ResultConsumer {
                       completed_at = CURRENT_TIMESTAMP, 
                       error_code = NULL, 
                       error_message = NULL
-                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
-                  RETURNING user_id, job_topic, trace_id",
+                  WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+                  RETURNING user_id, job_topic, trace_id, resource_id",
                     &[&status, &job_id, &result.job_topic],
                 )
                 .await?
@@ -256,8 +257,8 @@ impl ResultConsumer {
                   SET status = $1,
                       error_code = NULL, 
                       error_message = NULL
-                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
-                  RETURNING user_id, job_topic, trace_id",
+                  WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+                  RETURNING user_id, job_topic, trace_id, resource_id",
                     &[&status, &job_id, &result.job_topic],
                 )
                 .await?
@@ -269,8 +270,8 @@ impl ResultConsumer {
                       completed_at = CURRENT_TIMESTAMP, 
                       error_code = $2, 
                       error_message = $3
-                  WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
-                  RETURNING user_id, job_topic, trace_id",
+                  WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
+                  RETURNING user_id, job_topic, trace_id, resource_id",
                     &[&status, &error_code, &error_message, &job_id, &result.job_topic],
                 )
                 .await?
@@ -288,17 +289,46 @@ impl ResultConsumer {
             // Phân tích dữ liệu outbox record vừa được cập nhật
             let user_id: String = row.get(0);
             let job_topic: String = row.get(1);
-            // Đọc trace_id kiểu nhị phân BYTEA (Option<Vec<u8>>) từ DB để tiết kiệm tài nguyên
+            // [COMMENT]: Đọc trace_id dưới dạng Option<Vec<u8>> vì cột trace_id đã được chuyển đổi sang kiểu BYTEA (nhị phân).
+            // Sau đó chuyển đổi mảng byte này sang chuỗi hex 32 ký tự để khớp với định dạng OTel Trace ID.
             let trace_id_bytes = row.get::<_, Option<Vec<u8>>>(2).unwrap_or_default();
-            // Convert sang chuỗi hex 32 ký tự để tương thích với luồng logs/traces tiếp theo
             let trace_id = if trace_id_bytes.is_empty() {
                 String::new()
             } else {
-                trace_id_bytes
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>()
+                trace_id_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
             };
+            let resource_id = row.get::<_, Option<String>>(3).unwrap_or_default();
+
+            // [COMMENT]: Cập nhật trạng thái mail endpoint sang active nếu sync thành công
+            if status == "SUCCEEDED" && (job_topic == "mail.create_endpoint" || job_topic == "mail.sync_endpoint") {
+                if !resource_id.is_empty() {
+                    let update_endpoint_res = pg_client
+                        .execute(
+                            "UPDATE mail_endpoints SET status = 'active' WHERE id = $1",
+                            &[&resource_id],
+                        )
+                        .await;
+                    
+                    match update_endpoint_res {
+                        Ok(rows_updated) => {
+                            Logger::sys_info(
+                                "result_consumer.update_endpoint",
+                                &format!(
+                                    "Successfully set mail_endpoint {} status to 'active' (rows affected: {})",
+                                    resource_id, rows_updated
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            Logger::sys_error(
+                                "result_consumer.update_endpoint",
+                                &format!("Failed to update status for mail_endpoint {}: {}", resource_id, e),
+                                "DB_UPDATE_ERROR",
+                            );
+                        }
+                    }
+                }
+            }
 
             // Thiết lập scope trace_id và gửi thông báo real-time qua OTel span
             let trace_id_clone = trace_id.clone();

@@ -153,6 +153,7 @@ impl RedisSubscriber {
                                                         let event_message = event.message.clone();
                                                         let event_created_at = event.created_at;
                                                         let event_type = event.event_type.clone();
+                                                        let event_trace_parent = event.trace_parent.clone();
                                                         let client = self.client.clone();
 
                                                         // Thực thi xử lý nghiệp vụ đẩy tin trong phạm vi Trace Context
@@ -179,7 +180,10 @@ impl RedisSubscriber {
 
                                                             Logger::sys_info(
                                                                 "redis.subscriber",
-                                                                &format!("Successfully decoded job event {} for user: {}", event_job_id, event_user_id),
+                                                                &format!(
+                                                                    "Successfully decoded job event {} for user: {} with trace_parent: {}",
+                                                                    event_job_id, event_user_id, event_trace_parent
+                                                                ),
                                                             );
 
                                                             // Chuyển đổi Unix timestamp sang chuỗi ISO 8601 UTC
