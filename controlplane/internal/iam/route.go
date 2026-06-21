@@ -15,7 +15,7 @@
 //
 //   🟢 PHÂN HẠNG 1: USER ENDPOINTS (/api/v1/auth/*, /api/v1/me/*)
 //     - Định danh & Xác thực cơ bản: Sử dụng các HTTP Post-Auth Rate Limiters để chống bruteforce.
-//     - Phiên làm việc (Session Guard): Được bảo vệ qua `middleware.Access()` nhằm kiểm định
+//     - Phiên làm việc (Session Guard): Được bảo vệ qua `middleware.ACL()` nhằm kiểm định (Access Control Lifecycle)
 //       tính hợp lệ của JWT token đồng thời liên kết trực tiếp với Device Runtime Cache trong Redis.
 //
 //   🔵 PHÂN HẠNG 2: ADMIN ENDPOINTS (/admin/*)
@@ -64,7 +64,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	)
 
 	// 3) Opaque Refresh Token (Kiểu 2): Tái cấp phát phiên mới khi trinity đã hết hạn.
-	// Route này KHÔNG yêu cầu Access middleware vì trinity đã chết. Chỉ cần cookie refresh_token.
+	// Route này KHÔNG yêu cầu ACL middleware vì trinity đã chết. Chỉ cần cookie refresh_token.
 	// Use case: user đóng browser, hôm sau quay lại → trinity hết hạn nhưng refresh token (30 ngày) còn sống.
 	router.POST("/api/v1/auth/refresh",
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/refresh"),
@@ -72,10 +72,10 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	)
 
 	// 3b) Trinity Refresh (Kiểu 1): Gia hạn phiên đang dùng khi session sắp hết (≤ 900s).
-	// Route này YÊU CẦU Access middleware vì trinity phải còn sống trong Redis.
+	// Route này YÊU CẦU ACL middleware vì trinity phải còn sống trong Redis.
 	// Frontend tự động gọi khi nhận X-Session-Expires-In ≤ 900.
 	router.POST("/api/v1/auth/trinity-refresh",
-		middleware.Access(
+		middleware.ACL(
 			middleware.WithInjectAccessKey(),
 			middleware.WithInjectAccessSecret(),
 		),
@@ -85,14 +85,14 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 4) Lấy thông tin phiên làm việc hiện tại
 	router.GET("/api/v1/auth/session",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/session"),
 		module.AuthHandler.Session,
 	)
 
 	// 5) Đăng xuất tài khoản
 	router.POST("/api/v1/auth/logout",
-		middleware.Access(
+		middleware.ACL(
 			middleware.WithInjectAccessKey(),
 		),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/logout"),
@@ -101,28 +101,28 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices"),
 		module.DeviceHandler.ListMyDevices,
 	)
 
 	// 7) Thu hồi quyền truy cập của một thiết bị cụ thể
 	router.POST("/api/v1/me/devices/:device_id/revoke",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/:device_id/revoke"),
 		module.DeviceHandler.RevokeMyDevice,
 	)
 
 	// 8) Đăng xuất khỏi toàn bộ thiết bị khác ngoại trừ thiết bị hiện tại
 	router.POST("/api/v1/me/devices/logout-others",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/logout-others"),
 		module.DeviceHandler.LogoutOtherDevices,
 	)
 
 	// 9) Đăng xuất hoàn toàn trên toàn bộ thiết bị
 	router.POST("/api/v1/me/devices/logout-all",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/logout-all"),
 		module.DeviceHandler.LogoutAllDevices,
 	)
@@ -190,7 +190,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 15) Liệt kê danh sách vai trò
 	router.GET("/api/v1/rbac/roles",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles"),
 		module.RbacHandler.ListRoles,
 	)

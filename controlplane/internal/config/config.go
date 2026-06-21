@@ -35,6 +35,8 @@ type Config struct {
 	Telegram  TelegramCfg
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
+	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
+	Vault     VaultCfg
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -146,6 +148,15 @@ type SchemaSQLCfg struct {
 	Core string
 	IAM  string
 	Mail string
+}
+
+// [COMMENT]: VaultCfg chứa thông tin kết nối và quản lý định danh khóa trong Vault Transit
+type VaultCfg struct {
+	Addr           string
+	Token          string
+	TransitKeyName string
+	Timeout        time.Duration
+	MaxRetries     int
 }
 
 // LoadConfig đọc cấu hình từ environment variables của hệ thống.
@@ -270,6 +281,14 @@ func LoadConfig() *Config {
 			Core: "core",
 			IAM:  "iam",
 			Mail: "mail",
+		},
+		// [COMMENT]: Nạp cấu hình Vault từ môi trường (env) để khởi tạo client
+		Vault: VaultCfg{
+			Addr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
+			Token:          getEnv("VAULT_TOKEN", ""),
+			TransitKeyName: getEnv("VAULT_TRANSIT_KEY_NAME", "jwt-signer"),
+			Timeout:        getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
+			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),
 		},
 	}
 }

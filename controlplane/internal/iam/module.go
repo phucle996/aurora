@@ -107,6 +107,7 @@ type IAMModule struct {
 	AdminAPIKeyRepository iamRepoInterface.AdminAPIKeyRepository
 	AdminAPIKeyService    coreSvc.AdminAPIKeyService
 	AuthService           iamSvcInterface.AuthService
+	SessionRefreshService iamSvcInterface.SessionRefreshService
 	rotationCancel        context.CancelFunc
 	finalizeCancel        context.CancelFunc
 	deviceCapCancel       context.CancelFunc
@@ -290,6 +291,7 @@ func NewModule(
 		AdminAPIKeyRepository: adminRepo,
 		AdminAPIKeyService:    adminSvc,
 		deviceSvcImpl:         deviceSvc,
+		SessionRefreshService: refreshSvc,
 	}, nil
 }
 

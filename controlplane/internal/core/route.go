@@ -24,7 +24,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	)
 
 	router.GET("/api/v1/zones/catalog",
-		middleware.Access(),
+		middleware.ACL(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/zones/catalog"),
 		module.ZoneHandler.GetZoneCatalog,
 	)

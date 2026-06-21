@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 type DeviceService struct {
@@ -186,9 +187,14 @@ func (s *DeviceService) scanUserAccessSessions(ctx context.Context, rdb redis.Cm
 		if !ok {
 			continue
 		}
-		var record iamEntity.UserAccessSession
-		if jsonErr := json.Unmarshal([]byte(rawStr), &record); jsonErr != nil {
-			return nil, fmt.Errorf("iam cache: invalid user access session payload: %w", jsonErr)
+		var pb iamproto.UserAccessSession
+		if protoErr := proto.Unmarshal([]byte(rawStr), &pb); protoErr != nil {
+			return nil, fmt.Errorf("iam cache: invalid user access session payload: %w", protoErr)
+		}
+		record := iamEntity.UserAccessSession{
+			AccessSecretHash: pb.Ash,
+			TrackedDeviceID:  pb.Tdid,
+			LastSeenAt:       pb.Lsa,
 		}
 		out = append(out, record)
 	}
@@ -276,8 +282,13 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 						continue
 					}
 					if rawStr, ok := raw.(string); ok {
-						var record iamEntity.UserAccessSession
-						if json.Unmarshal([]byte(rawStr), &record) == nil {
+						var pb iamproto.UserAccessSession
+						if proto.Unmarshal([]byte(rawStr), &pb) == nil {
+							record := iamEntity.UserAccessSession{
+								AccessSecretHash: pb.Ash,
+								TrackedDeviceID:  pb.Tdid,
+								LastSeenAt:       pb.Lsa,
+							}
 							runtimes = append(runtimes, sessionWithKey{
 								key:    scanned[i],
 								record: record,

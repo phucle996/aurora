@@ -10,5 +10,5 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	if router == nil || module == nil {
 		return
 	}
-	router.POST("/api/v1/tenants", middleware.Access(), module.TenantHandler.CreateTenant)
+	router.POST("/api/v1/tenants", middleware.ACL(), module.TenantHandler.CreateTenant)
 }

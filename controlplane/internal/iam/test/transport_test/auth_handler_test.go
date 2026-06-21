@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"controlplane/internal/config"
+	"controlplane/internal/cacheengine"
+	coreEntity "controlplane/internal/core/domain/entity"
 	middleware "controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -247,7 +249,17 @@ func TestSession_Unauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
-	router.GET("/session", h.Session)
+
+	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
+	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
+		return &coreEntity.RuntimeSecrets{
+			Active: coreEntity.RuntimeSecret{Secret: []byte("some-test-secret-12345678901234567890123456789012")},
+		}, nil
+	})
+	middleware.InitACL(registry, 10*time.Second, nil, nil, nil)
+	defer middleware.InitACL(nil, 10*time.Second, nil, nil, nil)
+
+	router.GET("/session", middleware.ACL(), h.Session)
 
 	req := httptest.NewRequest(http.MethodGet, "/session", nil)
 	w := httptest.NewRecorder()
@@ -285,12 +297,12 @@ func TestSession_Success(t *testing.T) {
 	}
 }
 
-// TestSession_ServiceUnavailable kiểm thử khi thiếu middleware Access() xử lý định danh
+// TestSession_ServiceUnavailable kiểm thử khi thiếu middleware ACL() xử lý định danh
 func TestSession_ServiceUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := newAuthHandler(&authServiceStub{})
-	router.GET("/session", middleware.Access(), h.Session)
+	router.GET("/session", middleware.ACL(), h.Session)
 
 	req := httptest.NewRequest(http.MethodGet, "/session", nil)
 	w := httptest.NewRecorder()

@@ -15,7 +15,8 @@ type RouteParams = {
 // [COMMENT]: API Route Handler xử lý POST request chuyển tiếp các tác vụ xác thực ngầm (Refresh / Trinity Refresh).
 export async function POST(request: Request, { params }: RouteParams) {
   const { action } = await params;
-  console.log(`[BFF Proxy] Incoming POST request for action: "${action}"`);
+  const cookieHeader = request.headers.get("cookie") || "";
+  console.log(`[BFF Proxy] Incoming POST request for action: "${action}", cookie length: ${cookieHeader.length}, cookies: "${cookieHeader}"`);
 
   // Chỉ cho phép xử lý 2 hành động liên quan đến làm mới phiên
   if (action !== "trinity-refresh" && action !== "refresh") {
@@ -79,7 +80,8 @@ export async function POST(request: Request, { params }: RouteParams) {
 // [COMMENT]: API Route Handler xử lý GET request chuyển tiếp tác vụ kiểm tra phiên làm việc ngầm (Session Check).
 export async function GET(request: Request, { params }: RouteParams) {
   const { action } = await params;
-  console.log(`[BFF Proxy] Incoming GET request for action: "${action}"`);
+  const cookieHeader = request.headers.get("cookie") || "";
+  console.log(`[BFF Proxy] Incoming GET request for action: "${action}", cookie length: ${cookieHeader.length}, cookies: "${cookieHeader}"`);
 
   // Chỉ cho phép xử lý hành động lấy thông tin phiên
   if (action !== "session") {
