@@ -13,7 +13,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -364,17 +363,6 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, fmt.Errorf("%w: failed to generate access JTI: %v", iamTaxonomy.ErrAuthenticationUnavailable, idErr)
 	}
 	accessExp := now.Add(s.cfg.Security.AccessSecretTTL)
-	val, err := s.registry.GetOrLoad(ctx, "access_secret", "")
-	if err != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to get access secret from registry: %v", iamTaxonomy.ErrAuthenticationUnavailable, err)
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: invalid runtime secrets type", iamTaxonomy.ErrAuthenticationUnavailable)
-	}
-
 	// Access token chứa accessKey + jti để middleware verify với runtime cache.
 	accessToken, accessErr := security.SignWithSecret(security.Claims{
 		Subject:   user.ID.String(),
@@ -385,7 +373,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: accessExp.Unix(),
-	}, secrets.Active.Secret)
+	}, nil)
 	if accessErr != nil {
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		return nil, fmt.Errorf("%w: failed to sign access token: %v", iamTaxonomy.ErrAuthenticationUnavailable, accessErr)
@@ -568,29 +556,9 @@ func cleanString(value *string) string {
 
 // VerifyUserTrinitySession xác thực thông tin đăng nhập của End-User thông thường qua gRPC
 func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
-	// [ignoring loop detection]
-	// Bước 1: Truy xuất danh sách key ký mã hóa cho User từ cache registry
-	val, err := s.registry.GetOrLoad(ctx, "access_secret", "")
-	if err != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for user")
-	}
-
-	// Bước 2: Giải mã JWT lần lượt bằng active rồi standby key
-	var claims security.Claims
-	parsed := false
-	for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
-		parsedClaims, parseErr := security.Parse(token, candidate.Secret)
-		if parseErr == nil {
-			claims = parsedClaims
-			parsed = true
-			break
-		}
-	}
-	if !parsed {
+	// [COMMENT]: Giải mã JWT trực tiếp bằng Vault (không dùng candidates từ DB)
+	claims, parseErr := security.Parse(token, nil)
+	if parseErr != nil {
 		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 

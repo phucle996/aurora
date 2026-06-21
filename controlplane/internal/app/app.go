@@ -142,6 +142,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: vault init failed: %w", err)
 	}
 	app.vault = vaultClient
+	security.InitVault(vaultClient, cfg.Vault.TransitKeyName)
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Schema bootstrap: Database migrations bắt buộc chạy trước khi modules dùng DB.

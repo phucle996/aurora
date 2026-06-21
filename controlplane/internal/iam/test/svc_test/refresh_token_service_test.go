@@ -314,7 +314,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 	if result.AccessKey == "" || result.TrackedDeviceID != deviceID.String() {
 		t.Fatalf("expected runtime and tracked device ids, got %#v", result)
 	}
-	claims, err := security.Parse(result.AccessToken, []byte("secret-key"))
+	claims, err := security.Parse(result.AccessToken, nil)
 	if err != nil {
 		t.Fatalf("expected parsable access token, got %v", err)
 	}

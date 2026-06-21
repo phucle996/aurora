@@ -16,27 +16,6 @@
 -- ======================================================================================================
 
 
-CREATE TABLE IF NOT EXISTS core_secrets (
-    secret_type VARCHAR(100) PRIMARY KEY,
-    active_secret TEXT NOT NULL,
-    active_fingerprint VARCHAR(256) NOT NULL,
-    active_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    standby_secret TEXT NOT NULL,
-    standby_fingerprint VARCHAR(256) NOT NULL,
-    standby_created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-COMMENT ON TABLE core_secrets IS 'Lưu trữ các cặp secret active-standby cho từng loại token/chữ ký, phục vụ rotation và verification liên tục.';
-COMMENT ON COLUMN core_secrets.secret_type IS 'Unique identifier type code of the secret, for example access_secret, refresh_secret, admin_api_key, one_time_token.';
-COMMENT ON COLUMN core_secrets.active_secret IS 'Encrypted active secret material.';
-COMMENT ON COLUMN core_secrets.active_fingerprint IS 'Deterministic non-sensitive fingerprint of the active secret.';
-COMMENT ON COLUMN core_secrets.active_created_at IS 'Timestamp when the active secret was created.';
-COMMENT ON COLUMN core_secrets.standby_secret IS 'Encrypted standby secret material.';
-COMMENT ON COLUMN core_secrets.standby_fingerprint IS 'Deterministic non-sensitive fingerprint of the standby secret.';
-COMMENT ON COLUMN core_secrets.standby_created_at IS 'Timestamp when the standby secret was created.';
-COMMENT ON COLUMN core_secrets.updated_at IS 'Timestamp when this row was last updated.';
-
 CREATE TABLE IF NOT EXISTS zones (
     id UUID PRIMARY KEY,
     code TEXT NOT NULL,

@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
-	coreEntity "controlplane/internal/core/domain/entity"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 	apires "controlplane/pkg/apires"
@@ -133,58 +132,16 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 			return
 		}
 
+		// [ignoring loop detection]
 		// --------------------------------------------------------------------
-		// Parse JWT bằng danh sách các candidates.
+		// Parse JWT bằng Vault.
 		// --------------------------------------------------------------------
-		val, err := registry.GetOrLoad(c.Request.Context(), "admin_api_key", "")
-		if err != nil {
-			if isLogout {
-				c.Next()
-				return
-			}
-			abortAdminAuthUnavailable(c)
-			return
-		}
-		secrets, ok := val.(*coreEntity.RuntimeSecrets)
-		if !ok || secrets == nil {
-			if isLogout {
-				c.Next()
-				return
-			}
-			abortAdminAuthUnavailable(c)
-			return
-		}
-
-		candidates := []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby}
-		var claims security.Claims
-		parsed := false
-		expired := false
-		for _, candidate := range candidates {
-			parsedClaims, parseErr := security.Parse(token, candidate.Secret)
-			if parseErr == nil {
-				claims = parsedClaims
-				parsed = true
-				break
-			}
+		claims, parseErr := security.Parse(token, nil)
+		if parseErr != nil {
 			if errors.Is(parseErr, security.ErrTokenExpired) {
-				expired = true
+				// Kích hoạt cờ xoay khóa trực tiếp trên L2 Cache
+				_ = registry.L2.Set(c.Request.Context(), "iam:admin_key_rotation:required", "1", 1, adminAPIKeyRotationTriggerTTL)
 			}
-			if errors.Is(parseErr, security.ErrEmptySecret) {
-				if isLogout {
-					c.Next()
-					return
-				}
-				abortAdminAuthUnavailable(c)
-				return
-			}
-		}
-
-		if expired {
-			// Kích hoạt cờ xoay khóa trực tiếp trên L2 Cache
-			_ = registry.L2.Set(c.Request.Context(), "iam:admin_key_rotation:required", "1", 1, adminAPIKeyRotationTriggerTTL)
-		}
-
-		if !parsed {
 			if isLogout {
 				c.Next()
 				return

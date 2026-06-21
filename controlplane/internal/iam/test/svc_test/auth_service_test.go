@@ -445,7 +445,7 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 	if persisted == false {
 		t.Fatal("expected refresh session to be persisted")
 	}
-	claims, err := security.Parse(result.AccessToken, []byte("secret-key"))
+	claims, err := security.Parse(result.AccessToken, nil)
 	if err != nil {
 		t.Fatalf("expected parsable access token, got %v", err)
 	}

@@ -1,3 +1,2 @@
-DROP TABLE IF EXISTS core_secrets;
 DROP TABLE IF EXISTS zone_services;
 DROP TABLE IF EXISTS zones;

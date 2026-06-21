@@ -126,21 +126,6 @@ func (m *Module) RegisterGRPCServices(server *grpc.Server) {
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
-	if m == nil || m.SecretRotationService == nil {
-		return nil
-	}
-
-	types := []string{
-		"access_secret",
-		"refresh_secret",
-		"admin_api_key",
-		"one_time_token",
-	}
-	for _, secretType := range types {
-		if _, err := m.SecretRotationService.EnsureInitialSecrets(ctx, secretType); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

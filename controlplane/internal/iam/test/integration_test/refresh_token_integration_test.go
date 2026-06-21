@@ -146,7 +146,7 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 		t.Fatalf("refresh should succeed: %v", err)
 	}
 
-	claims, err := security.Parse(refreshResult.AccessToken, []byte("access_token-secret"))
+	claims, err := security.Parse(refreshResult.AccessToken, nil)
 	if err != nil {
 		t.Fatalf("parse refreshed access token: %v", err)
 	}

@@ -18,6 +18,8 @@ func NewVaultClient(ctx context.Context, cfg *config.VaultCfg) (*vaultapi.Client
 	vaultCfg := vaultapi.DefaultConfig()
 	vaultCfg.Address = cfg.Addr
 	vaultCfg.Timeout = cfg.Timeout
+	// [COMMENT]: Cấu hình số lần retry mặc định của SDK khi gọi REST API sang Vault Cluster (hỗ trợ HA Failover)
+	vaultCfg.MaxRetries = cfg.MaxRetries
 
 	var client *vaultapi.Client
 	var err error
@@ -32,8 +34,32 @@ func NewVaultClient(ctx context.Context, cfg *config.VaultCfg) (*vaultapi.Client
 			continue
 		}
 
-		// [COMMENT]: Thiết lập Token để xác thực các yêu cầu sau này gửi tới Vault
-		client.SetToken(cfg.Token)
+		// [COMMENT]: Nếu cấu hình AppRole được cung cấp (RoleID và SecretID), sử dụng AppRole authentication thay cho root token tĩnh.
+		// Điều này giúp tránh lưu trữ tĩnh root token trong môi trường production HA.
+		if cfg.RoleID != "" && cfg.SecretID != "" {
+			data := map[string]interface{}{
+				"role_id":   cfg.RoleID,
+				"secret_id": cfg.SecretID,
+			}
+			resp, err := client.Logical().Write("auth/approle/login", data)
+			if err != nil {
+				if attempt < cfg.MaxRetries {
+					time.Sleep(1 * time.Second)
+				}
+				continue
+			}
+			if resp == nil || resp.Auth == nil || resp.Auth.ClientToken == "" {
+				err = fmt.Errorf("vault: approle login returned empty client token")
+				if attempt < cfg.MaxRetries {
+					time.Sleep(1 * time.Second)
+				}
+				continue
+			}
+			client.SetToken(resp.Auth.ClientToken)
+		} else {
+			// [COMMENT]: Thiết lập Token tĩnh để xác thực các yêu cầu sau này (phù hợp dev/testing)
+			client.SetToken(cfg.Token)
+		}
 
 		// [COMMENT]: Kiểm tra trạng thái hoạt động thực tế (Healthcheck) của Vault Server.
 		// Đảm bảo Vault đã được khởi tạo (Initialized) và đã được mở khóa (Unsealed) trước khi trả về client hợp lệ.

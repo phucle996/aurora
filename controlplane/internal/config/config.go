@@ -154,6 +154,8 @@ type SchemaSQLCfg struct {
 type VaultCfg struct {
 	Addr           string
 	Token          string
+	RoleID         string
+	SecretID       string
 	TransitKeyName string
 	Timeout        time.Duration
 	MaxRetries     int
@@ -286,6 +288,8 @@ func LoadConfig() *Config {
 		Vault: VaultCfg{
 			Addr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
 			Token:          getEnv("VAULT_TOKEN", ""),
+			RoleID:         getEnv("VAULT_ROLE_ID", ""),
+			SecretID:       getEnv("VAULT_SECRET_ID", ""),
 			TransitKeyName: getEnv("VAULT_TRANSIT_KEY_NAME", "jwt-signer"),
 			Timeout:        getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
 			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),

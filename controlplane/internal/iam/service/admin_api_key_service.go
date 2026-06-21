@@ -35,7 +35,6 @@ import (
 	"controlplane/infra/telegram"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/core/domain/entity"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -803,20 +802,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, jtiErr, iamMetrics.OutcomeFailureUnknown)
 	}
 
-	// Ký admin_api token sử dụng CacheRegistry và coreEntity.RuntimeSecrets
-	val, err = s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
-	if err != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		// Cache L1 lỗi -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		// Secrets cấu hình sai -> ErrInternalError
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamMetrics.OutcomeFailureUnknown)
-	}
-
+	// [COMMENT]: Ký admin_api token sử dụng Vault Transit
 	adminAPIToken, signErr := security.SignWithSecret(security.Claims{
 		Subject:   "sre",
 		AccessKey: accessKey.String(),
@@ -825,7 +811,7 @@ func (s *AdminAPIKeyService) AdminLogin(ctx context.Context, req iamEntity.Admin
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
 		ZoneID:    zoneID,
-	}, secrets.Active.Secret)
+	}, nil)
 	if signErr != nil {
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		// JWT Sign lỗi -> ErrInternalError
@@ -1088,28 +1074,9 @@ func (s *AdminAPIKeyService) GetPublicKeyFromSession(ctx context.Context, access
 // Phương thức này kiểm tra JWT token dựa trên keys của Admin từ cache registry,
 // đối chiếu access_key và verify tính hoạt động của session trong Redis L2.
 func (s *AdminAPIKeyService) VerifyAdminTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
-	// Bước 1: Truy xuất danh sách key ký mã hóa cho Admin từ cache registry
-	val, err := s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
-	if err != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, fmt.Errorf("invalid runtime secrets type for admin")
-	}
-
-	// Bước 2: Giải mã JWT lần lượt bằng active rồi standby key
-	var claims security.Claims
-	parsed := false
-	for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
-		parsedClaims, parseErr := security.Parse(token, candidate.Secret)
-		if parseErr == nil {
-			claims = parsedClaims
-			parsed = true
-			break
-		}
-	}
-	if !parsed {
+	// [COMMENT]: Giải mã JWT trực tiếp bằng Vault (không dùng candidates từ DB)
+	claims, parseErr := security.Parse(token, nil)
+	if parseErr != nil {
 		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 

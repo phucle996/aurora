@@ -31,7 +31,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -40,7 +39,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/core/domain/entity"
 	middlewareMetrics "controlplane/internal/http/middleware/metrics"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
@@ -164,29 +162,9 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 			return
 		}
 
+		// [ignoring loop detection]
 		// --------------------------------------------------------------------
-		// BƯỚC 1: LẤY SIGNING SECRET TỪ CACHE REGISTRY (Đưa lên đầu để phục vụ parse/refresh)
-		// --------------------------------------------------------------------
-		secretVal, err := registry.GetOrLoad(c.Request.Context(), "access_secret", "")
-		if err != nil {
-			middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "error")
-			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "db_error")
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			c.Abort()
-			return
-		}
-		secrets, ok := secretVal.(*coreEntity.RuntimeSecrets)
-		if !ok || secrets == nil {
-			middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "error")
-			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "db_error")
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			c.Abort()
-			return
-		}
-		middlewareMetrics.RecordCacheOperation("access", "access_secret", "L1_L2", "hit")
-
-		// --------------------------------------------------------------------
-		// BƯỚC 2: LẤY ACCESS TOKEN TỪ HEADER HOẶC COOKIE & PARSE JWT
+		// BƯỚC 1: LẤY ACCESS TOKEN TỪ HEADER HOẶC COOKIE & PARSE JWT
 		// --------------------------------------------------------------------
 		var rawToken string
 		if bearer, ok := security.ExtractBearerToken(c.GetHeader("Authorization")); ok {
@@ -196,27 +174,20 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 		}
 
 		var (
-			claims      security.Claims
-			parsed      bool
-			parseErr    error
-			emptySecret bool
+			claims   security.Claims
+			parsed   bool
+			parseErr error
 		)
 
 		if rawToken != "" {
-			for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
-				claims, parseErr = security.Parse(rawToken, candidate.Secret)
-				if parseErr == nil {
-					parsed = true
-					break
-				}
-				if errors.Is(parseErr, security.ErrEmptySecret) {
-					emptySecret = true
-				}
+			claims, parseErr = security.Parse(rawToken, nil)
+			if parseErr == nil {
+				parsed = true
 			}
 		}
 
-		// [COMMENT]: Nếu access_token bị thiếu hoặc đã hết hạn -> Thử Silent Opaque Refresh (Kiểu 2)
-		if rawToken == "" || (!parsed && !emptySecret) {
+		// [COMMENT]: Nếu access_token bị thiếu hoặc không hợp lệ -> Thử Silent Opaque Refresh (Kiểu 2)
+		if rawToken == "" || !parsed {
 			refreshTokenCookie, err := c.Cookie(constant.RefreshTokenName)
 			if err == nil && strings.TrimSpace(refreshTokenCookie) != "" && aclMiddleware.refreshSvc != nil {
 				ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
@@ -230,26 +201,17 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 					}
 					setUserCookies(c, domain, secure, result.AccessToken, result.RefreshToken, result.AccessKey, result.AccessSecret, result.AccessExpiresAt, result.RefreshExpiresAt)
 
-					// Cập nhật lại rawToken và giải mã bằng các khóa ký
+					// Cập nhật lại rawToken và giải mã bằng Vault
 					rawToken = result.AccessToken
-					for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
-						claims, parseErr = security.Parse(rawToken, candidate.Secret)
-						if parseErr == nil {
-							parsed = true
-							break
-						}
+					claims, parseErr = security.Parse(rawToken, nil)
+					if parseErr == nil {
+						parsed = true
 					}
 				}
 			}
 		}
 
 		if !parsed {
-			if emptySecret {
-				middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "empty_secret")
-				apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-				c.Abort()
-				return
-			}
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "invalid_token")
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
@@ -294,20 +256,17 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 						}
 						setUserCookies(c, domain, secure, result.AccessToken, "", result.AccessKey, result.AccessSecret, result.AccessExpiresAt, time.Time{})
 
-						// Giải mã token mới để lấy các claims và secret mới
-						for _, candidate := range []coreEntity.RuntimeSecret{secrets.Active, secrets.Standby} {
-							newClaims, parseErr := security.Parse(result.AccessToken, candidate.Secret)
-							if parseErr == nil {
-								claims = newClaims
-								accessKeyClaim = strings.TrimSpace(claims.AccessKey)
-								userIDClaim = strings.TrimSpace(claims.Subject)
-								jti = strings.TrimSpace(claims.TokenID)
-								accessSecret = result.AccessSecret
-								accessKeyFromCookie = result.AccessKey
-								secretCookieErr = nil
-								keyCookieErr = nil
-								break
-							}
+						// [COMMENT]: Giải mã token mới để lấy các claims và secret mới qua Vault
+						newClaims, parseErr := security.Parse(result.AccessToken, nil)
+						if parseErr == nil {
+							claims = newClaims
+							accessKeyClaim = strings.TrimSpace(claims.AccessKey)
+							userIDClaim = strings.TrimSpace(claims.Subject)
+							jti = strings.TrimSpace(claims.TokenID)
+							accessSecret = result.AccessSecret
+							accessKeyFromCookie = result.AccessKey
+							secretCookieErr = nil
+							keyCookieErr = nil
 						}
 					}
 				}

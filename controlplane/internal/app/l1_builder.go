@@ -79,22 +79,7 @@ func RegisterL1Loaders(
 		return modules.Core.ZoneRepository.GetZoneCatalog(ctx)
 	})
 
-	// 5. Đăng ký tĩnh loader cho các secret types phục vụ JWT và API key auth
-	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return modules.Core.SecretRepository.GetAccessSecret(ctx)
-	})
-
-	cacheengine.Register(registry, "refresh_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return modules.Core.SecretRepository.GetRefreshSecret(ctx)
-	})
-
-	cacheengine.Register(registry, "admin_api_key", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return modules.Core.SecretRepository.GetAdminAPIKey(ctx)
-	})
-
-	cacheengine.Register(registry, "one_time_token", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return modules.Core.SecretRepository.GetOneTimeTokenSecret(ctx)
-	})
+	// [COMMENT]: Gỡ bỏ toàn bộ Cache Loaders cho các legacy database-backed secrets (đã chuyển dịch sang Vault)
 
 	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC (sử dụng GetPermissionCodesByRoleCode tối ưu hơn)
 	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {

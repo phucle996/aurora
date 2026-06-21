@@ -9,7 +9,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/core/domain/entity"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -116,23 +115,7 @@ func (s *SessionRefreshService) RefreshUserOpaque(ctx context.Context, rawRefres
 	}
 	accessExpiresAt := now.Add(s.cfg.Security.AccessSecretTTL)
 
-	// [COMMENT]: Tải khóa ký mật JWT từ L1/L2 Cache Registry
-	startCache := time.Now()
-	val, err := s.cacheEngine.GetOrLoad(ctx, "access_secret", "")
-	if err != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetOrLoad", iamMetrics.OutcomeFailureUnknown, time.Since(startCache), err)
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetOrLoad", iamMetrics.OutcomeFailureUnknown, time.Since(startCache), errors.New("invalid runtime secrets type"))
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, errors.New("invalid runtime secrets type"), refreshOutcome)
-	}
-	iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "GetOrLoad", iamMetrics.OutcomeSuccess, time.Since(startCache), nil)
-
-	// [COMMENT]: Ký JWT access token mới
+	// [COMMENT]: Ký JWT access token mới trực tiếp bằng Vault
 	accessToken, accessErr := security.SignWithSecret(security.Claims{
 		Subject:   user.ID.String(),
 		Role:      "",
@@ -142,7 +125,7 @@ func (s *SessionRefreshService) RefreshUserOpaque(ctx context.Context, rawRefres
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: accessExpiresAt.Unix(),
-	}, secrets.Active.Secret)
+	}, nil)
 	if accessErr != nil {
 		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamMetrics.OutcomeFailureUnknown)
@@ -202,6 +185,13 @@ func (s *SessionRefreshService) RefreshUserOpaque(ctx context.Context, rawRefres
 	indexKey := "iam:user_access_index:" + user.ID.String()
 	runtimeTTL := s.cfg.Security.AccessSecretTTL
 
+	// [COMMENT]: Kiểm tra an toàn xem cacheEngine hoặc L2 client có bị nil không (phổ biến trong môi trường chạy test cô lập)
+	// để tránh panic runtime và trả về lỗi ErrAuthenticationUnavailable đúng nghiệp vụ.
+	if s.cacheEngine == nil || s.cacheEngine.L2 == nil {
+		refreshOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, fmt.Errorf("cache engine L2 client is nil"), iamMetrics.OutcomeFailureUnknown)
+	}
+
 	startSetRuntime := time.Now()
 	rdb := s.cacheEngine.L2.Client()
 	pipe := rdb.Pipeline()
@@ -242,6 +232,12 @@ func (s *SessionRefreshService) RefreshUserTrinity(ctx context.Context, userID u
 	if oldAccessKey == "" || oldAccessSecret == "" {
 		trinityOutcome = iamMetrics.OutcomeInvalidCredential
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
+	}
+
+	// [COMMENT]: Đảm bảo an toàn cacheEngine không nil khi thực hiện Trinity Refresh trong môi trường test cô lập.
+	if s.cacheEngine == nil || s.cacheEngine.L2 == nil {
+		trinityOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, fmt.Errorf("cache engine L2 client is nil"), iamMetrics.OutcomeFailureUnknown)
 	}
 
 	rdb := s.cacheEngine.L2.Client()
@@ -294,18 +290,7 @@ func (s *SessionRefreshService) RefreshUserTrinity(ctx context.Context, userID u
 	}
 	newAccessExp := now.Add(s.cfg.Security.AccessSecretTTL)
 
-	// [COMMENT]: Tải signing secret từ cache registry để ký JWT access token mới
-	val, loadErr := s.cacheEngine.GetOrLoad(ctx, "access_secret", "")
-	if loadErr != nil {
-		trinityOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to load signing secret: %v", iamTaxonomy.ErrAuthenticationUnavailable, loadErr)
-	}
-	secrets, ok := val.(*coreEntity.RuntimeSecrets)
-	if !ok || secrets == nil {
-		trinityOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: invalid runtime secrets type", iamTaxonomy.ErrAuthenticationUnavailable)
-	}
-
+	// [COMMENT]: Ký JWT access token mới bằng Vault
 	newAccessToken, signErr := security.SignWithSecret(security.Claims{
 		Subject:   userIDStr,
 		Role:      "",
@@ -315,7 +300,7 @@ func (s *SessionRefreshService) RefreshUserTrinity(ctx context.Context, userID u
 		TokenUse:  "access",
 		IssuedAt:  now.Unix(),
 		ExpiresAt: newAccessExp.Unix(),
-	}, secrets.Active.Secret)
+	}, nil)
 	if signErr != nil {
 		trinityOutcome = iamMetrics.OutcomeFailureUnknown
 		return nil, fmt.Errorf("%w: failed to sign new access token: %v", iamTaxonomy.ErrAuthenticationUnavailable, signErr)
@@ -522,18 +507,7 @@ return 1
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
-	// [COMMENT]: Tải admin signing secret từ L1 cache registry và ký JWT Admin Token mới
-	valNew, errNew := s.cacheEngine.GetOrLoad(ctx, "admin_api_key", "")
-	if errNew != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errNew, iamMetrics.OutcomeFailureUnknown)
-	}
-	secretsNew, okNew := valNew.(*coreEntity.RuntimeSecrets)
-	if !okNew || secretsNew == nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, errors.New("invalid runtime secrets type"), iamMetrics.OutcomeFailureUnknown)
-	}
-
+	// [COMMENT]: Ký JWT Admin Token mới bằng Vault
 	adminAPITokenNew, signErr := security.SignWithSecret(security.Claims{
 		Subject:   "sre",
 		AccessKey: accessKeyNew,
@@ -542,7 +516,7 @@ return 1
 		ZoneID:    resolvedZoneID,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(s.cfg.Security.AdminSessionTTL).Unix(),
-	}, secretsNew.Active.Secret)
+	}, nil)
 	if signErr != nil {
 		refreshOutcome = iamMetrics.OutcomeFailureUnknown
 		return iamEntity.AdminLoginResult{}, apperr.Wrap(iamTaxonomy.ErrInternalError, signErr, iamMetrics.OutcomeFailureUnknown)
