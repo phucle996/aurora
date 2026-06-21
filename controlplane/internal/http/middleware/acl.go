@@ -45,6 +45,7 @@ import (
 	"controlplane/internal/security"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
+	"controlplane/pkg/logger" // [COMMENT]: Import package logger phục vụ ghi nhật ký lỗi chi tiết trong middleware ACL
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -212,6 +213,8 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 		}
 
 		if !parsed {
+			// [COMMENT]: Ghi log chi tiết lỗi parse/validate JWT (vd: hết hạn, chữ ký sai, ...) để debug
+			logger.HandlerWarn(c, "acl.middleware.jwt_parse", parseErr, "Xác thực JWT thất bại hoặc token bị thiếu")
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "invalid_token")
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
@@ -227,6 +230,8 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 		jti := strings.TrimSpace(claims.TokenID)
 
 		if accessKeyClaim == "" || userIDClaim == "" || jti == "" {
+			// [COMMENT]: Ghi log cảnh báo khi token thiếu các claim bắt buộc (access_key, sub, jti)
+			logger.HandlerWarn(c, "acl.middleware.claims_check", fmt.Errorf("missing claims in token"), fmt.Sprintf("Token thô hợp lệ nhưng thiếu thông tin định danh: accessKeyClaim='%s', userIDClaim='%s', jti='%s'", accessKeyClaim, userIDClaim, jti))
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "missing_claims")
 			c.Header("WWW-Authenticate", "Bearer")
 			apires.RespondUnauthorized(c, "unauthorized")
@@ -274,6 +279,8 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 		}
 
 		if secretCookieErr != nil || keyCookieErr != nil || accessSecret == "" || accessKeyFromCookie == "" {
+			// [COMMENT]: Ghi log cảnh báo khi trình duyệt/client không gửi đủ cookies định danh bắt buộc (access_secret hoặc access_key)
+			logger.HandlerWarn(c, "acl.middleware.cookie_check", fmt.Errorf("missing cookie credentials"), fmt.Sprintf("Thiếu cookie xác thực: secretErr=%v, keyErr=%v, secretLen=%d, keyLen=%d", secretCookieErr, keyCookieErr, len(accessSecret), len(accessKeyFromCookie)))
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "missing_cookie_credentials")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -281,6 +288,8 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 		}
 
 		if accessKeyFromCookie != accessKeyClaim {
+			// [COMMENT]: Khóa access_key trong cookie và trong JWT token không khớp nhau -> Tấn công giả mạo hoặc session mismatch
+			logger.HandlerWarn(c, "acl.middleware.key_mismatch", fmt.Errorf("mismatched access key"), fmt.Sprintf("Mâu thuẫn định danh: cookie key '%s' != token key '%s'", accessKeyFromCookie, accessKeyClaim))
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "mismatched_key")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
@@ -288,31 +297,40 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 		}
 
 		// --------------------------------------------------------------------
-		// BƯỚC 4: XÁC THỰC PHIÊN QUA REDIS L2 (SESSION BINDING)
+		// BƯỚC 4: XÁC THỰC PHIÊN QUA REDIS TRỰC TIẾP (SESSION BINDING)
 		// --------------------------------------------------------------------
+		// [COMMENT]: Sử dụng Redis client trực tiếp (không qua L2 wrapper) vì Login Service
+		// ghi session bằng rdb.Set(ctx, key, payload) — key dạng thô "iam:user_access_session:..."
+		// L2 wrapper sẽ transform key thành "{key}:data" / "{key}:version" gây mismatch khi đọc.
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 100*time.Millisecond)
 		defer cancel()
 
 		sessionKey := "iam:user_access_session:" + userIDClaim + ":" + accessKeyClaim
-		rawPayload, _, exists, l2Err := registry.L2.Get(ctx, sessionKey)
-		if l2Err != nil {
+		rdb := registry.L2.Client()
+		rawResult, redisErr := rdb.Get(ctx, sessionKey).Result()
+		if redisErr != nil {
+			if redisErr == goredis.Nil {
+				// [COMMENT]: Không tìm thấy session tương ứng của người dùng trong Redis
+				logger.HandlerWarn(c, "acl.middleware.session_miss", fmt.Errorf("session key not found in redis"), fmt.Sprintf("Không tìm thấy session key trong Redis: %s", sessionKey))
+				middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "miss")
+				middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "session_not_found")
+				apires.RespondUnauthorized(c, "unauthorized")
+				c.Abort()
+				return
+			}
+			// [COMMENT]: Lỗi kết nối Redis thực tế → fail-closed 503
 			middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "error")
 			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "redis_error")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
 			return
 		}
-		if !exists {
-			middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "miss")
-			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "session_not_found")
-			apires.RespondUnauthorized(c, "unauthorized")
-			c.Abort()
-			return
-		}
 		middlewareMetrics.RecordCacheOperation("access", "user_access_session", "L2", "hit")
 
 		var pb iamproto.UserAccessSession
-		if err := proto.Unmarshal(rawPayload, &pb); err != nil {
+		if err := proto.Unmarshal([]byte(rawResult), &pb); err != nil {
+			// [COMMENT]: Lỗi deserialize dữ liệu session lấy từ Redis
+			logger.HandlerWarn(c, "acl.middleware.unmarshal_fail", err, "Không thể giải mã payload session từ Redis L2")
 			middlewareMetrics.RecordAuthAttempt("access", "service_unavailable", "invalid_session_payload")
 			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
 			c.Abort()
@@ -326,6 +344,8 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 
 		// Đối khớp access_secret cookie với hash lưu trong Redis
 		if record.AccessSecretHash != security.HashTokenSHA256(accessSecret) {
+			// [COMMENT]: Giá trị hash của access_secret từ cookie không trùng khớp với dữ liệu đã lưu trong Redis -> Từ chối truy cập
+			logger.HandlerWarn(c, "acl.middleware.secret_mismatch", fmt.Errorf("invalid secret signature"), fmt.Sprintf("Hash của secret từ cookie (%s) không khớp với hash lưu trong Redis (%s)", security.HashTokenSHA256(accessSecret), record.AccessSecretHash))
 			middlewareMetrics.RecordAuthAttempt("access", "unauthorized", "invalid_secret")
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()

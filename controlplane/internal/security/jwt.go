@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"controlplane/pkg/logger"
+
 	vaultapi "github.com/hashicorp/vault/api"
 )
 
@@ -180,6 +182,9 @@ func SignWithSecret(claims Claims, secret []byte) (string, error) {
 		}
 		secretRes, err := vaultClient.Logical().Write(fmt.Sprintf("transit/hmac/%s", vaultTransitKey), data)
 		if err != nil {
+			logger.SysErrorFields("security.jwt.SignWithSecret", "Vault HMAC signing failed", err, logger.Fields{
+				"transit_key": vaultTransitKey,
+			})
 			return "", fmt.Errorf("security: vault sign failed: %w", err)
 		}
 
@@ -282,11 +287,14 @@ func Parse(token string, secret []byte) (Claims, error) {
 			if !valid {
 				return Claims{}, ErrInvalidSignature
 			}
+
 			// Hợp lệ và còn hạn trong L1 cache, bỏ qua REST API call đến Vault
 		} else {
+
 			// [COMMENT]: Giải mã chữ ký Raw URL sang byte và encode lại sang Base64 Standard phục vụ API Vault
 			sigBytes, err := jwtEncoding.DecodeString(rawSigB64URL)
 			if err != nil {
+
 				return Claims{}, ErrInvalidToken
 			}
 			sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
@@ -296,6 +304,8 @@ func Parse(token string, secret []byte) (Claims, error) {
 
 			inputB64 := base64.StdEncoding.EncodeToString([]byte(parts[0] + "." + parts[1]))
 
+
+
 			// [COMMENT]: Gọi API transit/verify của Vault để xác thực chữ ký
 			data := map[string]interface{}{
 				"input":     inputB64,
@@ -304,15 +314,22 @@ func Parse(token string, secret []byte) (Claims, error) {
 			}
 			secretRes, err := vaultClient.Logical().Write(fmt.Sprintf("transit/verify/%s", vaultTransitKey), data)
 			if err != nil {
+				logger.SysErrorFields("security.jwt.Parse", "Vault HMAC verification failed", err, logger.Fields{
+					"transit_key": vaultTransitKey,
+				})
 				return Claims{}, fmt.Errorf("security: vault verify failed: %w", err)
 			}
+
+
 
 			valid, ok := secretRes.Data["valid"].(bool)
 			if !ok || !valid {
 				// [COMMENT]: Cache trạng thái không hợp lệ trong 10 giây để giảm tải spamming
+
 				verifyCache.set(sigHash, false, 10*time.Second)
 				return Claims{}, ErrInvalidSignature
 			}
+
 
 			// [COMMENT]: Cache trạng thái hợp lệ trong 10 giây
 			verifyCache.set(sigHash, true, 10*time.Second)

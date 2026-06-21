@@ -567,15 +567,18 @@ func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string
 		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
-	// Bước 4: Kiểm tra tính hoạt động của session từ Redis L2 cache
+	// Bước 4: Kiểm tra tính hoạt động của session từ Redis trực tiếp
+	// [COMMENT]: Sử dụng Redis client trực tiếp (không qua L2 wrapper) vì Login Service
+	// ghi session bằng rdb.Set(ctx, key, payload) — L2 wrapper transform key thành "{key}:data" gây mismatch.
 	sessionKey := "iam:user_access_session:" + claims.Subject + ":" + accessKey
-	payload, _, exists, err := s.registry.L2.Get(ctx, sessionKey)
-	if err != nil || !exists {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
+	rdb := s.registry.L2.Client()
+	rawResult, redisErr := rdb.Get(ctx, sessionKey).Result()
+	if redisErr != nil {
+		return &iamEntity.VerifySessionResult{Valid: false}, nil
 	}
 
 	var pb iamproto.UserAccessSession
-	err = proto.Unmarshal(payload, &pb)
+	err := proto.Unmarshal([]byte(rawResult), &pb)
 	if err != nil {
 		return &iamEntity.VerifySessionResult{Valid: false}, err
 	}

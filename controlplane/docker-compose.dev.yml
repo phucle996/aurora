@@ -719,17 +719,28 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ============================================================================
+  # 🔒 PHẦN 8.5: HASHICORP VAULT - HA SECRET STORAGE BACKEND
+  # ============================================================================
+  # Khởi chạy Vault sử dụng file cấu hình chuyên nghiệp (vault.hcl) và Raft storage
+  # để thay thế chế độ in-memory dev tạm thời, bảo đảm dữ liệu khóa ký JWT bền vững.
   vault:
     image: hashicorp/vault:1.15
     container_name: controlplane-vault
-    command: server -dev
-    environment:
-      - VAULT_DEV_ROOT_TOKEN_ID=myroot
-      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    # [COMMENT]: Chạy dưới quyền root để tránh lỗi permission denied khi ghi file vào Raft storage volume
+    user: "0:0"
+    # [COMMENT]: Khởi chạy ở chế độ server sử dụng file cấu hình HCL gắn ngoài, chỉ rõ command 'vault server' để tránh entrypoint duplicate config
+    command: vault server -config=/vault/config/vault.hcl
+    volumes:
+      # [COMMENT]: Gắn file cấu hình HCL từ máy host dưới dạng Read-Only
+      - ./dev/vault/vault.hcl:/vault/config/vault.hcl:ro
+      # [COMMENT]: Lưu trữ dữ liệu Raft bền vững qua named volume
+      - controlplane_vault_data:/vault/data
     ports:
       - "8200:8200"
     healthcheck:
-      test: [ "CMD", "vault", "status" ]
+      # [COMMENT]: Sử dụng API sys/health để kiểm tra HTTP response của server thay cho command status nhằm tránh lỗi code khi chưa unseal
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8200/v1/sys/health" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -753,6 +764,8 @@ volumes:
   # Thư mục lưu cấu hình và dữ liệu của Stalwart Mail Server
   controlplane_stalwart_etc:
   controlplane_stalwart_data:
+  # [COMMENT]: Lưu trữ dữ liệu Raft bền vững của Vault
+  controlplane_vault_data:
 
   # Caching thư viện Golang cho cụm Controlplane
   controlplane_go_mod: # Thư mục chứa tệp dữ liệu vật lý của PostgreSQL
