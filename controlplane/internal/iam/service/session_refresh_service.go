@@ -656,3 +656,28 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 	}, nil
 }
 
+// [COMMENT]: RevokeOpaqueRefreshToken thực hiện băm token thô nhận từ ACL gRPC và thực thi xóa khỏi database.
+// Trả về ErrZeroRowsAffected nếu không tìm thấy bản ghi để tầng vận chuyển tự quyết định log/phản hồi.
+func (s *SessionRefreshService) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
+	if rawRefreshToken == "" {
+		return nil
+	}
+	// [COMMENT]: Băm SHA-256 mã token thô để so khớp bảo mật
+	tokenHash := security.HashTokenSHA256(rawRefreshToken)
+
+	startLoad := time.Now()
+	_, err := s.repo.DeleteRefreshTokenSessionByHash(ctx, tokenHash)
+	if err != nil {
+		// [COMMENT]: Nếu là lỗi ErrZeroRowsAffected, cập nhật metric thành công và trả lỗi lên lớp trên
+		if errors.Is(err, iamTaxonomy.ErrZeroRowsAffected) {
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
+			return err
+		}
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeFailureUnknown, time.Since(startLoad), err)
+		return fmt.Errorf("session refresh: failed to delete refresh token: %w", err)
+	}
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
+
+	return nil
+}
+

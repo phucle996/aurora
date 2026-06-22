@@ -6,11 +6,11 @@ option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
 
 service SessionService {
   // RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
-  rpc IssueTrinitySession (IssueTrinitySessionRequest) returns (IssueTrinitySessionResponse);
+  rpc ReleaseTrinitySession (ReleaseTrinitySessionRequest) returns (ReleaseTrinitySessionResponse);
 }
 
 // Request gửi thông tin định danh & thiết bị sau khi IAM xác thực thành công
-message IssueTrinitySessionRequest {
+message ReleaseTrinitySessionRequest {
   string user_id = 1;              // UUID dạng string của User (để làm claim 'sub' JWT & Key Redis)
   string device_id = 2;            // UUID của thiết bị trong DB PostgreSQL (lưu vào session 'tdid')
   string client_device_id = 3;     // Cookie client_device_id hiện tại (nếu có) để gắn kết thiết bị
@@ -25,7 +25,7 @@ message IssueTrinitySessionRequest {
 }
 
 // Response chứa bộ credentials trả về cho IAM để chuyển tiếp cho Envoy set cookie
-message IssueTrinitySessionResponse {
+message ReleaseTrinitySessionResponse {
   string access_token = 1;         // JWT Access Token được ký bởi Vault (chứa các claims sub, role, lvl, access_key,...)
   string refresh_token = 2;        // Opaque Refresh Token (chỉ có giá trị nếu request có trust_device = true)
   string access_key = 3;           // UUIDv7 làm định danh phiên (lưu ở Cookie dạng plain, dùng làm key lookup Redis L2)

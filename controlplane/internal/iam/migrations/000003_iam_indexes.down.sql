@@ -85,6 +85,7 @@ DROP INDEX IF EXISTS devices_last_seen_at_idx;
 DROP INDEX IF EXISTS devices_status_idx;
 DROP INDEX IF EXISTS devices_user_id_idx;
 DROP INDEX IF EXISTS devices_user_fingerprint_uidx;
+DROP INDEX IF EXISTS devices_user_fingerprint_idx;
 DROP INDEX IF EXISTS devices_user_client_device_uidx;
 DROP INDEX IF EXISTS devices_user_active_seen_idx;
 

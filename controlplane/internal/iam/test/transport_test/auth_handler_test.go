@@ -37,7 +37,8 @@ func (s *authServiceStub) RegisterAccount(ctx context.Context, user iamEntity.Us
 	return s.err
 }
 
-func (s *authServiceStub) Logout(ctx context.Context) error {
+// [COMMENT]: Thêm stub RevokeOpaqueRefreshToken để thoả mãn interface mới
+func (s *authServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
 	return nil
 }
 
@@ -164,7 +165,7 @@ func TestLogin_InvalidCredentials(t *testing.T) {
 	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrInvalidCredentials})
 	router.POST("/login", h.Login)
 
-	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
 	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -181,7 +182,7 @@ func TestLogin_VerificationRequired(t *testing.T) {
 	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrVerificationRequired})
 	router.POST("/login", h.Login)
 
-	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
 	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -208,7 +209,7 @@ func TestLogin_SuccessSetsCookies(t *testing.T) {
 	}})
 	router.POST("/login", h.Login)
 
-	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
 	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

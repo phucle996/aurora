@@ -9,15 +9,6 @@ policies:
       - 192.168.0.0/16
       - 172.16.0.0/12
   rate_limit:
-    preauth:
-      global_instant:
-        max_inflight: 2444
-        queue_limit: 0
-        retry_after_seconds: 1
-      ip:
-        capacity: 1200
-        refill: 1200
-        period_seconds: 60
     postauth:
       ip_device:
         capacity: 40

@@ -257,7 +257,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		// tối ưu hiệu năng và quản lý headers tập trung ở cấp gateway trong môi trường HA.
 		// middleware.CORS(cfg.App.AllowedOrigins),
 		middleware.CookieOriginGuard(cfg.App.AllowedOrigins),
-		middleware.RateLimitPreAuth(ratelimiter, "global_preauth"),
 		middleware.AccessLog(),
 		middleware.AdminXSSI(),
 	)

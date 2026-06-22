@@ -15,6 +15,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
+	"controlplane/pkg/constant"
 	cookie "controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
@@ -182,14 +183,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	var requestIP *string
-	if ip := strings.TrimSpace(c.ClientIP()); ip != "" {
-		requestIP = &ip
-	}
-	var userAgent *string
-	if ua := strings.TrimSpace(c.Request.UserAgent()); ua != "" {
-		userAgent = &ua
-	}
+	ipVal := strings.TrimSpace(c.ClientIP())
+	uaVal := strings.TrimSpace(c.Request.UserAgent())
+	ctx = context.WithValue(ctx, constant.RemoteIPKey, ipVal)
+	ctx = context.WithValue(ctx, constant.UserAgentKey, uaVal)
 
 	hostnameHint := c.GetHeader("X-Device-Hostname")
 	hostnameAlias := c.GetHeader("X-Device-Name")
@@ -211,10 +208,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Password:        password,
 		DevicePublicKey: devicePublicKey,
 		TrustDevice:     request.TrustDevice,
-		IP:              requestIP,
-		UserAgent:       userAgent,
 		DeviceName:      deviceName,
 		ClientDeviceID:  clientDeviceIDHint,
+		ZoneCode:        strings.TrimSpace(request.ZoneCode),
 	})
 	if err != nil {
 		switch {
@@ -311,55 +307,4 @@ func (h *AuthHandler) Session(c *gin.Context) {
 
 	logger.HandlerInfo(c, op, "user session authenticated")
 	apires.RespondSuccess(c, gin.H{"authenticated": true}, "ok")
-}
-
-// Logout godoc
-// @Summary User logout
-// @Description Xoá runtime device, revoke refresh token và clear cookie session.
-// @Tags auth
-// @Produce json
-// @Success 204 {string} string "No Content"
-// @Failure 401 {object} map[string]interface{} "unauthorized"
-// @Failure 500 {object} map[string]interface{} "internal_error"
-// @Router /api/v1/auth/logout [post]
-func (h *AuthHandler) Logout(c *gin.Context) {
-	const op = "iam.auth.logout"
-
-	// Clear cookies inline immediately so that the client's session is cleared in all execution paths
-	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-	secure := isSecureRequest(c)
-	exp := time.Unix(0, 0)
-	for _, cookieDef := range []struct {
-		name     string
-		httpOnly bool
-	}{
-		{cookie.AccessTokenName, true},
-		{cookie.RefreshTokenName, true},
-		{cookie.AccessKeyName, false},
-		{cookie.AccessSecretName, true},
-	} {
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     cookieDef.name,
-			Value:    "",
-			Path:     "/",
-			Domain:   domain,
-			HttpOnly: cookieDef.httpOnly,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   -1,
-			Expires:  exp,
-		})
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	if err := h.authSvc.Logout(ctx); err != nil {
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-
-	logger.HandlerInfo(c, op, "user logout successful")
-	c.Status(http.StatusNoContent)
 }

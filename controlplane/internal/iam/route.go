@@ -90,14 +90,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.AuthHandler.Session,
 	)
 
-	// 5) Đăng xuất tài khoản
-	router.POST("/api/v1/auth/logout",
-		middleware.ACL(
-			middleware.WithInjectAccessKey(),
-		),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/logout"),
-		module.AuthHandler.Logout,
-	)
+
 
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",

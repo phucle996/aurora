@@ -59,6 +59,7 @@ var (
 )
 
 var (
-	ErrInternalError   = errors.New("iam: internal error")
-	ErrLockAlreadyHeld = errors.New("iam: lock already held")
+	ErrInternalError    = errors.New("iam: internal error")
+	ErrLockAlreadyHeld  = errors.New("iam: lock already held")
+	ErrZeroRowsAffected = errors.New("iam: zero rows affected")
 )

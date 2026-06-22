@@ -52,36 +52,45 @@ func (r *AuthRepository) CheckUserExist(ctx context.Context, username string, em
 }
 
 func (r *AuthRepository) GetLoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+	// [COMMENT]: Thực hiện truy vấn trực tiếp bảng users để lấy thông tin đăng nhập mà không join sang bảng user_profiles
 	query := fmt.Sprintf(`
 		SELECT 
-			u.id,
-			u.username,
-			u.email,
-			COALESCE(p.fullname,''), 
-			u.password_hash, 
-			u.status
-		FROM %s.users u
-		LEFT JOIN %s.user_profiles p 
-			ON p.user_id = u.id
-		WHERE u.username = $1
+			id,
+			username,
+			email,
+			password_hash, 
+			status
+		FROM %s.users
+		WHERE username = $1
 		LIMIT 1
-	`, r.schema, r.schema)
+	`, r.schema)
 
-	var loginUser iamEntity.LoginUser
+	// [COMMENT]: Khởi tạo đối tượng DB model đại diện cho bảng users để hứng dữ liệu quét từ DB
+	var userModel iamModel.User
 	if err := r.db.QueryRow(ctx, query, username).Scan(
-		&loginUser.ID,
-		&loginUser.Username,
-		&loginUser.Email,
-		&loginUser.Fullname,
-		&loginUser.PasswordHash,
-		&loginUser.Status,
+		&userModel.ID,
+		&userModel.Username,
+		&userModel.Email,
+		&userModel.PasswordHash,
+		&userModel.Status,
 	); err != nil {
+		// [COMMENT]: Nếu không tìm thấy bản ghi người dùng, trả về lỗi nghiệp vụ ErrUserNotFound
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, iamTaxonomy.ErrUserNotFound
 		}
 		return nil, fmt.Errorf("iam repo: get login user by username: %w", err)
 	}
-	return &loginUser, nil
+
+	// [COMMENT]: Chuyển đổi từ cấu trúc DB Model sang Domain Entity để phục vụ Business Logic của Service
+	loginUser := &iamEntity.LoginUser{
+		ID:           userModel.ID,
+		Username:     userModel.Username,
+		Email:        userModel.Email,
+		PasswordHash: userModel.PasswordHash,
+		Status:       iamEntity.UserStatus(userModel.Status),
+	}
+
+	return loginUser, nil
 }
 
 func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {

@@ -2,6 +2,7 @@ package iamRepoImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,8 +10,11 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamModel "controlplane/internal/iam/model"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -111,36 +115,53 @@ func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.
 	return items, nil
 }
 
-func (r *DeviceRepository) GetDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) (*iamEntity.Device, error) {
-	// [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để pgx scan được vào Go *string.
+func (r *DeviceRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error) {
+	// [COMMENT]: Thực hiện query gọn nhẹ (SELECT client_device_id) chỉ lấy thông tin cần thiết.
+	// Tránh SELECT * cồng kềnh, tối ưu hóa I/O bằng cách lọc theo status != 'revoked' (đảm bảo thiết bị active).
 	query := fmt.Sprintf(`
-		SELECT id, user_id, device_name, device_type, os_name, browser_name, public_key, public_key_alg,
-		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
-		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
+		SELECT client_device_id
 		FROM %s.devices
-		WHERE id = $1 AND user_id = $2
+		WHERE user_id = $1 AND public_key_fingerprint = $2 AND status != 'revoked'
 		LIMIT 1
 	`, r.schema)
-	var item iamModel.Device
-	if err := r.db.QueryRow(ctx, query, deviceID, userID).Scan(
-		&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey, &item.PublicKeyAlg,
-		&item.PublicKeyFingerprint, &item.ClientDeviceID, &item.Status, &item.TrustedAt, &item.QuarantinedAt, &item.RiskFlags, &item.RevokedAt,
-		&item.LastSeenIP, &item.LastSeenUserAgent, &item.LastSeenAt, &item.CreatedAt, &item.UpdatedAt,
-	); err != nil {
-		return nil, fmt.Errorf("iam repo: get device by id and user id: %w", err)
+	var clientDeviceID *string
+	if err := r.db.QueryRow(ctx, query, userID, fingerprint).Scan(&clientDeviceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// [COMMENT]: Không tìm thấy thiết bị active -> Trả về chuỗi rỗng để luồng ngoài tự tạo mới
+			return "", nil
+		}
+		return "", fmt.Errorf("iam repo: get active device ID: %w", err)
 	}
-	entity := iamModel.DeviceModelToEntity(item)
-	return &entity, nil
+	if clientDeviceID == nil {
+		return "", nil
+	}
+	return *clientDeviceID, nil
 }
 
 func (r *DeviceRepository) RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error {
+	// [COMMENT]: Gộp UPDATE devices và DELETE refresh_tokens thành 1 câu SQL dùng CTE để tối ưu số lần round-trip DB.
+	// Sử dụng SELECT ... FROM để đảm bảo luôn trả về đúng 1 dòng (tránh lỗi pgx.ErrNoRows nếu DELETE 0 dòng).
 	query := fmt.Sprintf(`
-		UPDATE %s.devices
-		SET status='revoked', revoked_at=now(), updated_at=now()
-		WHERE id = $1 AND user_id = $2
-	`, r.schema)
-	if _, err := r.db.Exec(ctx, query, deviceID, userID); err != nil {
-		return fmt.Errorf("iam repo: revoke device by id and user id: %w", err)
+		WITH revoked_device AS (
+			UPDATE %s.devices
+			SET status='revoked', revoked_at=now(), updated_at=now()
+			WHERE id = $1 AND user_id = $2
+			RETURNING id
+		),
+		deleted_tokens AS (
+			DELETE FROM %s.refresh_tokens
+			WHERE user_id = $2 AND device_id = $1
+			RETURNING 1
+		)
+		SELECT 
+			(SELECT COUNT(*) FROM revoked_device) AS updated_count
+	`, r.schema, r.schema)
+	var updatedCount int64
+	if err := r.db.QueryRow(ctx, query, deviceID, userID).Scan(&updatedCount); err != nil {
+		return fmt.Errorf("iam repo: revoke device by id and user id CTE: %w", err)
+	}
+	if updatedCount == 0 {
+		return iamTaxonomy.ErrZeroRowsAffected
 	}
 	return nil
 }
@@ -158,7 +179,23 @@ func (r *DeviceRepository) RevokeOtherDevicesByUserID(ctx context.Context, userI
 	return res.RowsAffected(), nil
 }
 
-func (r *DeviceRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (r *DeviceRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
+	var ipStr, uaStr string
+	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
+		ipStr = v
+	}
+	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
+		uaStr = v
+	}
+	var ip *string
+	if ipStr != "" {
+		ip = &ipStr
+	}
+	var userAgent *string
+	if uaStr != "" {
+		userAgent = &uaStr
+	}
+
 	query := fmt.Sprintf(`
 		UPDATE %s.devices
 		SET last_seen_ip = $2, last_seen_user_agent = $3, last_seen_at = now(), updated_at = now()
@@ -170,7 +207,23 @@ func (r *DeviceRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uui
 	return nil
 }
 
-func (r *DeviceRepository) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string, ip *string, userAgent *string) error {
+func (r *DeviceRepository) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error {
+	var ipStr, uaStr string
+	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
+		ipStr = v
+	}
+	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
+		uaStr = v
+	}
+	var ip *string
+	if ipStr != "" {
+		ip = &ipStr
+	}
+	var userAgent *string
+	if uaStr != "" {
+		userAgent = &uaStr
+	}
+
 	query := fmt.Sprintf(`
 		INSERT INTO %s.audit_events (actor_user_id, tenant_id, workspace_id, event, severity, ip_address, user_agent, created_at)
 		VALUES ($1, NULL, NULL, $2, $3::audit_severity, $4, $5, now())

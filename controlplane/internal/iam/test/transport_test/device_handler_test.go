@@ -31,10 +31,10 @@ type deviceServiceStub struct {
 func (s *deviceServiceStub) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	return s.listResult, s.listErr
 }
-func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error {
 	return s.revokeErr
 }
-func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error) {
+func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	if currentTrackedDeviceID != nil {
 		s.logoutOthersID = currentTrackedDeviceID.String()
 	} else {
@@ -42,21 +42,21 @@ func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrack
 	}
 	return s.logoutOthersN, s.logoutOthersErr
 }
-func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error) {
+func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context) (int64, error) {
 	return s.logoutAllN, s.logoutAllErr
 }
 func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
 	return nil, nil
 }
-func (s *deviceServiceStub) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (s *deviceServiceStub) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
 	return nil
 }
-func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {}
+func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {}
 func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
 	return 0, nil
 }
-func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {}
-func (s *deviceServiceStub) ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {}
+func (s *deviceServiceStub) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
 	return "", nil
 }
 

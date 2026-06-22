@@ -147,6 +147,25 @@ func (r *RefreshTokenRepository) RotateRefreshToken(ctx context.Context, current
 	return nil
 }
 
+// [COMMENT]: Xóa bỏ Refresh Token session dựa trên hash để thực hiện thu hồi/logout khi nhận tín hiệu từ ACL
+func (r *RefreshTokenRepository) DeleteRefreshTokenSessionByHash(ctx context.Context, tokenHash string) (int64, error) {
+	query := fmt.Sprintf(`
+		DELETE FROM %s.refresh_tokens
+		WHERE token_hash = $1
+	`, r.schema)
+	res, err := r.db.Exec(ctx, query, tokenHash)
+	if err != nil {
+		// [COMMENT]: Trả lỗi trực tiếp không wrap theo yêu cầu
+		return 0, err
+	}
+	rowsAffected := res.RowsAffected()
+	if rowsAffected == 0 {
+		// [COMMENT]: Trả lỗi ErrZeroRowsAffected đặc thù nếu không có bản ghi nào bị ảnh hưởng
+		return 0, iamTaxonomy.ErrZeroRowsAffected
+	}
+	return rowsAffected, nil
+}
+
 func (r *RefreshTokenRepository) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.refresh_tokens

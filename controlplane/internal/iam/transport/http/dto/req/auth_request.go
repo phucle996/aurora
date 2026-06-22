@@ -16,4 +16,5 @@ type LoginRequest struct {
 	Password        string `json:"password" binding:"required"`
 	DevicePublicKey string `json:"device_public_key" binding:"required,min=16"`
 	TrustDevice     bool   `json:"trust_device"`
+	ZoneCode        string `json:"zone_code" binding:"required"`
 }

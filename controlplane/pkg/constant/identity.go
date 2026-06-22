@@ -74,3 +74,15 @@ func GetOperation(ctx context.Context) string {
 	}
 	return "unknown"
 }
+
+// RemoteIPKeyType là kiểu dữ liệu riêng cho context key của Remote IP
+type RemoteIPKeyType struct{}
+
+// RemoteIPKey là instance duy nhất dùng làm key trong context.WithValue()
+var RemoteIPKey = RemoteIPKeyType{}
+
+// UserAgentKeyType là kiểu dữ liệu riêng cho context key của User Agent
+type UserAgentKeyType struct{}
+
+// UserAgentKey là instance duy nhất dùng làm key trong context.WithValue()
+var UserAgentKey = UserAgentKeyType{}

@@ -55,14 +55,20 @@ func TestDeviceRepositoryListAndRevoke(t *testing.T) {
 		t.Fatalf("unexpected devices: %+v", items)
 	}
 
-	if err := repo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID); err != nil {
+	err = repo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID)
+	if err != nil {
 		t.Fatalf("revoke device: %v", err)
 	}
 
-	got, err := repo.GetDeviceByIDAndUserID(ctx, deviceID, userID)
+	// [COMMENT]: Liệt kê các thiết bị để kiểm tra trạng thái của thiết bị đã revoke.
+	devices, err := repo.ListDevicesByUserID(ctx, userID, 10, 0)
 	if err != nil {
-		t.Fatalf("get device: %v", err)
+		t.Fatalf("list devices: %v", err)
 	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	got := devices[0]
 	if got.Status != iamEntity.DeviceStatusRevoked {
 		t.Fatalf("expected revoked status, got %s", got.Status)
 	}

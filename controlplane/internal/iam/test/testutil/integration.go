@@ -175,12 +175,12 @@ func CountUsersByIdentity(ctx context.Context, t testing.TB, db *pgxpool.Pool, s
 }
 
 type SessionServiceClientMock struct {
-	IssueTrinitySessionFn func(ctx context.Context, in *iamproto.IssueTrinitySessionRequest) (*iamproto.IssueTrinitySessionResponse, error)
+	ReleaseTrinitySessionFn func(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest) (*iamproto.ReleaseTrinitySessionResponse, error)
 }
 
-func (m *SessionServiceClientMock) IssueTrinitySession(ctx context.Context, in *iamproto.IssueTrinitySessionRequest, opts ...grpc.CallOption) (*iamproto.IssueTrinitySessionResponse, error) {
-	if m.IssueTrinitySessionFn != nil {
-		return m.IssueTrinitySessionFn(ctx, in)
+func (m *SessionServiceClientMock) ReleaseTrinitySession(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest, opts ...grpc.CallOption) (*iamproto.ReleaseTrinitySessionResponse, error) {
+	if m.ReleaseTrinitySessionFn != nil {
+		return m.ReleaseTrinitySessionFn(ctx, in)
 	}
 	now := time.Now()
 	token, _ := security.SignWithSecret(security.Claims{
@@ -193,7 +193,7 @@ func (m *SessionServiceClientMock) IssueTrinitySession(ctx context.Context, in *
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(30 * time.Minute).Unix(),
 	}, nil)
-	return &iamproto.IssueTrinitySessionResponse{
+	return &iamproto.ReleaseTrinitySessionResponse{
 		AccessToken:    token,
 		RefreshToken:   "mock-refresh-token",
 		AccessKey:      "mock-access-key",

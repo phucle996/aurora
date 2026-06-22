@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SessionService_IssueTrinitySession_FullMethodName = "/iam.rpc.SessionService/IssueTrinitySession"
+	SessionService_ReleaseTrinitySession_FullMethodName = "/iam.rpc.SessionService/ReleaseTrinitySession"
 )
 
 // SessionServiceClient is the client API for SessionService service.
@@ -27,7 +27,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SessionServiceClient interface {
 	// RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
-	IssueTrinitySession(ctx context.Context, in *IssueTrinitySessionRequest, opts ...grpc.CallOption) (*IssueTrinitySessionResponse, error)
+	ReleaseTrinitySession(ctx context.Context, in *ReleaseTrinitySessionRequest, opts ...grpc.CallOption) (*ReleaseTrinitySessionResponse, error)
 }
 
 type sessionServiceClient struct {
@@ -38,10 +38,10 @@ func NewSessionServiceClient(cc grpc.ClientConnInterface) SessionServiceClient {
 	return &sessionServiceClient{cc}
 }
 
-func (c *sessionServiceClient) IssueTrinitySession(ctx context.Context, in *IssueTrinitySessionRequest, opts ...grpc.CallOption) (*IssueTrinitySessionResponse, error) {
+func (c *sessionServiceClient) ReleaseTrinitySession(ctx context.Context, in *ReleaseTrinitySessionRequest, opts ...grpc.CallOption) (*ReleaseTrinitySessionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(IssueTrinitySessionResponse)
-	err := c.cc.Invoke(ctx, SessionService_IssueTrinitySession_FullMethodName, in, out, cOpts...)
+	out := new(ReleaseTrinitySessionResponse)
+	err := c.cc.Invoke(ctx, SessionService_ReleaseTrinitySession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (c *sessionServiceClient) IssueTrinitySession(ctx context.Context, in *Issu
 // for forward compatibility.
 type SessionServiceServer interface {
 	// RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
-	IssueTrinitySession(context.Context, *IssueTrinitySessionRequest) (*IssueTrinitySessionResponse, error)
+	ReleaseTrinitySession(context.Context, *ReleaseTrinitySessionRequest) (*ReleaseTrinitySessionResponse, error)
 	mustEmbedUnimplementedSessionServiceServer()
 }
 
@@ -64,8 +64,8 @@ type SessionServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSessionServiceServer struct{}
 
-func (UnimplementedSessionServiceServer) IssueTrinitySession(context.Context, *IssueTrinitySessionRequest) (*IssueTrinitySessionResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method IssueTrinitySession not implemented")
+func (UnimplementedSessionServiceServer) ReleaseTrinitySession(context.Context, *ReleaseTrinitySessionRequest) (*ReleaseTrinitySessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseTrinitySession not implemented")
 }
 func (UnimplementedSessionServiceServer) mustEmbedUnimplementedSessionServiceServer() {}
 func (UnimplementedSessionServiceServer) testEmbeddedByValue()                        {}
@@ -88,20 +88,20 @@ func RegisterSessionServiceServer(s grpc.ServiceRegistrar, srv SessionServiceSer
 	s.RegisterService(&SessionService_ServiceDesc, srv)
 }
 
-func _SessionService_IssueTrinitySession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(IssueTrinitySessionRequest)
+func _SessionService_ReleaseTrinitySession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseTrinitySessionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(SessionServiceServer).IssueTrinitySession(ctx, in)
+		return srv.(SessionServiceServer).ReleaseTrinitySession(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: SessionService_IssueTrinitySession_FullMethodName,
+		FullMethod: SessionService_ReleaseTrinitySession_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SessionServiceServer).IssueTrinitySession(ctx, req.(*IssueTrinitySessionRequest))
+		return srv.(SessionServiceServer).ReleaseTrinitySession(ctx, req.(*ReleaseTrinitySessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -114,8 +114,8 @@ var SessionService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*SessionServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "IssueTrinitySession",
-			Handler:    _SessionService_IssueTrinitySession_Handler,
+			MethodName: "ReleaseTrinitySession",
+			Handler:    _SessionService_ReleaseTrinitySession_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

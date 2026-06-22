@@ -22,7 +22,7 @@ const (
 )
 
 // Request gửi thông tin định danh & thiết bị sau khi IAM xác thực thành công
-type IssueTrinitySessionRequest struct {
+type ReleaseTrinitySessionRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	UserId         string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                           // UUID dạng string của User (để làm claim 'sub' JWT & Key Redis)
 	DeviceId       string                 `protobuf:"bytes,2,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`                     // UUID của thiết bị trong DB PostgreSQL (lưu vào session 'tdid')
@@ -39,20 +39,20 @@ type IssueTrinitySessionRequest struct {
 	sizeCache      protoimpl.SizeCache
 }
 
-func (x *IssueTrinitySessionRequest) Reset() {
-	*x = IssueTrinitySessionRequest{}
+func (x *ReleaseTrinitySessionRequest) Reset() {
+	*x = ReleaseTrinitySessionRequest{}
 	mi := &file_session_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *IssueTrinitySessionRequest) String() string {
+func (x *ReleaseTrinitySessionRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*IssueTrinitySessionRequest) ProtoMessage() {}
+func (*ReleaseTrinitySessionRequest) ProtoMessage() {}
 
-func (x *IssueTrinitySessionRequest) ProtoReflect() protoreflect.Message {
+func (x *ReleaseTrinitySessionRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_session_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -64,82 +64,82 @@ func (x *IssueTrinitySessionRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use IssueTrinitySessionRequest.ProtoReflect.Descriptor instead.
-func (*IssueTrinitySessionRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ReleaseTrinitySessionRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseTrinitySessionRequest) Descriptor() ([]byte, []int) {
 	return file_session_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *IssueTrinitySessionRequest) GetUserId() string {
+func (x *ReleaseTrinitySessionRequest) GetUserId() string {
 	if x != nil {
 		return x.UserId
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetDeviceId() string {
+func (x *ReleaseTrinitySessionRequest) GetDeviceId() string {
 	if x != nil {
 		return x.DeviceId
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetClientDeviceId() string {
+func (x *ReleaseTrinitySessionRequest) GetClientDeviceId() string {
 	if x != nil {
 		return x.ClientDeviceId
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetUsername() string {
+func (x *ReleaseTrinitySessionRequest) GetUsername() string {
 	if x != nil {
 		return x.Username
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetRole() string {
+func (x *ReleaseTrinitySessionRequest) GetRole() string {
 	if x != nil {
 		return x.Role
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetLevel() int32 {
+func (x *ReleaseTrinitySessionRequest) GetLevel() int32 {
 	if x != nil {
 		return x.Level
 	}
 	return 0
 }
 
-func (x *IssueTrinitySessionRequest) GetTenantId() string {
+func (x *ReleaseTrinitySessionRequest) GetTenantId() string {
 	if x != nil {
 		return x.TenantId
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetZoneId() string {
+func (x *ReleaseTrinitySessionRequest) GetZoneId() string {
 	if x != nil {
 		return x.ZoneId
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetTrustDevice() bool {
+func (x *ReleaseTrinitySessionRequest) GetTrustDevice() bool {
 	if x != nil {
 		return x.TrustDevice
 	}
 	return false
 }
 
-func (x *IssueTrinitySessionRequest) GetClientIp() string {
+func (x *ReleaseTrinitySessionRequest) GetClientIp() string {
 	if x != nil {
 		return x.ClientIp
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionRequest) GetUserAgent() string {
+func (x *ReleaseTrinitySessionRequest) GetUserAgent() string {
 	if x != nil {
 		return x.UserAgent
 	}
@@ -147,7 +147,7 @@ func (x *IssueTrinitySessionRequest) GetUserAgent() string {
 }
 
 // Response chứa bộ credentials trả về cho IAM để chuyển tiếp cho Envoy set cookie
-type IssueTrinitySessionResponse struct {
+type ReleaseTrinitySessionResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	AccessToken    string                 `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`            // JWT Access Token được ký bởi Vault (chứa các claims sub, role, lvl, access_key,...)
 	RefreshToken   string                 `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`         // Opaque Refresh Token (chỉ có giá trị nếu request có trust_device = true)
@@ -159,20 +159,20 @@ type IssueTrinitySessionResponse struct {
 	sizeCache      protoimpl.SizeCache
 }
 
-func (x *IssueTrinitySessionResponse) Reset() {
-	*x = IssueTrinitySessionResponse{}
+func (x *ReleaseTrinitySessionResponse) Reset() {
+	*x = ReleaseTrinitySessionResponse{}
 	mi := &file_session_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *IssueTrinitySessionResponse) String() string {
+func (x *ReleaseTrinitySessionResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*IssueTrinitySessionResponse) ProtoMessage() {}
+func (*ReleaseTrinitySessionResponse) ProtoMessage() {}
 
-func (x *IssueTrinitySessionResponse) ProtoReflect() protoreflect.Message {
+func (x *ReleaseTrinitySessionResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_session_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -184,47 +184,47 @@ func (x *IssueTrinitySessionResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use IssueTrinitySessionResponse.ProtoReflect.Descriptor instead.
-func (*IssueTrinitySessionResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ReleaseTrinitySessionResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseTrinitySessionResponse) Descriptor() ([]byte, []int) {
 	return file_session_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *IssueTrinitySessionResponse) GetAccessToken() string {
+func (x *ReleaseTrinitySessionResponse) GetAccessToken() string {
 	if x != nil {
 		return x.AccessToken
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionResponse) GetRefreshToken() string {
+func (x *ReleaseTrinitySessionResponse) GetRefreshToken() string {
 	if x != nil {
 		return x.RefreshToken
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionResponse) GetAccessKey() string {
+func (x *ReleaseTrinitySessionResponse) GetAccessKey() string {
 	if x != nil {
 		return x.AccessKey
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionResponse) GetAccessSecret() string {
+func (x *ReleaseTrinitySessionResponse) GetAccessSecret() string {
 	if x != nil {
 		return x.AccessSecret
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionResponse) GetClientDeviceId() string {
+func (x *ReleaseTrinitySessionResponse) GetClientDeviceId() string {
 	if x != nil {
 		return x.ClientDeviceId
 	}
 	return ""
 }
 
-func (x *IssueTrinitySessionResponse) GetExpiresInSecs() int64 {
+func (x *ReleaseTrinitySessionResponse) GetExpiresInSecs() int64 {
 	if x != nil {
 		return x.ExpiresInSecs
 	}
@@ -235,8 +235,8 @@ var File_session_proto protoreflect.FileDescriptor
 
 const file_session_proto_rawDesc = "" +
 	"\n" +
-	"\rsession.proto\x12\aiam.rpc\"\xd7\x02\n" +
-	"\x1aIssueTrinitySessionRequest\x12\x17\n" +
+	"\rsession.proto\x12\aiam.rpc\"\xd9\x02\n" +
+	"\x1cReleaseTrinitySessionRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1b\n" +
 	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12(\n" +
 	"\x10client_device_id\x18\x03 \x01(\tR\x0eclientDeviceId\x12\x1a\n" +
@@ -249,17 +249,17 @@ const file_session_proto_rawDesc = "" +
 	"\tclient_ip\x18\n" +
 	" \x01(\tR\bclientIp\x12\x1d\n" +
 	"\n" +
-	"user_agent\x18\v \x01(\tR\tuserAgent\"\xfb\x01\n" +
-	"\x1bIssueTrinitySessionResponse\x12!\n" +
+	"user_agent\x18\v \x01(\tR\tuserAgent\"\xfd\x01\n" +
+	"\x1dReleaseTrinitySessionResponse\x12!\n" +
 	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
 	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\x12\x1d\n" +
 	"\n" +
 	"access_key\x18\x03 \x01(\tR\taccessKey\x12#\n" +
 	"\raccess_secret\x18\x04 \x01(\tR\faccessSecret\x12(\n" +
 	"\x10client_device_id\x18\x05 \x01(\tR\x0eclientDeviceId\x12&\n" +
-	"\x0fexpires_in_secs\x18\x06 \x01(\x03R\rexpiresInSecs2r\n" +
-	"\x0eSessionService\x12`\n" +
-	"\x13IssueTrinitySession\x12#.iam.rpc.IssueTrinitySessionRequest\x1a$.iam.rpc.IssueTrinitySessionResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
+	"\x0fexpires_in_secs\x18\x06 \x01(\x03R\rexpiresInSecs2x\n" +
+	"\x0eSessionService\x12f\n" +
+	"\x15ReleaseTrinitySession\x12%.iam.rpc.ReleaseTrinitySessionRequest\x1a&.iam.rpc.ReleaseTrinitySessionResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
 	file_session_proto_rawDescOnce sync.Once
@@ -275,12 +275,12 @@ func file_session_proto_rawDescGZIP() []byte {
 
 var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_session_proto_goTypes = []any{
-	(*IssueTrinitySessionRequest)(nil),  // 0: iam.rpc.IssueTrinitySessionRequest
-	(*IssueTrinitySessionResponse)(nil), // 1: iam.rpc.IssueTrinitySessionResponse
+	(*ReleaseTrinitySessionRequest)(nil),  // 0: iam.rpc.ReleaseTrinitySessionRequest
+	(*ReleaseTrinitySessionResponse)(nil), // 1: iam.rpc.ReleaseTrinitySessionResponse
 }
 var file_session_proto_depIdxs = []int32{
-	0, // 0: iam.rpc.SessionService.IssueTrinitySession:input_type -> iam.rpc.IssueTrinitySessionRequest
-	1, // 1: iam.rpc.SessionService.IssueTrinitySession:output_type -> iam.rpc.IssueTrinitySessionResponse
+	0, // 0: iam.rpc.SessionService.ReleaseTrinitySession:input_type -> iam.rpc.ReleaseTrinitySessionRequest
+	1, // 1: iam.rpc.SessionService.ReleaseTrinitySession:output_type -> iam.rpc.ReleaseTrinitySessionResponse
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

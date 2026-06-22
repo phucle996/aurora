@@ -39,13 +39,7 @@ import (
 func Compile(src RateLimitPolicy) (CompiledPolicy, error) {
 	out := CompiledPolicy{}
 
-	// Biên dịch các chính sách Bucket (Token Bucket Algorithm Parameters)
-	out.PreAuth.IP = compileBucketPolicy(src.PreAuth.IP)
-
-	if out.PreAuth.IP.Capacity <= 0 || out.PreAuth.IP.Refill <= 0 || out.PreAuth.IP.PeriodSeconds <= 0 {
-		return CompiledPolicy{}, fmt.Errorf("%w: ratelimit: invalid preauth IP bucket parameters", errorx.ErrPolicyInvalid)
-	}
-
+	// [COMMENT]: Chỉ compile và validate các cấu hình PostAuth. Quy trình Pre-Auth đã chuyển hoàn toàn lên Envoy Gateway.
 	for _, rule := range src.PostAuth.Rules {
 		path := strings.TrimSpace(rule.Path)
 		if path == "" {
@@ -60,14 +54,6 @@ func Compile(src RateLimitPolicy) (CompiledPolicy, error) {
 			Refill:        rule.Refill,
 			PeriodSeconds: rule.PeriodSeconds,
 		})
-	}
-
-	// Biên dịch cấu hình giới hạn đồng thời (Inflight Concurrency Limit)
-	out.PreAuth.GlobalInstant.MaxInflight = src.PreAuth.GlobalInstant.MaxInflight
-	out.PreAuth.GlobalInstant.QueueLimit = src.PreAuth.GlobalInstant.QueueLimit
-	out.PreAuth.GlobalInstant.RetryAfterSeconds = src.PreAuth.GlobalInstant.RetryAfterSeconds
-	if out.PreAuth.GlobalInstant.MaxInflight <= 0 || out.PreAuth.GlobalInstant.RetryAfterSeconds <= 0 || out.PreAuth.GlobalInstant.QueueLimit < 0 {
-		return CompiledPolicy{}, fmt.Errorf("%w: ratelimit: invalid global instant concurrency parameters", errorx.ErrPolicyInvalid)
 	}
 
 	// Biên dịch tham số Giám sát & Lấy mẫu (Sampling & Observability)
@@ -108,12 +94,4 @@ func Compile(src RateLimitPolicy) (CompiledPolicy, error) {
 	}
 
 	return out, nil
-}
-
-func compileBucketPolicy(src RateLimitBucketPolicy) CompiledRateLimitBucketPolicy {
-	return CompiledRateLimitBucketPolicy{
-		Capacity:      src.Capacity,
-		Refill:        src.Refill,
-		PeriodSeconds: src.PeriodSeconds,
-	}
 }

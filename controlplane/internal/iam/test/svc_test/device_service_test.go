@@ -13,22 +13,24 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 type deviceRepoMock struct {
 	listFn        func(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error)
-	getFn         func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) (*iamEntity.Device, error)
 	upsertLoginFn func(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 	revokeFn      func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error
 	revokeOtherFn func(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error)
+	getActiveDeviceIDFn func(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error)
 }
 
 func (m *deviceRepoMock) ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error) {
 	return m.listFn(ctx, userID, limit, offset)
 }
-func (m *deviceRepoMock) GetDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) (*iamEntity.Device, error) {
-	return m.getFn(ctx, deviceID, userID)
+func (m *deviceRepoMock) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error) {
+	if m.getActiveDeviceIDFn != nil {
+		return m.getActiveDeviceIDFn(ctx, userID, fingerprint)
+	}
+	return "", nil
 }
 func (m *deviceRepoMock) UpsertLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
 	if m.upsertLoginFn != nil {
@@ -44,7 +46,7 @@ func (m *deviceRepoMock) RevokeDeviceByIDAndUserID(ctx context.Context, deviceID
 func (m *deviceRepoMock) RevokeOtherDevicesByUserID(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) {
 	return m.revokeOtherFn(ctx, userID, keepDeviceID)
 }
-func (m *deviceRepoMock) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (m *deviceRepoMock) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
 	return nil
 }
 func (m *deviceRepoMock) ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error) {
@@ -55,7 +57,7 @@ func (m *deviceRepoMock) EvictExcessDevices(ctx context.Context, userID uuid.UUI
 	return nil, nil
 }
 
-func (m *deviceRepoMock) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string, ip *string, userAgent *string) error {
+func (m *deviceRepoMock) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error {
 	return nil
 }
 
@@ -94,6 +96,11 @@ func (m *refreshRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Con
 	return m.revokeFn(ctx, userID, &deviceID)
 }
 
+// [COMMENT]: Thêm mock DeleteRefreshTokenSessionByHash để thoả mãn interface mới
+func (m *refreshRepoMock) DeleteRefreshTokenSessionByHash(ctx context.Context, tokenHash string) (int64, error) {
+	return 0, nil
+}
+
 var _ iamRepoInterface.DeviceRepository = (*deviceRepoMock)(nil)
 var _ iamRepoInterface.RefreshTokenRepository = (*refreshRepoMock)(nil)
 
@@ -103,10 +110,7 @@ func newDeviceService(d iamRepoInterface.DeviceRepository, r iamRepoInterface.Re
 
 func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {
 	svc := newDeviceService(&deviceRepoMock{
-		getFn: func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) (*iamEntity.Device, error) {
-			return nil, pgx.ErrNoRows
-		},
-		revokeFn:      func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error { return nil },
+		revokeFn:      func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error { return iamTaxonomy.ErrZeroRowsAffected },
 		revokeOtherFn: func(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) { return 0, nil },
 	}, &refreshRepoMock{
 		revokeFn: func(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) { return 0, nil },
@@ -114,7 +118,7 @@ func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {
 	userID := uuid.New()
 	ident := &constant.Identity{UserID: userID.String()}
 	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
-	err := svc.RevokeMyDevice(ctx, uuid.New(), nil, nil)
+	err := svc.RevokeMyDevice(ctx, uuid.New())
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected ErrInvalidSession, got %v", err)
 	}
@@ -124,9 +128,6 @@ func TestDeviceServiceLogoutOtherDevicesSuccess(t *testing.T) {
 	var revokedTokenN int64 = 2
 	svc := newDeviceService(&deviceRepoMock{
 		listFn: func(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error) {
-			return nil, nil
-		},
-		getFn: func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) (*iamEntity.Device, error) {
 			return nil, nil
 		},
 		revokeFn: func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error { return nil },
@@ -142,7 +143,7 @@ func TestDeviceServiceLogoutOtherDevicesSuccess(t *testing.T) {
 	ident := &constant.Identity{UserID: userID.String()}
 	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
 	keep := uuid.New()
-	n, err := svc.LogoutOtherDevices(ctx, &keep, nil, nil)
+	n, err := svc.LogoutOtherDevices(ctx, &keep)
 	if err != nil {
 		t.Fatalf("expected nil err, got %v", err)
 	}

@@ -210,6 +210,28 @@ impl SessionManager {
         Ok(true)
     }
 
+    // [COMMENT]: Thực hiện xoá session runtime tại L2 Redis và loại bỏ access key khỏi user index.
+    // Phương thức này được thực thi đồng bộ và trả lỗi ngay lập tức nếu Redis gặp sự cố.
+    pub async fn delete_session(&self, user_id: &str, access_key: &str) -> Result<(), AclError> {
+        let mut conn = self.get_connection().await?;
+        let redis_key = format!("iam:user_access_session:{}:{}", user_id, access_key);
+        let index_key = format!("iam:user_access_index:{}", user_id);
+
+        // Sử dụng pipeline để đảm bảo tính nguyên tử khi xóa thông tin phiên
+        redis::pipe()
+            .atomic()
+            .cmd("DEL")
+            .arg(&redis_key)
+            .cmd("SREM")
+            .arg(&index_key)
+            .arg(access_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AclError::RedisError(format!("Delete session in Redis failed: {}", e)))?;
+
+        Ok(())
+    }
+
     // Hỗ trợ kết nối bất đồng bộ sang Redis
     async fn get_connection(&self) -> Result<redis::aio::Connection, AclError> {
         self.redis_client.get_tokio_connection().await

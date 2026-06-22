@@ -19,7 +19,8 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_tenant_id_idx ON refresh_tokens(tenant
 CREATE INDEX IF NOT EXISTS refresh_tokens_expires_at_idx ON refresh_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS refresh_tokens_family_idx ON refresh_tokens(token_family_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS devices_user_fingerprint_uidx ON devices(user_id, public_key_fingerprint);
+-- [COMMENT]: Xóa unique constraint để cho phép nhiều user đăng nhập chung browser/cặp khóa Ed25519
+CREATE INDEX IF NOT EXISTS devices_user_fingerprint_idx ON devices(user_id, public_key_fingerprint);
 CREATE INDEX IF NOT EXISTS devices_user_id_idx ON devices(user_id);
 CREATE INDEX IF NOT EXISTS devices_status_idx ON devices(status);
 CREATE INDEX IF NOT EXISTS devices_last_seen_at_idx ON devices(last_seen_at);
@@ -73,7 +74,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS user_role_assignments_tenant_scope_uidx ON use
 CREATE UNIQUE INDEX IF NOT EXISTS user_role_assignments_workspace_scope_uidx ON user_role_assignments(user_id, role_id, scope_type, tenant_id, workspace_id)
     WHERE tenant_id IS NOT NULL AND workspace_id IS NOT NULL AND revoked_at IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint);
+-- [COMMENT]: Cho phép đăng ký lại thiết bị khi thiết bị cũ bị revoked bằng cách chỉ áp dụng unique cho active devices
+CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint) WHERE revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS admin_devices_last_seen_at_idx ON admin_devices(last_seen_at);
 
 

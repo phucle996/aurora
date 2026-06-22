@@ -5,13 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
-	"controlplane/pkg/constant"
 	domainservice "controlplane/internal/iam/domain/service"
-	"controlplane/internal/iam/taxonomy"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apires"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -63,22 +62,17 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 
 func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 	const op = "iam.device.revoke_my_device"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	// Khởi tạo context với timeout và tiêm tên operation vào context
+	ctx := constant.WithOperation(c.Request.Context(), op)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	var ip *string
-	if v := strings.TrimSpace(c.ClientIP()); v != "" {
-		ip = &v
-	}
-	var userAgent *string
-	if v := strings.TrimSpace(c.Request.UserAgent()); v != "" {
-		userAgent = &v
-	}
+
 	did, err := uuid.Parse(c.Param("device_id"))
 	if err != nil {
 		apires.RespondBadRequest(c, "invalid device id")
 		return
 	}
-	err = h.deviceSvc.RevokeMyDevice(ctx, did, ip, userAgent)
+	err = h.deviceSvc.RevokeMyDevice(ctx, did)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
@@ -101,14 +95,6 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 	const op = "iam.device.logout_other_devices"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	var ip *string
-	if v := strings.TrimSpace(c.ClientIP()); v != "" {
-		ip = &v
-	}
-	var userAgent *string
-	if v := strings.TrimSpace(c.Request.UserAgent()); v != "" {
-		userAgent = &v
-	}
 	var currentTrackedDeviceID string
 	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
 		currentTrackedDeviceID = ident.TrackedDeviceID
@@ -122,7 +108,7 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 		apires.RespondUnauthorized(c, "unauthorized")
 		return
 	}
-	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, &currID, ip, userAgent)
+	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, &currID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")
@@ -145,15 +131,7 @@ func (h *DeviceHandler) LogoutAllDevices(c *gin.Context) {
 	const op = "iam.device.logout_all_devices"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	var ip *string
-	if v := strings.TrimSpace(c.ClientIP()); v != "" {
-		ip = &v
-	}
-	var userAgent *string
-	if v := strings.TrimSpace(c.Request.UserAgent()); v != "" {
-		userAgent = &v
-	}
-	affected, err := h.deviceSvc.LogoutAllDevices(ctx, ip, userAgent)
+	affected, err := h.deviceSvc.LogoutAllDevices(ctx)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")

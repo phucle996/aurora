@@ -90,11 +90,15 @@ func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheReg
 			},
 		}, nil
 	})
+	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
+		return "00000000-0000-0000-0000-000000000000", nil
+	})
 	return registry
 }
 
 type deviceServiceStub struct {
 	registerLoginDeviceFn func(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
+	getActiveDeviceIDFn   func(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
 }
 
 var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
@@ -102,13 +106,13 @@ var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 func (s *deviceServiceStub) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	return nil, nil
 }
-func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error {
 	return nil
 }
-func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error) {
+func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	return 0, nil
 }
-func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error) {
+func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context) (int64, error) {
 	return 0, nil
 }
 func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
@@ -118,17 +122,20 @@ func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamE
 	device.ID = uuid.NewString()
 	return &device, nil
 }
-func (s *deviceServiceStub) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (s *deviceServiceStub) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
 	return nil
 }
-func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {
+func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {
 }
 func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
 	return 0, nil
 }
-func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
+func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {
 }
-func (s *deviceServiceStub) ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+func (s *deviceServiceStub) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+	if s.getActiveDeviceIDFn != nil {
+		return s.getActiveDeviceIDFn(ctx, userID, devicePublicKey)
+	}
 	return "", nil
 }
 
@@ -166,6 +173,11 @@ func (s *sessionRefreshServiceStub) RevokeRefreshTokensByDeviceIDAndUserID(ctx c
 }
 
 func (s *sessionRefreshServiceStub) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error {
+	return nil
+}
+
+// [COMMENT]: Thêm stub RevokeOpaqueRefreshToken để thoả mãn interface mới
+func (s *sessionRefreshServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
 	return nil
 }
 
@@ -473,5 +485,70 @@ func TestAuthServiceLoginLoadUserErrorReturnsEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "db timeout") {
 		t.Fatalf("expected raw cause preserved in error message, got %v", err)
+	}
+}
+
+func TestAuthServiceLoginRevokedDeviceHeals(t *testing.T) {
+	hash, _ := security.HashPassword("secret123")
+	user := &iamEntity.LoginUser{
+		ID:           uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		Username:     "alice.nguyen",
+		PasswordHash: hash,
+		Status:       iamEntity.UserStatusActive,
+	}
+
+	repo := &authRepoMock{
+		getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+			return user, nil
+		},
+		createRefreshFn: func(ctx context.Context, token iamEntity.RefreshToken) error {
+			return nil
+		},
+	}
+
+	revokedDeviceID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+
+	// Setup custom deviceSvc stub
+	devSvc := &deviceServiceStub{
+		getActiveDeviceIDFn: func(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+			// [COMMENT]: Trả về chuỗi rỗng để mô phỏng không có thiết bị active nào (do thiết bị đã bị thu hồi hoặc chưa đăng ký).
+			return "", nil
+		},
+		registerLoginDeviceFn: func(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
+			// [COMMENT]: Đăng ký thiết bị mới cần trả về trạng thái hoạt động bình thường
+			device.ID = uuid.NewString()
+			device.Status = iamEntity.DeviceStatusRecognized
+			return &device, nil
+		},
+	}
+
+	refreshStub := &sessionRefreshServiceStub{
+		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+			return "mock-refresh-token", time.Now().UTC().Add(24 * time.Hour), nil
+		},
+	}
+
+	// [COMMENT]: Khởi tạo AuthService thủ công để tiêm (inject) mock devSvc tùy biến phục vụ test tự hồi phục cookie thiết bị.
+	svc := iamSvcImpl.NewAuthService(config.LoadConfig(), repo, refreshStub, devSvc, makeTestRegistry("secret-key", nil), nil, nil, &testutil.SessionServiceClientMock{})
+
+	result, err := svc.Login(context.Background(), iamEntity.LoginRequest{
+		Username:        "alice.nguyen",
+		Password:        "secret123",
+		DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ClientDeviceID:  revokedDeviceID,
+		TrustDevice:     true,
+	})
+
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	// [COMMENT]: Khẳng định ClientDeviceID mới sinh ra phải khác ClientDeviceID cũ bị revoked
+	if result.ClientDeviceID == revokedDeviceID.String() {
+		t.Fatalf("expected revoked client device ID to be discarded and healed, but got matching ID %s", result.ClientDeviceID)
+	}
+
+	if result.ClientDeviceIDProvenance != "server-bootstrap" {
+		t.Fatalf("expected provenance server-bootstrap, got %s", result.ClientDeviceIDProvenance)
 	}
 }

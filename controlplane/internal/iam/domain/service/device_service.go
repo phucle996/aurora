@@ -23,14 +23,15 @@ type DeviceListResult struct {
 
 type DeviceService interface {
 	ListMyDevices(ctx context.Context, limit int, offset int) (*DeviceListResult, error)
-	RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error
-	LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error)
-	LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error)
+	RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error
+	LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error)
+	LogoutAllDevices(ctx context.Context) (int64, error)
 
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
-	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error
-	EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string)
+	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
+	EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID)
 	ReconcileDeviceCap(ctx context.Context, batch int) (int, error)
-	PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string)
-	ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
+	PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string)
+	// GetActiveDeviceID trả về client_device_id của thiết bị đang hoạt động (chưa bị revoked) khớp với user và khóa công khai.
+	GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
 }

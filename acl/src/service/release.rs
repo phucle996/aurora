@@ -1,9 +1,9 @@
+use crate::core::session::SessionManager;
+use crate::core::token::{Claims, TokenManager};
+use crate::observability::logger::Logger;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
-use crate::core::session::SessionManager;
-use crate::core::token::{TokenManager, Claims};
-use crate::observability::logger::Logger;
 
 // Import protobuf sinh ra từ proto/session.proto
 pub mod session_proto {
@@ -11,9 +11,7 @@ pub mod session_proto {
 }
 
 use session_proto::{
-    session_service_server::SessionService,
-    IssueTrinitySessionRequest,
-    IssueTrinitySessionResponse,
+    session_service_server::SessionService, ReleaseTrinitySessionRequest, ReleaseTrinitySessionResponse,
 };
 
 pub struct SessionServiceImpl {
@@ -39,15 +37,15 @@ impl SessionServiceImpl {
 #[tonic::async_trait]
 impl SessionService for SessionServiceImpl {
     // Triển khai RPC cấp mới Trinity Session & lưu Redis L2
-    async fn issue_trinity_session(
+    async fn release_trinity_session(
         &self,
-        request: Request<IssueTrinitySessionRequest>,
-    ) -> Result<Response<IssueTrinitySessionResponse>, Status> {
+        request: Request<ReleaseTrinitySessionRequest>,
+    ) -> Result<Response<ReleaseTrinitySessionResponse>, Status> {
         let req = request.into_inner();
 
         Logger::sys_info(
-            "session.issue",
-            &format!("Issuing new trinity session for user_id={}", req.user_id),
+            "session.release",
+            &format!("Releasing new trinity session for user_id={}", req.user_id),
         );
 
         // 1. Sinh Access Key (UUIDv7) và Access Secret (UUIDv4) để làm Trinity credentials
@@ -65,8 +63,16 @@ impl SessionService for SessionServiceImpl {
             sub: req.user_id.clone(),
             role: req.role.clone(),
             lvl: req.level,
-            tenant_id: if req.tenant_id.is_empty() { None } else { Some(req.tenant_id.clone()) },
-            zone_id: if req.zone_id.is_empty() { None } else { Some(req.zone_id.clone()) },
+            tenant_id: if req.tenant_id.is_empty() {
+                None
+            } else {
+                Some(req.tenant_id.clone())
+            },
+            zone_id: if req.zone_id.is_empty() {
+                None
+            } else {
+                Some(req.zone_id.clone())
+            },
             access_key: access_key.clone(),
             jti: Uuid::new_v4().to_string(),
             iss: Some("aurora-acl".to_string()),
@@ -79,27 +85,32 @@ impl SessionService for SessionServiceImpl {
             Ok(token) => token,
             Err(e) => {
                 Logger::sys_error(
-                    "session.issue",
+                    "session.release",
                     "Failed to sign access token via Vault",
                     &e.to_string(),
                 );
-                return Err(Status::internal(format!("Failed to sign access token: {}", e)));
+                return Err(Status::internal(format!(
+                    "Failed to sign access token: {}",
+                    e
+                )));
             }
         };
 
         // 5. Ghi session lên Redis L2 qua SessionManager (Stateful Verification)
-        if let Err(e) = self.session_mgr.register_session(
-            &req.user_id,
-            &access_key,
-            &ash,
-            &req.device_id,
-        ).await {
+        if let Err(e) = self
+            .session_mgr
+            .register_session(&req.user_id, &access_key, &ash, &req.device_id)
+            .await
+        {
             Logger::sys_error(
-                "session.issue",
+                "session.release",
                 "Failed to register session in Redis",
                 &e.to_string(),
             );
-            return Err(Status::internal(format!("Failed to write session state: {}", e)));
+            return Err(Status::internal(format!(
+                "Failed to write session state: {}",
+                e
+            )));
         }
 
         // 6. Cấp Opaque Refresh Token nếu trust_device = true
@@ -118,11 +129,14 @@ impl SessionService for SessionServiceImpl {
         };
 
         Logger::sys_info(
-            "session.issue",
-            &format!("Session issued successfully for user_id={} with access_key={}", req.user_id, access_key),
+            "session.release",
+            &format!(
+                "Session released successfully for user_id={} with access_key={}",
+                req.user_id, access_key
+            ),
         );
 
-        Ok(Response::new(IssueTrinitySessionResponse {
+        Ok(Response::new(ReleaseTrinitySessionResponse {
             access_token,
             refresh_token,
             access_key,
@@ -135,7 +149,7 @@ impl SessionService for SessionServiceImpl {
 
 // Helper: Băm SHA-256 mã hóa access_secret
 fn sha256_hash(secret: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
     format!("{:x}", hasher.finalize())

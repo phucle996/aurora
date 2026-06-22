@@ -52,15 +52,6 @@ policies:
     allowlist:
       - 127.0.0.1/32
   rate_limit:
-    preauth:
-      global_instant:
-        max_inflight: 3333
-        queue_limit: 7
-        retry_after_seconds: 3
-      ip:
-        capacity: 111
-        refill: 22
-        period_seconds: 9
     postauth:
       rules:
         - path: "/api/v1/auth/login"
@@ -88,11 +79,8 @@ policies:
 		t.Fatalf("expected valid reload, got err: %v", err)
 	}
 
-	if snapshot.Runtime.RateLimit.PreAuth.IP.Capacity != 111 || len(snapshot.Runtime.RateLimit.PostAuth.Rules) != 1 || snapshot.Runtime.RateLimit.PostAuth.Rules[0].Refill != 55 {
+	if len(snapshot.Runtime.RateLimit.PostAuth.Rules) != 1 || snapshot.Runtime.RateLimit.PostAuth.Rules[0].Refill != 55 {
 		t.Fatalf("rate values drifted after compile: %+v", snapshot.Runtime.RateLimit)
-	}
-	if snapshot.Runtime.RateLimit.PreAuth.GlobalInstant.MaxInflight != 3333 || snapshot.Runtime.RateLimit.PreAuth.GlobalInstant.QueueLimit != 7 {
-		t.Fatalf("global instant values drifted: %+v", snapshot.Runtime.RateLimit.PreAuth.GlobalInstant)
 	}
 	if snapshot.Runtime.RateLimit.Observability.SamplingPercent.Error != 39 {
 		t.Fatalf("sampling value drifted: %+v", snapshot.Runtime.RateLimit.Observability.SamplingPercent)
@@ -107,10 +95,62 @@ func TestReload_InvalidRateLimitFields_ReturnPolicyInvalid(t *testing.T) {
 		name string
 		yaml string
 	}{
-		{name: "invalid preauth capacity", yaml: baseYAMLWithOverride("capacity: 0")},
-		{name: "invalid global inflight", yaml: baseYAMLWithOverride("max_inflight: 0")},
-		{name: "invalid retry fallback", yaml: baseYAMLWithOverride("retry_after_fallback_seconds: 0")},
-		{name: "invalid sampling", yaml: baseYAMLWithOverride("throttle: 101")},
+		{
+			name: "invalid retry fallback",
+			yaml: `version: v1
+policies:
+  admin_cidr:
+    enabled: true
+    mode: enforce
+    allowlist:
+      - 127.0.0.1/32
+  rate_limit:
+    postauth:
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 40
+          refill: 40
+          period_seconds: 60
+    observability:
+      sampling_percent:
+        throttle: 10
+        temporary_isolation: 50
+        block: 100
+        error: 100
+    behavior:
+      retry_after_fallback_seconds: 0
+      fail_open: false
+      bypass_route_patterns:
+        - /metrics`,
+		},
+		{
+			name: "invalid sampling",
+			yaml: `version: v1
+policies:
+  admin_cidr:
+    enabled: true
+    mode: enforce
+    allowlist:
+      - 127.0.0.1/32
+  rate_limit:
+    postauth:
+      rules:
+        - path: "/api/v1/auth/login"
+          capacity: 40
+          refill: 40
+          period_seconds: 60
+    observability:
+      sampling_percent:
+        throttle: 101
+        temporary_isolation: 50
+        block: 100
+        error: 100
+    behavior:
+      retry_after_fallback_seconds: 2
+      fail_open: false
+      bypass_route_patterns:
+        - /metrics`,
+		},
 		{name: "empty bypass list", yaml: baseYAMLEmptyBypass()},
 	}
 
@@ -131,8 +171,8 @@ func TestReload_InvalidRateLimitFields_ReturnPolicyInvalid(t *testing.T) {
 }
 
 func TestReload_KeepLastKnownGood_WhenNextPolicyInvalid(t *testing.T) {
-	valid := []byte(baseYAMLWithOverride("capacity: 120"))
-	invalid := []byte(baseYAMLWithOverride("capacity: 0"))
+	valid := []byte(baseYAMLWithOverride("retry_after_fallback_seconds: 2"))
+	invalid := []byte(baseYAMLWithOverride("retry_after_fallback_seconds: 0"))
 
 	source := &fakeSourceAdapter{
 		meta: policytypes.PolicySourceMeta{Path: "runtime/policies/policy.yaml", Version: "1", Size: int64(len(valid))},
@@ -171,15 +211,6 @@ policies:
     allowlist:
       - 127.0.0.1/32
   rate_limit:
-    preauth:
-      global_instant:
-        max_inflight: 2000
-        queue_limit: 0
-        retry_after_seconds: 1
-      ip:
-        ` + override + `
-        refill: 1200
-        period_seconds: 60
     postauth:
       rules:
         - path: "/api/v1/auth/login"
@@ -193,7 +224,7 @@ policies:
         block: 100
         error: 100
     behavior:
-      retry_after_fallback_seconds: 2
+      ` + override + `
       fail_open: false
       bypass_route_patterns:
         - /metrics
@@ -209,15 +240,6 @@ policies:
     allowlist:
       - 127.0.0.1/32
   rate_limit:
-    preauth:
-      global_instant:
-        max_inflight: 2000
-        queue_limit: 0
-        retry_after_seconds: 1
-      ip:
-        capacity: 1200
-        refill: 1200
-        period_seconds: 60
     postauth:
       rules:
         - path: "/api/v1/auth/login"

@@ -23,16 +23,12 @@
 package ratelimit
 
 // RateLimitPolicy là cấu trúc cấu hình thô được map trực tiếp từ tệp YAML.
+// RateLimitPolicy là cấu trúc cấu hình thô được map trực tiếp từ tệp YAML.
 type RateLimitPolicy struct {
-	PreAuth       RateLimitPreAuthPolicy       `yaml:"preauth"`
+	// [COMMENT]: Loại bỏ cấu hình preauth để chuyển giao hoàn toàn trách nhiệm rate limit IP thô sang Envoy Gateway
 	PostAuth      RateLimitPostAuthPolicy      `yaml:"postauth"`
 	Observability RateLimitObservabilityPolicy `yaml:"observability"`
 	Behavior      RateLimitBehaviorPolicy      `yaml:"behavior"`
-}
-
-type RateLimitPreAuthPolicy struct {
-	GlobalInstant RateLimitGlobalInstantPolicy `yaml:"global_instant"`
-	IP            RateLimitBucketPolicy        `yaml:"ip"`
 }
 
 type RateLimitPostAuthPolicy struct {
@@ -44,12 +40,6 @@ type RateLimitPathRule struct {
 	Capacity      int64  `yaml:"capacity"`
 	Refill        int64  `yaml:"refill"`
 	PeriodSeconds int64  `yaml:"period_seconds"`
-}
-
-type RateLimitGlobalInstantPolicy struct {
-	MaxInflight       int64 `yaml:"max_inflight"`
-	QueueLimit        int64 `yaml:"queue_limit"`
-	RetryAfterSeconds int64 `yaml:"retry_after_seconds"`
 }
 
 type RateLimitBucketPolicy struct {
@@ -81,15 +71,10 @@ type RateLimitBehaviorPolicy struct {
 
 // CompiledPolicy chứa cấu hình Rate Limit đã được kiểm tra tính hợp lệ nghiêm ngặt ở runtime.
 type CompiledPolicy struct {
-	PreAuth       CompiledRateLimitPreAuthPolicy
+	// [COMMENT]: Loại bỏ Compiled PreAuth do toàn bộ quá trình rate limit thô đã được Envoy offload
 	PostAuth      CompiledRateLimitPostAuthPolicy
 	Observability CompiledRateLimitObservabilityPolicy
 	Behavior      CompiledRateLimitBehaviorPolicy
-}
-
-type CompiledRateLimitPreAuthPolicy struct {
-	GlobalInstant CompiledRateLimitGlobalInstantPolicy
-	IP            CompiledRateLimitBucketPolicy
 }
 
 type CompiledRateLimitPostAuthPolicy struct {
@@ -101,12 +86,6 @@ type CompiledRateLimitPathRule struct {
 	Capacity      int64
 	Refill        int64
 	PeriodSeconds int64
-}
-
-type CompiledRateLimitGlobalInstantPolicy struct {
-	MaxInflight       int64
-	QueueLimit        int64
-	RetryAfterSeconds int64
 }
 
 type CompiledRateLimitBucketPolicy struct {

@@ -121,6 +121,11 @@ func (m *refreshTokenRepoMock) CreateRefreshTokenSession(ctx context.Context, to
 	return nil
 }
 
+// [COMMENT]: Thêm mock DeleteRefreshTokenSessionByHash để thoả mãn interface mới
+func (m *refreshTokenRepoMock) DeleteRefreshTokenSessionByHash(ctx context.Context, tokenHash string) (int64, error) {
+	return 0, nil
+}
+
 func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.SessionRefreshService {
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute

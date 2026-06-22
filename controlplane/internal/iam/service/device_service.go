@@ -21,7 +21,6 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
@@ -99,31 +98,39 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, limit int, offset int
 	return &iamSvcInterface.DeviceListResult{Devices: out, Total: int64(len(out))}, nil
 }
 
-func (s *DeviceService) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
+func (s *DeviceService) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error {
+	serviceOutcome := iamMetrics.OutcomeSuccess
+	defer func() {
+		iamMetrics.ServiceCall(ctx, serviceOutcome)
+	}()
+
 	userID, err := s.getUserIDFromContext(ctx)
 	if err != nil {
+		serviceOutcome = iamMetrics.OutcomeFailureUnknown
 		return err
 	}
-	_, getErr := s.deviceRepo.GetDeviceByIDAndUserID(ctx, deviceID, userID)
-	if getErr != nil {
-		if errors.Is(getErr, pgx.ErrNoRows) {
-			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, getErr, "invalid_session")
+
+	// [COMMENT]: Đo lường thời gian thực thi câu lệnh SQL CTE (downstream).
+	repoStart := time.Now()
+	revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID)
+	if revokeErr != nil {
+		if errors.Is(revokeErr, iamTaxonomy.ErrZeroRowsAffected) {
+			// [COMMENT]: Coi là lỗi nghiệp vụ (không hợp lệ) nhưng không phải lỗi hệ thống/downstream fail hoàn toàn.
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByIDAndUserID", iamMetrics.OutcomePreConditionFailed, time.Since(repoStart), revokeErr)
+			serviceOutcome = iamMetrics.OutcomePreConditionFailed
+			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, revokeErr, "invalid_session")
 		}
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, getErr, "dependency_error")
-	}
-	if revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID); revokeErr != nil {
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByIDAndUserID", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
+		serviceOutcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
-	_, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, userID, deviceID)
-	if revokeTokenErr != nil {
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
-	}
-	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning", ip, userAgent)
-	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
+
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByIDAndUserID", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
+	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning")
 	return nil
 }
 
-func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID, ip *string, userAgent *string) (int64, error) {
+func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	userID, err := s.getUserIDFromContext(ctx)
 	if err != nil {
 		return 0, err
@@ -135,13 +142,13 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDe
 	if revokeTokenErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
-	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning", ip, userAgent)
+	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning")
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 	return affected, nil
 }
 
-func (s *DeviceService) LogoutAllDevices(ctx context.Context, ip *string, userAgent *string) (int64, error) {
-	return s.LogoutOtherDevices(ctx, nil, ip, userAgent)
+func (s *DeviceService) LogoutAllDevices(ctx context.Context) (int64, error) {
+	return s.LogoutOtherDevices(ctx, nil)
 }
 
 func (s *DeviceService) scanUserAccessSessions(ctx context.Context, rdb redis.Cmdable, userID string, limit int) ([]iamEntity.UserAccessSession, error) {
@@ -205,11 +212,11 @@ func (s *DeviceService) RegisterLoginDevice(ctx context.Context, device iamEntit
 	return s.deviceRepo.UpsertLoginDevice(ctx, device)
 }
 
-func (s *DeviceService) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID, ip *string, userAgent *string) error {
-	return s.deviceRepo.TouchDeviceLastSeen(ctx, deviceID, ip, userAgent)
+func (s *DeviceService) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
+	return s.deviceRepo.TouchDeviceLastSeen(ctx, deviceID)
 }
 
-func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID, ip *string, userAgent *string) {
+func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {
 	// Best-effort maintenance path: mọi lỗi ở đây không được làm fail login.
 	if s == nil || s.deviceRepo == nil {
 		return
@@ -324,7 +331,7 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 		"reason":        "cap_exceeded",
 		"evicted_count": strconv.Itoa(len(evicted)),
 	}
-	s.PublishDeviceAuditAsync(ctx, userID, "device.evicted_capacity", "warning", ip, userAgent, extras)
+	s.PublishDeviceAuditAsync(ctx, userID, "device.evicted_capacity", "warning", extras)
 }
 
 func (s *DeviceService) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
@@ -337,37 +344,37 @@ func (s *DeviceService) ReconcileDeviceCap(ctx context.Context, batch int) (int,
 		return 0, err
 	}
 	for _, userID := range users {
-		s.EvictExcessDevicesIfNeeded(ctx, userID, nil, nil)
+		s.EvictExcessDevicesIfNeeded(ctx, userID)
 	}
 	return len(users), nil
 }
 
-func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, ip *string, userAgent *string, extras map[string]string) {
+func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {
+	var ip, ua string
+	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
+		ip = v
+	}
+	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
+		ua = v
+	}
 	go func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		op := constant.GetOperation(ctx)
 		bgCtx = constant.WithOperation(bgCtx, op)
-		_ = s.deviceRepo.InsertAuditEvent(bgCtx, &userID, event, severity, ip, userAgent)
+		bgCtx = context.WithValue(bgCtx, constant.RemoteIPKey, ip)
+		bgCtx = context.WithValue(bgCtx, constant.UserAgentKey, ua)
+		_ = s.deviceRepo.InsertAuditEvent(bgCtx, &userID, event, severity)
 		iamMetrics.ServiceCall(bgCtx, iamMetrics.OutcomeSuccess)
 	}()
 }
 
-func (s *DeviceService) ResolveClientDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
-	// [COMMENT]: Tính toán vân tay (fingerprint) của khóa công khai thiết bị để tra cứu.
+func (s *DeviceService) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+	// [COMMENT]: Tính toán vân tay (fingerprint) của khóa công khai thiết bị để truy vấn nhanh.
 	fp := sha256.Sum256([]byte(devicePublicKey))
 	fingerprint := hex.EncodeToString(fp[:])
 
-	// [COMMENT]: Truy vấn danh sách thiết bị của user từ repository để tìm thiết bị trùng khớp vân tay khóa.
-	// Hạn chế limit = 100 để bảo đảm an toàn cho các truy vấn danh sách thiết bị lớn.
-	devices, err := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
-	if err != nil {
-		return "", err
-	}
-	for _, dev := range devices {
-		if dev.PublicKeyFingerprint == fingerprint && dev.ClientDeviceID != nil {
-			return *dev.ClientDeviceID, nil
-		}
-	}
-	return "", nil
+	// [COMMENT]: Gọi trực tiếp xuống repository để kiểm tra xem có thiết bị đang hoạt động nào khớp với fingerprint này không.
+	// Cách này tối ưu hóa I/O vì repo chỉ trả về client_device_id dạng string chứ không quét nguyên cả struct Device cồng kềnh.
+	return s.deviceRepo.GetActiveDeviceID(ctx, userID, fingerprint)
 }

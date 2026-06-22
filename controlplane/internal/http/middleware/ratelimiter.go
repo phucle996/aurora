@@ -49,13 +49,10 @@ const (
 var rateLimitEngine = ratelimit.NewDecisionEngine()
 
 // rateLimitPolicyConfig lưu trữ cấu hình rate limit đã biên dịch và sẵn sàng thực thi ở runtime.
+// rateLimitPolicyConfig lưu trữ cấu hình rate limit đã biên dịch và sẵn sàng thực thi ở runtime.
 type rateLimitPolicyConfig struct {
-	preAuthCapacity          int64                                                    // Sức chứa của bucket PreAuth (IP-based)
-	preAuthRefill            int64                                                    // Tốc độ nạp lại của bucket PreAuth
-	preAuthPeriod            time.Duration                                            // Chu kỳ thời gian của bucket PreAuth
+	// [COMMENT]: Loại bỏ cấu hình preauth và global_instant do đã được Envoy Gateway đảm nhận ở rìa mạng
 	postAuthPathRules        map[string]policyRateLimit.CompiledRateLimitBucketPolicy // Map chứa quy tắc rate limit riêng cho từng Path (Post-Auth)
-	globalInstantMaxInflight int64                                                    // Số lượng request đồng thời tối đa toàn hệ thống (Inflight limit)
-	globalInstantRetryAfter  time.Duration                                            // Thời gian client phải chờ khi chạm ngưỡng MaxInflight
 	retryFallback            time.Duration                                            // Thời gian chờ mặc định khi Redis không trả về RetryAfter
 	throttleSample           int                                                      // Tỷ lệ log sampling cho hành vi Throttle (%)
 	isolationSample          int                                                      // Tỷ lệ log sampling cho hành vi Isolation (%)
@@ -66,9 +63,6 @@ type rateLimitPolicyConfig struct {
 
 // Cấu hình Rate Limit được lưu trữ trong một atomic.Value để đảm bảo an toàn luồng (Thread-safety).
 var rateLimitPolicyHolder atomic.Value
-
-// rateLimitInflight theo dõi số lượng request hiện tại đang nằm trong pipeline xử lý của limiter.
-var rateLimitInflight atomic.Int64
 
 // currentRateLimitPolicy là hàm helper lấy ra bản sao cấu hình rate limit hiện tại một cách an toàn luồng.
 func currentRateLimitPolicy() rateLimitPolicyConfig {
@@ -100,12 +94,7 @@ func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 
 	// Tạo cấu trúc config runtime mới:
 	cfg := rateLimitPolicyConfig{
-		preAuthCapacity:          policy.PreAuth.IP.Capacity,
-		preAuthRefill:            policy.PreAuth.IP.Refill,
-		preAuthPeriod:            time.Duration(policy.PreAuth.IP.PeriodSeconds) * time.Second,
 		postAuthPathRules:        pathRules,
-		globalInstantMaxInflight: policy.PreAuth.GlobalInstant.MaxInflight,
-		globalInstantRetryAfter:  time.Duration(policy.PreAuth.GlobalInstant.RetryAfterSeconds) * time.Second,
 		retryFallback:            time.Duration(policy.Behavior.RetryAfterFallbackSeconds) * time.Second,
 		throttleSample:           policy.Observability.SamplingPercent.Throttle,
 		isolationSample:          policy.Observability.SamplingPercent.TemporaryIsolation,
@@ -118,165 +107,7 @@ func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 }
 
 // ============================================================================
-// 🛡️ MIDDLEWARE 1: RATE LIMIT PRE-AUTH (ADMISSION FILTER)
-// ============================================================================
-
-// RateLimitPreAuth xử lý lọc chặn thô dựa trên IP trước khi định danh người dùng.
-// Nhiệm vụ chính: Bảo vệ tài nguyên tính toán ở rìa hệ thống, ngăn chặn DDoS/Spam thô bạo.
-func RateLimitPreAuth(limiter *ratelimit.Bucket, name string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// --------------------------------------------------------------------
-		// 🚀 BƯỚC B1: LẤY ROUTE PATTERN & KIỂM TRA DANH SÁCH BYPASS (SHORT-CIRCUIT)
-		// --------------------------------------------------------------------
-		routePattern := routePatternOf(c)
-		if shouldBypassRateLimit(routePattern) {
-			// Ghi nhận metric và cho qua ngay (ví dụ: các API health check, Prometheus scrape)
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultBypass)
-			c.Next()
-			return
-		}
-
-		// --------------------------------------------------------------------
-		// ⚡ BƯỚC B1.2: KIỂM TRA GIỚI HẠN REQUEST ĐỒNG THỜI TOÀN HỆ THỐNG (GLOBAL INFLIGHT)
-		// --------------------------------------------------------------------
-		if !acquireGlobalInstantPermit() {
-			// Hệ thống đang bị quá tải số lượng request đồng thời -> Từ chối ngay lập tức để tự bảo vệ
-			retryAfter := currentRateLimitPolicy().globalInstantRetryAfter
-			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(retryAfter))
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultBlocked)
-			middleware_metrics.RecordRLDecision(routePattern, rateLimitDecisionThrottle, rateLimitScopeIP)
-			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, rateLimitDecisionThrottle, "global_instant_cap", retryAfter, 0, "global")
-			apires.RespondTooManyRequests(c, "too many requests")
-			c.Abort()
-			return
-		}
-		defer releaseGlobalInstantPermit() // Giải phóng slot inflight khi request xử lý xong
-
-		// --------------------------------------------------------------------
-		// 🚀 BƯỚC B2: KIỂM TRA TÍNH HỢP LỆ CỦA CẤU HÌNH (FAIL-OPEN LOCAL)
-		// --------------------------------------------------------------------
-		policyCfg := currentRateLimitPolicy()
-		if limiter == nil || name == "" || policyCfg.preAuthCapacity <= 0 || policyCfg.preAuthRefill <= 0 || policyCfg.preAuthPeriod <= 0 {
-			// Cấu hình không hợp lệ hoặc Redis Limiter chưa sẵn sàng -> Cho qua (Fail-Open) để tránh nghẽn luồng nghiệp vụ
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultAllow)
-			c.Next()
-			return
-		}
-
-		// --------------------------------------------------------------------
-		// 🚀 BƯỚC B3: XÁC ĐỊNH IDENTITY CỦA CLIENT & TẠO REDIS KEY
-		// --------------------------------------------------------------------
-		key := ratelimit.Key("", name, clientIdentity(c))
-		if key == "" {
-			// Không xác định được IP client -> Cho qua để tránh block oan
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultAllow)
-			c.Next()
-			return
-		}
-
-		// --------------------------------------------------------------------
-		// 🚀 BƯỚC B4 & B5: TRA CỨU TRẠNG THÁI CHẶN TRONG LOCAL DENY CACHE (FAST-PATH)
-		// --------------------------------------------------------------------
-		// Kiểm tra trạng thái Throttle cục bộ:
-		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionThrottle {
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultBlocked)
-			middleware_metrics.RecordRLDecision(routePattern, rateLimitDecisionThrottle, rateLimitScopeIP)
-			if state.RetryAfter > 0 {
-				middleware_metrics.RecordRLRetryAfter(routePattern, state.RetryAfter)
-				c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(state.RetryAfter))
-			}
-			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, rateLimitDecisionThrottle, state.Reason, state.RetryAfter, 0, key)
-			apires.RespondTooManyRequests(c, "too many requests")
-			c.Abort()
-			return
-		}
-
-		// Kiểm tra trạng thái Block cục bộ:
-		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionBlock {
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultBlocked)
-			middleware_metrics.RecordRLDecision(routePattern, rateLimitDecisionBlock, rateLimitScopeIP)
-			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(state.RetryAfter))
-			middleware_metrics.RecordRLRetryAfter(routePattern, state.RetryAfter)
-			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, rateLimitDecisionBlock, state.Reason, state.RetryAfter, state.RetryAfter, key)
-			apires.RespondTooManyRequests(c, "too many requests")
-			c.Abort()
-			return
-		}
-
-		// Kiểm tra trạng thái Isolation cục bộ:
-		if state := rateLimitEngine.CheckActiveState(key); state.Decision == ratelimit.DecisionIsolation {
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultBlocked)
-			middleware_metrics.RecordRLDecision(routePattern, rateLimitDecisionIsolation, rateLimitScopeIP)
-			c.Writer.Header().Set("Retry-After", formatRetryAfterSeconds(state.RetryAfter))
-			middleware_metrics.RecordRLRetryAfter(routePattern, state.RetryAfter)
-			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, rateLimitDecisionIsolation, state.Reason, state.RetryAfter, state.RetryAfter, key)
-			apires.RespondTooManyRequests(c, "too many requests")
-			c.Abort()
-			return
-		}
-
-		// --------------------------------------------------------------------
-		// 🚀 BƯỚC B6: THỰC THI KIỂM TRA QUOTA BUCKET TRÊN REDIS (SLOW-PATH)
-		// --------------------------------------------------------------------
-		evalStart := time.Now()
-
-		res, err := limiter.Allow(
-			c.Request.Context(),
-			key,
-			ratelimit.Rate{
-				Capacity: policyCfg.preAuthCapacity,
-				Refill:   policyCfg.preAuthRefill,
-				Period:   policyCfg.preAuthPeriod,
-			},
-			1,
-		)
-
-		// Đẩy các header chuẩn Rate Limit về cho Client:
-		for k, v := range ratelimit.RateLimitHeaders(res) {
-			c.Writer.Header().Set(k, v)
-		}
-		middleware_metrics.RecordRLEvalDuration(rateLimitScopeIP, time.Since(evalStart))
-
-		// --------------------------------------------------------------------
-		// 🚀 BƯỚC B7: ĐÁNH GIÁ KẾT QUẢ & CẬP NHẬT TRẠNG THÁI CHẶN (ACTION MAP)
-		// --------------------------------------------------------------------
-
-		// Trường hợp lỗi kết nối Redis (err != nil) -> Áp dụng chính sách Fail-Closed:
-		// Để bảo vệ Database trung tâm khỏi bị DDoS sập nguồn khi bộ lọc chặn (Redis) bị hỏng,
-		// chúng ta từ chối request và trả về lỗi 503 (Service Unavailable).
-		if err != nil && !res.Allowed {
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultError)
-			middleware_metrics.RecordRLError(routePattern, "backend_unavailable")
-			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, "error", "backend_unavailable", 0, 0, key)
-			apires.RespondServiceUnavailable(c, "rate limit temporarily unavailable")
-			c.Abort()
-			return
-		}
-
-		// Trường hợp cạn kiệt Token (Vượt quota giới hạn):
-		if !res.Allowed {
-			middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultBlocked)
-			middleware_metrics.RecordRLDecision(routePattern, rateLimitDecisionThrottle, rateLimitScopeIP)
-			retryAfter := retryAfterFromRate(res)
-
-			// Ghi nhận vi phạm vào local engine để block nhanh các request tiếp theo ở bộ nhớ RAM:
-			rateLimitEngine.RecordThrottle(key)
-			if retryAfter > 0 {
-				middleware_metrics.RecordRLRetryAfter(routePattern, retryAfter)
-			}
-			emitRateLimitSecurityEvent(c, routePattern, rateLimitScopeIP, rateLimitDecisionThrottle, "capacity_exceeded", retryAfter, 0, key)
-			apires.RespondTooManyRequests(c, "too many requests")
-			c.Abort()
-			return
-		}
-
-		// Request hợp lệ và nằm trong định mức cho phép:
-		middleware_metrics.RecordRLCheck(routePattern, rateLimitScopeIP, rateLimitResultAllow)
-		middleware_metrics.RecordRLDecision(routePattern, rateLimitResultAllow, rateLimitScopeIP)
-
-		c.Next()
-	}
-}
+// [COMMENT]: Đã xóa Middleware 1: RateLimitPreAuth do toàn bộ quá trình giới hạn IP thô đã được chuyển giao cho Envoy Gateway đảm nhận ở rìa mạng.
 
 // ============================================================================
 // 🛡️ MIDDLEWARE 2: RATE LIMIT POST-AUTH (IDENTITY-AWARE ABUSE LIMITER)
@@ -560,38 +391,7 @@ func samplingPercentByDecision(decision string) int {
 	}
 }
 
-// acquireGlobalInstantPermit kiểm tra và giữ 1 slot concurrency (inflight) cho request.
-// Sử dụng vòng lặp Compare-And-Swap (CAS) an toàn đa luồng mà không gây block hệ thống.
-func acquireGlobalInstantPermit() bool {
-	cfg := currentRateLimitPolicy()
-	if cfg.globalInstantMaxInflight <= 0 {
-		return true
-	}
-	for {
-		cur := rateLimitInflight.Load()
-		if cur >= cfg.globalInstantMaxInflight {
-			// Ghi nhận sự kiện reject do quá tải đồng thời cục bộ:
-			middleware_metrics.RecordRLLocalCache("global_inflight_reject", rateLimitScopeIP)
-			return false
-		}
-		if rateLimitInflight.CompareAndSwap(cur, cur+1) {
-			return true
-		}
-	}
-}
-
-// releaseGlobalInstantPermit giải phóng 1 slot concurrency (inflight) khi request hoàn tất xử lý.
-func releaseGlobalInstantPermit() {
-	for {
-		cur := rateLimitInflight.Load()
-		if cur <= 0 {
-			return
-		}
-		if rateLimitInflight.CompareAndSwap(cur, cur-1) {
-			return
-		}
-	}
-}
+// [COMMENT]: Đã xóa acquireGlobalInstantPermit và releaseGlobalInstantPermit do cơ chế giới hạn request đồng thời (Inflight concurrency limit) đã được bàn giao hoàn toàn cho Circuit Breaker ở Envoy.
 
 // requestIDValue lấy mã Request ID duy nhất để hỗ trợ truy vết (Forensics) từ Gin context.
 func requestIDValue(c *gin.Context) string {

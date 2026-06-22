@@ -2,23 +2,32 @@ package rpcHandler
 
 import (
 	"context"
-	"controlplane/internal/iam/domain/service"
-	"controlplane/internal/iam/transport/rpc/proto"
+	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/pkg/logger"
+	"errors"
 )
 
 // AuthGRPCHandler là thin gRPC transport handler, nhận request và ủy quyền xử lý cho các service tương ứng.
 type AuthGRPCHandler struct {
 	iamproto.UnimplementedAuthServiceServer
-	authService        iamSvcInterface.AuthService        // Tầng nghiệp vụ xử lý chính cho User
-	adminAPIKeyService iamSvcInterface.AdminAPIKeyService // Tầng nghiệp vụ xử lý chính cho Admin
+	authService           iamSvcInterface.AuthService           // Tầng nghiệp vụ xử lý chính cho User
+	adminAPIKeyService    iamSvcInterface.AdminAPIKeyService    // Tầng nghiệp vụ xử lý chính cho Admin
+	sessionRefreshService iamSvcInterface.SessionRefreshService // Tầng nghiệp vụ xử lý Session Refresh
 }
 
 // NewAuthGRPCHandler khởi tạo mới một AuthGRPCHandler
-func NewAuthGRPCHandler(authService iamSvcInterface.AuthService, adminAPIKeyService iamSvcInterface.AdminAPIKeyService) *AuthGRPCHandler {
+func NewAuthGRPCHandler(
+	authService iamSvcInterface.AuthService,
+	adminAPIKeyService iamSvcInterface.AdminAPIKeyService,
+	sessionRefreshService iamSvcInterface.SessionRefreshService,
+) *AuthGRPCHandler {
 	// [ignoring loop detection]
 	return &AuthGRPCHandler{
-		authService:        authService,
-		adminAPIKeyService: adminAPIKeyService,
+		authService:           authService,
+		adminAPIKeyService:    adminAPIKeyService,
+		sessionRefreshService: sessionRefreshService,
 	}
 }
 
@@ -90,4 +99,24 @@ func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iam
 		Level:    res.Level,
 		ZoneId:   res.ZoneID,
 	}, nil
+}
+
+// [COMMENT]: RevokeOpaqueRefreshToken tiếp nhận và xử lý yêu cầu thu hồi refresh token từ ACL gửi qua gRPC
+func (h *AuthGRPCHandler) RevokeOpaqueRefreshToken(ctx context.Context, req *iamproto.RevokeOpaqueRefreshTokenRequest) (*iamproto.RevokeOpaqueRefreshTokenResponse, error) {
+	// [COMMENT]: Gọi trực tiếp hàm nghiệp vụ tại SessionRefreshService để thu hồi token
+	err := h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)
+	if err != nil {
+		// [COMMENT]: Nếu không tìm thấy token trong DB, ghi nhận log cảnh báo
+		if errors.Is(err, iamTaxonomy.ErrZeroRowsAffected) {
+			logger.SysWarn("RevokeOpaqueRefreshToken", "Refresh token record not found for hash")
+		} else {
+			// [COMMENT]: Ghi log lỗi hệ thống chi tiết nếu gặp lỗi cơ sở dữ liệu thực sự
+			logger.SysErrorFields("RevokeOpaqueRefreshToken", "Failed to revoke refresh token from database", err, nil)
+		}
+		// [COMMENT]: Luôn trả về thành công (nil error) cho client vì việc logout thực tế của user đã hoàn tất tại Gateway
+		return &iamproto.RevokeOpaqueRefreshTokenResponse{}, nil
+	}
+
+	logger.SysInfo("RevokeOpaqueRefreshToken", "Successfully deleted refresh token session")
+	return &iamproto.RevokeOpaqueRefreshTokenResponse{}, nil
 }

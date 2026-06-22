@@ -79,6 +79,7 @@ import (
 	iamRpcHandler "controlplane/internal/iam/transport/rpc/handler"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security/ratelimit"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 	"errors"
 
@@ -317,16 +318,28 @@ func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID str
 	if err != nil {
 		return
 	}
+	// [COMMENT]: Đảm bảo tương thích ngược, nếu truyền ip/ua trực tiếp, ta sẽ tiêm chúng vào Context trước khi gọi Service.
+	if ip != nil || userAgent != nil {
+		var ipStr, uaStr string
+		if ip != nil {
+			ipStr = *ip
+		}
+		if userAgent != nil {
+			uaStr = *userAgent
+		}
+		ctx = context.WithValue(ctx, constant.RemoteIPKey, ipStr)
+		ctx = context.WithValue(ctx, constant.UserAgentKey, uaStr)
+	}
 	// Best-effort: lỗi flush không ảnh hưởng flow xác thực.
-	_ = m.deviceSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID, ip, userAgent)
+	_ = m.deviceSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID)
 }
 
 // RegisterGRPCServices đăng ký các dịch vụ gRPC của phân hệ IAM phục vụ xác thực Trinity
 func (m *IAMModule) RegisterGRPCServices(server *grpc.Server) {
-	if m == nil || m.AuthService == nil || m.AdminAPIKeyService == nil {
+	if m == nil || m.AuthService == nil || m.AdminAPIKeyService == nil || m.SessionRefreshService == nil {
 		return
 	}
-	handler := iamRpcHandler.NewAuthGRPCHandler(m.AuthService, m.AdminAPIKeyService)
+	handler := iamRpcHandler.NewAuthGRPCHandler(m.AuthService, m.AdminAPIKeyService, m.SessionRefreshService)
 	iamproto.RegisterAuthServiceServer(server, handler)
 	logger.SysInfo("grpc", "registered IAM AuthService onto gRPC server")
 }

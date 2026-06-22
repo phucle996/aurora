@@ -119,7 +119,7 @@ Trước khi tiếp cận HTTP Handler `Login` của Admin, một request đăng
 | **`middleware.OTelTraceContext()`** | Trích xuất Span Context từ headers (W3C `traceparent`) hoặc tạo mới trace ID phục vụ Distributed Tracing. | **Go Context (`context.Context`)**: `trace.ContextWithSpanContext` |
 | **`middleware.OTelHTTPMetrics()`** | Thu thập tần suất request, latency và trạng thái response code đẩy lên Prometheus. | Không có |
 | **`middleware.CookieOriginGuard()`** | Kiểm tra trường `Origin` của CORS request để bảo vệ cookie, ngăn chặn tấn công CSRF. | Không có |
-| **`middleware.RateLimitPreAuth()`** | Giới hạn tần suất chung (Rate Limiting) dựa trên IP của client thô (KeyIP) trước khi xác thực. | Không có |
+| **`Envoy Local Rate Limit & Connection Limit`** | Chống DDoS/Spam bằng cách lọc chặn IP thô & Max Connection (Inflight) từ tầng Gateway trước khi chạm Controlplane. | Không có |
 | **`middleware.AccessLog()`** | Ghi log toàn bộ request với thông tin: IP, Method, Path, HTTP Status, Latency, RequestID. | Không có |
 
 #### 2. Route Middleware (Định nghĩa tại `controlplane/internal/iam/route.go`)

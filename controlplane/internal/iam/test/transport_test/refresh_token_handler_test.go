@@ -61,6 +61,11 @@ func (s *refreshTokenServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, 
 	return nil, nil
 }
 
+// [COMMENT]: Thêm stub RevokeOpaqueRefreshToken để thoả mãn interface mới
+func (s *refreshTokenServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
+	return nil
+}
+
 func newRefreshTokenHandler(service iamSvcInterface.SessionRefreshService) *handler.RefreshTokenHandler {
 	cfg := config.LoadConfig()
 	return handler.NewRefreshTokenHandler(cfg, service)

@@ -193,6 +193,14 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 }
 
 func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (result *iamEntity.LoginResult, err error) {
+	var ipVal, uaVal string
+	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
+		ipVal = v
+	}
+	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
+		uaVal = v
+	}
+
 	loginOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
 		iamMetrics.ServiceCall(ctx, loginOutcome)
@@ -252,12 +260,13 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 
 		// Đóng gói payload gửi mail bằng generic protobuf SendMailConfig
+		// [COMMENT]: Sử dụng user.Username thay thế cho user.Fullname do login flow không truy vấn bảng profile nhằm tối ưu hóa hiệu năng
 		mailConfig := &mailproto.SendMailConfig{
 			To:       user.Email,
 			Subject:  "Kích hoạt tài khoản của bạn",
 			BodyHtml: "Vui lòng sử dụng token sau để kích hoạt tài khoản của bạn.",
 			TemplateVariables: map[string]string{
-				"fullname":     user.Fullname,
+				"fullname":     user.Username,
 				"verify_token": verificationToken,
 				"purpose":      "account_verify",
 			},
@@ -306,30 +315,45 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 
-	// Runtime cache chỉ phục vụ flush heuristic. Cache read lỗi thì fallback DB path.
-	clientDeviceProvenance := "client"
-	if req.ClientDeviceID == uuid.Nil {
-		// [COMMENT]: Gọi deviceSvc để phân giải (resolve) client_device_id từ public key của thiết bị gửi lên.
-		// Tránh việc gọi trực tiếp repository ở tầng auth service nhằm giữ đúng ranh giới kiến trúc (architectural boundaries).
-		matchedClientDeviceID, resolveErr := s.deviceSvc.ResolveClientDeviceID(ctx, user.ID, req.DevicePublicKey)
-		if resolveErr == nil && matchedClientDeviceID != "" {
-			parsedID, parseErr := uuid.Parse(matchedClientDeviceID)
-			if parseErr == nil {
-				req.ClientDeviceID = parsedID
-				clientDeviceProvenance = "server-recovery"
-			}
-		}
+	// [COMMENT]: Phân giải thiết bị active từ userID và DevicePublicKey của trình duyệt gửi lên.
+	// Không quan tâm cookie cũ (hoàn toàn tránh được client fake cookie hoặc cookie đã bị thu hồi).
+	matchedClientDeviceID, err := s.deviceSvc.GetActiveDeviceID(ctx, user.ID, req.DevicePublicKey)
 
-		// [COMMENT]: Chỉ sinh mới client_device_id khi đây là thiết bị mới chưa từng đăng ký khóa trước đó.
-		if req.ClientDeviceID == uuid.Nil {
-			req.ClientDeviceID = uuid.New()
-			clientDeviceProvenance = "server-bootstrap"
-		}
+	clientDeviceProvenance := "client-recovery"
+	var clientDeviceID string
+
+	// [COMMENT]: Nếu không tìm thấy thiết bị active (hoặc thiết bị trước đó đã bị revoked) -> Xem như thiết bị mới hoàn toàn, tự sinh mới.
+	if err != nil || matchedClientDeviceID == "" {
+		newDeviceID := uuid.New()
+		clientDeviceID = newDeviceID.String()
+		clientDeviceProvenance = "server-bootstrap"
+	} else {
+		clientDeviceID = matchedClientDeviceID
 	}
-	clientDeviceID := req.ClientDeviceID.String()
+
+	deviceName := req.DeviceName
+	if strings.TrimSpace(deviceName) == "" {
+		deviceName = "unknown device"
+	}
+	deviceType := "browser"
+	fp := sha256.Sum256([]byte(req.DevicePublicKey))
+	fingerprint := hex.EncodeToString(fp[:])
+
+	loginDevice := iamEntity.Device{
+		UserID:               user.ID,
+		DeviceName:           deviceName,
+		DeviceType:           &deviceType,
+		PublicKey:            req.DevicePublicKey,
+		PublicKeyAlg:         security.AlgEd25519,
+		PublicKeyFingerprint: fingerprint,
+		ClientDeviceID:       cleanOptionalString(&clientDeviceID),
+		LastSeenIP:           cleanOptionalString(&ipVal),
+		LastSeenUserAgent:    cleanOptionalString(&uaVal),
+		UpdatedAt:            now.UTC(),
+	}
 
 	// RegisterLoginDevice qua DeviceService là DB SoT để lấy tracked device persistent.
-	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, buildLoginDevice(user.ID, req.DevicePublicKey, req.IP, req.UserAgent, now, req.DeviceName, clientDeviceID))
+	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
 	if deviceErr != nil {
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
@@ -359,16 +383,24 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		}
 	}
 
-	// [COMMENT]: Gọi ACL gRPC Service để khởi tạo Trinity credentials, tạo JWT & lưu phiên vào L2 Redis
-	var ipVal, uaVal string
-	if req.IP != nil {
-		ipVal = *req.IP
+	// [COMMENT]: Giải quyết Zone ID từ Zone Code bằng L1 cache registry
+	val, err := s.registry.GetOrLoad(ctx, "zone_by_code", req.ZoneCode)
+	if err != nil {
+		loginOutcome = iamMetrics.OutcomeFailureUnknown
+		return nil, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
-	if req.UserAgent != nil {
-		uaVal = *req.UserAgent
+	zoneID, ok := val.(string)
+	if !ok || zoneID == "" {
+		loginOutcome = iamMetrics.OutcomeFailure
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, errors.New("zone ID resolved is empty"), iamMetrics.OutcomeFailure)
+	}
+	if _, parseErr := uuid.Parse(zoneID); parseErr != nil {
+		loginOutcome = iamMetrics.OutcomeFailure
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, parseErr, iamMetrics.OutcomeFailure)
 	}
 
-	aclResp, aclErr := s.aclClient.IssueTrinitySession(ctx, &iamproto.IssueTrinitySessionRequest{
+	// [COMMENT]: Gọi ACL gRPC Service để khởi tạo Trinity credentials, tạo JWT & lưu phiên vào L2 Redis
+	aclResp, aclErr := s.aclClient.ReleaseTrinitySession(ctx, &iamproto.ReleaseTrinitySessionRequest{
 		UserId:         user.ID.String(),
 		DeviceId:       trackedDeviceID.String(),
 		ClientDeviceId: clientDeviceID,
@@ -379,11 +411,11 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		ClientIp:       ipVal,
 		UserAgent:      uaVal,
 		TenantId:       "",
-		ZoneId:         "",
+		ZoneId:         zoneID,
 	})
 	if aclErr != nil {
 		// [COMMENT]: Nếu gRPC write lỗi và đã cấp refresh token ở PostgreSQL, rollback bằng revoke để tránh token mồ côi.
-		if req.TrustDevice && s.refreshSvc != nil {
+		if req.TrustDevice {
 			_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
 		}
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
@@ -391,7 +423,7 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 
 	// Best-effort cap reconcile sau login. Không làm fail request thành công.
-	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID, req.IP, req.UserAgent)
+	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID)
 
 	return &iamEntity.LoginResult{
 		AccessToken:              aclResp.AccessToken,
@@ -404,26 +436,6 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		AccessExpiresAt:          now.Add(time.Duration(aclResp.ExpiresInSecs) * time.Second),
 		RefreshExpiresAt:         refreshExp,
 	}, nil
-}
-
-func buildLoginDevice(userID uuid.UUID, devicePublicKey string, ip *string, userAgent *string, now time.Time, deviceName string, clientDeviceID string) iamEntity.Device {
-	if strings.TrimSpace(deviceName) == "" {
-		deviceName = "unknown device"
-	}
-	deviceType := "browser"
-	fp := sha256.Sum256([]byte(devicePublicKey))
-	return iamEntity.Device{
-		UserID:               userID,
-		DeviceName:           deviceName,
-		DeviceType:           &deviceType,
-		PublicKey:            devicePublicKey,
-		PublicKeyAlg:         security.AlgEd25519,
-		PublicKeyFingerprint: hex.EncodeToString(fp[:]),
-		ClientDeviceID:       cleanOptionalString(&clientDeviceID),
-		LastSeenIP:           cleanOptionalString(ip),
-		LastSeenUserAgent:    cleanOptionalString(userAgent),
-		UpdatedAt:            now.UTC(),
-	}
 }
 
 // normalizeUserDevicePublicKey decode base64 (std hoặc raw) ed25519 public key
@@ -457,59 +469,6 @@ func cleanOptionalString(value *string) *string {
 	return &cleaned
 }
 
-func (s *AuthService) Logout(ctx context.Context) error {
-	var userIDStr string
-	var accessKey string
-	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		userIDStr = ident.UserID
-		accessKey = ident.AccessKey
-	}
-	userIDStr = strings.TrimSpace(userIDStr)
-	accessKey = strings.TrimSpace(accessKey)
-	if userIDStr == "" || accessKey == "" {
-		return fmt.Errorf("%w: missing userID or access key in context", iamTaxonomy.ErrInvalidArgument)
-	}
-	userID, parseErr := uuid.Parse(userIDStr)
-	if parseErr != nil {
-		return fmt.Errorf("%w: invalid user id in context: %v", iamTaxonomy.ErrInvalidArgument, parseErr)
-	}
-
-	rdb := s.registry.L2.Client()
-
-	// 1. Đọc runtime record để lấy trackedDeviceID + dirty state trước khi xoá.
-	var runtimeRecord *iamproto.UserAccessSession
-	key := "iam:user_access_session:" + userIDStr + ":" + accessKey
-	if raw, getErr := rdb.Get(ctx, key).Result(); getErr == nil {
-		var record iamproto.UserAccessSession
-		if proto.Unmarshal([]byte(raw), &record) == nil {
-			runtimeRecord = &record
-		}
-	}
-
-	// 2. PHẾ BỎ PHIÊN LÀM VIỆC NGAY LẬP TỨC (SECURITY CRITICAL)
-	// Xoá runtime key khỏi Redis → access middleware check tiếp theo sẽ miss → 401 tức thì.
-	indexKey := "iam:user_access_index:" + userIDStr
-	pipe := rdb.TxPipeline()
-	pipe.Del(ctx, key)
-	pipe.SRem(ctx, indexKey, accessKey)
-	_, _ = pipe.Exec(ctx)
-
-	// 3. CẬP NHẬT DB BẤT ĐỒNG BỘ (best-effort, không block response)
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-
-		if runtimeRecord != nil && strings.TrimSpace(runtimeRecord.Tdid) != "" {
-			if deviceUUID, parseErr := uuid.Parse(runtimeRecord.Tdid); parseErr == nil {
-				_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(bgCtx, userID, deviceUUID)
-			}
-		} else {
-			_ = s.refreshSvc.RevokeRefreshTokensByUserID(bgCtx, userID, nil)
-		}
-	}()
-
-	return nil
-}
 
 func cleanString(value *string) string {
 	if value == nil {

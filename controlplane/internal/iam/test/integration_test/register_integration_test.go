@@ -266,6 +266,9 @@ func makeIntegrationRegistry(rdb *goredis.Client) *cacheengine.CacheRegistry {
 			},
 		}, nil
 	})
+	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
+		return "00000000-0000-0000-0000-000000000000", nil
+	})
 	return registry
 }
 

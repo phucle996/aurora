@@ -37,7 +37,6 @@ type LoginUser struct {
 	ID           uuid.UUID
 	Username     string
 	Email        string
-	Fullname     string
 	PasswordHash string
 	Status       UserStatus
 }
@@ -47,10 +46,9 @@ type LoginRequest struct {
 	Password        string
 	DevicePublicKey string
 	TrustDevice     bool
-	IP              *string
-	UserAgent       *string
 	DeviceName      string
 	ClientDeviceID  uuid.UUID
+	ZoneCode        string
 }
 
 type LoginResult struct {

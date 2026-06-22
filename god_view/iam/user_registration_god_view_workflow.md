@@ -66,7 +66,7 @@ graph TD
 1. **`gin.Recovery()`**: Chống panic làm sập node xử lý.
 2. **`middleware.RequestID()`**: Gắn correlation ID để debug chéo.
 3. **`middleware.OTelTraceContext()`**: Đồng bộ hóa OpenTelemetry span trace.
-4. **`middleware.RateLimitPreAuth()`**: Chặn tấn công spam đăng ký (Rate limit 10 req/min/IP).
+4. **`Envoy Local Rate Limit & Connection Limit`**: Chặn tấn công spam đăng ký (Rate limit 10 req/min/IP) từ tầng gateway.
 
 ### 🔄 Trực Quan Luồng Sequence Diagram
 

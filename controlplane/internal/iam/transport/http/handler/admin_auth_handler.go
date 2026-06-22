@@ -51,7 +51,7 @@ func NewAdminAuthHandler(cfg *config.Config,
 func (h *AdminAuthHandler) Login(c *gin.Context) {
 	const op = "iam.admin_auth.login"
 	// Khởi tạo context với timeout và tiêm tên operation vào context
-	ctx := constant.WithOperation(c.Request.Context(), "admin_login")
+	ctx := constant.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

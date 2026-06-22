@@ -28,6 +28,7 @@
 package middleware
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -183,6 +184,13 @@ func RequestID() gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		c.Set(logger.KeyRequestID, reqID)
 		c.Header(constant.HeaderXRequestID, reqID)
+
+		// [COMMENT]: Trích xuất IP và UserAgent ở đầu luồng HTTP để tiêm vào Context, tách biệt hạ tầng mạng khỏi logic nghiệp vụ.
+		ip := strings.TrimSpace(c.ClientIP())
+		ua := strings.TrimSpace(c.Request.UserAgent())
+		ctx := context.WithValue(c.Request.Context(), constant.RemoteIPKey, ip)
+		ctx = context.WithValue(ctx, constant.UserAgentKey, ua)
+		c.Request = c.Request.WithContext(ctx)
 
 		c.Next()
 	}

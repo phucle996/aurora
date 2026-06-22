@@ -28,6 +28,9 @@ type SessionRefreshService interface {
 	RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error
 	RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error
 
+	// [COMMENT]: Xóa bỏ refresh token theo giá trị raw nhận được từ cookie (băm và xóa)
+	RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error
+
 	// Xác thực Opaque Refresh Token read-only từ gRPC có kèm theo context scope
 	VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error)
 }

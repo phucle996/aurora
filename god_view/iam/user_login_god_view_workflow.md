@@ -52,7 +52,7 @@ graph TD
 
 ### 🚧 Biên Và Ràng Buộc (Boundaries & Constraints)
 
-- **Đầu Vào (Inputs)**: JSON Payload (`username`, `password`, `device_public_key`, `trust_device`).
+- **Đầu Vào (Inputs)**: JSON Payload (`username`, `password`, `device_public_key`, `trust_device`, `zone_code`).
 - **Đầu Ra (Outputs)**: HTTP `200 OK` thiết lập 5 Cookies mật mã (`access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`) cùng header `X-Client-Device-Id`.
 - **Ngăn Chặn Direct Call**: Việc truy xuất thông tin thiết bị và đăng ký thiết bị bắt buộc thông qua `DeviceService` để đảm bảo ranh giới kiến trúc (Architectural Boundaries), tuyệt đối không cho phép `AuthService` truy cập trực tiếp repository của thiết bị.
 
@@ -71,7 +71,7 @@ Khi một yêu cầu đăng nhập (`POST /api/v1/auth/login`) được gửi đ
 | `middleware.OTelTraceContext()` | Phục hồi hoặc khởi tạo ngữ cảnh theo vết phân tán OpenTelemetry trace context. | App (Global) |
 | `middleware.OTelHTTPMetrics()` | Tự động đo lường tần suất request, latency và status codes đẩy sang Prometheus. | App (Global) |
 | `middleware.CookieOriginGuard()` | Kiểm tra nguồn gốc Origin của yêu cầu đính kèm cookie để chống tấn công CSRF. | App (Global) |
-| `middleware.RateLimitPreAuth()` | Chống DDoS/Spam thô bạo bằng cách lọc chặn tần suất dựa trên Client IP thô (ngăn Account Lockout DoS). | App (Global) |
+| `Envoy Local Rate Limit & Connection Limit` | Chống DDoS/Spam bằng cách lọc chặn IP thô & Max Connection (Inflight) từ tầng Gateway trước khi chạm Controlplane. | Envoy Ingress |
 | `middleware.AccessLog()` | Ghi nhật ký truy cập chứa thông tin ngữ cảnh bảo mật và định danh. | App (Global) |
 | `middleware.AdminXSSI()` | Chống tấn công XSSI (Cross-Site Script Inclusion) bằng cách chèn tiền tố an toàn vào JSON. | App (Global) |
 | `middleware.RateLimitPostAuth()` | Giới hạn brute-force tần suất thử mật khẩu cho endpoint `/api/v1/auth/login` (chạy chế độ fallback KeyIP do chưa có Identity). | Route (Endpoint /login) |
@@ -94,15 +94,15 @@ sequenceDiagram
     participant OTT as One-Time Token Service
     participant DB as PostgreSQL Database
 
-    UI->>Handler: POST /api/v1/auth/login<br/>Payload: {username, password, device_public_key, trust_device}
+    UI->>Handler: POST /api/v1/auth/login
     
-    Handler->>Handler: Chuẩn hóa Lowercase & Trim space (username)
-    Handler->>Service: Login(ctx, loginDto)
+    Handler->>Handler: Chuẩn hóa Lowercase & Trim space
+    Handler->>Service: Login(ctx, entity)
     
     Service->>Repo: GetLoginUserByUsername(ctx, username)
-    Repo->>DB: SELECT u.id, u.username, u.email, COALESCE(p.fullname, ''), u.password_hash, u.status FROM iam.users u LEFT JOIN iam.user_profiles p ON p.user_id = u.id WHERE u.username = ?
-    DB-->>Repo: Trả về dòng CSDL (iamModel.User)
-    Note over Repo: Chuyển DB model sang Entity:<br/>loginUser = UserModelToEntity(dbModel)
+    Repo->>DB: SELECT id, username, email, password_hash, status FROM iam.users WHERE username = ?
+    DB-->>Repo: Trả về dữ liệu dòng (iamModel.User)
+    Note over Repo: Map DB Model sang Entity (iamEntity.LoginUser)
     Repo-->>Service: Trả về loginUser (iamEntity.LoginUser)
     
     Service->>Service: Xác thực password hash (Argon2id verify)
@@ -122,18 +122,15 @@ sequenceDiagram
     end
     
     Note over Service, DeviceSvc: Phân giải Định danh Thiết bị (Device Resolution)
-    alt ClientDeviceID == uuid.Nil (Không mang theo cookie client_device_id)
-        Service->>DeviceSvc: ResolveClientDeviceID(ctx, userEntity.ID, devicePublicKey)
-        DeviceSvc->>Repo: ListDevicesByUserID(ctx, userID, 100, 0)
-        Repo->>DB: SELECT * FROM iam.devices WHERE user_id = ?
-        DB-->>Repo: Danh sách db model ([]iamModel.Device)
-        Repo-->>DeviceSvc: Trả về devices ([]iamEntity.Device)
-        Note over DeviceSvc: Khớp fingerprint của public key
-        DeviceSvc-->>Service: Trả về client_device_id cũ (nếu có)
-    end
+    Service->>DeviceSvc: GetActiveDeviceID(ctx, userEntity.ID, devicePublicKey)
+    DeviceSvc->>Repo: GetActiveDeviceID(ctx, userID, fingerprint)
+    Repo->>DB: SELECT client_device_id FROM iam.devices WHERE user_id = ? AND public_key_fingerprint = ? AND status != 'revoked' LIMIT 1
+    DB-->>Repo: Trả về client_device_id (hoặc empty/nil)
+    Repo-->>DeviceSvc: Trả về client_device_id (hoặc empty)
+    DeviceSvc-->>Service: Trả về client_device_id (hoặc empty)
     
-    alt ClientDeviceID vẫn bằng uuid.Nil (Thiết bị mới hoàn toàn)
-        Service->>Service: Sinh mới ClientDeviceID (UUIDv4)
+    alt ClientDeviceID == "" (Thiết bị mới hoặc thiết bị cũ đã bị thu hồi)
+        Service->>Service: Sinh mới ClientDeviceID (UUIDv4) (Tạo định danh độc lập)
     end
     
     Service->>DeviceSvc: RegisterLoginDevice(ctx, deviceEntity)
@@ -142,11 +139,6 @@ sequenceDiagram
     DB-->>Repo: UPSERT thành công & trả về trackedDevice
     Repo-->>DeviceSvc: Trả về trackedDevice (iamEntity.Device)
     DeviceSvc-->>Service: Trả về trackedDevice metadata
-    
-    alt Thiết bị bị thu hồi (Status == "revoked")
-        Service-->>Handler: Trả về ErrInvalidCredentials
-        Handler-->>UI: HTTP 401 Unauthorized (InvalidCredentials)
-    end
     
     alt trust_device = true (Chọn tin cậy thiết bị)
         Service->>RefreshSvc: CreateRefreshToken(ctx, user.ID, trackedDeviceID)
@@ -180,7 +172,8 @@ sequenceDiagram
   "username": "phucle996",
   "password": "SuperSecurePassword123!",
   "device_public_key": "MCowBQYDK2VwAyEAdS5D...",
-  "trust_device": true
+  "trust_device": true,
+  "zone_code": "vn"
 }
 ```
 
@@ -194,12 +187,17 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Service as IAM Service
+    participant Registry as Cache Registry (L1)
     participant ACL as ACL Service
     participant Vault as HashiCorp Vault
     participant RDS as Redis L2 Cluster
     participant RefreshSvc as Refresh Token Service
     participant Handler as HTTP Handler
     participant UI as Browser Cloud UI
+
+    Service->>Registry: GetOrLoad(ctx, "zone_by_code", zoneCode)
+    Registry-->>Service: Trả về zoneID (string)
+    Note over Service: Xác thực zoneID là UUID hợp lệ
 
     Note over Service, ACL: Bắt đầu giao tiếp gRPC xuyên biên giới mạng
     Service->>ACL: IssueTrinitySession(ctx, req)
