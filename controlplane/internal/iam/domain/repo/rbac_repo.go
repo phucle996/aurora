@@ -36,4 +36,5 @@ type RbacRepository interface {
 	RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error
 
 	GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error)
+	GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error)
 }

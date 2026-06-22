@@ -72,3 +72,13 @@ type VerifySessionResult struct {
 	Role   string
 	ZoneID string
 }
+
+// VerifyOpaqueRefreshTokenResult chứa thông tin phản hồi sau khi xác thực Opaque Refresh Token thành công
+type VerifyOpaqueRefreshTokenResult struct {
+	Valid    bool
+	UserID   string
+	TenantID string
+	Role     string
+	Level    int32
+	ZoneID   string
+}

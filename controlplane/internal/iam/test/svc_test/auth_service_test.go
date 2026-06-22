@@ -19,6 +19,7 @@ import (
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/id"
+	"controlplane/internal/iam/test/testutil"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
@@ -132,19 +133,23 @@ func (s *deviceServiceStub) ResolveClientDeviceID(ctx context.Context, userID uu
 }
 
 type sessionRefreshServiceStub struct {
-	createUserOpaqueSessionFn func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
+	createRefreshTokenFn func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
 }
 
 var _ iamSvcInterface.SessionRefreshService = (*sessionRefreshServiceStub)(nil)
 
-func (s *sessionRefreshServiceStub) CreateUserOpaqueSession(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
-	if s.createUserOpaqueSessionFn != nil {
-		return s.createUserOpaqueSessionFn(ctx, userID, deviceID)
+func (s *sessionRefreshServiceStub) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+	if s.createRefreshTokenFn != nil {
+		return s.createRefreshTokenFn(ctx, userID, deviceID)
 	}
 	return "mock-refresh-token", time.Now().UTC().Add(24 * time.Hour), nil
 }
 
 func (s *sessionRefreshServiceStub) RefreshUserOpaque(ctx context.Context, rawRefreshToken string) (*iamEntity.RefreshTokenResult, error) {
+	return nil, nil
+}
+
+func (s *sessionRefreshServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	return nil, nil
 }
 
@@ -166,7 +171,7 @@ func (s *sessionRefreshServiceStub) RevokeRefreshTokensByUserID(ctx context.Cont
 
 func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
 	refreshStub := &sessionRefreshServiceStub{
-		createUserOpaqueSessionFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
 			token := iamEntity.RefreshToken{
 				ID:            uuid.New(),
 				UserID:        userID,
@@ -180,7 +185,7 @@ func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.
 			return "mock-refresh-token", token.ExpiresAt, err
 		},
 	}
-	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, refreshStub, &deviceServiceStub{}, registry, nil, nil)
+	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, refreshStub, &deviceServiceStub{}, registry, nil, nil, &testutil.SessionServiceClientMock{})
 }
 
 func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {

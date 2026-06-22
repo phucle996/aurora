@@ -90,7 +90,7 @@ func TestAdminLoginInvalidArgumentReturnsAppError(t *testing.T) {
 
 func TestRefreshInvalidArgumentReturnsAppError(t *testing.T) {
 	registry := &cacheengine.CacheRegistry{}
-	svc := iamSvcImpl.NewSessionRefreshService(config.LoadConfig(), nil, nil, registry)
+	svc := iamSvcImpl.NewSessionRefreshService(config.LoadConfig(), nil, nil, nil, registry)
 
 	ident := &constant.Identity{AccessKey: " "}
 	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
@@ -138,7 +138,7 @@ func TestRefreshLoadRuntimeErrorReturnsInternalKind(t *testing.T) {
 		return nil, 0, false, raw
 	}}
 	registry := &cacheengine.CacheRegistry{L2: l2Mock}
-	svc := iamSvcImpl.NewSessionRefreshService(config.LoadConfig(), nil, nil, registry)
+	svc := iamSvcImpl.NewSessionRefreshService(config.LoadConfig(), nil, nil, nil, registry)
 
 	ident := &constant.Identity{AccessKey: "device-1"}
 	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)

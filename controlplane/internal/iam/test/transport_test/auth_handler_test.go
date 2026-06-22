@@ -50,6 +50,10 @@ func (s *authServiceStub) VerifyUserTrinitySession(ctx context.Context, token st
 	return nil, nil
 }
 
+func (s *authServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
+	return nil, nil
+}
+
 
 
 func newAuthHandler(service iamSvcInterface.AuthService) *handler.AuthHandler {
@@ -256,8 +260,6 @@ func TestSession_Unauthorized(t *testing.T) {
 			Active: coreEntity.RuntimeSecret{Secret: []byte("some-test-secret-12345678901234567890123456789012")},
 		}, nil
 	})
-	middleware.InitACL(registry, 10*time.Second, nil, nil, nil)
-	defer middleware.InitACL(nil, 10*time.Second, nil, nil, nil)
 
 	router.GET("/session", middleware.ACL(), h.Session)
 
@@ -297,21 +299,6 @@ func TestSession_Success(t *testing.T) {
 	}
 }
 
-// TestSession_ServiceUnavailable kiểm thử khi thiếu middleware ACL() xử lý định danh
-func TestSession_ServiceUnavailable(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{})
-	router.GET("/session", middleware.ACL(), h.Session)
-
-	req := httptest.NewRequest(http.MethodGet, "/session", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", w.Code)
-	}
-}
 
 // TestSession_ReadOnly kiểm thử tính năng session endpoint là read-only (không được ghi lại/cập nhật cookies mới)
 func TestSession_ReadOnly(t *testing.T) {

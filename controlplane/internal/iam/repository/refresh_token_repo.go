@@ -38,6 +38,7 @@ func (r *RefreshTokenRepository) GetRefreshTokenByHash(ctx context.Context,
 		device_id,
 		token_hash,
 		token_family_id, 
+		tenant_id,
 		expires_at
 		FROM %s.refresh_tokens
 		WHERE token_hash = $1
@@ -51,6 +52,7 @@ func (r *RefreshTokenRepository) GetRefreshTokenByHash(ctx context.Context,
 		&session.DeviceID,
 		&session.TokenHash,
 		&session.TokenFamilyID,
+		&session.TenantID,
 		&session.ExpiresAt,
 	); err != nil {
 		return nil, fmt.Errorf("iam repo: get refresh token session by hash: %w", err)
@@ -187,7 +189,7 @@ func (r *RefreshTokenRepository) RevokeRefreshTokensByDeviceIDsAndUserID(ctx con
 func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) {
 	query := fmt.Sprintf(`
 		SELECT
-			r.id, r.user_id, r.device_id, r.token_hash, r.token_family_id, r.expires_at,
+			r.id, r.user_id, r.device_id, r.token_hash, r.token_family_id, r.tenant_id, r.expires_at,
 			u.id, u.status,
 			d.id, d.status
 		FROM %s.refresh_tokens r
@@ -207,6 +209,7 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		&ctxOut.Session.DeviceID,
 		&ctxOut.Session.TokenHash,
 		&ctxOut.Session.TokenFamilyID,
+		&ctxOut.Session.TenantID,
 		&ctxOut.Session.ExpiresAt,
 		&ctxOut.User.ID,
 		&ctxOut.User.Status,

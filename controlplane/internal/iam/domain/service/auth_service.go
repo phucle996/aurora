@@ -13,4 +13,7 @@ type AuthService interface {
 
 	// Xác thực credentials của End-User qua gRPC
 	VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error)
+
+	// Xác thực Opaque Refresh Token (gọi nội bộ từ gRPC)
+	VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error)
 }

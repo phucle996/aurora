@@ -87,6 +87,9 @@ func (m *rbacRepoMock) RevokeUserRole(ctx context.Context, userID, roleID uuid.U
 func (m *rbacRepoMock) GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error) {
 	return 999999, nil
 }
+func (m *rbacRepoMock) GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error) {
+	return "platform_user", 8, nil
+}
 
 func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 	roleID := uuid.New()

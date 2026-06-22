@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package iam.rpc;
+
+option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+
+service SessionService {
+  // RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
+  rpc IssueTrinitySession (IssueTrinitySessionRequest) returns (IssueTrinitySessionResponse);
+}
+
+// Request gửi thông tin định danh & thiết bị sau khi IAM xác thực thành công
+message IssueTrinitySessionRequest {
+  string user_id = 1;              // UUID dạng string của User (để làm claim 'sub' JWT & Key Redis)
+  string device_id = 2;            // UUID của thiết bị trong DB PostgreSQL (lưu vào session 'tdid')
+  string client_device_id = 3;     // Cookie client_device_id hiện tại (nếu có) để gắn kết thiết bị
+  string username = 4;             // Tên đăng nhập của user (phục vụ audit & logs)
+  string role = 5;                 // Vai trò của user (lưu vào claim 'role' JWT)
+  int32 level = 6;                 // Cấp độ bảo mật (lưu vào claim 'lvl' JWT, vd: 0 = cao nhất)
+  string tenant_id = 7;            // ID của Tenant (lưu vào claim 'tenant_id' JWT)
+  string zone_id = 8;              // ID của Zone hoạt động (lưu vào claim 'zone_id' JWT)
+  bool trust_device = 9;           // Flag xác định user có chọn tin cậy thiết bị (để ACL quyết định cấp Refresh Token)
+  string client_ip = 10;           // IP của client đăng nhập (để lưu metadata phiên & audit)
+  string user_agent = 11;          // User-Agent của client (để lưu metadata phiên & audit)
+}
+
+// Response chứa bộ credentials trả về cho IAM để chuyển tiếp cho Envoy set cookie
+message IssueTrinitySessionResponse {
+  string access_token = 1;         // JWT Access Token được ký bởi Vault (chứa các claims sub, role, lvl, access_key,...)
+  string refresh_token = 2;        // Opaque Refresh Token (chỉ có giá trị nếu request có trust_device = true)
+  string access_key = 3;           // UUIDv7 làm định danh phiên (lưu ở Cookie dạng plain, dùng làm key lookup Redis L2)
+  string access_secret = 4;        // Access Secret thô dạng plain (để client/Envoy kiểm thử tính toàn vẹn)
+  string client_device_id = 5;     // Client Device ID (trả về giá trị cũ hoặc giá trị server sinh mới nếu là thiết bị mới)
+  int64 expires_in_secs = 6;       // Thời gian sống của Access Token (giây)
+}

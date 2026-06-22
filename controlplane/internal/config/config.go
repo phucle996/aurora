@@ -37,6 +37,7 @@ type Config struct {
 	SchemaSQL SchemaSQLCfg
 	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
 	Vault     VaultCfg
+	ACLGRPCTarget string
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -294,5 +295,6 @@ func LoadConfig() *Config {
 			Timeout:        getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
 			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),
 		},
+		ACLGRPCTarget: getEnv("ACL_GRPC_TARGET", "acl:50051"),
 	}
 }

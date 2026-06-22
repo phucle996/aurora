@@ -62,3 +62,32 @@ func (h *AuthGRPCHandler) VerifyUserTrinityToken(ctx context.Context, req *iampr
 		ZoneId: res.ZoneID,
 	}, nil
 }
+
+// VerifyOpaqueRefreshToken tiếp nhận và xử lý yêu cầu xác thực Opaque Refresh Token từ Gateway qua gRPC
+func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iamproto.VerifyOpaqueRefreshTokenRequest) (*iamproto.VerifyOpaqueRefreshTokenResponse, error) {
+	// [COMMENT]: 1. Kiểm tra nhanh trường dữ liệu rỗng đầu vào
+	if req.RefreshToken == "" {
+		return &iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:        false,
+			ErrorMessage: "empty refresh token",
+		}, nil
+	}
+
+	// [COMMENT]: 2. Gọi hàm nghiệp vụ tại AuthService để xác thực token và phân giải scope
+	res, err := h.authService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, req.Scope)
+	if err != nil {
+		return &iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:        false,
+			ErrorMessage: err.Error(),
+		}, nil
+	}
+
+	return &iamproto.VerifyOpaqueRefreshTokenResponse{
+		Valid:    res.Valid,
+		UserId:   res.UserID,
+		TenantId: res.TenantID,
+		Role:     res.Role,
+		Level:    res.Level,
+		ZoneId:   res.ZoneID,
+	}, nil
+}

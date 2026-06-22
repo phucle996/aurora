@@ -11,6 +11,9 @@ service AuthService {
 
   // Xác thực Trinity credentials cho người dùng (End-User) thông thường
   rpc VerifyUserTrinityToken (VerifyUserTrinityTokenRequest) returns (VerifyUserTrinityTokenResponse);
+
+  // Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ ACL Service)
+  rpc VerifyOpaqueRefreshToken (VerifyOpaqueRefreshTokenRequest) returns (VerifyOpaqueRefreshTokenResponse);
 }
 
 // Request xác thực cho Admin/SRE
@@ -40,4 +43,21 @@ message VerifyUserTrinityTokenResponse {
   string user_id = 2;
   string role = 3;
   string zone_id = 4;
+}
+
+// Request xác thực Opaque Refresh Token
+message VerifyOpaqueRefreshTokenRequest {
+  string refresh_token = 1;
+  string scope = 2;
+}
+
+// Response trả về khi xác thực Opaque Refresh Token
+message VerifyOpaqueRefreshTokenResponse {
+  bool valid = 1;
+  string user_id = 2;
+  string tenant_id = 3;
+  string role = 4;
+  int32 level = 5;
+  string zone_id = 6;
+  string error_message = 7;
 }

@@ -37,7 +37,7 @@ func TestRegisterAccountIntegrationSuccessWithRealPostgresRedis(t *testing.T) {
 
 	presence := &testRegisterPresenceCache{rdb: rdb}
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 
 	ctx := context.Background()
 	username, email := testutil.UniqueIdentity("reg_success")
@@ -67,7 +67,7 @@ func TestRegisterAccountIntegrationDuplicateWithRealPostgresRedis(t *testing.T) 
 	rdb := testutil.OpenRedis(t, cfg)
 
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 
 	ctx := context.Background()
 	username, email := testutil.UniqueIdentity("reg_duplicate")
@@ -93,7 +93,7 @@ func TestRegisterAccountIntegrationBitmapFalsePositiveStillCreatesUser(t *testin
 
 	presence := &testRegisterPresenceCache{rdb: rdb}
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 
 	ctx := context.Background()
 	username, email := testutil.UniqueIdentity("reg_false_positive")
@@ -120,7 +120,7 @@ func TestRegisterAccountIntegrationRedisFallbackStillCreatesUser(t *testing.T) {
 	defer brokenRedis.Close()
 
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(brokenRedis), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(brokenRedis), nil, nil, &testutil.SessionServiceClientMock{})
 
 	ctx := context.Background()
 	username, email := testutil.UniqueIdentity("reg_redis_fallback")
@@ -142,7 +142,7 @@ func TestRegisterAccountIntegrationDuplicateMarksBitmapAfterDBConflict(t *testin
 
 	presence := &testRegisterPresenceCache{rdb: rdb}
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 
 	ctx := context.Background()
 	username, email := testutil.UniqueIdentity("reg_duplicate_mark")
@@ -175,9 +175,10 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, makeIntegrationRegistry(rdb))
+	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, rbacRepo, makeIntegrationRegistry(rdb))
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, repo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	registerSvc := iamSvcImpl.NewAuthService(cfg, repo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	username, email := testutil.UniqueIdentity("login_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Login User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -186,7 +187,7 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil)
+	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	result, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
@@ -214,7 +215,7 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 	rdb := testutil.OpenRedis(t, cfg)
 
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil)
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	username, email := testutil.UniqueIdentity("login_pending")
 	if err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)

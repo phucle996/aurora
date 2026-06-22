@@ -40,6 +40,8 @@ type RbacRepository struct {
 	getUserMaxRoleLevelQuery          string
 	getPermissionCodesByRoleCodeQuery string
 	listSystemRoleEntriesQuery        string
+	getUserRoleAndLevelByScopeQuery   string
+	getUserFallbackRoleAndLevelQuery  string
 }
 
 func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.RbacRepository {
@@ -129,6 +131,16 @@ func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.Rb
 		listSystemRoleEntriesQuery: fmt.Sprintf(
 			`SELECT r.id, r.code, r.name, r.description, r.scope_type, r.role_level, r.is_system, r.is_protected, r.is_assignable, r.owner_tenant_id, r.created_at, r.updated_at, p.code FROM %s.roles r LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id LEFT JOIN %s.permissions p ON rp.permission_id = p.id WHERE r.is_system = true OR r.is_protected = true ORDER BY r.code ASC`,
 			schema,
+			schema,
+			schema,
+		),
+		getUserRoleAndLevelByScopeQuery: fmt.Sprintf(
+			`SELECT r.code, r.role_level FROM %s.user_role_assignments ura JOIN %s.roles r ON ura.role_id = r.id WHERE ura.user_id = $1 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) AND ura.revoked_at IS NULL AND ((($2 = '' OR $2 = 'global' OR $2 = 'platform') AND ura.scope_type = 'platform') OR (ura.tenant_id::text = $2) OR (ura.workspace_id::text = $2)) ORDER BY r.role_level ASC LIMIT 1`,
+			schema,
+			schema,
+		),
+		getUserFallbackRoleAndLevelQuery: fmt.Sprintf(
+			`SELECT r.code, r.role_level FROM %s.user_role_assignments ura JOIN %s.roles r ON ura.role_id = r.id WHERE ura.user_id = $1 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) AND ura.revoked_at IS NULL ORDER BY r.role_level ASC LIMIT 1`,
 			schema,
 			schema,
 		),
@@ -419,4 +431,27 @@ func (r *RbacRepository) GetUserMaxRoleLevel(ctx context.Context, userID uuid.UU
 		return 999999, fmt.Errorf("iam rbac repo: get user max role level: %w", err)
 	}
 	return level, nil
+}
+
+func (r *RbacRepository) GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error) {
+	// [COMMENT]: Thực hiện truy vấn lấy role và level theo scope truyền từ Gateway
+	var code string
+	var level int
+	err := r.db.QueryRow(ctx, r.getUserRoleAndLevelByScopeQuery, userID, strings.TrimSpace(scope)).Scan(&code, &level)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// [COMMENT]: Nếu không tìm thấy role cụ thể theo scope, thực hiện fallback lấy role cao nhất của user nói chung
+			fallbackErr := r.db.QueryRow(ctx, r.getUserFallbackRoleAndLevelQuery, userID).Scan(&code, &level)
+			if fallbackErr != nil {
+				if errors.Is(fallbackErr, pgx.ErrNoRows) {
+					// Fallback mặc định nếu user tồn tại nhưng vì lý do nào đó không được gán bất kỳ role nào
+					return "platform_user", 8, nil
+				}
+				return "", 999999, fmt.Errorf("iam rbac repo: fallback get user role: %w", fallbackErr)
+			}
+			return code, level, nil
+		}
+		return "", 999999, fmt.Errorf("iam rbac repo: get user role by scope: %w", err)
+	}
+	return code, level, nil
 }

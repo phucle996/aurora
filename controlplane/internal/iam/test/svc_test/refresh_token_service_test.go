@@ -125,7 +125,7 @@ func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, regist
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
-	return iamSvcImpl.NewSessionRefreshService(cfg, repo, nil, registry)
+	return iamSvcImpl.NewSessionRefreshService(cfg, repo, nil, nil, registry)
 }
 
 

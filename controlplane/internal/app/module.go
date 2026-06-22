@@ -217,7 +217,6 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		middleware.InitRateLimitPolicy(*policy)
 	})
 	middleware.InitZoneAuth(cacheEngine)
-	middleware.InitACL(cacheEngine, 10*time.Second, iamModule.TouchDeviceLastSeen, iamModule.SessionRefreshService, cfg)
 	if err := middleware.InitAdminAPIKeyAuth(cacheEngine); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}

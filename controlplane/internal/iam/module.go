@@ -86,6 +86,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type IAMModule struct {
@@ -197,8 +198,16 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP device handler")
 	}
 
+	// ------------------------------------------------------------------------
+	// 🛡️ GIAI ĐOẠN 5: RBAC SYSTEM BOOTSTRAPPING (Di chuyển lên đầu để giải quyết DI)
+	// ------------------------------------------------------------------------
+	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
+	if rbacRepo == nil {
+		return nil, errors.New("iam module: failed to construct RBAC repository")
+	}
+
 	// Session Refresh Service
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, adminRepo, cacheEngine)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, adminRepo, rbacRepo, cacheEngine)
 	if refreshSvc == nil {
 		return nil, errors.New("iam module: failed to construct session refresh service")
 	}
@@ -213,9 +222,17 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct IAM outbox repository")
 	}
 
+	// [COMMENT]: Khởi tạo gRPC connection đến ACL Service phục vụ phân rã & offload Trinity Session
+	aclConn, err := grpc.Dial(cfg.ACLGRPCTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, errors.New("iam module: failed to dial ACL gRPC target: " + err.Error())
+	}
+	aclClient := iamproto.NewSessionServiceClient(aclConn)
+
 	authSvc := iamSvcImpl.NewAuthService(
 		cfg, authRepo, refreshSvc, deviceSvc,
 		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
+		aclClient,
 	)
 	if authSvc == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
@@ -255,10 +272,7 @@ func NewModule(
 	// ------------------------------------------------------------------------
 	// Phân hệ phân quyền truy cập người dùng và đồng bộ hóa cache trên toàn cụm.
 
-	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
-	if rbacRepo == nil {
-		return nil, errors.New("iam module: failed to construct RBAC repository")
-	}
+	// rbacRepo đã được khởi tạo phía trên phục vụ DI cho refreshSvc
 
 	rbacSvc := iamSvcImpl.NewRbacService(rbacRepo, cacheEngine)
 	if rbacSvc == nil {

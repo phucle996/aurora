@@ -31,7 +31,7 @@ type refreshTokenServiceStub struct {
 
 var _ iamSvcInterface.SessionRefreshService = (*refreshTokenServiceStub)(nil)
 
-func (s *refreshTokenServiceStub) CreateUserOpaqueSession(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+func (s *refreshTokenServiceStub) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
 	return "", time.Time{}, nil
 }
 
@@ -55,6 +55,10 @@ func (s *refreshTokenServiceStub) RevokeRefreshTokensByDeviceIDAndUserID(ctx con
 
 func (s *refreshTokenServiceStub) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error {
 	return nil
+}
+
+func (s *refreshTokenServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
+	return nil, nil
 }
 
 func newRefreshTokenHandler(service iamSvcInterface.SessionRefreshService) *handler.RefreshTokenHandler {

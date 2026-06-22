@@ -45,6 +45,7 @@ type AuthService struct {
 	ott        iamSvcInterface.OneTimeTokenService
 	outboxRepo iamRepoInterface.IamOutboxRepository
 	cfg        *config.Config
+	aclClient  iamproto.SessionServiceClient
 }
 
 func NewAuthService(cfg *config.Config,
@@ -54,6 +55,7 @@ func NewAuthService(cfg *config.Config,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	outboxRepo iamRepoInterface.IamOutboxRepository,
+	aclClient iamproto.SessionServiceClient,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
 		repo:       repo,
@@ -63,6 +65,7 @@ func NewAuthService(cfg *config.Config,
 		ott:        ott,
 		outboxRepo: outboxRepo,
 		cfg:        cfg,
+		aclClient:  aclClient,
 	}
 }
 
@@ -325,10 +328,6 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 	}
 	clientDeviceID := req.ClientDeviceID.String()
 
-	rdb := s.registry.L2.Client()
-	userIDStr := user.ID.String()
-	indexKey := "iam:user_access_index:" + userIDStr
-
 	// RegisterLoginDevice qua DeviceService là DB SoT để lấy tracked device persistent.
 	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, buildLoginDevice(user.ID, req.DevicePublicKey, req.IP, req.UserAgent, now, req.DeviceName, clientDeviceID))
 	if deviceErr != nil {
@@ -345,99 +344,64 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (re
 		return nil, fmt.Errorf("%w: failed to parse tracked device ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, trackedErr)
 	}
 
-	// Runtime fragment generation: lỗi ở đây là auth dependency error (fail-close).
-	accessKeyID, accessKeyErr := uuid.NewV7()
-	if accessKeyErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to generate access key: %v", iamTaxonomy.ErrAuthenticationUnavailable, accessKeyErr)
-	}
-	accessKey := accessKeyID.String()
-	accessSecret, secretErr := security.GenerateToken(32)
-	if secretErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to generate access secret: %v", iamTaxonomy.ErrAuthenticationUnavailable, secretErr)
-	}
-	accessJTI, idErr := uuid.NewV7()
-	if idErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to generate access JTI: %v", iamTaxonomy.ErrAuthenticationUnavailable, idErr)
-	}
-	accessExp := now.Add(s.cfg.Security.AccessSecretTTL)
-	// Access token chứa accessKey + jti để middleware verify với runtime cache.
-	accessToken, accessErr := security.SignWithSecret(security.Claims{
-		Subject:   user.ID.String(),
-		Role:      "",
-		Level:     0,
-		AccessKey: accessKey,
-		TokenID:   accessJTI.String(),
-		TokenUse:  "access",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: accessExp.Unix(),
-	}, nil)
-	if accessErr != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to sign access token: %v", iamTaxonomy.ErrAuthenticationUnavailable, accessErr)
-	}
-
 	// [COMMENT]: Chỉ cấp refresh token khi người dùng chọn "trusted device in 30 days".
 	// Nếu không tin tưởng thiết bị, chỉ cấp access token với TTL 30 phút – hết hạn là logout.
 	var rawRefresh string
 	var refreshExp time.Time
 	if req.TrustDevice {
 		var refreshErr error
-		// Ủy quyền hoàn toàn việc tạo và lưu trữ session refresh token cho SessionRefreshService.
+		// [COMMENT]: Ủy quyền hoàn toàn việc tạo và lưu trữ session refresh token dạng <userID>_<entropy> cho SessionRefreshService.
 		// AuthService chỉ nhận lại kết quả token thô và thời điểm hết hạn.
-		rawRefresh, refreshExp, refreshErr = s.refreshSvc.CreateUserOpaqueSession(ctx, user.ID, trackedDeviceID)
+		rawRefresh, refreshExp, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID)
 		if refreshErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			return nil, refreshErr
 		}
 	}
 
-	// Runtime write lỗi: rollback theo callsite policy bằng revoke refresh token.
-	// Không fallback chạy tiếp vì sẽ tạo access token không verify được runtime.
-	sessionRecord := iamEntity.UserAccessSession{
-		AccessSecretHash: security.HashTokenSHA256(accessSecret),
-		TrackedDeviceID:  trackedDeviceID.String(),
-		LastSeenAt:       now.Unix(), // Middleware sẽ cập nhật lsa realtime sau mỗi request xác thực
+	// [COMMENT]: Gọi ACL gRPC Service để khởi tạo Trinity credentials, tạo JWT & lưu phiên vào L2 Redis
+	var ipVal, uaVal string
+	if req.IP != nil {
+		ipVal = *req.IP
 	}
-	var setErr error
-	pb := &iamproto.UserAccessSession{
-		Ash:  sessionRecord.AccessSecretHash,
-		Tdid: sessionRecord.TrackedDeviceID,
-		Lsa:  sessionRecord.LastSeenAt,
+	if req.UserAgent != nil {
+		uaVal = *req.UserAgent
 	}
-	if payload, marshalErr := proto.Marshal(pb); marshalErr != nil {
-		setErr = marshalErr
-	} else {
-		key := "iam:user_access_session:" + userIDStr + ":" + accessKey
-		pipe := rdb.TxPipeline()
-		pipe.Set(ctx, key, payload, s.cfg.Security.AccessSecretTTL)
-		pipe.SAdd(ctx, indexKey, accessKey)
-		pipe.Expire(ctx, indexKey, s.cfg.Security.AccessSecretTTL+24*time.Hour)
-		_, setErr = pipe.Exec(ctx)
-	}
-	if setErr != nil {
-		// [COMMENT]: Nếu runtime write lỗi và đã cấp refresh token, rollback bằng revoke để tránh token mồ côi.
+
+	aclResp, aclErr := s.aclClient.IssueTrinitySession(ctx, &iamproto.IssueTrinitySessionRequest{
+		UserId:         user.ID.String(),
+		DeviceId:       trackedDeviceID.String(),
+		ClientDeviceId: clientDeviceID,
+		Username:       user.Username,
+		Role:           "",
+		Level:          0,
+		TrustDevice:    req.TrustDevice,
+		ClientIp:       ipVal,
+		UserAgent:      uaVal,
+		TenantId:       "",
+		ZoneId:         "",
+	})
+	if aclErr != nil {
+		// [COMMENT]: Nếu gRPC write lỗi và đã cấp refresh token ở PostgreSQL, rollback bằng revoke để tránh token mồ côi.
 		if req.TrustDevice && s.refreshSvc != nil {
 			_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
 		}
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, fmt.Errorf("%w: failed to set device runtime: %v", iamTaxonomy.ErrAuthenticationUnavailable, setErr)
+		return nil, fmt.Errorf("%w: failed to issue trinity session from ACL service: %v", iamTaxonomy.ErrAuthenticationUnavailable, aclErr)
 	}
 
 	// Best-effort cap reconcile sau login. Không làm fail request thành công.
 	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID, req.IP, req.UserAgent)
 
 	return &iamEntity.LoginResult{
-		AccessToken:              accessToken,
+		AccessToken:              aclResp.AccessToken,
 		RefreshToken:             rawRefresh,
-		AccessKey:                accessKey,
-		AccessSecret:             accessSecret,
+		AccessKey:                aclResp.AccessKey,
+		AccessSecret:             aclResp.AccessSecret,
 		TrackedDeviceID:          trackedDeviceID.String(),
-		ClientDeviceID:           clientDeviceID,
+		ClientDeviceID:           aclResp.ClientDeviceId,
 		ClientDeviceIDProvenance: string(clientDeviceProvenance),
-		AccessExpiresAt:          accessExp,
+		AccessExpiresAt:          now.Add(time.Duration(aclResp.ExpiresInSecs) * time.Second),
 		RefreshExpiresAt:         refreshExp,
 	}, nil
 }
@@ -596,4 +560,9 @@ func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string
 		Role:   claims.Role,
 		ZoneID: claims.ZoneID,
 	}, nil
+}
+
+func (s *AuthService) VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
+	// [COMMENT]: Ủy thác (delegate) hoàn toàn logic xác thực Opaque Refresh Token sang cho SessionRefreshService
+	return s.refreshSvc.VerifyOpaqueRefreshToken(ctx, refreshToken, scope)
 }

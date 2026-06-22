@@ -16,9 +16,12 @@ import (
 	iammigrations "controlplane/internal/iam/migrations"
 	"controlplane/internal/security"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/grpc"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 )
 
 const (
@@ -169,4 +172,33 @@ func CountUsersByIdentity(ctx context.Context, t testing.TB, db *pgxpool.Pool, s
 		t.Fatalf("count user row: %v", err)
 	}
 	return count
+}
+
+type SessionServiceClientMock struct {
+	IssueTrinitySessionFn func(ctx context.Context, in *iamproto.IssueTrinitySessionRequest) (*iamproto.IssueTrinitySessionResponse, error)
+}
+
+func (m *SessionServiceClientMock) IssueTrinitySession(ctx context.Context, in *iamproto.IssueTrinitySessionRequest, opts ...grpc.CallOption) (*iamproto.IssueTrinitySessionResponse, error) {
+	if m.IssueTrinitySessionFn != nil {
+		return m.IssueTrinitySessionFn(ctx, in)
+	}
+	now := time.Now()
+	token, _ := security.SignWithSecret(security.Claims{
+		Subject:   in.UserId,
+		Role:      in.Role,
+		Level:     int(in.Level),
+		AccessKey: "mock-access-key",
+		TokenID:   uuid.NewString(),
+		TokenUse:  "access",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(30 * time.Minute).Unix(),
+	}, nil)
+	return &iamproto.IssueTrinitySessionResponse{
+		AccessToken:    token,
+		RefreshToken:   "mock-refresh-token",
+		AccessKey:      "mock-access-key",
+		AccessSecret:   "mock-access-secret",
+		ClientDeviceId: "mock-client-device-id",
+		ExpiresInSecs:  1800,
+	}, nil
 }

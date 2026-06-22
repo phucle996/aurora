@@ -1,0 +1,60 @@
+[package]
+name = "acl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Tokio làm runtime bất đồng bộ để chạy server hiệu năng cao
+tokio = { version = "1.35", features = ["full"] }
+
+# Tonic làm gRPC framework — PIN version 0.9 khớp với envoy-types 0.2
+tonic = { version = "0.9", features = ["transport", "codegen", "tls"] }
+
+# Prost làm Protobuf compiler runtime — PIN version 0.11 khớp với tonic 0.9
+prost = "0.11"
+
+# Redis client hỗ trợ bất đồng bộ để quản lý Session
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
+# Serde phục vụ serialization/deserialization cấu hình và JSON
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Uuid phục vụ sinh ID thiết bị và AccessKey (hỗ trợ UUIDv7)
+uuid = { version = "1.6", features = ["v4", "v7", "serde"] }
+
+# Tracing phục vụ logging cấu trúc & giám sát hiệu năng
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Dotenvy dùng để tải các cấu hình môi trường từ file .env
+dotenvy = "0.15"
+
+# Envoy-types chứa các struct protobuf đã được sinh sẵn cho Envoy API
+envoy-types = "0.2"
+
+# Chrono dùng để quản lý thời gian và tính toán TTL session
+chrono = "0.4"
+
+# Sha2 dùng để băm mật mã AccessSecret
+sha2 = "0.10"
+
+# ═══════════════════════════════════════
+# OpenTelemetry: Tracing + Metrics pipeline (đồng bộ version với dataplane)
+# ═══════════════════════════════════════
+opentelemetry = { version = "0.23", features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.16.0", features = ["grpc-tonic", "metrics"] }
+
+# ═══════════════════════════════════════
+# Vault Transit: JWT HMAC ký/xác thực qua HashiCorp Vault REST API
+# ═══════════════════════════════════════
+# Reqwest làm HTTP client gọi REST API tới Vault Transit Engine
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Base64 encoding/decoding phục vụ giao tiếp với Vault Transit API
+base64 = "0.22"
+
+[build-dependencies]
+tonic-build = "0.9"
+

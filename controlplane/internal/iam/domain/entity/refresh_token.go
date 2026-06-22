@@ -23,6 +23,7 @@ type RefreshTokenSession struct {
 	DeviceID      *uuid.UUID
 	TokenHash     string
 	TokenFamilyID uuid.UUID
+	TenantID      *uuid.UUID
 	ExpiresAt     time.Time
 }
 
