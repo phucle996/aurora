@@ -20,8 +20,8 @@ use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
 use crate::service::ext_authz::ExtAuthzService;
-use crate::service::release::session_proto::session_service_server::SessionServiceServer;
-use crate::service::release::SessionServiceImpl;
+use crate::service::release_session::session_proto::session_service_server::SessionServiceServer;
+use crate::service::release_session::SessionServiceImpl;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,12 +96,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.controlplane_grpc_client_key.clone(),
     ));
 
+    // [COMMENT]: Khởi tạo bộ quản lý Zone (ZoneManager) đồng bộ L1 cache qua gRPC
+    let zone_mgr = Arc::new(crate::core::zone::ZoneManager::new(control_plane_client.clone()));
+
     let ext_authz_service = ExtAuthzService::new(
         session_mgr.clone(),
         token_mgr.clone(),
         evaluator.clone(),
         config.clone(),
         control_plane_client.clone(),
+        zone_mgr.clone(),
     );
 
     let session_service = SessionServiceImpl::new(

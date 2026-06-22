@@ -334,8 +334,7 @@ type VerifyOpaqueRefreshTokenResponse struct {
 	TenantId      string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
 	Level         int32                  `protobuf:"varint,5,opt,name=level,proto3" json:"level,omitempty"`
-	ZoneId        string                 `protobuf:"bytes,6,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,7,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -403,13 +402,6 @@ func (x *VerifyOpaqueRefreshTokenResponse) GetLevel() int32 {
 		return x.Level
 	}
 	return 0
-}
-
-func (x *VerifyOpaqueRefreshTokenResponse) GetZoneId() string {
-	if x != nil {
-		return x.ZoneId
-	}
-	return ""
 }
 
 func (x *VerifyOpaqueRefreshTokenResponse) GetErrorMessage() string {
@@ -528,15 +520,14 @@ const file_auth_proto_rawDesc = "" +
 	"\azone_id\x18\x04 \x01(\tR\x06zoneId\"\\\n" +
 	"\x1fVerifyOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x12\x14\n" +
-	"\x05scope\x18\x02 \x01(\tR\x05scope\"\xd6\x01\n" +
+	"\x05scope\x18\x02 \x01(\tR\x05scope\"\xbd\x01\n" +
 	" VerifyOpaqueRefreshTokenResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
 	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04role\x18\x04 \x01(\tR\x04role\x12\x14\n" +
-	"\x05level\x18\x05 \x01(\x05R\x05level\x12\x17\n" +
-	"\azone_id\x18\x06 \x01(\tR\x06zoneId\x12#\n" +
-	"\rerror_message\x18\a \x01(\tR\ferrorMessage\"F\n" +
+	"\x05level\x18\x05 \x01(\x05R\x05level\x12#\n" +
+	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\"F\n" +
 	"\x1fRevokeOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\"\n" +
 	" RevokeOpaqueRefreshTokenResponse2\xc8\x03\n" +

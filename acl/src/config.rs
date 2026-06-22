@@ -1,6 +1,6 @@
+use crate::error::AclError;
 use std::env;
 use std::time::Duration;
-use crate::error::AclError;
 
 /// Lấy hostname của node/container hiện tại (dùng cho OTel resource attributes)
 pub fn get_node_hostname() -> String {
@@ -58,32 +58,31 @@ impl Config {
         let grpc_port = env::var("ACL_GRPC_PORT")
             .unwrap_or_else(|_| "50051".to_string())
             .parse::<u16>()
-            .map_err(|_| AclError::ConfigError("ACL_GRPC_PORT must be a valid port number".to_string()))?;
+            .map_err(|_| {
+                AclError::ConfigError("ACL_GRPC_PORT must be a valid port number".to_string())
+            })?;
 
-        let redis_url = env::var("REDIS_URL")
-            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis_url =
+            env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
         // Vault configurations
-        let vault_addr = env::var("VAULT_ADDR")
-            .unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
-        
-        let vault_token = env::var("VAULT_TOKEN")
-            .unwrap_or_else(|_| "".to_string());
-        
-        let vault_role_id = env::var("VAULT_ROLE_ID")
-            .unwrap_or_else(|_| "".to_string());
-            
-        let vault_secret_id = env::var("VAULT_SECRET_ID")
-            .unwrap_or_else(|_| "".to_string());
-            
-        let vault_transit_key_name = env::var("VAULT_TRANSIT_KEY_NAME")
-            .unwrap_or_else(|_| "jwt-signer".to_string());
-            
+        let vault_addr =
+            env::var("VAULT_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
+
+        let vault_token = env::var("VAULT_TOKEN").unwrap_or_else(|_| "".to_string());
+
+        let vault_role_id = env::var("VAULT_ROLE_ID").unwrap_or_else(|_| "".to_string());
+
+        let vault_secret_id = env::var("VAULT_SECRET_ID").unwrap_or_else(|_| "".to_string());
+
+        let vault_transit_key_name =
+            env::var("VAULT_TRANSIT_KEY_NAME").unwrap_or_else(|_| "jwt-signer".to_string());
+
         let vault_timeout_secs = env::var("VAULT_TIMEOUT_SECS")
             .unwrap_or_else(|_| "5".to_string())
             .parse::<u64>()
             .unwrap_or(5);
-            
+
         let vault_max_retries = env::var("VAULT_MAX_RETRIES")
             .unwrap_or_else(|_| "3".to_string())
             .parse::<usize>()
@@ -107,7 +106,9 @@ impl Config {
         let refresh_threshold_secs = env::var("REFRESH_THRESHOLD_SECS")
             .unwrap_or_else(|_| "900".to_string())
             .parse::<u64>()
-            .map_err(|_| AclError::ConfigError("REFRESH_THRESHOLD_SECS must be a number".to_string()))?;
+            .map_err(|_| {
+                AclError::ConfigError("REFRESH_THRESHOLD_SECS must be a number".to_string())
+            })?;
 
         let grace_period_secs = env::var("GRACE_PERIOD_SECS")
             .unwrap_or_else(|_| "15".to_string())
@@ -119,8 +120,8 @@ impl Config {
             .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
 
         // [COMMENT]: Khai báo nạp biến môi trường cho gRPC client đi đến Controlplane
-        let controlplane_grpc_endpoint = env::var("CONTROLPLANE_GRPC_ENDPOINT")
-            .unwrap_or_else(|_| "localhost:9443".to_string());
+        let controlplane_grpc_endpoint =
+            env::var("CONTROLPLANE_GRPC_ENDPOINT").unwrap_or_else(|_| "localhost:9443".to_string());
         let controlplane_grpc_ca_cert = env::var("CONTROLPLANE_GRPC_CA_CERT").ok();
         let controlplane_grpc_client_cert = env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok();
         let controlplane_grpc_client_key = env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok();
@@ -133,10 +134,12 @@ impl Config {
                     .filter(|item| !item.is_empty())
                     .collect::<Vec<String>>()
             })
-            .unwrap_or_else(|_| vec![
-                "/api/v1/auth/login".to_string(),
-                "/api/v1/health".to_string(),
-            ]);
+            .unwrap_or_else(|_| {
+                vec![
+                    "/api/v1/auth/login".to_string(),
+                    "/api/v1/health".to_string(),
+                ]
+            });
 
         Ok(Config {
             grpc_port,
@@ -154,4 +157,3 @@ impl Config {
         })
     }
 }
-

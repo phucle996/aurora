@@ -71,17 +71,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.RefreshTokenHandler.Refresh,
 	)
 
-	// 3b) Trinity Refresh (Kiểu 1): Gia hạn phiên đang dùng khi session sắp hết (≤ 900s).
-	// Route này YÊU CẦU ACL middleware vì trinity phải còn sống trong Redis.
-	// Frontend tự động gọi khi nhận X-Session-Expires-In ≤ 900.
-	router.POST("/api/v1/auth/trinity-refresh",
-		middleware.ACL(
-			middleware.WithInjectAccessKey(),
-			middleware.WithInjectAccessSecret(),
-		),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/trinity-refresh"),
-		module.RefreshTokenHandler.TrinityRefresh,
-	)
 
 	// 4) Lấy thông tin phiên làm việc hiện tại
 	router.GET("/api/v1/auth/session",

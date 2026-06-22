@@ -25,7 +25,6 @@ package middleware
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -231,12 +230,7 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 		goCtx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
 		c.Request = c.Request.WithContext(goCtx)
 
-		// Gửi X-Session-Expires-In qua Header phản hồi để Frontend theo dõi session timeout
-		expiresIn := claims.ExpiresAt - time.Now().Unix()
-		if expiresIn < 0 {
-			expiresIn = 0
-		}
-		c.Header("X-Session-Expires-In", strconv.FormatInt(expiresIn, 10))
+		// [COMMENT]: Không ghi nhận header X-Session-Expires-In theo thiết kế mới, client sẽ tự dựa trên JWT expiration và cơ chế trượt tại Envoy.
 
 		c.Next()
 	}

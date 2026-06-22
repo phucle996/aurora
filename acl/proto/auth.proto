@@ -61,8 +61,7 @@ message VerifyOpaqueRefreshTokenResponse {
   string tenant_id = 3;
   string role = 4;
   int32 level = 5;
-  string zone_id = 6;
-  string error_message = 7;
+  string error_message = 6;
 }
 
 // [COMMENT]: Request chứa raw refresh token từ client cookie để CP hash & revoke

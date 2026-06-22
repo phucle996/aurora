@@ -15,9 +15,11 @@ pub async fn handle_session_rotation(
     access_key: &str,
 ) -> Vec<String> {
     let now = chrono::Utc::now().timestamp();
-    let session_age = now - session.lsa;
-    let remaining_ttl = if config.session_ttl_secs > session_age as u64 {
-        config.session_ttl_secs - session_age as u64
+    // [COMMENT]: Tính remaining_ttl dựa trên thời hạn hết hạn thực tế của JWT (claims.exp)
+    // thay vì dựa trên session.lsa — vì lsa bị throttle update liên tục (30s)
+    // dẫn đến session_age luôn nhỏ → remaining_ttl luôn cao → sliding session không bao giờ kích hoạt.
+    let remaining_ttl = if claims.exp > now {
+        (claims.exp - now) as u64
     } else {
         0
     };
@@ -69,7 +71,7 @@ pub async fn handle_session_rotation(
                         new_jwt
                     ));
                     cookies_to_set.push(format!(
-                        "access_key={}; Path=/; Secure; SameSite=Lax",
+                        "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax",
                         new_access_key
                     ));
                     cookies_to_set.push(format!(

@@ -160,9 +160,7 @@ func (s *sessionRefreshServiceStub) VerifyOpaqueRefreshToken(ctx context.Context
 	return nil, nil
 }
 
-func (s *sessionRefreshServiceStub) RefreshUserTrinity(ctx context.Context, userID uuid.UUID, oldAccessKey, oldAccessSecret string) (*iamEntity.TrinityRefreshResult, error) {
-	return nil, nil
-}
+
 
 func (s *sessionRefreshServiceStub) RefreshAdminTrinity(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	return iamEntity.AdminLoginResult{}, nil

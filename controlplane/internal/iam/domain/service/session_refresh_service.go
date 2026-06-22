@@ -18,8 +18,8 @@ type SessionRefreshService interface {
 	// 1. Opaque Refresh Token (Kiểu 2) cho End-User — phục hồi session qua DB Postgres
 	RefreshUserOpaque(ctx context.Context, rawRefreshToken string) (*iamEntity.RefreshTokenResult, error)
 
-	// 2. Trinity Refresh (Kiểu 1) cho End-User — sliding session qua Redis L2
-	RefreshUserTrinity(ctx context.Context, userID uuid.UUID, oldAccessKey, oldAccessSecret string) (*iamEntity.TrinityRefreshResult, error)
+	// [COMMENT]: Trinity Refresh (Kiểu 1 - Sliding Session) đã được chuyển sang Rust ACL (ext_authz)
+	// xử lý transparent tại tầng Envoy Gateway, không cần method Go nữa.
 
 	// 3. Trinity Refresh cho SRE Admin — sliding session qua Redis L2 kèm CAS versioning
 	RefreshAdminTrinity(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)

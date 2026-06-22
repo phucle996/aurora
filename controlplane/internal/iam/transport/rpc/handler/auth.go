@@ -97,7 +97,6 @@ func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iam
 		TenantId: res.TenantID,
 		Role:     res.Role,
 		Level:    res.Level,
-		ZoneId:   res.ZoneID,
 	}, nil
 }
 

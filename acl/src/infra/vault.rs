@@ -1,7 +1,7 @@
-use std::time::Duration;
 use crate::config::VaultConfig;
 use crate::error::AclError;
 use crate::observability::logger::Logger;
+use std::time::Duration;
 
 /// ============================================================================
 /// 📂 MODULE: infra/vault.rs - Vault Transit Engine Client (JWT HMAC Verify)
@@ -46,11 +46,17 @@ impl VaultClient {
             // 1. Xác thực: AppRole (production) hoặc Static Token (dev)
             let token = if !cfg.role_id.is_empty() && !cfg.secret_id.is_empty() {
                 // AppRole Login: POST auth/approle/login
-                match Self::approle_login(&http_client, &cfg.addr, &cfg.role_id, &cfg.secret_id).await {
+                match Self::approle_login(&http_client, &cfg.addr, &cfg.role_id, &cfg.secret_id)
+                    .await
+                {
                     Ok(t) => t,
                     Err(e) => {
                         last_err = format!("AppRole login attempt {}: {}", attempt, e);
-                        Logger::sys_warn("vault.init", &format!("AppRole login attempt {} failed", attempt), &last_err);
+                        Logger::sys_warn(
+                            "vault.init",
+                            &format!("AppRole login attempt {} failed", attempt),
+                            &last_err,
+                        );
                         if attempt < cfg.max_retries {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                         }
@@ -67,7 +73,10 @@ impl VaultClient {
                 Ok(()) => {
                     Logger::sys_info(
                         "vault.init",
-                        &format!("Vault client connected successfully to {} (attempt {})", cfg.addr, attempt),
+                        &format!(
+                            "Vault client connected successfully to {} (attempt {})",
+                            cfg.addr, attempt
+                        ),
                     );
                     return Ok(Self {
                         http_client,
@@ -78,7 +87,11 @@ impl VaultClient {
                 }
                 Err(e) => {
                     last_err = format!("Health check attempt {}: {}", attempt, e);
-                    Logger::sys_warn("vault.init", &format!("Vault health check attempt {} failed", attempt), &last_err);
+                    Logger::sys_warn(
+                        "vault.init",
+                        &format!("Vault health check attempt {} failed", attempt),
+                        &last_err,
+                    );
                     if attempt < cfg.max_retries {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
@@ -113,13 +126,15 @@ impl VaultClient {
             .map_err(|e| AclError::Internal(format!("AppRole login request failed: {}", e)))?;
 
         let status = resp.status();
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AclError::Internal(format!("AppRole login response parse failed: {}", e)))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            AclError::Internal(format!("AppRole login response parse failed: {}", e))
+        })?;
 
         if !status.is_success() {
-            return Err(AclError::Internal(format!("AppRole login HTTP {}: {:?}", status, json)));
+            return Err(AclError::Internal(format!(
+                "AppRole login HTTP {}: {:?}",
+                status, json
+            )));
         }
 
         // Trích xuất client_token từ auth object
@@ -127,7 +142,9 @@ impl VaultClient {
             .as_str()
             .filter(|t| !t.is_empty())
             .map(|t| t.to_string())
-            .ok_or_else(|| AclError::Internal("AppRole login returned empty client_token".to_string()))
+            .ok_or_else(|| {
+                AclError::Internal("AppRole login returned empty client_token".to_string())
+            })
     }
 
     /// Kiểm tra Vault đã initialized và unsealed.
@@ -139,16 +156,17 @@ impl VaultClient {
             .await
             .map_err(|e| AclError::Internal(format!("Vault health check failed: {}", e)))?;
 
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AclError::Internal(format!("Vault health response parse failed: {}", e)))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            AclError::Internal(format!("Vault health response parse failed: {}", e))
+        })?;
 
         let initialized = json["initialized"].as_bool().unwrap_or(false);
         let sealed = json["sealed"].as_bool().unwrap_or(true);
 
         if !initialized {
-            return Err(AclError::Internal("Vault is not initialized yet".to_string()));
+            return Err(AclError::Internal(
+                "Vault is not initialized yet".to_string(),
+            ));
         }
         if sealed {
             return Err(AclError::Internal("Vault is sealed".to_string()));
@@ -191,10 +209,7 @@ impl VaultClient {
         let input_b64 = std_engine.encode(signing_input.as_bytes());
 
         // 5. Gọi Vault Transit API verify
-        let url = format!(
-            "{}/v1/transit/verify/{}",
-            self.addr, self.transit_key_name
-        );
+        let url = format!("{}/v1/transit/verify/{}", self.addr, self.transit_key_name);
         let body = serde_json::json!({
             "input": input_b64,
             "hmac": vault_hmac,
@@ -208,13 +223,14 @@ impl VaultClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| AclError::Internal(format!("Vault Transit verify request failed: {}", e)))?;
+            .map_err(|e| {
+                AclError::Internal(format!("Vault Transit verify request failed: {}", e))
+            })?;
 
         let status = resp.status();
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AclError::Internal(format!("Vault Transit verify response parse failed: {}", e)))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            AclError::Internal(format!("Vault Transit verify response parse failed: {}", e))
+        })?;
 
         if !status.is_success() {
             Logger::sys_error(
@@ -246,10 +262,7 @@ impl VaultClient {
         let input_b64 = std_engine.encode(signing_input.as_bytes());
 
         // 2. Gọi Vault Transit API hmac
-        let url = format!(
-            "{}/v1/transit/hmac/{}",
-            self.addr, self.transit_key_name
-        );
+        let url = format!("{}/v1/transit/hmac/{}", self.addr, self.transit_key_name);
         let body = serde_json::json!({
             "input": input_b64,
             "algorithm": "sha2-256",
@@ -265,10 +278,9 @@ impl VaultClient {
             .map_err(|e| AclError::Internal(format!("Vault Transit hmac request failed: {}", e)))?;
 
         let status = resp.status();
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AclError::Internal(format!("Vault Transit hmac response parse failed: {}", e)))?;
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            AclError::Internal(format!("Vault Transit hmac response parse failed: {}", e))
+        })?;
 
         if !status.is_success() {
             Logger::sys_error(
@@ -283,21 +295,25 @@ impl VaultClient {
         let hmac_val = json["data"]["hmac"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| AclError::Internal("Vault Transit hmac returned empty hmac value".to_string()))?;
+            .ok_or_else(|| {
+                AclError::Internal("Vault Transit hmac returned empty hmac value".to_string())
+            })?;
 
         // 4. Split signature thành 3 phần: "vault", version, signature_b64_std
         let parts: Vec<&str> = hmac_val.split(':').collect();
         if parts.len() < 3 {
-            return Err(AclError::Internal("Malformed Vault HMAC signature format".to_string()));
+            return Err(AclError::Internal(
+                "Malformed Vault HMAC signature format".to_string(),
+            ));
         }
 
         let version = parts[1]; // Ví dụ: "v1"
         let sig_b64_std = parts[2];
 
         // 5. Decode signature từ Base64 Standard sang bytes
-        let sig_bytes = std_engine
-            .decode(sig_b64_std)
-            .map_err(|e| AclError::Internal(format!("Failed to decode Vault hmac signature: {}", e)))?;
+        let sig_bytes = std_engine.decode(sig_b64_std).map_err(|e| {
+            AclError::Internal(format!("Failed to decode Vault hmac signature: {}", e))
+        })?;
 
         // 6. Encode lại sang Base64 Raw URL để đúng đặc tả JWT
         let sig_b64_url = url_engine.encode(&sig_bytes);
@@ -306,4 +322,3 @@ impl VaultClient {
         Ok(format!("{}_{}", version, sig_b64_url))
     }
 }
-

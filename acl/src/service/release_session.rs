@@ -11,7 +11,8 @@ pub mod session_proto {
 }
 
 use session_proto::{
-    session_service_server::SessionService, ReleaseTrinitySessionRequest, ReleaseTrinitySessionResponse,
+    session_service_server::SessionService, ReleaseTrinitySessionRequest,
+    ReleaseTrinitySessionResponse,
 };
 
 pub struct SessionServiceImpl {

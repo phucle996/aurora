@@ -16,58 +16,35 @@ type FetchJSONOptions = {
 // =====================================================================================
 // SESSION LIFECYCLE MANAGER
 // =====================================================================================
-// Quản lý vòng đời phiên làm việc với 2 cơ chế refresh:
+// Quản lý vòng đời phiên làm việc:
 //
 // Kiểu 1 — Trinity Refresh (sliding session):
-//   Khi backend trả X-Session-Expires-In ≤ 900s → tự động gọi /api/v1/auth/trinity-refresh
-//   để đổi bộ trinity cũ → mới, kéo dài session liền mạch.
+//   Được xử lý tự động và trong suốt (transparent) tại Rust ACL (ext_authz) trên Envoy Gateway.
+//   Client không cần gọi endpoint riêng — Envoy tự xoay vòng cookies qua Set-Cookie header.
 //
 // Kiểu 2 — Opaque Refresh Token (session recovery):
 //   Khi gặp 401 và có refresh_token cookie → thử gọi /api/v1/auth/refresh
 //   để tạo phiên mới hoàn toàn, không cần nhập lại mật khẩu.
 // =====================================================================================
 
-// [COMMENT]: Ngưỡng kích hoạt trinity refresh. Khi session còn ≤ giá trị này (giây),
-// frontend tự động gọi trinity-refresh endpoint để gia hạn phiên.
-const TRINITY_REFRESH_THRESHOLD_SECONDS = 900;
-
-// [COMMENT]: Semaphore ngăn chặn race condition khi nhiều request đồng thời trigger refresh.
+// [COMMENT]: Semaphore ngăn chặn race condition khi nhiều request đồng thời trigger opaque refresh.
 // Chỉ 1 request duy nhất thực hiện refresh tại một thời điểm.
-let trinityRefreshInFlight: Promise<void> | null = null;
 let opaqueRefreshInFlight: Promise<boolean> | null = null;
 
 // [COMMENT]: Danh sách path không trigger session recovery để tránh vòng lặp vô hạn.
-const AUTH_PATHS = ["/auth/login", "/auth/register", "/auth/refresh", "/auth/trinity-refresh"];
+const AUTH_PATHS = ["/auth/login", "/auth/register", "/auth/refresh"];
 
 function isAuthPath(path: string): boolean {
   return AUTH_PATHS.some((p) => path.includes(p));
 }
 
-// [COMMENT]: Gọi trinity-refresh (Kiểu 1) khi session sắp hết qua BFF.
-// Không gọi trực tiếp Control Plane để tránh lộ endpoint và thông tin máy chủ ở client DevTools.
-async function performTrinityRefresh(): Promise<void> {
-  try {
-    const response = await fetch("/bff/auth/trinity-refresh", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-    });
-    if (!response.ok) {
-      // [COMMENT]: Trinity refresh thất bại (session đã chết hoặc lỗi).
-      // Không cần xử lý gì — Kiểu 2 sẽ bắt lỗi 401 ở request tiếp theo.
-      console.warn("[iam] Trinity refresh failed:", response.status);
-    }
-  } catch {
-    // Network error — bỏ qua, retry tự nhiên ở request tiếp.
-    console.warn("[iam] Trinity refresh network error");
-  }
-}
 
-// [COMMENT]: Gọi opaque refresh (Kiểu 2) khi trinity đã chết nhưng refresh_token cookie còn sống qua BFF.
+
+// [COMMENT]: Gọi opaque refresh (Kiểu 2) khi trinity đã chết nhưng refresh_token cookie còn sống trực tiếp qua Envoy.
 // Trả về true nếu phục hồi phiên thành công, false nếu cần redirect login.
 async function performOpaqueRefresh(): Promise<boolean> {
   try {
-    const response = await fetch("/bff/auth/refresh", {
+    const response = await fetch("/api/v1/auth/refresh", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -196,8 +173,6 @@ export async function fetchJSON<T>(
       );
 
       if (retryResponse.ok || retryResponse.status === 204) {
-        // [COMMENT]: Check X-Session-Expires-In trên response retry thành công.
-        checkAndTriggerTrinityRefresh(retryResponse, path);
 
         if (retryResponse.status === 204) {
           return undefined as T;
@@ -251,33 +226,10 @@ export async function fetchJSON<T>(
     } as APIError;
   }
 
-  // =========================================================================
-  // KIỂU 1: TRINITY REFRESH — Sliding Session Extension
-  // =========================================================================
-  // [COMMENT]: Sau mỗi response thành công, kiểm tra header X-Session-Expires-In.
-  // Nếu ≤ 900s → tự động gọi trinity-refresh ở background để gia hạn phiên liền mạch.
-  checkAndTriggerTrinityRefresh(response, path);
 
   if (response.status === 204) {
     return undefined as T;
   }
 
   return (await response.json()) as T;
-}
-
-// [COMMENT]: Hàm tiện ích kiểm tra header X-Session-Expires-In và trigger trinity refresh nếu cần.
-// Chỉ chạy ở background (fire-and-forget), không block response hiện tại.
-function checkAndTriggerTrinityRefresh(response: Response, path: string): void {
-  if (isAuthPath(path)) return;
-  if (!response.headers.has("X-Session-Expires-In")) return;
-
-  const expiresIn = parseInt(response.headers.get("X-Session-Expires-In") ?? "", 10);
-  if (isNaN(expiresIn) || expiresIn > TRINITY_REFRESH_THRESHOLD_SECONDS) return;
-
-  // [COMMENT]: Dedup — chỉ 1 trinity refresh chạy đồng thời.
-  if (!trinityRefreshInFlight) {
-    trinityRefreshInFlight = performTrinityRefresh().finally(() => {
-      trinityRefreshInFlight = null;
-    });
-  }
 }

@@ -3,14 +3,21 @@ pub mod auth {
     tonic::include_proto!("iam.rpc");
 }
 
+// [COMMENT]: Sinh mã Rust từ gRPC protobuf definitions dựa trên package name 'core.rpc' tương thích Go
+pub mod zone_proto {
+    tonic::include_proto!("core.rpc");
+}
+
 use auth::auth_service_client::AuthServiceClient;
 use auth::RevokeOpaqueRefreshTokenRequest;
+use zone_proto::zone_service_client::ZoneServiceClient;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 
 // [COMMENT]: Client tương tác với Control Plane gRPC server để thực hiện các cuộc gọi nghiệp vụ nội bộ
 #[derive(Clone)]
 pub struct ControlPlaneClient {
     client: AuthServiceClient<Channel>,
+    zone_client: ZoneServiceClient<Channel>,
 }
 
 impl ControlPlaneClient {
@@ -72,9 +79,10 @@ impl ControlPlaneClient {
 
         // [COMMENT]: Khởi tạo kênh kết nối lazy (không block startup của ACL nếu Controlplane chưa sẵn sàng)
         let channel = endpoint_configured.connect_lazy();
-        let client = AuthServiceClient::new(channel);
+        let client = AuthServiceClient::new(channel.clone());
+        let zone_client = ZoneServiceClient::new(channel);
 
-        Self { client }
+        Self { client, zone_client }
     }
 
     // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ (gọi qua gRPC đến CP)
@@ -97,5 +105,49 @@ impl ControlPlaneClient {
 
         client.revoke_opaque_refresh_token(request).await?;
         Ok(())
+    }
+
+    // [COMMENT]: Xác thực Opaque Refresh Token đồng bộ qua gRPC đến Controlplane
+    pub async fn verify_opaque_refresh_token(
+        &self,
+        refresh_token: String,
+        scope: String,
+    ) -> Result<auth::VerifyOpaqueRefreshTokenResponse, tonic::Status> {
+        let mut client = self.client.clone();
+        let mut request = tonic::Request::new(auth::VerifyOpaqueRefreshTokenRequest {
+            refresh_token,
+            scope,
+        });
+
+        // [COMMENT]: Bơm traceparent W3C vào gRPC Metadata để tiếp tục distributed tracing ở Controlplane (Go)
+        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+            // [COMMENT]: Sinh span_id ngẫu nhiên 16 ký tự hex để đóng gói traceparent chuẩn
+            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+            if let Ok(meta_val) = tonic::metadata::MetadataValue::try_from(&traceparent) {
+                request.metadata_mut().insert("traceparent", meta_val);
+            }
+        }
+
+        let response = client.verify_opaque_refresh_token(request).await?;
+        Ok(response.into_inner())
+    }
+
+    // [COMMENT]: Lấy danh sách Zone từ Controlplane qua gRPC phục vụ đồng bộ L1 cache ở ACL
+    pub async fn get_zone_list(&self) -> Result<Vec<zone_proto::ZoneEntry>, tonic::Status> {
+        let mut client = self.zone_client.clone();
+        let mut request = tonic::Request::new(zone_proto::GetZoneListRequest {});
+
+        // [COMMENT]: Bơm traceparent W3C vào gRPC Metadata để phục vụ distributed tracing
+        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+            if let Ok(meta_val) = tonic::metadata::MetadataValue::try_from(&traceparent) {
+                request.metadata_mut().insert("traceparent", meta_val);
+            }
+        }
+
+        let response = client.get_zone_list(request).await?;
+        Ok(response.into_inner().zones)
     }
 }

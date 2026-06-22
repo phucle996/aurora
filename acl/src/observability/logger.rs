@@ -130,13 +130,7 @@ impl Logger {
     }
 
     /// Ghi nhận toàn bộ quyết định authorize từ ext_authz (Authz Decision Logs).
-    pub fn authz_log(
-        user_id: &str,
-        method: &str,
-        path: &str,
-        decision: &str,
-        reason: &str,
-    ) {
+    pub fn authz_log(user_id: &str, method: &str, path: &str, decision: &str, reason: &str) {
         if Self::get_level() <= LogLevel::Info {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             let trace_seg = Self::trace_segment();

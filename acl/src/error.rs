@@ -44,7 +44,9 @@ impl From<AclError> for tonic::Status {
                 tracing::error!("Redis infrastructure error: {}", msg);
                 tonic::Status::unavailable("Session storage is temporarily unavailable")
             }
-            AclError::TokenError(msg) => tonic::Status::unauthenticated(format!("Invalid token: {}", msg)),
+            AclError::TokenError(msg) => {
+                tonic::Status::unauthenticated(format!("Invalid token: {}", msg))
+            }
             AclError::ConfigError(msg) => {
                 tracing::error!("Configuration error: {}", msg);
                 tonic::Status::internal("Internal system configuration error")

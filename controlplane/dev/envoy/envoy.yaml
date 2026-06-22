@@ -105,7 +105,6 @@ static_resources:
                             - exact: "http://localhost:5173"
                           allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
                           allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          expose_headers: "X-Session-Expires-In"
                           allow_credentials:
                             value: true
                           max_age: "86400"
@@ -141,7 +140,6 @@ static_resources:
                             - exact: "http://localhost:5173"
                           allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
                           allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          expose_headers: "X-Session-Expires-In"
                           allow_credentials:
                             value: true
                           max_age: "86400"
@@ -185,7 +183,6 @@ static_resources:
                             - exact: "http://localhost:5173"
                           allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
                           allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          expose_headers: "X-Session-Expires-In"
                           allow_credentials:
                             value: true
                           max_age: "86400"
@@ -228,7 +225,6 @@ static_resources:
                             - exact: "http://localhost:3000"
                           allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
                           allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          expose_headers: "X-Session-Expires-In"
                           allow_credentials:
                             value: true
                           max_age: "86400"
@@ -263,7 +259,6 @@ static_resources:
                             - exact: "http://localhost:5173"
                           allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
                           allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          expose_headers: "X-Session-Expires-In"
                           allow_credentials:
                             value: true
                           max_age: "86400"

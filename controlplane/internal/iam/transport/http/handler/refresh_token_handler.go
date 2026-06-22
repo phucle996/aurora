@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // RefreshTokenHandler tiếp nhận và điều hướng toàn bộ yêu cầu làm mới/gia hạn phiên
@@ -29,7 +27,9 @@ type RefreshTokenHandler struct {
 	cfg        *config.Config
 }
 
-// NewRefreshTokenHandler tạo HTTP handler cho các refresh/trinity-refresh endpoints.
+// NewRefreshTokenHandler tạo HTTP handler cho các refresh endpoints (Opaque Refresh & Admin Refresh).
+// [COMMENT]: Luồng Trinity Refresh (Kiểu 1 - Sliding Session) đã được chuyển sang Rust ACL (ext_authz)
+// xử lý transparent tại tầng Envoy Gateway, không cần HTTP endpoint riêng.
 func NewRefreshTokenHandler(
 	cfg *config.Config,
 	refreshSvc domainservice.SessionRefreshService,
@@ -89,96 +89,6 @@ func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
 
 	// [COMMENT]: Thiết lập cookie mới và trả về trạng thái 204 No Content
 	h.setUserCookies(c, result, secure)
-	c.Status(http.StatusNoContent)
-}
-
-// TrinityRefresh godoc
-// @Summary Trinity session refresh (sliding session)
-// @Description Đổi bộ trinity cũ lấy bộ mới khi phiên còn sống. Frontend gọi khi ≤ 900s còn lại (Kiểu 1).
-// @Tags auth
-// @Produce json
-// @Success 204 {string} string "No Content"
-// @Failure 401 {object} map[string]interface{} "invalid session"
-// @Failure 503 {object} map[string]interface{} "authentication temporarily unavailable"
-// @Failure 500 {object} map[string]interface{} "internal_error"
-// @Router /api/v1/auth/trinity-refresh [post]
-func (h *RefreshTokenHandler) TrinityRefresh(c *gin.Context) {
-	const op = "iam.refresh_token.trinity_refresh"
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	// [COMMENT]: Trích xuất identity từ Access middleware context
-	var userIDStr string
-	var accessKey string
-	var accessSecret string
-	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		userIDStr = ident.UserID
-		accessKey = ident.AccessKey
-		accessSecret = ident.AccessSecret
-	}
-	userIDStr = strings.TrimSpace(userIDStr)
-	accessKey = strings.TrimSpace(accessKey)
-	accessSecret = strings.TrimSpace(accessSecret)
-	if userIDStr == "" || accessKey == "" || accessSecret == "" {
-		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidCredentials, "trinity refresh missing identity")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	userID, parseErr := uuid.Parse(userIDStr)
-	if parseErr != nil {
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
-	// [COMMENT]: Gọi SessionRefreshService để gia hạn sliding session
-	result, err := h.refreshSvc.RefreshUserTrinity(ctx, userID, accessKey, accessSecret)
-	if err != nil {
-		switch {
-		case errors.Is(err, iamTaxonomy.ErrInvalidSession):
-			logger.HandlerWarn(c, op, err, "trinity refresh invalid session")
-			apires.RespondUnauthorized(c, "invalid session")
-			return
-		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
-			logger.HandlerWarn(c, op, err, "trinity refresh invalid credentials")
-			apires.RespondUnauthorized(c, "invalid credentials")
-			return
-		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
-			logger.HandlerWarn(c, op, err, "trinity refresh unavailable")
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			return
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-			return
-		}
-	}
-
-	// [COMMENT]: Ghi đè bộ cookies mới trên Client
-	secure := isSecureRequest(c)
-	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-	maxAge := int(time.Until(result.AccessExpiresAt).Seconds())
-
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name: cookie.AccessTokenName, Value: result.AccessToken,
-		Path: "/", Domain: domain, HttpOnly: true, Secure: secure,
-		SameSite: http.SameSiteLaxMode, Expires: result.AccessExpiresAt, MaxAge: maxAge,
-	})
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name: cookie.AccessKeyName, Value: result.AccessKey,
-		Path: "/", Domain: domain, HttpOnly: false, Secure: secure,
-		SameSite: http.SameSiteLaxMode, Expires: result.AccessExpiresAt, MaxAge: maxAge,
-	})
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name: cookie.AccessSecretName, Value: result.AccessSecret,
-		Path: "/", Domain: domain, HttpOnly: true, Secure: secure,
-		SameSite: http.SameSiteLaxMode, Expires: result.AccessExpiresAt, MaxAge: maxAge,
-	})
-
-	// [COMMENT]: Trả header X-Session-Expires-In để frontend reset bộ đếm sliding window
-	c.Header("X-Session-Expires-In", fmt.Sprintf("%d", maxAge))
-
-	logger.HandlerInfo(c, op, "trinity refresh successful")
 	c.Status(http.StatusNoContent)
 }
 
@@ -302,9 +212,6 @@ func (h *RefreshTokenHandler) AdminRefresh(c *gin.Context) {
 		MaxAge:   int(time.Until(cdidExpires).Seconds()),
 	})
 
-	logger.HandlerInfo(c, op, "admin refresh successful")
-
-	c.Header("X-Session-Expires-In", strconv.Itoa(maxAge))
 	apires.RespondSuccess(c, nil, "ok")
 }
 
@@ -328,7 +235,7 @@ func (h *RefreshTokenHandler) clearUserCookies(c *gin.Context, secure bool) {
 	}
 	clearCookie(cookie.AccessTokenName, true)
 	clearCookie(cookie.RefreshTokenName, true)
-	clearCookie(cookie.AccessKeyName, false)
+	clearCookie(cookie.AccessKeyName, true)
 	clearCookie(cookie.AccessSecretName, true)
 }
 
@@ -349,6 +256,6 @@ func (h *RefreshTokenHandler) setUserCookies(c *gin.Context, result *iamEntity.R
 	}
 	setCookie(cookie.AccessTokenName, result.AccessToken, result.AccessExpiresAt, true)
 	setCookie(cookie.RefreshTokenName, result.RefreshToken, result.RefreshExpiresAt, true)
-	setCookie(cookie.AccessKeyName, result.AccessKey, result.AccessExpiresAt, false)
+	setCookie(cookie.AccessKeyName, result.AccessKey, result.AccessExpiresAt, true)
 	setCookie(cookie.AccessSecretName, result.AccessSecret, result.AccessExpiresAt, true)
 }

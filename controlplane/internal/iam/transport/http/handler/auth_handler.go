@@ -261,7 +261,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Value:    result.AccessKey,
 		Path:     "/",
 		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
-		HttpOnly: false,
+		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  result.AccessExpiresAt,

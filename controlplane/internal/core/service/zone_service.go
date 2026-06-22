@@ -44,7 +44,16 @@ func NewZoneService(
 }
 
 func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
-	return s.repo.ListZones(ctx)
+	// [COMMENT]: Lấy danh sách zone từ RAM cache L1, nếu miss thì nạp từ repo và cache 10 phút.
+	val, err := s.l1Registry.GetOrLoad(ctx, "zone_list", "")
+	if err != nil {
+		return nil, err
+	}
+	zones, ok := val.([]coreEntity.Zone)
+	if !ok {
+		return nil, errors.New("invalid zone_list cache Type Assertion")
+	}
+	return zones, nil
 }
 
 // GetZoneCatalog hot-path: L1 RAM cache O(1) Zero-Serialization & COW.
@@ -101,6 +110,7 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 
 	// Invalidate cache "zone_catalog" để lazy load khi có request tiếp theo (sửa lại key không có dấu hai chấm ":")
 	s.l1Registry.L1.Delete("zone_catalog")
+	s.l1Registry.L1.Delete("zone_list")
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
 	// nếu đã có code từ trước thì phải invalid zone_by_code trước rồi tạo lại để clean cache
@@ -108,13 +118,22 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	s.l1Registry.L1.Delete("zone_by_code:" + zone.Code)
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
-	// Publish cả hai event: một cho catalog, một cho zone_by_code
+	// Publish cả ba event: catalog, zone_list, zone_by_code
 	// Dù có lỗi publish thì vẫn tiếp tục vì là best-effort
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			// Sửa lại key pub "zone_catalog" để các replica nhận diện chính xác và dọn RAM cache L1 cục bộ
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
+		}
+	}()
+	go func() {
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_list", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
@@ -166,8 +185,9 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		return err
 	}
 
-	// Đồng bộ dọn dẹp RAM L1 cache cục bộ sử dụng key chuẩn "zone_catalog" và "zone_status_by_id"
+	// Đồng bộ dọn dẹp RAM L1 cache cục bộ sử dụng key chuẩn "zone_catalog", "zone_list" và "zone_status_by_id"
 	s.l1Registry.L1.Delete("zone_catalog")
+	s.l1Registry.L1.Delete("zone_list")
 	s.l1Registry.L1.Delete("zone_status_by_id:" + zoneID.String())
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 
@@ -176,6 +196,15 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			// Fanout invalidation key "zone_catalog" không chứa dấu ":" để đồng bộ hóa cho các replica khác
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
+		}
+	}()
+	go func() {
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_list", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
@@ -204,6 +233,7 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 
 	// Invalidate cache catalog khi xóa zone (dùng key "zone_catalog" không chứa ":")
 	s.l1Registry.L1.Delete("zone_catalog")
+	s.l1Registry.L1.Delete("zone_list")
 	s.l1Registry.L1.Delete("zone_by_code:" + code)
 	s.l1Registry.L1.Delete("zone_status_by_id:" + zoneID.String())
 	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
@@ -213,6 +243,15 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			// Publish dọn dẹp cache cho các replica khác với key "zone_catalog"
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
+		}
+	}()
+	go func() {
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_list", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
@@ -258,12 +297,13 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 		return nil, err
 	}
 
-	// Xóa RAM cache cục bộ cho catalog sử dụng key chuẩn "zone_catalog"
+	// Xóa RAM cache cục bộ cho catalog sử dụng key chuẩn "zone_catalog" và "zone_list"
 	if ok := s.l1Registry.L1.Delete("zone_catalog"); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
 	}
+	s.l1Registry.L1.Delete("zone_list")
 	if ok := s.l1Registry.L1.Delete("zone_by_code:" + zoneCode); ok {
 		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
 	} else {
@@ -275,6 +315,15 @@ func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, s
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			// Đồng bộ xóa cache của các replica hyper-scale qua Pub/Sub với key "zone_catalog"
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+			} else {
+				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+			}
+		}
+	}()
+	go func() {
+		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
+			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_list", nil); err != nil {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
 			} else {
 				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)

@@ -116,12 +116,19 @@ func NewModule(
 
 // RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
 func (m *Module) RegisterGRPCServices(server *grpc.Server) {
-	if m == nil || m.BackpressureService == nil {
+	if m == nil {
 		return
 	}
-	handler := coreRpcHandler.NewBackpressureGRPCHandler(m.BackpressureService)
-	coreProto.RegisterBackpressureServiceServer(server, handler)
-	logger.SysInfo("grpc", "registered BackpressureService onto gRPC server")
+	if m.BackpressureService != nil {
+		handler := coreRpcHandler.NewBackpressureGRPCHandler(m.BackpressureService)
+		coreProto.RegisterBackpressureServiceServer(server, handler)
+		logger.SysInfo("grpc", "registered BackpressureService onto gRPC server")
+	}
+	if m.ZoneService != nil {
+		zoneHandler := coreRpcHandler.NewZoneGRPCHandler(m.ZoneService)
+		coreProto.RegisterZoneServiceServer(server, zoneHandler)
+		logger.SysInfo("grpc", "registered ZoneService onto gRPC server")
+	}
 }
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.

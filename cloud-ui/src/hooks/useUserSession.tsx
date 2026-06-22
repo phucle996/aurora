@@ -78,25 +78,48 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     mountedRef.current = true;
+    const controller = new AbortController();
 
     // [COMMENT]: Đọc nhanh trạng thái từ localStorage sau khi Client đã mount để tránh lỗi Hydration Mismatch.
-    // Vì Next.js Middleware ở server-side đã xác thực và gia hạn phiên âm thầm trước khi render trang,
-    // client-side không cần chạy các cuộc gọi ngầm resolveSession() gây ồn ào trên DevTools Network tab.
     if (typeof window !== "undefined") {
       const cached = window.localStorage.getItem("iam.user.authenticated");
       const nextState: UserAuthState = cached === "true"
         ? { status: "authenticated", session: { authenticated: true } }
         : { status: "unauthenticated" };
 
+      // [COMMENT]: Thiết lập nhanh trạng thái từ cache để tránh nhấp nháy UI (flickering) cho trang Dashboard.
       queueMicrotask(() => {
         if (mountedRef.current) {
           setState(nextState);
         }
       });
+
+      // [COMMENT]: Next.js Server Middleware đã bị xóa để tối ưu hóa latency (gọi Envoy trực tiếp).
+      // Do đó, ta chạy ngầm resolveSession() ngay sau khi mount để kiểm chứng trạng thái session thực tế với backend.
+      if (cached === "true") {
+        resolveSession(controller.signal)
+          .then((actualState) => {
+            if (mountedRef.current) {
+              setState(actualState);
+              if (actualState.status === "unauthenticated") {
+                // [COMMENT]: Nếu session thực tế hết hạn, cập nhật lại localStorage để đồng bộ trạng thái đăng xuất.
+                window.localStorage.setItem("iam.user.authenticated", "false");
+              }
+            }
+          })
+          .catch((err) => {
+            // [COMMENT]: Bỏ qua lỗi abort khi unmount hoặc lỗi kết nối mạng tạm thời.
+            if (err instanceof DOMException && err.name === "AbortError") {
+              return;
+            }
+            console.warn("[Session Verification] Background check failed:", err);
+          });
+      }
     }
 
     return () => {
       mountedRef.current = false;
+      controller.abort();
     };
   }, []);
 

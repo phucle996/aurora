@@ -87,7 +87,7 @@ Luồng Logout được chia thành 2 Phase độc lập với 2 sơ đồ tuầ
 **Các file mã nguồn liên quan (Code References):**
 
 - [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Tiếp nhận yêu cầu từ bộ lọc `ext_authz` của Envoy, nhận diện request `/api/v1/auth/logout` và chuyển tiếp xử lý sang dịch vụ Logout.
-- [acl/src/service/logout.rs](../../acl/src/service/logout.rs): Xóa đồng bộ session trong L2 Redis, chuẩn bị response 204 kèm xóa Cookies, và spawn tác vụ nền gRPC gửi Control Plane.
+- [acl/src/service/revoke_session.rs](../../acl/src/service/revoke_session.rs): Xóa đồng bộ session trong L2 Redis, chuẩn bị response 204 kèm xóa Cookies, và spawn tác vụ nền gRPC gửi Control Plane.
 - [acl/src/config.rs](../../acl/src/config.rs): Cấu hình chung cho ACL Service (nơi định cấu hình bypass route).
 
 ```mermaid

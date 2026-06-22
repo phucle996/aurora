@@ -1,8 +1,7 @@
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 use crate::error::AclError;
 use crate::infra::vault::VaultClient;
-
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// ============================================================================
 /// 📂 MODULE: core/token.rs - JWT Identity Claims & Verification via Vault
@@ -20,46 +19,46 @@ pub struct Claims {
     // Subject (User UUID)
     #[serde(rename = "sub")]
     pub sub: String,
-    
+
     // Single role from Go controlplane JWT
     #[serde(rename = "role", default)]
     pub role: String,
-    
+
     // Level (0 = highest privilege)
     #[serde(rename = "lvl", default)]
     pub lvl: i32,
-    
+
     // Tenant ID
     #[serde(rename = "tenant_id", default)]
     pub tenant_id: Option<String>,
-    
+
     // Zone ID
     #[serde(rename = "zone_id", default)]
     pub zone_id: Option<String>,
-    
+
     // Access key binding the JWT to a Redis session
     #[serde(rename = "access_key")]
     pub access_key: String,
-    
+
     // JWT ID (Token unique identifier)
     #[serde(rename = "jti", default)]
     pub jti: String,
-    
+
     // Issuer
     #[serde(rename = "iss", default)]
     pub iss: Option<String>,
-    
+
     // Expiration timestamp (Unix epoch in seconds)
     #[serde(rename = "exp")]
     pub exp: i64,
-    
+
     // Issued At timestamp
     #[serde(rename = "iat", default)]
     pub iat: i64,
 }
 
 impl Claims {
-    /// Tiện ích chuyển đổi role đơn thành danh sách roles Vec<String> 
+    /// Tiện ích chuyển đổi role đơn thành danh sách roles Vec<String>
     /// để tương thích với hệ thống AuthContext / PolicyEvaluator của Rust ACL.
     pub fn get_roles(&self) -> Vec<String> {
         if self.role.is_empty() {
@@ -96,11 +95,11 @@ impl TokenManager {
         // 2. Decode & Deserialize phần Payload sang Claims để đọc thông tin trước
         use base64::Engine;
         let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        
+
         let payload_bytes = url_engine
             .decode(parts[1])
             .map_err(|e| AclError::TokenError(format!("Failed to decode JWT payload: {}", e)))?;
-            
+
         let claims: Claims = serde_json::from_slice(&payload_bytes)
             .map_err(|e| AclError::TokenError(format!("Failed to parse JWT claims: {}", e)))?;
 
@@ -112,7 +111,7 @@ impl TokenManager {
 
         // 4. Kiểm tra chữ ký JWT qua Vault Transit Engine
         let sig_part = parts[2];
-        
+
         // Nhận diện định dạng chữ ký lai có chứa version của Vault (vd: "v1_signature_hash")
         if sig_part.starts_with('v') {
             if let Some(idx) = sig_part.find('_') {
@@ -120,10 +119,15 @@ impl TokenManager {
                 let signature_b64url = &sig_part[idx + 1..];
 
                 let signing_input = format!("{}.{}", parts[0], parts[1]);
-                
-                let is_valid = self.vault_client.verify_hmac(&signing_input, vault_version, signature_b64url).await?;
+
+                let is_valid = self
+                    .vault_client
+                    .verify_hmac(&signing_input, vault_version, signature_b64url)
+                    .await?;
                 if !is_valid {
-                    return Err(AclError::TokenError("Invalid signature verified by Vault".to_string()));
+                    return Err(AclError::TokenError(
+                        "Invalid signature verified by Vault".to_string(),
+                    ));
                 }
 
                 return Ok(claims);
@@ -131,7 +135,9 @@ impl TokenManager {
         }
 
         // Nếu token không có signature prefix của Vault -> Báo lỗi do production bắt buộc dùng Vault signature.
-        Err(AclError::TokenError("Token lacks Vault signature prefix or format is invalid".to_string()))
+        Err(AclError::TokenError(
+            "Token lacks Vault signature prefix or format is invalid".to_string(),
+        ))
     }
 
     /// Tạo mới một JWT Token dựa trên claims cung cấp bằng cách ký qua Vault Transit Engine.
@@ -171,4 +177,3 @@ impl TokenManager {
         Ok(format!("{}.{}", signing_input, signature))
     }
 }
-

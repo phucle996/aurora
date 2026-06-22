@@ -39,9 +39,7 @@ func (s *refreshTokenServiceStub) RefreshUserOpaque(ctx context.Context, rawRefr
 	return s.result, s.err
 }
 
-func (s *refreshTokenServiceStub) RefreshUserTrinity(ctx context.Context, userID uuid.UUID, oldAccessKey string, oldAccessSecret string) (*iamEntity.TrinityRefreshResult, error) {
-	return nil, nil
-}
+
 
 func (s *refreshTokenServiceStub) RefreshAdminTrinity(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error) {
 	s.adminRefreshCalled = true

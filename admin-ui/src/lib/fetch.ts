@@ -7,7 +7,6 @@
 //                       wrapResponse()     ← strip XSSI prefix ")]}',\n"
 //                              ↓
 //               [401?] → Reactive Self-Healing (token refresh)
-//               [ok + X-Session-Expires-In < 900s] → Proactive Silent Refresh
 //
 // XSSI (Cross-Site Script Inclusion) Protection:
 //   Backend middleware prepends ")]}',\n" trước mọi JSON response để ngăn
@@ -320,53 +319,8 @@ function request(baseURL: string, input: string, init?: RequestInit): Promise<Re
       }
     }
 
-    // =========================================================================
-    // Cơ chế 2: Proactive Silent Refresh — Sliding session window
-    //
-    // Kịch bản: Server attach header X-Session-Expires-In (giây) vào response.
-    // Nếu session còn < 15 phút (900s), client âm thầm refresh ngay bây giờ
-    // thay vì đợi đến khi hết hạn mới xử lý 401.
-    //
-    // Ưu điểm: User không bị gián đoạn, không thấy lỗi 401 trong quá trình làm việc.
-    // Non-blocking: refresh chạy nền, không block response hiện tại.
-    // Cross-tab safe: dùng cùng localStorage lock để tránh refresh đồng thời.
-    // =========================================================================
-    if (response.ok && response.headers.has('X-Session-Expires-In')) {
-      const expiresIn = parseInt(response.headers.get('X-Session-Expires-In') ?? '')
-
-      // Chỉ proactive refresh nếu session sắp hết (< 15 phút)
-      // và không phải auth route (tránh vòng lặp)
-      if (!isNaN(expiresIn) && expiresIn < 900 && !isAuthRoute) {
-        const lockKey = 'admin_session_refresh_lock'
-        const lockVal = localStorage.getItem(lockKey)
-        const now = Date.now()
-        let shouldRefresh = false
-
-        if (!lockVal) {
-          shouldRefresh = true
-        } else {
-          const lockTime = parseInt(lockVal)
-          if (isNaN(lockTime) || now - lockTime > 10000) {
-            shouldRefresh = true
-          }
-        }
-
-        if (shouldRefresh) {
-          localStorage.setItem(lockKey, now.toString())
-          // Fire-and-forget: không await, không block response
-          fetch(toAbsoluteURL(baseURL, '/admin/auth/refresh'), {
-            method: 'POST',
-            credentials: 'include',
-          })
-            .then((refreshRes) => {
-              if (refreshRes.ok) emitAdminSessionRefresh()
-            })
-            .finally(() => {
-              localStorage.removeItem(lockKey)
-            })
-        }
-      }
-    }
+    // [COMMENT]: Cơ chế trượt phiên làm việc (sliding session) hiện tại được thực thi tự động và transparent ở Edge (Envoy + Rust ACL)
+    // dựa trên JWT TTL còn lại < 900s bằng cách trả về Set-Cookie trong response API. Frontend không cần chủ động gửi yêu cầu refresh.
 
     return response
   })
@@ -382,7 +336,6 @@ function request(baseURL: string, input: string, init?: RequestInit): Promise<Re
  * Dùng thay cho native fetch() để có:
  *   - XSSI prefix stripping tự động
  *   - Auto token refresh khi 401
- *   - Proactive session renewal
  *   - Credentials (cookie) luôn được gửi kèm
  *
  * @example
