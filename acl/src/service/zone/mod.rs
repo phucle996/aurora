@@ -1,10 +1,8 @@
 // ======================================================================================================
-// 📂 MODULE: acl/src/service/mod.rs
-//            Khai báo các module cấp cao của tầng Service
+// 📂 MODULE: acl/src/service/zone/mod.rs
+//            Khai báo các module con liên quan đến Vùng Dữ Liệu (Zone Services)
 // ======================================================================================================
 
-pub mod ext_authz;
-pub mod auth;
-pub mod login;
-pub mod session;
-pub mod zone;
+pub mod zone_catalog;
+pub mod zone_resolution;
+pub mod zone_switch;

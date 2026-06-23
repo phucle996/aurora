@@ -149,7 +149,7 @@ pub async fn handle_session_recovery(
     path: &str,
 ) -> Result<Response<CheckResponse>, Status> {
     // [COMMENT]: Khách hàng bắt buộc phải cung cấp ngữ cảnh zone. Nếu thiếu hoặc sai -> Chặn ngay (Fail-Fast)
-    let zone_res = crate::service::zone_resolution::resolve_zone_context(
+    let zone_res = crate::service::zone::zone_resolution::resolve_zone_context(
         zone_mgr,
         cookie_header,
         client_headers,
@@ -160,10 +160,10 @@ pub async fn handle_session_recovery(
         Ok(res) => res,
         Err(err) => {
             let msg = match err {
-                crate::service::zone_resolution::ZoneResolutionError::Missing => {
+                crate::service::zone::zone_resolution::ZoneResolutionError::Missing => {
                     "Missing zone context during session recovery"
                 }
-                crate::service::zone_resolution::ZoneResolutionError::InvalidCode(code) => {
+                crate::service::zone::zone_resolution::ZoneResolutionError::InvalidCode(code) => {
                     &format!("Requested zone code not found: {}", code)
                 }
             };

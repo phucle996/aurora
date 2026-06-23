@@ -97,13 +97,6 @@ impl ZoneManager {
             .map(|(id, _)| id)
     }
 
-    // [COMMENT]: Tìm kiếm zone_code dựa vào zone_id
-    pub async fn resolve_id_to_code(&self, zone_id: &str) -> Option<String> {
-        self.resolve_id_to_code_and_status(zone_id)
-            .await
-            .map(|(code, _)| code)
-    }
-
     // [COMMENT]: Tìm kiếm zone_id và status dựa vào zone_code, hỗ trợ RPC sync khi cache miss và cache bad codes
     pub async fn resolve_code_to_id_and_status(&self, zone_code: &str) -> Option<(String, String)> {
         // [COMMENT]: 1. Thử đọc từ RAM cache L1 xem có tồn tại không
@@ -146,12 +139,18 @@ impl ZoneManager {
         // [COMMENT]: 4. Nếu sau khi đồng bộ vẫn không tìm thấy -> đây là zone code không tồn tại. Cache lại để chặn spam.
         Logger::sys_warn(
             "zone.manager",
-            &format!("Zone code '{}' not found after sync. Caching as invalid zone code.", zone_code),
+            &format!(
+                "Zone code '{}' not found after sync. Caching as invalid zone code.",
+                zone_code
+            ),
             "invalid_zone_code",
         );
         let mut bad = self.bad_codes.write().await;
         // Cache zone lỗi trong vòng 5 phút (300 giây)
-        bad.insert(zone_code.to_string(), Instant::now() + Duration::from_secs(300));
+        bad.insert(
+            zone_code.to_string(),
+            Instant::now() + Duration::from_secs(300),
+        );
 
         None
     }

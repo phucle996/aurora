@@ -1,10 +1,7 @@
 // ======================================================================================================
-// 📂 MODULE: acl/src/service/mod.rs
-//            Khai báo các module cấp cao của tầng Service
+// 📂 MODULE: acl/src/service/login/mod.rs
+//            Khai báo các module con liên quan đến luồng Đăng nhập (Login Services)
 // ======================================================================================================
 
-pub mod ext_authz;
-pub mod auth;
-pub mod login;
-pub mod session;
-pub mod zone;
+pub mod login_handler;
+pub mod admin_login_handler;

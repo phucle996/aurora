@@ -321,4 +321,75 @@ impl VaultClient {
         // 7. Trả về định dạng version_signature_b64url (ví dụ: "v1_abcd...")
         Ok(format!("{}_{}", version, sig_b64_url))
     }
+
+    /// [COMMENT]: Đọc dữ liệu secret từ một đường dẫn bất kỳ trong Vault (KV v2)
+    /// Hỗ trợ đọc API Key và 2FA Secret thô phục vụ xác thực tại biên (ACL).
+    pub async fn read_secret(&self, path: &str) -> Result<serde_json::Value, AclError> {
+        let url = format!("{}/v1/{}", self.addr, path);
+
+        let resp = self
+            .http_client
+            .get(&url)
+            .header("X-Vault-Token", &self.token)
+            .send()
+            .await
+            .map_err(|e| AclError::Internal(format!("Vault read request failed: {}", e)))?;
+
+        let status = resp.status();
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AclError::Internal(format!("Vault read response parse failed: {}", e)))?;
+
+        if !status.is_success() {
+            Logger::sys_error(
+                "vault.read_secret",
+                &format!("Vault read HTTP {}", status),
+                &format!("{:?}", json),
+            );
+            return Err(AclError::Internal(format!("Vault read HTTP {}", status)));
+        }
+
+        Ok(json)
+    }
+
+    /// [COMMENT]: Thực hiện gửi mã OTP đến Vault TOTP Secrets Engine để kiểm tra trực tiếp
+    /// Giúp bảo vệ an toàn tối đa cho 2FA Secret Key (không bao giờ rời khỏi Vault)
+    pub async fn verify_totp(&self, key_name: &str, code: &str) -> Result<bool, AclError> {
+        // [COMMENT]: 1. Xây dựng URL tới Vault TOTP verify endpoint
+        let url = format!("{}/v1/totp/code/{}", self.addr, key_name);
+
+        // [COMMENT]: 2. Chuẩn bị request body chứa OTP code từ client
+        let body = serde_json::json!({
+            "code": code,
+        });
+
+        // [COMMENT]: 3. Thực thi POST request sang Vault kèm theo token xác thực hợp lệ
+        let resp = self
+            .http_client
+            .post(&url)
+            .header("X-Vault-Token", &self.token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AclError::Internal(format!("Vault TOTP verify request failed: {}", e)))?;
+
+        let status = resp.status();
+        let json: serde_json::Value = resp.json().await.map_err(|e| {
+            AclError::Internal(format!("Vault TOTP verify response parse failed: {}", e))
+        })?;
+
+        // [COMMENT]: 4. Xử lý kết quả trả về từ Vault
+        if !status.is_success() {
+            Logger::sys_warn(
+                "vault.verify_totp",
+                &format!("Vault TOTP verify HTTP {}: {:?}", status, json),
+                "",
+            );
+            return Ok(false);
+        }
+
+        let valid = json["data"]["valid"].as_bool().unwrap_or(false);
+        Ok(valid)
+    }
 }

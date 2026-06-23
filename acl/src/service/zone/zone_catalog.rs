@@ -10,11 +10,11 @@ use serde::Serialize;
 use std::sync::Arc;
 use tonic::{Response, Status};
 
-use super::ext_authz::extract_cookie_value;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::observability::logger::Logger;
+use crate::service::ext_authz::extract_cookie_value;
 
 // [COMMENT]: Cấu trúc JSON trả về cho Client, khớp với ZoneCatalog cũ của Go
 #[derive(Serialize)]
@@ -53,11 +53,18 @@ pub async fn handle_zone_catalog(
             return None;
         }
 
-        // [COMMENT]: Kiểm tra session hoạt động trong Redis L2
-        let _session = session_mgr
-            .get_session(&claims.sub, &access_key)
-            .await
-            .ok()??;
+        // [COMMENT]: Kiểm tra session hoạt động trong Redis L2 tương ứng với vai trò
+        if claims.is_admin() {
+            let _admin_session = session_mgr
+                .get_admin_session(&access_key)
+                .await
+                .ok()??;
+        } else {
+            let _user_session = session_mgr
+                .get_session(&claims.sub, &access_key)
+                .await
+                .ok()??;
+        }
 
         // [COMMENT]: Trả về kết quả kiểm tra quyền admin
         Some(claims.is_admin())

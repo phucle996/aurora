@@ -55,6 +55,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # Base64 encoding/decoding phục vụ giao tiếp với Vault Transit API
 base64 = "0.22"
 
+# Moka: Concurrent L1 Cache cho JWT Signature Verification (LRU, TTL, max capacity)
+moka = { version = "0.12", features = ["future"] }
+
 [build-dependencies]
 tonic-build = "0.9"
 

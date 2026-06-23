@@ -19,13 +19,11 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
-use crate::service::ext_authz::ExtAuthzService;
-use crate::service::release_session::session_proto::session_service_server::SessionServiceServer;
-use crate::service::release_session::SessionServiceImpl;
 use crate::service::auth::auth_proto::auth_service_server::AuthServiceServer;
 use crate::service::auth::AuthServiceImpl;
-
-
+use crate::service::ext_authz::ExtAuthzService;
+use crate::service::session::release_session::session_proto::session_service_server::SessionServiceServer;
+use crate::service::session::release_session::SessionServiceImpl;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -102,7 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // [COMMENT]: Khởi tạo bộ quản lý Zone (ZoneManager) đồng bộ L1 cache qua gRPC
-    let zone_mgr = Arc::new(crate::core::zone::ZoneManager::new(control_plane_client.clone()));
+    let zone_mgr = Arc::new(crate::core::zone::ZoneManager::new(
+        control_plane_client.clone(),
+    ));
 
     let ext_authz_service = ExtAuthzService::new(
         session_mgr.clone(),
@@ -134,7 +134,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Logger::sys_info(
         "main.server",
-        &format!("Starting ext_authz, session & auth gRPC Server on: {}", addr),
+        &format!(
+            "Starting ext_authz, session & auth gRPC Server on: {}",
+            addr
+        ),
     );
 
     // 8. Dựng server kèm cơ chế Shutdown tín hiệu (Graceful Shutdown)

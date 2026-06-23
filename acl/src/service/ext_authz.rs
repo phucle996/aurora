@@ -118,8 +118,25 @@ impl Authorization for ExtAuthzService {
                     &format!("Intercepting: {} {}", method, path),
                 );
 
+                // [COMMENT]: Gọi handle_admin_login để xử lý chặn bắt và đăng nhập SRE Admin tại biên
+                if let Some(admin_login_res) =
+                    crate::service::login::admin_login_handler::handle_admin_login(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.zone_mgr,
+                        &self.config,
+                        client_headers,
+                        &req,
+                        &method,
+                        &path,
+                    )
+                    .await
+                {
+                    return admin_login_res;
+                }
+
                 // [COMMENT]: Gọi handle_login để xử lý chặn bắt và xử lý đăng nhập trực tiếp tại biên
-                if let Some(login_res) = crate::service::login_handler::handle_login(
+                if let Some(login_res) = crate::service::login::login_handler::handle_login(
                     &self.session_mgr,
                     &self.token_mgr,
                     &self.control_plane_client,
@@ -136,7 +153,7 @@ impl Authorization for ExtAuthzService {
                 }
 
                 // [COMMENT]: Gọi handle_zone_catalog từ module zone_catalog để xử lý API danh mục tại biên
-                if let Some(catalog_res) = crate::service::zone_catalog::handle_zone_catalog(
+                if let Some(catalog_res) = crate::service::zone::zone_catalog::handle_zone_catalog(
                     &self.session_mgr,
                     &self.token_mgr,
                     &self.zone_mgr,
@@ -150,19 +167,37 @@ impl Authorization for ExtAuthzService {
                 }
 
                 // [COMMENT]: Chặn bắt và xử lý API chuyển Active Zone tường minh tại biên (Edge Termination)
-                if let Some(zone_switch_res) = crate::service::zone_switch::handle_zone_switch(
-                    &self.session_mgr,
-                    &self.token_mgr,
-                    &self.zone_mgr,
-                    &self.config,
-                    client_headers,
-                    &req,
-                    &method,
-                    &path,
-                )
-                .await
+                if let Some(zone_switch_res) =
+                    crate::service::zone::zone_switch::handle_zone_switch(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.zone_mgr,
+                        &self.config,
+                        client_headers,
+                        &req,
+                        &method,
+                        &path,
+                    )
+                    .await
                 {
                     return zone_switch_res;
+                }
+
+                // [COMMENT]: Chặn bắt và xử lý API chuyển Active Zone cho SRE Admin tại biên (Edge Termination)
+                if let Some(admin_zone_switch_res) =
+                    crate::service::zone::zone_switch::handle_admin_zone_switch(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.zone_mgr,
+                        &self.config,
+                        client_headers,
+                        &req,
+                        &method,
+                        &path,
+                    )
+                    .await
+                {
+                    return admin_zone_switch_res;
                 }
 
                 // [COMMENT]: Cho phép Bypass (Không kiểm tra) đối với các endpoint Public cấu hình từ môi trường
@@ -186,7 +221,7 @@ impl Authorization for ExtAuthzService {
                 }
 
                 // [COMMENT]: Gọi handle_revoke_session từ module revoke_session đã được tách biệt
-                if let Some(revoke_res) = crate::service::revoke_session::handle_logout(
+                if let Some(revoke_res) = crate::service::session::revoke_session::handle_logout(
                     &self.session_mgr,
                     &self.token_mgr,
                     &self.control_plane_client,
@@ -226,18 +261,41 @@ impl Authorization for ExtAuthzService {
                         return Err("Access Key Mismatch");
                     }
 
-                    // Kiểm tra session trạng thái trong Redis L2 (Stateful Verification)
-                    let session = match self.session_mgr.get_session(&claims.sub, &access_key).await
-                    {
-                        Ok(Some(s)) => s,
-                        Ok(None) => return Err("Session Expired or Revoked"),
-                        Err(e) => {
-                            Logger::sys_error(
-                                "ext_authz.check",
-                                "Redis error while validating session",
-                                &e.to_string(),
-                            );
-                            return Err("Authentication service unavailable");
+                    // [COMMENT]: Kiểm tra session trạng thái trong Redis L2 (Stateful Verification)
+                    let session = if claims.is_admin() {
+                        let admin_sess = match self
+                            .session_mgr
+                            .get_admin_session(&access_key)
+                            .await
+                        {
+                            Ok(Some(s)) => s,
+                            Ok(None) => return Err("Session Expired or Revoked"),
+                            Err(e) => {
+                                Logger::sys_error(
+                                    "ext_authz.check",
+                                    "Redis error while validating admin session",
+                                    &e.to_string(),
+                                );
+                                return Err("Authentication service unavailable");
+                            }
+                        };
+                        crate::core::session::UserAccessSession {
+                            ash: admin_sess.access_secret_hash,
+                            tdid: "global".to_string(),
+                            lsa: chrono::Utc::now().timestamp(),
+                        }
+                    } else {
+                        match self.session_mgr.get_session(&claims.sub, &access_key).await {
+                            Ok(Some(s)) => s,
+                            Ok(None) => return Err("Session Expired or Revoked"),
+                            Err(e) => {
+                                Logger::sys_error(
+                                    "ext_authz.check",
+                                    "Redis error while validating session",
+                                    &e.to_string(),
+                                );
+                                return Err("Authentication service unavailable");
+                            }
                         }
                     };
 
@@ -259,7 +317,7 @@ impl Authorization for ExtAuthzService {
                     Ok(val) => val,
                     Err(err_msg) => {
                         // [COMMENT]: Khi xác thực Trinity Cookie thất bại, chuyển hướng sang luồng khôi phục session bằng Refresh Token
-                        return crate::service::recovery_session::handle_session_recovery(
+                        return crate::service::session::recovery_session::handle_session_recovery(
                             &self.session_mgr,
                             &self.token_mgr,
                             &self.zone_mgr,
@@ -275,13 +333,11 @@ impl Authorization for ExtAuthzService {
                     }
                 };
 
-                // [COMMENT]: 3.5. Phân giải và xác thực thông tin Zone thông qua dịch vụ zone_resolution
-                let cookies_to_set_zone =
-                    match crate::service::zone_resolution::resolve_and_verify_zone(
+                // [COMMENT]: 3.5. Phân giải và xác thực thông tin Zone thông qua dịch vụ zone_resolution tùy theo vai trò
+                let cookies_to_set_zone = if claims.is_admin() {
+                    match crate::service::zone::zone_resolution::resolve_and_verify_zone_admin(
                         &self.zone_mgr,
-                        &self.token_mgr,
-                        &self.config,
-                        &mut claims,
+                        Some(&mut claims),
                         &cookie_header,
                         client_headers,
                         &method,
@@ -291,13 +347,30 @@ impl Authorization for ExtAuthzService {
                     {
                         Ok(cookies) => cookies,
                         Err(err_res) => return err_res,
-                    };
+                    }
+                } else {
+                    match crate::service::zone::zone_resolution::resolve_and_verify_zone_user(
+                        &self.zone_mgr,
+                        Some(&mut claims),
+                        &cookie_header,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                    {
+                        Ok(cookies) => cookies,
+                        Err(err_res) => return err_res,
+                    }
+                };
 
-                // 6. Xử lý cập nhật Last Seen At (Throttled ghi)
-                let _ = self
-                    .session_mgr
-                    .update_last_seen(&claims.sub, &access_key, session.lsa)
-                    .await;
+                // [COMMENT]: 6. Xử lý cập nhật Last Seen At (Throttled ghi) - Chỉ áp dụng cho user thường, bỏ qua cho SRE Admin
+                if !claims.is_admin() {
+                    let _ = self
+                        .session_mgr
+                        .update_last_seen(&claims.sub, &access_key, session.lsa)
+                        .await;
+                }
 
                 // 7. Tạo ngữ cảnh danh tính AuthContext phục vụ đánh giá quyền hạn
                 let auth_ctx = AuthContext {
@@ -329,16 +402,27 @@ impl Authorization for ExtAuthzService {
                     };
                 }
 
-                // [COMMENT]: Gọi handle_session_rotation từ module rotate đã được tách biệt
-                let mut cookies_to_set = crate::service::rotate_session::handle_session_rotation(
-                    &self.session_mgr,
-                    &self.token_mgr,
-                    &self.config,
-                    &claims,
-                    &session,
-                    &access_key,
-                )
-                .await;
+                // [COMMENT]: 9. Thực hiện xoay vòng session (Sliding Session) tương ứng cho Admin hoặc User thường
+                let mut cookies_to_set = if claims.is_admin() {
+                    crate::service::session::rotate_session::handle_admin_session_rotation(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.config,
+                        &claims,
+                        &access_key,
+                    )
+                    .await
+                } else {
+                    crate::service::session::rotate_session::handle_session_rotation(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.config,
+                        &claims,
+                        &session,
+                        &access_key,
+                    )
+                    .await
+                };
 
                 // Hợp nhất các cookie cập nhật zone
                 cookies_to_set.extend(cookies_to_set_zone);

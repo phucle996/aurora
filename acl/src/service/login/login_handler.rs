@@ -11,7 +11,6 @@ use std::sync::Arc;
 use tonic::{Response, Status};
 use uuid::Uuid;
 
-use super::ext_authz::extract_cookie_value;
 use crate::config::Config;
 use crate::core::session::SessionManager;
 use crate::core::token::{Claims, TokenManager};
@@ -19,6 +18,7 @@ use crate::core::zone::ZoneManager;
 use crate::infra::controlplane::auth::VerifyUserCredentialsRequest;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
+use crate::service::ext_authz::extract_cookie_value;
 
 // [COMMENT]: Cấu trúc JSON nhận từ client khi đăng nhập
 #[derive(Deserialize)]

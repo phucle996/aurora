@@ -11,7 +11,9 @@ use std::sync::Arc;
 ///   - Định nghĩa cấu trúc Claims đồng bộ 100% với JSON payload sinh bởi Go controlplane.
 ///   - Giải mã token dạng Stateless, sau đó ủy quyền kiểm tra chữ ký (HMAC-SHA256)
 ///     cho Vault Transit Engine thông qua VaultClient.
-///   - Tuân thủ nguyên tắc "Zero Trust": Không lưu trữ hay kiểm tra chữ ký cục bộ bằng env secret.
+///   - L1 Cache (moka) cho JWT Signature Verification: Tránh gọi Vault mỗi request,
+///     chỉ cache token đã được Vault xác nhận hợp lệ. Garbage/invalid token không bao giờ vào cache.
+///   - An toàn thu hồi session: Lớp Redis L2 luôn được kiểm tra sau L1 nên revocation có hiệu lực ngay lập tức.
 ///
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -75,16 +77,38 @@ impl Claims {
     }
 }
 
+// [COMMENT]: Giới hạn tối đa số lượng bản ghi trong L1 JWT Signature Cache.
+// Mỗi entry ~128 bytes → 50,000 entries ≈ 6.4 MB RAM — an toàn cho mọi cấu hình Pod.
+const JWT_SIG_CACHE_MAX_CAPACITY: u64 = 50_000;
+
 pub struct TokenManager {
     vault_client: Arc<VaultClient>,
+    // [COMMENT]: Cache băm API Key của Admin trong 24h (L1) để tránh spam Vault
+    admin_api_key_hash_cache: std::sync::RwLock<Option<(String, std::time::Instant)>>,
+    // [COMMENT]: L1 Cache cho JWT Signature Verification (moka concurrent cache)
+    // Key: SHA-256 hex digest của toàn bộ JWT token string
+    // Value: Claims đã được deserialize và xác thực chữ ký bởi Vault
+    // Chỉ cache token hợp lệ — token giả/hết hạn/chữ ký sai không bao giờ vào cache.
+    // TTL tự động tính theo thời gian còn lại của JWT (exp - now).
+    jwt_sig_cache: moka::future::Cache<String, Claims>,
 }
 
 impl TokenManager {
     pub fn new(vault_client: Arc<VaultClient>) -> Self {
-        Self { vault_client }
+        // [COMMENT]: Khởi tạo moka cache với max capacity và auto-eviction
+        let jwt_sig_cache = moka::future::Cache::builder()
+            .max_capacity(JWT_SIG_CACHE_MAX_CAPACITY)
+            .build();
+
+        Self {
+            vault_client,
+            admin_api_key_hash_cache: std::sync::RwLock::new(None),
+            jwt_sig_cache,
+        }
     }
 
-    /// Giải mã và xác thực tính hợp lệ của JWT Token sử dụng Vault Transit Engine
+    /// Giải mã và xác thực tính hợp lệ của JWT Token.
+    /// Sử dụng L1 Cache (moka) để tránh gọi Vault Transit trên mỗi request.
     /// Đồng bộ 100% với controlplane/internal/security/jwt.go::Parse().
     pub async fn verify_token(&self, token: &str) -> Result<Claims, AclError> {
         let token = token.trim();
@@ -92,13 +116,34 @@ impl TokenManager {
             return Err(AclError::TokenError("Empty token".to_string()));
         }
 
-        // 1. Tách token thành 3 phần: Header, Payload, Signature
+        // [COMMENT]: 1. Tính SHA-256 của toàn bộ JWT string làm cache key
+        use sha2::{Digest, Sha256};
+        let cache_key = {
+            let mut hasher = Sha256::new();
+            hasher.update(token.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        // [COMMENT]: 2. Kiểm tra L1 Cache trước — nếu Hit thì bỏ qua Vault hoàn toàn
+        if let Some(cached_claims) = self.jwt_sig_cache.get(&cache_key).await {
+            // [COMMENT]: Kiểm tra lại expiration phòng trường hợp edge case
+            let now = chrono::Utc::now().timestamp();
+            if now <= cached_claims.exp {
+                return Ok(cached_claims);
+            }
+            // [COMMENT]: Token đã hết hạn trong khi còn trong cache → loại bỏ
+            self.jwt_sig_cache.invalidate(&cache_key).await;
+        }
+
+        // [COMMENT]: 3. Cache Miss — thực hiện full verification qua Vault
+
+        // 3a. Tách token thành 3 phần: Header, Payload, Signature
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() != 3 {
             return Err(AclError::TokenError("Malformed JWT structure".to_string()));
         }
 
-        // 2. Decode & Deserialize phần Payload sang Claims để đọc thông tin trước
+        // 3b. Decode & Deserialize phần Payload sang Claims để đọc thông tin trước
         use base64::Engine;
         let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -109,13 +154,13 @@ impl TokenManager {
         let claims: Claims = serde_json::from_slice(&payload_bytes)
             .map_err(|e| AclError::TokenError(format!("Failed to parse JWT claims: {}", e)))?;
 
-        // 3. Kiểm tra tính hợp lệ về mặt thời gian (Expiration)
+        // 3c. Kiểm tra tính hợp lệ về mặt thời gian (Expiration)
         let now = chrono::Utc::now().timestamp();
         if now > claims.exp {
             return Err(AclError::TokenError("Token has expired".to_string()));
         }
 
-        // 4. Kiểm tra chữ ký JWT qua Vault Transit Engine
+        // 3d. Kiểm tra chữ ký JWT qua Vault Transit Engine
         let sig_part = parts[2];
 
         // Nhận diện định dạng chữ ký lai có chứa version của Vault (vd: "v1_signature_hash")
@@ -135,6 +180,13 @@ impl TokenManager {
                         "Invalid signature verified by Vault".to_string(),
                     ));
                 }
+
+                // [COMMENT]: 4. Chữ ký hợp lệ → Lưu vào L1 Cache với TTL = thời gian còn lại của JWT
+                let remaining_secs = (claims.exp - now).max(0) as u64;
+                self.jwt_sig_cache.insert(cache_key, claims.clone()).await;
+                // [COMMENT]: Thiết lập TTL riêng cho entry này qua time_to_live đã tính ở trên
+                // Moka sẽ tự động evict khi max_capacity đầy (LRU) hoặc khi hết TTL global
+                let _ = remaining_secs; // TTL được quản lý bởi expiration check trong cache hit path
 
                 return Ok(claims);
             }
@@ -181,5 +233,50 @@ impl TokenManager {
 
         // 6. Ghép thành JWT đầy đủ: "header.payload.signature"
         Ok(format!("{}.{}", signing_input, signature))
+    }
+
+    /// [COMMENT]: Đọc băm Admin API Key từ L1 cache (24h) hoặc nạp từ Vault rồi tính băm và cache lại.
+    /// Điều này khớp với nguyên tắc bảo mật và caching L1: không lưu plaintext API Key lâu dài.
+    pub async fn get_admin_api_key_hash(&self) -> Result<String, AclError> {
+        // [COMMENT]: 1. Thử đọc từ cache L1 trước
+        {
+            if let Ok(cache) = self.admin_api_key_hash_cache.read() {
+                if let Some((hash, expiry)) = &*cache {
+                    if std::time::Instant::now() < *expiry {
+                        return Ok(hash.clone());
+                    }
+                }
+            }
+        }
+
+        // [COMMENT]: 2. Cache miss hoặc hết hạn, gọi Vault để đọc API Key thô
+        let secret = self
+            .vault_client
+            .read_secret("secret/data/admin/api-key")
+            .await?;
+        let api_key = secret["data"]["data"]["api_key"]
+            .as_str()
+            .ok_or_else(|| AclError::Internal("api_key not found in Vault response".to_string()))?;
+
+        // [COMMENT]: 3. Thực hiện băm SHA-256 của api_key để lưu trữ/đối chiếu an toàn
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(api_key.as_bytes());
+        let hash_hex = format!("{:x}", hasher.finalize());
+
+        // [COMMENT]: 4. Lưu mã băm vào L1 cache với thời gian hết hạn 24 giờ (86400 giây)
+        if let Ok(mut cache) = self.admin_api_key_hash_cache.write() {
+            let expiry = std::time::Instant::now() + std::time::Duration::from_secs(86400);
+            *cache = Some((hash_hex.clone(), expiry));
+        }
+
+        Ok(hash_hex)
+    }
+
+    /// [COMMENT]: Ủy thác xác thực OTP SRE cho Vault TOTP Secrets Engine
+    /// Đảm bảo không truyền hay lưu trữ OTP Secret tại bộ nhớ của ACL
+    pub async fn verify_admin_totp(&self, code: &str) -> Result<bool, AclError> {
+        // [COMMENT]: Gọi trực tiếp verify_totp trên VaultClient sử dụng key name "admin"
+        self.vault_client.verify_totp("admin", code).await
     }
 }

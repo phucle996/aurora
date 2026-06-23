@@ -4,7 +4,7 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use std::sync::Arc;
 use tonic::{Response, Status};
 
-use super::ext_authz::extract_cookie_value;
+use crate::service::ext_authz::extract_cookie_value;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::infra::controlplane::ControlPlaneClient;

@@ -109,12 +109,8 @@ impl AuthService for AuthServiceImpl {
             }));
         }
 
-        // 4. Kiểm tra tính hoạt động của session từ Redis L2 cache
-        let zone_id = claims
-            .zone_id
-            .clone()
-            .unwrap_or_else(|| "global".to_string());
-        let redis_key = format!("iam:admin_access_session:{}:{}", req.access_key, zone_id);
+        // 4. Kiểm tra tính hoạt động của session từ Redis L2 cache (Bỏ zone_id khỏi key theo kiến trúc tĩnh HA)
+        let redis_key = format!("iam:admin_access_session:{}", req.access_key);
         let mut conn = self.get_redis_connection().await?;
 
         let data: Option<Vec<u8>> = redis::cmd("GET")
