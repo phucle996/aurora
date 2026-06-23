@@ -105,6 +105,11 @@ if [ "$KV_ENABLED" = "false" ]; then
   docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault secrets enable -path=secret kv-v2
 fi
 
+# [COMMENT]: Cấu hình metadata giới hạn tối đa 2 phiên bản cho secret/admin/api-key
+echo "Cấu hình metadata max-versions=2 cho secret/admin/api-key..."
+docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" \
+  vault kv metadata put -max-versions=2 secret/admin/api-key || true
+
 # [COMMENT]: Thực hiện lưu trữ thông tin mật mã mẫu vào Vault KV
 # Đây là file config tạo secret mà hệ thống cần dùng (ví dụ: DB Password, SMTP, OTP...)
 echo "Đang tạo mật khẩu và cấu hình nhạy cảm mẫu vào 'secret/controlplane'..."

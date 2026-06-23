@@ -107,12 +107,6 @@ CREATE INDEX IF NOT EXISTS audit_events_tenant_workspace_idx ON audit_events(ten
 CREATE INDEX IF NOT EXISTS audit_events_event_idx ON audit_events(event);
 CREATE INDEX IF NOT EXISTS audit_events_severity_idx ON audit_events(severity);
 CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at);
-
--- Admin API key v1 indexes
-CREATE UNIQUE INDEX IF NOT EXISTS admin_api_keys_key_hash_uidx ON admin_api_keys(key_hash);
-CREATE INDEX IF NOT EXISTS admin_api_keys_expires_at_idx_v1 ON admin_api_keys(expires_at);
-CREATE UNIQUE INDEX IF NOT EXISTS admin_api_keys_singleton_uidx ON admin_api_keys((true));
-
 -- Admin action audit v1 indexes
 CREATE INDEX IF NOT EXISTS admin_action_audits_created_at_idx ON admin_action_audits(created_at);
 CREATE INDEX IF NOT EXISTS admin_action_audits_action_created_at_idx ON admin_action_audits(action, created_at);

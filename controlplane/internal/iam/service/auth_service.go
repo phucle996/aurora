@@ -388,7 +388,6 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}, nil
 }
 
-
 // normalizeUserDevicePublicKey decode base64 (std hoặc raw) ed25519 public key
 // (32 bytes) và trả canonical form base64 std để repo lưu + so sánh fingerprint.
 func normalizeUserDevicePublicKey(raw string) (string, error) {
@@ -425,50 +424,6 @@ func cleanString(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
-}
-
-// VerifyUserTrinitySession xác thực thông tin đăng nhập của End-User thông thường qua gRPC
-func (s *AuthService) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
-	// [COMMENT]: Giải mã JWT trực tiếp bằng Vault (không dùng candidates từ DB)
-	claims, parseErr := security.Parse(token, nil)
-	if parseErr != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	// Bước 3: Đối chiếu access_key trong token với access_key client cung cấp
-	if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	// Bước 4: Kiểm tra tính hoạt động của session từ Redis trực tiếp
-	// [COMMENT]: Sử dụng Redis client trực tiếp (không qua L2 wrapper) vì Login Service
-	// ghi session bằng rdb.Set(ctx, key, payload) — L2 wrapper transform key thành "{key}:data" gây mismatch.
-	sessionKey := "iam:user_access_session:" + claims.Subject + ":" + accessKey
-	rdb := s.registry.L2.Client()
-	rawResult, redisErr := rdb.Get(ctx, sessionKey).Result()
-	if redisErr != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	var pb iamproto.UserAccessSession
-	err := proto.Unmarshal([]byte(rawResult), &pb)
-	if err != nil {
-		return &iamEntity.VerifySessionResult{Valid: false}, err
-	}
-	ash := pb.Ash
-
-	// So sánh SHA256 hash của access_secret nhận được
-	incomingHash := security.HashTokenSHA256(accessSecret)
-	if ash != incomingHash {
-		return &iamEntity.VerifySessionResult{Valid: false}, nil
-	}
-
-	return &iamEntity.VerifySessionResult{
-		Valid:  true,
-		UserID: claims.Subject,
-		Role:   claims.Role,
-		ZoneID: claims.ZoneID,
-	}, nil
 }
 
 func (s *AuthService) VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {

@@ -94,61 +94,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	)
 
 	// ========================================================================
-	// 👑 PHÂN KHÚC ADMIN: QUẢN TRỊ VIÊN & RBAC (ADMIN AUTH, SECURITY & ROLES)
-	// ========================================================================
-
-	// 10) Đăng nhập Admin
-	router.POST("/admin/auth/login",
-		middleware.AdminCIDR(),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/login"),
-		module.AdminAuthHandler.Login,
-	)
-
-	// 11) Lấy thông tin phiên làm việc hiện tại của Admin: Bảo vệ bởi Admin API Key
-	router.GET("/admin/auth/session",
-		middleware.AdminAPIKeyAuth(),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/session"),
-		module.AdminAuthHandler.Session,
-	)
-
-	// 12) Đăng xuất Admin: Thu hồi và giải phóng Access Key
-	router.POST("/admin/auth/logout",
-		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectAdminAccessKey(),
-		),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/logout"),
-		module.AdminAuthHandler.Logout,
-	)
-
-	// 13) Làm mới Token Admin: Giới hạn bởi IP Whitelist (CIDR) & Xác thực API Key chuyên sâu
-	router.POST("/admin/auth/refresh",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectAdminAccessKey(),
-			middleware.WithInjectAdminAccessSecret(),
-		),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/refresh"),
-		module.RefreshTokenHandler.AdminRefresh,
-	)
-
-	// 14) Xoay vòng khoá bảo mật Admin (Rotate Key) - HÀNH ĐỘNG CỰC KỲ NHẠY CẢM:
-	//     - Bắt buộc kiểm tra CIDR Whitelist.
-	//     - Đăng nhập/Xác thực API Key.
-	//     - Rate Limiting chặt chẽ.
-	//     - Ký số chống giả mạo (Signature Verification).
-	//     - Xác thực 2 yếu tố Step-Up 2FA.
-	router.POST("/admin/auth/rotate-key",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(
-			middleware.WithInjectAdminAccessKey(),
-		),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/rotate-key"),
-		middleware.AdminCriticalSignature(),
-		middleware.AdminCriticalStepUp2FA(),
-		module.AdminAuthHandler.RotateKey,
-	)
-
-	// ========================================================================
 	// 🔑 PHÂN KHÚC RBAC: QUẢN LÝ VAI TRÒ & PHÂN QUYỀN (ADMIN ROLE-BASED ACCESS CONTROL)
 	// ========================================================================
 

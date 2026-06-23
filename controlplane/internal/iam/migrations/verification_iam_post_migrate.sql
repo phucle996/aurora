@@ -37,8 +37,7 @@ WHERE schemaname = current_schema()
     'user_role_assignments_platform_scope_uidx',
     'user_role_assignments_tenant_scope_uidx',
     'user_role_assignments_workspace_scope_uidx',
-    'audit_events_event_idx',
-    'admin_api_keys_singleton_uidx'
+    'audit_events_event_idx'
   )
 ORDER BY tablename, indexname;
 
@@ -52,8 +51,7 @@ WHERE conname IN (
   'device_challenges_nonce_key',
   'device_challenges_expires_after_created_chk',
   'mfa_settings_user_type_key',
-  'roles_role_level_check',
-  'admin_api_keys_expires_after_created_chk'
+  'roles_role_level_check'
 )
 ORDER BY table_name::text, conname;
 

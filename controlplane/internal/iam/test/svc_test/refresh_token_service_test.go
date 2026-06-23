@@ -138,7 +138,7 @@ func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, rbacRe
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
-	return iamSvcImpl.NewSessionRefreshService(cfg, repo, nil, rbacRepo, registry)
+	return iamSvcImpl.NewSessionRefreshService(cfg, repo, rbacRepo, registry)
 }
 
 func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {

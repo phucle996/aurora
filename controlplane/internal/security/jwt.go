@@ -140,6 +140,11 @@ func InitVault(client *vaultapi.Client, keyName string) {
 	vaultTransitKey = keyName
 }
 
+// [COMMENT]: GetVaultClient trả về Vault client toàn cục phục vụ các tác vụ quản lý Key khác (KV engine...)
+func GetVaultClient() *vaultapi.Client {
+	return vaultClient
+}
+
 // SignWithSecret creates a compact JWT using HMAC-SHA256 with an explicit raw
 // secret value. This is the low-level helper used after runtime secret lookup.
 func SignWithSecret(claims Claims, secret []byte) (string, error) {

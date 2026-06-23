@@ -342,22 +342,6 @@ CREATE TABLE IF NOT EXISTS admin_devices (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS admin_api_keys (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- Singleton row ID admin API key
-    key_hash text NOT NULL, -- Hash của admin API key
-    created_by text NULL, -- Actor tạo hoặc rotate key
-    created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo key
-    expires_at timestamptz NOT NULL, -- Thời điểm key hết hạn
-    CONSTRAINT admin_api_keys_expires_after_created_chk CHECK (expires_at > created_at)
-);
-
-COMMENT ON TABLE admin_api_keys IS 'Stores the singleton active hashed admin API key. Raw key must never be stored.';
-COMMENT ON COLUMN admin_api_keys.id IS 'Primary key of the singleton admin API key row. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN admin_api_keys.key_hash IS 'Hash of the admin API key. Raw key must never be stored.';
-COMMENT ON COLUMN admin_api_keys.created_by IS 'Optional free-text actor that created or rotated this key.';
-COMMENT ON COLUMN admin_api_keys.created_at IS 'Timestamp when this admin API key row was created.';
-COMMENT ON COLUMN admin_api_keys.expires_at IS 'Hard expiry timestamp of the active admin API key.';
-
 CREATE TABLE IF NOT EXISTS oauth_clients (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- Internal ID oauth client
     client_id varchar(255) NOT NULL UNIQUE, -- Public OAuth client_id

@@ -8,7 +8,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/core/domain/entity"
-	iamEntity "controlplane/internal/iam/domain/entity"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 
@@ -91,30 +90,89 @@ func RegisterL1Loaders(
 	// 7. Đăng ký tĩnh loader cho "admin_2fa_secret"
 	// giải mã sẵn admin 2fa secret và lưu vào l1 cache.
 	cacheengine.Register(registry, "admin_2fa_secret", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
-		ciphertext, _, err := modules.IAM.AdminAPIKeyRepository.GetAdmin2FASecret(ctx)
+		vaultClient := security.GetVaultClient()
+		if vaultClient == nil {
+			return "", fmt.Errorf("vault client not initialized")
+		}
+
+		secret, err := vaultClient.Logical().Read("secret/data/admin/2fa-secret")
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("failed to read admin 2fa secret from vault: %w", err)
 		}
-		if ciphertext == "" {
-			return "", fmt.Errorf("admin 2fa secret not found")
+		if secret == nil || secret.Data == nil {
+			return "", fmt.Errorf("admin 2fa secret not found in vault")
 		}
-		decrypted, err := security.DecryptSecret(ciphertext)
-		if err != nil {
-			return "", err
+
+		dataMap, ok := secret.Data["data"].(map[string]interface{})
+		if !ok || dataMap == nil {
+			return "", fmt.Errorf("invalid data format in vault secret")
 		}
-		return decrypted, nil
+
+		plainSecret, ok := dataMap["secret"].(string)
+		if !ok || plainSecret == "" {
+			return "", fmt.Errorf("secret not found in vault secret")
+		}
+
+		return plainSecret, nil
 	})
 
 	// 8. Đăng ký tĩnh loader cho "admin_api_key_active"
-	cacheengine.Register(registry, "admin_api_key_active", 10*time.Second, func(ctx context.Context, param string) (*iamEntity.AdminAPIKey, error) {
-		active, err := modules.IAM.AdminAPIKeyRepository.GetActiveAdminAPIKey(ctx)
+	cacheengine.Register(registry, "admin_api_key_active", 24*time.Hour, func(ctx context.Context, param string) (string, error) {
+		// [COMMENT]: Khởi trị L1 cache miss: lazy load khóa gốc từ Vault, băm SHA256 rồi lưu RAM, hủy plaintext
+		vaultClient := security.GetVaultClient()
+		if vaultClient == nil {
+			return "", fmt.Errorf("vault client not initialized")
+		}
+
+		secret, err := vaultClient.Logical().Read("secret/data/admin/api-key")
 		if err != nil {
-			return nil, err
+			return "", fmt.Errorf("failed to read admin api key from vault: %w", err)
 		}
-		if active == nil {
-			return nil, fmt.Errorf("active admin api key not found")
+		if secret == nil || secret.Data == nil {
+			return "", fmt.Errorf("active admin api key not found in vault")
 		}
-		return active, nil
+
+		dataMap, ok := secret.Data["data"].(map[string]interface{})
+		if !ok || dataMap == nil {
+			return "", fmt.Errorf("invalid data format in vault secret")
+		}
+
+		plainKey, ok := dataMap["api_key"].(string)
+		if !ok || plainKey == "" {
+			return "", fmt.Errorf("api_key not found in vault secret")
+		}
+
+		// [COMMENT]: Chỉ cache SHA-256 hash của API key để đảm bảo an toàn tuyệt đối
+		hashKey := security.HashTokenSHA256(plainKey)
+		return hashKey, nil
+	})
+
+	// 8b. Đăng ký tĩnh loader cho "admin_public_key"
+	cacheengine.Register(registry, "admin_public_key", 24*time.Hour, func(ctx context.Context, param string) (string, error) {
+		vaultClient := security.GetVaultClient()
+		if vaultClient == nil {
+			return "", fmt.Errorf("vault client not initialized")
+		}
+
+		secret, err := vaultClient.Logical().Read("secret/data/admin/public-key")
+		if err != nil {
+			return "", fmt.Errorf("failed to read admin public key from vault: %w", err)
+		}
+		if secret == nil || secret.Data == nil {
+			return "", fmt.Errorf("admin public key not found in vault")
+		}
+
+		dataMap, ok := secret.Data["data"].(map[string]interface{})
+		if !ok || dataMap == nil {
+			return "", fmt.Errorf("invalid data format in vault secret")
+		}
+
+		pubKey, ok := dataMap["public_key"].(string)
+		if !ok || pubKey == "" {
+			return "", fmt.Errorf("public_key not found in vault secret")
+		}
+
+		return pubKey, nil
 	})
 
 	// 9. Đăng ký tĩnh loader cho "zone_backpressure" phục vụ đọc-xuyên-thấu L2 Redis khi L1 RAM cache bị miss

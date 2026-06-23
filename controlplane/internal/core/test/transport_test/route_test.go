@@ -7,12 +7,15 @@ import (
 
 	"controlplane/internal/core"
 	coreHandler "controlplane/internal/core/transport/http/handler"
+	"controlplane/internal/http/middleware"
+	"controlplane/internal/cacheengine"
 
 	"github.com/gin-gonic/gin"
 )
 
 func TestRegisterRoutesAppliesAdminAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	_ = middleware.InitAdminAPIKeyAuth(cacheengine.NewCacheRegistry(cacheengine.NewL1Cache()))
 
 	r := gin.New()
 	called := false

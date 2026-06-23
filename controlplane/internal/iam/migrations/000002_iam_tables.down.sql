@@ -8,7 +8,6 @@ DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS admin_recovery_codes;
 DROP TABLE IF EXISTS admin_2fa_settings;
 DROP TABLE IF EXISTS admin_action_audits;
-DROP TABLE IF EXISTS admin_api_keys;
 DROP TABLE IF EXISTS admin_devices;
 DROP TABLE IF EXISTS user_role_assignments;
 DROP TABLE IF EXISTS role_permissions;

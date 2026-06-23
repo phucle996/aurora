@@ -52,10 +52,6 @@ func (s *authServiceStub) VerifyUserCredentials(ctx context.Context, req iamEnti
 	}, nil
 }
 
-func (s *authServiceStub) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
-	return nil, nil
-}
-
 func (s *authServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	return nil, nil
 }

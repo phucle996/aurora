@@ -175,7 +175,7 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
 	refreshRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
 	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, rbacRepo, makeIntegrationRegistry(rdb))
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, rbacRepo, makeIntegrationRegistry(rdb))
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	registerSvc := iamSvcImpl.NewAuthService(cfg, repo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	username, email := testutil.UniqueIdentity("login_success")

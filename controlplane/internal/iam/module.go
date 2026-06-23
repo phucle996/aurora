@@ -67,11 +67,9 @@ import (
 	"context"
 	"strings"
 
-	"controlplane/infra/telegram"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
-	coreSvc "controlplane/internal/iam/domain/service"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
@@ -99,19 +97,13 @@ type IAMModule struct {
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler         *iamHandler.AuthHandler
-	RefreshTokenHandler *iamHandler.RefreshTokenHandler
 	DeviceHandler       *iamHandler.DeviceHandler
-	AdminAuthHandler    *iamHandler.AdminAuthHandler
 	RbacHandler         *iamHandler.RbacHandler
 
 	// Core Services & Sync Engines
 	RbacRepository        iamRepoInterface.RbacRepository
-	AdminAPIKeyRepository iamRepoInterface.AdminAPIKeyRepository
-	AdminAPIKeyService    coreSvc.AdminAPIKeyService
 	AuthService           iamSvcInterface.AuthService
 	SessionRefreshService iamSvcInterface.SessionRefreshService
-	rotationCancel        context.CancelFunc
-	finalizeCancel        context.CancelFunc
 	deviceCapCancel       context.CancelFunc
 	deviceSvcImpl         iamSvcInterface.DeviceService // giữ interface type để tránh type assertion
 }
@@ -172,12 +164,6 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct refresh token repository")
 	}
 
-	// Admin Key Repository (PostgreSQL)
-	adminRepo := iamRepoImpl.NewAdminAPIKeyRepository(cfg, db)
-	if adminRepo == nil {
-		return nil, errors.New("iam module: failed to construct SRE admin key repository")
-	}
-
 	// One Time Token Service
 	oneTimeTokenSvc := iamSvcImpl.NewOneTimeTokenService(cfg, cacheEngine)
 	if oneTimeTokenSvc == nil {
@@ -208,13 +194,9 @@ func NewModule(
 	}
 
 	// Session Refresh Service
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, adminRepo, rbacRepo, cacheEngine)
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, rbacRepo, cacheEngine)
 	if refreshSvc == nil {
 		return nil, errors.New("iam module: failed to construct session refresh service")
-	}
-	refreshTokenHandler := iamHandler.NewRefreshTokenHandler(cfg, refreshSvc)
-	if refreshTokenHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP refresh token handler")
 	}
 
 	// Khởi tạo repository phục vụ cơ chế Transactional Outbox riêng biệt của module IAM (giải quyết HA & data reliability)
@@ -242,30 +224,6 @@ func NewModule(
 	authHandler := iamHandler.NewAuthHandler(cfg, authSvc)
 	if authHandler == nil {
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
-	}
-
-	// ------------------------------------------------------------------------
-	// 🔐 GIAI ĐOẠN 4: SRE ADMIN SECURITY FLOW (HIGH RESILIENCE SRE CORNER)
-	// ------------------------------------------------------------------------
-	// Khởi tạo quy trình xoay vòng khóa khẩn cấp SRE và cấu hình đồng bộ hóa Cache.
-
-	// Telegram Alert Channel (SRE Incident Response Alerting)
-	tgClient := telegram.NewTelegramClient(cfg.Telegram.BotToken, cfg.Telegram.ChatID)
-	if tgClient == nil {
-		return nil, errors.New("iam module: failed to establish Telegram client connection")
-	}
-
-	// SRE Admin API Key Service (Nơi điều khiển xoay khóa khẩn cấp và Pub/Sub Invalidation)
-	adminSvc := iamSvcImpl.NewAdminAPIKeyService(
-		cfg, adminRepo, tgClient, cacheEngine,
-	)
-	if adminSvc == nil {
-		return nil, errors.New("iam module: failed to construct SRE admin API key management service")
-	}
-
-	adminAuthHandler := iamHandler.NewAdminAuthHandler(cfg, adminSvc)
-	if adminAuthHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP admin authentication handler")
 	}
 
 	// ------------------------------------------------------------------------
@@ -298,13 +256,9 @@ func NewModule(
 		L1Registry:            cacheEngine,
 		AuthService:           authSvc,
 		AuthHandler:           authHandler,
-		RefreshTokenHandler:   refreshTokenHandler,
 		DeviceHandler:         deviceHandler,
-		AdminAuthHandler:      adminAuthHandler,
 		RbacHandler:           rbacHandler,
 		RbacRepository:        rbacRepo,
-		AdminAPIKeyRepository: adminRepo,
-		AdminAPIKeyService:    adminSvc,
 		deviceSvcImpl:         deviceSvc,
 		SessionRefreshService: refreshSvc,
 	}, nil
@@ -336,10 +290,10 @@ func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID str
 
 // RegisterGRPCServices đăng ký các dịch vụ gRPC của phân hệ IAM phục vụ xác thực Trinity
 func (m *IAMModule) RegisterGRPCServices(server *grpc.Server) {
-	if m == nil || m.AuthService == nil || m.AdminAPIKeyService == nil || m.SessionRefreshService == nil {
+	if m == nil || m.AuthService == nil || m.SessionRefreshService == nil {
 		return
 	}
-	handler := iamRpcHandler.NewAuthGRPCHandler(m.AuthService, m.AdminAPIKeyService, m.SessionRefreshService)
+	handler := iamRpcHandler.NewAuthGRPCHandler(m.AuthService, m.SessionRefreshService)
 	iamproto.RegisterAuthServiceServer(server, handler)
 	logger.SysInfo("grpc", "registered IAM AuthService onto gRPC server")
 }

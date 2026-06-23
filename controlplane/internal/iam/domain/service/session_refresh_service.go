@@ -15,8 +15,6 @@ type SessionRefreshService interface {
 	// CreateRefreshToken tạo mới một session refresh token đục (opaque) khi đăng nhập thành công trên thiết bị tin cậy.
 	CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
 
-	// 3. Trinity Refresh cho SRE Admin — sliding session qua Redis L2 kèm CAS versioning
-	RefreshAdminTrinity(ctx context.Context, zoneCode string, ip *string, userAgent *string) (iamEntity.AdminLoginResult, error)
 
 	// Các phương thức phụ trợ thu hồi refresh token của user
 	RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error

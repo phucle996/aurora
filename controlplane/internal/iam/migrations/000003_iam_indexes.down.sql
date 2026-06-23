@@ -14,11 +14,6 @@ DROP INDEX IF EXISTS admin_recovery_codes_used_at_idx;
 DROP INDEX IF EXISTS admin_recovery_codes_created_at_idx;
 DROP INDEX IF EXISTS admin_recovery_codes_code_hash_uidx;
 DROP INDEX IF EXISTS admin_2fa_settings_updated_at_idx;
-
-DROP INDEX IF EXISTS admin_api_keys_singleton_uidx;
-DROP INDEX IF EXISTS admin_api_keys_expires_at_idx_v1;
-DROP INDEX IF EXISTS admin_api_keys_key_hash_uidx;
-
 DROP INDEX IF EXISTS oauth_tokens_expires_at_idx;
 DROP INDEX IF EXISTS oauth_tokens_grant_id_idx;
 DROP INDEX IF EXISTS oauth_tokens_user_id_idx;

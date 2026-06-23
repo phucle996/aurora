@@ -25,19 +25,18 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"controlplane/internal/cacheengine"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
-	"google.golang.org/protobuf/proto"
 )
 
 // adminAPIKeyRotationTriggerTTL là TTL (khóa chặn) của cờ yêu cầu xoay vòng khóa.
@@ -70,7 +69,7 @@ func InitAdminAPIKeyAuth(registry *cacheengine.CacheRegistry) error {
 	return nil
 }
 
-// WithInjectAdminAccessKey chỉ định middleware tiêm access_key của Admin vào Identity context struct.
+// WithInjectAdminAccessKey chỉ định middleware tiêm access_key của Admin vào Identity context struct (no-op).
 func WithInjectAdminAccessKey() AdminAuthOption {
 	return func(options *adminAuthOptions) {
 		if options != nil {
@@ -79,7 +78,7 @@ func WithInjectAdminAccessKey() AdminAuthOption {
 	}
 }
 
-// WithInjectAdminAccessSecret chỉ định middleware tiêm access_secret của Admin vào Identity context struct.
+// WithInjectAdminAccessSecret chỉ định middleware tiêm access_secret của Admin vào Identity context struct (no-op).
 func WithInjectAdminAccessSecret() AdminAuthOption {
 	return func(options *adminAuthOptions) {
 		if options != nil {
@@ -88,7 +87,7 @@ func WithInjectAdminAccessSecret() AdminAuthOption {
 	}
 }
 
-// AdminAPIKeyAuth xác thực admin runtime session bằng 3 cookie.
+// AdminAPIKeyAuth xác thực admin runtime session bằng API key gửi từ Client.
 func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 	options := adminAuthOptions{}
 	for _, opt := range opts {
@@ -98,139 +97,72 @@ func AdminAPIKeyAuth(opts ...AdminAuthOption) gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
-		isLogout := c.Request.URL.Path == "/admin/auth/logout"
-
-		// Đọc giá trị các cookie bảo mật của Admin
-		tokenCookie, errToken := c.Cookie(constant.AdminAPITokenName)
-		accessKeyCookie, errKey := c.Cookie(constant.AccessKeyName)
-		accessSecretCookie, errSecret := c.Cookie(constant.AccessSecretName)
-
-		token := strings.TrimSpace(tokenCookie)
-		accessKey := strings.TrimSpace(accessKeyCookie)
-		accessSecret := strings.TrimSpace(accessSecretCookie)
-
-		if errToken != nil || errKey != nil || errSecret != nil || token == "" || accessKey == "" || accessSecret == "" {
-			if isLogout {
-				c.Next()
-				return
-			}
-			logger.HandlerWarn(c, "admin.auth.cookie", nil, "missing or empty admin cookie")
-			abortAdminUnauthorized(c)
-			return
-		}
-
 		adminAPIKeyAuthState.mu.RLock()
 		registry := adminAPIKeyAuthState.registry
 		adminAPIKeyAuthState.mu.RUnlock()
 		if registry == nil {
-			if isLogout {
-				c.Next()
-				return
-			}
 			abortAdminAuthUnavailable(c)
 			return
 		}
 
-		// [ignoring loop detection]
-		// --------------------------------------------------------------------
-		// Parse JWT bằng Vault.
-		// --------------------------------------------------------------------
-		claims, parseErr := security.Parse(token, nil)
-		if parseErr != nil {
-			if errors.Is(parseErr, security.ErrTokenExpired) {
-				// Kích hoạt cờ xoay khóa trực tiếp trên L2 Cache
-				_ = registry.L2.Set(c.Request.Context(), "iam:admin_key_rotation:required", "1", 1, adminAPIKeyRotationTriggerTTL)
+		// 1. Trích xuất API Key từ X-Admin-API-Key hoặc Authorization Header
+		apiKey := strings.TrimSpace(c.GetHeader("X-Admin-API-Key"))
+		if apiKey == "" {
+			authHeader := c.GetHeader("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				apiKey = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+			} else {
+				apiKey = strings.TrimSpace(authHeader)
 			}
-			if isLogout {
-				c.Next()
-				return
-			}
+		}
+
+		if apiKey == "" {
+			logger.HandlerWarn(c, "admin.auth.header", nil, "missing or empty admin API key")
 			abortAdminUnauthorized(c)
 			return
 		}
 
-		// Kiểm tra access_key claim khớp cookie gửi lên để ngăn chặn token hijacking
-		if strings.TrimSpace(claims.AccessKey) == "" || claims.AccessKey != accessKey {
-			if isLogout {
-				c.Next()
-				return
-			}
-			abortAdminUnauthorized(c)
-			return
-		}
-
-		// --------------------------------------------------------------------
-		// Xác thực access_secret trực tiếp thông qua Redis L2 Cache.
-		// Bổ sung phân vùng theo Zone ID (Zone-scoped) để triệt tiêu bypass.
-		// --------------------------------------------------------------------
-		zoneID := strings.TrimSpace(claims.ZoneID)
-		if zoneID == "" {
-			// Nếu rỗng, fallback về global để đảm bảo tương thích ngược
-			zoneID = "global"
-		}
-		payload, _, exists, err := registry.L2.Get(c.Request.Context(), "admin_access_session:"+accessKey+":"+zoneID)
+		// 2. Load active API Key Hash từ L1 Cache
+		val, err := registry.GetOrLoad(c.Request.Context(), "admin_api_key_active", "")
 		if err != nil {
-			if isLogout {
-				c.Next()
-				return
-			}
-			abortAdminAuthUnavailable(c)
-			return
-		}
-		if !exists {
-			if isLogout {
-				c.Next()
-				return
-			}
-			abortAdminUnauthorized(c)
-			return
-		}
-
-		session := &iamproto.AdminAccessSession{}
-		err = proto.Unmarshal(payload, session)
-		if err != nil {
-			if isLogout {
-				c.Next()
-				return
-			}
+			logger.HandlerError(c, "admin.auth.cache", err)
 			abortAdminAuthUnavailable(c)
 			return
 		}
 
-		incomingHash := security.HashTokenSHA256(accessSecret)
-		if session.AccessSecretHash != incomingHash {
-			if isLogout {
-				c.Next()
-				return
-			}
+		activeHash, ok := val.(string)
+		if !ok || activeHash == "" {
+			logger.HandlerError(c, "admin.auth.cache", fmt.Errorf("invalid active api key format in cache"))
+			abortAdminAuthUnavailable(c)
+			return
+		}
+
+		// 3. So sánh Hash
+		incomingHash := security.HashTokenSHA256(apiKey)
+		if incomingHash != activeHash {
+			logger.HandlerWarn(c, "admin.auth.verify", nil, "invalid admin API key")
 			abortAdminUnauthorized(c)
 			return
 		}
 
-		// --------------------------------------------------------------------
-		// Inject thông tin định danh vào struct Identity duy nhất trong Go context.
-		// --------------------------------------------------------------------
+		// 4. Inject Identity với mức tối cao (supreme)
 		ident := &constant.Identity{
-			UserID: claims.Subject,
-			Level:  claims.Level,
-			ZoneID: claims.ZoneID,
+			UserID: "admin",
+			Role:   "admin",
+			Level:  99,
+			ZoneID: "global",
 		}
 
 		if options.injectAccessKey {
-			ident.AccessKey = accessKey
+			ident.AccessKey = "admin_key"
 		}
 		if options.injectAccessSecret {
-			ident.AccessSecret = accessSecret
-		}
-		if options.injectTokenJTI {
-			ident.JTI = claims.TokenID
+			ident.AccessSecret = apiKey
 		}
 
 		// Ghi nhận Identity vào Go standard context
 		goCtx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
 		c.Request = c.Request.WithContext(goCtx)
-
-		// [COMMENT]: Không ghi nhận header X-Session-Expires-In theo thiết kế mới, client sẽ tự dựa trên JWT expiration và cơ chế trượt tại Envoy.
 
 		c.Next()
 	}

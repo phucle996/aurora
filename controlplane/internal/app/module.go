@@ -223,7 +223,17 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		cacheEngine,
 		time.Minute,
 		2*time.Minute,
-		iamModule.AdminAPIKeyService.GetPublicKeyFromSession,
+		func(ctx context.Context, accessKey string) (string, error) {
+			val, err := cacheEngine.GetOrLoad(ctx, "admin_public_key", "")
+			if err != nil {
+				return "", err
+			}
+			pubKey, ok := val.(string)
+			if !ok {
+				return "", fmt.Errorf("invalid public key format in cache")
+			}
+			return pubKey, nil
+		},
 	); err != nil {
 		return fmt.Errorf("app: init admin critical signature middleware: %w", err)
 	}

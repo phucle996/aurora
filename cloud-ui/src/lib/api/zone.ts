@@ -20,8 +20,8 @@ export async function fetchZoneCatalog(options: { signal?: AbortSignal } = {}): 
 export async function switchZone(
   zoneCode: string,
   options: { signal?: AbortSignal } = {},
-): Promise<{ zone_code: string; zone_id: string }> {
-  return fetchJSON<{ zone_code: string; zone_id: string }>(
+): Promise<{ zone_code: string }> {
+  return fetchJSON<{ zone_code: string }>(
     `/api/v1/zone/go-to-zone?zone_code=${zoneCode}`,
     {
       method: "POST",
