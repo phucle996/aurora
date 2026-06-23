@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: internal/core/transport/rpc/proto/zone.proto
+// source: zone.proto
 
 package proto
 
@@ -29,7 +29,7 @@ type GetZoneListRequest struct {
 
 func (x *GetZoneListRequest) Reset() {
 	*x = GetZoneListRequest{}
-	mi := &file_internal_core_transport_rpc_proto_zone_proto_msgTypes[0]
+	mi := &file_zone_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +41,7 @@ func (x *GetZoneListRequest) String() string {
 func (*GetZoneListRequest) ProtoMessage() {}
 
 func (x *GetZoneListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_core_transport_rpc_proto_zone_proto_msgTypes[0]
+	mi := &file_zone_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,20 +54,22 @@ func (x *GetZoneListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetZoneListRequest.ProtoReflect.Descriptor instead.
 func (*GetZoneListRequest) Descriptor() ([]byte, []int) {
-	return file_internal_core_transport_rpc_proto_zone_proto_rawDescGZIP(), []int{0}
+	return file_zone_proto_rawDescGZIP(), []int{0}
 }
 
 type ZoneEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ZoneId        string                 `protobuf:"bytes,1,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`
 	ZoneCode      string                 `protobuf:"bytes,2,opt,name=zone_code,json=zoneCode,proto3" json:"zone_code,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // Trạng thái hoạt động của zone (active, planned, draining, etc.)
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ZoneEntry) Reset() {
 	*x = ZoneEntry{}
-	mi := &file_internal_core_transport_rpc_proto_zone_proto_msgTypes[1]
+	mi := &file_zone_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -79,7 +81,7 @@ func (x *ZoneEntry) String() string {
 func (*ZoneEntry) ProtoMessage() {}
 
 func (x *ZoneEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_core_transport_rpc_proto_zone_proto_msgTypes[1]
+	mi := &file_zone_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -92,7 +94,7 @@ func (x *ZoneEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZoneEntry.ProtoReflect.Descriptor instead.
 func (*ZoneEntry) Descriptor() ([]byte, []int) {
-	return file_internal_core_transport_rpc_proto_zone_proto_rawDescGZIP(), []int{1}
+	return file_zone_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ZoneEntry) GetZoneId() string {
@@ -109,6 +111,20 @@ func (x *ZoneEntry) GetZoneCode() string {
 	return ""
 }
 
+func (x *ZoneEntry) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ZoneEntry) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 type GetZoneListResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Zones         []*ZoneEntry           `protobuf:"bytes,1,rep,name=zones,proto3" json:"zones,omitempty"`
@@ -118,7 +134,7 @@ type GetZoneListResponse struct {
 
 func (x *GetZoneListResponse) Reset() {
 	*x = GetZoneListResponse{}
-	mi := &file_internal_core_transport_rpc_proto_zone_proto_msgTypes[2]
+	mi := &file_zone_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -130,7 +146,7 @@ func (x *GetZoneListResponse) String() string {
 func (*GetZoneListResponse) ProtoMessage() {}
 
 func (x *GetZoneListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_core_transport_rpc_proto_zone_proto_msgTypes[2]
+	mi := &file_zone_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -143,7 +159,7 @@ func (x *GetZoneListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetZoneListResponse.ProtoReflect.Descriptor instead.
 func (*GetZoneListResponse) Descriptor() ([]byte, []int) {
-	return file_internal_core_transport_rpc_proto_zone_proto_rawDescGZIP(), []int{2}
+	return file_zone_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetZoneListResponse) GetZones() []*ZoneEntry {
@@ -153,39 +169,42 @@ func (x *GetZoneListResponse) GetZones() []*ZoneEntry {
 	return nil
 }
 
-var File_internal_core_transport_rpc_proto_zone_proto protoreflect.FileDescriptor
+var File_zone_proto protoreflect.FileDescriptor
 
-const file_internal_core_transport_rpc_proto_zone_proto_rawDesc = "" +
+const file_zone_proto_rawDesc = "" +
 	"\n" +
-	",internal/core/transport/rpc/proto/zone.proto\x12\bcore.rpc\"\x14\n" +
-	"\x12GetZoneListRequest\"A\n" +
+	"\n" +
+	"zone.proto\x12\bcore.rpc\"\x14\n" +
+	"\x12GetZoneListRequest\"m\n" +
 	"\tZoneEntry\x12\x17\n" +
 	"\azone_id\x18\x01 \x01(\tR\x06zoneId\x12\x1b\n" +
-	"\tzone_code\x18\x02 \x01(\tR\bzoneCode\"@\n" +
+	"\tzone_code\x18\x02 \x01(\tR\bzoneCode\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x12\n" +
+	"\x04name\x18\x04 \x01(\tR\x04name\"@\n" +
 	"\x13GetZoneListResponse\x12)\n" +
 	"\x05zones\x18\x01 \x03(\v2\x13.core.rpc.ZoneEntryR\x05zones2Y\n" +
 	"\vZoneService\x12J\n" +
 	"\vGetZoneList\x12\x1c.core.rpc.GetZoneListRequest\x1a\x1d.core.rpc.GetZoneListResponseB0Z.controlplane/internal/core/transport/rpc/protob\x06proto3"
 
 var (
-	file_internal_core_transport_rpc_proto_zone_proto_rawDescOnce sync.Once
-	file_internal_core_transport_rpc_proto_zone_proto_rawDescData []byte
+	file_zone_proto_rawDescOnce sync.Once
+	file_zone_proto_rawDescData []byte
 )
 
-func file_internal_core_transport_rpc_proto_zone_proto_rawDescGZIP() []byte {
-	file_internal_core_transport_rpc_proto_zone_proto_rawDescOnce.Do(func() {
-		file_internal_core_transport_rpc_proto_zone_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_core_transport_rpc_proto_zone_proto_rawDesc), len(file_internal_core_transport_rpc_proto_zone_proto_rawDesc)))
+func file_zone_proto_rawDescGZIP() []byte {
+	file_zone_proto_rawDescOnce.Do(func() {
+		file_zone_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_zone_proto_rawDesc), len(file_zone_proto_rawDesc)))
 	})
-	return file_internal_core_transport_rpc_proto_zone_proto_rawDescData
+	return file_zone_proto_rawDescData
 }
 
-var file_internal_core_transport_rpc_proto_zone_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_internal_core_transport_rpc_proto_zone_proto_goTypes = []any{
+var file_zone_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_zone_proto_goTypes = []any{
 	(*GetZoneListRequest)(nil),  // 0: core.rpc.GetZoneListRequest
 	(*ZoneEntry)(nil),           // 1: core.rpc.ZoneEntry
 	(*GetZoneListResponse)(nil), // 2: core.rpc.GetZoneListResponse
 }
-var file_internal_core_transport_rpc_proto_zone_proto_depIdxs = []int32{
+var file_zone_proto_depIdxs = []int32{
 	1, // 0: core.rpc.GetZoneListResponse.zones:type_name -> core.rpc.ZoneEntry
 	0, // 1: core.rpc.ZoneService.GetZoneList:input_type -> core.rpc.GetZoneListRequest
 	2, // 2: core.rpc.ZoneService.GetZoneList:output_type -> core.rpc.GetZoneListResponse
@@ -196,26 +215,26 @@ var file_internal_core_transport_rpc_proto_zone_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_internal_core_transport_rpc_proto_zone_proto_init() }
-func file_internal_core_transport_rpc_proto_zone_proto_init() {
-	if File_internal_core_transport_rpc_proto_zone_proto != nil {
+func init() { file_zone_proto_init() }
+func file_zone_proto_init() {
+	if File_zone_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_core_transport_rpc_proto_zone_proto_rawDesc), len(file_internal_core_transport_rpc_proto_zone_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_zone_proto_rawDesc), len(file_zone_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_internal_core_transport_rpc_proto_zone_proto_goTypes,
-		DependencyIndexes: file_internal_core_transport_rpc_proto_zone_proto_depIdxs,
-		MessageInfos:      file_internal_core_transport_rpc_proto_zone_proto_msgTypes,
+		GoTypes:           file_zone_proto_goTypes,
+		DependencyIndexes: file_zone_proto_depIdxs,
+		MessageInfos:      file_zone_proto_msgTypes,
 	}.Build()
-	File_internal_core_transport_rpc_proto_zone_proto = out.File
-	file_internal_core_transport_rpc_proto_zone_proto_goTypes = nil
-	file_internal_core_transport_rpc_proto_zone_proto_depIdxs = nil
+	File_zone_proto = out.File
+	file_zone_proto_goTypes = nil
+	file_zone_proto_depIdxs = nil
 }

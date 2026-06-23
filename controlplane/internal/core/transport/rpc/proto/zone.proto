@@ -1,3 +1,5 @@
+// [COMMENT]: file proto này và file acl/proto/zone.proto phải đồng bộ với nhau
+
 syntax = "proto3";
 
 package core.rpc;
@@ -9,6 +11,8 @@ message GetZoneListRequest {}
 message ZoneEntry {
   string zone_id = 1;
   string zone_code = 2;
+  string status = 3; // Trạng thái hoạt động của zone (active, planned, draining, etc.)
+  string name = 4;
 }
 
 message GetZoneListResponse {

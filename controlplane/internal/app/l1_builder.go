@@ -73,19 +73,11 @@ func RegisterL1Loaders(
 		return string(zone.Status), nil
 	})
 
-	// 4. Đăng ký tĩnh loader cho danh sách "zone_catalog" phục vụ dropdown/select UI
-	cacheengine.Register(registry, "zone_catalog", 10*time.Minute, func(ctx context.Context, param string) ([]coreEntity.ZoneCatalog, error) {
-		// Truy vấn trực tiếp từ Repository để tránh vòng lặp phụ thuộc (dependency loop)
-		return modules.Core.ZoneRepository.GetZoneCatalog(ctx)
-	})
-
 	// 4b. Đăng ký tĩnh loader cho danh sách "zone_list" chứa cả ID và Code để sync gRPC sang ACL
 	cacheengine.Register(registry, "zone_list", 10*time.Minute, func(ctx context.Context, param string) ([]coreEntity.Zone, error) {
 		// [COMMENT]: Truy cập DB lấy toàn bộ list zone, cache 10 phút.
 		return modules.Core.ZoneRepository.ListZones(ctx)
 	})
-
-	// [COMMENT]: Gỡ bỏ toàn bộ Cache Loaders cho các legacy database-backed secrets (đã chuyển dịch sang Vault)
 
 	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC (sử dụng GetPermissionCodesByRoleCode tối ưu hơn)
 	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {

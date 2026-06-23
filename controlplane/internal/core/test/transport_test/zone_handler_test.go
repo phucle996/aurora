@@ -27,8 +27,8 @@ type zoneServiceStub struct {
 func (s *zoneServiceStub) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
 	return []coreEntity.Zone{}, nil
 }
-func (s *zoneServiceStub) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	return []coreEntity.ZoneCatalog{}, nil
+func (s *zoneServiceStub) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
+	return []coreEntity.RPCZone{}, nil
 }
 func (s *zoneServiceStub) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
 	return &coreEntity.ZoneDetail{

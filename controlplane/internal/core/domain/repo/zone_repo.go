@@ -9,7 +9,8 @@ import (
 
 type ZoneRepository interface {
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
-	GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error)
+	// RPCListZones truy vấn tối giản danh sách Zone (4 trường) để tối ưu hóa đồng bộ qua gRPC.
+	RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error)
 	CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error
 	GetZoneByID(ctx context.Context, id uuid.UUID) (*coreEntity.Zone, error)
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)

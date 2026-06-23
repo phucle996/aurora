@@ -143,9 +143,10 @@ sequenceDiagram
 
 ### Sơ đồ nhánh 2 — Opaque Refresh Token (Session Recovery tại ext_authz với Redis Distributed Lock/Cache)
 
-Áp dụng tự động khi phiên làm việc hiện tại (Trinity Credentials) không hợp lệ hoặc đã hết hạn, nhưng Client vẫn giữ `refresh_token` cookie hợp lệ. Khi đó, Envoy chuyển tiếp yêu cầu xác thực đến Rust ACL (ext_authz). 
+Áp dụng tự động khi phiên làm việc hiện tại (Trinity Credentials) không hợp lệ hoặc đã hết hạn, nhưng Client vẫn giữ `refresh_token` cookie hợp lệ. Khi đó, Envoy chuyển tiếp yêu cầu xác thực đến Rust ACL (ext_authz).
 
 Để chống hiện tượng **Thundering Herd** (nhiều requests đồng thời từ client kích hoạt hàng loạt cuộc gọi gRPC và truy vấn DB song song gây tải cho hệ thống - Blood Request), ACL sử dụng cơ chế **Distributed Singleflight** qua Redis L2:
+
 1. **Kiểm tra Cache**: ACL kiểm tra cache kết quả hồi phục `iam:recovery_cache:<token_hash>` trong Redis L2. Nếu có (cache hit), trả về ngay bộ Trinity Credentials mới.
 2. **Chiếm Lock**: Nếu chưa có, ACL thử chiếm lock phân tán `iam:lock:recovery:<token_hash>` (TTL 5s).
    - **Leader (giành được lock)**: Thực hiện cuộc gọi gRPC `VerifyOpaqueRefreshToken` sang Controlplane, ký JWT qua Vault, đăng ký session mới trong Redis, lưu kết quả vào `iam:recovery_cache:<token_hash>` (TTL 5s) và giải phóng lock.
@@ -221,13 +222,13 @@ sequenceDiagram
 
 ### Sơ đồ nhánh 3 — Zone Verification & Token Resigning (Xác Thực & Ký Lại Token Theo Zone tại ACL)
 
-Áp dụng tự động trên mỗi request đi qua Rust ACL (`ext_authz`). Hệ thống kiểm tra Zone được yêu cầu từ Client (qua Cookies hoặc HTTP Headers) để phân giải thông tin Zone, đồng bộ L1 cache, tự động ký lại JWT nếu có sự thay đổi Zone hoạt động, và inject thông tin Zone vào Upstream headers.
+Áp dụng tự động trên mỗi request đi qua Rust ACL (`ext_authz`). Hệ thống kiểm tra Zone được yêu cầu từ Client (qua Cookies hoặc HTTP Headers) để phân giải thông tin Zone, kiểm tra trạng thái hoạt động (active status) đối với User thường, cấm truy cập Global đối với User thường, tự động ký lại JWT nếu có sự thay đổi Zone hoạt động, và inject thông tin Zone vào Upstream headers.
 
 **Các file mã nguồn liên quan (Code References):**
 
-- [acl/src/core/zone.rs](../../acl/src/core/zone.rs): Bộ quản lý `ZoneManager` chứa L1 cache (`code_to_id`, `id_to_code`), Single-Flight locking, và 5 phút Negative cache.
+- [acl/src/core/zone.rs](../../acl/src/core/zone.rs): Bộ quản lý `ZoneManager` chứa L1 cache (`code_to_id`, `id_to_code`, `status`), Single-Flight locking, và cache đồng bộ định kỳ/negative cache.
 - [acl/src/infra/controlplane.rs](../../acl/src/infra/controlplane.rs): Hàm gRPC client `get_zone_list` kết nối trực tiếp đến `ZoneServiceClient` của Controlplane.
-- [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Logic phân giải Zone, so khớp claims, sinh lại JWT qua Vault và inject headers/cookies trong hàm `check`.
+- [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Logic phân giải Zone, kiểm tra trạng thái hoạt động (status == active), chặn quyền Global của User thường, so khớp claims, sinh lại JWT qua Vault và inject headers/cookies trong hàm `check`.
 
 ```mermaid
 sequenceDiagram
@@ -246,11 +247,11 @@ sequenceDiagram
     alt Có chỉ định zone_code hoặc zone_id
         ACL->>RDS: Tra cứu L1 Cache RAM
         alt L1 Cache Hit
-            RDS-->>ACL: Trả về thông tin Zone (ID <-> Code)
+            RDS-->>ACL: Trả về thông tin Zone (ID, Code, Status)
         else L1 Cache Miss / Cần đồng bộ
             RDS->>RDS: Chiếm Single-Flight Lock
             RDS->>CP: gRPC GetZoneList()
-            CP-->>RDS: Trả về danh sách Zone từ RAM Control Plane
+            CP-->>RDS: Trả về danh sách Zone từ Database (Không qua L1 Cache)
             RDS->>RDS: Cập nhật L1 Cache & last_sync
             RDS-->>ACL: Trả về thông tin Zone đã phân giải
         else Zone không tồn tại sau khi gọi gRPC
@@ -262,12 +263,20 @@ sequenceDiagram
     end
 
     alt Thông tin Zone phân giải hợp lệ
-        alt claims.zone_id != resolved_zone_id (User chuyển Zone)
-            ACL->>Vault: Ký lại claims.zone_id mới
-            Vault-->>ACL: Trả về access_token JWT mới
-            Note over ACL: Thêm Set-Cookie (access_token mới, zone_code mới)
-        else JWT khớp nhưng thiếu Cookie zone_code
-            Note over ACL: Thêm Set-Cookie (zone_code mới)
+        alt User thường yêu cầu truy cập Zone "global" hoặc UUID nil
+            ACL-->>Envoy: DENIED 403 Forbidden (Global zone restricted to admins)
+            Envoy-->>UI: HTTP 403 Forbidden
+        else User thường yêu cầu Zone có status != "active"
+            ACL-->>Envoy: DENIED 403 Forbidden (Zone not active)
+            Envoy-->>UI: HTTP 403 Forbidden
+        else Hợp lệ
+            alt claims.zone_id != resolved_zone_id (User chuyển Zone)
+                ACL->>Vault: Ký lại claims.zone_id mới
+                Vault-->>ACL: Trả về access_token JWT mới
+                Note over ACL: Thêm Set-Cookie (access_token mới, zone_code mới)
+            else JWT khớp nhưng thiếu Cookie zone_code
+                Note over ACL: Thêm Set-Cookie (zone_code mới)
+            end
         end
     end
 

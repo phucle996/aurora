@@ -216,7 +216,6 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	policyModule.EngineService.RegisterRateLimitHook(func(policy *policyRateLimit.CompiledPolicy) {
 		middleware.InitRateLimitPolicy(*policy)
 	})
-	middleware.InitZoneAuth(cacheEngine)
 	if err := middleware.InitAdminAPIKeyAuth(cacheEngine); err != nil {
 		return fmt.Errorf("app: init admin api key middleware: %w", err)
 	}

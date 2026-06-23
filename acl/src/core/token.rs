@@ -67,6 +67,12 @@ impl Claims {
             vec![self.role.clone()]
         }
     }
+
+    /// [COMMENT]: Kiểm tra xem user có đặc quyền Admin/SRE hay không dựa trên sub claim
+    pub fn is_admin(&self) -> bool {
+        // [COMMENT]: Chỉ chấp nhận định danh sub == "sre" làm Admin quản trị cao cấp
+        self.sub == "sre"
+    }
 }
 
 pub struct TokenManager {

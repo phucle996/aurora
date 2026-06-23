@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.30.2
-// source: internal/core/transport/rpc/proto/zone.proto
+// source: zone.proto
 
 package proto
 
@@ -117,5 +117,5 @@ var ZoneService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/core/transport/rpc/proto/zone.proto",
+	Metadata: "zone.proto",
 }

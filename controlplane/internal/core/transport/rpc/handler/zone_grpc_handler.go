@@ -20,9 +20,6 @@ import (
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreProto "controlplane/internal/core/transport/rpc/proto"
 	"controlplane/pkg/logger"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // ZoneGRPCHandler tiếp nhận các yêu cầu đồng bộ danh sách Zone qua gRPC.
@@ -41,18 +38,23 @@ func NewZoneGRPCHandler(service coreSvcInterface.ZoneService) *ZoneGRPCHandler {
 
 // GetZoneList trả về danh sách các Zone bao gồm ID và Code phục vụ L1 cache của ACL.
 func (h *ZoneGRPCHandler) GetZoneList(ctx context.Context, req *coreProto.GetZoneListRequest) (*coreProto.GetZoneListResponse, error) {
-	// [COMMENT]: Gọi xuống Service layer để lấy danh sách zone từ cache RAM L1
-	zones, err := h.service.ListZones(ctx)
+	const op = "core.zone.rpc.get_zone_list"
+	// [COMMENT]: Gọi xuống Service layer để lấy danh sách zone tối giản qua rpcListZones
+	zones, err := h.service.RPCListZones(ctx)
 	if err != nil {
-		logger.SysWarnFields("core.zone.rpc", "failed to list zones via gRPC", err, nil)
-		return nil, status.Errorf(codes.Internal, "failed to list zones: %v", err)
+		// [COMMENT]: Sử dụng RPCHandlerWarn (log_type: handler) để ghi nhận lỗi kèm theo trace_id từ context
+		logger.RPCHandlerWarn(ctx, op, err, "failed to list zones via gRPC")
+		return nil, err
 	}
 
 	var pbZones []*coreProto.ZoneEntry
 	for _, z := range zones {
+		// [COMMENT]: Map các trường ID, Code, Status, Name vào ZoneEntry protobuf
 		pbZones = append(pbZones, &coreProto.ZoneEntry{
 			ZoneId:   z.ID.String(),
 			ZoneCode: z.Code,
+			Status:   string(z.Status),
+			Name:     z.Name,
 		})
 	}
 

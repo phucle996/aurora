@@ -8,27 +8,6 @@ BEGIN
         SELECT 1
         FROM pg_type t
         JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'core_secret_status' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE core_secret_status AS ENUM ('pending', 'active', 'retired', 'revoked');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending');
-    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'active');
-    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'retired');
-    EXECUTE format('ALTER TYPE %I.core_secret_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'revoked');
-END
-$$;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE t.typname = 'zone_status' AND n.nspname = current_schema()
     ) THEN
         CREATE TYPE zone_status AS ENUM ('planned', 'active', 'draining', 'maintenance', 'disabled');

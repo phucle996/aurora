@@ -123,7 +123,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 11) Lấy thông tin phiên làm việc hiện tại của Admin: Bảo vệ bởi Admin API Key
 	router.GET("/admin/auth/session",
 		middleware.AdminAPIKeyAuth(),
-		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/session"),
 		module.AdminAuthHandler.Session,
 	)
@@ -144,7 +143,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			middleware.WithInjectAdminAccessKey(),
 			middleware.WithInjectAdminAccessSecret(),
 		),
-		middleware.ZoneOptional(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/auth/refresh"),
 		module.RefreshTokenHandler.AdminRefresh,
 	)

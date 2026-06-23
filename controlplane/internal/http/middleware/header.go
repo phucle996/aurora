@@ -25,7 +25,19 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
+
+// [COMMENT]: ContextWithZoneID chèn Zone ID đã xác thực vào Go context để tầng Service sử dụng.
+func ContextWithZoneID(ctx context.Context, id uuid.UUID) context.Context {
+	return context.WithValue(ctx, constant.ZoneIDCtxKey, id)
+}
+
+// [COMMENT]: GetZoneID trích xuất Zone ID đã xác thực từ Go context.
+func GetZoneID(ctx context.Context) (uuid.UUID, bool) {
+	id, ok := ctx.Value(constant.ZoneIDCtxKey).(uuid.UUID)
+	return id, ok
+}
 
 type aclOptions struct {
 	injectAccessKey     bool
@@ -109,8 +121,13 @@ func ACL(opts ...ACLOption) gin.HandlerFunc {
 			ident.TrackedDeviceID = strings.TrimSpace(c.GetHeader("x-device-id"))
 		}
 
-		// 5. Lưu trữ Identity vào Go standard context
+		// 5. [COMMENT]: Lưu trữ Identity vào Go standard context
 		goCtx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
+		if zoneID != "" {
+			if parsedUUID, err := uuid.Parse(zoneID); err == nil {
+				goCtx = context.WithValue(goCtx, constant.ZoneIDCtxKey, parsedUUID)
+			}
+		}
 		c.Request = c.Request.WithContext(goCtx)
 
 		c.Next()

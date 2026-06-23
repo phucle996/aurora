@@ -100,43 +100,6 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 	apires.RespondCreated(c, nil, "zone created")
 }
 
-// GetZoneCatalog godoc
-// @Summary      Get zone catalog
-// @Description  Lightweight catalog of operational zones (active, draining, maintenance) for Select/Dropdown UI.
-//
-//	Returns only id, code, name — no sensitive status or timestamp fields.
-//
-// @Tags         zones
-// @Produce      json
-// @Success      200 {object} map[string]interface{} "Zone catalog fetched successfully"
-// @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/core/zones/catalog [get]
-// @Router       /api/v1/zones/catalog [get]
-// @Security     UserAuth
-func (h *ZoneHandler) GetZoneCatalog(c *gin.Context) {
-	const op = "core.zone.catalog"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-	defer cancel()
-
-	items, err := h.zoneSvc.GetZoneCatalog(ctx)
-	if err != nil {
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-	rows := make([]gin.H, 0, len(items))
-	for _, item := range items {
-		rows = append(rows, gin.H{
-			"code": item.Code,
-			"name": item.Name,
-		})
-	}
-	apires.RespondSuccess(c, gin.H{"items": rows,
-		"total": len(rows)},
-		"zone catalog fetched",
-	)
-}
-
 // ListZones godoc
 // @Summary      List all zones
 // @Description  Retrieve a list of all infrastructure zones in the system

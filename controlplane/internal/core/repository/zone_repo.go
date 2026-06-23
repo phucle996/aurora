@@ -45,7 +45,7 @@ type ZoneRepoImpl struct {
 	db                                  *pgxpool.Pool
 	schema                              string
 	listZonesQuery                      string
-	getZoneCatalogQuery                 string
+	rpcListZonesQuery                   string
 	createZoneQuery                     string
 	getZoneByIDQuery                    string
 	getZoneDetailByIDQuery              string
@@ -69,11 +69,11 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			FROM %s.zones 
 			ORDER BY created_at DESC
 		`, schema),
-		getZoneCatalogQuery: fmt.Sprintf(`
-			SELECT code, name 
+		rpcListZonesQuery: fmt.Sprintf(`
+			// [COMMENT]: Chỉ SELECT 4 trường id, code, name, status để tối ưu hiệu năng truyền tải
+			SELECT id, code, name, status 
 			FROM %s.zones 
-			WHERE status IN ('active') 
-			ORDER BY code ASC
+			ORDER BY created_at DESC
 		`, schema),
 		createZoneQuery: fmt.Sprintf(`
 			INSERT INTO %s.zones (id, code, name, location, description, status, created_at, updated_at) 
@@ -187,24 +187,36 @@ func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	return out, rows.Err()
 }
 
-// GetZoneCatalog trả danh sách zone catalog tối giản phục vụ Select/Dropdown UI.
-func (r *ZoneRepoImpl) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	rows, err := r.db.Query(ctx, r.getZoneCatalogQuery)
+// RPCListZones lấy danh sách các zone tối giản chỉ bao gồm ID, Code, Name, Status.
+// Phù hợp sử dụng cho các luồng hot-path RPC phục vụ Edge Gateway/ACL Service.
+func (r *ZoneRepoImpl) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
+	// Thực hiện truy vấn qua rpcListZonesQuery đã biên dịch trước
+	rows, err := r.db.Query(ctx, r.rpcListZonesQuery)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := make([]coreEntity.ZoneCatalog, 0)
+	out := make([]coreEntity.RPCZone, 0)
 	for rows.Next() {
-		var item coreEntity.ZoneCatalog
-		if err := rows.Scan(&item.Code, &item.Name); err != nil {
+		var id uuid.UUID
+		var code string
+		var name string
+		var status string
+		// Chỉ scan 4 trường dữ liệu tối giản
+		if err := rows.Scan(&id, &code, &name, &status); err != nil {
 			return nil, err
 		}
-		out = append(out, item)
+		out = append(out, coreEntity.RPCZone{
+			ID:     id,
+			Code:   code,
+			Name:   name,
+			Status: coreEntity.ZoneStatus(status),
+		})
 	}
 	return out, rows.Err()
 }
+
 
 // CreateZone khởi tạo Zone mới kèm theo các services cấu hình trong cùng một transaction.
 func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
@@ -361,7 +373,6 @@ func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, er
 	}
 	return deletedCode, nil
 }
-
 
 // HasEnabledZoneServicesByZone kiểm tra xem Zone hiện tại có dịch vụ nào đang được kích hoạt hay không.
 func (r *ZoneRepoImpl) HasEnabledZoneServicesByZone(ctx context.Context, zoneID uuid.UUID) (bool, error) {

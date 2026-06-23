@@ -28,10 +28,20 @@ func (f *fakeZoneRepo) ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	}
 	return []coreEntity.Zone{*f.zone}, nil
 }
-func (f *fakeZoneRepo) GetZoneCatalog(ctx context.Context) ([]coreEntity.ZoneCatalog, error) {
-	return []coreEntity.ZoneCatalog{}, nil
-}
 
+func (f *fakeZoneRepo) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
+	if f.zone == nil {
+		return []coreEntity.RPCZone{}, nil
+	}
+	return []coreEntity.RPCZone{
+		{
+			ID:     f.zone.ID,
+			Code:   f.zone.Code,
+			Name:   f.zone.Name,
+			Status: f.zone.Status,
+		},
+	}, nil
+}
 func (f *fakeZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
 	return nil
 }

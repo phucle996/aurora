@@ -24,6 +24,7 @@ package coreRpcHandler
 
 import (
 	"context"
+	"fmt"
 
 	coreSvcInterface "controlplane/internal/core/domain/service"
 	coreProto "controlplane/internal/core/transport/rpc/proto"
@@ -56,7 +57,8 @@ func (h *BackpressureGRPCHandler) ReportBackpressure(ctx context.Context, req *c
 	// Step 2: Gọi xuống Service layer để xử lý logic lưu trữ L2 và phát tán trạng thái.
 	err := h.service.ReportBackpressure(ctx, req.GetZoneId(), req.GetQueueLen(), req.GetPendingLen(), req.GetCongested(), req.GetEpoch(), req.GetCongestionRate())
 	if err != nil {
-		logger.SysWarnFields("core.backpressure.rpc", "failed to process backpressure report via gRPC", err, logger.Fields{"zone": req.GetZoneId()})
+		// [COMMENT]: Sử dụng RPCHandlerWarnWithFields (log_type: handler) để tự động đính kèm trace_id trích xuất từ metadata
+		logger.RPCHandlerWarn(ctx, "core.backpressure.rpc", err, fmt.Sprintf("failed to process backpressure zone %s report via gRPC", req.GetZoneId()))
 		return nil, status.Errorf(codes.Internal, "failed to process backpressure report: %v", err)
 	}
 

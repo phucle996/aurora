@@ -118,6 +118,20 @@ impl Authorization for ExtAuthzService {
                     &format!("Intercepting: {} {}", method, path),
                 );
 
+                // [COMMENT]: Gọi handle_zone_catalog từ module zone_catalog để xử lý API danh mục tại biên
+                if let Some(catalog_res) = crate::service::zone_catalog::handle_zone_catalog(
+                    &self.session_mgr,
+                    &self.token_mgr,
+                    &self.zone_mgr,
+                    client_headers,
+                    &method,
+                    &path,
+                )
+                .await
+                {
+                    return catalog_res;
+                }
+
                 // [COMMENT]: Cho phép Bypass (Không kiểm tra) đối với các endpoint Public cấu hình từ môi trường
                 // Sử dụng self.config.bypass_endpoints để kiểm tra tiền tố đường dẫn (starts_with)
                 if self
@@ -239,12 +253,14 @@ impl Authorization for ExtAuthzService {
 
                 let mut resolved_zone_id = None;
                 let mut resolved_zone_code = None;
+                let mut resolved_zone_status = None;
 
                 if let Some(ref code) = requested_zone_code {
-                    // Phân giải zone code thành zone id
-                    if let Some(id) = self.zone_mgr.resolve_code_to_id(code).await {
+                    // [COMMENT]: Phân giải zone_code thành zone_id và status
+                    if let Some((id, status)) = self.zone_mgr.resolve_code_to_id_and_status(code).await {
                         resolved_zone_id = Some(id);
                         resolved_zone_code = Some(code.clone());
+                        resolved_zone_status = Some(status);
                     } else {
                         // Gửi zone_code không hợp lệ -> chặn request ngay
                         Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Requested zone code not found: {}", code));
@@ -253,10 +269,11 @@ impl Authorization for ExtAuthzService {
                         )));
                     }
                 } else if let Some(ref id) = requested_zone_id {
-                    // Phân giải zone id thành zone code
-                    if let Some(code) = self.zone_mgr.resolve_id_to_code(id).await {
+                    // [COMMENT]: Phân giải zone_id thành zone_code và status
+                    if let Some((code, status)) = self.zone_mgr.resolve_id_to_code_and_status(id).await {
                         resolved_zone_id = Some(id.clone());
                         resolved_zone_code = Some(code);
+                        resolved_zone_status = Some(status);
                     } else {
                         // Gửi zone_id không hợp lệ -> chặn request
                         Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Requested zone ID not found: {}", id));
@@ -265,10 +282,32 @@ impl Authorization for ExtAuthzService {
                         )));
                     }
                 } else if let Some(ref claims_zone_id) = claims.zone_id {
-                    // Fallback về zone trong JWT claims nếu không có tham số request cụ thể
-                    if let Some(code) = self.zone_mgr.resolve_id_to_code(claims_zone_id).await {
+                    // [COMMENT]: Fallback về zone trong JWT claims nếu không có tham số request cụ thể
+                    if let Some((code, status)) = self.zone_mgr.resolve_id_to_code_and_status(claims_zone_id).await {
                         resolved_zone_id = Some(claims_zone_id.clone());
                         resolved_zone_code = Some(code);
+                        resolved_zone_status = Some(status);
+                    }
+                }
+
+                // [COMMENT]: Thực hiện xác thực các ràng buộc bảo mật Zone đối với người dùng thông thường
+                if let (Some(ref zone_id), Some(ref zone_code), Some(ref zone_status)) = (&resolved_zone_id, &resolved_zone_code, &resolved_zone_status) {
+                    if !claims.is_admin() {
+                        // 1. Chặn user thường vào zone global (zone_code = "global" hoặc nil UUID)
+                        if zone_code == "global" || zone_id == "00000000-0000-0000-0000-000000000000" {
+                            Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Forbidden global zone access for non-admin: user_id={}", claims.sub));
+                            return Ok(Response::new(CheckResponse::with_status(
+                                Status::permission_denied("Forbidden access to global zone"),
+                            )));
+                        }
+
+                        // 2. Chặn user thường vào zone không hoạt động (status != "active")
+                        if zone_status != "active" {
+                            Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Forbidden access to inactive zone ({} is {}): user_id={}", zone_code, zone_status, claims.sub));
+                            return Ok(Response::new(CheckResponse::with_status(
+                                Status::permission_denied("Forbidden access to inactive zone"),
+                            )));
+                        }
                     }
                 }
 
