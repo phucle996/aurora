@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	coreMetrics "controlplane/internal/core/metrics"
 	iamMetrics "controlplane/internal/iam/metrics"
 	mailMetrics "controlplane/internal/mail/metrics"
 	"controlplane/pkg/constant"
@@ -129,6 +130,7 @@ func InitOTel(ctx context.Context, cfg *OTelConfig, serviceName string) (*OTel, 
 	}
 	iamMetrics.Init(mp)
 	mailMetrics.Init(mp)
+	coreMetrics.Init(mp)
 
 	propagator := propagation.TraceContext{}
 	otel.SetTextMapPropagator(propagator)

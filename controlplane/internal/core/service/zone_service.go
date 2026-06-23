@@ -43,21 +43,36 @@ func NewZoneService(
 }
 
 func (s *ZoneService) ListZones(ctx context.Context) ([]coreEntity.Zone, error) {
-	return s.repo.ListZones(ctx)
+	// [COMMENT]: Gọi xuống repository ListZones và đo lường thời gian thực thi downstream
+	start := time.Now()
+	zones, err := s.repo.ListZones(ctx)
+	duration := time.Since(start)
+	if err != nil {
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListZones", coreMetric.OutcomeFailure, duration, err)
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		return nil, err
+	}
+	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListZones", coreMetric.OutcomeSuccess, duration, nil)
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	return zones, nil
 }
 
 // RPCListZones phục vụ luồng gRPC sync sang ACL chỉ lấy 4 thuộc tính (ID, Code, Name, Status).
 // Triển khai này giúp tối ưu hóa hiệu năng, giảm dung lượng payload khi đồng bộ danh sách Zone qua biên.
 func (s *ZoneService) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
-	// [COMMENT]: Gọi xuống repository RPCListZones chuyên biệt để tránh tải các trường không cần thiết
+	// [COMMENT]: Gọi xuống repository RPCListZones chuyên biệt và đo lường thời gian thực thi downstream
+	start := time.Now()
 	zones, err := s.repo.RPCListZones(ctx)
+	duration := time.Since(start)
 	if err != nil {
-		// [COMMENT]: Ghi nhận lỗi truy vấn cơ sở dữ liệu
-		coreMetric.ObserveZoneOperation("rpc_list_zones", coreTaxonomy.OutcomeRepoFailed)
+		// [COMMENT]: Ghi nhận lỗi truy vấn cơ sở dữ liệu kèm thời gian thực thi
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "RPCListZones", coreMetric.OutcomeFailure, duration, err)
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
-	// [COMMENT]: Ghi nhận truy vấn cơ sở dữ liệu thành công
-	coreMetric.ObserveZoneOperation("rpc_list_zones", coreTaxonomy.OutcomeRepoSuccess)
+	// [COMMENT]: Ghi nhận truy vấn cơ sở dữ liệu thành công kèm thời gian thực thi
+	coreMetric.Downstream(ctx, coreMetric.KindRepo, "RPCListZones", coreMetric.OutcomeSuccess, duration, nil)
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return zones, nil
 }
 
@@ -66,6 +81,7 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	now := time.Now().UTC()
 	zoneID, err := uuid.NewV7()
 	if err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomePreConditionFailed)
 		return apperr.Wrap(coreTaxonomy.ErrZoneInvalidInput, err)
 	}
 	zone := coreEntity.Zone{
@@ -88,25 +104,27 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 	}
 
 	if err := s.repo.CreateZone(ctx, zone, svcs); err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
 
 	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog phục vụ API public, không còn dùng cache cho zone_list nữa
 	s.l1Registry.L1.Delete("zone_catalog")
-	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
 
 	// [COMMENT]: Phát tán thông báo xóa cache zone_catalog tới các replica khác qua pub/sub
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
 			} else {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
 			}
 		}
 	}()
 
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }
 
@@ -114,8 +132,10 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
 	detail, err := s.repo.GetZoneDetailByID(ctx, id)
 	if err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return detail, nil
 }
 
@@ -139,25 +159,27 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	allowedOld := append(allowed[toStatus], toStatus)
 	err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
 	if err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
 
 	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog cho API public
 	s.l1Registry.L1.Delete("zone_catalog")
-	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
 
 	// [COMMENT]: Phát tán thông báo xóa cache zone_catalog tới các replica khác
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
 			} else {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
 			}
 		}
 	}()
 
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }
 
@@ -165,35 +187,38 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 	_, err := s.repo.DeleteZone(ctx, zoneID)
 	if err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
 
 	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog phục vụ API public
 	s.l1Registry.L1.Delete("zone_catalog")
-	coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+	coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
 
 	// [COMMENT]: Phát tán thông báo xóa cache zone_catalog tới các replica khác
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
 			} else {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
 			}
 		}
 	}()
 
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }
 
 // ListZoneServices trả danh sách tất cả zone services của một zone.
 func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
-
 	svcs, err := s.repo.ListZoneServicesByZoneID(ctx, zoneID)
 	if err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return svcs, nil
 }
 
@@ -201,26 +226,28 @@ func (s *ZoneService) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([
 func (s *ZoneService) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	svc, _, err := s.repo.UpsertZoneServiceByZoneAndType(ctx, zoneID, serviceType, enabled)
 	if err != nil {
+		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
 
 	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog phục vụ API public
 	if ok := s.l1Registry.L1.Delete("zone_catalog"); ok {
-		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateSuccess)
+		coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
 	} else {
-		coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1InvalidateFailed)
+		coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeFailure, 0, nil)
 	}
 
 	detachedCtx := context.WithoutCancel(ctx)
 	go func() {
 		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
 			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutFailed)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
 			} else {
-				coreMetric.ObserveZoneOperation("cache", coreTaxonomy.OutcomeL1FanoutSuccess)
+				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
 			}
 		}
 	}()
 
+	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return svc, nil
 }

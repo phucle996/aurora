@@ -177,4 +177,5 @@ sequenceDiagram
 ## 🛠️ 6. Nhật ký kiểm tra (Execution Log & Audit Verification)
 
 - **Go controlplane**: Build thành công và pass toàn bộ **157/157 tests**. Các API GetZoneCatalog cũ đã được gỡ bỏ hoàn toàn khỏi Controller/Router và mock tests để giải phóng bộ nhớ.
+- **Metrics & Telemetry**: Hợp nhất toàn bộ metrics của Core Service & Downstream vào duy nhất file `controlplane/internal/core/metrics/metrics.go` chuẩn hóa theo mô hình IAM. Xóa bỏ hoàn toàn file chứa danh sách outcome dư thừa `outcome.go` để tối giản cấu trúc thư mục.
 - **Rust ACL (ext_authz)**: Cấu hình intercept thành công hai endpoint `/admin/core/zones/catalog` và `/api/v1/zones/catalog`. Biên dịch ổn định không cảnh báo (Zero Warnings).
