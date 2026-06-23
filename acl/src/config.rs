@@ -47,6 +47,8 @@ pub struct Config {
     pub controlplane_grpc_client_key: Option<String>,
     // [COMMENT]: Danh sách các endpoint được phép bypass không cần kiểm tra token
     pub bypass_endpoints: Vec<String>,
+    // [COMMENT]: Domain công khai của hệ thống để gắn kết session cookie (đọc từ APP_PUBLIC_DOMAIN)
+    pub app_public_domain: String,
 }
 
 impl Config {
@@ -141,6 +143,9 @@ impl Config {
                 ]
             });
 
+        // [COMMENT]: Nạp domain công khai từ biến môi trường APP_PUBLIC_DOMAIN
+        let app_public_domain = env::var("APP_PUBLIC_DOMAIN").unwrap_or_default();
+
         Ok(Config {
             grpc_port,
             redis_url,
@@ -154,6 +159,7 @@ impl Config {
             controlplane_grpc_client_cert,
             controlplane_grpc_client_key,
             bypass_endpoints,
+            app_public_domain,
         })
     }
 }

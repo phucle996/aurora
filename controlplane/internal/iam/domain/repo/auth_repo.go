@@ -3,7 +3,7 @@ package iamRepoInterface
 import (
 	"context"
 
-	"controlplane/internal/iam/domain/entity"
+	iamEntity "controlplane/internal/iam/domain/entity"
 )
 
 type AuthRepository interface {

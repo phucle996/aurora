@@ -12,7 +12,7 @@ import (
 type IamOutboxRecord struct {
 	ID                   int64      `db:"id"`
 	EventID              uuid.UUID  `db:"event_id"`
-	ZoneID               uuid.UUID  `db:"zone_id"`
+	RoutingScope         string     `db:"routing_scope"`
 	JobTopic             string     `db:"job_topic"`
 	Payload              []byte     `db:"payload"` // Dữ liệu nhị phân serialized Protobuf
 	UserID               string     `db:"user_id"`
@@ -33,7 +33,7 @@ func IamOutboxEntityToModel(e iamEntity.IamOutboxRecord) IamOutboxRecord {
 	return IamOutboxRecord{
 		ID:                   e.ID,
 		EventID:              e.EventID,
-		ZoneID:               e.ZoneID,
+		RoutingScope:         e.RoutingScope,
 		JobTopic:             e.JobTopic,
 		Payload:              e.Payload,
 		UserID:               e.UserID,
@@ -54,7 +54,7 @@ func IamOutboxModelToEntity(m IamOutboxRecord) iamEntity.IamOutboxRecord {
 	return iamEntity.IamOutboxRecord{
 		ID:                   m.ID,
 		EventID:              m.EventID,
-		ZoneID:               m.ZoneID,
+		RoutingScope:         m.RoutingScope,
 		JobTopic:             m.JobTopic,
 		Payload:              m.Payload,
 		UserID:               m.UserID,

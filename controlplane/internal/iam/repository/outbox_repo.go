@@ -27,7 +27,7 @@ func NewIamOutboxRepository(db *pgxpool.Pool, cfg *config.Config) iamRepoInterfa
 		schema: schema,
 		saveQuery: fmt.Sprintf(`
 			INSERT INTO %s.iam_outbox_records (
-				event_id, zone_id, job_topic, payload, user_id, status,
+				event_id, routing_scope, job_topic, payload, user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -43,7 +43,7 @@ func (r *IamOutboxRepoImpl) Create(ctx context.Context, record *iamEntity.IamOut
 
 	err := r.db.QueryRow(ctx, r.saveQuery,
 		model.EventID,
-		model.ZoneID,
+		model.RoutingScope,
 		model.JobTopic,
 		model.Payload,
 		model.UserID,

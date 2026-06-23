@@ -29,8 +29,8 @@ type MailOutboxRecord struct {
 	ID int64
 	// EventID: UUID định danh duy nhất toàn cục của sự kiện, dùng làm Idempotency Key chống trùng lặp giữa các node
 	EventID uuid.UUID
-	// ZoneID: UUID phân vùng tài nguyên (Multi-tenancy), xác định Redis Stream đích của dataplane
-	ZoneID uuid.UUID
+	// RoutingScope: Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
+	RoutingScope string
 	// JobTopic: Tên loại công việc hoặc topic sự kiện (ví dụ: "mail.test_connection")
 	JobTopic string
 	// Payload: Nội dung nhị phân (Protobuf) chứa tham số cấu hình hoặc dữ liệu chi tiết của công việc

@@ -14,6 +14,7 @@ use utils::parse_pg_config;
 pub struct CdcStreamer {
     config: Config,
     redis_client: redis::Client,
+    active_zones_cache: tokio::sync::Mutex<Option<(Vec<String>, std::time::Instant)>>,
 }
 
 impl CdcStreamer {
@@ -22,6 +23,7 @@ impl CdcStreamer {
         Self {
             config,
             redis_client,
+            active_zones_cache: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -167,7 +169,8 @@ impl CdcStreamer {
         redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let event_id = fields.get("event_id").cloned().unwrap_or_default();
-        let zone_id = fields.get("zone_id").cloned().unwrap_or_default();
+        // Trích xuất routing_scope thay vì zone_id
+        let routing_scope = fields.get("routing_scope").cloned().unwrap_or_default();
         let job_topic = fields.get("job_topic").cloned().unwrap_or_default();
         let payload_hex = fields.get("payload").cloned().unwrap_or_default();
         let job_version_str = fields.get("job_version").cloned().unwrap_or_default();
@@ -180,8 +183,8 @@ impl CdcStreamer {
         let trace_id_hex = trace_id_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
         let idle_str = fields.get("idle").cloned().unwrap_or_default();
 
-        if event_id.is_empty() || zone_id.is_empty() || job_topic.is_empty() {
-            Logger::sys_warn("cdc.insert", "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng", "Missing event_id/zone_id/job_topic");
+        if event_id.is_empty() || routing_scope.is_empty() || job_topic.is_empty() {
+            Logger::sys_warn("cdc.insert", "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng", "Missing event_id/routing_scope/job_topic");
             return Ok(());
         }
 
@@ -201,7 +204,7 @@ impl CdcStreamer {
         let trace_id_hex_clone = trace_id_hex.clone();
         let event_id_clone = event_id.clone();
         let job_topic_clone = job_topic.clone();
-        let zone_id_clone = zone_id.clone();
+        let routing_scope_clone = routing_scope.clone();
         let payload_hex_clone = payload_hex.clone();
         let job_version_str_clone = job_version_str.clone();
         let resource_id_clone = resource_id.clone();
@@ -223,7 +226,7 @@ impl CdcStreamer {
             let mut span = tracer.start_with_context(format!("cdc.push.{}", job_topic_clone), &cx);
 
             span.set_attribute(opentelemetry::KeyValue::new("job_id", event_id_clone.clone()));
-            span.set_attribute(opentelemetry::KeyValue::new("zone_id", zone_id_clone.clone()));
+            span.set_attribute(opentelemetry::KeyValue::new("routing_scope", routing_scope_clone.clone()));
 
             // Giải mã cột nhị phân (BYTEA) từ chuỗi đại diện hex truyền qua WAL
             let payload_bytes = match decode_pg_bytea(&payload_hex_clone) {
@@ -238,8 +241,31 @@ impl CdcStreamer {
             let payload_schema_version = payload_schema_version_str_clone.parse::<u32>().unwrap_or(1);
             let idle = if idle_str_clone.is_empty() { None } else { idle_str_clone.parse::<u32>().ok() };
 
-            // Định tuyến dynamic stream key theo zone_id
-            let stream_key = format!("jobs:{}", zone_id_clone);
+            // Phân giải routing_scope để xác định target_zone_id
+            let target_zone_id = if routing_scope_clone == "platform" || routing_scope_clone == "global" {
+                // Định tuyến ngẫu nhiên tới các zone hoạt động để phân phối tải (Load Balancing)
+                match self.resolve_platform_zone().await {
+                    Ok(zone) => {
+                        zone
+                    }
+                    Err(e) => {
+                        span.record_error(e.as_ref());
+                        Logger::sys_error("cdc.insert", "CdcStreamer: Không thể phân giải platform zone", &e.to_string());
+                        return Err(e);
+                    }
+                }
+            } else if routing_scope_clone.starts_with("zone:") {
+                // Trích xuất zone UUID sau tiền tố 'zone:'
+                routing_scope_clone.strip_prefix("zone:").unwrap_or(&routing_scope_clone).to_string()
+            } else {
+                // Tương thích ngược: Nếu lưu trực tiếp UUID
+                routing_scope_clone.clone()
+            };
+
+            span.set_attribute(opentelemetry::KeyValue::new("zone_id", target_zone_id.clone()));
+
+            // Định tuyến dynamic stream key theo target_zone_id
+            let stream_key = format!("jobs:{}", target_zone_id);
 
             // Tinh chỉnh tối ưu hóa hiệu năng (HA Performance): 
             // Thay vì bọc JSON gây chi phí Serde và phình to mảng bytes nhị phân,
@@ -285,6 +311,60 @@ impl CdcStreamer {
         }).await?;
 
         Ok(())
+    }
+
+    /// Lấy danh sách các zone active và chọn ngẫu nhiên một zone (có tích hợp caching 30 giây tránh quá tải DB)
+    async fn resolve_platform_zone(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let mut cache = self.active_zones_cache.lock().await;
+        let now = std::time::Instant::now();
+        
+        let zones = if let Some((ref zones, ref updated_at)) = *cache {
+            if now.duration_since(*updated_at) < std::time::Duration::from_secs(30) {
+                zones.clone()
+            } else {
+                let fresh_zones = self.fetch_active_zones_from_db().await?;
+                *cache = Some((fresh_zones.clone(), now));
+                fresh_zones
+            }
+        } else {
+            let fresh_zones = self.fetch_active_zones_from_db().await?;
+            *cache = Some((fresh_zones.clone(), now));
+            fresh_zones
+        };
+
+        if zones.is_empty() {
+            return Err("No active zones found in core.zones".into());
+        }
+
+        // Lấy vị trí ngẫu nhiên bằng cách modulo thời gian mili-giây hiện tại (Zero-dependency random)
+        let index = (chrono::Utc::now().timestamp_millis() as usize) % zones.len();
+        Ok(zones[index].clone())
+    }
+
+    /// Truy vấn trực tiếp từ bảng core.zones các zone đang có trạng thái active
+    async fn fetch_active_zones_from_db(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        use tokio_postgres::NoTls;
+        
+        // Thiết lập kết nối tạm thời không TLS
+        let (pg_client, connection) = tokio_postgres::connect(&self.config.database_url, NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                Logger::sys_error("cdc.postgres", "CdcStreamer: Lỗi luồng kết nối Postgres", &e.to_string());
+            }
+        });
+
+        // Query danh sách zone_id UUID dưới dạng String
+        let rows = pg_client
+            .query("SELECT id::text FROM core.zones WHERE status = 'active'", &[])
+            .await?;
+
+        let mut active_zones = Vec::new();
+        for row in rows {
+            let zone_id: String = row.get(0);
+            active_zones.push(zone_id);
+        }
+        
+        Ok(active_zones)
     }
 }
 

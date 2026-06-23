@@ -115,7 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session_service = SessionServiceImpl::new(
         session_mgr.clone(),
         token_mgr.clone(),
-        config.session_ttl_secs,
+        zone_mgr.clone(),
+        config.clone(),
     );
 
     let auth_service = AuthServiceImpl::new(

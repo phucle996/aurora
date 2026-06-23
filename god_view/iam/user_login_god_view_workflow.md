@@ -44,16 +44,18 @@ graph TD
     UI -- "POST /api/v1/auth/login" --> Envoy
     Envoy -- "Forward Request" --> CP
     CP -- "1. Verify password & Load device" --> DB
-    CP -- "2. Issue Session (gRPC)" --> ACL
+    CP -- "2. Release Trinity Session (gRPC)" --> ACL
     ACL -- "3. Sign token claims (HMAC-SHA256)" --> Vault
     ACL -- "4. Write Protobuf UserAccessSession" --> Redis
-    CP -- "5. Set HttpOnly / Secure Cookies" --> UI
+    ACL -- "5. Return Set-Cookie Headers via gRPC Metadata" --> CP
+    CP -- "6. Forward Set-Cookie Headers (HTTP 204)" --> Envoy
+    Envoy -- "Set HttpOnly / Secure Cookies" --> UI
 ```
 
 ### 🚧 Biên Và Ràng Buộc (Boundaries & Constraints)
 
 - **Đầu Vào (Inputs)**: JSON Payload (`username`, `password`, `device_public_key`, `trust_device`, `zone_code`).
-- **Đầu Ra (Outputs)**: HTTP `200 OK` thiết lập 5 Cookies mật mã (`access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`) cùng header `X-Client-Device-Id`.
+- **Đầu Ra (Outputs)**: HTTP `204 No Content` thiết lập 5 Cookies mật mã (`access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`) thông qua việc forward `Set-Cookie` headers từ gRPC metadata của ACL.
 - **Ngăn Chặn Direct Call**: Việc truy xuất thông tin thiết bị và đăng ký thiết bị bắt buộc thông qua `DeviceService` để đảm bảo ranh giới kiến trúc (Architectural Boundaries), tuyệt đối không cho phép `AuthService` truy cập trực tiếp repository của thiết bị.
 
 ---
@@ -200,7 +202,7 @@ sequenceDiagram
     Note over Service: Xác thực zoneID là UUID hợp lệ
 
     Note over Service, ACL: Bắt đầu giao tiếp gRPC xuyên biên giới mạng
-    Service->>ACL: IssueTrinitySession(ctx, req)
+    Service->>ACL: ReleaseTrinitySession(ctx, req)
     
     ACL->>Vault: Ký Access Claims (Transit Engine - HMAC-SHA256)
     Vault-->>ACL: Trả về signed JWT Access Token
@@ -208,7 +210,7 @@ sequenceDiagram
     ACL->>RDS: Pipeline: SET key session & SADD index set (Lưu runtime session)
     RDS-->>ACL: Trả về kết quả ghi Redis (OK/Err)
     
-    ACL-->>Service: Trả về Trinity credentials (gRPC Response)
+    ACL-->>Service: Trả về gRPC Metadata (chứa Set-Cookie headers) + Response trống
     
     alt Ghi Redis L2 hoặc ký Vault thất bại (gRPC Err)
         Note over Service: Trigger Rollback ngăn chặn session mồ côi
@@ -218,9 +220,9 @@ sequenceDiagram
         Handler-->>UI: HTTP 503 Service Unavailable
     end
     
-    Service->>Service: Đóng gói Cookies (HTTP Headers)
-    Service-->>Handler: Trả về LoginResult
-    Handler-->>UI: Thiết lập 5 Secure Cookies + HTTP 200 OK
+    Service->>Service: Trích xuất header Set-Cookie từ gRPC Metadata
+    Service-->>Handler: Trả về LoginResult (chứa ResponseHeaders)
+    Handler-->>UI: Forward Set-Cookie Headers + HTTP 204 No Content
 ```
 
 #### 2. Ranh giới & Ràng buộc (Boundary & Constraints)
@@ -235,10 +237,10 @@ sequenceDiagram
 
 #### 4. Hợp đồng dữ liệu (Data Contract - Phase 2)
 
-##### gRPC Request: `iamproto.IssueTrinitySessionRequest`
+##### gRPC Request: `iamproto.ReleaseTrinitySessionRequest`
 
 ```protobuf
-message IssueTrinitySessionRequest {
+message ReleaseTrinitySessionRequest {
   string user_id = 1;
   string device_id = 2;
   string client_device_id = 3;
@@ -253,16 +255,11 @@ message IssueTrinitySessionRequest {
 }
 ```
 
-##### gRPC Response: `iamproto.IssueTrinitySessionResponse`
+##### gRPC Response: `iamproto.ReleaseTrinitySessionResponse`
 
 ```protobuf
-message IssueTrinitySessionResponse {
-  string access_token = 1;
-  string refresh_token = 2;
-  string access_key = 3;
-  string access_secret = 4;
-  string client_device_id = 5;
-  int64 expires_in_secs = 6;
+message ReleaseTrinitySessionResponse {
+  bool released = 1;               // Trả về true nếu khởi tạo phiên thành công
 }
 ```
 

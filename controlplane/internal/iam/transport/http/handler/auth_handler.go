@@ -154,7 +154,7 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Param payload body requestdto.LoginRequest true "Login payload"
-// @Success 200 {object} map[string]interface{} "login successful"
+// @Success 204 "login successful"
 // @Failure 400 {object} map[string]interface{} "invalid request"
 // @Failure 401 {object} map[string]interface{} "invalid credentials"
 // @Failure 403 {object} map[string]interface{} "please check your email to verify account"
@@ -203,7 +203,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		clientDeviceIDHint = uuid.Nil
 	}
 
-	result, err := h.authSvc.Login(ctx, iamEntity.LoginRequest{
+	err = h.authSvc.Login(ctx, iamEntity.LoginRequest{
 		Username:        username,
 		Password:        password,
 		DevicePublicKey: devicePublicKey,
@@ -233,67 +233,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		}
 	}
 
-	secure := isSecureRequest(c)
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.AccessTokenName,
-		Value:    result.AccessToken,
-		Path:     "/",
-		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  result.AccessExpiresAt,
-		MaxAge:   int(time.Until(result.AccessExpiresAt).Seconds()),
-	})
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.RefreshTokenName,
-		Value:    result.RefreshToken,
-		Path:     "/",
-		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  result.RefreshExpiresAt,
-		MaxAge:   int(time.Until(result.RefreshExpiresAt).Seconds()),
-	})
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.AccessKeyName,
-		Value:    result.AccessKey,
-		Path:     "/",
-		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  result.AccessExpiresAt,
-		MaxAge:   int(time.Until(result.AccessExpiresAt).Seconds()),
-	})
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.AccessSecretName,
-		Value:    result.AccessSecret,
-		Path:     "/",
-		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  result.AccessExpiresAt,
-		MaxAge:   int(time.Until(result.AccessExpiresAt).Seconds()),
-	})
-	cdidExpires := time.Now().UTC().Add(365 * 24 * time.Hour)
-	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookie.ClientDeviceIDName,
-		Value:    result.ClientDeviceID,
-		Path:     "/",
-		Domain:   strings.TrimSpace(h.cfg.App.PublicDomain),
-		HttpOnly: false,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  cdidExpires,
-		MaxAge:   int(time.Until(cdidExpires).Seconds()),
-	})
-	c.Header("X-Client-Device-Id", result.ClientDeviceID)
-
 	logger.HandlerInfo(c, op, "login successful")
-	apires.RespondSuccess(c, nil, "login successful")
+	// [COMMENT]: Vì toàn bộ logic xác thực và quản lý phiên đã được ủy quyền cho ACL service,
+	// HTTP handler ở tầng Controlplane sau khi thiết lập xong bộ cookie xác thực chỉ cần trả về HTTP 204 (No Content).
+	c.Status(http.StatusNoContent)
 }
 
 // Session godoc

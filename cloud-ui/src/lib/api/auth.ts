@@ -5,6 +5,8 @@ export type LoginRequest = {
   password: string;
   device_public_key: string;
   trust_device: boolean;
+  // [COMMENT]: zone_code đại diện cho zone mà user lựa chọn để đăng nhập (ví dụ: "vn", "sg")
+  zone_code: string;
 };
 
 export type RegisterRequest = {

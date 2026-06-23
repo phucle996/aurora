@@ -59,7 +59,7 @@ func (m *rbacRepoMock) GetRoleByID(ctx context.Context, id uuid.UUID) (*iamEntit
 }
 func (m *rbacRepoMock) CreateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
 func (m *rbacRepoMock) UpdateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
-func (m *rbacRepoMock) DeleteRole(ctx context.Context, id uuid.UUID) error        { return nil }
+func (m *rbacRepoMock) DeleteRole(ctx context.Context, id uuid.UUID) error         { return nil }
 func (m *rbacRepoMock) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
 	return nil, nil
 }

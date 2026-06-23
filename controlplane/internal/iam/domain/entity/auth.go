@@ -51,18 +51,6 @@ type LoginRequest struct {
 	ZoneCode        string
 }
 
-type LoginResult struct {
-	AccessToken              string
-	RefreshToken             string
-	AccessKey                string
-	AccessSecret             string
-	TrackedDeviceID          string
-	ClientDeviceID           string
-	ClientDeviceIDProvenance string
-	AccessExpiresAt          time.Time
-	RefreshExpiresAt         time.Time
-}
-
 // VerifySessionResult chứa thông tin phản hồi sau khi xác thực Trinity session thành công
 type VerifySessionResult struct {
 	Valid  bool

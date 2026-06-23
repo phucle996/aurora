@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS iam_outbox_records (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID UNIQUE NOT NULL, -- UUID định danh duy nhất của sự kiện (Idempotency Key)
-    zone_id UUID NOT NULL, -- Định danh zone phục vụ đa thuê bao (Multi-tenancy)
+    routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
     job_topic VARCHAR(100) NOT NULL, -- Tên topic/tác vụ (e.g. mail.system.verify_account)
     payload BYTEA NOT NULL, -- Dữ liệu nhị phân serialized dạng Protobuf
     user_id VARCHAR(64) NOT NULL, -- ID người dùng kích hoạt hành động này

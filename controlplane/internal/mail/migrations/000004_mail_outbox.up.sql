@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS mail_outbox_records (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID UNIQUE NOT NULL,
-    zone_id UUID NOT NULL,
+    routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
     job_topic VARCHAR(100) NOT NULL,
     payload BYTEA NOT NULL,
     user_id VARCHAR(64) NOT NULL,

@@ -26,9 +26,8 @@ import (
 
 // authServiceStub là mock service để kiểm thử hành vi của handler độc lập
 type authServiceStub struct {
-	err         error
-	loginErr    error
-	loginResult *iamEntity.LoginResult
+	err      error
+	loginErr error
 }
 
 var _ iamSvcInterface.AuthService = (*authServiceStub)(nil)
@@ -42,8 +41,8 @@ func (s *authServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefre
 	return nil
 }
 
-func (s *authServiceStub) Login(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.LoginResult, error) {
-	return s.loginResult, s.loginErr
+func (s *authServiceStub) Login(ctx context.Context, req iamEntity.LoginRequest) error {
+	return s.loginErr
 }
 
 
@@ -196,17 +195,7 @@ func TestLogin_VerificationRequired(t *testing.T) {
 func TestLogin_SuccessSetsCookies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := newAuthHandler(&authServiceStub{loginResult: &iamEntity.LoginResult{
-		AccessToken:              "access-token",
-		RefreshToken:             "refresh-token",
-		AccessKey:                "runtime-device-1",
-		AccessSecret:             "secret-1",
-		TrackedDeviceID:          "177682fc-3e96-4a5a-84eb-b5e9c71af721",
-		ClientDeviceID:           "cdid-bootstrap-1",
-		ClientDeviceIDProvenance: "server-bootstrap",
-		AccessExpiresAt:          time.Now().UTC().Add(15 * time.Minute),
-		RefreshExpiresAt:         time.Now().UTC().Add(24 * time.Hour),
-	}})
+	h := newAuthHandler(&authServiceStub{})
 	router.POST("/login", h.Login)
 
 	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
@@ -214,38 +203,15 @@ func TestLogin_SuccessSetsCookies(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
 	}
 	cookies := w.Result().Cookies()
-	if len(cookies) < 2 {
-		t.Fatalf("expected at least 2 cookies, got %d", len(cookies))
+	if len(cookies) != 0 {
+		t.Fatalf("expected 0 cookies since Envoy handles them, got %d", len(cookies))
 	}
-	foundAccess := false
-	foundRefresh := false
-	foundDevice := false
-	foundClientDeviceID := false
-	for _, ck := range cookies {
-		switch ck.Name {
-		case constant.AccessTokenName:
-			foundAccess = true
-		case constant.RefreshTokenName:
-			foundRefresh = true
-		case constant.AccessKeyName:
-			if ck.Value == "runtime-device-1" {
-				foundDevice = true
-			}
-		case constant.ClientDeviceIDName:
-			if ck.Value == "cdid-bootstrap-1" {
-				foundClientDeviceID = true
-			}
-		}
-	}
-	if !foundAccess || !foundRefresh || !foundDevice || !foundClientDeviceID {
-		t.Fatalf("expected %s, %s, %s and %s cookies, got %#v", constant.AccessTokenName, constant.RefreshTokenName, constant.AccessKeyName, constant.ClientDeviceIDName, cookies)
-	}
-	if w.Result().Header.Get("X-Client-Device-Id") != "cdid-bootstrap-1" {
-		t.Fatalf("expected X-Client-Device-Id header to mirror cookie, got %q", w.Result().Header.Get("X-Client-Device-Id"))
+	if w.Result().Header.Get("X-Client-Device-Id") != "" {
+		t.Fatalf("expected no X-Client-Device-Id header, got %q", w.Result().Header.Get("X-Client-Device-Id"))
 	}
 }
 

@@ -64,6 +64,8 @@ func (m *authRepoMock) CreateRefreshTokenSession(ctx context.Context, token iamE
 	return nil
 }
 
+
+
 func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheRegistry {
 	security.SetRuntimeMasterKey(make([]byte, 32))
 	l1Cache := cacheengine.NewShardedCache()
@@ -195,7 +197,7 @@ func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.
 			return "mock-refresh-token", token.ExpiresAt, err
 		},
 	}
-	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, refreshStub, &deviceServiceStub{}, registry, nil, nil, &testutil.SessionServiceClientMock{})
+	return iamSvcImpl.NewAuthService(config.LoadConfig(), repo, &rbacRepoMock{}, refreshStub, &deviceServiceStub{}, registry, nil, nil, &testutil.SessionServiceClientMock{})
 }
 
 func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
@@ -380,7 +382,7 @@ func TestAuthServiceLoginUserNotFound(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return nil, iamTaxonomy.ErrInvalidCredentials
 	}}, nil)
-	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -390,7 +392,7 @@ func TestAuthServiceLoginNoRowsErrorMapsInvalidCredentials(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return nil, fmt.Errorf("%w: %w", iamTaxonomy.ErrInvalidCredentials, pgx.ErrNoRows)
 	}}, nil)
-	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -411,7 +413,7 @@ func TestAuthServiceLoginWrongPassword(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return &iamEntity.LoginUser{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Username: username, PasswordHash: hash, Status: iamEntity.UserStatusActive}, nil
 	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "wrongpass", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "wrongpass", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
@@ -422,7 +424,7 @@ func TestAuthServiceLoginPendingActiveBlocked(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return &iamEntity.LoginUser{ID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Username: username, PasswordHash: hash, Status: iamEntity.UserStatusPendingActive}, nil
 	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 		t.Fatalf("expected ErrVerificationRequired, got %v", err)
 	}
@@ -447,28 +449,12 @@ func TestAuthServiceLoginSuccess(t *testing.T) {
 		},
 	}, makeTestRegistry("secret-key", nil))
 
-	result, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if result == nil || result.AccessToken == "" || result.RefreshToken == "" {
-		t.Fatalf("expected tokens in result, got %#v", result)
-	}
-	if result.AccessKey == "" || result.TrackedDeviceID == "" {
-		t.Fatalf("expected runtime and tracked device ids, got %#v", result)
-	}
 	if persisted == false {
 		t.Fatal("expected refresh session to be persisted")
-	}
-	claims, err := security.Parse(result.AccessToken, nil)
-	if err != nil {
-		t.Fatalf("expected parsable access token, got %v", err)
-	}
-	if claims.AccessKey != result.AccessKey {
-		t.Fatalf("unexpected device claims: %#v", claims)
-	}
-	if len(result.RefreshToken) == 0 || result.RefreshExpiresAt.Before(time.Now().UTC()) {
-		t.Fatalf("unexpected refresh token result %#v", result)
 	}
 }
 
@@ -477,7 +463,7 @@ func TestAuthServiceLoginLoadUserErrorReturnsEnvelope(t *testing.T) {
 	svc := newAuthService(&authRepoMock{getUserFn: func(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 		return nil, raw
 	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: "alice.nguyen", Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}
@@ -506,6 +492,7 @@ func TestAuthServiceLoginRevokedDeviceHeals(t *testing.T) {
 
 	revokedDeviceID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
 
+	var registeredDevice iamEntity.Device
 	// Setup custom deviceSvc stub
 	devSvc := &deviceServiceStub{
 		getActiveDeviceIDFn: func(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
@@ -516,6 +503,7 @@ func TestAuthServiceLoginRevokedDeviceHeals(t *testing.T) {
 			// [COMMENT]: Đăng ký thiết bị mới cần trả về trạng thái hoạt động bình thường
 			device.ID = uuid.NewString()
 			device.Status = iamEntity.DeviceStatusRecognized
+			registeredDevice = device
 			return &device, nil
 		},
 	}
@@ -527,9 +515,9 @@ func TestAuthServiceLoginRevokedDeviceHeals(t *testing.T) {
 	}
 
 	// [COMMENT]: Khởi tạo AuthService thủ công để tiêm (inject) mock devSvc tùy biến phục vụ test tự hồi phục cookie thiết bị.
-	svc := iamSvcImpl.NewAuthService(config.LoadConfig(), repo, refreshStub, devSvc, makeTestRegistry("secret-key", nil), nil, nil, &testutil.SessionServiceClientMock{})
+	svc := iamSvcImpl.NewAuthService(config.LoadConfig(), repo, &rbacRepoMock{}, refreshStub, devSvc, makeTestRegistry("secret-key", nil), nil, nil, &testutil.SessionServiceClientMock{})
 
-	result, err := svc.Login(context.Background(), iamEntity.LoginRequest{
+	err := svc.Login(context.Background(), iamEntity.LoginRequest{
 		Username:        "alice.nguyen",
 		Password:        "secret123",
 		DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -542,11 +530,7 @@ func TestAuthServiceLoginRevokedDeviceHeals(t *testing.T) {
 	}
 
 	// [COMMENT]: Khẳng định ClientDeviceID mới sinh ra phải khác ClientDeviceID cũ bị revoked
-	if result.ClientDeviceID == revokedDeviceID.String() {
-		t.Fatalf("expected revoked client device ID to be discarded and healed, but got matching ID %s", result.ClientDeviceID)
-	}
-
-	if result.ClientDeviceIDProvenance != "server-bootstrap" {
-		t.Fatalf("expected provenance server-bootstrap, got %s", result.ClientDeviceIDProvenance)
+	if registeredDevice.ClientDeviceID == nil || *registeredDevice.ClientDeviceID == revokedDeviceID.String() {
+		t.Fatalf("expected revoked client device ID to be discarded and healed")
 	}
 }

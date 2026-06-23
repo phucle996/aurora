@@ -27,7 +27,7 @@ const (
 type IamOutboxRecord struct {
 	ID                   int64           // Khóa chính tự tăng (BIGSERIAL)
 	EventID              uuid.UUID       // Định danh sự kiện duy nhất (Idempotency Key)
-	ZoneID               uuid.UUID       // Định danh zone phục vụ multi-tenancy
+	RoutingScope         string          // Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
 	JobTopic             string          // Tên topic xử lý (e.g. mail.system.verify_account)
 	Payload              []byte          // Dữ liệu nhị phân serialized Protobuf
 	UserID               string          // ID của user liên quan

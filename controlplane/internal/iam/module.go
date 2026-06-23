@@ -231,7 +231,7 @@ func NewModule(
 	aclClient := iamproto.NewSessionServiceClient(aclConn)
 
 	authSvc := iamSvcImpl.NewAuthService(
-		cfg, authRepo, refreshSvc, deviceSvc,
+		cfg, authRepo, rbacRepo, refreshSvc, deviceSvc,
 		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
 		aclClient,
 	)

@@ -73,3 +73,17 @@ message RevokeOpaqueRefreshTokenRequest {
 message RevokeOpaqueRefreshTokenResponse {
 }
 
+// [COMMENT]: AdminAccessSession đại diện cho session của SRE Admin lưu trữ trong Redis L2
+message AdminAccessSession {
+  string access_key = 1;
+  string access_secret_hash = 2;
+  string tracked_device_id = 3;
+  string device_public_key = 4;
+  string token_jti = 5;
+  int64 version = 6;
+  int64 last_seen_at = 7;
+  string last_seen_ip = 8;
+  string last_seen_user_agent = 9;
+  bool last_seen_dirty = 10;
+}
+

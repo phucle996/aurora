@@ -18,19 +18,23 @@ use session_proto::{
 pub struct SessionServiceImpl {
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
-    session_ttl_secs: u64,
+    zone_mgr: Arc<crate::core::zone::ZoneManager>,
+    // [COMMENT]: Lưu trữ cấu hình đầy đủ thay vì chỉ lưu session_ttl_secs để sử dụng cho domain & cookies
+    config: crate::config::Config,
 }
 
 impl SessionServiceImpl {
     pub fn new(
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
-        session_ttl_secs: u64,
+        zone_mgr: Arc<crate::core::zone::ZoneManager>,
+        config: crate::config::Config,
     ) -> Self {
         Self {
             session_mgr,
             token_mgr,
-            session_ttl_secs,
+            zone_mgr,
+            config,
         }
     }
 }
@@ -43,6 +47,9 @@ impl SessionService for SessionServiceImpl {
         request: Request<ReleaseTrinitySessionRequest>,
     ) -> Result<Response<ReleaseTrinitySessionResponse>, Status> {
         let req = request.into_inner();
+
+        // [COMMENT]: Đọc refresh token trực tiếp từ proto request field (không qua metadata header nữa)
+        let refresh_token = req.refresh_token.clone();
 
         Logger::sys_info(
             "session.release",
@@ -58,7 +65,7 @@ impl SessionService for SessionServiceImpl {
 
         // 3. Chuẩn bị Claims cho JWT Access Token
         let now_unix = chrono::Utc::now().timestamp();
-        let exp_unix = now_unix + self.session_ttl_secs as i64;
+        let exp_unix = now_unix + self.config.session_ttl_secs as i64;
 
         let claims = Claims {
             sub: req.user_id.clone(),
@@ -69,10 +76,14 @@ impl SessionService for SessionServiceImpl {
             } else {
                 Some(req.tenant_id.clone())
             },
+            // [COMMENT]: Phân giải zone_id: Nếu là UUID hợp lệ thì giữ nguyên.
+            // Nếu là zone code (ví dụ "vn", "sg"), gọi ZoneManager L1/CP để phân giải sang UUID.
             zone_id: if req.zone_id.is_empty() {
                 None
-            } else {
+            } else if Uuid::parse_str(&req.zone_id).is_ok() {
                 Some(req.zone_id.clone())
+            } else {
+                self.zone_mgr.resolve_code_to_id(&req.zone_id).await
             },
             access_key: access_key.clone(),
             jti: Uuid::new_v4().to_string(),
@@ -114,14 +125,6 @@ impl SessionService for SessionServiceImpl {
             )));
         }
 
-        // 6. Cấp Opaque Refresh Token nếu trust_device = true
-        // Token này sẽ được chèn vào PostgreSQL phía Go (IAM) để quản lý vòng đời lưu trữ
-        let refresh_token = if req.trust_device {
-            Uuid::new_v4().to_string().replace("-", "")
-        } else {
-            String::new()
-        };
-
         // 7. Giải quyết client_device_id
         let client_device_id = if req.client_device_id.trim().is_empty() {
             Uuid::new_v4().to_string()
@@ -137,14 +140,72 @@ impl SessionService for SessionServiceImpl {
             ),
         );
 
-        Ok(Response::new(ReleaseTrinitySessionResponse {
-            access_token,
-            refresh_token,
-            access_key,
-            access_secret,
-            client_device_id,
-            expires_in_secs: self.session_ttl_secs as i64,
-        }))
+        // [COMMENT]: Khởi tạo gRPC response với released = true
+        // Toàn bộ cookie và header x-client-device-id sẽ được truyền ngược lại qua gRPC response metadata
+        let mut response = Response::new(ReleaseTrinitySessionResponse {
+            released: true,
+        });
+
+        // Cấu hình cookie domain
+        let domain_str = if self.config.app_public_domain.trim().is_empty() {
+            "".to_string()
+        } else {
+            format!("; Domain={}", self.config.app_public_domain.trim())
+        };
+
+        // 1. Cấu hình Cookie cho trinity_access_token (JWT)
+        let access_cookie = format!(
+            "access_token={}; Path=/{}; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
+            access_token, domain_str, self.config.session_ttl_secs
+        );
+        if let Ok(val) = tonic::metadata::MetadataValue::try_from(&access_cookie) {
+            response.metadata_mut().append("set-cookie", val);
+        }
+
+        // 2. Cấu hình Cookie cho trinity_access_key
+        let key_cookie = format!(
+            "access_key={}; Path=/{}; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
+            access_key, domain_str, self.config.session_ttl_secs
+        );
+        if let Ok(val) = tonic::metadata::MetadataValue::try_from(&key_cookie) {
+            response.metadata_mut().append("set-cookie", val);
+        }
+
+        // 3. Cấu hình Cookie cho trinity_access_secret
+        let secret_cookie = format!(
+            "access_secret={}; Path=/{}; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
+            access_secret, domain_str, self.config.session_ttl_secs
+        );
+        if let Ok(val) = tonic::metadata::MetadataValue::try_from(&secret_cookie) {
+            response.metadata_mut().append("set-cookie", val);
+        }
+
+        // 4. Cấu hình Cookie cho client_device_id (365 ngày, không HttpOnly để UI đọc được nếu cần)
+        let cdid_cookie = format!(
+            "client_device_id={}; Path=/{}; Secure; SameSite=Lax; Max-Age=31536000",
+            client_device_id, domain_str
+        );
+        if let Ok(val) = tonic::metadata::MetadataValue::try_from(&cdid_cookie) {
+            response.metadata_mut().append("set-cookie", val);
+        }
+
+        // 5. Cấu hình Cookie cho trinity_refresh_token (nếu có, 30 ngày)
+        if !refresh_token.is_empty() {
+            let refresh_cookie = format!(
+                "refresh_token={}; Path=/{}; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000",
+                refresh_token, domain_str
+            );
+            if let Ok(val) = tonic::metadata::MetadataValue::try_from(&refresh_cookie) {
+                response.metadata_mut().append("set-cookie", val);
+            }
+        }
+
+        // 6. Trả thêm header X-Client-Device-Id cho Envoy
+        if let Ok(val) = tonic::metadata::MetadataValue::try_from(&client_device_id) {
+            response.metadata_mut().insert("x-client-device-id", val);
+        }
+
+        Ok(response)
     }
 }
 

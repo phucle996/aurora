@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: session.proto
+// source: internal/iam/transport/rpc/proto/session.proto
 
 package iamproto
 
@@ -35,13 +35,14 @@ type ReleaseTrinitySessionRequest struct {
 	TrustDevice    bool                   `protobuf:"varint,9,opt,name=trust_device,json=trustDevice,proto3" json:"trust_device,omitempty"`           // Flag xác định user có chọn tin cậy thiết bị (để ACL quyết định cấp Refresh Token)
 	ClientIp       string                 `protobuf:"bytes,10,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`                    // IP của client đăng nhập (để lưu metadata phiên & audit)
 	UserAgent      string                 `protobuf:"bytes,11,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`                 // User-Agent của client (để lưu metadata phiên & audit)
+	RefreshToken   string                 `protobuf:"bytes,12,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`        // Opaque refresh token thô do CP tạo (truyền cho ACL set cookie, rỗng nếu trust_device=false)
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ReleaseTrinitySessionRequest) Reset() {
 	*x = ReleaseTrinitySessionRequest{}
-	mi := &file_session_proto_msgTypes[0]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -53,7 +54,7 @@ func (x *ReleaseTrinitySessionRequest) String() string {
 func (*ReleaseTrinitySessionRequest) ProtoMessage() {}
 
 func (x *ReleaseTrinitySessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[0]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -66,7 +67,7 @@ func (x *ReleaseTrinitySessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseTrinitySessionRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseTrinitySessionRequest) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{0}
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ReleaseTrinitySessionRequest) GetUserId() string {
@@ -146,22 +147,24 @@ func (x *ReleaseTrinitySessionRequest) GetUserAgent() string {
 	return ""
 }
 
-// Response chứa bộ credentials trả về cho IAM để chuyển tiếp cho Envoy set cookie
+func (x *ReleaseTrinitySessionRequest) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+// Response chứa kết quả khởi tạo phiên
 type ReleaseTrinitySessionResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	AccessToken    string                 `protobuf:"bytes,1,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`            // JWT Access Token được ký bởi Vault (chứa các claims sub, role, lvl, access_key,...)
-	RefreshToken   string                 `protobuf:"bytes,2,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`         // Opaque Refresh Token (chỉ có giá trị nếu request có trust_device = true)
-	AccessKey      string                 `protobuf:"bytes,3,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`                  // UUIDv7 làm định danh phiên (lưu ở Cookie dạng plain, dùng làm key lookup Redis L2)
-	AccessSecret   string                 `protobuf:"bytes,4,opt,name=access_secret,json=accessSecret,proto3" json:"access_secret,omitempty"`         // Access Secret thô dạng plain (để client/Envoy kiểm thử tính toàn vẹn)
-	ClientDeviceId string                 `protobuf:"bytes,5,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"` // Client Device ID (trả về giá trị cũ hoặc giá trị server sinh mới nếu là thiết bị mới)
-	ExpiresInSecs  int64                  `protobuf:"varint,6,opt,name=expires_in_secs,json=expiresInSecs,proto3" json:"expires_in_secs,omitempty"`   // Thời gian sống của Access Token (giây)
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Released      bool                   `protobuf:"varint,1,opt,name=released,proto3" json:"released,omitempty"` // Trả về true nếu khởi tạo phiên thành công
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReleaseTrinitySessionResponse) Reset() {
 	*x = ReleaseTrinitySessionResponse{}
-	mi := &file_session_proto_msgTypes[1]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -173,7 +176,7 @@ func (x *ReleaseTrinitySessionResponse) String() string {
 func (*ReleaseTrinitySessionResponse) ProtoMessage() {}
 
 func (x *ReleaseTrinitySessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_session_proto_msgTypes[1]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -186,56 +189,21 @@ func (x *ReleaseTrinitySessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseTrinitySessionResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseTrinitySessionResponse) Descriptor() ([]byte, []int) {
-	return file_session_proto_rawDescGZIP(), []int{1}
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ReleaseTrinitySessionResponse) GetAccessToken() string {
+func (x *ReleaseTrinitySessionResponse) GetReleased() bool {
 	if x != nil {
-		return x.AccessToken
+		return x.Released
 	}
-	return ""
+	return false
 }
 
-func (x *ReleaseTrinitySessionResponse) GetRefreshToken() string {
-	if x != nil {
-		return x.RefreshToken
-	}
-	return ""
-}
+var File_internal_iam_transport_rpc_proto_session_proto protoreflect.FileDescriptor
 
-func (x *ReleaseTrinitySessionResponse) GetAccessKey() string {
-	if x != nil {
-		return x.AccessKey
-	}
-	return ""
-}
-
-func (x *ReleaseTrinitySessionResponse) GetAccessSecret() string {
-	if x != nil {
-		return x.AccessSecret
-	}
-	return ""
-}
-
-func (x *ReleaseTrinitySessionResponse) GetClientDeviceId() string {
-	if x != nil {
-		return x.ClientDeviceId
-	}
-	return ""
-}
-
-func (x *ReleaseTrinitySessionResponse) GetExpiresInSecs() int64 {
-	if x != nil {
-		return x.ExpiresInSecs
-	}
-	return 0
-}
-
-var File_session_proto protoreflect.FileDescriptor
-
-const file_session_proto_rawDesc = "" +
+const file_internal_iam_transport_rpc_proto_session_proto_rawDesc = "" +
 	"\n" +
-	"\rsession.proto\x12\aiam.rpc\"\xd9\x02\n" +
+	".internal/iam/transport/rpc/proto/session.proto\x12\aiam.rpc\"\xfe\x02\n" +
 	"\x1cReleaseTrinitySessionRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1b\n" +
 	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12(\n" +
@@ -249,36 +217,31 @@ const file_session_proto_rawDesc = "" +
 	"\tclient_ip\x18\n" +
 	" \x01(\tR\bclientIp\x12\x1d\n" +
 	"\n" +
-	"user_agent\x18\v \x01(\tR\tuserAgent\"\xfd\x01\n" +
-	"\x1dReleaseTrinitySessionResponse\x12!\n" +
-	"\faccess_token\x18\x01 \x01(\tR\vaccessToken\x12#\n" +
-	"\rrefresh_token\x18\x02 \x01(\tR\frefreshToken\x12\x1d\n" +
-	"\n" +
-	"access_key\x18\x03 \x01(\tR\taccessKey\x12#\n" +
-	"\raccess_secret\x18\x04 \x01(\tR\faccessSecret\x12(\n" +
-	"\x10client_device_id\x18\x05 \x01(\tR\x0eclientDeviceId\x12&\n" +
-	"\x0fexpires_in_secs\x18\x06 \x01(\x03R\rexpiresInSecs2x\n" +
+	"user_agent\x18\v \x01(\tR\tuserAgent\x12#\n" +
+	"\rrefresh_token\x18\f \x01(\tR\frefreshToken\";\n" +
+	"\x1dReleaseTrinitySessionResponse\x12\x1a\n" +
+	"\breleased\x18\x01 \x01(\bR\breleased2x\n" +
 	"\x0eSessionService\x12f\n" +
 	"\x15ReleaseTrinitySession\x12%.iam.rpc.ReleaseTrinitySessionRequest\x1a&.iam.rpc.ReleaseTrinitySessionResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
-	file_session_proto_rawDescOnce sync.Once
-	file_session_proto_rawDescData []byte
+	file_internal_iam_transport_rpc_proto_session_proto_rawDescOnce sync.Once
+	file_internal_iam_transport_rpc_proto_session_proto_rawDescData []byte
 )
 
-func file_session_proto_rawDescGZIP() []byte {
-	file_session_proto_rawDescOnce.Do(func() {
-		file_session_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_session_proto_rawDesc), len(file_session_proto_rawDesc)))
+func file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP() []byte {
+	file_internal_iam_transport_rpc_proto_session_proto_rawDescOnce.Do(func() {
+		file_internal_iam_transport_rpc_proto_session_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_session_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_session_proto_rawDesc)))
 	})
-	return file_session_proto_rawDescData
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescData
 }
 
-var file_session_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_session_proto_goTypes = []any{
+var file_internal_iam_transport_rpc_proto_session_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_internal_iam_transport_rpc_proto_session_proto_goTypes = []any{
 	(*ReleaseTrinitySessionRequest)(nil),  // 0: iam.rpc.ReleaseTrinitySessionRequest
 	(*ReleaseTrinitySessionResponse)(nil), // 1: iam.rpc.ReleaseTrinitySessionResponse
 }
-var file_session_proto_depIdxs = []int32{
+var file_internal_iam_transport_rpc_proto_session_proto_depIdxs = []int32{
 	0, // 0: iam.rpc.SessionService.ReleaseTrinitySession:input_type -> iam.rpc.ReleaseTrinitySessionRequest
 	1, // 1: iam.rpc.SessionService.ReleaseTrinitySession:output_type -> iam.rpc.ReleaseTrinitySessionResponse
 	1, // [1:2] is the sub-list for method output_type
@@ -288,26 +251,26 @@ var file_session_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_session_proto_init() }
-func file_session_proto_init() {
-	if File_session_proto != nil {
+func init() { file_internal_iam_transport_rpc_proto_session_proto_init() }
+func file_internal_iam_transport_rpc_proto_session_proto_init() {
+	if File_internal_iam_transport_rpc_proto_session_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_session_proto_rawDesc), len(file_session_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_session_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_session_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_session_proto_goTypes,
-		DependencyIndexes: file_session_proto_depIdxs,
-		MessageInfos:      file_session_proto_msgTypes,
+		GoTypes:           file_internal_iam_transport_rpc_proto_session_proto_goTypes,
+		DependencyIndexes: file_internal_iam_transport_rpc_proto_session_proto_depIdxs,
+		MessageInfos:      file_internal_iam_transport_rpc_proto_session_proto_msgTypes,
 	}.Build()
-	File_session_proto = out.File
-	file_session_proto_goTypes = nil
-	file_session_proto_depIdxs = nil
+	File_internal_iam_transport_rpc_proto_session_proto = out.File
+	file_internal_iam_transport_rpc_proto_session_proto_goTypes = nil
+	file_internal_iam_transport_rpc_proto_session_proto_depIdxs = nil
 }

@@ -12,6 +12,7 @@ import (
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/internal/iam/test/testutil"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 )
 
@@ -28,7 +29,7 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, rbacRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	username, email := testutil.UniqueIdentity("refresh_success")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -37,20 +38,29 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
-	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
+	var capturedRefreshToken string
+	mockClient := &testutil.SessionServiceClientMock{
+		ReleaseTrinitySessionFn: func(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest) (*iamproto.ReleaseTrinitySessionResponse, error) {
+			// [COMMENT]: Đọc refresh token trực tiếp từ proto request field
+			capturedRefreshToken = in.RefreshToken
+			return &iamproto.ReleaseTrinitySessionResponse{Released: true}, nil
+		},
+	}
+
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, mockClient)
+	err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshResult, err := refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
+	refreshResult, err := refreshSvc.RefreshUserOpaque(context.Background(), capturedRefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)
 	}
 	if refreshResult == nil || refreshResult.AccessToken == "" || refreshResult.RefreshToken == "" {
 		t.Fatalf("expected refresh result, got %#v", refreshResult)
 	}
-	if refreshResult.RefreshToken == loginResult.RefreshToken {
+	if refreshResult.RefreshToken == capturedRefreshToken {
 		t.Fatal("expected rotated refresh token")
 	}
 	if len(strings.Split(refreshResult.RefreshToken, ".")) == 3 {
@@ -65,7 +75,7 @@ func TestRefreshTokenIntegrationSuccessRotatesSession(t *testing.T) {
 		t.Fatalf("expected 1 refresh token row after rotate, got %d", count)
 	}
 
-	_, err = refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
+	_, err = refreshSvc.RefreshUserOpaque(context.Background(), capturedRefreshToken)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected old refresh token to be invalid, got %v", err)
 	}
@@ -84,7 +94,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, rbacRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	username, email := testutil.UniqueIdentity("refresh_pending")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -93,8 +103,17 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
-	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
+	var capturedRefreshToken string
+	mockClient := &testutil.SessionServiceClientMock{
+		ReleaseTrinitySessionFn: func(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest) (*iamproto.ReleaseTrinitySessionResponse, error) {
+			// [COMMENT]: Đọc refresh token trực tiếp từ proto request field
+			capturedRefreshToken = in.RefreshToken
+			return &iamproto.ReleaseTrinitySessionResponse{Released: true}, nil
+		},
+	}
+
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, mockClient)
+	err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
@@ -102,7 +121,7 @@ func TestRefreshTokenIntegrationPendingActiveBlocked(t *testing.T) {
 		t.Fatalf("deactivate user: %v", err)
 	}
 
-	_, err = refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
+	_, err = refreshSvc.RefreshUserOpaque(context.Background(), capturedRefreshToken)
 	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
 		t.Fatalf("expected invalid session for blocked user, got %v", err)
 	}
@@ -129,7 +148,7 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
 	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshRepo, makeIntegrationRegistry(rdb))
 	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshRepo, nil, rbacRepo, makeIntegrationRegistry(rdb))
-	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
+	registerSvc := iamSvcImpl.NewAuthService(cfg, authRepo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
 	username, email := testutil.UniqueIdentity("refresh_claims")
 	if err := registerSvc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Refresh Claims User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
@@ -138,13 +157,22 @@ func TestRefreshTokenIntegrationAccessClaimsDoNotContainStatus(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
-	loginResult, err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
+	var capturedRefreshToken string
+	mockClient := &testutil.SessionServiceClientMock{
+		ReleaseTrinitySessionFn: func(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest) (*iamproto.ReleaseTrinitySessionResponse, error) {
+			// [COMMENT]: Đọc refresh token trực tiếp từ proto request field
+			capturedRefreshToken = in.RefreshToken
+			return &iamproto.ReleaseTrinitySessionResponse{Released: true}, nil
+		},
+	}
+
+	loginSvc := iamSvcImpl.NewAuthService(cfg, authRepo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, mockClient)
+	err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
 	}
 
-	refreshResult, err := refreshSvc.RefreshUserOpaque(context.Background(), loginResult.RefreshToken)
+	refreshResult, err := refreshSvc.RefreshUserOpaque(context.Background(), capturedRefreshToken)
 	if err != nil {
 		t.Fatalf("refresh should succeed: %v", err)
 	}

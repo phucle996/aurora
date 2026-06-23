@@ -4,6 +4,8 @@ import Input from "@/components/form/input/InputField";
 import Label from "@/components/form/Label";
 import Button from "@/components/ui/button/Button";
 import { authAPI } from "@/lib/api/auth";
+// [COMMENT]: Import API fetch danh mục Zone phục vụ chọn cụm khu vực khi đăng nhập.
+import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
 import {
   DeviceKeyUnsupportedError,
   ensureDevicePublicKey,
@@ -21,6 +23,12 @@ export default function SignInForm() {
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  // [COMMENT]: Lưu trữ danh sách Zone hoạt động fetch về từ Edge.
+  const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
+  // [COMMENT]: Lưu trữ mã code của Zone đang được chọn.
+  const [selectedZone, setSelectedZone] = useState<string>("");
+  // [COMMENT]: Trạng thái loading khi fetch danh mục Zone từ gateway.
+  const [isLoadingZones, setIsLoadingZones] = useState<boolean>(true);
   const submitLockRef = useRef(false);
   const { setAuthenticated, status } = useUserSession();
   const router = useRouter();
@@ -32,6 +40,35 @@ export default function SignInForm() {
       router.push("/");
     }
   }, [status, router]);
+
+  // [COMMENT]: Tải danh mục Zone động từ Edge Gateway khi mở trang.
+  // L1 cache tại Edge đã tối ưu hóa, đảm bảo HA và giảm tải DB tối đa.
+  useEffect(() => {
+    const fetchZonesController = new AbortController();
+
+    async function loadZones() {
+      try {
+        const list = await fetchZoneCatalog({ signal: fetchZonesController.signal });
+        setZones(list);
+
+        // [COMMENT]: Tự động chọn Zone đầu tiên nếu danh sách không rỗng để cải thiện UX.
+        if (list.length > 0) {
+          setSelectedZone(list[0].code);
+        }
+      } catch (err) {
+        // [COMMENT]: Fallback an toàn nếu API catalog lỗi, đảm bảo trang login không bị hỏng.
+        console.error("Không thể tải danh sách zone:", err);
+      } finally {
+        setIsLoadingZones(false);
+      }
+    }
+
+    loadZones();
+
+    return () => {
+      fetchZonesController.abort();
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -99,6 +136,8 @@ export default function SignInForm() {
           password: normalizedPassword,
           device_public_key: devicePublicKey,
           trust_device: isChecked,
+          // [COMMENT]: Truyền zone_code đã chọn từ dropdown xuống DTO login.
+          zone_code: selectedZone,
         },
         { signal: controller.signal },
       );
@@ -222,6 +261,73 @@ export default function SignInForm() {
                       <span className="text-gray-500 dark:text-gray-400 text-xs font-medium select-none">
                         {showPassword ? "Hide" : "Show"}
                       </span>
+                    </span>
+                  </div>
+                </div>
+                {/* [COMMENT]: Khung chọn Zone động với globe icon và custom select styling để tăng tính thẩm mỹ */}
+                <div>
+                  <Label>
+                    Zone / Khu vực <span className="text-error-500">*</span>
+                  </Label>
+                  <div className="relative">
+                    <span className="absolute z-30 -translate-y-1/2 left-4 top-1/2">
+                      <svg
+                        className="text-gray-400 dark:text-gray-500"
+                        width="18"
+                        height="18"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M10 1.66663C5.39762 1.66663 1.66666 5.39762 1.66666 10C1.66666 14.6023 5.39762 18.3333 10 18.3333C14.6023 18.3333 18.3333 14.6023 18.3333 10C18.3333 5.39762 14.6023 1.66663 10 1.66663ZM10 3.33329C11.1396 4.90829 11.6667 6.94996 11.6667 9.16663H8.33333C8.33333 6.94996 8.86041 4.90829 10 3.33329ZM10 16.6666C8.86041 15.0916 8.33333 13.05 8.33333 10.8333H11.6667C11.6667 13.05 11.1396 15.0916 10 16.6666ZM3.33333 10C3.33333 9.16663 3.66666 8.33329 4.16666 7.5H6.66666C6.66666 8.33329 6.66666 9.16663 6.66666 10C6.66666 10.8333 6.66666 11.6666 6.66666 12.5H4.16666C3.66666 11.667 3.33333 10.8333 3.33333 10ZM10 10.8333H13.3333C13.3333 13.05 12.8063 15.0916 11.6667 16.6666C12.8063 15.0916 13.3333 13.05 13.3333 10.8333ZM15.8333 12.5H13.3333C13.3333 11.6666 13.3333 10.8333 13.3333 10C13.3333 9.16663 13.3333 8.33329 13.3333 7.5H15.8333C16.3333 8.33329 16.6667 9.16663 16.6667 10C16.6667 10.8333 16.3333 11.667 15.8333 12.5ZM15.8333 7.5C15.3333 6.66663 14.6667 5.83329 13.8333 5.33329C14.6667 5.83329 15.3333 6.66663 15.8333 7.5Z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </span>
+
+                    {isLoadingZones ? (
+                      <div className="h-11 w-full flex items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-11 text-sm dark:border-gray-700 dark:bg-gray-900 text-gray-400">
+                        <span>Đang tải danh mục vùng...</span>
+                        <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+                      </div>
+                    ) : (
+                      <select
+                        className="h-11 w-full appearance-none rounded-lg border border-gray-300 bg-white px-11 py-2.5 text-sm shadow-theme-xs text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 focus:dark:border-brand-800"
+                        value={selectedZone}
+                        onChange={(e) => setSelectedZone(e.target.value)}
+                      >
+                        {zones.length === 0 ? (
+                          <option value="" disabled>
+                            Không có zone nào hoạt động
+                          </option>
+                        ) : (
+                          zones.map((z) => (
+                            <option key={z.id} value={z.code}>
+                              {z.name} ({z.code.toUpperCase()})
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    )}
+
+                    <span className="absolute z-30 -translate-y-1/2 pointer-events-none right-4 top-1/2">
+                      <svg
+                        className="text-gray-400 dark:text-gray-500"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M4 6L8 10L12 6"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
                     </span>
                   </div>
                 </div>

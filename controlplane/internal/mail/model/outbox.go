@@ -12,7 +12,7 @@ import (
 type MailOutboxRecord struct {
 	ID       int64     `db:"id"`
 	EventID  uuid.UUID `db:"event_id"`
-	ZoneID   uuid.UUID `db:"zone_id"`
+	RoutingScope string `db:"routing_scope"`
 	JobTopic string    `db:"job_topic"`
 	// Payload: Lưu trữ dạng nhị phân (Protobuf) cho công việc
 	Payload []byte `db:"payload"`
@@ -35,7 +35,7 @@ func OutboxEntityToModel(e mailEntity.MailOutboxRecord) MailOutboxRecord {
 	return MailOutboxRecord{
 		ID:                   e.ID,
 		EventID:              e.EventID,
-		ZoneID:               e.ZoneID,
+		RoutingScope:         e.RoutingScope,
 		JobTopic:             e.JobTopic,
 		Payload:              e.Payload,
 		UserID:               e.UserID,
@@ -56,7 +56,7 @@ func OutboxModelToEntity(m MailOutboxRecord) mailEntity.MailOutboxRecord {
 	return mailEntity.MailOutboxRecord{
 		ID:                   m.ID,
 		EventID:              m.EventID,
-		ZoneID:               m.ZoneID,
+		RoutingScope:         m.RoutingScope,
 		JobTopic:             m.JobTopic,
 		Payload:              m.Payload,
 		UserID:               m.UserID,
