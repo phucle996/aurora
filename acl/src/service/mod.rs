@@ -7,3 +7,5 @@ pub mod zone_catalog;
 pub mod auth;
 pub mod login_handler;
 pub mod zone_resolution;
+pub mod zone_switch;
+

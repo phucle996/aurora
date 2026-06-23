@@ -149,6 +149,22 @@ impl Authorization for ExtAuthzService {
                     return catalog_res;
                 }
 
+                // [COMMENT]: Chặn bắt và xử lý API chuyển Active Zone tường minh tại biên (Edge Termination)
+                if let Some(zone_switch_res) = crate::service::zone_switch::handle_zone_switch(
+                    &self.session_mgr,
+                    &self.token_mgr,
+                    &self.zone_mgr,
+                    &self.config,
+                    client_headers,
+                    &req,
+                    &method,
+                    &path,
+                )
+                .await
+                {
+                    return zone_switch_res;
+                }
+
                 // [COMMENT]: Cho phép Bypass (Không kiểm tra) đối với các endpoint Public cấu hình từ môi trường
                 // Sử dụng self.config.bypass_endpoints để kiểm tra tiền tố đường dẫn (starts_with)
                 if self

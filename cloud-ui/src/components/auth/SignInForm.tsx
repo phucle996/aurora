@@ -16,6 +16,15 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import React, { useEffect, useRef, useState } from "react";
 
+// [COMMENT]: Hàm helper Client-side dùng để đọc cookie.
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop()?.split(";").shift() || null;
+  return null;
+}
+
 export default function SignInForm() {
   const [showPassword, setShowPassword] = useState(false);
   const [isChecked, setIsChecked] = useState(false);
@@ -51,8 +60,12 @@ export default function SignInForm() {
         const list = await fetchZoneCatalog({ signal: fetchZonesController.signal });
         setZones(list);
 
-        // [COMMENT]: Tự động chọn Zone đầu tiên nếu danh sách không rỗng để cải thiện UX.
-        if (list.length > 0) {
+        // [COMMENT]: Đọc cookie zone_code cũ trên thiết bị và tự động chọn nếu khớp, cải thiện UX.
+        const cachedCode = getCookie("zone_code")?.toLowerCase();
+        const matchedZone = list.find((z) => z.code.toLowerCase() === cachedCode);
+        if (matchedZone) {
+          setSelectedZone(matchedZone.code);
+        } else if (list.length > 0) {
           setSelectedZone(list[0].code);
         }
       } catch (err) {

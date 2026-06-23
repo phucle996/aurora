@@ -316,77 +316,11 @@ sequenceDiagram
 
 ---
 
-### Sơ đồ nhánh 3 — Zone Verification & Token Resigning (Xác Thực & Ký Lại Token Theo Zone tại ACL)
+### 🌐 Chi tiết Phân giải & Chuyển đổi Ngữ cảnh Zone (Zone Context & Switch Workflow)
 
-Áp dụng tự động trên mỗi request đi qua Rust ACL (`ext_authz`). Hệ thống kiểm tra Zone được yêu cầu từ Client (qua Cookies hoặc HTTP Headers) để phân giải thông tin Zone, kiểm tra trạng thái hoạt động (active status) đối với User thường, cấm truy cập Global đối với User thường, tự động ký lại JWT nếu có sự thay đổi Zone hoạt động, và inject thông tin Zone vào Upstream headers.
+Toàn bộ quy trình phân giải Zone, các ràng buộc bảo mật đối với người dùng (không cho phép user thường truy cập zone global hay zone inactive), và cơ chế chuyển đổi ngữ cảnh Zone tường minh (Explicit Zone Switch via `/api/v1/zone/go-to-zone`) được mô tả chi tiết tại:
 
-**Các file mã nguồn liên quan (Code References):**
-
-- [acl/src/core/zone.rs](../../acl/src/core/zone.rs): Bộ quản lý `ZoneManager` chứa L1 cache (`code_to_id`, `id_to_code`, `status`), Single-Flight locking, và cache đồng bộ định kỳ/negative cache.
-- [acl/src/infra/controlplane.rs](../../acl/src/infra/controlplane.rs): Hàm gRPC client `get_zone_list` kết nối trực tiếp đến `ZoneServiceClient` của Controlplane.
-- [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Logic phân giải Zone, kiểm tra trạng thái hoạt động (status == active), chặn quyền Global của User thường, so khớp claims, sinh lại JWT qua Vault và inject headers/cookies trong hàm `check`.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Client
-    participant Envoy as Envoy Ingress Gateway
-    participant ACL as Rust ACL (ext_authz)
-    participant RDS as ZoneManager (L1 Cache)
-    participant CP as Controlplane (Go - gRPC)
-    participant Vault as HashiCorp Vault
-
-    UI->>Envoy: Request kèm Zone (Cookie: zone_code, Header: x-zone-code)
-    Envoy->>ACL: ext_authz Check
-    
-    Note over ACL, RDS: Phân giải Zone sử dụng L1 Cache và Single-Flight (Chỉ nhận zone_code)
-    alt Có chỉ định zone_code (cookie/header)
-        ACL->>RDS: Tra cứu L1 Cache RAM (valid zones)
-        alt L1 Cache Hit (Trường hợp phổ biến)
-            RDS-->>ACL: Trả về thông tin Zone (ID, Code, Status)
-        else L1 Cache Miss (Trường hợp hiếm)
-            alt zone_code nằm trong bad_codes (blacklist L1 cache)
-                ACL-->>Envoy: DENIED 400 Bad Request (Zone code cached as invalid)
-                Envoy-->>UI: HTTP 400 Bad Request
-            else Không có trong blacklist L1 cache
-                RDS->>RDS: Chiếm Single-Flight Lock
-                RDS->>CP: gRPC GetZoneList()
-                CP-->>RDS: Trả về danh sách Zone từ Database (Không qua L1 Cache)
-                alt Tìm thấy zone_code
-                    RDS->>RDS: Cập nhật L1 Cache & last_sync
-                    RDS-->>ACL: Trả về thông tin Zone đã phân giải
-                else Không tìm thấy
-                    RDS->>RDS: Lưu zone_code vào bad_codes (blacklist, TTL 5m)
-                    RDS-->>ACL: Báo lỗi không tồn tại
-                    ACL-->>Envoy: DENIED 400 Invalid Argument (Zone not found)
-                    Envoy-->>UI: HTTP 400 Bad Request
-                end
-            end
-        end
-    end
-
-    alt Thông tin Zone phân giải hợp lệ
-        alt User thường yêu cầu truy cập Zone "global" hoặc UUID nil
-            ACL-->>Envoy: DENIED 403 Forbidden (Global zone restricted to admins)
-            Envoy-->>UI: HTTP 403 Forbidden
-        else User thường yêu cầu Zone có status != "active"
-            ACL-->>Envoy: DENIED 403 Forbidden (Zone not active)
-            Envoy-->>UI: HTTP 403 Forbidden
-        else Hợp lệ
-            alt claims.zone_id != resolved_zone_id (User chuyển Zone)
-                ACL->>Vault: Ký lại claims.zone_id mới
-                Vault-->>ACL: Trả về access_token JWT mới
-                Note over ACL: Thêm Set-Cookie (access_token mới, zone_code mới)
-            else JWT khớp nhưng thiếu Cookie zone_code
-                Note over ACL: Thêm Set-Cookie (zone_code mới)
-            end
-        end
-    end
-
-    Note over ACL: Inject header: x-zone-id vào Upstream (không chuyển tiếp x-zone-code)
-    ACL-->>Envoy: OK + Set-Cookie (nếu có) + Injected Header (x-zone-id)
-    Envoy-->>UI: Response + Set-Cookie
-```
+👉 [Tài liệu Thiết kế Zone Context & Switch Workflow](user_zone_context_god_view_workflow.md)
 
 ---
 

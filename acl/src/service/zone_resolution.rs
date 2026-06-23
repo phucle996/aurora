@@ -60,8 +60,8 @@ pub async fn resolve_zone_context(
 ///   + Err(Response): phản hồi từ chối (DENIED) trực tiếp từ gateway gửi về client.
 pub async fn resolve_and_verify_zone(
     zone_mgr: &Arc<ZoneManager>,
-    token_mgr: &Arc<TokenManager>,
-    config: &Config,
+    _token_mgr: &Arc<TokenManager>,
+    _config: &Config,
     claims: &mut Claims,
     cookie_header: &str,
     client_headers: &std::collections::HashMap<String, String>,
@@ -84,8 +84,9 @@ pub async fn resolve_and_verify_zone(
                 "DENIED",
                 &format!("Requested zone code not found: {}", code),
             );
+            // [COMMENT]: Trả lỗi "Zone unavailable" về client để ẩn giấu thông tin chi tiết hệ thống
             return Err(Ok(Response::new(CheckResponse::with_status(
-                Status::invalid_argument("Requested zone code not found"),
+                Status::permission_denied("Zone unavailable"),
             ))));
         }
         Err(ZoneResolutionError::Missing) => {
@@ -121,8 +122,9 @@ pub async fn resolve_and_verify_zone(
                         claims.sub
                     ),
                 );
+                // [COMMENT]: Trả lỗi "Zone unavailable" về client để ẩn giấu thông tin
                 return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Forbidden access to global zone"),
+                    Status::permission_denied("Zone unavailable"),
                 ))));
             }
 
@@ -138,53 +140,36 @@ pub async fn resolve_and_verify_zone(
                         zone_code, zone_status, claims.sub
                     ),
                 );
+                // [COMMENT]: Trả lỗi "Zone unavailable" về client để ẩn giấu thông tin
                 return Err(Ok(Response::new(CheckResponse::with_status(
-                    Status::permission_denied("Forbidden access to inactive zone"),
+                    Status::permission_denied("Zone unavailable"),
                 ))));
             }
         }
     }
 
-    // [COMMENT]: 4. Thực hiện cơ chế sliding/chuyển đổi Active Zone tự động (Zone Transitioning)
+    // [COMMENT]: 4. Thực hiện kiểm tra trùng khớp Active Zone của phiên làm việc hiện tại
     if let (Some(zone_id), Some(zone_code)) = (resolved_zone_id, resolved_zone_code) {
         let claims_mismatch = claims.zone_id.as_ref() != Some(&zone_id);
         let cookie_mismatch =
             extract_cookie_value(cookie_header, "zone_code").as_ref() != Some(&zone_code);
 
+        // [COMMENT]: Cấm tự động đổi/ký lại zone ngầm trên các request API tự động của máy (machine-triggered).
+        // Chuyển zone phải do người dùng thao tác tường minh qua API go-to-zone.
         if claims_mismatch {
-            // [COMMENT]: Khi phát hiện có sự thay đổi Zone, ký lại JWT mới chứa zone_id cập nhật
-            let mut updated_claims = claims.clone();
-            updated_claims.zone_id = Some(zone_id.clone());
-            match token_mgr.generate_token(&updated_claims).await {
-                Ok(new_jwt) => {
-                    Logger::sys_info(
-                        "ext_authz.zone",
-                        &format!(
-                            "Switching active zone of user_id={} to zone_id={}, zone_code={}",
-                            claims.sub, zone_id, zone_code
-                        ),
-                    );
-                    // [COMMENT]: Cấp cookie JWT chứa claims zone mới để trình duyệt ghi đè lại
-                    cookies_to_set_zone.push(format!(
-                        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
-                        new_jwt, config.session_ttl_secs
-                    ));
-                    // [COMMENT]: Lưu song song zone_code để client frontend đọc trực tiếp dễ dàng
-                    cookies_to_set_zone.push(format!(
-                        "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
-                        zone_code
-                    ));
-                    // [COMMENT]: Cập nhật claims trong bộ nhớ hiện tại để downstream context nhận đúng zone_id mới
-                    claims.zone_id = Some(zone_id);
-                }
-                Err(e) => {
-                    Logger::sys_error(
-                        "ext_authz.zone",
-                        "Failed to generate access token with updated zone_id",
-                        &e.to_string(),
-                    );
-                }
-            }
+            Logger::authz_log(
+                &claims.sub,
+                method,
+                path,
+                "DENIED",
+                &format!(
+                    "Zone mismatch: JWT active zone_id={:?}, Request resolved_zone_id={:?}. Active zone transition is forbidden for automated requests.",
+                    claims.zone_id, zone_id
+                ),
+            );
+            return Err(Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Zone unavailable"),
+            ))));
         } else if cookie_mismatch {
             // [COMMENT]: Nếu JWT đã khớp zone_id nhưng thiếu/sai cookie zone_code, set lại cookie cho đồng bộ với JWT
             cookies_to_set_zone.push(format!(

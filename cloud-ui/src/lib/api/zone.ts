@@ -8,11 +8,25 @@ export type ZoneCatalogItem = {
   status: string;
 };
 
-// [COMMENT]: Hàm fetch danh mục Zone phục vụ hiển thị ở form đăng nhập khi chưa authenticated.
-// Do API này được đánh chặn tại Envoy Edge nên latency cực thấp và có sẵn cơ chế bảo vệ DDoS.
 export async function fetchZoneCatalog(options: { signal?: AbortSignal } = {}): Promise<ZoneCatalogItem[]> {
   return fetchJSON<ZoneCatalogItem[]>("/api/v1/zones/catalog", {
     method: "GET",
     signal: options.signal,
   });
+}
+
+// [COMMENT]: Hàm gọi API chuyển đổi Active Zone tường minh qua Edge Ingress/ACL.
+// Trả về JSON Body chứa zone_code và zone_id mới để UI cập nhật state đồng bộ.
+export async function switchZone(
+  zoneCode: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<{ zone_code: string; zone_id: string }> {
+  return fetchJSON<{ zone_code: string; zone_id: string }>(
+    `/api/v1/zone/go-to-zone?zone_code=${zoneCode}`,
+    {
+      method: "POST",
+      credentials: "include",
+      signal: options.signal,
+    }
+  );
 }
