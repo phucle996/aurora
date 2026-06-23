@@ -17,7 +17,6 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON refresh_tokens(user_id)
 CREATE INDEX IF NOT EXISTS refresh_tokens_device_id_idx ON refresh_tokens(device_id);
 CREATE INDEX IF NOT EXISTS refresh_tokens_tenant_id_idx ON refresh_tokens(tenant_id);
 CREATE INDEX IF NOT EXISTS refresh_tokens_expires_at_idx ON refresh_tokens(expires_at);
-CREATE INDEX IF NOT EXISTS refresh_tokens_family_idx ON refresh_tokens(token_family_id);
 
 -- [COMMENT]: Xóa unique constraint để cho phép nhiều user đăng nhập chung browser/cặp khóa Ed25519
 CREATE INDEX IF NOT EXISTS devices_user_fingerprint_idx ON devices(user_id, public_key_fingerprint);
@@ -101,7 +100,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS oauth_tokens_refresh_hash_uidx ON oauth_tokens
 CREATE INDEX IF NOT EXISTS oauth_tokens_client_id_idx ON oauth_tokens(client_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_user_id_idx ON oauth_tokens(user_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_grant_id_idx ON oauth_tokens(grant_id);
-CREATE INDEX IF NOT EXISTS oauth_tokens_family_idx ON oauth_tokens(token_family_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at_idx ON oauth_tokens(expires_at);
 
 CREATE INDEX IF NOT EXISTS audit_events_actor_user_id_idx ON audit_events(actor_user_id);
@@ -126,3 +124,6 @@ CREATE INDEX IF NOT EXISTS admin_2fa_settings_updated_at_idx ON admin_2fa_settin
 CREATE UNIQUE INDEX IF NOT EXISTS admin_recovery_codes_code_hash_uidx ON admin_recovery_codes(code_hash);
 CREATE INDEX IF NOT EXISTS admin_recovery_codes_created_at_idx ON admin_recovery_codes(created_at);
 CREATE INDEX IF NOT EXISTS admin_recovery_codes_used_at_idx ON admin_recovery_codes(used_at);
+
+-- Outbox indexes
+CREATE INDEX IF NOT EXISTS idx_iam_outbox_pending ON iam_outbox_records (status, id ASC) WHERE status = 'PENDING';

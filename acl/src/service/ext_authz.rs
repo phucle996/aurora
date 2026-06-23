@@ -118,6 +118,23 @@ impl Authorization for ExtAuthzService {
                     &format!("Intercepting: {} {}", method, path),
                 );
 
+                // [COMMENT]: Gọi handle_login để xử lý chặn bắt và xử lý đăng nhập trực tiếp tại biên
+                if let Some(login_res) = crate::service::login_handler::handle_login(
+                    &self.session_mgr,
+                    &self.token_mgr,
+                    &self.control_plane_client,
+                    &self.zone_mgr,
+                    &self.config,
+                    client_headers,
+                    &req,
+                    &method,
+                    &path,
+                )
+                .await
+                {
+                    return login_res;
+                }
+
                 // [COMMENT]: Gọi handle_zone_catalog từ module zone_catalog để xử lý API danh mục tại biên
                 if let Some(catalog_res) = crate::service::zone_catalog::handle_zone_catalog(
                     &self.session_mgr,
@@ -225,12 +242,15 @@ impl Authorization for ExtAuthzService {
                 let (mut claims, session, access_key) = match auth_result {
                     Ok(val) => val,
                     Err(err_msg) => {
+                        // [COMMENT]: Khi xác thực Trinity Cookie thất bại, chuyển hướng sang luồng khôi phục session bằng Refresh Token
                         return crate::service::recovery_session::handle_session_recovery(
                             &self.session_mgr,
                             &self.token_mgr,
+                            &self.zone_mgr,
                             &self.control_plane_client,
                             &self.config,
                             &cookie_header,
+                            client_headers,
                             err_msg,
                             &method,
                             &path,
@@ -239,121 +259,23 @@ impl Authorization for ExtAuthzService {
                     }
                 };
 
-                // [COMMENT]: 3.5. Xác định, phân giải và kiểm tra tính hợp lệ của Zone (L1 Cache + gRPC Controlplane)
-                let mut cookies_to_set_zone = Vec::new();
-                
-                // Trích xuất zone code / zone id được chỉ định từ request cookies hoặc custom headers
-                let mut requested_zone_code = extract_cookie_value(&cookie_header, "zone_code");
-                if requested_zone_code.is_none() {
-                    requested_zone_code = client_headers.get("x-zone-code").cloned()
-                        .or_else(|| client_headers.get("X-Zone-Code").cloned());
-                }
-                let requested_zone_id = client_headers.get("x-zone-id").cloned()
-                    .or_else(|| client_headers.get("X-Zone-Id").cloned());
-
-                let mut resolved_zone_id = None;
-                let mut resolved_zone_code = None;
-                let mut resolved_zone_status = None;
-
-                if let Some(ref code) = requested_zone_code {
-                    // [COMMENT]: Phân giải zone_code thành zone_id và status
-                    if let Some((id, status)) = self.zone_mgr.resolve_code_to_id_and_status(code).await {
-                        resolved_zone_id = Some(id);
-                        resolved_zone_code = Some(code.clone());
-                        resolved_zone_status = Some(status);
-                    } else {
-                        // Gửi zone_code không hợp lệ -> chặn request ngay
-                        Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Requested zone code not found: {}", code));
-                        return Ok(Response::new(CheckResponse::with_status(
-                            Status::invalid_argument("Requested zone code not found"),
-                        )));
-                    }
-                } else if let Some(ref id) = requested_zone_id {
-                    // [COMMENT]: Phân giải zone_id thành zone_code và status
-                    if let Some((code, status)) = self.zone_mgr.resolve_id_to_code_and_status(id).await {
-                        resolved_zone_id = Some(id.clone());
-                        resolved_zone_code = Some(code);
-                        resolved_zone_status = Some(status);
-                    } else {
-                        // Gửi zone_id không hợp lệ -> chặn request
-                        Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Requested zone ID not found: {}", id));
-                        return Ok(Response::new(CheckResponse::with_status(
-                            Status::invalid_argument("Requested zone ID not found"),
-                        )));
-                    }
-                } else if let Some(ref claims_zone_id) = claims.zone_id {
-                    // [COMMENT]: Fallback về zone trong JWT claims nếu không có tham số request cụ thể
-                    if let Some((code, status)) = self.zone_mgr.resolve_id_to_code_and_status(claims_zone_id).await {
-                        resolved_zone_id = Some(claims_zone_id.clone());
-                        resolved_zone_code = Some(code);
-                        resolved_zone_status = Some(status);
-                    }
-                }
-
-                // [COMMENT]: Thực hiện xác thực các ràng buộc bảo mật Zone đối với người dùng thông thường
-                if let (Some(ref zone_id), Some(ref zone_code), Some(ref zone_status)) = (&resolved_zone_id, &resolved_zone_code, &resolved_zone_status) {
-                    if !claims.is_admin() {
-                        // 1. Chặn user thường vào zone global (zone_code = "global" hoặc nil UUID)
-                        if zone_code == "global" || zone_id == "00000000-0000-0000-0000-000000000000" {
-                            Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Forbidden global zone access for non-admin: user_id={}", claims.sub));
-                            return Ok(Response::new(CheckResponse::with_status(
-                                Status::permission_denied("Forbidden access to global zone"),
-                            )));
-                        }
-
-                        // 2. Chặn user thường vào zone không hoạt động (status != "active")
-                        if zone_status != "active" {
-                            Logger::authz_log(&claims.sub, &method, &path, "DENIED", &format!("Forbidden access to inactive zone ({} is {}): user_id={}", zone_code, zone_status, claims.sub));
-                            return Ok(Response::new(CheckResponse::with_status(
-                                Status::permission_denied("Forbidden access to inactive zone"),
-                            )));
-                        }
-                    }
-                }
-
-                // Nếu tìm thấy thông tin Zone hợp lệ
-                if let (Some(zone_id), Some(zone_code)) = (resolved_zone_id, resolved_zone_code) {
-                    // So sánh sự không khớp giữa zone trong claims hiện tại và zone phân giải được
-                    let claims_mismatch = claims.zone_id.as_ref() != Some(&zone_id);
-                    let cookie_mismatch = extract_cookie_value(&cookie_header, "zone_code").as_ref() != Some(&zone_code);
-
-                    if claims_mismatch {
-                        // Ký lại token mới với claims.zone_id được cập nhật để downstream sử dụng
-                        let mut updated_claims = claims.clone();
-                        updated_claims.zone_id = Some(zone_id.clone());
-                        match self.token_mgr.generate_token(&updated_claims).await {
-                            Ok(new_jwt) => {
-                                Logger::sys_info(
-                                    "ext_authz.zone",
-                                    &format!("Switching active zone of user_id={} to zone_id={}, zone_code={}", claims.sub, zone_id, zone_code)
-                                );
-                                cookies_to_set_zone.push(format!(
-                                    "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}",
-                                    new_jwt, self.config.session_ttl_secs
-                                ));
-                                cookies_to_set_zone.push(format!(
-                                    "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
-                                    zone_code
-                                ));
-                                // Cập nhật claims trong bộ nhớ hiện tại
-                                claims.zone_id = Some(zone_id);
-                            }
-                            Err(e) => {
-                                Logger::sys_error(
-                                    "ext_authz.zone",
-                                    "Failed to generate access token with updated zone_id",
-                                    &e.to_string(),
-                                );
-                            }
-                        }
-                    } else if cookie_mismatch {
-                        // Nếu JWT đã khớp zone_id nhưng thiếu/sai cookie zone_code, set lại cookie cho đồng bộ
-                        cookies_to_set_zone.push(format!(
-                            "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
-                            zone_code
-                        ));
-                    }
-                }
+                // [COMMENT]: 3.5. Phân giải và xác thực thông tin Zone thông qua dịch vụ zone_resolution
+                let cookies_to_set_zone =
+                    match crate::service::zone_resolution::resolve_and_verify_zone(
+                        &self.zone_mgr,
+                        &self.token_mgr,
+                        &self.config,
+                        &mut claims,
+                        &cookie_header,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                    {
+                        Ok(cookies) => cookies,
+                        Err(err_res) => return err_res,
+                    };
 
                 // 6. Xử lý cập nhật Last Seen At (Throttled ghi)
                 let _ = self
@@ -401,7 +323,7 @@ impl Authorization for ExtAuthzService {
                     &access_key,
                 )
                 .await;
-                
+
                 // Hợp nhất các cookie cập nhật zone
                 cookies_to_set.extend(cookies_to_set_zone);
 
@@ -448,8 +370,8 @@ impl Authorization for ExtAuthzService {
                                 ..Default::default()
                             });
                         }
-                        
-                        // Inject zone headers nếu có
+
+                        // [COMMENT]: Chỉ inject header x-zone-id cho microservices upstream, không trả x-zone-code
                         if let Some(ref z_id) = claims.zone_id {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {
@@ -459,16 +381,6 @@ impl Authorization for ExtAuthzService {
                                 }),
                                 ..Default::default()
                             });
-                            if let Some(z_code) = self.zone_mgr.resolve_id_to_code(z_id).await {
-                                ok.headers.push(HeaderValueOption {
-                                    header: Some(HeaderValue {
-                                        key: "x-zone-code".to_string(),
-                                        value: z_code,
-                                        ..Default::default()
-                                    }),
-                                    ..Default::default()
-                                });
-                            }
                         }
 
                         // Inject Set-Cookie headers cho sliding session refresh & zone updates

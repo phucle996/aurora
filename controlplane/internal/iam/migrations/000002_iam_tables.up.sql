@@ -61,21 +61,23 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- User sở hữu refresh token
     device_id uuid NOT NULL, -- Device liên quan tới refresh token
     token_hash text NOT NULL, -- Hash refresh token, không lưu raw token
-    token_family_id uuid NOT NULL, -- ID nhóm token rotation
     tenant_id uuid NULL, -- Tenant context nếu có, phase đầu thường là NULL
     issued_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm phát hành refresh token
-    expires_at timestamptz NOT NULL -- Thời điểm refresh token hết hạn
+    expires_at timestamptz NOT NULL, -- Thời điểm refresh token hết hạn
+    used_at timestamptz NULL, -- Thời điểm token đã được sử dụng để xoay vòng
+    revoked_at timestamptz NULL -- Thời điểm token bị thu hồi
 );
 
-COMMENT ON TABLE refresh_tokens IS 'Stores hashed refresh tokens for JWT refresh flow. There is no sessions table. Old tokens are expected to be hard deleted during rotation, logout, or revoke flows.';
+COMMENT ON TABLE refresh_tokens IS 'Stores hashed refresh tokens for JWT refresh flow. There is no sessions table. Old tokens are marked as used during rotation, logout, or revoke flows.';
 COMMENT ON COLUMN refresh_tokens.id IS 'Primary key of the refresh token record. Generated automatically with gen_random_uuid().';
 COMMENT ON COLUMN refresh_tokens.user_id IS 'User who owns this refresh token.';
 COMMENT ON COLUMN refresh_tokens.device_id IS 'Optional device related to the refresh token. If the device is deleted, this reference is set to null.';
 COMMENT ON COLUMN refresh_tokens.token_hash IS 'Hash of the refresh token. Raw refresh token must never be stored.';
-COMMENT ON COLUMN refresh_tokens.token_family_id IS 'Identifier for the refresh token family used across refresh rotation.';
 COMMENT ON COLUMN refresh_tokens.tenant_id IS 'Optional tenant context for future tenant-scoped login flows. In the initial global login phase this is typically null.';
 COMMENT ON COLUMN refresh_tokens.issued_at IS 'Timestamp when the refresh token was issued.';
 COMMENT ON COLUMN refresh_tokens.expires_at IS 'Timestamp when the refresh token expires.';
+COMMENT ON COLUMN refresh_tokens.used_at IS 'Timestamp when this refresh token was consumed/used for rotation.';
+COMMENT ON COLUMN refresh_tokens.revoked_at IS 'Timestamp when this refresh token was explicitly revoked.';
 
 CREATE TABLE IF NOT EXISTS devices (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID device
@@ -479,7 +481,6 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
     grant_id uuid NULL REFERENCES oauth_grants(id) ON DELETE SET NULL, -- Grant liên quan
     access_token_hash text NOT NULL, -- Hash access token
     refresh_token_hash text NULL, -- Hash refresh token
-    token_family_id uuid NOT NULL, -- Nhóm token rotation
     scopes text[] NOT NULL DEFAULT ARRAY[]::text[], -- Scopes token được cấp
     issued_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm phát hành token
     expires_at timestamptz NOT NULL, -- Thời điểm access token hết hạn
@@ -495,7 +496,6 @@ COMMENT ON COLUMN oauth_tokens.user_id IS 'User related to this token, if the to
 COMMENT ON COLUMN oauth_tokens.grant_id IS 'Related OAuth grant, if the token was issued from a prior consent record.';
 COMMENT ON COLUMN oauth_tokens.access_token_hash IS 'Hash of the OAuth access token. Raw access token must never be stored.';
 COMMENT ON COLUMN oauth_tokens.refresh_token_hash IS 'Optional hash of the OAuth refresh token. Raw refresh token must never be stored.';
-COMMENT ON COLUMN oauth_tokens.token_family_id IS 'Token family identifier used for OAuth token rotation.';
 COMMENT ON COLUMN oauth_tokens.scopes IS 'Scopes granted to this OAuth token.';
 COMMENT ON COLUMN oauth_tokens.issued_at IS 'Timestamp when the token was issued.';
 COMMENT ON COLUMN oauth_tokens.expires_at IS 'Timestamp when the access token expires.';
@@ -578,3 +578,28 @@ COMMENT ON COLUMN admin_recovery_codes.id IS 'Primary key of admin recovery code
 COMMENT ON COLUMN admin_recovery_codes.code_hash IS 'Hash of recovery code. Raw recovery code must never be stored.';
 COMMENT ON COLUMN admin_recovery_codes.used_at IS 'Timestamp when this recovery code was consumed.';
 COMMENT ON COLUMN admin_recovery_codes.created_at IS 'Timestamp when this recovery code record was created.';
+
+-- -------------------------------------------------------------
+-- Bảng outbox lưu trữ các sự kiện/tác vụ bất đồng bộ của module IAM để CDC đồng bộ sang Redis/Kafka
+-- -------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS iam_outbox_records (
+    id BIGSERIAL PRIMARY KEY,
+    event_id UUID UNIQUE NOT NULL, -- UUID định danh duy nhất của sự kiện (Idempotency Key)
+    routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
+    job_topic VARCHAR(100) NOT NULL, -- Tên topic/tác vụ (e.g. mail.system.verify_account)
+    payload BYTEA NOT NULL, -- Dữ liệu nhị phân serialized dạng Protobuf
+    user_id VARCHAR(64) NOT NULL, -- ID người dùng kích hoạt hành động này
+    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
+    completed_at TIMESTAMP WITH TIME ZONE, -- Thời gian hoàn tất tác vụ
+
+    -- CÁC CỘT ĐỒNG BỘ CONTRACT:
+    job_version INT NOT NULL DEFAULT 1,
+    resource_id VARCHAR(64),
+    payload_schema_version INT NOT NULL DEFAULT 1,
+    trace_id BYTEA, -- Trích xuất OpenTelemetry trace parent để liên kết vết
+    idle INT, -- Hạn mức timeout cho tác vụ tính bằng giây
+
+    -- CÁC CỘT PHẢN HỒI KẾT QUẢ:
+    error_code VARCHAR(100),
+    error_message TEXT
+);

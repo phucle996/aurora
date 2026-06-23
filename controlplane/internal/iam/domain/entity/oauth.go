@@ -88,7 +88,6 @@ type OAuthToken struct {
 	GrantID          *uuid.UUID
 	AccessTokenHash  string
 	RefreshTokenHash *string
-	TokenFamilyID    string
 	Scopes           []string
 	IssuedAt         time.Time
 	ExpiresAt        time.Time

@@ -186,10 +186,13 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 		t.Fatalf("activate user: %v", err)
 	}
 
-	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
-	err := loginSvc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
+	loginSvc := iamSvcImpl.NewAuthService(cfg, repo, rbacRepo, refreshSvc, deviceSvc, makeIntegrationRegistry(rdb), nil, nil, nil)
+	res, err := loginSvc.VerifyUserCredentials(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", TrustDevice: true})
 	if err != nil {
 		t.Fatalf("login should succeed: %v", err)
+	}
+	if !res.Valid {
+		t.Fatal("expected login result to be valid")
 	}
 	var count int
 	if err := db.QueryRow(context.Background(), fmt.Sprintf("SELECT count(*) FROM %s.refresh_tokens rt JOIN %s.users u ON u.id = rt.user_id WHERE u.username = $1", cfg.SchemaSQL.IAM, cfg.SchemaSQL.IAM), username).Scan(&count); err != nil {
@@ -208,12 +211,12 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 	rdb := testutil.OpenRedis(t, cfg)
 
 	repo := iamRepoImpl.NewAuthRepository(cfg, db)
-	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, nil, makeIntegrationRegistry(rdb), nil, nil, &testutil.SessionServiceClientMock{})
+	svc := iamSvcImpl.NewAuthService(cfg, repo, nil, nil, nil, makeIntegrationRegistry(rdb), nil, nil, nil)
 	username, email := testutil.UniqueIdentity("login_pending")
 	if err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
 	}
-	err := svc.Login(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
+	_, err := svc.VerifyUserCredentials(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 		t.Fatalf("expected verification required, got %v", err)
 	}

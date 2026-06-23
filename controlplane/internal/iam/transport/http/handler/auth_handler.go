@@ -3,7 +3,6 @@ package iamHandler
 import (
 	"context"
 	"errors"
-	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -15,12 +14,9 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
-	cookie "controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 var (
@@ -145,98 +141,6 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 
 	logger.HandlerInfo(c, op, "account registered")
 	apires.RespondCreated(c, nil, "account created")
-}
-
-// Login godoc
-// @Summary Login
-// @Description Đăng nhập bằng username và password, set access/refresh cookies khi thành công.
-// @Tags auth
-// @Accept json
-// @Produce json
-// @Param payload body requestdto.LoginRequest true "Login payload"
-// @Success 204 "login successful"
-// @Failure 400 {object} map[string]interface{} "invalid request"
-// @Failure 401 {object} map[string]interface{} "invalid credentials"
-// @Failure 403 {object} map[string]interface{} "please check your email to verify account"
-// @Failure 503 {object} map[string]interface{} "authentication temporarily unavailable"
-// @Failure 500 {object} map[string]interface{} "internal_error"
-// @Router /api/v1/auth/login [post]
-func (h *AuthHandler) Login(c *gin.Context) {
-	const op = "iam.auth.login"
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	var request requestdto.LoginRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		logger.HandlerWarn(c, op, err, "bind login request failed")
-		apires.RespondBadRequest(c, "invalid request")
-		return
-	}
-
-	username := strings.ToLower(strings.TrimSpace(request.Username))
-	password := strings.TrimSpace(request.Password)
-	devicePublicKey := strings.TrimSpace(request.DevicePublicKey)
-	if username == "" || password == "" || devicePublicKey == "" {
-		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "login validation failed")
-		apires.RespondBadRequest(c, "invalid request")
-		return
-	}
-
-	ipVal := strings.TrimSpace(c.ClientIP())
-	uaVal := strings.TrimSpace(c.Request.UserAgent())
-	ctx = context.WithValue(ctx, constant.RemoteIPKey, ipVal)
-	ctx = context.WithValue(ctx, constant.UserAgentKey, uaVal)
-
-	hostnameHint := c.GetHeader("X-Device-Hostname")
-	hostnameAlias := c.GetHeader("X-Device-Name")
-	deviceName := resolveDeviceName(hostnameHint, hostnameAlias)
-
-	clientDeviceIDHintStr := c.GetHeader("X-Client-Device-Id")
-	if clientDeviceIDHintStr == "" {
-		if cookieValue, _ := c.Cookie(cookie.ClientDeviceIDName); cookieValue != "" {
-			clientDeviceIDHintStr = cookieValue
-		}
-	}
-	clientDeviceIDHint, err := uuid.Parse(clientDeviceIDHintStr)
-	if err != nil {
-		clientDeviceIDHint = uuid.Nil
-	}
-
-	err = h.authSvc.Login(ctx, iamEntity.LoginRequest{
-		Username:        username,
-		Password:        password,
-		DevicePublicKey: devicePublicKey,
-		TrustDevice:     request.TrustDevice,
-		DeviceName:      deviceName,
-		ClientDeviceID:  clientDeviceIDHint,
-		ZoneCode:        strings.TrimSpace(request.ZoneCode),
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, iamTaxonomy.ErrInvalidCredentials):
-			logger.HandlerWarn(c, op, err, "login invalid credentials")
-			apires.RespondUnauthorized(c, "invalid credentials")
-			return
-		case errors.Is(err, iamTaxonomy.ErrVerificationRequired):
-			logger.HandlerWarn(c, op, err, "login verification required")
-			apires.RespondForbidden(c, "please check your email to verify account")
-			return
-		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
-			logger.HandlerWarn(c, op, err, "login authentication unavailable")
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			return
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-			return
-		}
-	}
-
-	logger.HandlerInfo(c, op, "login successful")
-	// [COMMENT]: Vì toàn bộ logic xác thực và quản lý phiên đã được ủy quyền cho ACL service,
-	// HTTP handler ở tầng Controlplane sau khi thiết lập xong bộ cookie xác thực chỉ cần trả về HTTP 204 (No Content).
-	c.Status(http.StatusNoContent)
 }
 
 // Session godoc

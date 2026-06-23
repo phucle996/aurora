@@ -194,7 +194,10 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	return nil
 }
 
-func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (err error) {
+// [COMMENT]: VerifyUserCredentials thực hiện xác thực thông tin đăng nhập (username, password),
+// kiểm tra trạng thái tài khoản, định danh/upsert thiết bị và sinh Opaque Refresh Token (nếu được yêu cầu).
+// Phương thức này được gọi qua gRPC từ Gateway/ACL để CP đóng vai trò Data Plane (SoT).
+func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (res *iamEntity.VerifyUserCredentialsResult, err error) {
 	var ipVal, uaVal string
 	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
 		ipVal = v
@@ -208,53 +211,50 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (er
 		iamMetrics.ServiceCall(ctx, loginOutcome)
 	}()
 
-	// Repo load user là SoT; no fallback source khác cho identity.
+	// [COMMENT]: 1. Truy xuất thông tin người dùng từ cơ sở dữ liệu (Single Source of Truth)
 	now := time.Now()
 	user, loadErr := s.repo.GetLoginUserByUsername(ctx, req.Username)
 	if loadErr != nil {
 		if errors.Is(loadErr, iamTaxonomy.ErrInvalidCredentials) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetLoginUserByUsername", iamMetrics.OutcomeInvalidCredential, time.Since(now), loadErr)
-			return apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, loadErr, iamMetrics.OutcomeInvalidCredential)
+			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, loadErr, iamMetrics.OutcomeInvalidCredential)
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetLoginUserByUsername", iamMetrics.OutcomeFailureUnknown, time.Since(now), loadErr)
-		return fmt.Errorf("%w: failed to get login user: %v", iamTaxonomy.ErrAuthenticationUnavailable, loadErr)
+		return nil, fmt.Errorf("%w: failed to get login user: %v", iamTaxonomy.ErrAuthenticationUnavailable, loadErr)
 	}
 
+	// [COMMENT]: 2. Xác thực mật khẩu sử dụng thư viện băm bảo mật
 	verified, verifyErr := security.VerifyPassword(user.PasswordHash, req.Password)
 	if verifyErr != nil {
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
-		return apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, verifyErr, iamMetrics.OutcomeInvalidCredential)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, verifyErr, iamMetrics.OutcomeInvalidCredential)
 	}
 	if !verified {
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
-		return apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 
-	// Check user status
+	// [COMMENT]: 3. Kiểm tra trạng thái tài khoản của người dùng
 	switch user.Status {
 	case iamEntity.UserStatusPendingActive:
-		// [COMMENT]: Hỗ trợ chạy các test suite bằng cách kiểm tra nil cho mock dependency
+		// [COMMENT]: Nếu tài khoản chưa kích hoạt, phát hành mã OTT kích hoạt và gửi email xác nhận qua Outbox
 		if s.ott == nil || s.outboxRepo == nil {
 			loginOutcome = iamMetrics.OutcomePreConditionFailed
-			return apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamMetrics.OutcomePreConditionFailed)
+			return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamMetrics.OutcomePreConditionFailed)
 		}
-		// Khởi tạo token OTT để gửi kèm mail xác thực
 		verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", user.ID)
 		if issueErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, issueErr, iamMetrics.OutcomeFailureUnknown)
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, issueErr, iamMetrics.OutcomeFailureUnknown)
 		}
 		idempotencyKey := uuid.Must(uuid.NewV7())
 
-		// Trích xuất Trace ID dạng nhị phân 16-byte từ context để tối ưu hóa lưu trữ cột BYTEA trong DB
 		var traceID []byte
 		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
 			tid := spanCtx.TraceID()
 			traceID = tid[:]
 		}
 
-		// Đóng gói payload gửi mail bằng generic protobuf SendMailConfig
-		// [COMMENT]: Sử dụng user.Username thay thế cho user.Fullname do login flow không truy vấn bảng profile nhằm tối ưu hóa hiệu năng
 		mailConfig := &mailproto.SendMailConfig{
 			To:       user.Email,
 			Subject:  "Kích hoạt tài khoản của bạn",
@@ -266,14 +266,12 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (er
 			},
 		}
 
-		// Tuần tự hóa cấu hình sang dạng nhị phân Protobuf
 		payloadBytes, marshalErr := proto.Marshal(mailConfig)
 		if marshalErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return fmt.Errorf("%w: failed to marshal verification mail config: %v", iamTaxonomy.ErrAuthenticationUnavailable, marshalErr)
+			return nil, fmt.Errorf("%w: failed to marshal verification mail config: %v", iamTaxonomy.ErrAuthenticationUnavailable, marshalErr)
 		}
 
-		// Khởi tạo thực thể bản ghi IamOutboxRecord để lưu xuống DB
 		record := &iamEntity.IamOutboxRecord{
 			EventID:              idempotencyKey,
 			RoutingScope:         "platform",
@@ -285,42 +283,36 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (er
 			ResourceID:           "verify_account",
 			PayloadSchemaVersion: 1,
 			TraceID:              traceID,
-			Idle:                 60, // Hạn mức thời gian thực thi job 60 giây
+			Idle:                 60,
 		}
 
-		// Thực hiện lưu trữ bền vững outbox record trong cùng luồng
 		if insertErr := s.outboxRepo.Create(ctx, record); insertErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return fmt.Errorf("%w: failed to create iam outbox record: %v", iamTaxonomy.ErrAuthenticationUnavailable, insertErr)
+			return nil, fmt.Errorf("%w: failed to create iam outbox record: %v", iamTaxonomy.ErrAuthenticationUnavailable, insertErr)
 		}
 
 		loginOutcome = iamMetrics.OutcomePreConditionFailed
-		return apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamMetrics.OutcomePreConditionFailed)
+		return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamMetrics.OutcomePreConditionFailed)
 
 	case iamEntity.UserStatusSuspended, iamEntity.UserStatusDisabled:
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
-		return apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 
 	case iamEntity.UserStatusActive:
-		// Active user: proceed to login
+		// [COMMENT]: Tài khoản đang hoạt động bình thường, cho phép tiếp tục đăng nhập
 
 	default:
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
-		return apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 
-	// [COMMENT]: Phân giải thiết bị active từ userID và DevicePublicKey của trình duyệt gửi lên.
-	// Không quan tâm cookie cũ (hoàn toàn tránh được client fake cookie hoặc cookie đã bị thu hồi).
+	// [COMMENT]: 4. Phân giải/Tìm kiếm thiết bị đang hoạt động tương thích
 	matchedClientDeviceID, err := s.deviceSvc.GetActiveDeviceID(ctx, user.ID, req.DevicePublicKey)
 
 	var clientDeviceID string
-
-	isNewDevice := false
-	// [COMMENT]: Nếu không tìm thấy thiết bị active (hoặc thiết bị trước đó đã bị revoked) -> Xem như thiết bị mới hoàn toàn, tự sinh mới.
 	if err != nil || matchedClientDeviceID == "" {
 		newDeviceID := uuid.New()
 		clientDeviceID = newDeviceID.String()
-		isNewDevice = true
 	} else {
 		clientDeviceID = matchedClientDeviceID
 	}
@@ -346,84 +338,56 @@ func (s *AuthService) Login(ctx context.Context, req iamEntity.LoginRequest) (er
 		UpdatedAt:            now.UTC(),
 	}
 
-	// RegisterLoginDevice qua DeviceService là DB SoT để lấy tracked device persistent.
+	// [COMMENT]: Đăng ký/Cập nhật thiết bị vào cơ sở dữ liệu
 	trackedDevice, deviceErr := s.deviceSvc.RegisterLoginDevice(ctx, loginDevice)
 	if deviceErr != nil {
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
+		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
 	}
 	if trackedDevice == nil || strings.TrimSpace(trackedDevice.ID) == "" || trackedDevice.Status == iamEntity.DeviceStatusRevoked {
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
-		return apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 	trackedDeviceID, trackedErr := uuid.Parse(strings.TrimSpace(trackedDevice.ID))
 	if trackedErr != nil {
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return fmt.Errorf("%w: failed to parse tracked device ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, trackedErr)
+		return nil, fmt.Errorf("%w: failed to parse tracked device ID: %v", iamTaxonomy.ErrAuthenticationUnavailable, trackedErr)
 	}
 
-	// [COMMENT]: Chỉ cấp refresh token khi người dùng chọn "trusted device in 30 days".
-	// Nếu không tin tưởng thiết bị, chỉ cấp access token với TTL 30 phút – hết hạn là logout.
+	// [COMMENT]: 5. Sinh Refresh Token nếu thiết bị được đánh dấu tin cậy (Trust Device)
 	var rawRefresh string
 	if req.TrustDevice {
 		var refreshErr error
-		// [COMMENT]: Ủy quyền hoàn toàn việc tạo và lưu trữ session refresh token dạng <userID>_<entropy> cho SessionRefreshService.
-		// AuthService chỉ nhận lại kết quả token thô và thời điểm hết hạn.
 		rawRefresh, _, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID)
 		if refreshErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return refreshErr
+			return nil, refreshErr
 		}
 	}
 
-	// [COMMENT]: Dùng GetUserRoleAndLevelByScope với scope là platform (không có tenant)
+	// [COMMENT]: 6. Truy vấn Role và Level của người dùng trong hệ thống
 	role, levelInt, err := s.rbacRepo.GetUserRoleAndLevelByScope(ctx, user.ID, "platform")
 	if err != nil {
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
+		return nil, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
 	}
 	level := int32(levelInt)
 	tenantID := ""
 
-	// [COMMENT]: Gọi ACL gRPC Service để khởi tạo Trinity credentials, tạo JWT & lưu phiên vào L2 Redis.
-	// Refresh token truyền trực tiếp trong proto request, không qua metadata header.
-	aclResp, aclErr := s.aclClient.ReleaseTrinitySession(ctx, &iamproto.ReleaseTrinitySessionRequest{
-		UserId:         user.ID.String(),
-		DeviceId:       trackedDeviceID.String(),
-		ClientDeviceId: clientDeviceID,
-		Username:       user.Username,
-		Role:           role,
-		Level:          level,
-		TrustDevice:    req.TrustDevice,
-		ClientIp:       ipVal,
-		UserAgent:      uaVal,
-		TenantId:       tenantID,
-		ZoneId:         req.ZoneCode,
-		RefreshToken:   rawRefresh,
-	})
-	if aclErr != nil || aclResp == nil || !aclResp.Released {
-		// [COMMENT]: Nếu gRPC write lỗi và đã cấp refresh token ở PostgreSQL, rollback bằng revoke để tránh token mồ côi.
-		if req.TrustDevice {
-			_ = s.refreshSvc.RevokeRefreshTokensByDeviceIDAndUserID(ctx, user.ID, trackedDeviceID)
-		}
-		// [COMMENT]: Rollback device mới tạo nếu có lỗi/thất bại sinh phiên
-		if isNewDevice {
-			ident := &constant.Identity{UserID: user.ID.String()}
-			ctxWithIdent := context.WithValue(ctx, constant.IdentityKey, ident)
-			_ = s.deviceSvc.RevokeMyDevice(ctxWithIdent, trackedDeviceID)
-		}
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		if aclErr != nil {
-			return fmt.Errorf("%w: failed to issue trinity session from ACL service: %v", iamTaxonomy.ErrAuthenticationUnavailable, aclErr)
-		}
-		return fmt.Errorf("%w: failed to release trinity session from ACL service", iamTaxonomy.ErrAuthenticationUnavailable)
-	}
-
-	// Best-effort cap reconcile sau login. Không làm fail request thành công.
+	// [COMMENT]: 7. Thu hồi bớt thiết bị vượt quá số lượng cho phép (Best effort)
 	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID)
 
-	return nil
+	return &iamEntity.VerifyUserCredentialsResult{
+		Valid:          true,
+		UserID:         user.ID.String(),
+		Role:           role,
+		Level:          level,
+		TenantID:       tenantID,
+		ClientDeviceID: clientDeviceID,
+		RefreshToken:   rawRefresh,
+	}, nil
 }
+
 
 // normalizeUserDevicePublicKey decode base64 (std hoặc raw) ed25519 public key
 // (32 bytes) và trả canonical form base64 std để repo lưu + so sánh fingerprint.

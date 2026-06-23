@@ -188,12 +188,11 @@ func (r *AuthRepository) CreateRefreshTokenSession(ctx context.Context, token ia
 			user_id,
 			device_id,
 			token_hash,
-			token_family_id,
 			tenant_id,
 			issued_at,
 			expires_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
 	`, r.schema)
 
 	if _, err := r.db.Exec(ctx, query,
@@ -201,7 +200,6 @@ func (r *AuthRepository) CreateRefreshTokenSession(ctx context.Context, token ia
 		tokenModel.UserID,
 		tokenModel.DeviceID,
 		tokenModel.TokenHash,
-		tokenModel.TokenFamilyID,
 		tokenModel.TenantID,
 		tokenModel.IssuedAt,
 		tokenModel.ExpiresAt,

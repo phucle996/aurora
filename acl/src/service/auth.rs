@@ -11,8 +11,8 @@
 //
 // ======================================================================================================
 
-use std::sync::Arc;
 use prost::Message;
+use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::core::session::SessionManager;
@@ -26,11 +26,11 @@ pub mod auth_proto {
 }
 
 use auth_proto::{
-    auth_service_server::AuthService, AdminAccessSession,
-    VerifyAdminTrinityTokenRequest, VerifyAdminTrinityTokenResponse,
+    auth_service_server::AuthService, AdminAccessSession, RevokeOpaqueRefreshTokenRequest,
+    RevokeOpaqueRefreshTokenResponse, VerifyAdminTrinityTokenRequest,
+    VerifyAdminTrinityTokenResponse, VerifyOpaqueRefreshTokenRequest,
+    VerifyOpaqueRefreshTokenResponse, VerifyUserCredentialsRequest, VerifyUserCredentialsResponse,
     VerifyUserTrinityTokenRequest, VerifyUserTrinityTokenResponse,
-    VerifyOpaqueRefreshTokenRequest, VerifyOpaqueRefreshTokenResponse,
-    RevokeOpaqueRefreshTokenRequest, RevokeOpaqueRefreshTokenResponse,
 };
 
 pub struct AuthServiceImpl {
@@ -74,7 +74,10 @@ impl AuthService for AuthServiceImpl {
         let req = request.into_inner();
 
         // 1. Kiểm tra nhanh các trường rỗng đầu vào
-        if req.admin_api_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty() {
+        if req.admin_api_token.is_empty()
+            || req.access_key.is_empty()
+            || req.access_secret.is_empty()
+        {
             return Ok(Response::new(VerifyAdminTrinityTokenResponse {
                 valid: false,
                 user_id: String::new(),
@@ -107,7 +110,10 @@ impl AuthService for AuthServiceImpl {
         }
 
         // 4. Kiểm tra tính hoạt động của session từ Redis L2 cache
-        let zone_id = claims.zone_id.clone().unwrap_or_else(|| "global".to_string());
+        let zone_id = claims
+            .zone_id
+            .clone()
+            .unwrap_or_else(|| "global".to_string());
         let redis_key = format!("iam:admin_access_session:{}:{}", req.access_key, zone_id);
         let mut conn = self.get_redis_connection().await?;
 
@@ -116,7 +122,11 @@ impl AuthService for AuthServiceImpl {
             .query_async(&mut conn)
             .await
             .map_err(|e| {
-                Logger::sys_error("auth.verify_admin", "GET admin session failed", &e.to_string());
+                Logger::sys_error(
+                    "auth.verify_admin",
+                    "GET admin session failed",
+                    &e.to_string(),
+                );
                 Status::internal("Failed to retrieve admin session")
             })?;
 
@@ -166,7 +176,8 @@ impl AuthService for AuthServiceImpl {
         let req = request.into_inner();
 
         // 1. Kiểm tra nhanh các trường rỗng đầu vào
-        if req.access_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty() {
+        if req.access_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty()
+        {
             return Ok(Response::new(VerifyUserTrinityTokenResponse {
                 valid: false,
                 user_id: String::new(),
@@ -200,7 +211,11 @@ impl AuthService for AuthServiceImpl {
         }
 
         // 4. Kiểm tra tính hoạt động của session từ Redis trực tiếp (qua SessionManager)
-        let session = match self.session_mgr.get_session(&claims.sub, &req.access_key).await {
+        let session = match self
+            .session_mgr
+            .get_session(&claims.sub, &req.access_key)
+            .await
+        {
             Ok(Some(s)) => s,
             Ok(None) => {
                 return Ok(Response::new(VerifyUserTrinityTokenResponse {
@@ -267,6 +282,16 @@ impl AuthService for AuthServiceImpl {
             .await?;
 
         Ok(Response::new(RevokeOpaqueRefreshTokenResponse {}))
+    }
+
+    // [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng (Không áp dụng ở phía ACL Server)
+    async fn verify_user_credentials(
+        &self,
+        _request: Request<VerifyUserCredentialsRequest>,
+    ) -> Result<Response<VerifyUserCredentialsResponse>, Status> {
+        Err(Status::unimplemented(
+            "VerifyUserCredentials is not implemented on the ACL server side",
+        ))
     }
 }
 

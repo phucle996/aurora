@@ -14,13 +14,12 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
 	constant "controlplane/pkg/constant"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -52,177 +51,10 @@ func NewSessionRefreshService(
 }
 
 // ======================================================================================================
-// 1. OPAQUE REFRESH TOKEN (KIỂU 2 - END-USER)
+// 1. OPAQUE REFRESH TOKEN (KIỂU 2 - END-USER) - DEPRECATED / REMOVED
 // ======================================================================================================
-func (s *SessionRefreshService) RefreshUserOpaque(ctx context.Context, rawRefreshToken string) (*iamEntity.RefreshTokenResult, error) {
-	const workflow = "refresh_user_opaque"
-
-	refreshOutcome := iamMetrics.OutcomeSuccess
-	defer func() {
-		iamMetrics.ServiceCall(ctx, refreshOutcome)
-	}()
-
-	// [COMMENT]: Thực hiện băm SHA256 Refresh Token thô nhận được từ phía Client để so khớp với DB.
-	startLoad := time.Now()
-	refreshContext, ctxErr := s.repo.LoadRefreshContextByHash(ctx, security.HashTokenSHA256(rawRefreshToken))
-	if ctxErr != nil {
-		if errors.Is(ctxErr, iamTaxonomy.ErrNotFound) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoadRefreshContextByHash", iamMetrics.OutcomeInvalidCredential, time.Since(startLoad), ctxErr)
-			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, ctxErr, iamMetrics.OutcomeInvalidCredential)
-		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoadRefreshContextByHash", iamMetrics.OutcomeFailureUnknown, time.Since(startLoad), ctxErr)
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, ctxErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoadRefreshContextByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
-
-	session := &refreshContext.Session
-	// [COMMENT]: Kiểm tra xem token đã quá hạn sử dụng hay chưa
-	if time.Now().UTC().After(session.ExpiresAt) {
-		refreshOutcome = iamMetrics.OutcomeInvalidCredential
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
-	}
-	trackedDeviceID := *session.DeviceID
-
-	user := &refreshContext.User
-	// [COMMENT]: Xác nhận tài khoản người dùng có tồn tại hợp lệ
-	if user.ID == (uuid.UUID{}) {
-		refreshOutcome = iamMetrics.OutcomeInvalidCredential
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
-	}
-	// [COMMENT]: Kiểm tra trạng thái tài khoản để ngăn chặn các phiên của user bị treo/vô hiệu hóa/đang chờ kích hoạt
-	if user.Status == iamEntity.UserStatusPendingActive || user.Status == iamEntity.UserStatusSuspended || user.Status == iamEntity.UserStatusDisabled {
-		refreshOutcome = iamMetrics.OutcomeInvalidCredential
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
-	}
-	// [COMMENT]: Kiểm tra trạng thái thiết bị có bị thu hồi quyền truy cập (Revoked) hay không
-	if refreshContext.Device == nil || refreshContext.Device.Status == iamEntity.DeviceStatusRevoked {
-		refreshOutcome = iamMetrics.OutcomeInvalidCredential
-		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, nil, iamMetrics.OutcomeInvalidCredential)
-	}
-
-	now := time.Now().UTC()
-
-	// [COMMENT]: Tạo mới Token ID sử dụng UUIDv7 đóng vai trò JTI Claim
-	accessJTI, idErr := uuid.NewV7()
-	if idErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, idErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	// [COMMENT]: Sinh ngẫu nhiên access key để làm định danh phiên làm việc mới
-	accessKey := uuid.NewString()
-	// [COMMENT]: Sinh ngẫu nhiên access secret dài 32 bytes có tính mật mã bảo mật cao
-	accessSecret, secretErr := security.GenerateToken(32)
-	if secretErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, secretErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	accessExpiresAt := now.Add(s.cfg.Security.AccessSecretTTL)
-
-	// [COMMENT]: Ký JWT access token mới trực tiếp bằng Vault
-	accessToken, accessErr := security.SignWithSecret(security.Claims{
-		Subject:   user.ID.String(),
-		Role:      "",
-		Level:     0,
-		AccessKey: accessKey,
-		TokenID:   accessJTI.String(),
-		TokenUse:  "access",
-		IssuedAt:  now.Unix(),
-		ExpiresAt: accessExpiresAt.Unix(),
-	}, nil)
-	if accessErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, accessErr, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	// [COMMENT]: Tạo refresh token tiếp theo (rotation token)
-	rawNextRefreshToken, refreshErr := security.GenerateToken(43)
-	if refreshErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, refreshErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	nextRefreshID, refreshIDErr := uuid.NewV7()
-	if refreshIDErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrUuidGenerateFailed, refreshIDErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	nextRefreshExpiresAt := now.Add(s.cfg.Security.RefreshTokenTTL)
-	nextRefreshToken := iamEntity.RefreshToken{
-		ID:            nextRefreshID,
-		UserID:        session.UserID,
-		DeviceID:      &trackedDeviceID,
-		TokenHash:     security.HashTokenSHA256(rawNextRefreshToken),
-		TokenFamilyID: session.TokenFamilyID,
-		TenantID:      nil,
-		IssuedAt:      now,
-		ExpiresAt:     nextRefreshExpiresAt,
-	}
-
-	// [COMMENT]: Thực thi xoay vòng refresh token đồng bộ ở Postgres DB trong 1 Transaction
-	startRotate := time.Now()
-	if rotateErr := s.repo.RotateRefreshToken(ctx, *session, nextRefreshToken); rotateErr != nil {
-		if errors.Is(rotateErr, iamTaxonomy.ErrInvalidSession) || errors.Is(rotateErr, pgx.ErrNoRows) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RotateRefreshToken", iamMetrics.OutcomeInvalidCredential, time.Since(startRotate), rotateErr)
-			refreshOutcome = iamMetrics.OutcomeInvalidCredential
-			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, rotateErr, iamMetrics.OutcomeInvalidCredential)
-		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RotateRefreshToken", iamMetrics.OutcomeFailureUnknown, time.Since(startRotate), rotateErr)
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, rotateErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RotateRefreshToken", iamMetrics.OutcomeSuccess, time.Since(startRotate), nil)
-
-	// [COMMENT]: Đồng bộ trạng thái runtime của thiết bị vào Redis cache engine L2
-	newAccessSecretHash := security.HashTokenSHA256(accessSecret)
-	pbUser := &iamproto.UserAccessSession{
-		Ash:  newAccessSecretHash,
-		Tdid: trackedDeviceID.String(),
-		Lsa:  now.Unix(),
-	}
-	payload, marshalErr := proto.Marshal(pbUser)
-	if marshalErr != nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, marshalErr, iamMetrics.OutcomeFailureUnknown)
-	}
-
-	sessionKey := "iam:user_access_session:" + user.ID.String() + ":" + accessKey
-	indexKey := "iam:user_access_index:" + user.ID.String()
-	runtimeTTL := s.cfg.Security.AccessSecretTTL
-
-	// [COMMENT]: Kiểm tra an toàn xem cacheEngine hoặc L2 client có bị nil không (phổ biến trong môi trường chạy test cô lập)
-	// để tránh panic runtime và trả về lỗi ErrAuthenticationUnavailable đúng nghiệp vụ.
-	if s.cacheEngine == nil || s.cacheEngine.L2 == nil {
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, fmt.Errorf("cache engine L2 client is nil"), iamMetrics.OutcomeFailureUnknown)
-	}
-
-	startSetRuntime := time.Now()
-	rdb := s.cacheEngine.L2.Client()
-	pipe := rdb.Pipeline()
-	pipe.Set(ctx, sessionKey, payload, runtimeTTL)
-	pipe.SAdd(ctx, indexKey, accessKey)
-	pipe.Expire(ctx, indexKey, runtimeTTL*3)
-	_, setErr := pipe.Exec(ctx)
-
-	if setErr != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "setTrinityToken", iamMetrics.OutcomeFailureUnknown, time.Since(startSetRuntime), setErr)
-		refreshOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, setErr, iamMetrics.OutcomeFailureUnknown)
-	}
-	iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL1, "setTrinityToken", iamMetrics.OutcomeSuccess, time.Since(startSetRuntime), nil)
-
-	return &iamEntity.RefreshTokenResult{
-		AccessToken:      accessToken,
-		RefreshToken:     rawNextRefreshToken,
-		AccessKey:        accessKey,
-		AccessSecret:     accessSecret,
-		TrackedDeviceID:  trackedDeviceID.String(),
-		AccessExpiresAt:  accessExpiresAt,
-		RefreshExpiresAt: nextRefreshExpiresAt,
-	}, nil
-}
-
-// [COMMENT]: RefreshUserTrinity (Kiểu 1 - Sliding Session) đã được chuyển sang Rust ACL (ext_authz)
-// xử lý transparent tại tầng Envoy Gateway. Xem acl/src/service/rotate.rs.
+// [COMMENT]: Luồng HTTP refresh xoay vòng token kiểu cũ đã bị xóa. Việc xác thực & khôi phục phiên
+// hoàn toàn được thực hiện thông qua gRPC VerifyOpaqueRefreshToken kết nối từ ACL Gateway.
 
 
 // ======================================================================================================
@@ -433,14 +265,10 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 	// [COMMENT]: 2. Kết hợp với userID để tạo token hoàn chỉnh định dạng user_token (tổng cộng 36 + 1 + 32 = 69 ký tự)
 	rawRefresh := fmt.Sprintf("%s_%s", userID.String(), entropy)
 
-	// [COMMENT]: 3. Tạo UUID v7 cho ID và Family ID (phục vụ mục đích truy vết tuyến tính và rotation)
+	// [COMMENT]: 3. Tạo UUID v7 cho ID (phục vụ mục đích truy vết tuyến tính và rotation)
 	refreshID, err := uuid.NewV7()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("session refresh: failed to generate refresh ID: %w", err)
-	}
-	familyID, err := uuid.NewV7()
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("session refresh: failed to generate family ID: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -448,14 +276,13 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 
 	// [COMMENT]: 4. Chuẩn bị struct thực thể refresh token
 	rt := iamEntity.RefreshToken{
-		ID:            refreshID,
-		UserID:        userID,
-		DeviceID:      &deviceID,
-		TokenHash:     security.HashTokenSHA256(rawRefresh),
-		TokenFamilyID: familyID,
-		TenantID:      nil,
-		IssuedAt:      now,
-		ExpiresAt:     refreshExp,
+		ID:        refreshID,
+		UserID:    userID,
+		DeviceID:  &deviceID,
+		TokenHash: security.HashTokenSHA256(rawRefresh),
+		TenantID:  nil,
+		IssuedAt:  now,
+		ExpiresAt: refreshExp,
 	}
 
 	// [COMMENT]: 5. Ghi trực tiếp xuống DB PostgreSQL thông qua Repository của RefreshToken
@@ -465,7 +292,6 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 
 	return rawRefresh, refreshExp, nil
 }
-
 
 // ======================================================================================================
 // 4. CÁC PHƯƠNG THỨC THU HỒI PHỤ TRỢ (AUXILIARY REVOCATION METHODS)
@@ -480,6 +306,8 @@ func (s *SessionRefreshService) RevokeRefreshTokensByUserID(ctx context.Context,
 	return err
 }
 
+// VerifyOpaqueRefreshToken thực hiện kiểm tra tính hợp lệ của Refresh Token
+// acl call để cấp trinity token mới
 func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	// [COMMENT]: 1. Thực hiện băm SHA-256 token thô từ client để so khớp với cơ sở dữ liệu
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
@@ -526,16 +354,12 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		tenantIDStr = session.TenantID.String()
 	}
 
-	// [COMMENT]: 8. Đọc thông tin Zone ID (mặc định global hoặc custom từ metadata)
-	zoneID := "global"
-
 	return &iamEntity.VerifyOpaqueRefreshTokenResult{
 		Valid:    true,
 		UserID:   user.ID.String(),
 		TenantID: tenantIDStr,
 		Role:     roleCode,
 		Level:    int32(roleLevel),
-		ZoneID:   zoneID,
 	}, nil
 }
 
@@ -563,4 +387,3 @@ func (s *SessionRefreshService) RevokeOpaqueRefreshToken(ctx context.Context, ra
 
 	return nil
 }
-

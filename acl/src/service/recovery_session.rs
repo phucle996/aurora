@@ -33,6 +33,8 @@ fn build_success_response(
     new_access_key: &str,
     new_access_secret: &str,
     cookie_header: &str,
+    zone_id: &str,
+    zone_code: &str,
 ) -> Result<Response<CheckResponse>, Status> {
     let mut ok_response = CheckResponse::with_status(Status::ok("authorized"));
     ok_response.set_http_response(envoy_types::ext_authz::v3::pb::OkHttpResponse::default());
@@ -88,7 +90,17 @@ fn build_success_response(
                 });
             }
 
-            // [COMMENT]: Bơm Set-Cookie headers chứa bộ ba Trinity mới trả về cho client
+            // [COMMENT]: Chỉ inject header x-zone-id sang microservices, không gửi x-zone-code
+            ok.headers.push(HeaderValueOption {
+                header: Some(HeaderValue {
+                    key: "x-zone-id".to_string(),
+                    value: zone_id.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+
+            // [COMMENT]: Bơm Set-Cookie headers chứa bộ ba Trinity và zone_code mới trả về cho client
             let cookies = vec![
                 format!(
                     "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax",
@@ -101,6 +113,10 @@ fn build_success_response(
                 format!(
                     "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax",
                     new_access_secret
+                ),
+                format!(
+                    "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
+                    zone_code
                 ),
             ];
             for cookie in cookies {
@@ -123,13 +139,67 @@ fn build_success_response(
 pub async fn handle_session_recovery(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
+    zone_mgr: &Arc<crate::core::zone::ZoneManager>,
     control_plane_client: &Arc<ControlPlaneClient>,
     config: &Config,
     cookie_header: &str,
+    client_headers: &std::collections::HashMap<String, String>,
     err_msg: &str,
     method: &str,
     path: &str,
 ) -> Result<Response<CheckResponse>, Status> {
+    // [COMMENT]: Khách hàng bắt buộc phải cung cấp ngữ cảnh zone. Nếu thiếu hoặc sai -> Chặn ngay (Fail-Fast)
+    let zone_res = crate::service::zone_resolution::resolve_zone_context(
+        zone_mgr,
+        cookie_header,
+        client_headers,
+    )
+    .await;
+
+    let (resolved_zone_id, resolved_zone_code, resolved_zone_status) = match zone_res {
+        Ok(res) => res,
+        Err(err) => {
+            let msg = match err {
+                crate::service::zone_resolution::ZoneResolutionError::Missing => {
+                    "Missing zone context during session recovery"
+                }
+                crate::service::zone_resolution::ZoneResolutionError::InvalidCode(code) => {
+                    &format!("Requested zone code not found: {}", code)
+                }
+            };
+            Logger::authz_log(
+                "unknown",
+                method,
+                path,
+                "DENIED",
+                msg,
+            );
+            let mut denied_builder = DeniedHttpResponseBuilder::new();
+            denied_builder.set_http_status(HttpStatusCode::BadRequest);
+            let mut response = CheckResponse::new();
+            response.set_status(Status::invalid_argument("Missing or invalid zone context"));
+            response.set_http_response(denied_builder);
+            return Ok(Response::new(response));
+        }
+    };
+
+    // [COMMENT]: Chặn truy cập nếu zone đang không ở trạng thái hoạt động (active)
+    if resolved_zone_status != "active" {
+        Logger::authz_log(
+            "unknown",
+            method,
+            path,
+            "DENIED",
+            &format!("Forbidden access to inactive zone ({}): user_id=unknown", resolved_zone_code),
+        );
+        let mut denied_builder = DeniedHttpResponseBuilder::new();
+        denied_builder.set_http_status(HttpStatusCode::Forbidden);
+        let mut response = CheckResponse::new();
+        response.set_status(Status::permission_denied("Forbidden access to inactive zone"));
+        response.set_http_response(denied_builder);
+        return Ok(Response::new(response));
+    }
+
     // [COMMENT]: Mặc định nếu không có refresh token hoặc xác thực thất bại sẽ xóa sạch cookies
     let mut clear_refresh_token = true;
     let mut final_err_msg = err_msg.to_string();
@@ -162,6 +232,8 @@ pub async fn handle_session_recovery(
                     &cached.new_access_key,
                     &cached.new_access_secret,
                     cookie_header,
+                    &cached.zone_id,
+                    &cached.zone_code,
                 );
             }
             Err(e) => {
@@ -211,6 +283,8 @@ pub async fn handle_session_recovery(
                                 &cached.new_access_key,
                                 &cached.new_access_secret,
                                 cookie_header,
+                                &cached.zone_id,
+                                &cached.zone_code,
                             );
                         }
                         Ok(None) => {
@@ -265,6 +339,28 @@ pub async fn handle_session_recovery(
             .await
         {
             Ok(verify_res) if verify_res.valid => {
+                // [COMMENT]: Kiểm tra ràng buộc admin với zone global
+                if !verify_res.role.eq_ignore_ascii_case("admin")
+                    && (resolved_zone_code == "global" || resolved_zone_id == "00000000-0000-0000-0000-000000000000")
+                {
+                    Logger::authz_log(
+                        &verify_res.user_id,
+                        method,
+                        path,
+                        "DENIED",
+                        &format!("Forbidden global zone access for non-admin: user_id={}", verify_res.user_id),
+                    );
+                    if is_leader {
+                        release_recovery_lock(session_mgr, &token_hash).await;
+                    }
+                    let mut denied_builder = DeniedHttpResponseBuilder::new();
+                    denied_builder.set_http_status(HttpStatusCode::Forbidden);
+                    let mut response = CheckResponse::new();
+                    response.set_status(Status::permission_denied("Forbidden access to global zone"));
+                    response.set_http_response(denied_builder);
+                    return Ok(Response::new(response));
+                }
+
                 // [COMMENT]: 1. Sinh bộ Trinity Credentials mới gồm Access Key và Access Secret
                 let new_access_key = uuid::Uuid::now_v7().to_string();
                 let new_access_secret = uuid::Uuid::new_v4().to_string();
@@ -278,7 +374,7 @@ pub async fn handle_session_recovery(
                 let now_unix = chrono::Utc::now().timestamp();
                 let exp_unix = now_unix + config.session_ttl_secs as i64;
 
-                // [COMMENT]: 4. Tạo Claims mới cho JWT Access Token (không bao gồm zone_id, zone xử lý sau)
+                // [COMMENT]: 4. Tạo Claims mới cho JWT Access Token chứa resolved_zone_id
                 let new_claims = Claims {
                     sub: verify_res.user_id.clone(),
                     role: verify_res.role.clone(),
@@ -288,7 +384,7 @@ pub async fn handle_session_recovery(
                     } else {
                         Some(verify_res.tenant_id.clone())
                     },
-                    zone_id: None,
+                    zone_id: Some(resolved_zone_id.clone()),
                     access_key: new_access_key.clone(),
                     jti: uuid::Uuid::new_v4().to_string(),
                     iss: Some("aurora-acl".to_string()),
@@ -306,7 +402,7 @@ pub async fn handle_session_recovery(
                                 &new_access_key,
                                 &new_ash,
                                 &device_id,
-                            )
+                             )
                             .await
                         {
                             Ok(_) => {
@@ -327,6 +423,8 @@ pub async fn handle_session_recovery(
                                     new_jwt: new_jwt.clone(),
                                     new_access_key: new_access_key.clone(),
                                     new_access_secret: new_access_secret.clone(),
+                                    zone_id: resolved_zone_id.clone(),
+                                    zone_code: resolved_zone_code.clone(),
                                 };
                                 if is_leader {
                                     if let Err(e) = session_mgr
@@ -350,6 +448,8 @@ pub async fn handle_session_recovery(
                                     &new_access_key,
                                     &new_access_secret,
                                     cookie_header,
+                                    &resolved_zone_id,
+                                    &resolved_zone_code,
                                 );
                             }
                             Err(e) => {

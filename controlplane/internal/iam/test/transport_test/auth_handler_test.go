@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"controlplane/internal/config"
 	"controlplane/internal/cacheengine"
+	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
 	middleware "controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -41,10 +41,16 @@ func (s *authServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefre
 	return nil
 }
 
-func (s *authServiceStub) Login(ctx context.Context, req iamEntity.LoginRequest) error {
-	return s.loginErr
+// [COMMENT]: Thêm stub VerifyUserCredentials để thoả mãn interface AuthService
+func (s *authServiceStub) VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.VerifyUserCredentialsResult, error) {
+	if s.loginErr != nil {
+		return nil, s.loginErr
+	}
+	return &iamEntity.VerifyUserCredentialsResult{
+		Valid:  true,
+		UserID: "test-user-id",
+	}, nil
 }
-
 
 func (s *authServiceStub) VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error) {
 	return nil, nil
@@ -53,8 +59,6 @@ func (s *authServiceStub) VerifyUserTrinitySession(ctx context.Context, token st
 func (s *authServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	return nil, nil
 }
-
-
 
 func newAuthHandler(service iamSvcInterface.AuthService) *handler.AuthHandler {
 	cfg := config.LoadConfig()
@@ -140,81 +144,6 @@ func TestRegisterAccount_InternalError(t *testing.T) {
 	}
 }
 
-// TestLogin_BadRequest kiểm thử trường hợp yêu cầu đăng nhập gửi dữ liệu sai định dạng
-func TestLogin_BadRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{})
-	router.POST("/login", h.Login)
-
-	body, _ := json.Marshal(map[string]any{"username": "abc", "password": "123"})
-	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-// TestLogin_InvalidCredentials kiểm thử khi thông tin đăng nhập (username/password) sai
-func TestLogin_InvalidCredentials(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrInvalidCredentials})
-	router.POST("/login", h.Login)
-
-	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
-	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-// TestLogin_VerificationRequired kiểm thử trường hợp đăng nhập đúng nhưng cần xác thực 2FA/MFA
-func TestLogin_VerificationRequired(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{loginErr: iamTaxonomy.ErrVerificationRequired})
-	router.POST("/login", h.Login)
-
-	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
-	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", w.Code)
-	}
-}
-
-// TestLogin_SuccessSetsCookies kiểm thử đăng nhập thành công và thiết lập đúng các session cookies
-func TestLogin_SuccessSetsCookies(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{})
-	router.POST("/login", h.Login)
-
-	body, _ := json.Marshal(map[string]any{"username": "alice01", "password": "secret123", "device_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "zone_code": "global"})
-	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", w.Code)
-	}
-	cookies := w.Result().Cookies()
-	if len(cookies) != 0 {
-		t.Fatalf("expected 0 cookies since Envoy handles them, got %d", len(cookies))
-	}
-	if w.Result().Header.Get("X-Client-Device-Id") != "" {
-		t.Fatalf("expected no X-Client-Device-Id header, got %q", w.Result().Header.Get("X-Client-Device-Id"))
-	}
-}
-
 // TestSession_Unauthorized kiểm thử việc truy cập session endpoint khi không có token định danh
 func TestSession_Unauthorized(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -265,7 +194,6 @@ func TestSession_Success(t *testing.T) {
 		t.Fatalf("expected authenticated true payload, got %s", got)
 	}
 }
-
 
 // TestSession_ReadOnly kiểm thử tính năng session endpoint là read-only (không được ghi lại/cập nhật cookies mới)
 func TestSession_ReadOnly(t *testing.T) {

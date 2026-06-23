@@ -10,8 +10,8 @@ pub mod zone_proto {
 
 use auth::auth_service_client::AuthServiceClient;
 use auth::RevokeOpaqueRefreshTokenRequest;
-use zone_proto::zone_service_client::ZoneServiceClient;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
+use zone_proto::zone_service_client::ZoneServiceClient;
 
 // [COMMENT]: Client tương tác với Control Plane gRPC server để thực hiện các cuộc gọi nghiệp vụ nội bộ
 #[derive(Clone)]
@@ -82,7 +82,10 @@ impl ControlPlaneClient {
         let client = AuthServiceClient::new(channel.clone());
         let zone_client = ZoneServiceClient::new(channel);
 
-        Self { client, zone_client }
+        Self {
+            client,
+            zone_client,
+        }
     }
 
     // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ (gọi qua gRPC đến CP)
@@ -130,6 +133,27 @@ impl ControlPlaneClient {
         }
 
         let response = client.verify_opaque_refresh_token(request).await?;
+        Ok(response.into_inner())
+    }
+
+    // [COMMENT]: Gọi gRPC VerifyUserCredentials sang Control Plane để xác thực mật khẩu & thiết bị thô
+    pub async fn verify_user_credentials(
+        &self,
+        request: auth::VerifyUserCredentialsRequest,
+    ) -> Result<auth::VerifyUserCredentialsResponse, tonic::Status> {
+        let mut client = self.client.clone();
+        let mut grpc_req = tonic::Request::new(request);
+
+        // [COMMENT]: Bơm traceparent W3C vào gRPC Metadata để tiếp tục distributed tracing ở Controlplane (Go)
+        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+            if let Ok(meta_val) = tonic::metadata::MetadataValue::try_from(&traceparent) {
+                grpc_req.metadata_mut().insert("traceparent", meta_val);
+            }
+        }
+
+        let response = client.verify_user_credentials(grpc_req).await?;
         Ok(response.into_inner())
     }
 

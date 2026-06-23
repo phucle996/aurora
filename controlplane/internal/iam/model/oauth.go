@@ -191,7 +191,6 @@ type OAuthToken struct {
 	GrantID          *uuid.UUID `db:"grant_id"`
 	AccessTokenHash  string     `db:"access_token_hash"`
 	RefreshTokenHash *string    `db:"refresh_token_hash"`
-	TokenFamilyID    string     `db:"token_family_id"`
 	Scopes           []string   `db:"scopes"`
 	IssuedAt         time.Time  `db:"issued_at"`
 	ExpiresAt        time.Time  `db:"expires_at"`
@@ -207,7 +206,6 @@ func OAuthTokenEntityToModel(input iamEntity.OAuthToken) OAuthToken {
 		GrantID:          input.GrantID,
 		AccessTokenHash:  input.AccessTokenHash,
 		RefreshTokenHash: input.RefreshTokenHash,
-		TokenFamilyID:    input.TokenFamilyID,
 		Scopes:           input.Scopes,
 		IssuedAt:         input.IssuedAt,
 		ExpiresAt:        input.ExpiresAt,
@@ -222,7 +220,6 @@ func OAuthTokenModelToEntity(input OAuthToken) iamEntity.OAuthToken {
 		GrantID:          input.GrantID,
 		AccessTokenHash:  input.AccessTokenHash,
 		RefreshTokenHash: input.RefreshTokenHash,
-		TokenFamilyID:    input.TokenFamilyID,
 		Scopes:           input.Scopes,
 		IssuedAt:         input.IssuedAt,
 		ExpiresAt:        input.ExpiresAt,

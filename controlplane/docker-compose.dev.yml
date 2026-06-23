@@ -693,7 +693,6 @@ services:
       VAULT_MAX_RETRIES: "3"
       SESSION_TTL_SECS: "1800"
       REFRESH_THRESHOLD_SECS: "900"
-      GRACE_PERIOD_SECS: "15"
       # [COMMENT]: ACL cần gọi ngược Controlplane cho opaque refresh token (chưa chuyển)
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"

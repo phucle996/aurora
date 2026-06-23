@@ -209,7 +209,7 @@ impl SessionManager {
 
         // 3. Thực thi Pipeline nguyên tử:
         // - Tạo session mới với đầy đủ TTL
-        // - Chuyển session cũ sang thời gian sống ngắn hạn (Grace Period - 15 giây) để tránh lỗi 401 cho các request đang bay lơ lửng
+        // - [COMMENT]: Chuyển session cũ sang thời gian sống ngắn hạn (Grace Period - hardcode 5 giây) để tránh lỗi 401 cho các request đang bay lơ lửng.
         // - [COMMENT]: Thêm AccessKey mới vào index và xoá AccessKey cũ để đảm bảo tính năng đăng xuất thiết bị khác/thu hồi hoạt động chính xác.
         redis::pipe()
             .atomic()
@@ -221,7 +221,7 @@ impl SessionManager {
             .arg(self.config.session_ttl_secs)
             .cmd("EXPIRE")
             .arg(&old_redis_key)
-            .arg(self.config.grace_period_secs)
+            .arg(5) // [COMMENT]: Hardcode grace period 5 giây để giải phóng nhanh RAM và nâng cao bảo mật (thu hẹp replay attack window).
             .cmd("SADD")
             .arg(&index_key)
             .arg(new_access_key)
@@ -391,4 +391,6 @@ pub struct RecoverySessionCache {
     pub new_jwt: String,
     pub new_access_key: String,
     pub new_access_secret: String,
+    pub zone_id: String,
+    pub zone_code: String,
 }

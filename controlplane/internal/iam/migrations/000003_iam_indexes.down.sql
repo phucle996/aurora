@@ -1,3 +1,4 @@
+DROP INDEX IF EXISTS idx_iam_outbox_pending;
 DROP INDEX IF EXISTS audit_events_created_at_idx;
 DROP INDEX IF EXISTS audit_events_severity_idx;
 DROP INDEX IF EXISTS audit_events_event_idx;
@@ -19,7 +20,6 @@ DROP INDEX IF EXISTS admin_api_keys_expires_at_idx_v1;
 DROP INDEX IF EXISTS admin_api_keys_key_hash_uidx;
 
 DROP INDEX IF EXISTS oauth_tokens_expires_at_idx;
-DROP INDEX IF EXISTS oauth_tokens_family_idx;
 DROP INDEX IF EXISTS oauth_tokens_grant_id_idx;
 DROP INDEX IF EXISTS oauth_tokens_user_id_idx;
 DROP INDEX IF EXISTS oauth_tokens_client_id_idx;
@@ -89,7 +89,6 @@ DROP INDEX IF EXISTS devices_user_fingerprint_idx;
 DROP INDEX IF EXISTS devices_user_client_device_uidx;
 DROP INDEX IF EXISTS devices_user_active_seen_idx;
 
-DROP INDEX IF EXISTS refresh_tokens_family_idx;
 DROP INDEX IF EXISTS refresh_tokens_expires_at_idx;
 DROP INDEX IF EXISTS refresh_tokens_tenant_id_idx;
 DROP INDEX IF EXISTS refresh_tokens_device_id_idx;

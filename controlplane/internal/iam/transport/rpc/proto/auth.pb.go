@@ -493,6 +493,341 @@ func (*RevokeOpaqueRefreshTokenResponse) Descriptor() ([]byte, []int) {
 	return file_auth_proto_rawDescGZIP(), []int{7}
 }
 
+// [COMMENT]: Request xác thực thông tin đăng nhập thô từ client gửi lên gateway
+type VerifyUserCredentialsRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Username       string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"`                                     // Tên đăng nhập hoặc Email của người dùng
+	Password       string                 `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`                                     // Mật khẩu dạng plain-text cần xác thực
+	ClientDeviceId string                 `protobuf:"bytes,3,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"` // UUID định danh thiết bị gửi lên từ cookie (nếu có)
+	DeviceName     string                 `protobuf:"bytes,4,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`               // Tên hiển thị của thiết bị (ví dụ: Chrome on Windows)
+	DeviceType     string                 `protobuf:"bytes,5,opt,name=device_type,json=deviceType,proto3" json:"device_type,omitempty"`               // OS/Platform và phiên bản của thiết bị (ví dụ: "Windows 11", "macOS 14", "iOS 17")
+	PublicKey      string                 `protobuf:"bytes,6,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`                  // Khóa Ed25519 public key dạng base64 phục vụ xác thực chữ ký/thiết bị tin cậy
+	Signature      string                 `protobuf:"bytes,7,opt,name=signature,proto3" json:"signature,omitempty"`                                   // Chữ ký bảo mật (signature) nếu có
+	TrustDevice    bool                   `protobuf:"varint,8,opt,name=trust_device,json=trustDevice,proto3" json:"trust_device,omitempty"`           // Cờ xác định có cấp refresh token hay không (trusted device)
+	ClientIp       string                 `protobuf:"bytes,9,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`                     // Địa chỉ IP của Client (trích xuất từ X-Forwarded-For hoặc Envoy context)
+	UserAgent      string                 `protobuf:"bytes,10,opt,name=user_agent,json=userAgent,proto3" json:"user_agent,omitempty"`                 // Chuỗi User-Agent của client phục vụ tracking
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *VerifyUserCredentialsRequest) Reset() {
+	*x = VerifyUserCredentialsRequest{}
+	mi := &file_auth_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyUserCredentialsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyUserCredentialsRequest) ProtoMessage() {}
+
+func (x *VerifyUserCredentialsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyUserCredentialsRequest.ProtoReflect.Descriptor instead.
+func (*VerifyUserCredentialsRequest) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *VerifyUserCredentialsRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetDeviceType() string {
+	if x != nil {
+		return x.DeviceType
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetSignature() string {
+	if x != nil {
+		return x.Signature
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetTrustDevice() bool {
+	if x != nil {
+		return x.TrustDevice
+	}
+	return false
+}
+
+func (x *VerifyUserCredentialsRequest) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsRequest) GetUserAgent() string {
+	if x != nil {
+		return x.UserAgent
+	}
+	return ""
+}
+
+// [COMMENT]: Response trả về trạng thái xác thực và các thông tin định danh/claim
+type VerifyUserCredentialsResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Valid          bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`                                          // Cờ báo hiệu xác thực thông tin thành công hay thất bại
+	UserId         string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                           // UUID của người dùng dưới dạng chuỗi
+	Role           string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`                                             // Quyền của người dùng (RBAC role - ví dụ: user, admin)
+	Level          int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`                                          // Cấp độ quyền (level)
+	TenantId       string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                     // ID của Tenant liên đới (nếu có)
+	ClientDeviceId string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"` // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
+	RefreshToken   string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`         // Opaque Refresh Token được sinh bởi CP để ACL ghi nhận cookie (nếu trust_device=true)
+	ErrorMessage   string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`         // Mô tả lỗi chi tiết nếu valid = false
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *VerifyUserCredentialsResponse) Reset() {
+	*x = VerifyUserCredentialsResponse{}
+	mi := &file_auth_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyUserCredentialsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyUserCredentialsResponse) ProtoMessage() {}
+
+func (x *VerifyUserCredentialsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyUserCredentialsResponse.ProtoReflect.Descriptor instead.
+func (*VerifyUserCredentialsResponse) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *VerifyUserCredentialsResponse) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+func (x *VerifyUserCredentialsResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsResponse) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsResponse) GetLevel() int32 {
+	if x != nil {
+		return x.Level
+	}
+	return 0
+}
+
+func (x *VerifyUserCredentialsResponse) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsResponse) GetClientDeviceId() string {
+	if x != nil {
+		return x.ClientDeviceId
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsResponse) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+// [COMMENT]: AdminAccessSession đại diện cho session của SRE Admin lưu trữ trong Redis L2
+type AdminAccessSession struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	AccessKey         string                 `protobuf:"bytes,1,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
+	AccessSecretHash  string                 `protobuf:"bytes,2,opt,name=access_secret_hash,json=accessSecretHash,proto3" json:"access_secret_hash,omitempty"`
+	TrackedDeviceId   string                 `protobuf:"bytes,3,opt,name=tracked_device_id,json=trackedDeviceId,proto3" json:"tracked_device_id,omitempty"`
+	DevicePublicKey   string                 `protobuf:"bytes,4,opt,name=device_public_key,json=devicePublicKey,proto3" json:"device_public_key,omitempty"`
+	TokenJti          string                 `protobuf:"bytes,5,opt,name=token_jti,json=tokenJti,proto3" json:"token_jti,omitempty"`
+	Version           int64                  `protobuf:"varint,6,opt,name=version,proto3" json:"version,omitempty"`
+	LastSeenAt        int64                  `protobuf:"varint,7,opt,name=last_seen_at,json=lastSeenAt,proto3" json:"last_seen_at,omitempty"`
+	LastSeenIp        string                 `protobuf:"bytes,8,opt,name=last_seen_ip,json=lastSeenIp,proto3" json:"last_seen_ip,omitempty"`
+	LastSeenUserAgent string                 `protobuf:"bytes,9,opt,name=last_seen_user_agent,json=lastSeenUserAgent,proto3" json:"last_seen_user_agent,omitempty"`
+	LastSeenDirty     bool                   `protobuf:"varint,10,opt,name=last_seen_dirty,json=lastSeenDirty,proto3" json:"last_seen_dirty,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *AdminAccessSession) Reset() {
+	*x = AdminAccessSession{}
+	mi := &file_auth_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminAccessSession) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminAccessSession) ProtoMessage() {}
+
+func (x *AdminAccessSession) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminAccessSession.ProtoReflect.Descriptor instead.
+func (*AdminAccessSession) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *AdminAccessSession) GetAccessKey() string {
+	if x != nil {
+		return x.AccessKey
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetAccessSecretHash() string {
+	if x != nil {
+		return x.AccessSecretHash
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetTrackedDeviceId() string {
+	if x != nil {
+		return x.TrackedDeviceId
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetDevicePublicKey() string {
+	if x != nil {
+		return x.DevicePublicKey
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetTokenJti() string {
+	if x != nil {
+		return x.TokenJti
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *AdminAccessSession) GetLastSeenAt() int64 {
+	if x != nil {
+		return x.LastSeenAt
+	}
+	return 0
+}
+
+func (x *AdminAccessSession) GetLastSeenIp() string {
+	if x != nil {
+		return x.LastSeenIp
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetLastSeenUserAgent() string {
+	if x != nil {
+		return x.LastSeenUserAgent
+	}
+	return ""
+}
+
+func (x *AdminAccessSession) GetLastSeenDirty() bool {
+	if x != nil {
+		return x.LastSeenDirty
+	}
+	return false
+}
+
 var File_auth_proto protoreflect.FileDescriptor
 
 const file_auth_proto_rawDesc = "" +
@@ -530,12 +865,53 @@ const file_auth_proto_rawDesc = "" +
 	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\"F\n" +
 	"\x1fRevokeOpaqueRefreshTokenRequest\x12#\n" +
 	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"\"\n" +
-	" RevokeOpaqueRefreshTokenResponse2\xc8\x03\n" +
+	" RevokeOpaqueRefreshTokenResponse\"\xde\x02\n" +
+	"\x1cVerifyUserCredentialsRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12(\n" +
+	"\x10client_device_id\x18\x03 \x01(\tR\x0eclientDeviceId\x12\x1f\n" +
+	"\vdevice_name\x18\x04 \x01(\tR\n" +
+	"deviceName\x12\x1f\n" +
+	"\vdevice_type\x18\x05 \x01(\tR\n" +
+	"deviceType\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x06 \x01(\tR\tpublicKey\x12\x1c\n" +
+	"\tsignature\x18\a \x01(\tR\tsignature\x12!\n" +
+	"\ftrust_device\x18\b \x01(\bR\vtrustDevice\x12\x1b\n" +
+	"\tclient_ip\x18\t \x01(\tR\bclientIp\x12\x1d\n" +
+	"\n" +
+	"user_agent\x18\n" +
+	" \x01(\tR\tuserAgent\"\x89\x02\n" +
+	"\x1dVerifyUserCredentialsResponse\x12\x14\n" +
+	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x12\n" +
+	"\x04role\x18\x03 \x01(\tR\x04role\x12\x14\n" +
+	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
+	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
+	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
+	"\rrefresh_token\x18\a \x01(\tR\frefreshToken\x12#\n" +
+	"\rerror_message\x18\b \x01(\tR\ferrorMessage\"\x8d\x03\n" +
+	"\x12AdminAccessSession\x12\x1d\n" +
+	"\n" +
+	"access_key\x18\x01 \x01(\tR\taccessKey\x12,\n" +
+	"\x12access_secret_hash\x18\x02 \x01(\tR\x10accessSecretHash\x12*\n" +
+	"\x11tracked_device_id\x18\x03 \x01(\tR\x0ftrackedDeviceId\x12*\n" +
+	"\x11device_public_key\x18\x04 \x01(\tR\x0fdevicePublicKey\x12\x1b\n" +
+	"\ttoken_jti\x18\x05 \x01(\tR\btokenJti\x12\x18\n" +
+	"\aversion\x18\x06 \x01(\x03R\aversion\x12 \n" +
+	"\flast_seen_at\x18\a \x01(\x03R\n" +
+	"lastSeenAt\x12 \n" +
+	"\flast_seen_ip\x18\b \x01(\tR\n" +
+	"lastSeenIp\x12/\n" +
+	"\x14last_seen_user_agent\x18\t \x01(\tR\x11lastSeenUserAgent\x12&\n" +
+	"\x0flast_seen_dirty\x18\n" +
+	" \x01(\bR\rlastSeenDirty2\xb0\x04\n" +
 	"\vAuthService\x12l\n" +
 	"\x17VerifyAdminTrinityToken\x12'.iam.rpc.VerifyAdminTrinityTokenRequest\x1a(.iam.rpc.VerifyAdminTrinityTokenResponse\x12i\n" +
 	"\x16VerifyUserTrinityToken\x12&.iam.rpc.VerifyUserTrinityTokenRequest\x1a'.iam.rpc.VerifyUserTrinityTokenResponse\x12o\n" +
 	"\x18VerifyOpaqueRefreshToken\x12(.iam.rpc.VerifyOpaqueRefreshTokenRequest\x1a).iam.rpc.VerifyOpaqueRefreshTokenResponse\x12o\n" +
-	"\x18RevokeOpaqueRefreshToken\x12(.iam.rpc.RevokeOpaqueRefreshTokenRequest\x1a).iam.rpc.RevokeOpaqueRefreshTokenResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
+	"\x18RevokeOpaqueRefreshToken\x12(.iam.rpc.RevokeOpaqueRefreshTokenRequest\x1a).iam.rpc.RevokeOpaqueRefreshTokenResponse\x12f\n" +
+	"\x15VerifyUserCredentials\x12%.iam.rpc.VerifyUserCredentialsRequest\x1a&.iam.rpc.VerifyUserCredentialsResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
 	file_auth_proto_rawDescOnce sync.Once
@@ -549,7 +925,7 @@ func file_auth_proto_rawDescGZIP() []byte {
 	return file_auth_proto_rawDescData
 }
 
-var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_auth_proto_goTypes = []any{
 	(*VerifyAdminTrinityTokenRequest)(nil),   // 0: iam.rpc.VerifyAdminTrinityTokenRequest
 	(*VerifyAdminTrinityTokenResponse)(nil),  // 1: iam.rpc.VerifyAdminTrinityTokenResponse
@@ -559,18 +935,23 @@ var file_auth_proto_goTypes = []any{
 	(*VerifyOpaqueRefreshTokenResponse)(nil), // 5: iam.rpc.VerifyOpaqueRefreshTokenResponse
 	(*RevokeOpaqueRefreshTokenRequest)(nil),  // 6: iam.rpc.RevokeOpaqueRefreshTokenRequest
 	(*RevokeOpaqueRefreshTokenResponse)(nil), // 7: iam.rpc.RevokeOpaqueRefreshTokenResponse
+	(*VerifyUserCredentialsRequest)(nil),     // 8: iam.rpc.VerifyUserCredentialsRequest
+	(*VerifyUserCredentialsResponse)(nil),    // 9: iam.rpc.VerifyUserCredentialsResponse
+	(*AdminAccessSession)(nil),               // 10: iam.rpc.AdminAccessSession
 }
 var file_auth_proto_depIdxs = []int32{
 	0, // 0: iam.rpc.AuthService.VerifyAdminTrinityToken:input_type -> iam.rpc.VerifyAdminTrinityTokenRequest
 	2, // 1: iam.rpc.AuthService.VerifyUserTrinityToken:input_type -> iam.rpc.VerifyUserTrinityTokenRequest
 	4, // 2: iam.rpc.AuthService.VerifyOpaqueRefreshToken:input_type -> iam.rpc.VerifyOpaqueRefreshTokenRequest
 	6, // 3: iam.rpc.AuthService.RevokeOpaqueRefreshToken:input_type -> iam.rpc.RevokeOpaqueRefreshTokenRequest
-	1, // 4: iam.rpc.AuthService.VerifyAdminTrinityToken:output_type -> iam.rpc.VerifyAdminTrinityTokenResponse
-	3, // 5: iam.rpc.AuthService.VerifyUserTrinityToken:output_type -> iam.rpc.VerifyUserTrinityTokenResponse
-	5, // 6: iam.rpc.AuthService.VerifyOpaqueRefreshToken:output_type -> iam.rpc.VerifyOpaqueRefreshTokenResponse
-	7, // 7: iam.rpc.AuthService.RevokeOpaqueRefreshToken:output_type -> iam.rpc.RevokeOpaqueRefreshTokenResponse
-	4, // [4:8] is the sub-list for method output_type
-	0, // [0:4] is the sub-list for method input_type
+	8, // 4: iam.rpc.AuthService.VerifyUserCredentials:input_type -> iam.rpc.VerifyUserCredentialsRequest
+	1, // 5: iam.rpc.AuthService.VerifyAdminTrinityToken:output_type -> iam.rpc.VerifyAdminTrinityTokenResponse
+	3, // 6: iam.rpc.AuthService.VerifyUserTrinityToken:output_type -> iam.rpc.VerifyUserTrinityTokenResponse
+	5, // 7: iam.rpc.AuthService.VerifyOpaqueRefreshToken:output_type -> iam.rpc.VerifyOpaqueRefreshTokenResponse
+	7, // 8: iam.rpc.AuthService.RevokeOpaqueRefreshToken:output_type -> iam.rpc.RevokeOpaqueRefreshTokenResponse
+	9, // 9: iam.rpc.AuthService.VerifyUserCredentials:output_type -> iam.rpc.VerifyUserCredentialsResponse
+	5, // [5:10] is the sub-list for method output_type
+	0, // [0:5] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -587,7 +968,7 @@ func file_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

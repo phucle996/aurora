@@ -56,20 +56,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.AuthHandler.RegisterAccount,
 	)
 
-	// 2) Đăng nhập tài khoản: Giới hạn brute-force đăng nhập.
-	// Tương tự, hoạt động ở chế độ fallback IP-only do chưa có thông tin identity.
-	router.POST("/api/v1/auth/login",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/login"),
-		module.AuthHandler.Login,
-	)
-
-	// 3) Opaque Refresh Token (Kiểu 2): Tái cấp phát phiên mới khi trinity đã hết hạn.
-	// Route này KHÔNG yêu cầu ACL middleware vì trinity đã chết. Chỉ cần cookie refresh_token.
-	// Use case: user đóng browser, hôm sau quay lại → trinity hết hạn nhưng refresh token (30 ngày) còn sống.
-	router.POST("/api/v1/auth/refresh",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/refresh"),
-		module.RefreshTokenHandler.Refresh,
-	)
 
 
 	// 4) Lấy thông tin phiên làm việc hiện tại
@@ -78,8 +64,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/session"),
 		module.AuthHandler.Session,
 	)
-
-
 
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",

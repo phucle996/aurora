@@ -40,9 +40,9 @@ func TestRefreshTokenRepoRevokeByScope(t *testing.T) {
 	}
 
 	_, err = db.Exec(ctx,
-		"INSERT INTO "+cfg.SchemaSQL.IAM+".refresh_tokens (id,user_id,device_id,token_hash,token_family_id,tenant_id,issued_at,expires_at) VALUES ($1,$2,$3,$4,$5,NULL,$6,$7),($8,$2,$9,$10,$11,NULL,$6,$7)",
-		uuid.New(), userID, d1, "h1", uuid.New(), now, now.Add(24*time.Hour),
-		uuid.New(), d2, "h2", uuid.New(),
+		"INSERT INTO "+cfg.SchemaSQL.IAM+".refresh_tokens (id,user_id,device_id,token_hash,tenant_id,issued_at,expires_at) VALUES ($1,$2,$3,$4,NULL,$5,$6),($7,$2,$8,$9,NULL,$5,$6)",
+		uuid.New(), userID, d1, "h1", now, now.Add(24*time.Hour),
+		uuid.New(), d2, "h2",
 	)
 	if err != nil {
 		t.Fatalf("seed refresh tokens: %v", err)

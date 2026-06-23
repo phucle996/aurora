@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	coreEntity "controlplane/internal/core/domain/entity"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -14,8 +13,6 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	"controlplane/internal/security"
-	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -121,56 +118,76 @@ func (m *refreshTokenRepoMock) CreateRefreshTokenSession(ctx context.Context, to
 	return nil
 }
 
-// [COMMENT]: Thêm mock DeleteRefreshTokenSessionByHash để thoả mãn interface mới
 func (m *refreshTokenRepoMock) DeleteRefreshTokenSessionByHash(ctx context.Context, tokenHash string) (int64, error) {
 	return 0, nil
 }
 
-func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.SessionRefreshService {
+type refreshRbacRepoMock struct {
+	iamRepoInterface.RbacRepository
+	getUserRoleAndLevelByScopeFn func(ctx context.Context, userID uuid.UUID, scope string) (string, int, error)
+}
+
+func (m *refreshRbacRepoMock) GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error) {
+	if m.getUserRoleAndLevelByScopeFn != nil {
+		return m.getUserRoleAndLevelByScopeFn(ctx, userID, scope)
+	}
+	return "user", 1, nil
+}
+
+func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, rbacRepo iamRepoInterface.RbacRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.SessionRefreshService {
 	cfg := &config.Config{}
 	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
-	return iamSvcImpl.NewSessionRefreshService(cfg, repo, nil, nil, registry)
+	return iamSvcImpl.NewSessionRefreshService(cfg, repo, nil, rbacRepo, registry)
 }
-
 
 func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, nil
-	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-		t.Fatalf("expected ErrInvalidSession, got %v", err)
+	}}, nil, nil)
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Valid {
+		t.Fatal("expected invalid token result")
 	}
 }
 
 func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, iamTaxonomy.ErrNotFound
-	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-		t.Fatalf("expected ErrInvalidSession, got %v", err)
+	}}, nil, nil)
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
+	if res.Valid {
+		t.Fatal("expected invalid token result")
 	}
-	if appErr.Outcome != "invalid_credential" {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
-	}
-	if !errors.Is(appErr.Cause, iamTaxonomy.ErrNotFound) {
-		t.Fatalf("expected iamTaxonomy.ErrNotFound cause preserved")
+}
+
+func TestRefreshTokenServiceDatabaseError(t *testing.T) {
+	dbErr := errors.New("db error")
+	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
+		return nil, dbErr
+	}}, nil, nil)
+	_, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
 func TestRefreshTokenServiceInvalidSessionWhenExpired(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
-	}}, makeTestRegistry("secret-key", nil))
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-		t.Fatalf("expected ErrInvalidSession, got %v", err)
+		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
+	}}, nil, nil)
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Valid {
+		t.Fatal("expected invalid token result")
 	}
 }
 
@@ -179,15 +196,18 @@ func TestRefreshTokenServiceInvalidSessionWhenUserStatusBlocked(t *testing.T) {
 	deviceID := uuid.New()
 	svc := newRefreshTokenService(&refreshTokenRepoMock{
 		getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
+			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 		},
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusDisabled}, nil
 		},
-	}, makeTestRegistry("secret-key", nil))
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-		t.Fatalf("expected ErrInvalidSession, got %v", err)
+	}, nil, nil)
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Valid {
+		t.Fatal("expected invalid token result")
 	}
 }
 
@@ -196,94 +216,27 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 	deviceID := uuid.New()
 	svc := newRefreshTokenService(&refreshTokenRepoMock{
 		getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
+			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 		},
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return nil, pgx.ErrNoRows
 		},
-	}, makeTestRegistry("secret-key", nil))
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-		t.Fatalf("expected ErrInvalidSession, got %v", err)
+	}, nil, nil)
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
 	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
-	}
-	if appErr.Outcome != "invalid_credential" {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
-	}
-	if !errors.Is(appErr.Cause, iamTaxonomy.ErrNotFound) {
-		t.Fatalf("expected iamTaxonomy.ErrNotFound cause preserved")
-	}
-}
-
-func TestRefreshTokenServiceAuthenticationUnavailable(t *testing.T) {
-	userID := uuid.New()
-	deviceID := uuid.New()
-	registry := cacheengine.NewCacheRegistry(cacheengine.NewShardedCache())
-	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return nil, errors.New("cache unavailable")
-	})
-	svc := newRefreshTokenService(&refreshTokenRepoMock{
-		getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
-		},
-		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
-			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusActive}, nil
-		},
-		getDeviceFn: func(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error) {
-			return &iamEntity.RefreshTokenDevice{ID: deviceID, Status: iamEntity.DeviceStatusRecognized}, nil
-		},
-	}, registry)
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
-		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
-	}
-}
-
-func TestRefreshTokenServiceRotateError(t *testing.T) {
-	userID := uuid.New()
-	deviceID := uuid.New()
-	raw := errors.New("rotate failed")
-	svc := newRefreshTokenService(&refreshTokenRepoMock{
-		getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, TokenFamilyID: uuid.New(), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
-		},
-		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
-			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusActive}, nil
-		},
-		getDeviceFn: func(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error) {
-			return &iamEntity.RefreshTokenDevice{ID: deviceID, Status: iamEntity.DeviceStatusRecognized}, nil
-		},
-		rotateFn: func(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
-			return raw
-		},
-	}, makeTestRegistry("secret-key", nil))
-	_, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
-	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
-		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
-	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
-	}
-	if appErr.Outcome != "failure_unknown" {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
-	}
-	if !errors.Is(appErr.Cause, raw) {
-		t.Fatalf("expected raw cause preserved")
+	if res.Valid {
+		t.Fatal("expected invalid token result")
 	}
 }
 
 func TestRefreshTokenServiceSuccess(t *testing.T) {
 	userID := uuid.New()
 	deviceID := uuid.New()
-	familyID := uuid.New()
-	rotated := false
 	svc := newRefreshTokenService(&refreshTokenRepoMock{
 		getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, TokenFamilyID: familyID, ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
+			return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: userID, DeviceID: &deviceID, TokenHash: tokenHash, ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
 		},
 		getUserFn: func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
 			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusActive}, nil
@@ -291,39 +244,23 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 		getDeviceFn: func(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error) {
 			return &iamEntity.RefreshTokenDevice{ID: deviceID, Status: iamEntity.DeviceStatusRecognized}, nil
 		},
-		rotateFn: func(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
-			rotated = true
-			if next.TokenHash == "" {
-				t.Fatal("expected next token hash")
-			}
-			if next.TokenFamilyID != familyID {
-				t.Fatalf("expected token family to be preserved, got %s", next.TokenFamilyID)
-			}
-			if next.DeviceID == nil || *next.DeviceID != deviceID {
-				t.Fatalf("expected tracked device id to be preserved, got %#v", next.DeviceID)
-			}
-			return nil
+	}, &refreshRbacRepoMock{
+		getUserRoleAndLevelByScopeFn: func(ctx context.Context, uID uuid.UUID, scope string) (string, int, error) {
+			return "admin", 99, nil
 		},
-	}, makeTestRegistry("secret-key", nil))
+	}, nil)
 
-	result, err := svc.RefreshUserOpaque(context.Background(), "raw-refresh")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if !rotated {
-		t.Fatal("expected rotate to be called")
+	if !res.Valid {
+		t.Fatal("expected valid token result")
 	}
-	if result == nil || result.AccessToken == "" || result.RefreshToken == "" {
-		t.Fatalf("expected refresh token result, got %#v", result)
+	if res.UserID != userID.String() {
+		t.Fatalf("expected user ID %s, got %s", userID.String(), res.UserID)
 	}
-	if result.AccessKey == "" || result.TrackedDeviceID != deviceID.String() {
-		t.Fatalf("expected runtime and tracked device ids, got %#v", result)
-	}
-	claims, err := security.Parse(result.AccessToken, nil)
-	if err != nil {
-		t.Fatalf("expected parsable access token, got %v", err)
-	}
-	if claims.AccessKey != result.AccessKey {
-		t.Fatalf("unexpected device claims: %#v", claims)
+	if res.Role != "admin" || res.Level != 99 {
+		t.Fatalf("unexpected role or level: %s, %d", res.Role, res.Level)
 	}
 }

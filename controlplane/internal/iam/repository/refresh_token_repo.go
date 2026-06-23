@@ -37,9 +37,10 @@ func (r *RefreshTokenRepository) GetRefreshTokenByHash(ctx context.Context,
 		user_id, 
 		device_id,
 		token_hash,
-		token_family_id, 
 		tenant_id,
-		expires_at
+		expires_at,
+		used_at,
+		revoked_at
 		FROM %s.refresh_tokens
 		WHERE token_hash = $1
 		LIMIT 1
@@ -51,9 +52,10 @@ func (r *RefreshTokenRepository) GetRefreshTokenByHash(ctx context.Context,
 		&session.UserID,
 		&session.DeviceID,
 		&session.TokenHash,
-		&session.TokenFamilyID,
 		&session.TenantID,
 		&session.ExpiresAt,
+		&session.UsedAt,
+		&session.RevokedAt,
 	); err != nil {
 		return nil, fmt.Errorf("iam repo: get refresh token session by hash: %w", err)
 	}
@@ -94,56 +96,49 @@ func (r *RefreshTokenRepository) GetRefreshTokenUserByID(ctx context.Context, us
 }
 
 func (r *RefreshTokenRepository) RotateRefreshToken(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	// [COMMENT]: Thực hiện xoay vòng theo Phương án 2 (Đánh dấu đã dùng + Tạo mới kế thừa expires_at cũ)
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("iam repo: begin rotate refresh token tx: %w", err)
+		return fmt.Errorf("iam repo: begin rotate tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	deleteQuery := fmt.Sprintf(`
-		DELETE FROM %s.refresh_tokens
-		WHERE id = $1 AND token_hash = $2
-		RETURNING id
+	// 1. Đánh dấu bản ghi cũ là đã sử dụng (chỉ khi nó chưa từng dùng/thu hồi)
+	queryUpdate := fmt.Sprintf(`
+		UPDATE %s.refresh_tokens
+		SET used_at = now()
+		WHERE id = $1 AND used_at IS NULL AND revoked_at IS NULL
 	`, r.schema)
-
-	var deletedID uuid.UUID
-	if err := tx.QueryRow(ctx, deleteQuery, current.ID, current.TokenHash).Scan(&deletedID); err != nil {
-		return fmt.Errorf("iam repo: delete current refresh token session: %w", err)
+	res, err := tx.Exec(ctx, queryUpdate, current.ID)
+	if err != nil {
+		return fmt.Errorf("iam repo: update old refresh token as used: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return iamTaxonomy.ErrInvalidSession
 	}
 
-	insertQuery := fmt.Sprintf(`
+	// 2. Chèn bản ghi mới kế thừa expires_at cũ để có thời hạn hết hạn tuyệt đối
+	queryInsert := fmt.Sprintf(`
 		INSERT INTO %s.refresh_tokens (
-			id,
-			user_id,
-			device_id,
-			token_hash,
-			token_family_id,
-			tenant_id,
-			issued_at,
-			expires_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			id, user_id, device_id, token_hash, tenant_id, issued_at, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, r.schema)
-
-	if _, err := tx.Exec(
-		ctx,
-		insertQuery,
+	_, err = tx.Exec(ctx, queryInsert,
 		next.ID,
 		next.UserID,
 		next.DeviceID,
 		next.TokenHash,
-		next.TokenFamilyID,
 		next.TenantID,
 		next.IssuedAt,
-		next.ExpiresAt,
-	); err != nil {
-		return fmt.Errorf("iam repo: insert rotated refresh token session: %w", err)
+		current.ExpiresAt, // Kế thừa hạn hết tuyệt đối
+	)
+	if err != nil {
+		return fmt.Errorf("iam repo: insert new rotated refresh token: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("iam repo: commit rotate refresh token tx: %w", err)
+		return fmt.Errorf("iam repo: commit rotate tx: %w", err)
 	}
-
 	return nil
 }
 
@@ -208,7 +203,8 @@ func (r *RefreshTokenRepository) RevokeRefreshTokensByDeviceIDsAndUserID(ctx con
 func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) {
 	query := fmt.Sprintf(`
 		SELECT
-			r.id, r.user_id, r.device_id, r.token_hash, r.token_family_id, r.tenant_id, r.expires_at,
+			r.id, r.user_id, r.device_id, r.token_hash, r.tenant_id, r.expires_at,
+			r.used_at, r.revoked_at,
 			u.id, u.status,
 			d.id, d.status
 		FROM %s.refresh_tokens r
@@ -227,9 +223,10 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		&ctxOut.Session.UserID,
 		&ctxOut.Session.DeviceID,
 		&ctxOut.Session.TokenHash,
-		&ctxOut.Session.TokenFamilyID,
 		&ctxOut.Session.TenantID,
 		&ctxOut.Session.ExpiresAt,
+		&ctxOut.Session.UsedAt,
+		&ctxOut.Session.RevokedAt,
 		&ctxOut.User.ID,
 		&ctxOut.User.Status,
 		&deviceID,
@@ -256,12 +253,11 @@ func (r *RefreshTokenRepository) CreateRefreshTokenSession(ctx context.Context, 
 			user_id,
 			device_id,
 			token_hash,
-			token_family_id,
 			tenant_id,
 			issued_at,
 			expires_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`, r.schema)
 
 	// Thực thi câu lệnh SQL với các tham số truyền vào
@@ -272,7 +268,6 @@ func (r *RefreshTokenRepository) CreateRefreshTokenSession(ctx context.Context, 
 		token.UserID,
 		token.DeviceID,
 		token.TokenHash,
-		token.TokenFamilyID,
 		token.TenantID,
 		token.IssuedAt,
 		token.ExpiresAt,
@@ -282,4 +277,3 @@ func (r *RefreshTokenRepository) CreateRefreshTokenSession(ctx context.Context, 
 
 	return nil
 }
-

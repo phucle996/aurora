@@ -8,8 +8,9 @@ import (
 
 type AuthService interface {
 	RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) error
-	Login(ctx context.Context, req iamEntity.LoginRequest) error
 
+	// Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng qua gRPC
+	VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.VerifyUserCredentialsResult, error)
 
 	// Xác thực credentials của End-User qua gRPC
 	VerifyUserTrinitySession(ctx context.Context, token string, accessKey string, accessSecret string) (*iamEntity.VerifySessionResult, error)

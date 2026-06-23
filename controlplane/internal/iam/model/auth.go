@@ -68,10 +68,11 @@ type RefreshToken struct {
 	UserID        uuid.UUID  `db:"user_id"`
 	DeviceID      *uuid.UUID `db:"device_id"`
 	TokenHash     string     `db:"token_hash"`
-	TokenFamilyID uuid.UUID  `db:"token_family_id"`
 	TenantID      *uuid.UUID `db:"tenant_id"`
 	IssuedAt      time.Time  `db:"issued_at"`
 	ExpiresAt     time.Time  `db:"expires_at"`
+	UsedAt        *time.Time `db:"used_at"`
+	RevokedAt     *time.Time `db:"revoked_at"`
 }
 
 func RefreshTokenEntityToModel(input iamEntity.RefreshToken) RefreshToken {
@@ -79,10 +80,11 @@ func RefreshTokenEntityToModel(input iamEntity.RefreshToken) RefreshToken {
 		UserID:        input.UserID,
 		DeviceID:      input.DeviceID,
 		TokenHash:     input.TokenHash,
-		TokenFamilyID: input.TokenFamilyID,
 		TenantID:      input.TenantID,
 		IssuedAt:      input.IssuedAt,
-		ExpiresAt:     input.ExpiresAt}
+		ExpiresAt:     input.ExpiresAt,
+		UsedAt:        input.UsedAt,
+		RevokedAt:     input.RevokedAt}
 }
 
 func RefreshTokenModelToEntity(input RefreshToken) iamEntity.RefreshToken {
@@ -90,8 +92,9 @@ func RefreshTokenModelToEntity(input RefreshToken) iamEntity.RefreshToken {
 		UserID:        input.UserID,
 		DeviceID:      input.DeviceID,
 		TokenHash:     input.TokenHash,
-		TokenFamilyID: input.TokenFamilyID,
 		TenantID:      input.TenantID,
 		IssuedAt:      input.IssuedAt,
-		ExpiresAt:     input.ExpiresAt}
+		ExpiresAt:     input.ExpiresAt,
+		UsedAt:        input.UsedAt,
+		RevokedAt:     input.RevokedAt}
 }

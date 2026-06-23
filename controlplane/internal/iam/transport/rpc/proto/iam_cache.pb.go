@@ -201,122 +201,6 @@ func (x *UserAccessSession) GetLsa() int64 {
 	return 0
 }
 
-type AdminAccessSession struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	AccessKey         string                 `protobuf:"bytes,1,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
-	AccessSecretHash  string                 `protobuf:"bytes,2,opt,name=access_secret_hash,json=accessSecretHash,proto3" json:"access_secret_hash,omitempty"`
-	TrackedDeviceId   string                 `protobuf:"bytes,3,opt,name=tracked_device_id,json=trackedDeviceId,proto3" json:"tracked_device_id,omitempty"`
-	DevicePublicKey   string                 `protobuf:"bytes,4,opt,name=device_public_key,json=devicePublicKey,proto3" json:"device_public_key,omitempty"`
-	TokenJti          string                 `protobuf:"bytes,5,opt,name=token_jti,json=tokenJti,proto3" json:"token_jti,omitempty"`
-	Version           int64                  `protobuf:"varint,6,opt,name=version,proto3" json:"version,omitempty"`
-	LastSeenAt        int64                  `protobuf:"varint,7,opt,name=last_seen_at,json=lastSeenAt,proto3" json:"last_seen_at,omitempty"`
-	LastSeenIp        string                 `protobuf:"bytes,8,opt,name=last_seen_ip,json=lastSeenIp,proto3" json:"last_seen_ip,omitempty"`
-	LastSeenUserAgent string                 `protobuf:"bytes,9,opt,name=last_seen_user_agent,json=lastSeenUserAgent,proto3" json:"last_seen_user_agent,omitempty"`
-	LastSeenDirty     bool                   `protobuf:"varint,10,opt,name=last_seen_dirty,json=lastSeenDirty,proto3" json:"last_seen_dirty,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
-}
-
-func (x *AdminAccessSession) Reset() {
-	*x = AdminAccessSession{}
-	mi := &file_internal_iam_transport_rpc_proto_iam_cache_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AdminAccessSession) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AdminAccessSession) ProtoMessage() {}
-
-func (x *AdminAccessSession) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_iam_cache_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AdminAccessSession.ProtoReflect.Descriptor instead.
-func (*AdminAccessSession) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *AdminAccessSession) GetAccessKey() string {
-	if x != nil {
-		return x.AccessKey
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetAccessSecretHash() string {
-	if x != nil {
-		return x.AccessSecretHash
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetTrackedDeviceId() string {
-	if x != nil {
-		return x.TrackedDeviceId
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetDevicePublicKey() string {
-	if x != nil {
-		return x.DevicePublicKey
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetTokenJti() string {
-	if x != nil {
-		return x.TokenJti
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetVersion() int64 {
-	if x != nil {
-		return x.Version
-	}
-	return 0
-}
-
-func (x *AdminAccessSession) GetLastSeenAt() int64 {
-	if x != nil {
-		return x.LastSeenAt
-	}
-	return 0
-}
-
-func (x *AdminAccessSession) GetLastSeenIp() string {
-	if x != nil {
-		return x.LastSeenIp
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetLastSeenUserAgent() string {
-	if x != nil {
-		return x.LastSeenUserAgent
-	}
-	return ""
-}
-
-func (x *AdminAccessSession) GetLastSeenDirty() bool {
-	if x != nil {
-		return x.LastSeenDirty
-	}
-	return false
-}
-
 var File_internal_iam_transport_rpc_proto_iam_cache_proto protoreflect.FileDescriptor
 
 const file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDesc = "" +
@@ -334,22 +218,7 @@ const file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDesc = "" +
 	"\x11UserAccessSession\x12\x10\n" +
 	"\x03ash\x18\x01 \x01(\tR\x03ash\x12\x12\n" +
 	"\x04tdid\x18\x02 \x01(\tR\x04tdid\x12\x10\n" +
-	"\x03lsa\x18\x03 \x01(\x03R\x03lsa\"\x8d\x03\n" +
-	"\x12AdminAccessSession\x12\x1d\n" +
-	"\n" +
-	"access_key\x18\x01 \x01(\tR\taccessKey\x12,\n" +
-	"\x12access_secret_hash\x18\x02 \x01(\tR\x10accessSecretHash\x12*\n" +
-	"\x11tracked_device_id\x18\x03 \x01(\tR\x0ftrackedDeviceId\x12*\n" +
-	"\x11device_public_key\x18\x04 \x01(\tR\x0fdevicePublicKey\x12\x1b\n" +
-	"\ttoken_jti\x18\x05 \x01(\tR\btokenJti\x12\x18\n" +
-	"\aversion\x18\x06 \x01(\x03R\aversion\x12 \n" +
-	"\flast_seen_at\x18\a \x01(\x03R\n" +
-	"lastSeenAt\x12 \n" +
-	"\flast_seen_ip\x18\b \x01(\tR\n" +
-	"lastSeenIp\x12/\n" +
-	"\x14last_seen_user_agent\x18\t \x01(\tR\x11lastSeenUserAgent\x12&\n" +
-	"\x0flast_seen_dirty\x18\n" +
-	" \x01(\bR\rlastSeenDirtyB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
+	"\x03lsa\x18\x03 \x01(\x03R\x03lsaB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
 	file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDescOnce sync.Once
@@ -363,12 +232,11 @@ func file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDescGZIP() []byte 
 	return file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDescData
 }
 
-var file_internal_iam_transport_rpc_proto_iam_cache_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_internal_iam_transport_rpc_proto_iam_cache_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_internal_iam_transport_rpc_proto_iam_cache_proto_goTypes = []any{
-	(*RoleEntry)(nil),          // 0: iam.rpc.RoleEntry
-	(*AdminAPIKey)(nil),        // 1: iam.rpc.AdminAPIKey
-	(*UserAccessSession)(nil),  // 2: iam.rpc.UserAccessSession
-	(*AdminAccessSession)(nil), // 3: iam.rpc.AdminAccessSession
+	(*RoleEntry)(nil),         // 0: iam.rpc.RoleEntry
+	(*AdminAPIKey)(nil),       // 1: iam.rpc.AdminAPIKey
+	(*UserAccessSession)(nil), // 2: iam.rpc.UserAccessSession
 }
 var file_internal_iam_transport_rpc_proto_iam_cache_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -389,7 +257,7 @@ func file_internal_iam_transport_rpc_proto_iam_cache_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_iam_cache_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

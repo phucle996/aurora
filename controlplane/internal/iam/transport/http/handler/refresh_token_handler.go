@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	iamEntity "controlplane/internal/iam/domain/entity"
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	apires "controlplane/pkg/apires"
@@ -38,58 +37,6 @@ func NewRefreshTokenHandler(
 		refreshSvc: refreshSvc,
 		cfg:        cfg,
 	}
-}
-
-// Refresh godoc
-// @Summary Refresh session
-// @Description Làm mới access token bằng refresh token cookie và rotate refresh token (Kiểu 2).
-// @Tags auth
-// @Produce json
-// @Success 204 {string} string "No Content"
-// @Failure 401 {object} map[string]interface{} "invalid session"
-// @Failure 503 {object} map[string]interface{} "authentication temporarily unavailable"
-// @Failure 500 {object} map[string]interface{} "internal_error"
-// @Router /api/v1/auth/refresh [post]
-func (h *RefreshTokenHandler) Refresh(c *gin.Context) {
-	const op = "iam.refresh_token.refresh"
-
-	secure := isSecureRequest(c)
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
-
-	// [COMMENT]: Đọc refresh_token từ cookie
-	rawRefreshToken, err := c.Cookie(cookie.RefreshTokenName)
-	if err != nil || strings.TrimSpace(rawRefreshToken) == "" {
-		// [COMMENT]: Nếu không tìm thấy cookie, dọn dẹp toàn bộ cookies hiện tại trên client để tránh trạng thái không đồng bộ
-		h.clearUserCookies(c, secure)
-		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidSession, "refresh token missing")
-		apires.RespondUnauthorized(c, "invalid session")
-		return
-	}
-
-	// [COMMENT]: Gọi SessionRefreshService để xoay vòng refresh token và lấy bộ credentials mới
-	result, err := h.refreshSvc.RefreshUserOpaque(ctx, strings.TrimSpace(rawRefreshToken))
-	if err != nil {
-		switch {
-		case errors.Is(err, iamTaxonomy.ErrInvalidSession):
-			h.clearUserCookies(c, secure)
-			logger.HandlerWarn(c, op, err, "refresh token invalid session")
-			apires.RespondUnauthorized(c, "invalid session")
-			return
-		case errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable):
-			logger.HandlerWarn(c, op, err, "refresh token authentication unavailable")
-			apires.RespondServiceUnavailable(c, "authentication temporarily unavailable")
-			return
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-			return
-		}
-	}
-
-	// [COMMENT]: Thiết lập cookie mới và trả về trạng thái 204 No Content
-	h.setUserCookies(c, result, secure)
-	c.Status(http.StatusNoContent)
 }
 
 // AdminRefresh godoc
@@ -213,49 +160,4 @@ func (h *RefreshTokenHandler) AdminRefresh(c *gin.Context) {
 	})
 
 	apires.RespondSuccess(c, nil, "ok")
-}
-
-// ======================================================================================================
-// HELPER METHODS
-// ======================================================================================================
-func (h *RefreshTokenHandler) clearUserCookies(c *gin.Context, secure bool) {
-	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-	clearCookie := func(name string, httpOnly bool) {
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     name,
-			Value:    "",
-			Path:     "/",
-			Domain:   domain,
-			HttpOnly: httpOnly,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   -1,
-			Expires:  time.Unix(0, 0),
-		})
-	}
-	clearCookie(cookie.AccessTokenName, true)
-	clearCookie(cookie.RefreshTokenName, true)
-	clearCookie(cookie.AccessKeyName, true)
-	clearCookie(cookie.AccessSecretName, true)
-}
-
-func (h *RefreshTokenHandler) setUserCookies(c *gin.Context, result *iamEntity.RefreshTokenResult, secure bool) {
-	domain := strings.TrimSpace(h.cfg.App.PublicDomain)
-	setCookie := func(name, val string, expires time.Time, httpOnly bool) {
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name:     name,
-			Value:    val,
-			Path:     "/",
-			Domain:   domain,
-			HttpOnly: httpOnly,
-			Secure:   secure,
-			SameSite: http.SameSiteLaxMode,
-			Expires:  expires,
-			MaxAge:   int(time.Until(expires).Seconds()),
-		})
-	}
-	setCookie(cookie.AccessTokenName, result.AccessToken, result.AccessExpiresAt, true)
-	setCookie(cookie.RefreshTokenName, result.RefreshToken, result.RefreshExpiresAt, true)
-	setCookie(cookie.AccessKeyName, result.AccessKey, result.AccessExpiresAt, true)
-	setCookie(cookie.AccessSecretName, result.AccessSecret, result.AccessExpiresAt, true)
 }

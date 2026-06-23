@@ -17,6 +17,9 @@ service AuthService {
 
   // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
   rpc RevokeOpaqueRefreshToken (RevokeOpaqueRefreshTokenRequest) returns (RevokeOpaqueRefreshTokenResponse);
+
+  // [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
+  rpc VerifyUserCredentials (VerifyUserCredentialsRequest) returns (VerifyUserCredentialsResponse);
 }
 
 // Request xác thực cho Admin/SRE
@@ -72,6 +75,33 @@ message RevokeOpaqueRefreshTokenRequest {
 // [COMMENT]: Response rỗng phục vụ tín hiệu hoàn tất cho rpc call
 message RevokeOpaqueRefreshTokenResponse {
 }
+
+// [COMMENT]: Request xác thực thông tin đăng nhập thô từ client gửi lên gateway
+message VerifyUserCredentialsRequest {
+  string username = 1;         // Tên đăng nhập hoặc Email của người dùng
+  string password = 2;         // Mật khẩu dạng plain-text cần xác thực
+  string client_device_id = 3;  // UUID định danh thiết bị gửi lên từ cookie (nếu có)
+  string device_name = 4;      // Tên hiển thị của thiết bị (ví dụ: Chrome on Windows)
+  string device_type = 5;      // OS/Platform và phiên bản của thiết bị (ví dụ: "Windows 11", "macOS 14", "iOS 17")
+  string public_key = 6;       // Khóa Ed25519 public key dạng base64 phục vụ xác thực chữ ký/thiết bị tin cậy
+  string signature = 7;        // Chữ ký bảo mật (signature) nếu có
+  bool trust_device = 8;       // Cờ xác định có cấp refresh token hay không (trusted device)
+  string client_ip = 9;        // Địa chỉ IP của Client (trích xuất từ X-Forwarded-For hoặc Envoy context)
+  string user_agent = 10;      // Chuỗi User-Agent của client phục vụ tracking
+}
+
+// [COMMENT]: Response trả về trạng thái xác thực và các thông tin định danh/claim
+message VerifyUserCredentialsResponse {
+  bool valid = 1;              // Cờ báo hiệu xác thực thông tin thành công hay thất bại
+  string user_id = 2;          // UUID của người dùng dưới dạng chuỗi
+  string role = 3;             // Quyền của người dùng (RBAC role - ví dụ: user, admin)
+  int32 level = 4;             // Cấp độ quyền (level)
+  string tenant_id = 5;        // ID của Tenant liên đới (nếu có)
+  string client_device_id = 6;  // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
+  string refresh_token = 7;    // Opaque Refresh Token được sinh bởi CP để ACL ghi nhận cookie (nếu trust_device=true)
+  string error_message = 8;    // Mô tả lỗi chi tiết nếu valid = false
+}
+
 
 // [COMMENT]: AdminAccessSession đại diện cho session của SRE Admin lưu trữ trong Redis L2
 message AdminAccessSession {

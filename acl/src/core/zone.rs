@@ -42,6 +42,9 @@ pub struct ZoneManager {
     // [COMMENT]: Bản đồ L1 RAM cache ánh xạ từ zone_id sang name của zone
     id_to_name: RwLock<HashMap<String, String>>,
 
+    // [COMMENT]: Cache chứa danh sách các zone code không hợp lệ (bad zone codes) để chống spam
+    bad_codes: RwLock<HashMap<String, Instant>>,
+
     // Lưu Instant của lần gọi RPC đồng bộ thành công/thất bại gần nhất
     last_sync: RwLock<Option<Instant>>,
 
@@ -58,6 +61,7 @@ impl ZoneManager {
             id_to_code: RwLock::new(HashMap::new()),
             id_to_status: RwLock::new(HashMap::new()),
             id_to_name: RwLock::new(HashMap::new()),
+            bad_codes: RwLock::new(HashMap::new()),
             last_sync: RwLock::new(None),
             single_flight_mutex: Mutex::new(()),
         }
@@ -100,9 +104,9 @@ impl ZoneManager {
             .map(|(code, _)| code)
     }
 
-    // [COMMENT]: Tìm kiếm zone_id và status dựa vào zone_code, hỗ trợ RPC sync khi cache miss
+    // [COMMENT]: Tìm kiếm zone_id và status dựa vào zone_code, hỗ trợ RPC sync khi cache miss và cache bad codes
     pub async fn resolve_code_to_id_and_status(&self, zone_code: &str) -> Option<(String, String)> {
-        // Thử đọc từ RAM cache L1 (đọc đồng thời)
+        // [COMMENT]: 1. Thử đọc từ RAM cache L1 xem có tồn tại không
         {
             let id_map = self.code_to_id.read().await;
             let status_map = self.id_to_status.read().await;
@@ -113,9 +117,23 @@ impl ZoneManager {
             }
         }
 
-        // Cache miss, tiến hành gọi RPC đồng bộ thông qua cơ chế Single Flight
+        // [COMMENT]: 2. Kiểm tra danh sách bad codes xem có phải zone code không tồn tại đang bị spam không
+        {
+            let bad = self.bad_codes.read().await;
+            if let Some(expiry) = bad.get(zone_code) {
+                if *expiry > Instant::now() {
+                    Logger::sys_debug(
+                        "zone.manager",
+                        &format!("Zone code '{}' is cached as invalid. Fast failing request to prevent spam.", zone_code),
+                    );
+                    return None;
+                }
+            }
+        }
+
+        // [COMMENT]: 3. Thực hiện đồng bộ qua gRPC đến Controlplane để cập nhật danh sách mới
         if self.sync_zones_if_needed().await {
-            // Đọc lại sau khi đồng bộ thành công
+            // [COMMENT]: Đọc lại RAM cache L1 sau khi đã đồng bộ thành công
             let id_map = self.code_to_id.read().await;
             let status_map = self.id_to_status.read().await;
             if let Some(id) = id_map.get(zone_code) {
@@ -124,6 +142,16 @@ impl ZoneManager {
                 }
             }
         }
+
+        // [COMMENT]: 4. Nếu sau khi đồng bộ vẫn không tìm thấy -> đây là zone code không tồn tại. Cache lại để chặn spam.
+        Logger::sys_warn(
+            "zone.manager",
+            &format!("Zone code '{}' not found after sync. Caching as invalid zone code.", zone_code),
+            "invalid_zone_code",
+        );
+        let mut bad = self.bad_codes.write().await;
+        // Cache zone lỗi trong vòng 5 phút (300 giây)
+        bad.insert(zone_code.to_string(), Instant::now() + Duration::from_secs(300));
 
         None
     }

@@ -50,11 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // [COMMENT]: Log thông tin cấu hình, thời gian Grace Period đã được hardcode về 5s
     Logger::sys_info(
         "main.config",
         &format!(
-            "Loaded config: grpc_port={}, redis={}, session_ttl={}s, grace={}s",
-            config.grpc_port, config.redis_url, config.session_ttl_secs, config.grace_period_secs
+            "Loaded config: grpc_port={}, redis={}, session_ttl={}s, grace=5s (hardcoded)",
+            config.grpc_port, config.redis_url, config.session_ttl_secs
         ),
     );
 

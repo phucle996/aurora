@@ -23,6 +23,7 @@ const (
 	AuthService_VerifyUserTrinityToken_FullMethodName   = "/iam.rpc.AuthService/VerifyUserTrinityToken"
 	AuthService_VerifyOpaqueRefreshToken_FullMethodName = "/iam.rpc.AuthService/VerifyOpaqueRefreshToken"
 	AuthService_RevokeOpaqueRefreshToken_FullMethodName = "/iam.rpc.AuthService/RevokeOpaqueRefreshToken"
+	AuthService_VerifyUserCredentials_FullMethodName    = "/iam.rpc.AuthService/VerifyUserCredentials"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -39,6 +40,8 @@ type AuthServiceClient interface {
 	VerifyOpaqueRefreshToken(ctx context.Context, in *VerifyOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*VerifyOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
 	RevokeOpaqueRefreshToken(ctx context.Context, in *RevokeOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*RevokeOpaqueRefreshTokenResponse, error)
+	// [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
+	VerifyUserCredentials(ctx context.Context, in *VerifyUserCredentialsRequest, opts ...grpc.CallOption) (*VerifyUserCredentialsResponse, error)
 }
 
 type authServiceClient struct {
@@ -89,6 +92,16 @@ func (c *authServiceClient) RevokeOpaqueRefreshToken(ctx context.Context, in *Re
 	return out, nil
 }
 
+func (c *authServiceClient) VerifyUserCredentials(ctx context.Context, in *VerifyUserCredentialsRequest, opts ...grpc.CallOption) (*VerifyUserCredentialsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyUserCredentialsResponse)
+	err := c.cc.Invoke(ctx, AuthService_VerifyUserCredentials_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuthServiceServer is the server API for AuthService service.
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
@@ -103,6 +116,8 @@ type AuthServiceServer interface {
 	VerifyOpaqueRefreshToken(context.Context, *VerifyOpaqueRefreshTokenRequest) (*VerifyOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
 	RevokeOpaqueRefreshToken(context.Context, *RevokeOpaqueRefreshTokenRequest) (*RevokeOpaqueRefreshTokenResponse, error)
+	// [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
+	VerifyUserCredentials(context.Context, *VerifyUserCredentialsRequest) (*VerifyUserCredentialsResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -124,6 +139,9 @@ func (UnimplementedAuthServiceServer) VerifyOpaqueRefreshToken(context.Context, 
 }
 func (UnimplementedAuthServiceServer) RevokeOpaqueRefreshToken(context.Context, *RevokeOpaqueRefreshTokenRequest) (*RevokeOpaqueRefreshTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeOpaqueRefreshToken not implemented")
+}
+func (UnimplementedAuthServiceServer) VerifyUserCredentials(context.Context, *VerifyUserCredentialsRequest) (*VerifyUserCredentialsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VerifyUserCredentials not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -218,6 +236,24 @@ func _AuthService_RevokeOpaqueRefreshToken_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_VerifyUserCredentials_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyUserCredentialsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).VerifyUserCredentials(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_VerifyUserCredentials_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).VerifyUserCredentials(ctx, req.(*VerifyUserCredentialsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -240,6 +276,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevokeOpaqueRefreshToken",
 			Handler:    _AuthService_RevokeOpaqueRefreshToken_Handler,
+		},
+		{
+			MethodName: "VerifyUserCredentials",
+			Handler:    _AuthService_VerifyUserCredentials_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

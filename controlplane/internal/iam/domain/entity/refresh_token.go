@@ -11,10 +11,11 @@ type RefreshToken struct {
 	UserID        uuid.UUID
 	DeviceID      *uuid.UUID
 	TokenHash     string
-	TokenFamilyID uuid.UUID
 	TenantID      *uuid.UUID
 	IssuedAt      time.Time
 	ExpiresAt     time.Time
+	UsedAt        *time.Time
+	RevokedAt     *time.Time
 }
 
 type RefreshTokenSession struct {
@@ -22,9 +23,10 @@ type RefreshTokenSession struct {
 	UserID        uuid.UUID
 	DeviceID      *uuid.UUID
 	TokenHash     string
-	TokenFamilyID uuid.UUID
 	TenantID      *uuid.UUID
 	ExpiresAt     time.Time
+	UsedAt        *time.Time
+	RevokedAt     *time.Time
 }
 
 type RefreshTokenUser struct {

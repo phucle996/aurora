@@ -33,8 +33,6 @@ pub struct Config {
     pub session_ttl_secs: u64,
     // Ngưỡng kích hoạt Trinity Refresh (mặc định: 900 giây - 15 phút)
     pub refresh_threshold_secs: u64,
-    // Thời gian ân hạn cho session cũ khi xoay vòng (mặc định: 15 giây)
-    pub grace_period_secs: u64,
     // Địa chỉ kết nối OTLP Collector (gRPC endpoint cho Tracing + Metrics)
     pub otel_exporter_otlp_endpoint: String,
     // [COMMENT]: Địa chỉ kết nối gRPC đến Control Plane (mặc định localhost:9443)
@@ -112,11 +110,6 @@ impl Config {
                 AclError::ConfigError("REFRESH_THRESHOLD_SECS must be a number".to_string())
             })?;
 
-        let grace_period_secs = env::var("GRACE_PERIOD_SECS")
-            .unwrap_or_else(|_| "15".to_string())
-            .parse::<u64>()
-            .map_err(|_| AclError::ConfigError("GRACE_PERIOD_SECS must be a number".to_string()))?;
-
         // Endpoint OTel Collector (mặc định trỏ đến sidecar trong cùng Pod K8s)
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
@@ -152,7 +145,6 @@ impl Config {
             vault,
             session_ttl_secs,
             refresh_threshold_secs,
-            grace_period_secs,
             otel_exporter_otlp_endpoint,
             controlplane_grpc_endpoint,
             controlplane_grpc_ca_cert,
