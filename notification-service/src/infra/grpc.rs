@@ -23,6 +23,8 @@ impl GrpcAuthClient {
         ca_cert: Option<String>,
         client_cert: Option<String>,
         client_key: Option<String>,
+        // [COMMENT]: Domain name cho TLS verification — truyền từ Config, không đọc env trực tiếp
+        domain: String,
     ) -> Self {
         // [ignoring loop detection]
         let has_tls = ca_cert.is_some() || (client_cert.is_some() && client_key.is_some());
@@ -35,7 +37,7 @@ impl GrpcAuthClient {
         
         // Thiết lập endpoint với lazy connection, keep-alive và timeout để chống treo kết nối
         let mut endpoint_configured = Endpoint::from_shared(url)
-            .expect("Invalid Controlplane gRPC endpoint URI")
+            .expect("Invalid ACL gRPC endpoint URI")
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(5))
             .tcp_keepalive(Some(std::time::Duration::from_secs(15)));
@@ -59,17 +61,15 @@ impl GrpcAuthClient {
                 tls_config = tls_config.identity(identity);
             }
 
-            // Cấu hình domain_name khớp với Common Name (CN) hoặc Subject Alternative Name (SAN) trong cert tự ký
-            let domain_name = std::env::var("CONTROLPLANE_GRPC_DOMAIN")
-                .unwrap_or_else(|_| "localhost".to_string());
-            tls_config = tls_config.domain_name(domain_name);
+            // Cấu hình domain_name khớp với CN hoặc SAN trong cert — giá trị từ Config
+            tls_config = tls_config.domain_name(domain);
 
             endpoint_configured = endpoint_configured
                 .tls_config(tls_config)
                 .expect("Failed to configure gRPC client TLS");
         }
 
-        // Khởi tạo kênh kết nối lazy (không block startup nếu Controlplane chưa sẵn sàng)
+        // Khởi tạo kênh kết nối lazy (không block startup nếu ACL chưa sẵn sàng)
         let channel = endpoint_configured.connect_lazy();
         let client = AuthServiceClient::new(channel);
 
@@ -86,7 +86,7 @@ impl GrpcAuthClient {
         let start_time = std::time::Instant::now();
         Logger::sys_info(
             "grpc.auth_call",
-            "Verifying admin trinity token via lazy-connected gRPC Channel pool",
+            "Verifying admin trinity token via ACL gRPC",
         );
 
         // Client của tonic rẻ để clone (chỉ clone underlying channel reference)
@@ -127,7 +127,7 @@ impl GrpcAuthClient {
         let start_time = std::time::Instant::now();
         Logger::sys_info(
             "grpc.auth_call",
-            "Verifying user trinity token via lazy-connected gRPC Channel pool",
+            "Verifying user trinity token via ACL gRPC",
         );
 
         // Client của tonic rẻ để clone (chỉ clone underlying channel reference)

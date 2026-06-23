@@ -23,9 +23,13 @@ RUN mkdir src && \
 
 # Copy toàn bộ source code thực tế
 COPY src/ src/
+# [COMMENT]: Copy proto definitions và build script cần thiết cho tonic_build
+COPY proto/ proto/
+COPY build.rs build.rs
 
 # Biên dịch release binary với tối ưu hóa tối đa
 RUN cargo build --release
+
 
 # ═══════════════════════════════════════════════════════════════
 # 🚀 STAGE 2: Runtime — Container tối thiểu chạy production

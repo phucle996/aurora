@@ -6,15 +6,17 @@ pub struct Config {
     pub centrifugo_api_url: String,
     pub centrifugo_api_key: String,
     pub redis_url: String,
-    pub controlplane_grpc_endpoint: String,
-    // Đường dẫn chứng chỉ CA phục vụ xác thực HTTPS/gRPC
-    pub controlplane_grpc_ca_cert: Option<String>,
-    // Đường dẫn chứng chỉ Client phục vụ xác thực hai chiều mTLS
-    pub controlplane_grpc_client_cert: Option<String>,
-    // Đường dẫn khóa riêng tư của Client phục vụ mTLS
-    pub controlplane_grpc_client_key: Option<String>,
+    // [COMMENT]: Địa chỉ gRPC của ACL service (Rust) — xác thực Trinity Token cho cả User và Admin
+    pub acl_grpc_endpoint: String,
+    // [COMMENT]: Đường dẫn chứng chỉ CA phục vụ mTLS đến ACL service
+    pub acl_grpc_ca_cert: Option<String>,
+    // [COMMENT]: Đường dẫn chứng chỉ Client phục vụ mTLS đến ACL service
+    pub acl_grpc_client_cert: Option<String>,
+    // [COMMENT]: Đường dẫn khóa riêng tư Client phục vụ mTLS đến ACL service
+    pub acl_grpc_client_key: Option<String>,
+    // [COMMENT]: Domain name cho TLS verification (CN/SAN) khi dùng mTLS đến ACL
+    pub acl_grpc_domain: String,
     pub otel_exporter_otlp_endpoint: String,
-    pub zone_id: String,
 }
 
 impl Config {
@@ -32,14 +34,17 @@ impl Config {
                 .unwrap_or_else(|_| "your_centrifugo_api_key_secret".to_string()),
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://controlplane-redis-job:6379/0".to_string()),
-            controlplane_grpc_endpoint: env::var("CONTROLPLANE_GRPC_ENDPOINT")
-                .unwrap_or_else(|_| "controlplane-dev-1:9443".to_string()), // Cập nhật port chuẩn sang 9443
-            controlplane_grpc_ca_cert: env::var("CONTROLPLANE_GRPC_CA_CERT").ok(),
-            controlplane_grpc_client_cert: env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok(),
-            controlplane_grpc_client_key: env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok(),
+            // [COMMENT]: Nạp cấu hình ACL gRPC endpoint — mặc định trỏ đến acl:50051 trong Docker network
+            acl_grpc_endpoint: env::var("ACL_GRPC_ENDPOINT")
+                .unwrap_or_else(|_| "acl:50051".to_string()),
+            acl_grpc_ca_cert: env::var("ACL_GRPC_CA_CERT").ok(),
+            acl_grpc_client_cert: env::var("ACL_GRPC_CLIENT_CERT").ok(),
+            acl_grpc_client_key: env::var("ACL_GRPC_CLIENT_KEY").ok(),
+            // [COMMENT]: Domain name cho TLS certificate verification khi dùng mTLS
+            acl_grpc_domain: env::var("ACL_GRPC_DOMAIN")
+                .unwrap_or_else(|_| "localhost".to_string()),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://controlplane-otel-collector:4317".to_string()),
-            zone_id: env::var("ZONE_ID").unwrap_or_else(|_| "zone-global".to_string()),
         }
     }
 }

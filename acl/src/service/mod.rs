@@ -4,4 +4,6 @@ pub mod release_session;
 pub mod revoke_session;
 pub mod rotate_session;
 pub mod zone_catalog;
+pub mod auth;
+
 

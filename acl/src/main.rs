@@ -22,6 +22,10 @@ use crate::observability::otel::OtelTracer;
 use crate::service::ext_authz::ExtAuthzService;
 use crate::service::release_session::session_proto::session_service_server::SessionServiceServer;
 use crate::service::release_session::SessionServiceImpl;
+use crate::service::auth::auth_proto::auth_service_server::AuthServiceServer;
+use crate::service::auth::AuthServiceImpl;
+
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -114,6 +118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.session_ttl_secs,
     );
 
+    let auth_service = AuthServiceImpl::new(
+        session_mgr.clone(),
+        token_mgr.clone(),
+        redis_client.clone(),
+        control_plane_client.clone(),
+    );
+
     // 7. Cấu hình địa chỉ mạng và khởi chạy gRPC Server
     let addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
         .parse()
@@ -121,13 +132,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Logger::sys_info(
         "main.server",
-        &format!("Starting ext_authz & session gRPC Server on: {}", addr),
+        &format!("Starting ext_authz, session & auth gRPC Server on: {}", addr),
     );
 
     // 8. Dựng server kèm cơ chế Shutdown tín hiệu (Graceful Shutdown)
     Server::builder()
         .add_service(AuthorizationServer::new(ext_authz_service))
         .add_service(SessionServiceServer::new(session_service))
+        .add_service(AuthServiceServer::new(auth_service))
         .serve_with_shutdown(addr, async {
             // Lắng nghe tín hiệu ngắt (SIGINT/SIGTERM) để tắt server an toàn
             tokio::signal::ctrl_c()

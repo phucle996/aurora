@@ -256,20 +256,7 @@ services:
       psql:
         condition: service_healthy
     restart: unless-stopped
-    command: [
-      "--disable-default-metrics",
-      "--no-collector.database",
-      "--no-collector.locks",
-      "--no-collector.replication",
-      "--no-collector.replication_slot",
-      "--no-collector.roles",
-      "--no-collector.stat_bgwriter",
-      "--no-collector.stat_database",
-      "--no-collector.stat_progress_vacuum",
-      "--no-collector.stat_user_tables",
-      "--no-collector.statio_user_tables",
-      "--no-collector.wal"
-    ]
+    command: [ "--disable-default-metrics", "--no-collector.database", "--no-collector.locks", "--no-collector.replication", "--no-collector.replication_slot", "--no-collector.roles", "--no-collector.stat_bgwriter", "--no-collector.stat_database", "--no-collector.stat_progress_vacuum", "--no-collector.stat_user_tables", "--no-collector.statio_user_tables", "--no-collector.wal" ]
 
   # 📊 PHẦN 3.5: REDIS EXPORTER - THU THẬP METRICS CHO CẢ 4 INSTANCES REDIS (HA SCRAPER)
   # - Sử dụng oliver006/redis_exporter để cào metrics qua cơ chế multi-target /scrape.
@@ -683,6 +670,44 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ============================================================================
+  # 🛡️ PHẦN 8.2: ACL SERVICE (RUST) — AUTH GATE / DATA PLANE AUTH
+  # ============================================================================
+  # Dịch vụ ACL xác thực Trinity Token cho user trực tiếp (stateless JWT + Redis L2),
+  # loại bỏ hoàn toàn nhu cầu gọi ngược về Controlplane (Go) cho luồng verify user.
+  # Kết nối Vault Transit để xác minh chữ ký JWT và Redis Core cho session lookup.
+
+  acl:
+    build:
+      context: ../acl
+      dockerfile: Dockerfile
+    container_name: aurora-acl
+    init: true
+    environment:
+      ACL_GRPC_PORT: "50051"
+      REDIS_URL: "redis://controlplane-redis:6379/0"
+      VAULT_ADDR: "http://vault:8200"
+      VAULT_TOKEN: "myroot"
+      VAULT_TRANSIT_KEY_NAME: "jwt-signer"
+      VAULT_TIMEOUT_SECS: "5"
+      VAULT_MAX_RETRIES: "3"
+      SESSION_TTL_SECS: "1800"
+      REFRESH_THRESHOLD_SECS: "900"
+      GRACE_PERIOD_SECS: "15"
+      # [COMMENT]: ACL cần gọi ngược Controlplane cho opaque refresh token (chưa chuyển)
+      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
+    depends_on:
+      redis:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      controlplane1:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
   notification-service:
     build:
       context: ../notification-service
@@ -692,8 +717,6 @@ services:
       - "8083:8083"
       # Cổng xuất bản Prometheus Metrics
       - "2112:2112"
-    volumes:
-      - ./dev/tls:/etc/notification-service/tls:ro
     environment:
       - APP_PORT=8083
       # Chỉ định cổng chạy Metrics Exporter
@@ -701,17 +724,14 @@ services:
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       - REDIS_URL=redis://controlplane-redis-job:6379/0
-      - CONTROLPLANE_GRPC_ENDPOINT=controlplane-dev-1:9090
-      - CONTROLPLANE_GRPC_CA_CERT=/etc/notification-service/tls/ca.crt
-      - CONTROLPLANE_GRPC_CLIENT_CERT=/etc/notification-service/tls/grpc-server.crt
-      - CONTROLPLANE_GRPC_CLIENT_KEY=/etc/notification-service/tls/grpc-server.key
-      - CONTROLPLANE_GRPC_DOMAIN=localhost
+      # [COMMENT]: ACL service phục vụ toàn bộ xác thực Trinity Token (User + Admin) — internal network, không mTLS
+      - ACL_GRPC_ENDPOINT=acl:50051
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
     depends_on:
       centrifugo:
         condition: service_started
-      controlplane1:
+      acl:
         condition: service_started
       redis-job:
         condition: service_healthy
@@ -751,7 +771,7 @@ services:
     container_name: controlplane-stalwart
     restart: unless-stopped
     ports:
-      - "8085:8080"   # Admin HTTP API & Web UI (Dành cho dev cấu hình)
+      - "8085:8080" # Admin HTTP API & Web UI (Dành cho dev cấu hình)
       # Lưu ý: Các cổng 25, 465, 587 không cần map ra ngoài host vì Dataplane 
       # và Stalwart giao tiếp nội bộ trong mạng Docker Network.
     environment:
@@ -763,8 +783,8 @@ services:
 volumes:
   # Thư mục lưu cấu hình và dữ liệu của Stalwart Mail Server
   controlplane_stalwart_etc:
-  controlplane_stalwart_data:
-  # [COMMENT]: Lưu trữ dữ liệu Raft bền vững của Vault
+  controlplane_stalwart_data: # [COMMENT]: Lưu trữ dữ liệu Raft bền vững của Vault
+
   controlplane_vault_data:
 
   # Caching thư viện Golang cho cụm Controlplane

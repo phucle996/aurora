@@ -3,9 +3,9 @@ use crate::observability::logger::Logger;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
+    metrics::{PeriodicReader, SdkMeterProvider},
     propagation::TraceContextPropagator,
     trace::{self, Sampler},
-    metrics::{PeriodicReader, SdkMeterProvider},
     Resource,
 };
 use tokio::task_local;
@@ -58,7 +58,7 @@ impl TraceContext {
 
     /// Chuyển đổi thông tin Trace Context nội bộ thành opentelemetry::Context để liên kết các Span
     pub fn get_otel_context(&self) -> opentelemetry::Context {
-        use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceContextExt};
+        use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId};
 
         let trace_id = TraceId::from_hex(&self.trace_id).ok();
         let span_id = SpanId::from_hex(&self.span_id).ok();
@@ -102,13 +102,11 @@ impl OtelTracer {
         global::set_text_map_propagator(TraceContextPropagator::new());
 
         let endpoint = &config.otel_exporter_otlp_endpoint;
-        let zone_id = &config.zone_id;
         let hostname = get_node_hostname();
 
         // Định danh tài nguyên nghiệp vụ trong hệ thống giám sát tập trung
         let resource = Resource::new(vec![
             KeyValue::new("service.name", "aurora-notification-service"),
-            KeyValue::new("zone_id", zone_id.clone()),
             KeyValue::new("hostname", hostname),
         ]);
 
@@ -150,13 +148,11 @@ impl OtelTracer {
     /// Khởi tạo OpenTelemetry metrics pipeline đẩy dữ liệu lên OTel Collector định kỳ
     fn init_metrics(config: &Config) {
         let endpoint = &config.otel_exporter_otlp_endpoint;
-        let zone_id = &config.zone_id;
         let hostname = get_node_hostname();
 
         // Thiết lập resource attributes mô tả nguồn gốc metrics
         let resource = Resource::new(vec![
             KeyValue::new("service.name", "aurora-notification-service"),
-            KeyValue::new("zone_id", zone_id.clone()),
             KeyValue::new("hostname", hostname),
         ]);
 
@@ -167,8 +163,7 @@ impl OtelTracer {
             .build_metrics_exporter(
                 Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),
                 Box::new(opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector::new()),
-            )
-        {
+            ) {
             Ok(exp) => exp,
             Err(e) => {
                 Logger::sys_error(
@@ -234,10 +229,9 @@ impl OtelTracer {
 
 /// Hàm phụ trợ lấy Hostname của node hiện tại phục vụ định danh tài nguyên (Resource Attributes)
 pub fn get_node_hostname() -> String {
-    std::env::var("HOSTNAME")
-        .unwrap_or_else(|_| {
-            hostname::get()
-                .map(|h| h.into_string().unwrap_or_default())
-                .unwrap_or_default()
-        })
+    std::env::var("HOSTNAME").unwrap_or_else(|_| {
+        hostname::get()
+            .map(|h| h.into_string().unwrap_or_default())
+            .unwrap_or_default()
+    })
 }

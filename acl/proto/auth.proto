@@ -72,3 +72,4 @@ message RevokeOpaqueRefreshTokenRequest {
 // [COMMENT]: Response rỗng phục vụ tín hiệu hoàn tất cho rpc call
 message RevokeOpaqueRefreshTokenResponse {
 }
+
