@@ -88,16 +88,16 @@ type deviceServiceStub struct {
 
 var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 
-func (s *deviceServiceStub) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	return nil, nil
 }
-func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error {
+func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
 	return nil
 }
-func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error) {
+func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	return 0, nil
 }
-func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context) (int64, error) {
+func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error) {
 	return 0, nil
 }
 func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {

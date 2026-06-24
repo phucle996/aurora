@@ -5,23 +5,24 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"unsafe"
 
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -42,52 +43,94 @@ func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
 	}
 }
 
-func (s *DeviceService) getUserIDFromContext(ctx context.Context) (uuid.UUID, error) {
-	ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity)
-	if !ok || ident == nil || ident.UserID == "" {
-		return uuid.Nil, apperr.Wrap(iamTaxonomy.ErrInvalidSession, errors.New("missing or invalid user identity in context"), "unauthorized")
-	}
-	uid, err := uuid.Parse(ident.UserID)
-	if err != nil {
-		return uuid.Nil, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, err, "invalid_argument")
-	}
-	return uid, nil
-}
+// [COMMENT]: Đã xóa bỏ getUserIDFromContext vì userID hiện tại được truyền trực tiếp từ handler/transport layer qua HTTP header.
 
-func (s *DeviceService) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
-	userID, err := s.getUserIDFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
+// ListMyDevices lấy danh sách các thiết bị của user.
+// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
+func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	if offset < 0 {
 		offset = 0
 	}
-	items, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
+
+	var items []iamEntity.Device
+	var listErr error
+	presenceByTracked := make(map[string]iamEntity.UserAccessSession, 10) // Mặc định 10 để tối ưu RAM
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// [COMMENT]: Nhánh 1: Truy vấn PostgreSQL (I/O Bound) chạy trong goroutine riêng biệt.
+	go func() {
+		defer wg.Done()
+		items, listErr = s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
+	}()
+
+	// [COMMENT]: Nhánh 2: Quét L2 Redis Cache (I/O Bound) chạy song song với DB query.
+	go func() {
+		defer wg.Done()
+		rdb := s.registry.L2.Client()
+		userIDStr := userID.String()
+		indexKey := "iam:user_access_index:" + userIDStr
+
+		// [COMMENT]: Duyệt lấy tối đa 200 sessions trong Redis.
+		keys := make([]string, 0, 10)
+		var cursor uint64
+		for len(keys) < 200 {
+			scanned, nextCursor, scanErr := rdb.SScan(ctx, indexKey, cursor, "*", 200).Result()
+			if scanErr != nil {
+				break
+			}
+			for _, accessKey := range scanned {
+				keys = append(keys, "iam:user_access_session:"+userIDStr+":"+accessKey)
+				if len(keys) >= 200 {
+					break
+				}
+			}
+			cursor = nextCursor
+			if cursor == 0 {
+				break
+			}
+		}
+
+		if len(keys) > 0 {
+			if values, err := rdb.MGet(ctx, keys...).Result(); err == nil {
+				for _, raw := range values {
+					if raw == nil {
+						continue
+					}
+					if rawStr, ok := raw.(string); ok {
+						// [COMMENT]: Sử dụng zero-copy conversion từ string sang []byte để triệt tiêu allocations.
+						var pb iamproto.UserAccessSession
+						if proto.Unmarshal(unsafeStringToBytes(rawStr), &pb) == nil {
+							key := strings.TrimSpace(pb.Tdid)
+							if key != "" {
+								presenceByTracked[key] = iamEntity.UserAccessSession{
+									TrackedDeviceID: pb.Tdid,
+									LastSeenAt:      pb.Lsa,
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	// [COMMENT]: Chờ cả 2 tác vụ I/O hoàn thành song song.
+	wg.Wait()
+
 	if listErr != nil {
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
-	presenceByTracked := map[string]iamEntity.UserAccessSession{}
-	if s.registry != nil {
-		runtimes, runtimeErr := s.scanUserAccessSessions(ctx, s.registry.L2.Client(), userID.String(), 200)
-		if runtimeErr == nil {
-			for _, rt := range runtimes {
-				key := strings.TrimSpace(rt.TrackedDeviceID)
-				if key == "" {
-					continue
-				}
-				presenceByTracked[key] = rt
-			}
-		}
-	}
+
 	out := make([]iamSvcInterface.DevicePresence, 0, len(items))
 	for _, device := range items {
 		p := iamSvcInterface.DevicePresence{Device: device, IsOnline: false}
 		if rt, ok := presenceByTracked[strings.TrimSpace(device.ID)]; ok {
 			p.IsOnline = true
-			// LastSeenAt từ Redis phản ánh lần cuối request xác thực thành công (realtime qua middleware).
 			if rt.LastSeenAt > 0 {
 				ts := time.Unix(rt.LastSeenAt, 0).UTC()
 				p.LastSeenAt = &ts
@@ -98,21 +141,23 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, limit int, offset int
 	return &iamSvcInterface.DeviceListResult{Devices: out, Total: int64(len(out))}, nil
 }
 
-func (s *DeviceService) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error {
+// RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể.
+// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
+func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
 	serviceOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
 		iamMetrics.ServiceCall(ctx, serviceOutcome)
 	}()
 
-	userID, err := s.getUserIDFromContext(ctx)
-	if err != nil {
-		serviceOutcome = iamMetrics.OutcomeFailureUnknown
-		return err
+	// [COMMENT]: Chặn nhanh nếu client cố tình gửi yêu cầu tự thu hồi thiết bị hiện tại của mình.
+	if currentDeviceID != uuid.Nil && deviceID == currentDeviceID {
+		serviceOutcome = iamMetrics.OutcomePreConditionFailed
+		return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
 	}
 
 	// [COMMENT]: Đo lường thời gian thực thi câu lệnh SQL CTE (downstream).
 	repoStart := time.Now()
-	revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID)
+	revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID, currentDeviceID)
 	if revokeErr != nil {
 		if errors.Is(revokeErr, iamTaxonomy.ErrZeroRowsAffected) {
 			// [COMMENT]: Coi là lỗi nghiệp vụ (không hợp lệ) nhưng không phải lỗi hệ thống/downstream fail hoàn toàn.
@@ -130,11 +175,9 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) 
 	return nil
 }
 
-func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error) {
-	userID, err := s.getUserIDFromContext(ctx)
-	if err != nil {
-		return 0, err
-	}
+// LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác.
+// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
+func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	if _, revokeErr := s.deviceRepo.RevokeOtherDevicesByUserID(ctx, userID, currentTrackedDeviceID); revokeErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
@@ -147,65 +190,10 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, currentTrackedDe
 	return affected, nil
 }
 
-func (s *DeviceService) LogoutAllDevices(ctx context.Context) (int64, error) {
-	return s.LogoutOtherDevices(ctx, nil)
-}
-
-func (s *DeviceService) scanUserAccessSessions(ctx context.Context, rdb redis.Cmdable, userID string, limit int) ([]iamEntity.UserAccessSession, error) {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return nil, iamTaxonomy.ErrUserAccessSessionInvalid
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	indexKey := "iam:user_access_index:" + userID
-	keys := make([]string, 0, limit)
-	var cursor uint64
-	for len(keys) < limit {
-		scanned, nextCursor, scanErr := rdb.SScan(ctx, indexKey, cursor, "*", int64(limit)).Result()
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		for _, accessKey := range scanned {
-			keys = append(keys, "iam:user_access_session:"+userID+":"+accessKey)
-			if len(keys) >= limit {
-				break
-			}
-		}
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
-	}
-	if len(keys) == 0 {
-		return []iamEntity.UserAccessSession{}, nil
-	}
-	values, err := rdb.MGet(ctx, keys...).Result()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]iamEntity.UserAccessSession, 0, len(values))
-	for _, raw := range values {
-		if raw == nil {
-			continue
-		}
-		rawStr, ok := raw.(string)
-		if !ok {
-			continue
-		}
-		var pb iamproto.UserAccessSession
-		if protoErr := proto.Unmarshal([]byte(rawStr), &pb); protoErr != nil {
-			return nil, fmt.Errorf("iam cache: invalid user access session payload: %w", protoErr)
-		}
-		record := iamEntity.UserAccessSession{
-			AccessSecretHash: pb.Ash,
-			TrackedDeviceID:  pb.Tdid,
-			LastSeenAt:       pb.Lsa,
-		}
-		out = append(out, record)
-	}
-	return out, nil
+// LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị.
+// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
+func (s *DeviceService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error) {
+	return s.LogoutOtherDevices(ctx, userID, nil)
 }
 
 func (s *DeviceService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
@@ -290,11 +278,11 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 					}
 					if rawStr, ok := raw.(string); ok {
 						var pb iamproto.UserAccessSession
-						if proto.Unmarshal([]byte(rawStr), &pb) == nil {
+						if proto.Unmarshal(unsafeStringToBytes(rawStr), &pb) == nil {
 							record := iamEntity.UserAccessSession{
-								AccessSecretHash: pb.Ash,
-								TrackedDeviceID:  pb.Tdid,
-								LastSeenAt:       pb.Lsa,
+								// [COMMENT]: Đã bỏ gán AccessSecretHash vì trường này không còn tồn tại trên domain entity.
+								TrackedDeviceID: pb.Tdid,
+								LastSeenAt:      pb.Lsa,
 							}
 							runtimes = append(runtimes, sessionWithKey{
 								key:    scanned[i],
@@ -377,4 +365,9 @@ func (s *DeviceService) GetActiveDeviceID(ctx context.Context, userID uuid.UUID,
 	// [COMMENT]: Gọi trực tiếp xuống repository để kiểm tra xem có thiết bị đang hoạt động nào khớp với fingerprint này không.
 	// Cách này tối ưu hóa I/O vì repo chỉ trả về client_device_id dạng string chứ không quét nguyên cả struct Device cồng kềnh.
 	return s.deviceRepo.GetActiveDeviceID(ctx, userID, fingerprint)
+}
+
+// [COMMENT]: Chuyển đổi zero-copy từ string sang slice byte để tránh allocations bộ nhớ phụ trên heap.
+func unsafeStringToBytes(s string) []byte {
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }

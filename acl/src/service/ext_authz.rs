@@ -26,6 +26,8 @@ pub struct ExtAuthzService {
     // [COMMENT]: Client gRPC để gọi không đồng bộ sang Control Plane
     control_plane_client: Arc<ControlPlaneClient>,
     zone_mgr: Arc<ZoneManager>,
+    // [COMMENT]: Bộ giới hạn tần suất tích hợp tại biên
+    rate_limiter: Arc<crate::service::ratelimit::RateLimiter>,
 }
 
 impl ExtAuthzService {
@@ -37,6 +39,9 @@ impl ExtAuthzService {
         control_plane_client: Arc<ControlPlaneClient>,
         zone_mgr: Arc<ZoneManager>,
     ) -> Self {
+        let rate_limiter = Arc::new(crate::service::ratelimit::RateLimiter::new(
+            session_mgr.clone(),
+        ));
         Self {
             session_mgr,
             token_mgr,
@@ -44,6 +49,7 @@ impl ExtAuthzService {
             config,
             control_plane_client,
             zone_mgr,
+            rate_limiter,
         }
     }
 }
@@ -251,6 +257,21 @@ impl Authorization for ExtAuthzService {
                 // Trích xuất cookie từ HTTP header để phục vụ cho xác thực và khôi phục
                 let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
 
+                // [COMMENT]: Chặn nhanh (Fast-Bypass) nếu token nằm trong L1 Block Cache của Rate Limiter
+                if let Some(jwt_token) = extract_cookie_value(&cookie_header, "access_token") {
+                    let cache_key = sha256_hash(&jwt_token);
+                    if self.rate_limiter.is_blocked(&cache_key).await {
+                        Logger::sys_warn(
+                            "ext_authz.check",
+                            "Fast-bypass rate limit block triggered",
+                            &cache_key,
+                        );
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::resource_exhausted("Rate limit exceeded"),
+                        )));
+                    }
+                }
+
                 // [COMMENT]: Thực hiện xác thực an toàn CSRF chống tấn công cross-site forgery trên session dùng cookie
                 if let Err(err_msg) = crate::service::csrf::verify_csrf(
                     &method,
@@ -417,6 +438,18 @@ impl Authorization for ExtAuthzService {
                         .await;
                     }
                 };
+
+                // [COMMENT]: 4. Thực hiện Rate Limit (Post-Auth) tích hợp L1 Block Cache
+                if let Some(jwt_token) = extract_cookie_value(&cookie_header, "access_token") {
+                    let cache_key = sha256_hash(&jwt_token);
+                    if let Err(status) = self
+                        .rate_limiter
+                        .check_rate_limit(&claims, &cache_key, is_critical_admin, &path)
+                        .await
+                    {
+                        return Ok(Response::new(CheckResponse::with_status(status)));
+                    }
+                }
 
                 // [COMMENT]: Nếu là endpoint critical của SRE, kiểm tra chữ ký số thiết bị và chống Replay
                 if is_critical_admin {

@@ -56,7 +56,6 @@ import (
 	mailRepoImpl "controlplane/internal/mail/repository"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailHandler "controlplane/internal/mail/transport/http/handler"
-	"controlplane/internal/security/ratelimit"
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -82,7 +81,6 @@ type Module struct {
 	TemplateHandler *mailHandler.TemplateHandler
 
 	// 5) Security
-	RateLimiter *ratelimit.Bucket
 	cacheEngine *cacheengine.CacheRegistry
 }
 
@@ -110,7 +108,7 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the Dependency Graph for the Mail Module.
 // coreModule is required to resolve cross-module dependencies (e.g. ZoneService for endpoint zone resolution).
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLimiter *ratelimit.Bucket, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
+func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
 
 	// ------------------------------------------------------------------------
 	// 🔄 GIAI ĐOẠN 1: CORE REPOSITORIES & CACHES BOOTSTRAPPING
@@ -170,7 +168,6 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, rateLi
 		TemplateService: templateSvc,
 		ConsumerHandler: consumerHandler,
 		TemplateHandler: templateHandler,
-		RateLimiter:     rateLimiter,
 	}, nil
 }
 

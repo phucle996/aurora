@@ -76,7 +76,6 @@ import (
 	iamHandler "controlplane/internal/iam/transport/http/handler"
 	iamRpcHandler "controlplane/internal/iam/transport/rpc/handler"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
-	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 	"errors"
@@ -92,7 +91,6 @@ type IAMModule struct {
 	cfg         *config.Config
 	db          *pgxpool.Pool
 	rds         *goredis.Client
-	rateLimiter *ratelimit.Bucket
 	L1Registry  *cacheengine.CacheRegistry
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
@@ -113,7 +111,6 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	rateLimiter *ratelimit.Bucket,
 	cacheEngine *cacheengine.CacheRegistry,
 ) (*IAMModule, error) {
 
@@ -132,9 +129,6 @@ func NewModule(
 	}
 	if rds == nil {
 		return nil, errors.New("iam module: redis cluster client (rds) is nil (check redis sentinel/cluster endpoint)")
-	}
-	if rateLimiter == nil {
-		return nil, errors.New("iam module: global rate limiter bucket (rateLimiter) is nil")
 	}
 
 	if cacheEngine == nil {
@@ -252,7 +246,6 @@ func NewModule(
 		cfg:                   cfg,
 		db:                    db,
 		rds:                   rds,
-		rateLimiter:           rateLimiter,
 		L1Registry:            cacheEngine,
 		AuthService:           authSvc,
 		AuthHandler:           authHandler,

@@ -1,12 +1,13 @@
 package iam
 
 import (
-	"controlplane/internal/http/middleware"
-
 	"github.com/gin-gonic/gin"
 )
 
 // RegisterRoutes thực hiện đăng ký và thiết lập chuỗi phòng ngự (Security Chain) cho toàn bộ IAM API.
+// [COMMENT]: Đã loại bỏ hoàn toàn RateLimitPostAuth middleware tại đây.
+// Toàn bộ logic giới hạn tần suất (Rate Limiting) hiện đã được bàn giao (offload)
+// lên tầng Rust ACL (Edge) chạy trước Envoy để tăng tính HA và giảm tải CPU/Redis cho Control Plane.
 func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// ========================================================================
@@ -15,37 +16,31 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 1) Đăng ký tài khoản mới
 	router.POST("/api/v1/auth/register",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/register"),
 		module.AuthHandler.RegisterAccount,
 	)
 
 	// 4) Lấy thông tin phiên làm việc hiện tại
 	router.GET("/api/v1/auth/session",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/auth/session"),
 		module.AuthHandler.Session,
 	)
 
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices"),
 		module.DeviceHandler.ListMyDevices,
 	)
 
 	// 7) Thu hồi quyền truy cập của một thiết bị cụ thể
 	router.POST("/api/v1/me/devices/:device_id/revoke",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/:device_id/revoke"),
 		module.DeviceHandler.RevokeMyDevice,
 	)
 
 	// 8) Đăng xuất khỏi toàn bộ thiết bị khác ngoại trừ thiết bị hiện tại
 	router.POST("/api/v1/me/devices/logout-others",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/logout-others"),
 		module.DeviceHandler.LogoutOtherDevices,
 	)
 
 	// 9) Đăng xuất hoàn toàn trên toàn bộ thiết bị
 	router.POST("/api/v1/me/devices/logout-all",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/me/devices/logout-all"),
 		module.DeviceHandler.LogoutAllDevices,
 	)
 
@@ -55,25 +50,21 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// 15) Liệt kê danh sách vai trò
 	router.GET("/api/v1/rbac/roles",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles"),
 		module.RbacHandler.ListRoles,
 	)
 
 	// 16) Tạo vai trò mới
 	router.POST("/api/v1/rbac/roles",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles"),
 		module.RbacHandler.CreateRole,
 	)
 
 	// 17) Cập nhật cấu hình vai trò
 	router.PUT("/api/v1/rbac/roles/:id",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles/:id"),
 		module.RbacHandler.UpdateRole,
 	)
 
 	// 18) Xóa bỏ vai trò
 	router.DELETE("/api/v1/rbac/roles/:id",
-		middleware.RateLimitPostAuth(module.rateLimiter, "/api/v1/rbac/roles/:id"),
 		module.RbacHandler.DeleteRole,
 	)
 }

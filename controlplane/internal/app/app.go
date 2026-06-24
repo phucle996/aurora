@@ -52,7 +52,6 @@ import (
 	"controlplane/internal/observability"
 	"controlplane/internal/policyengine"
 	"controlplane/internal/security"
-	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
 	"encoding/base64"
 	"fmt"
@@ -224,12 +223,8 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	app.prom = promObs
 
+	// [COMMENT]: Khởi động cấu hình HTTP Engine
 	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Rate Limiter bootstrap: SetFailOpen(false) -> mất Redis thì chặn toàn bộ request.
-	// Đây là lựa chọn bảo mật cao: thà chặn request còn hơn để request vượt qua mà không bị rate limit.
-	// --------------------------------------------------------------------
-	ratelimiter := ratelimit.NewBucket(rds)
-	ratelimiter.SetFailOpen(false)
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] HTTP Engine bootstrap: TrustedProxies là bắt buộc.
@@ -272,7 +267,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, ratelimiter, policyModule, cacheEngine)
+	modules, err := NewGlobalModules(cfg, db, rds, policyModule, cacheEngine)
 	if err != nil {
 		app.Stop()
 		return nil, err

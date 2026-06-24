@@ -22,10 +22,11 @@ type DeviceListResult struct {
 }
 
 type DeviceService interface {
-	ListMyDevices(ctx context.Context, limit int, offset int) (*DeviceListResult, error)
-	RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error
-	LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error)
-	LogoutAllDevices(ctx context.Context) (int64, error)
+	// [COMMENT]: Thay đổi chữ ký hàm để truyền userID trực tiếp từ handler thay vì giải mã trong context.
+	ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*DeviceListResult, error)
+	RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error
+	LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error)
+	LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error)
 
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error

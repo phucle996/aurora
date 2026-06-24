@@ -43,13 +43,10 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/core"
 	healthhandler "controlplane/internal/http/handler"
-	"controlplane/internal/http/middleware"
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
 	"controlplane/internal/policyengine"
-	policyRateLimit "controlplane/internal/policyengine/policies/ratelimit"
-	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,7 +77,6 @@ type Modules struct {
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	rateLimiter *ratelimit.Bucket,
 	policyEngineModule *policyengine.Engine,
 	cacheEngine *cacheengine.CacheRegistry,
 ) (*Modules, error) {
@@ -121,7 +117,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rds, rateLimiter, cacheEngine)
+	coreModule, err := core.NewModule(cfg, db, rds, cacheEngine)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}
@@ -130,7 +126,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, rateLimiter, cacheEngine)
+	iamModule, err := iam.NewModule(cfg, db, rds, cacheEngine)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -159,7 +155,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ gửi mail Mail
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	mailModule, err := mail.NewModule(cfg, db, rds, rateLimiter, cacheEngine)
+	mailModule, err := mail.NewModule(cfg, db, rds, cacheEngine)
 	if err != nil {
 		logger.SysError("graceful.degradation.mail", fmt.Sprintf("Failed to initialize mail module: %v. Running in degraded mode.", err))
 		mailModule = mail.NewDegradedModule(err)
@@ -206,15 +202,6 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 		return errors.New("app: init middleware: redis client is required")
 	}
 
-	policySnapshot, err := policyModule.EngineService.Current(context.Background())
-	if err != nil || policySnapshot == nil {
-		return errors.New("app: init middleware: active runtime policy is required")
-	}
-	middleware.InitRateLimitPolicy(policySnapshot.Runtime.RateLimit)
-
-	policyModule.EngineService.RegisterRateLimitHook(func(policy *policyRateLimit.CompiledPolicy) {
-		middleware.InitRateLimitPolicy(*policy)
-	})
 	return nil
 }
 

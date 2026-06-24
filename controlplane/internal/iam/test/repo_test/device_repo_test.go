@@ -55,7 +55,7 @@ func TestDeviceRepositoryListAndRevoke(t *testing.T) {
 		t.Fatalf("unexpected devices: %+v", items)
 	}
 
-	err = repo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID)
+	err = repo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID, uuid.Nil)
 	if err != nil {
 		t.Fatalf("revoke device: %v", err)
 	}

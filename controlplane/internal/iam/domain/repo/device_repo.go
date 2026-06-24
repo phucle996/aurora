@@ -12,7 +12,7 @@ type DeviceRepository interface {
 	UpsertLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 	ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error)
 	GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error)
-	RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error
+	RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID, currentDeviceID uuid.UUID) error
 	RevokeOtherDevicesByUserID(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error)
 	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
 	InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error

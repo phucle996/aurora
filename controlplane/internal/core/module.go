@@ -41,7 +41,6 @@ import (
 	coreHandler "controlplane/internal/core/transport/http/handler"
 	coreRpcHandler "controlplane/internal/core/transport/rpc/handler"
 	coreProto "controlplane/internal/core/transport/rpc/proto"
-	"controlplane/internal/security/ratelimit"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,7 +57,6 @@ type Module struct {
 	ZoneHandler           *coreHandler.ZoneHandler
 	BackpressureService   coreSvcInterface.BackpressureService
 	listenCancel          context.CancelFunc
-	rateLimiter           *ratelimit.Bucket
 	L1Registry            *cacheengine.CacheRegistry
 }
 
@@ -68,7 +66,6 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	rateLimiter *ratelimit.Bucket,
 	cacheEngine *cacheengine.CacheRegistry,
 ) (*Module, error) {
 	if cfg == nil {
@@ -107,7 +104,6 @@ func NewModule(
 		ZoneService:           zoneService,
 		ZoneHandler:           zoneHandler,
 		BackpressureService:   backpressureSvc,
-		rateLimiter:           rateLimiter,
 		L1Registry:            cacheEngine,
 	}
 

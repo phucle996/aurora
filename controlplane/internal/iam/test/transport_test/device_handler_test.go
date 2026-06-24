@@ -28,13 +28,14 @@ type deviceServiceStub struct {
 	logoutAllErr    error
 }
 
-func (s *deviceServiceStub) ListMyDevices(ctx context.Context, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+// [COMMENT]: Khớp chữ ký hàm mới nhận userID trực tiếp từ handler.
+func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
 	return s.listResult, s.listErr
 }
-func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, deviceID uuid.UUID) error {
+func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
 	return s.revokeErr
 }
-func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrackedDeviceID *uuid.UUID) (int64, error) {
+func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	if currentTrackedDeviceID != nil {
 		s.logoutOthersID = currentTrackedDeviceID.String()
 	} else {
@@ -42,7 +43,7 @@ func (s *deviceServiceStub) LogoutOtherDevices(ctx context.Context, currentTrack
 	}
 	return s.logoutOthersN, s.logoutOthersErr
 }
-func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context) (int64, error) {
+func (s *deviceServiceStub) LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error) {
 	return s.logoutAllN, s.logoutAllErr
 }
 func (s *deviceServiceStub) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
@@ -62,6 +63,7 @@ func (s *deviceServiceStub) GetActiveDeviceID(ctx context.Context, userID uuid.U
 
 var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 
+// [COMMENT]: Cấu hình middleware giả lập định danh người dùng cả ở Context lẫn HTTP header.
 func withUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ident := &constant.Identity{
@@ -71,6 +73,7 @@ func withUser() gin.HandlerFunc {
 		}
 		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
 		c.Request = c.Request.WithContext(ctx)
+		c.Request.Header.Set("x-user-id", "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
 		c.Next()
 	}
 }
@@ -152,6 +155,7 @@ func TestDeviceHandlerLogoutOthersRequiresTrackedDeviceID(t *testing.T) {
 			}
 			ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
 			c.Request = c.Request.WithContext(ctx)
+			c.Request.Header.Set("x-user-id", "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
 			c.Next()
 		},
 		h.LogoutOtherDevices,

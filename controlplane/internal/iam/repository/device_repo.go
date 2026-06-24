@@ -138,26 +138,26 @@ func (r *DeviceRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UU
 	return *clientDeviceID, nil
 }
 
-func (r *DeviceRepository) RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error {
+func (r *DeviceRepository) RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID, currentDeviceID uuid.UUID) error {
 	// [COMMENT]: Gộp UPDATE devices và DELETE refresh_tokens thành 1 câu SQL dùng CTE để tối ưu số lần round-trip DB.
-	// Sử dụng SELECT ... FROM để đảm bảo luôn trả về đúng 1 dòng (tránh lỗi pgx.ErrNoRows nếu DELETE 0 dòng).
+	// Bổ sung lọc loại trừ thiết bị hiện tại (currentDeviceID) để tránh tự thu hồi chính mình.
 	query := fmt.Sprintf(`
 		WITH revoked_device AS (
 			UPDATE %s.devices
 			SET status='revoked', revoked_at=now(), updated_at=now()
-			WHERE id = $1 AND user_id = $2
+			WHERE id = $1 AND user_id = $2 AND id != $3
 			RETURNING id
 		),
 		deleted_tokens AS (
 			DELETE FROM %s.refresh_tokens
-			WHERE user_id = $2 AND device_id = $1
+			WHERE user_id = $2 AND device_id = $1 AND device_id != $3
 			RETURNING 1
 		)
 		SELECT 
 			(SELECT COUNT(*) FROM revoked_device) AS updated_count
 	`, r.schema, r.schema)
 	var updatedCount int64
-	if err := r.db.QueryRow(ctx, query, deviceID, userID).Scan(&updatedCount); err != nil {
+	if err := r.db.QueryRow(ctx, query, deviceID, userID, currentDeviceID).Scan(&updatedCount); err != nil {
 		return fmt.Errorf("iam repo: revoke device by id and user id CTE: %w", err)
 	}
 	if updatedCount == 0 {
