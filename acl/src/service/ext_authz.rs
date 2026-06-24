@@ -234,8 +234,35 @@ impl Authorization for ExtAuthzService {
                     return revoke_res;
                 }
 
+                // [COMMENT]: Gọi handle_admin_logout để xử lý đăng xuất cho SRE Admin tại biên
+                if let Some(admin_revoke_res) =
+                    crate::service::session::revoke_session::handle_admin_logout(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                {
+                    return admin_revoke_res;
+                }
+
                 // Trích xuất cookie từ HTTP header để phục vụ cho xác thực và khôi phục
                 let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+
+                // [COMMENT]: Thực hiện xác thực an toàn CSRF chống tấn công cross-site forgery trên session dùng cookie
+                if let Err(err_msg) = crate::service::csrf::verify_csrf(
+                    &method,
+                    &path,
+                    &cookie_header,
+                    client_headers,
+                    &self.config,
+                ) {
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::permission_denied(err_msg),
+                    )));
+                }
 
                 // 3. Thực hiện xác thực Trinity Credentials thô qua cookie và Redis L2
                 let auth_result = async {
@@ -261,12 +288,11 @@ impl Authorization for ExtAuthzService {
                         return Err("Access Key Mismatch");
                     }
 
+                    let mut dev_pubkey = "".to_string();
+
                     // [COMMENT]: Kiểm tra session trạng thái trong Redis L2 (Stateful Verification)
                     let session = if claims.is_admin() {
-                        let admin_sess = match self
-                            .session_mgr
-                            .get_admin_session(&access_key)
-                            .await
+                        let admin_sess = match self.session_mgr.get_admin_session(&access_key).await
                         {
                             Ok(Some(s)) => s,
                             Ok(None) => return Err("Session Expired or Revoked"),
@@ -279,6 +305,8 @@ impl Authorization for ExtAuthzService {
                                 return Err("Authentication service unavailable");
                             }
                         };
+                        // [COMMENT]: Lưu khóa công khai của thiết bị phục vụ kiểm tra chữ ký ở bước sau
+                        dev_pubkey = admin_sess.device_public_key.clone();
                         crate::core::session::UserAccessSession {
                             ash: admin_sess.access_secret_hash,
                             tdid: "global".to_string(),
@@ -309,11 +337,68 @@ impl Authorization for ExtAuthzService {
                         return Err("Access Secret Mismatch");
                     }
 
-                    Ok((claims, session, access_key))
-                }
-                .await;
+                    Ok((claims, session, access_key, dev_pubkey))
+                };
 
-                let (mut claims, session, access_key) = match auth_result {
+                let is_critical_admin = path.contains("/critical/");
+
+                let auth_result = if is_critical_admin {
+                    // [COMMENT]: Trích xuất mã OTP từ header x-admin-stepup-code
+                    let otp_code = client_headers
+                        .get("x-admin-stepup-code")
+                        .map(|s| s.as_str().trim().to_string())
+                        .unwrap_or_default();
+
+                    if otp_code.is_empty()
+                        || otp_code.len() != 6
+                        || !otp_code.chars().all(|c| c.is_ascii_digit())
+                    {
+                        Logger::sys_warn(
+                            "ext_authz.check",
+                            "Missing or invalid SRE OTP code for critical endpoint",
+                            &path,
+                        );
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::unauthenticated("Missing or invalid SRE OTP code"),
+                        )));
+                    }
+
+                    // [COMMENT]: Chạy song song: Xác thực session (trinity) và gọi Vault verify OTP
+                    let trinity_verify = auth_result;
+                    let otp_verify = self.token_mgr.verify_admin_totp(&otp_code);
+
+                    match tokio::join!(trinity_verify, otp_verify) {
+                        (Ok((claims, session, access_key, dev_pubkey)), Ok(true)) => {
+                            if !claims.is_admin() {
+                                Logger::sys_warn(
+                                    "ext_authz.check",
+                                    "Non-admin attempted to access critical endpoint",
+                                    &claims.sub,
+                                );
+                                return Ok(Response::new(CheckResponse::with_status(
+                                    Status::permission_denied(
+                                        "Only SRE Admin can access critical endpoints",
+                                    ),
+                                )));
+                            }
+                            Ok((claims, session, access_key, dev_pubkey))
+                        }
+                        (Err(err_msg), _) => Err(err_msg),
+                        (_, Ok(false)) => Err("Invalid OTP code"),
+                        (_, Err(e)) => {
+                            Logger::sys_error(
+                                "ext_authz.check",
+                                "Vault TOTP verification failed",
+                                &e.to_string(),
+                            );
+                            Err("Authentication service temporarily unavailable")
+                        }
+                    }
+                } else {
+                    auth_result.await
+                };
+
+                let (mut claims, session, access_key, device_public_key) = match auth_result {
                     Ok(val) => val,
                     Err(err_msg) => {
                         // [COMMENT]: Khi xác thực Trinity Cookie thất bại, chuyển hướng sang luồng khôi phục session bằng Refresh Token
@@ -332,6 +417,23 @@ impl Authorization for ExtAuthzService {
                         .await;
                     }
                 };
+
+                // [COMMENT]: Nếu là endpoint critical của SRE, kiểm tra chữ ký số thiết bị và chống Replay
+                if is_critical_admin {
+                    if let Err(status) = crate::service::signature::verify_admin_signature(
+                        &self.session_mgr,
+                        client_headers,
+                        &req,
+                        &method,
+                        &path,
+                        &device_public_key,
+                        &access_key,
+                    )
+                    .await
+                    {
+                        return Ok(Response::new(CheckResponse::with_status(status)));
+                    }
+                }
 
                 // [COMMENT]: 3.5. Phân giải và xác thực thông tin Zone thông qua dịch vụ zone_resolution tùy theo vai trò
                 let cookies_to_set_zone = if claims.is_admin() {

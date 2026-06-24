@@ -82,8 +82,8 @@ type App struct {
 	rds        *goredis.Client
 	rdsJob     *goredis.Client
 	// [COMMENT]: Vault client phục vụ kết nối quản lý khóa an toàn
-	vault      *vaultapi.Client
-	ready      bool
+	vault *vaultapi.Client
+	ready bool
 }
 
 // NewApplication khởi tạo toàn bộ runtime dependency theo thứ tự đã định và trả về App sẵn sàng Start().
@@ -253,10 +253,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		middleware.RequestID(),
 		middleware.OTelTraceContext(otelObs),
 		middleware.OTelHTTPMetrics(promObs),
-		// CORS được offload sang Envoy Edge Ingress Gateway (xem dev/envoy/envoy.yaml) để
-		// tối ưu hiệu năng và quản lý headers tập trung ở cấp gateway trong môi trường HA.
-		// middleware.CORS(cfg.App.AllowedOrigins),
-		middleware.CookieOriginGuard(cfg.App.AllowedOrigins),
 		middleware.AccessLog(),
 		middleware.AdminXSSI(),
 	)

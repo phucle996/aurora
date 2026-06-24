@@ -28,11 +28,12 @@ impl SessionManager {
         }
     }
 
-    // [COMMENT]: Đăng ký Session Admin mới cho SRE vào Redis L2
+    // [COMMENT]: Đăng ký Session Admin mới cho SRE vào Redis L2, đính kèm device_public_key để verify signature tại biên
     pub async fn register_admin_session(
         &self,
         access_key: &str,
         access_secret_hash: &str,
+        device_public_key: &str,
     ) -> Result<(), AclError> {
         // [COMMENT]: 1. Tạo kết nối tới Redis
         let mut conn = self.get_connection().await?;
@@ -40,9 +41,10 @@ impl SessionManager {
         // [COMMENT]: 2. Thiết lập Redis key cho admin session (Bỏ zone_id khỏi Namespace theo kiến trúc HA mới)
         let redis_key = format!("iam:admin_access_session:{}", access_key);
 
-        // [COMMENT]: 3. Khởi tạo đối tượng session với băm mật của access_secret
+        // [COMMENT]: 3. Khởi tạo đối tượng session với băm mật của access_secret và khóa công khai thiết bị
         let session = AdminAccessSession {
             access_secret_hash: access_secret_hash.to_string(),
+            device_public_key: device_public_key.to_string(),
         };
 
         // [COMMENT]: 4. Serialize struct sang Protobuf binary
@@ -95,12 +97,19 @@ impl SessionManager {
             return Ok(false);
         }
 
-        // [COMMENT]: 2. Thiết lập key Redis cho session cũ và mới (Bỏ zone_id khỏi Namespace theo kiến trúc HA mới)
+        // [COMMENT]: 2. Đọc session cũ để lấy thông tin device_public_key nhằm giữ lại sau khi xoay vòng
+        let device_public_key = match self.get_admin_session(old_access_key).await? {
+            Some(old_sess) => old_sess.device_public_key,
+            None => "".to_string(),
+        };
+
+        // [COMMENT]: 3. Thiết lập key Redis cho session cũ và mới (Bỏ zone_id khỏi Namespace theo kiến trúc HA mới)
         let old_redis_key = format!("iam:admin_access_session:{}", old_access_key);
         let new_redis_key = format!("iam:admin_access_session:{}", new_access_key);
 
         let new_session = AdminAccessSession {
             access_secret_hash: new_ash.to_string(),
+            device_public_key,
         };
 
         let mut buf = Vec::new();
@@ -108,7 +117,7 @@ impl SessionManager {
             .encode(&mut buf)
             .map_err(|e| AclError::Internal(e.to_string()))?;
 
-        // [COMMENT]: 3. Thực thi Pipeline nguyên tử:
+        // [COMMENT]: 4. Thực thi Pipeline nguyên tử:
         // - Tạo session mới với đầy đủ TTL
         // - Chuyển session cũ sang thời gian sống ngắn hạn (Grace Period 5 giây) để tránh lỗi 401 cho các request song song đang xử lý.
         redis::pipe()
@@ -134,5 +143,23 @@ impl SessionManager {
             .unwrap_or(());
 
         Ok(true)
+    }
+
+    // [COMMENT]: Thực hiện giảm TTL của admin session xuống còn 5 giây thay vì xoá ngay lập tức (DEL)
+    // để tránh gây lỗi 401 bất ngờ cho các request song song khác đang bay lơ lửng.
+    pub async fn delete_admin_session(&self, access_key: &str) -> Result<(), AclError> {
+        let mut conn = self.get_connection().await?;
+        let redis_key = format!("iam:admin_access_session:{}", access_key);
+
+        redis::cmd("EXPIRE")
+            .arg(&redis_key)
+            .arg(5)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| {
+                AclError::RedisError(format!("Expire admin session in Redis failed: {}", e))
+            })?;
+
+        Ok(())
     }
 }

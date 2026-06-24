@@ -23,6 +23,10 @@ pub struct AdminAccessSession {
     // [COMMENT]: Access Secret Hash (Băm SHA-256 của Access Secret thô)
     #[prost(string, tag = "1")]
     pub access_secret_hash: ::prost::alloc::string::String,
+
+    // [COMMENT]: Khóa công khai Ed25519 của thiết bị dùng để xác thực chữ ký của các thao tác critical
+    #[prost(string, tag = "2")]
+    pub device_public_key: ::prost::alloc::string::String,
 }
 
 pub struct SessionManager {
@@ -39,7 +43,7 @@ impl SessionManager {
     }
 
     // Hỗ trợ kết nối bất đồng bộ sang Redis
-    async fn get_connection(&self) -> Result<redis::aio::Connection, AclError> {
+    pub(crate) async fn get_connection(&self) -> Result<redis::aio::Connection, AclError> {
         self.redis_client
             .get_tokio_connection()
             .await

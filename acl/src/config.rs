@@ -47,6 +47,8 @@ pub struct Config {
     pub bypass_endpoints: Vec<String>,
     // [COMMENT]: Domain công khai của hệ thống để gắn kết session cookie (đọc từ APP_PUBLIC_DOMAIN)
     pub app_public_domain: String,
+    // [COMMENT]: Danh sách các origin được phép gọi API (đọc từ APP_ALLOWED_ORIGINS)
+    pub allowed_origins: Vec<String>,
 }
 
 impl Config {
@@ -133,11 +135,22 @@ impl Config {
                 vec![
                     "/api/v1/auth/login".to_string(),
                     "/api/v1/health".to_string(),
+                    "/api/v1/auth/register".to_string(),
                 ]
             });
 
         // [COMMENT]: Nạp domain công khai từ biến môi trường APP_PUBLIC_DOMAIN
         let app_public_domain = env::var("APP_PUBLIC_DOMAIN").unwrap_or_default();
+
+        // [COMMENT]: Nạp danh sách các domain/origin được phép truy cập từ biến môi trường APP_ALLOWED_ORIGINS
+        let allowed_origins = env::var("APP_ALLOWED_ORIGINS")
+            .map(|s| {
+                s.split(',')
+                    .map(|item| item.trim().to_string())
+                    .filter(|item| !item.is_empty())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
 
         Ok(Config {
             grpc_port,
@@ -152,6 +165,7 @@ impl Config {
             controlplane_grpc_client_key,
             bypass_endpoints,
             app_public_domain,
+            allowed_origins,
         })
     }
 }

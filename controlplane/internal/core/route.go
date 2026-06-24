@@ -7,48 +7,32 @@ import (
 )
 
 func RegisterRoutes(router *gin.Engine, module *Module) {
-	router.POST("/admin/core/zones",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(middleware.WithInjectAdminAccessKey()),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
-		middleware.AdminCriticalSignature(),
-		middleware.AdminCriticalStepUp2FA(),
+	// [COMMENT]: Route tạo zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACL chặn bắt song song)
+	router.POST("/admin/critical/core/zones",
+		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/critical/core/zones"),
 		module.ZoneHandler.CreateZone,
 	)
 	router.GET("/admin/core/zones",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(),
 		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones"),
 		module.ZoneHandler.ListZones,
 	)
 	router.GET("/admin/core/zones/:zone_id",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(),
 		module.ZoneHandler.GetZone,
 	)
 
-	router.PATCH("/admin/core/zones/status",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(middleware.WithInjectAdminAccessKey()),
-		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/core/zones/status"),
-		middleware.AdminCriticalSignature(),
-		middleware.AdminCriticalStepUp2FA(),
+	// [COMMENT]: Route cập nhật trạng thái zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACL chặn bắt song song)
+	router.PATCH("/admin/critical/core/zones/status",
+		middleware.RateLimitPostAuth(module.rateLimiter, "/admin/critical/core/zones/status"),
 		module.ZoneHandler.UpdateZoneStatus,
 	)
 
 	router.DELETE("/admin/core/zones/:zone_id",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(),
 		module.ZoneHandler.DeleteZone,
 	)
 	router.GET("/admin/core/zones/:zone_id/services",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(),
 		module.ZoneHandler.ListZoneServices,
 	)
 	router.PUT("/admin/core/zones/services",
-		middleware.AdminCIDR(),
-		middleware.AdminAPIKeyAuth(),
 		module.ZoneHandler.UpsertZoneService,
 	)
 }

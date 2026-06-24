@@ -28,20 +28,12 @@ import (
 )
 
 type authRepoMock struct {
-	checkFn         func(ctx context.Context, username string, email string) (bool, error)
 	createFn        func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error
 	getUserFn       func(ctx context.Context, username string) (*iamEntity.LoginUser, error)
 	createRefreshFn func(ctx context.Context, token iamEntity.RefreshToken) error
 }
 
 var _ iamRepoInterface.AuthRepository = (*authRepoMock)(nil)
-
-func (m *authRepoMock) CheckUserExist(ctx context.Context, username string, email string) (bool, error) {
-	if m.checkFn != nil {
-		return m.checkFn(ctx, username, email)
-	}
-	return false, nil
-}
 
 func (m *authRepoMock) GetLoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 	if m.getUserFn != nil {
@@ -53,13 +45,6 @@ func (m *authRepoMock) GetLoginUserByUsername(ctx context.Context, username stri
 func (m *authRepoMock) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 	if m.createFn != nil {
 		return m.createFn(ctx, user, profile)
-	}
-	return nil
-}
-
-func (m *authRepoMock) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
-	if m.createRefreshFn != nil {
-		return m.createRefreshFn(ctx, token)
 	}
 	return nil
 }
@@ -160,13 +145,6 @@ func (s *sessionRefreshServiceStub) RefreshAdminTrinity(ctx context.Context, zon
 	return iamEntity.AdminLoginResult{}, nil
 }
 
-func (s *sessionRefreshServiceStub) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error {
-	return nil
-}
-
-func (s *sessionRefreshServiceStub) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error {
-	return nil
-}
 
 // [COMMENT]: Thêm stub RevokeOpaqueRefreshToken để thoả mãn interface mới
 func (s *sessionRefreshServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
@@ -184,7 +162,10 @@ func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.
 				IssuedAt:      time.Now().UTC(),
 				ExpiresAt:     time.Now().UTC().Add(24 * time.Hour),
 			}
-			err := repo.CreateRefreshTokenSession(ctx, token)
+			var err error
+			if mock, ok := repo.(*authRepoMock); ok && mock.createRefreshFn != nil {
+				err = mock.createRefreshFn(ctx, token)
+			}
 			return "mock-refresh-token", token.ExpiresAt, err
 		},
 	}
@@ -252,16 +233,11 @@ func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
 	rdb.SetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
 
-	checked := false
 	created := false
 	svc := newAuthService(&authRepoMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, error) {
-			checked = true
-			return true, nil
-		},
 		createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 			created = true
-			return nil
+			return iamTaxonomy.ErrUserAlreadyExist
 		},
 	}, registry)
 
@@ -269,11 +245,8 @@ func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
 	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist, got %v", err)
 	}
-	if !checked {
-		t.Fatal("expected CheckUserExist to be called")
-	}
-	if created {
-		t.Fatal("did not expect repository create to be called")
+	if !created {
+		t.Fatal("expected repository create to be called")
 	}
 }
 
@@ -285,13 +258,8 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
 	rdb.SetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
 
-	checked := false
 	created := false
 	svc := newAuthService(&authRepoMock{
-		checkFn: func(ctx context.Context, username string, email string) (bool, error) {
-			checked = true
-			return false, nil
-		},
 		createFn: func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 			created = true
 			return nil
@@ -302,8 +270,8 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if !checked || !created {
-		t.Fatalf("expected checked=%v created=%v all true", checked, created)
+	if !created {
+		t.Fatalf("expected created true")
 	}
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")

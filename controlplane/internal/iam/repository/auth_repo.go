@@ -32,24 +32,6 @@ func NewAuthRepository(
 	}
 }
 
-func (r *AuthRepository) CheckUserExist(ctx context.Context, username string, email string) (bool, error) {
-	query := fmt.Sprintf(`
-		SELECT EXISTS (
-			SELECT 1
-			FROM %s.users
-			WHERE username = $1
-			   OR email = $2
-		)
-	`, r.schema)
-
-	var exists bool
-
-	if err := r.db.QueryRow(ctx, query, username, email).Scan(&exists); err != nil {
-		return false, fmt.Errorf("iam repo: check user exist: %w", err)
-	}
-
-	return exists, nil
-}
 
 func (r *AuthRepository) GetLoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 	// [COMMENT]: Thực hiện truy vấn trực tiếp bảng users để lấy thông tin đăng nhập mà không join sang bảng user_profiles
@@ -175,36 +157,6 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("iam repo: commit register tx: %w", err)
-	}
-
-	return nil
-}
-
-func (r *AuthRepository) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
-	tokenModel := iamModel.RefreshTokenEntityToModel(token)
-	query := fmt.Sprintf(`
-		INSERT INTO %s.refresh_tokens (
-			id,
-			user_id,
-			device_id,
-			token_hash,
-			tenant_id,
-			issued_at,
-			expires_at
-		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)
-	`, r.schema)
-
-	if _, err := r.db.Exec(ctx, query,
-		tokenModel.ID,
-		tokenModel.UserID,
-		tokenModel.DeviceID,
-		tokenModel.TokenHash,
-		tokenModel.TenantID,
-		tokenModel.IssuedAt,
-		tokenModel.ExpiresAt,
-	); err != nil {
-		return fmt.Errorf("iam repo: create refresh token session: %w", err)
 	}
 
 	return nil

@@ -210,36 +210,11 @@ func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Modu
 	if err != nil || policySnapshot == nil {
 		return errors.New("app: init middleware: active runtime policy is required")
 	}
-	middleware.InitAdminCIDR(policySnapshot.Runtime.AdminCIDR.Allowlist)
 	middleware.InitRateLimitPolicy(policySnapshot.Runtime.RateLimit)
 
 	policyModule.EngineService.RegisterRateLimitHook(func(policy *policyRateLimit.CompiledPolicy) {
 		middleware.InitRateLimitPolicy(*policy)
 	})
-	if err := middleware.InitAdminAPIKeyAuth(cacheEngine); err != nil {
-		return fmt.Errorf("app: init admin api key middleware: %w", err)
-	}
-	if err := middleware.InitAdminCriticalSignature(
-		cacheEngine,
-		time.Minute,
-		2*time.Minute,
-		func(ctx context.Context, accessKey string) (string, error) {
-			val, err := cacheEngine.GetOrLoad(ctx, "admin_public_key", "")
-			if err != nil {
-				return "", err
-			}
-			pubKey, ok := val.(string)
-			if !ok {
-				return "", fmt.Errorf("invalid public key format in cache")
-			}
-			return pubKey, nil
-		},
-	); err != nil {
-		return fmt.Errorf("app: init admin critical signature middleware: %w", err)
-	}
-	if err := middleware.InitAdminCriticalStepUp2FA(cacheEngine); err != nil {
-		return fmt.Errorf("app: init admin critical step-up middleware: %w", err)
-	}
 	return nil
 }
 

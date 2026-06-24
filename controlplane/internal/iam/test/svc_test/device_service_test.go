@@ -16,10 +16,10 @@ import (
 )
 
 type deviceRepoMock struct {
-	listFn        func(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error)
-	upsertLoginFn func(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
-	revokeFn      func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error
-	revokeOtherFn func(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error)
+	listFn              func(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error)
+	upsertLoginFn       func(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
+	revokeFn            func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error
+	revokeOtherFn       func(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error)
 	getActiveDeviceIDFn func(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error)
 }
 
@@ -65,18 +65,6 @@ type refreshRepoMock struct {
 	revokeFn func(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error)
 }
 
-func (m *refreshRepoMock) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-	return nil, nil
-}
-func (m *refreshRepoMock) GetRefreshTokenUserByID(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
-	return nil, nil
-}
-func (m *refreshRepoMock) GetRefreshTokenDeviceByID(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error) {
-	return nil, nil
-}
-func (m *refreshRepoMock) RotateRefreshToken(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
-	return nil
-}
 func (m *refreshRepoMock) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
 	return m.revokeFn(ctx, userID, exceptDeviceID)
 }
@@ -110,7 +98,9 @@ func newDeviceService(d iamRepoInterface.DeviceRepository, r iamRepoInterface.Re
 
 func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {
 	svc := newDeviceService(&deviceRepoMock{
-		revokeFn:      func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error { return iamTaxonomy.ErrZeroRowsAffected },
+		revokeFn: func(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID) error {
+			return iamTaxonomy.ErrZeroRowsAffected
+		},
 		revokeOtherFn: func(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) { return 0, nil },
 	}, &refreshRepoMock{
 		revokeFn: func(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) { return 0, nil },

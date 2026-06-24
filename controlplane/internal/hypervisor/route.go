@@ -1,8 +1,6 @@
 package hypervisor
 
 import (
-	"controlplane/internal/http/middleware"
-
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,7 +12,6 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 
 	// Group định tuyến cho hypervisor được bảo vệ bởi middleware bảo mật Access
 	group := router.Group("/api/v1/hypervisor")
-	group.Use(middleware.ACL())
 	{
 		group.GET("/status", func(c *gin.Context) {
 			c.JSON(200, gin.H{

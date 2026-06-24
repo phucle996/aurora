@@ -16,10 +16,6 @@ type SessionRefreshService interface {
 	CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
 
 
-	// Các phương thức phụ trợ thu hồi refresh token của user
-	RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error
-	RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error
-
 	// [COMMENT]: Xóa bỏ refresh token theo giá trị raw nhận được từ cookie (băm và xóa)
 	RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error
 

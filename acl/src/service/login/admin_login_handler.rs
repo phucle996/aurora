@@ -22,6 +22,8 @@ use crate::observability::logger::Logger;
 pub struct AdminLoginPayload {
     pub api_key: Option<String>,
     pub totp_code: Option<String>,
+    // [COMMENT]: Khóa công khai Ed25519 của thiết bị/trình duyệt đăng nhập
+    pub device_public_key: Option<String>,
 }
 
 // [COMMENT]: Cấu trúc JSON phản hồi lỗi nếu xác thực thất bại
@@ -225,9 +227,31 @@ pub async fn handle_admin_login(
     // [COMMENT]: Băm SHA-256 access_secret
     let ash = sha256_hash(&access_secret);
 
-    // [COMMENT]: Đăng ký Session vào L2 Redis dưới key: "iam:admin_access_session:<access_key>"
+    // [COMMENT]: Đăng ký Session vào L2 Redis dưới key: "iam:admin_access_session:<access_key>" kèm theo device_public_key
+    let device_pubkey = payload.device_public_key.as_deref().unwrap_or("");
+
+    // [COMMENT]: Thực hiện giải mã thử và kiểm tra độ dài public key để phát hiện lỗi sớm trước khi ghi nhận login thành công
+    if !device_pubkey.is_empty() {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+        let is_valid = match BASE64.decode(device_pubkey) {
+            Ok(bytes) => bytes.len() == 32,
+            Err(_) => false,
+        };
+        if !is_valid {
+            Logger::sys_warn(
+                "admin_login_handler",
+                "SRE Admin login failed: Invalid device_public_key format or length",
+                "",
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::BadRequest,
+                "Invalid device_public_key format or length (must be a valid 32-byte Base64-encoded key)",
+            ))));
+        }
+    }
+
     if let Err(e) = session_mgr
-        .register_admin_session(&access_key, &ash)
+        .register_admin_session(&access_key, &ash, device_pubkey)
         .await
     {
         Logger::sys_error(

@@ -114,7 +114,7 @@ func InitRateLimitPolicy(policy policyRateLimit.CompiledPolicy) {
 // ============================================================================
 
 // RateLimitPostAuth thực hiện giới hạn tần suất dựa trên thông tin định danh chi tiết.
-// Chỉ áp dụng sau các middleware xác thực (Access, AdminAPIKeyAuth).
+// Chỉ áp dụng sau khi request đã được xác thực bởi Envoy/ACL ở biên mạng.
 // Giúp tránh việc block nhầm các máy khách hợp lệ nằm sau cùng một NAT IP bằng cách ưu tiên key:
 // 1) IP + Device ID
 // 2) IP + User ID

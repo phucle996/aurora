@@ -78,45 +78,7 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		iamMetrics.ServiceCall(ctx, result)
 	}()
 
-	// Presence cache chỉ là acceleration path. Đo lường latency & outcome của Redis check.
-	presenceStart := time.Now()
 	rdb := s.registry.L2.Client()
-	var usernameHit, emailHit bool
-	usernameDigest, cacheErr := security.PresenceHMACSHA256Hex("iam.register.username", user.Username)
-	var emailDigest string
-	if cacheErr == nil {
-		emailDigest, cacheErr = security.PresenceHMACSHA256Hex("iam.register.email", user.Email)
-	}
-	var usernameHitInt, emailHitInt int64
-	if cacheErr == nil {
-		usernameHitInt, cacheErr = rdb.GetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
-	}
-	if cacheErr == nil {
-		emailHitInt, cacheErr = rdb.GetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
-	}
-	if cacheErr != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "checkPresence", iamMetrics.OutcomeFailureUnknown, time.Since(presenceStart), cacheErr)
-	} else {
-		usernameHit = usernameHitInt == 1
-		emailHit = emailHitInt == 1
-	}
-
-	if cacheErr == nil && (usernameHit || emailHit) {
-		// Cache hit nghi ngờ duplicate -> xác nhận lại ở DB (SoT).
-		dbCheckStart := time.Now()
-		exists, checkErr := s.repo.CheckUserExist(ctx, user.Username, user.Email)
-		if checkErr != nil {
-			result = iamMetrics.OutcomeFailureUnknown
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CheckUserExist", iamMetrics.OutcomeFailureUnknown, time.Since(dbCheckStart), checkErr)
-			return fmt.Errorf("%w: user check exist failed: %v", iamTaxonomy.ErrAuthenticationUnavailable, checkErr)
-		}
-		if exists {
-			result = iamMetrics.OutcomePreConditionFailed
-			return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, nil, iamMetrics.OutcomePreConditionFailed)
-		}
-	}
-	if cacheErr == nil && !(usernameHit || emailHit) {
-	}
 
 	// Đo lường thời gian băm mật khẩu để SRE theo dõi mức sử dụng CPU (CPU-bound).
 	passwordHash, hashErr := security.HashPassword(password)
@@ -157,10 +119,11 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		// DB unique violation được map về domain duplicate ở repo; sau đó mark presence
 		// best-effort để các request sau short-circuit sớm.
 		if errors.Is(insertErr, iamTaxonomy.ErrUserAlreadyExist) {
+
 			result = iamMetrics.OutcomePreConditionFailed
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CreateRegisteredUser", iamMetrics.OutcomePreConditionFailed, time.Since(insertStart), insertErr)
-			if usernameDigest, err := security.PresenceHMACSHA256Hex("iam.register.username", user.Username); err == nil {
-				if emailDigest, err := security.PresenceHMACSHA256Hex("iam.register.email", user.Email); err == nil {
+			if usernameDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.username", user.Username); digestErr == nil {
+				if emailDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.email", user.Email); digestErr == nil {
 					pipe := rdb.Pipeline()
 					pipe.SetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
 					pipe.SetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
@@ -171,13 +134,13 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		}
 		result = iamMetrics.OutcomeFailureUnknown
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CreateRegisteredUser", iamMetrics.OutcomeFailureUnknown, time.Since(insertStart), insertErr)
-		return fmt.Errorf("%w: failed to create registered user: %v", iamTaxonomy.ErrAuthenticationUnavailable, insertErr)
+		return insertErr
 	}
 
 	// Đánh dấu presence trong cache (best-effort).
 	markStart := time.Now()
-	var markErr error
-	usernameDigest, markErr = security.PresenceHMACSHA256Hex("iam.register.username", user.Username)
+	usernameDigest, markErr := security.PresenceHMACSHA256Hex("iam.register.username", user.Username)
+	var emailDigest string
 	if markErr == nil {
 		emailDigest, markErr = security.PresenceHMACSHA256Hex("iam.register.email", user.Email)
 	}
@@ -424,9 +387,4 @@ func cleanString(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
-}
-
-func (s *AuthService) VerifyOpaqueRefreshToken(ctx context.Context, refreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
-	// [COMMENT]: Ủy thác (delegate) hoàn toàn logic xác thực Opaque Refresh Token sang cho SessionRefreshService
-	return s.refreshSvc.VerifyOpaqueRefreshToken(ctx, refreshToken, scope)
 }

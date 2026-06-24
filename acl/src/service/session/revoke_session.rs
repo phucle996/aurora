@@ -151,6 +151,125 @@ pub async fn handle_logout(
     Some(Ok(Response::new(response)))
 }
 
+// [COMMENT]: Xử lý luồng logout độc lập dành riêng cho SRE Admin để làm sạch L2 Session & Cookies tại biên
+pub async fn handle_admin_logout(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<TokenManager>,
+    client_headers: &std::collections::HashMap<String, String>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    // [COMMENT]: Chỉ áp dụng đối với HTTP POST /admin/auth/logout
+    if !(path.starts_with("/admin/auth/logout") && method == "POST") {
+        return None;
+    }
+
+    let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+    let jwt_token = extract_cookie_value(&cookie_header, "access_token");
+    let access_key = extract_cookie_value(&cookie_header, "access_key");
+
+    // [COMMENT]: Nếu không có thông tin cookie cần thiết, xem như đã logout thành công từ trước, trả về 204 ngay lập tức
+    if jwt_token.is_none() || access_key.is_none() {
+        Logger::authz_log(
+            "unknown_admin",
+            method,
+            path,
+            "ALLOWED_BYPASS_ADMIN_LOGOUT",
+            "No cookies present, bypass admin logout to 204",
+        );
+        let mut denied_builder = DeniedHttpResponseBuilder::new();
+        denied_builder.set_http_status(HttpStatusCode::NoContent);
+        add_clear_cookie_headers(&mut denied_builder);
+
+        let mut response = CheckResponse::new();
+        response.set_status(tonic::Status::unauthenticated("Logged out"));
+        response.set_http_response(denied_builder);
+        return Some(Ok(Response::new(response)));
+    }
+
+    let jwt_token = jwt_token.unwrap();
+    let access_key = access_key.unwrap();
+
+    // [COMMENT]: Thực hiện verify token JWT stateless
+    let claims = match token_mgr.verify_token(&jwt_token).await {
+        Ok(c) => c,
+        Err(_) => {
+            // [COMMENT]: Nếu token không hợp lệ hoặc hết hạn, trả về 204 kèm lệnh xóa cookie
+            let mut denied_builder = DeniedHttpResponseBuilder::new();
+            denied_builder.set_http_status(HttpStatusCode::NoContent);
+            add_clear_cookie_headers(&mut denied_builder);
+
+            let mut response = CheckResponse::new();
+            response.set_status(tonic::Status::unauthenticated(
+                "Invalid token during admin logout",
+            ));
+            response.set_http_response(denied_builder);
+            return Some(Ok(Response::new(response)));
+        }
+    };
+
+    // [COMMENT]: Ràng buộc kiểm tra sub để đảm bảo là tài khoản SRE Admin
+    if claims.sub != "sre" {
+        let mut denied_builder = DeniedHttpResponseBuilder::new();
+        denied_builder.set_http_status(HttpStatusCode::NoContent);
+        add_clear_cookie_headers(&mut denied_builder);
+
+        let mut response = CheckResponse::new();
+        response.set_status(tonic::Status::unauthenticated(
+            "Non-sre sub during admin logout",
+        ));
+        response.set_http_response(denied_builder);
+        return Some(Ok(Response::new(response)));
+    }
+
+    // [COMMENT]: Ràng buộc khóa kiểm tra để tránh tấn công giả mạo (replay attack)
+    if claims.access_key != access_key {
+        let mut denied_builder = DeniedHttpResponseBuilder::new();
+        denied_builder.set_http_status(HttpStatusCode::NoContent);
+        add_clear_cookie_headers(&mut denied_builder);
+
+        let mut response = CheckResponse::new();
+        response.set_status(tonic::Status::unauthenticated(
+            "Access key mismatch during admin logout",
+        ));
+        response.set_http_response(denied_builder);
+        return Some(Ok(Response::new(response)));
+    }
+
+    // [COMMENT]: Xóa session tại Redis L2. Trả về HTTP 500 nếu gặp sự cố hạ tầng Redis
+    if let Err(e) = session_mgr.delete_admin_session(&access_key).await {
+        Logger::sys_error(
+            "ext_authz.admin_logout",
+            "Failed to delete L2 session in Redis during admin logout",
+            &e.to_string(),
+        );
+
+        let mut denied_builder = DeniedHttpResponseBuilder::new();
+        denied_builder.set_http_status(HttpStatusCode::InternalServerError);
+        denied_builder.set_body("Failed to process admin logout session revocation");
+
+        let mut response = CheckResponse::new();
+        response.set_status(tonic::Status::internal("Redis delete admin session failed"));
+        response.set_http_response(denied_builder);
+        return Some(Ok(Response::new(response)));
+    }
+
+    Logger::sys_info(
+        "ext_authz.admin_logout",
+        "Successfully deleted L2 session for SRE Admin",
+    );
+
+    // [COMMENT]: Trả về HTTP 204 NoContent, xóa sạch mọi session cookie và zone_code cookie
+    let mut denied_builder = DeniedHttpResponseBuilder::new();
+    denied_builder.set_http_status(HttpStatusCode::NoContent);
+    add_clear_cookie_headers(&mut denied_builder);
+
+    let mut response = CheckResponse::new();
+    response.set_status(tonic::Status::unauthenticated("Admin logout success"));
+    response.set_http_response(denied_builder);
+    Some(Ok(Response::new(response)))
+}
+
 // [COMMENT]: Helper function để thêm các HTTP Header "set-cookie" cấu hình xóa cookie khỏi trình duyệt.
 // Cấu hình cookie bao gồm Path, HttpOnly, Secure, SameSite, và thời gian hết hạn để xóa sạch trên Client.
 pub(crate) fn add_clear_cookie_headers(
@@ -161,6 +280,7 @@ pub(crate) fn add_clear_cookie_headers(
         "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
         "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
         "refresh_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        "zone_code=; Path=/; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
     ];
     for cookie in cookies {
         builder.add_header("set-cookie", cookie, None, false);

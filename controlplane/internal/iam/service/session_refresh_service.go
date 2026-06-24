@@ -43,16 +43,6 @@ func NewSessionRefreshService(
 	}
 }
 
-// ======================================================================================================
-// 1. OPAQUE REFRESH TOKEN (KIỂU 2 - END-USER) - DEPRECATED / REMOVED
-// ======================================================================================================
-// [COMMENT]: Luồng HTTP refresh xoay vòng token kiểu cũ đã bị xóa. Việc xác thực & khôi phục phiên
-// hoàn toàn được thực hiện thông qua gRPC VerifyOpaqueRefreshToken kết nối từ ACL Gateway.
-
-// CreateRefreshToken tạo mới một session refresh token đục (opaque) khi đăng nhập thành công trên thiết bị tin cậy.
-// Phương thức này sinh khóa ngẫu nhiên cao (high entropy), băm SHA256 để lưu trữ an toàn trong PostgreSQL qua repo,
-// và trả về token thô cùng với thời gian hết hạn để AuthService đưa vào cookie/response.
-// Token sinh ra có định dạng <userID>_<entropy> (độ dài 69 ký tự) để đảm bảo tính duy nhất tuyệt đối theo user.
 func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
 	// [COMMENT]: 1. Tạo chuỗi entropy ngẫu nhiên dài 32 ký tự
 	entropy, err := security.GenerateToken(32)
@@ -89,19 +79,6 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 	}
 
 	return rawRefresh, refreshExp, nil
-}
-
-// ======================================================================================================
-// 4. CÁC PHƯƠNG THỨC THU HỒI PHỤ TRỢ (AUXILIARY REVOCATION METHODS)
-// ======================================================================================================
-func (s *SessionRefreshService) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) error {
-	_, err := s.repo.RevokeRefreshTokensByDeviceIDAndUserID(ctx, userID, deviceID)
-	return err
-}
-
-func (s *SessionRefreshService) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) error {
-	_, err := s.repo.RevokeRefreshTokensByUserID(ctx, userID, exceptDeviceID)
-	return err
 }
 
 // VerifyOpaqueRefreshToken thực hiện kiểm tra tính hợp lệ của Refresh Token

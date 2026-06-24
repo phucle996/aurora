@@ -14,6 +14,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -70,7 +71,7 @@ func NewAuthHandler(cfg *config.Config, authSvc domainservice.AuthService) *Auth
 func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	const op = "iam.auth.register"
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	var request requestdto.RegisterRequest
@@ -151,6 +152,13 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 // @Router /api/v1/auth/session [get]
 func (h *AuthHandler) Session(c *gin.Context) {
 	const op = "iam.auth.session"
+
+	userID := strings.TrimSpace(c.GetHeader("x-user-id"))
+	if userID == "" {
+		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
+		apires.RespondUnauthorized(c, "unauthorized - gateway validation required")
+		return
+	}
 
 	logger.HandlerInfo(c, op, "user session authenticated")
 	apires.RespondSuccess(c, gin.H{"authenticated": true}, "ok")

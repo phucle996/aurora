@@ -13,12 +13,16 @@ SRE Admin là phương thức truy cập khẩn cấp/quản trị hệ thống 
    - Nhằm tránh gián đoạn các kịch bản tự động hóa hoặc các thao tác khẩn cấp liên tục của SRE trong vòng 30s, hệ thống KHÔNG thực hiện khóa OTP cũ trong Redis L2.
 3. **Cơ chế Trinity Cookie & Session độc lập (Phase 3)**:
    - Khi đăng nhập thành công, Rust ACL tự phát hành và ký số JWT Access Token (claims: `sub="sre"`, `zone_id="global"`, không có `role` hay `lvl` vì đây là tài khoản kỹ thuật quản trị khẩn cấp, không phải thực thể user).
-   - Session của SRE Admin được đăng ký trực tiếp trên Redis L2 dạng `AdminAccessSession { access_secret_hash }` dưới key `iam:admin_access_session:<access_key>` để phục vụ xác thực phi trạng thái ở các request sau.
+   - Session của SRE Admin được đăng ký trực tiếp trên Redis L2 dạng `AdminAccessSession { access_secret_hash, device_public_key }` dưới key `iam:admin_access_session:<access_key>` để phục vụ xác thực phi trạng thái ở các request sau.
    - ACL phản hồi `204 No Content` cùng các cookie `access_token`, `access_key`, `access_secret`, `zone_code=global`.
 4. **Không mở rộng Port HTTP**:
    - Tránh việc mở thêm các cổng lắng nghe HTTP mới trên ACL gây rủi ro an ninh mạng. Envoy Ingress bắt trực tiếp route `/admin/auth/login` (POST) và định tuyến tới Ext-Authz của ACL để thực hiện Edge Termination.
 5. **JWT Signature L1 Cache (Vault Transit Offload)**:
    - Sau khi đăng nhập thành công, các request tiếp theo của SRE sẽ được xác thực chữ ký JWT qua L1 moka Cache (RAM, per-Pod) thay vì gọi Vault Transit mỗi request. Chi tiết kiến trúc 2 lớp xem mục 5 bên dưới.
+6. **Dynamic Device Binding & Edge Signature Verification**:
+   - Khi đăng nhập SRE, client (Admin UI / CLI) tạo cặp khóa Ed25519 (private key non-extractable lưu trong IndexedDB, public key base64-encoded) gửi lên API đăng nhập qua tham số `device_public_key`.
+   - Public key này được đính kèm vào `AdminAccessSession` lưu trên Redis L2.
+   - Các request Critical (đường dẫn chứa `/critical/`) bắt buộc phải gửi kèm chữ ký Ed25519, timestamp, và nonce qua các header tương ứng để Rust ACL verify trực tiếp tại biên, chống Replay và giả mạo request.
 
 ---
 
@@ -297,7 +301,8 @@ Tất cả dữ liệu nhạy cảm được ủy quyền lưu trữ và xử l�
 ```json
 {
   "api_key": "sre_super_secret_static_key_configured_in_vault",
-  "totp_code": "685934"
+  "totp_code": "685934",
+  "device_public_key": "base64_encoded_ed25519_public_key_bytes"
 }
 ```
 

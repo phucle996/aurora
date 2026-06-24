@@ -23,31 +23,9 @@ type refreshTokenRepoMock struct {
 	getUserFn    func(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error)
 	getDeviceFn  func(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error)
 	revokeFn     func(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error)
-	rotateFn     func(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error
 }
 
 var _ iamRepoInterface.RefreshTokenRepository = (*refreshTokenRepoMock)(nil)
-
-func (m *refreshTokenRepoMock) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
-	if m.getSessionFn != nil {
-		return m.getSessionFn(ctx, tokenHash)
-	}
-	return nil, nil
-}
-
-func (m *refreshTokenRepoMock) GetRefreshTokenUserByID(ctx context.Context, userID uuid.UUID) (*iamEntity.RefreshTokenUser, error) {
-	if m.getUserFn != nil {
-		return m.getUserFn(ctx, userID)
-	}
-	return nil, nil
-}
-
-func (m *refreshTokenRepoMock) GetRefreshTokenDeviceByID(ctx context.Context, deviceID uuid.UUID) (*iamEntity.RefreshTokenDevice, error) {
-	if m.getDeviceFn != nil {
-		return m.getDeviceFn(ctx, deviceID)
-	}
-	return nil, nil
-}
 
 func (m *refreshTokenRepoMock) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
 	if m.revokeFn != nil {
@@ -105,13 +83,6 @@ func (m *refreshTokenRepoMock) RevokeRefreshTokensByDeviceIDAndUserID(ctx contex
 		return m.revokeFn(ctx, userID, &deviceID)
 	}
 	return 0, nil
-}
-
-func (m *refreshTokenRepoMock) RotateRefreshToken(ctx context.Context, current iamEntity.RefreshTokenSession, next iamEntity.RefreshToken) error {
-	if m.rotateFn != nil {
-		return m.rotateFn(ctx, current, next)
-	}
-	return nil
 }
 
 func (m *refreshTokenRepoMock) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {

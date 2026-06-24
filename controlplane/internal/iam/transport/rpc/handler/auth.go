@@ -43,8 +43,8 @@ func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iam
 		}, nil
 	}
 
-	// [COMMENT]: 2. Gọi hàm nghiệp vụ tại AuthService để xác thực token và phân giải scope
-	res, err := h.authService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, req.Scope)
+	// [COMMENT]: 2. Gọi hàm nghiệp vụ tại SessionRefreshService để xác thực token và phân giải scope
+	res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, req.Scope)
 	if err != nil {
 		return &iamproto.VerifyOpaqueRefreshTokenResponse{
 			Valid:        false,

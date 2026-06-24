@@ -14,7 +14,6 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/core/domain/entity"
-	middleware "controlplane/internal/http/middleware"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
@@ -153,7 +152,7 @@ func TestSession_Unauthorized(t *testing.T) {
 		}, nil
 	})
 
-	router.GET("/session", middleware.ACL(), h.Session)
+	router.GET("/session", h.Session)
 
 	req := httptest.NewRequest(http.MethodGet, "/session", nil)
 	w := httptest.NewRecorder()
@@ -180,6 +179,7 @@ func TestSession_Success(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	req.Header.Set("x-user-id", "user-1")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -207,6 +207,7 @@ func TestSession_ReadOnly(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/session", nil)
+	req.Header.Set("x-user-id", "user-1")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
