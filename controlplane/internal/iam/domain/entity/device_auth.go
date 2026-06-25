@@ -66,3 +66,16 @@ type DeviceChallenge struct {
 	CreatedUserAgent *string
 	CreatedAt        time.Time
 }
+
+type DevicePresence struct {
+	Device     Device
+	IsOnline   bool
+	LastSeenAt *time.Time
+	LastIP     *string
+	LastUA     *string
+}
+
+type DeviceListResult struct {
+	Devices []DevicePresence
+	Total   int64
+}

@@ -88,7 +88,7 @@ type deviceServiceStub struct {
 
 var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 
-func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
 	return nil, nil
 }
 func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
@@ -145,7 +145,6 @@ func (s *sessionRefreshServiceStub) RefreshAdminTrinity(ctx context.Context, zon
 	return iamEntity.AdminLoginResult{}, nil
 }
 
-
 // [COMMENT]: Thêm stub RevokeOpaqueRefreshToken để thoả mãn interface mới
 func (s *sessionRefreshServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
 	return nil
@@ -155,12 +154,12 @@ func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.
 	refreshStub := &sessionRefreshServiceStub{
 		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
 			token := iamEntity.RefreshToken{
-				ID:            uuid.New(),
-				UserID:        userID,
-				DeviceID:      &deviceID,
-				TokenHash:     "mock-hash",
-				IssuedAt:      time.Now().UTC(),
-				ExpiresAt:     time.Now().UTC().Add(24 * time.Hour),
+				ID:        uuid.New(),
+				UserID:    userID,
+				DeviceID:  &deviceID,
+				TokenHash: "mock-hash",
+				IssuedAt:  time.Now().UTC(),
+				ExpiresAt: time.Now().UTC().Add(24 * time.Hour),
 			}
 			var err error
 			if mock, ok := repo.(*authRepoMock); ok && mock.createRefreshFn != nil {

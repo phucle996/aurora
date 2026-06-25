@@ -18,7 +18,7 @@ import (
 )
 
 type deviceServiceStub struct {
-	listResult      *iamSvcInterface.DeviceListResult
+	listResult      *iamEntity.DeviceListResult
 	listErr         error
 	revokeErr       error
 	logoutOthersN   int64
@@ -29,7 +29,7 @@ type deviceServiceStub struct {
 }
 
 // [COMMENT]: Khớp chữ ký hàm mới nhận userID trực tiếp từ handler.
-func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
+func (s *deviceServiceStub) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
 	return s.listResult, s.listErr
 }
 func (s *deviceServiceStub) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
@@ -56,7 +56,8 @@ func (s *deviceServiceStub) EvictExcessDevicesIfNeeded(ctx context.Context, user
 func (s *deviceServiceStub) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
 	return 0, nil
 }
-func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {}
+func (s *deviceServiceStub) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {
+}
 func (s *deviceServiceStub) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
 	return "", nil
 }
@@ -96,8 +97,8 @@ func TestDeviceHandlerListMyDevicesSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	h := handler.NewDeviceHandler(&deviceServiceStub{
-		listResult: &iamSvcInterface.DeviceListResult{
-			Devices: []iamSvcInterface.DevicePresence{{Device: iamEntity.Device{ID: "dev-1"}, IsOnline: true}},
+		listResult: &iamEntity.DeviceListResult{
+			Devices: []iamEntity.DevicePresence{{Device: iamEntity.Device{ID: "dev-1"}, IsOnline: true}},
 			Total:   1,
 		},
 	})

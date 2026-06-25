@@ -1,23 +1,3 @@
-// ============================================================================
-// 📂 FILE: policies/admincidr/compiler.go - Trình Biên Dịch & Xác Thực Admin CIDR
-// ============================================================================
-//
-// 📌 VAI TRÒ (ROLE):
-//   - Biên dịch cấu hình thô từ YAML sang định dạng trung gian có kiểm soát (Compiled).
-//   - Thực thi triết lý Fail-Fast: Từ chối các cấu hình không hợp lệ ngay tại bước biên dịch.
-//
-// 🎯 SOURCE OF TRUTH (SoT):
-//   - Tệp [types.go](file:///home/phucle/Desktop/New/controlplane/internal/policyengine/policies/admincidr/types.go) trong cùng package.
-//
-// 🔒 RANH GIỚI BẢO MẬT/NGHIỆP VỤ (BOUNDARY):
-//   - Ngăn chặn các chuỗi CIDR rỗng hoặc không hợp lệ.
-//   - Bảo đảm trường `mode` phải có giá trị cụ thể để middleware biết cách hành xử chính xác.
-//
-// 🔄 CALLSITE FLOW:
-//   - Được gọi bởi bộ điều phối chính `runtime.compilePolicies` khi tải hoặc nạp lại cấu hình.
-//
-// ============================================================================
-
 package admincidr
 
 import (

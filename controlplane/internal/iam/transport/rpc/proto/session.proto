@@ -7,6 +7,9 @@ option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
 service SessionService {
   // RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
   rpc ReleaseTrinitySession (ReleaseTrinitySessionRequest) returns (ReleaseTrinitySessionResponse);
+
+  // [NEW] RPC to revoke runtime L2 sessions belonging to specific devices of a user
+  rpc RevokeUserSessionsByDevices (RevokeUserSessionsByDevicesRequest) returns (RevokeUserSessionsByDevicesResponse);
 }
 
 // Request gửi thông tin định danh & thiết bị sau khi IAM xác thực thành công
@@ -29,3 +32,15 @@ message ReleaseTrinitySessionRequest {
 message ReleaseTrinitySessionResponse {
   bool released = 1;               // Trả về true nếu khởi tạo phiên thành công
 }
+
+// [NEW] Request payload for device-specific session revocation
+message RevokeUserSessionsByDevicesRequest {
+  string user_id = 1;              // The UUID of the user
+  repeated string device_ids = 2;  // The list of device UUIDs to revoke sessions for
+}
+
+// [NEW] Response payload returning status
+message RevokeUserSessionsByDevicesResponse {
+  int64 revoked_count = 1;         // Total number of sessions successfully transitioned to grace period
+}
+

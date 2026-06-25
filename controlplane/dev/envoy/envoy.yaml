@@ -289,14 +289,11 @@ static_resources:
                                   rules:
                                     - not_rule:
                                         header: { name: ":path", prefix_match: "/admin/" }
-                                    - not_rule:
-                                        header: { name: ":path", prefix_match: "/api/v1/mail/" }
                             principals:
                               - any: true
                           "allow-whitelisted-admin":
                             permissions:
                               - header: { name: ":path", prefix_match: "/admin/" }
-                              - header: { name: ":path", prefix_match: "/api/v1/mail/" }
                             principals:
                               - source_ip: { address_prefix: 127.0.0.1, prefix_len: 32 }
                               - source_ip: { address_prefix: 10.0.0.0, prefix_len: 8 }

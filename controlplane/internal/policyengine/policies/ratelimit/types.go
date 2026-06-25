@@ -25,7 +25,6 @@ package ratelimit
 // RateLimitPolicy là cấu trúc cấu hình thô được map trực tiếp từ tệp YAML.
 // RateLimitPolicy là cấu trúc cấu hình thô được map trực tiếp từ tệp YAML.
 type RateLimitPolicy struct {
-	// [COMMENT]: Loại bỏ cấu hình preauth để chuyển giao hoàn toàn trách nhiệm rate limit IP thô sang Envoy Gateway
 	PostAuth      RateLimitPostAuthPolicy      `yaml:"postauth"`
 	Observability RateLimitObservabilityPolicy `yaml:"observability"`
 	Behavior      RateLimitBehaviorPolicy      `yaml:"behavior"`
@@ -71,7 +70,6 @@ type RateLimitBehaviorPolicy struct {
 
 // CompiledPolicy chứa cấu hình Rate Limit đã được kiểm tra tính hợp lệ nghiêm ngặt ở runtime.
 type CompiledPolicy struct {
-	// [COMMENT]: Loại bỏ Compiled PreAuth do toàn bộ quá trình rate limit thô đã được Envoy offload
 	PostAuth      CompiledRateLimitPostAuthPolicy
 	Observability CompiledRateLimitObservabilityPolicy
 	Behavior      CompiledRateLimitBehaviorPolicy

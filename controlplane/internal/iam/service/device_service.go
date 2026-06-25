@@ -47,13 +47,7 @@ func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
 
 // ListMyDevices lấy danh sách các thiết bị của user.
 // [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
-func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamSvcInterface.DeviceListResult, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	if offset < 0 {
-		offset = 0
-	}
+func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
 
 	var items []iamEntity.Device
 	var listErr error
@@ -126,9 +120,9 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, lim
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
 
-	out := make([]iamSvcInterface.DevicePresence, 0, len(items))
+	out := make([]iamEntity.DevicePresence, 0, len(items))
 	for _, device := range items {
-		p := iamSvcInterface.DevicePresence{Device: device, IsOnline: false}
+		p := iamEntity.DevicePresence{Device: device, IsOnline: false}
 		if rt, ok := presenceByTracked[strings.TrimSpace(device.ID)]; ok {
 			p.IsOnline = true
 			if rt.LastSeenAt > 0 {
@@ -138,7 +132,7 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, lim
 		}
 		out = append(out, p)
 	}
-	return &iamSvcInterface.DeviceListResult{Devices: out, Total: int64(len(out))}, nil
+	return &iamEntity.DeviceListResult{Devices: out, Total: int64(len(out))}, nil
 }
 
 // RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể.
@@ -150,7 +144,7 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, de
 	}()
 
 	// [COMMENT]: Chặn nhanh nếu client cố tình gửi yêu cầu tự thu hồi thiết bị hiện tại của mình.
-	if currentDeviceID != uuid.Nil && deviceID == currentDeviceID {
+	if deviceID == currentDeviceID {
 		serviceOutcome = iamMetrics.OutcomePreConditionFailed
 		return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
 	}

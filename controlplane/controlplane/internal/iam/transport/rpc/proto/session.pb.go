@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: controlplane/internal/iam/transport/rpc/proto/session.proto
+// source: internal/iam/transport/rpc/proto/session.proto
 
 package iamproto
 
@@ -42,7 +42,7 @@ type ReleaseTrinitySessionRequest struct {
 
 func (x *ReleaseTrinitySessionRequest) Reset() {
 	*x = ReleaseTrinitySessionRequest{}
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[0]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -54,7 +54,7 @@ func (x *ReleaseTrinitySessionRequest) String() string {
 func (*ReleaseTrinitySessionRequest) ProtoMessage() {}
 
 func (x *ReleaseTrinitySessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[0]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -67,7 +67,7 @@ func (x *ReleaseTrinitySessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseTrinitySessionRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseTrinitySessionRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{0}
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *ReleaseTrinitySessionRequest) GetUserId() string {
@@ -164,7 +164,7 @@ type ReleaseTrinitySessionResponse struct {
 
 func (x *ReleaseTrinitySessionResponse) Reset() {
 	*x = ReleaseTrinitySessionResponse{}
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[1]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -176,7 +176,7 @@ func (x *ReleaseTrinitySessionResponse) String() string {
 func (*ReleaseTrinitySessionResponse) ProtoMessage() {}
 
 func (x *ReleaseTrinitySessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[1]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -189,7 +189,7 @@ func (x *ReleaseTrinitySessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseTrinitySessionResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseTrinitySessionResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{1}
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ReleaseTrinitySessionResponse) GetReleased() bool {
@@ -210,7 +210,7 @@ type RevokeUserSessionsByDevicesRequest struct {
 
 func (x *RevokeUserSessionsByDevicesRequest) Reset() {
 	*x = RevokeUserSessionsByDevicesRequest{}
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[2]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -222,7 +222,7 @@ func (x *RevokeUserSessionsByDevicesRequest) String() string {
 func (*RevokeUserSessionsByDevicesRequest) ProtoMessage() {}
 
 func (x *RevokeUserSessionsByDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[2]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -235,7 +235,7 @@ func (x *RevokeUserSessionsByDevicesRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use RevokeUserSessionsByDevicesRequest.ProtoReflect.Descriptor instead.
 func (*RevokeUserSessionsByDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{2}
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RevokeUserSessionsByDevicesRequest) GetUserId() string {
@@ -262,7 +262,7 @@ type RevokeUserSessionsByDevicesResponse struct {
 
 func (x *RevokeUserSessionsByDevicesResponse) Reset() {
 	*x = RevokeUserSessionsByDevicesResponse{}
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[3]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -274,7 +274,7 @@ func (x *RevokeUserSessionsByDevicesResponse) String() string {
 func (*RevokeUserSessionsByDevicesResponse) ProtoMessage() {}
 
 func (x *RevokeUserSessionsByDevicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes[3]
+	mi := &file_internal_iam_transport_rpc_proto_session_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -287,7 +287,7 @@ func (x *RevokeUserSessionsByDevicesResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use RevokeUserSessionsByDevicesResponse.ProtoReflect.Descriptor instead.
 func (*RevokeUserSessionsByDevicesResponse) Descriptor() ([]byte, []int) {
-	return file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{3}
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RevokeUserSessionsByDevicesResponse) GetRevokedCount() int64 {
@@ -297,11 +297,11 @@ func (x *RevokeUserSessionsByDevicesResponse) GetRevokedCount() int64 {
 	return 0
 }
 
-var File_controlplane_internal_iam_transport_rpc_proto_session_proto protoreflect.FileDescriptor
+var File_internal_iam_transport_rpc_proto_session_proto protoreflect.FileDescriptor
 
-const file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDesc = "" +
+const file_internal_iam_transport_rpc_proto_session_proto_rawDesc = "" +
 	"\n" +
-	";controlplane/internal/iam/transport/rpc/proto/session.proto\x12\aiam.rpc\"\xfe\x02\n" +
+	".internal/iam/transport/rpc/proto/session.proto\x12\aiam.rpc\"\xfe\x02\n" +
 	"\x1cReleaseTrinitySessionRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1b\n" +
 	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12(\n" +
@@ -330,25 +330,25 @@ const file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDesc =
 	"\x1bRevokeUserSessionsByDevices\x12+.iam.rpc.RevokeUserSessionsByDevicesRequest\x1a,.iam.rpc.RevokeUserSessionsByDevicesResponseB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
-	file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescOnce sync.Once
-	file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescData []byte
+	file_internal_iam_transport_rpc_proto_session_proto_rawDescOnce sync.Once
+	file_internal_iam_transport_rpc_proto_session_proto_rawDescData []byte
 )
 
-func file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP() []byte {
-	file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescOnce.Do(func() {
-		file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDesc), len(file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDesc)))
+func file_internal_iam_transport_rpc_proto_session_proto_rawDescGZIP() []byte {
+	file_internal_iam_transport_rpc_proto_session_proto_rawDescOnce.Do(func() {
+		file_internal_iam_transport_rpc_proto_session_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_session_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_session_proto_rawDesc)))
 	})
-	return file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDescData
+	return file_internal_iam_transport_rpc_proto_session_proto_rawDescData
 }
 
-var file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
-var file_controlplane_internal_iam_transport_rpc_proto_session_proto_goTypes = []any{
+var file_internal_iam_transport_rpc_proto_session_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_internal_iam_transport_rpc_proto_session_proto_goTypes = []any{
 	(*ReleaseTrinitySessionRequest)(nil),        // 0: iam.rpc.ReleaseTrinitySessionRequest
 	(*ReleaseTrinitySessionResponse)(nil),       // 1: iam.rpc.ReleaseTrinitySessionResponse
 	(*RevokeUserSessionsByDevicesRequest)(nil),  // 2: iam.rpc.RevokeUserSessionsByDevicesRequest
 	(*RevokeUserSessionsByDevicesResponse)(nil), // 3: iam.rpc.RevokeUserSessionsByDevicesResponse
 }
-var file_controlplane_internal_iam_transport_rpc_proto_session_proto_depIdxs = []int32{
+var file_internal_iam_transport_rpc_proto_session_proto_depIdxs = []int32{
 	0, // 0: iam.rpc.SessionService.ReleaseTrinitySession:input_type -> iam.rpc.ReleaseTrinitySessionRequest
 	2, // 1: iam.rpc.SessionService.RevokeUserSessionsByDevices:input_type -> iam.rpc.RevokeUserSessionsByDevicesRequest
 	1, // 2: iam.rpc.SessionService.ReleaseTrinitySession:output_type -> iam.rpc.ReleaseTrinitySessionResponse
@@ -360,26 +360,26 @@ var file_controlplane_internal_iam_transport_rpc_proto_session_proto_depIdxs = [
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_controlplane_internal_iam_transport_rpc_proto_session_proto_init() }
-func file_controlplane_internal_iam_transport_rpc_proto_session_proto_init() {
-	if File_controlplane_internal_iam_transport_rpc_proto_session_proto != nil {
+func init() { file_internal_iam_transport_rpc_proto_session_proto_init() }
+func file_internal_iam_transport_rpc_proto_session_proto_init() {
+	if File_internal_iam_transport_rpc_proto_session_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDesc), len(file_controlplane_internal_iam_transport_rpc_proto_session_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_session_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_session_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_controlplane_internal_iam_transport_rpc_proto_session_proto_goTypes,
-		DependencyIndexes: file_controlplane_internal_iam_transport_rpc_proto_session_proto_depIdxs,
-		MessageInfos:      file_controlplane_internal_iam_transport_rpc_proto_session_proto_msgTypes,
+		GoTypes:           file_internal_iam_transport_rpc_proto_session_proto_goTypes,
+		DependencyIndexes: file_internal_iam_transport_rpc_proto_session_proto_depIdxs,
+		MessageInfos:      file_internal_iam_transport_rpc_proto_session_proto_msgTypes,
 	}.Build()
-	File_controlplane_internal_iam_transport_rpc_proto_session_proto = out.File
-	file_controlplane_internal_iam_transport_rpc_proto_session_proto_goTypes = nil
-	file_controlplane_internal_iam_transport_rpc_proto_session_proto_depIdxs = nil
+	File_internal_iam_transport_rpc_proto_session_proto = out.File
+	file_internal_iam_transport_rpc_proto_session_proto_goTypes = nil
+	file_internal_iam_transport_rpc_proto_session_proto_depIdxs = nil
 }

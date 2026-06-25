@@ -13,6 +13,7 @@ import (
 
 var (
 	ErrInvalidTokenLength = errors.New("security: invalid token length")
+	ErrEmptySecret        = errors.New("security: secret cannot be empty")
 )
 
 var tokenEncoding = base64.RawURLEncoding

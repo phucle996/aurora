@@ -1,36 +1,3 @@
-// ============================================================================
-// 🏛️ ARCHITECTURAL COMPONENT: GLOBAL APPLICATION GRAPH & DI CONTAINER (SOT)
-// ============================================================================
-// Thiết kế bởi: Antigravity AI & SRE Platform Engineering Team.
-//
-// 📜 SOVEREIGN CONTRACT (Hợp đồng Tối cao) & CHỨC NĂNG CHÍNH:
-//   - Tệp tin này là **SOURCE OF TRUTH (SoT) DUY NHẤT** kiến tạo nên toàn bộ đồ thị phụ thuộc
-//     (Dependency Graph - DI) của ứng dụng Control Plane.
-//   - Chức năng cốt lõi: Thiết lập trật tự khởi dựng, kết nối các luồng phụ thuộc chéo giữa
-//     các module độc lập, quản lý vòng đời (Lifecycle) và phân phối tài nguyên hệ thống
-//     (Database Pool, Redis Client, Ratelimiter) cho các module thành phần.
-//
-// 🛡️ SRE HA ARCHITECTURAL BOUNDARY (Ranh giới Phân loại & Phục hồi Sự cố):
-//   Hệ thống khởi dựng được phân hoạch thành hai phân hạng rõ rệt nhằm đạt tính HA tối đa:
-//
-//   🟢 PHÂN HẠNG 1: TIER-0 (CRITICAL DEPENDENCIES - SAI LÀ FAIL-FAST TOÀN CỤC)
-//     - Các module: `Core`, `IAM`, `PolicyEngine`, `Health`, và các Global Middlewares.
-//     - Chính sách: Nếu xảy ra bất kỳ lỗi khởi dựng nào ở các cấu phần này, tiến trình
-//       BẮT BUỘC phải dừng ngay lập tức (Fail-Fast) và trả lỗi về hàm main để Kubelet
-//       phát hiện thông qua Startup Probe và đưa Pod vào vòng lặp cảnh báo (CrashLoopback).
-//
-//   🔵 PHÂN HẠNG 2: TIER-1 (NON-CRITICAL DEPENDENCIES - SAI LÀ DEGRADE CHỌN LỌC)
-//     - Các module: `Hypervisor` (ảo hóa hệ thống), v.v.
-//     - Chính sách: Lỗi kết nối API mạng, lỗi drift cấu hình hạ tầng của các phân hệ này
-//       TUYỆT ĐỐI KHÔNG ĐƯỢC PHÉP làm sập Control Plane. Hệ thống phải thực hiện
-//       **Graceful Degradation (Suy giảm tính năng chọn lọc)**:
-//       1. Bắt lỗi (Catch Error) tại biên khởi dựng.
-//       2. Ghi log cảnh báo mức hệ thống (observability alert).
-//       3. Khởi tạo một phiên bản câm mang lỗi (Dummy Degraded Instance - Null Object Pattern)
-//          để thay thế, bảo đảm không gây ra Nil Pointer Panic khi chạy các logic nghiệp vụ sau.
-//       4. Vô hiệu hóa tính năng (Disable) cục bộ phân hệ đó và tiếp tục khởi động thành công ứng dụng.
-// ============================================================================
-
 package app
 
 import (
@@ -161,15 +128,6 @@ func NewGlobalModules(cfg *config.Config,
 		mailModule = mail.NewDegradedModule(err)
 	}
 
-	// ------------------------------------------------------------------------
-	// GIAI ĐOẠN 4: THIẾT LẬP MIDDLEWARES & AN TOÀN ĐỊNH TUYẾN TOÀN CỤC
-	// ------------------------------------------------------------------------
-
-	// 7) Global middleware bootstrap (cross-module wiring).
-	if err := initMiddlewares(cfg, db, coreModule, iamModule, rds, policyEngineModule, cacheEngine); err != nil {
-		return nil, err
-	}
-
 	// 8) Chỉ mark ready khi toàn bộ module graph đã dựng xong.
 	health.MarkReady()
 	keepProbeRunning = true
@@ -186,23 +144,6 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	return modules, nil
-}
-
-func initMiddlewares(cfg *config.Config, db *pgxpool.Pool, coreModule *core.Module, iamModule *iam.IAMModule, rds *goredis.Client, policyModule *policyengine.Engine, cacheEngine *cacheengine.CacheRegistry) error {
-	if cfg == nil {
-		return errors.New("app: init middleware: config is required")
-	}
-	if db == nil {
-		return errors.New("app: init middleware: database is required")
-	}
-	if coreModule == nil {
-		return errors.New("app: init middleware: core module is required")
-	}
-	if rds == nil {
-		return errors.New("app: init middleware: redis client is required")
-	}
-
-	return nil
 }
 
 // Stop dừng toàn bộ modules theo thứ tự an toàn và nil-safe.
