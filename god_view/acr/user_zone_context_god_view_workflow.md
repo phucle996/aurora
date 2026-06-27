@@ -2,7 +2,7 @@
 
 ## 📌 1. Tổng Quan Kiến Trúc (Architecture & Cloud-Native HA)
 
-Hệ thống được thiết kế để hoạt động ổn định và đạt tính sẵn sàng cao (High Availability) trên môi trường Cloud-Native. Nhằm tối ưu hóa độ trễ tối đa (Low Latency) tại cổng biên (Ingress Gateway), toàn bộ quá trình phân giải và kiểm tra Zone được xử lý bất đồng bộ/stateless tại tầng Rust ACL (`ext_authz`) thông qua bộ nhớớ đệm cục bộ L1 Cache (đồng bộ không chặn từ Control Plane).
+Hệ thống được thiết kế để hoạt động ổn định và đạt tính sẵn sàng cao (High Availability) trên môi trường Cloud-Native. Nhằm tối ưu hóa độ trễ tối đa (Low Latency) tại cổng biên (Ingress Gateway), toàn bộ quá trình phân giải và kiểm tra Zone được xử lý bất đồng bộ/stateless tại tầng Rust acr (`ext_authz`) thông qua bộ nhớớ đệm cục bộ L1 Cache (đồng bộ không chặn từ Control Plane).
 
 ### 🛡️ Ràng Buộc Bảo Mật & Phòng Chống Race Condition
 
@@ -50,16 +50,16 @@ graph TD
 
     Client["💻 Client (Browser/UI)"]:::client
     Envoy["🛡️ Envoy Ingress Gateway"]:::gateway
-    ACL["🦀 Rust ACL (ext_authz)"]:::edgeService
+    acr["🦀 Rust acr (ext_authz)"]:::edgeService
     Vault["🔑 HashiCorp Vault"]:::control
     Redis[("⚡ Redis L2 (Session Store)")]:::storage
 
     Client -- "1. Yêu cầu chuyển zone (POST /api/v1/zone/go-to-zone)" --> Envoy
-    Envoy -- "2. ext_authz intercept" --> ACL
-    ACL -- "3. Xác thực JWT & Redis L2" --> Redis
-    ACL -- "4. Phân giải zone_code -> zone_id (L1 Cache)" --> ACL
-    ACL -- "5. Ký JWT mới với claims.zone_id cập nhật" --> Vault
-    ACL -- "6. Response 200 OK + Set-Cookie (access_token, zone_code)" --> Envoy
+    Envoy -- "2. ext_authz intercept" --> acr
+    acr -- "3. Xác thực JWT & Redis L2" --> Redis
+    acr -- "4. Phân giải zone_code -> zone_id (L1 Cache)" --> acr
+    acr -- "5. Ký JWT mới với claims.zone_id cập nhật" --> Vault
+    acr -- "6. Response 200 OK + Set-Cookie (access_token, zone_code)" --> Envoy
     Envoy -- "7. Trả cookie mới & JSON cho Client" --> Client
 ```
 
@@ -69,7 +69,7 @@ graph TD
 
 ### 📌 Nhánh 1: Xác Thực & Ràng Buộc Zone Trên Request Thông Thường (Route Interception)
 
-Mỗi request nghiệp vụ đi qua Envoy Ingress sẽ được chuyển đến Rust ACL qua Ext-Authz. Rust ACL thực hiện kiểm tra đối chiếu zone tĩnh bằng cách phân nhánh xử lý tường minh:
+Mỗi request nghiệp vụ đi qua Envoy Ingress sẽ được chuyển đến Rust acr qua Ext-Authz. Rust acr thực hiện kiểm tra đối chiếu zone tĩnh bằng cách phân nhánh xử lý tường minh:
 
 #### 1. Sơ đồ trình tự (Sequence Diagram - Branch 1)
 
@@ -78,70 +78,70 @@ sequenceDiagram
     autonumber
     participant UI as Browser Client
     participant Envoy as Envoy Ingress
-    participant ACL as Rust ACL (ext_authz)
+    participant acr as Rust acr (ext_authz)
     participant CP as Go Control Plane (gRPC)
 
     UI->>Envoy: Request API nghiệp vụ kèm cookie/header zone_code
-    Envoy->>ACL: ext_authz Check (access_token, zone_code)
-    ACL->>ACL: Xác thực Trinity Credentials
+    Envoy->>acr: ext_authz Check (access_token, zone_code)
+    acr->>acr: Xác thực Trinity Credentials
     
     rect rgb(20, 30, 40)
-        Note over ACL: Quá trình Phân giải zone_code (ZoneManager.resolve_code_to_id)
-        ACL->>ACL: 1. Đọc L1 Cache (RAM HashMap)
+        Note over acr: Quá trình Phân giải zone_code (ZoneManager.resolve_code_to_id)
+        acr->>acr: 1. Đọc L1 Cache (RAM HashMap)
         alt L1 Cache Hit
-            Note over ACL: Trả về target_zone_id trực tiếp (Fast Path)
+            Note over acr: Trả về target_zone_id trực tiếp (Fast Path)
         else L1 Cache Miss
-            ACL->>ACL: 2. Kiểm tra Negative Cache (bad_codes)
+            acr->>acr: 2. Kiểm tra Negative Cache (bad_codes)
             alt Negative Cache Hit (Còn trong hạn 5 phút)
-                Note over ACL: Trả về None trực tiếp (Fast Fail chống Spam)
+                Note over acr: Trả về None trực tiếp (Fast Fail chống Spam)
             else Negative Cache Miss
-                ACL->>ACL: 3. Chờ Single Flight lock (tokio::Mutex) tránh bão Request
-                ACL->>CP: 4. Gọi gRPC get_zone_list() đồng bộ (Tần suất tối đa 5 phút/lần)
-                CP-->>ACL: Trả về danh sách zone mới hoạt động
+                acr->>acr: 3. Chờ Single Flight lock (tokio::Mutex) tránh bão Request
+                acr->>CP: 4. Gọi gRPC get_zone_list() đồng bộ (Tần suất tối đa 5 phút/lần)
+                CP-->>acr: Trả về danh sách zone mới hoạt động
                 alt Zone tìm thấy trong danh sách mới
-                    ACL->>ACL: Lưu L1 Cache & cập nhật last_sync
+                    acr->>acr: Lưu L1 Cache & cập nhật last_sync
                 else Không tìm thấy
-                    ACL->>ACL: Ghi vào Negative Cache (bad_codes) hạn 5 phút
+                    acr->>acr: Ghi vào Negative Cache (bad_codes) hạn 5 phút
                 end
             end
         end
     end
     
     alt Phân giải zone_code thất bại (None)
-        ACL-->>Envoy: Denied (HTTP 403 Forbidden - "Zone unavailable")
+        acr-->>Envoy: Denied (HTTP 403 Forbidden - "Zone unavailable")
         Envoy-->>UI: Trả về lỗi 403 Forbidden ("Zone unavailable")
     else Phân giải thành công (target_zone_id, zone_status)
         alt Định tuyến xử lý theo Vai trò
-            Note over ACL: Gọi resolve_and_verify_zone_admin HOẶC resolve_and_verify_zone_user
+            Note over acr: Gọi resolve_and_verify_zone_admin HOẶC resolve_and_verify_zone_user
             
             alt Vai trò: ADMIN (SRE)
                 alt Đã đăng nhập
-                    Note over ACL: Cho phép truy cập bất kỳ zone nào (kể cả global/inactive)
+                    Note over acr: Cho phép truy cập bất kỳ zone nào (kể cả global/inactive)
                     alt target_zone_id != claims.zone_id
-                        ACL-->>Envoy: Denied (HTTP 403 - "Zone unavailable" chống tự động đổi zone ngầm)
+                        acr-->>Envoy: Denied (HTTP 403 - "Zone unavailable" chống tự động đổi zone ngầm)
                     else Khớp
-                        ACL-->>Envoy: Ok (Inject x-zone-id header)
+                        acr-->>Envoy: Ok (Inject x-zone-id header)
                     end
                 else Chưa đăng nhập (Anonymous)
                     alt zone_code == "global" OR status là active/draining
-                        ACL-->>Envoy: Ok (Chuyển tiếp đến trang đăng nhập Admin)
+                        acr-->>Envoy: Ok (Chuyển tiếp đến trang đăng nhập Admin)
                     else Vi phạm
-                        ACL-->>Envoy: Denied (HTTP 403 - "Zone unavailable")
+                        acr-->>Envoy: Denied (HTTP 403 - "Zone unavailable")
                     end
                 end
                 
             alt Vai trò: USER THƯỜNG
                 alt Đã đăng nhập
                     alt zone_code == "global" OR status NOT IN [active, draining] OR target_zone_id != claims.zone_id
-                        ACL-->>Envoy: Denied (HTTP 403 - "Zone unavailable")
+                        acr-->>Envoy: Denied (HTTP 403 - "Zone unavailable")
                     else Hợp lệ
-                        ACL-->>Envoy: Ok (Inject x-zone-id header)
+                        acr-->>Envoy: Ok (Inject x-zone-id header)
                     end
                 else Chưa đăng nhập (Anonymous)
                     alt zone_code == "global" OR status NOT IN [active, draining]
-                        ACL-->>Envoy: Denied (HTTP 403 - "Zone unavailable")
+                        acr-->>Envoy: Denied (HTTP 403 - "Zone unavailable")
                     else Hợp lệ
-                        ACL-->>Envoy: Ok (Cho phép truy cập trang public)
+                        acr-->>Envoy: Ok (Cho phép truy cập trang public)
                     end
                 end
             end
@@ -160,34 +160,34 @@ Client gọi các API này khi người dùng chủ động chọn chuyển đ�
 
 #### 1. API cho User thường (`POST /api/v1/zone/go-to-zone`)
 
-* **Sơ đồ trình tự**:
+- **Sơ đồ trình tự**:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant UI as Browser Client
     participant Envoy as Envoy Ingress
-    participant ACL as Rust ACL (ext_authz)
+    participant acr as Rust acr (ext_authz)
     participant Vault as HashiCorp Vault
 
     UI->>Envoy: POST /api/v1/zone/go-to-zone?zone_code=XYZ (Cookies: access_token, access_key, access_secret)
-    Envoy->>ACL: ext_authz Check
-    ACL->>ACL: Xác thực Trinity Credentials hiện tại (JWT + Redis Session)
+    Envoy->>acr: ext_authz Check
+    acr->>acr: Xác thực Trinity Credentials hiện tại (JWT + Redis Session)
     
     alt Trinity Credentials không hợp lệ hoặc hết hạn
-        ACL-->>Envoy: Denied (HTTP 401 Unauthorized)
+        acr-->>Envoy: Denied (HTTP 401 Unauthorized)
         Envoy-->>UI: Trả về 401 Unauthorized
     else Hợp lệ
-        ACL->>ACL: Tra cứu zone_code "XYZ" qua L1 Cache (ZoneManager)
+        acr->>acr: Tra cứu zone_code "XYZ" qua L1 Cache (ZoneManager)
         alt Zone không tồn tại OR status NOT IN [active, draining]
-            ACL-->>Envoy: Denied (HTTP 403 Forbidden / 400 Bad Request - "Zone unavailable")
+            acr-->>Envoy: Denied (HTTP 403 Forbidden / 400 Bad Request - "Zone unavailable")
             Envoy-->>UI: Trả về lỗi 403 / 400 "Zone unavailable"
         else Zone hoạt động bình thường
-            ACL->>Vault: Ký JWT Access Token mới với claims.zone_id="XYZ_ID"
-            Vault-->>ACL: Trả về signed access_token
-            Note over ACL: Tạo DeniedHttpResponse (HTTP 200 OK)
-            ACL->>ACL: Inject Set-Cookie (access_token, zone_code=XYZ) + JSON Body
-            ACL-->>Envoy: CheckResponse (with DeniedHttpResponse, Cookies & JSON)
+            acr->>Vault: Ký JWT Access Token mới với claims.zone_id="XYZ_ID"
+            Vault-->>acr: Trả về signed access_token
+            Note over acr: Tạo DeniedHttpResponse (HTTP 200 OK)
+            acr->>acr: Inject Set-Cookie (access_token, zone_code=XYZ) + JSON Body
+            acr-->>Envoy: CheckResponse (with DeniedHttpResponse, Cookies & JSON)
             Envoy-->>UI: HTTP 200 OK + Set-Cookies + JSON
         end
     end
@@ -195,37 +195,37 @@ sequenceDiagram
 
 #### 2. API cho SRE Admin (`POST /admin/zone/go-to-zone`)
 
-* **Sơ đồ trình tự**:
+- **Sơ đồ trình tự**:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant UI as Admin Dashboard
     participant Envoy as Envoy Ingress
-    participant ACL as Rust ACL (ext_authz)
+    participant acr as Rust acr (ext_authz)
     participant Vault as HashiCorp Vault
 
     UI->>Envoy: POST /admin/zone/go-to-zone?zone_code=XYZ (Cookies: access_token, access_key, access_secret)
-    Envoy->>ACL: ext_authz Check
-    ACL->>ACL: Xác thực Trinity Credentials Admin
+    Envoy->>acr: ext_authz Check
+    acr->>acr: Xác thực Trinity Credentials Admin
     
     alt Không hợp lệ hoặc không phải Admin
-        ACL-->>Envoy: Denied (HTTP 403 Forbidden / 401 Unauthorized)
+        acr-->>Envoy: Denied (HTTP 403 Forbidden / 401 Unauthorized)
         Envoy-->>UI: Trả về lỗi 403 / 401 "Zone unavailable"
     else Hợp lệ
-        Note over ACL: Phân giải zone_code (Chấp nhận cả "global" và mọi zone khác)
-        ACL->>Vault: Ký JWT Access Token mới với claims.zone_id="XYZ_ID" (hoặc "global")
-        Vault-->>ACL: Trả về signed access_token
-        Note over ACL: Tạo DeniedHttpResponse (HTTP 200 OK - Edge Termination)
-        ACL->>ACL: Inject Set-Cookie (access_token, zone_code=XYZ) + JSON Body
-        ACL-->>Envoy: CheckResponse (with DeniedHttpResponse, Cookies & JSON)
+        Note over acr: Phân giải zone_code (Chấp nhận cả "global" và mọi zone khác)
+        acr->>Vault: Ký JWT Access Token mới với claims.zone_id="XYZ_ID" (hoặc "global")
+        Vault-->>acr: Trả về signed access_token
+        Note over acr: Tạo DeniedHttpResponse (HTTP 200 OK - Edge Termination)
+        acr->>acr: Inject Set-Cookie (access_token, zone_code=XYZ) + JSON Body
+        acr-->>Envoy: CheckResponse (with DeniedHttpResponse, Cookies & JSON)
         Envoy-->>UI: HTTP 200 OK + Set-Cookies + JSON
     end
 ```
 
 #### 3. Mô tả nghiệp vụ chi tiết
 
-- **Xác thực phiên làm việc**: Rust ACL kiểm tra tính toàn vẹn của request thông qua bộ xác thực Trinity:
+- **Xác thực phiên làm việc**: Rust acr kiểm tra tính toàn vẹn của request thông qua bộ xác thực Trinity:
   - Đối với User thường: So khớp session tại `iam:user_access_session:<sub>:<access_key>`.
   - Đối với SRE Admin: So khớp session tại key tĩnh `iam:admin_access_session:<access_key>` (không chứa tiền tố/hậu tố zone_id).
 - **Phân giải Zone cục bộ**: Tra cứu và ánh xạ `zone_code` sang `zone_id` thông qua L1 cache (không gọi gRPC sang Go CP).
@@ -239,9 +239,9 @@ sequenceDiagram
 
 ## 🏛️ 4. Bản Đồ Tham Chiếu File Mã Nguồn (Implementation References)
 
-- **Định nghĩa Ext-Authz gRPC Server**: [ext_authz.rs](../../acl/src/service/ext_authz.rs#L54-L404) - Lắng nghe request, định tuyến các API đặc biệt và ủy quyền xử lý phân giải zone.
-- **Dịch vụ Phân giải & Xác thực Zone của Admin**: [zone_resolution.rs](../../acl/src/service/zone/zone_resolution.rs#L68-L138) - Hàm `resolve_and_verify_zone_admin` đối chiếu và thực thi ma trận bảo mật vùng dữ liệu cho SRE.
-- **Dịch vụ Phân giải & Xác thực Zone của User**: [zone_resolution.rs](../../acl/src/service/zone/zone_resolution.rs#L140-L223) - Hàm `resolve_and_verify_zone_user` thực thi ma trận bảo mật vùng dữ liệu cho khách hàng thường.
-- **Bộ quản lý Zone Cache cục bộ (L1 Cache)**: [zone.rs](../../acl/src/core/zone.rs) - Lưu trữ danh sách map giữa `zone_code` và `zone_id`/`status`.
-- **API Chuyển đổi Zone của User**: [zone_switch.rs](../../acl/src/service/zone/zone_switch.rs#L76-L303) - Triển khai hàm xử lý `handle_zone_switch` phục vụ API `/api/v1/zone/go-to-zone`.
-- **API Chuyển đổi Zone của Admin**: [zone_switch.rs](../../acl/src/service/zone/zone_switch.rs#L305-L500) - Triển khai hàm xử lý `handle_admin_zone_switch` phục vụ API `/admin/zone/go-to-zone`.
+- **Định nghĩa Ext-Authz gRPC Server**: [ext_authz.rs](../../acr/src/service/ext_authz.rs#L54-L404) - Lắng nghe request, định tuyến các API đặc biệt và ủy quyền xử lý phân giải zone.
+- **Dịch vụ Phân giải & Xác thực Zone của Admin**: [zone_resolution.rs](../../acr/src/service/zone/zone_resolution.rs#L68-L138) - Hàm `resolve_and_verify_zone_admin` đối chiếu và thực thi ma trận bảo mật vùng dữ liệu cho SRE.
+- **Dịch vụ Phân giải & Xác thực Zone của User**: [zone_resolution.rs](../../acr/src/service/zone/zone_resolution.rs#L140-L223) - Hàm `resolve_and_verify_zone_user` thực thi ma trận bảo mật vùng dữ liệu cho khách hàng thường.
+- **Bộ quản lý Zone Cache cục bộ (L1 Cache)**: [zone.rs](../../acr/src/core/zone.rs) - Lưu trữ danh sách map giữa `zone_code` và `zone_id`/`status`.
+- **API Chuyển đổi Zone của User**: [zone_switch.rs](../../acr/src/service/zone/zone_switch.rs#L76-L303) - Triển khai hàm xử lý `handle_zone_switch` phục vụ API `/api/v1/zone/go-to-zone`.
+- **API Chuyển đổi Zone của Admin**: [zone_switch.rs](../../acr/src/service/zone/zone_switch.rs#L305-L500) - Triển khai hàm xử lý `handle_admin_zone_switch` phục vụ API `/admin/zone/go-to-zone`.

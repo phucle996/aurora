@@ -11,7 +11,6 @@ SOT: file này là source of truth cho toàn bộ cấu hình tĩnh của applic
 BOUNDARY:
 1. file này chỉ load immutable config từ .env và OS env, không validate dữ liệu.
 2. khi sử dụng env, phải sử dụng các function helper của file này để avoid
-3. đây là immutable config , không phải dynamic config (policyengine)
 4. chỉ parse theo kiểu dữ liệu , không xác định tính đúng sai logic.
 ============================================================================
 */
@@ -36,8 +35,8 @@ type Config struct {
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
 	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
-	Vault     VaultCfg
-	ACLGRPCTarget string
+	Vault         VaultCfg
+	ACRGRPCTarget string
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -295,6 +294,11 @@ func LoadConfig() *Config {
 			Timeout:        getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
 			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),
 		},
-		ACLGRPCTarget: getEnv("ACL_GRPC_TARGET", "acl:50051"),
+		ACRGRPCTarget: func() string {
+			if target := getEnv("ACR_GRPC_TARGET", ""); target != "" {
+				return target
+			}
+			return getEnv("ACL_GRPC_TARGET", "acr:50051")
+		}(),
 	}
 }

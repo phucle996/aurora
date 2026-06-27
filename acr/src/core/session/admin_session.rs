@@ -4,7 +4,7 @@ impl SessionManager {
     pub async fn get_admin_session(
         &self,
         access_key: &str,
-    ) -> Result<Option<AdminAccessSession>, AclError> {
+    ) -> Result<Option<AdminAccessSession>, AcrError> {
         // [COMMENT]: 1. Tạo kết nối tới Redis
         let mut conn = self.get_connection().await?;
         // [COMMENT]: 2. Xác định Redis key của Admin session (Bỏ zone_id khỏi Namespace theo kiến trúc HA mới)
@@ -15,13 +15,13 @@ impl SessionManager {
             .arg(&redis_key)
             .query_async(&mut conn)
             .await
-            .map_err(|e| AclError::RedisError(format!("GET admin session failed: {}", e)))?;
+            .map_err(|e| AcrError::RedisError(format!("GET admin session failed: {}", e)))?;
 
         // [COMMENT]: 4. Giải mã Protobuf nếu tồn tại dữ liệu
         match data {
             Some(bytes) => {
                 let session = AdminAccessSession::decode(bytes.as_slice())
-                    .map_err(|e| AclError::Internal(format!("Protobuf decode failed: {}", e)))?;
+                    .map_err(|e| AcrError::Internal(format!("Protobuf decode failed: {}", e)))?;
                 Ok(Some(session))
             }
             None => Ok(None),
@@ -34,7 +34,7 @@ impl SessionManager {
         access_key: &str,
         access_secret_hash: &str,
         device_public_key: &str,
-    ) -> Result<(), AclError> {
+    ) -> Result<(), AcrError> {
         // [COMMENT]: 1. Tạo kết nối tới Redis
         let mut conn = self.get_connection().await?;
 
@@ -50,7 +50,7 @@ impl SessionManager {
         // [COMMENT]: 4. Serialize struct sang Protobuf binary
         let mut buf = Vec::new();
         session.encode(&mut buf).map_err(|e| {
-            AclError::Internal(format!("Protobuf encode AdminAccessSession failed: {}", e))
+            AcrError::Internal(format!("Protobuf encode AdminAccessSession failed: {}", e))
         })?;
 
         // [COMMENT]: 5. Thực thi ghi dữ liệu vào Redis và thiết lập thời gian hết hạn TTL
@@ -65,7 +65,7 @@ impl SessionManager {
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|e| {
-                AclError::RedisError(format!("Register admin session in Redis failed: {}", e))
+                AcrError::RedisError(format!("Register admin session in Redis failed: {}", e))
             })?;
 
         Ok(())
@@ -77,7 +77,7 @@ impl SessionManager {
         old_access_key: &str,
         new_access_key: &str,
         new_ash: &str,
-    ) -> Result<bool, AclError> {
+    ) -> Result<bool, AcrError> {
         let mut conn = self.get_connection().await?;
         let lock_key = format!("iam:lock:admin_refresh:{}", old_access_key);
 
@@ -90,7 +90,7 @@ impl SessionManager {
             .arg("NX")
             .query_async(&mut conn)
             .await
-            .map_err(|e| AclError::RedisError(format!("Admin lock acquisition error: {}", e)))?;
+            .map_err(|e| AcrError::RedisError(format!("Admin lock acquisition error: {}", e)))?;
 
         if !acquired {
             // Không lấy được lock -> luồng song song khác đang refresh -> cho phép đi tiếp bằng session cũ
@@ -115,7 +115,7 @@ impl SessionManager {
         let mut buf = Vec::new();
         new_session
             .encode(&mut buf)
-            .map_err(|e| AclError::Internal(e.to_string()))?;
+            .map_err(|e| AcrError::Internal(e.to_string()))?;
 
         // [COMMENT]: 4. Thực thi Pipeline nguyên tử:
         // - Tạo session mới với đầy đủ TTL
@@ -133,7 +133,7 @@ impl SessionManager {
             .arg(5) // grace period
             .query_async::<_, ()>(&mut conn)
             .await
-            .map_err(|e| AclError::RedisError(format!("Admin rotation pipeline failed: {}", e)))?;
+            .map_err(|e| AcrError::RedisError(format!("Admin rotation pipeline failed: {}", e)))?;
 
         // [COMMENT]: 4. Giải phóng lock sớm
         let _: () = redis::cmd("DEL")
@@ -147,7 +147,7 @@ impl SessionManager {
 
     // [COMMENT]: Thực hiện giảm TTL của admin session xuống còn 5 giây thay vì xoá ngay lập tức (DEL)
     // để tránh gây lỗi 401 bất ngờ cho các request song song khác đang bay lơ lửng.
-    pub async fn delete_admin_session(&self, access_key: &str) -> Result<(), AclError> {
+    pub async fn delete_admin_session(&self, access_key: &str) -> Result<(), AcrError> {
         let mut conn = self.get_connection().await?;
         let redis_key = format!("iam:admin_access_session:{}", access_key);
 
@@ -157,7 +157,7 @@ impl SessionManager {
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|e| {
-                AclError::RedisError(format!("Expire admin session in Redis failed: {}", e))
+                AcrError::RedisError(format!("Expire admin session in Redis failed: {}", e))
             })?;
 
         Ok(())

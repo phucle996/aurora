@@ -21,7 +21,7 @@ Tài liệu được thiết kế cho các kỹ sư Backend phát triển dịch
 
 - **Frontend Cloud UI**: Trang `login` & [auth.ts](../../cloud-ui/src/lib/api/auth.ts).
 - **Envoy Ingress Gateway**: Cấu hình Ext-Authz chặn bắt `/api/v1/auth/login`.
-- **ACL Service (Rust)**: Xử lý chặn bắt Ext-Authz tại biên, phân giải zone_code, ghi nhận phiên chạy lên Redis L2, sinh Trinity Credentials, ký JWT qua Vault, và phát hành Set-Cookie trực tiếp thông qua Denied Response.
+- **acr Service (Rust)**: Xử lý chặn bắt Ext-Authz tại biên, phân giải zone_code, ghi nhận phiên chạy lên Redis L2, sinh Trinity Credentials, ký JWT qua Vault, và phát hành Set-Cookie trực tiếp thông qua Denied Response.
 - **Controlplane IAM Service (Go)**: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng qua gRPC endpoint `VerifyUserCredentials`.
 - **Device Service**: [device_service.go](../../controlplane/internal/iam/service/device_service.go) (Phân giải thiết bị và tự dọn dẹp thiết bị vượt định mức).
 - **Security Signer**: Vault JWT Transit in [jwt.go](../../controlplane/internal/security/jwt.go).
@@ -36,21 +36,21 @@ Tài liệu được thiết kế cho các kỹ sư Backend phát triển dịch
 graph TD
     UI["💻 Browser Cloud UI"]
     Envoy["🛡️ Envoy Ingress Gateway"]
-    ACL["🛡️ ACL Service (Rust - Ext-Authz)"]
+    acr["🛡️ acr Service (Rust - Ext-Authz)"]
     CP["⚙️ Controlplane IAM (Go)"]
     Vault["🔑 HashiCorp Vault (Transit Engine)"]
     Redis[("⚡ Redis L2 (Runtime Sessions)")]
     DB[("🗄️ PostgreSQL (Users & Devices SoT)")]
 
     UI -- "POST /api/v1/auth/login" --> Envoy
-    Envoy -- "1. Intercept Request (Ext-Authz Check)" --> ACL
-    ACL -- "2. Verify User Credentials (gRPC)" --> CP
+    Envoy -- "1. Intercept Request (Ext-Authz Check)" --> acr
+    acr -- "2. Verify User Credentials (gRPC)" --> CP
     CP -- "3. Verify Argon2id & Load/Upsert Device" --> DB
-    CP -- "4. Return verification success & metadata" --> ACL
-    ACL -- "5. Resolve Zone Code to Zone ID" --> ACL
-    ACL -- "6. Sign token claims via Vault (Stateless)" --> Vault
-    ACL -- "7. Write UserAccessSession to L2" --> Redis
-    ACL -- "8. Return Denied (HTTP 204 & Set-Cookie)" --> Envoy
+    CP -- "4. Return verification success & metadata" --> acr
+    acr -- "5. Resolve Zone Code to Zone ID" --> acr
+    acr -- "6. Sign token claims via Vault (Stateless)" --> Vault
+    acr -- "7. Write UserAccessSession to L2" --> Redis
+    acr -- "8. Return Denied (HTTP 204 & Set-Cookie)" --> Envoy
     Envoy -- "9. Forward Set-Cookie & 204 Status" --> UI
 ```
 
@@ -65,11 +65,11 @@ Khi một yêu cầu đăng nhập (`POST /api/v1/auth/login`) được gửi đ
 | Middleware | Feature / Vai Trò | Level (App/Route) |
 | :--- | :--- | :--- |
 | `Envoy Local Rate Limit` | Chống DDoS/Spam bằng cách lọc chặn IP thô & Max Connection (Inflight) từ tầng Ingress. | Envoy Ingress |
-| `Ext-Authz Interceptor` | Chuyển hướng các request đăng nhập về phía dịch vụ ACL (Rust) để thực hiện xác thực và phân giải quyền. | Ingress Policy |
+| `Ext-Authz Interceptor` | Chuyển hướng các request đăng nhập về phía dịch vụ acr (Rust) để thực hiện xác thực và phân giải quyền. | Ingress Policy |
 
 ---
 
-### 📌 PHASE 1: Interceptor (Chặn bắt & Chuyển tiếp - Rust ACL / Envoy)
+### 📌 PHASE 1: Interceptor (Chặn bắt & Chuyển tiếp - Rust acr / Envoy)
 
 #### 1. Sơ đồ trình tự (Sequence Diagram - Phase 1)
 
@@ -78,25 +78,26 @@ sequenceDiagram
     autonumber
     participant UI as Browser Cloud UI
     participant Envoy as Envoy Ingress
-    participant ACL as Rust ACL Service
+    participant acr as Rust acr Service
     participant CP as Go Controlplane
 
     UI->>Envoy: POST /api/v1/auth/login (with username, password, etc)
-    Envoy->>ACL: CheckRequest (HTTP Context, Headers & Body)
-    Note over ACL: handle_login() intercepts
-    ACL->>ACL: Parse JSON payload
-    ACL->>ACL: Extract client_device_id from cookies, client_ip, user_agent
-    ACL->>CP: VerifyUserCredentials(grpc_request)
+    Envoy->>acr: CheckRequest (HTTP Context, Headers & Body)
+    Note over acr: handle_login() intercepts
+    acr->>acr: Parse JSON payload
+    acr->>acr: Extract client_device_id from cookies, client_ip, user_agent
+    acr->>CP: VerifyUserCredentials(grpc_request)
 ```
 
 #### 2. Mô tả nghiệp vụ
 
-- **Chặn bắt tại Biên (Gateway Interception)**: Envoy Ingress chuyển tiếp toàn bộ request chứa thông tin đăng nhập đến Ext-Authz middleware (Rust ACL).
-- **Phân tách và chuẩn bị dữ liệu**: Rust ACL bóc tách JSON payload gửi lên, đồng thời thu thập siêu dữ liệu gồm IP khách (Client IP), User-Agent từ Header của request và `client_device_id` từ HTTP Cookies hiện có (nếu có).
-- **Giao tiếp gRPC**: Rust ACL đóng gói các tham số nhận được và gửi yêu cầu xác thực thô đến Go Controlplane thông qua gRPC method `VerifyUserCredentials`.
+- **Chặn bắt tại Biên (Gateway Interception)**: Envoy Ingress chuyển tiếp toàn bộ request chứa thông tin đăng nhập đến Ext-Authz middleware (Rust acr).
+- **Phân tách và chuẩn bị dữ liệu**: Rust acr bóc tách JSON payload gửi lên, đồng thời thu thập siêu dữ liệu gồm IP khách (Client IP), User-Agent từ Header của request và `client_device_id` từ HTTP Cookies hiện có (nếu có).
+- **Giao tiếp gRPC**: Rust acr đóng gói các tham số nhận được và gửi yêu cầu xác thực thô đến Go Controlplane thông qua gRPC method `VerifyUserCredentials`.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
-- **Rust Ingress Interceptor / Gateway Auth Handler**: [login_handler.rs](../../acl/src/service/login_handler.rs#L43-L182) - Chặn bắt HTTP POST `/api/v1/auth/login` tại biên, trích xuất cookie/IP/UA và chuyển tiếp qua gRPC.
+
+- **Rust Ingress Interceptor / Gateway Auth Handler**: [login_handler.rs](../../acr/src/service/login_handler.rs#L43-L182) - Chặn bắt HTTP POST `/api/v1/auth/login` tại biên, trích xuất cookie/IP/UA và chuyển tiếp qua gRPC.
 - **gRPC API Definition (VerifyUserCredentials)**: [auth.proto](../../controlplane/internal/iam/transport/rpc/proto/auth.proto#L12-L28) - Định nghĩa message gRPC dùng để giao tiếp liên dịch vụ.
 
 ---
@@ -108,12 +109,12 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant ACL as Rust ACL Service
+    participant acr as Rust acr Service
     participant CP as Go Controlplane
     participant Repo as PostgreSQL Repo
     participant DB as PostgreSQL Database
 
-    ACL->>CP: VerifyUserCredentials(grpc_request)
+    acr->>CP: VerifyUserCredentials(grpc_request)
     
     CP->>Repo: GetLoginUserByUsername(ctx, username)
     Repo->>DB: SELECT id, username, email, password_hash, status FROM users WHERE username = ?
@@ -124,9 +125,9 @@ sequenceDiagram
     
     alt Trạng thái User là "pending-active"
         Note over CP: Gửi token qua outbox & trả lỗi
-        CP-->>ACL: valid=false (VerificationRequired)
+        CP-->>acr: valid=false (VerificationRequired)
     else Trạng thái User là "suspended" hoặc "disabled"
-        CP-->>ACL: valid=false (InvalidCredentials)
+        CP-->>acr: valid=false (InvalidCredentials)
     end
     
     CP->>CP: Phân giải & Gắn kết thiết bị (Device Binding)
@@ -137,7 +138,7 @@ sequenceDiagram
         CP->>DB: INSERT INTO refresh_tokens
     end
 
-    CP-->>ACL: VerifyUserCredentialsResponse (valid=true, user_id, role, refresh_token, client_device_id)
+    CP-->>acr: VerifyUserCredentialsResponse (valid=true, user_id, role, refresh_token, client_device_id)
 ```
 
 #### 2. Mô tả nghiệp vụ
@@ -148,56 +149,58 @@ sequenceDiagram
   - Nếu trạng thái là `suspended` hoặc `disabled`, hệ thống trả về lỗi `InvalidCredentials`.
 - **Gắn kết thiết bị (Device Binding)**: Thực hiện logic Upsert thiết bị đăng nhập vào bảng `devices`. Trùng lặp dựa trên index duy nhất `(user_id, client_device_id)`. Các tham số nhạy cảm như `public_key` tuyệt đối không bị ghi đè để tránh tấn công chiếm quyền thiết bị.
 - **Phát hành Refresh Token**: Khi tham số `trust_device` là `true`, Controlplane sinh ra Opaque Refresh Token theo cấu trúc bảo mật `<userID>_<random_entropy>` (tổng độ dài khoảng 64 - 72 ký tự) và lưu hash của nó vào bảng `refresh_tokens`.
-- **Phản hồi gRPC**: Trả về dữ liệu thành công kèm theo metadata của User, Role, Level, Refresh Token và Device ID về lại cho Rust ACL.
+- **Phản hồi gRPC**: Trả về dữ liệu thành công kèm theo metadata của User, Role, Level, Refresh Token và Device ID về lại cho Rust acr.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
-- **gRPC Transport Server Handler**: [auth.go](../../controlplane/internal/iam/transport/rpc/handler/auth.go#L128-L179) - Tiếp nhận request gRPC từ ACL Service, ánh xạ sang entity và chuyển giao cho tầng nghiệp vụ.
+
+- **gRPC Transport Server Handler**: [auth.go](../../controlplane/internal/iam/transport/rpc/handler/auth.go#L128-L179) - Tiếp nhận request gRPC từ acr Service, ánh xạ sang entity và chuyển giao cho tầng nghiệp vụ.
 - **Business AuthService Implementation**: [auth_service.go](../../controlplane/internal/iam/service/auth_service.go#L200-L280) - Thực hiện so khớp mật khẩu bằng Argon2id, kiểm soát trạng thái tài khoản (`pending-active`, `active`, `suspended`, `disabled`), sinh refresh token.
 - **Device Management Service**: [device_service.go](../../controlplane/internal/iam/service/device_service.go#L30-L75) - Đăng ký, kiểm tra dấu vân tay thiết bị (Fingerprint) và kiểm soát số lượng thiết bị hoạt động tối đa của user.
 
 ---
 
-### 📌 PHASE 3: Token Issuance & Session Storage (Cấp phát & Lưu trữ phiên - Rust ACL)
+### 📌 PHASE 3: Token Issuance & Session Storage (Cấp phát & Lưu trữ phiên - Rust acr)
 
 #### 1. Sơ đồ trình tự (Sequence Diagram - Phase 3)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant ACL as Rust ACL Service
+    participant acr as Rust acr Service
     participant Vault as HashiCorp Vault
     participant RDS as Redis L2 Cluster
     participant Envoy as Envoy Ingress
     participant UI as Browser Cloud UI
 
-    Note over ACL: Nhận VerifyUserCredentialsResponse (valid=true)
-    ACL->>ACL: Phân giải zone_code -> zone_id thô (L1 cache)
-    ACL->>ACL: Sinh mới access_key (UUIDv7) & access_secret (UUIDv4)
-    ACL->>Vault: Ký Access Claims (Transit Engine - HMAC-SHA256)
-    Vault-->>ACL: Trả về signed JWT Access Token
+    Note over acr: Nhận VerifyUserCredentialsResponse (valid=true)
+    acr->>acr: Phân giải zone_code -> zone_id thô (L1 cache)
+    acr->>acr: Sinh mới access_key (UUIDv7) & access_secret (UUIDv4)
+    acr->>Vault: Ký Access Claims (Transit Engine - HMAC-SHA256)
+    Vault-->>acr: Trả về signed JWT Access Token
     
-    ACL->>RDS: Pipeline: SET key session & SADD index set (Lưu runtime session)
-    RDS-->>ACL: Trả về kết quả ghi Redis (OK/Err)
+    acr->>RDS: Pipeline: SET key session & SADD index set (Lưu runtime session)
+    RDS-->>acr: Trả về kết quả ghi Redis (OK/Err)
     
-    Note over ACL: Tạo DeniedHttpResponse (HTTP 204)
-    ACL->>ACL: Inject Set-Cookie headers (access_token, access_key, access_secret, client_device_id, refresh_token)
-    ACL-->>Envoy: CheckResponse (with DeniedHttpResponse & Cookies)
+    Note over acr: Tạo DeniedHttpResponse (HTTP 204)
+    acr->>acr: Inject Set-Cookie headers (access_token, access_key, access_secret, client_device_id, refresh_token)
+    acr-->>Envoy: CheckResponse (with DeniedHttpResponse & Cookies)
     Envoy-->>UI: HTTP 204 No Content + Cookies
 ```
 
 #### 2. Mô tả nghiệp vụ
 
-- **Phân giải Zone**: Rust ACL ánh xạ `zone_code` sang `zone_id` bằng bộ nhớ đệm L1 cục bộ nhằm tối thiểu hóa độ trễ.
+- **Phân giải Zone**: Rust acr ánh xạ `zone_code` sang `zone_id` bằng bộ nhớ đệm L1 cục bộ nhằm tối thiểu hóa độ trễ.
 - **Khởi tạo định danh runtime**: Sinh mới cặp khóa truy cập gồm `access_key` (UUIDv7) và `access_secret` (UUIDv4).
 - **Ký số Stateless JWT**: Gửi yêu cầu ký JWT Access Token chứa các claims về phân quyền tới HashiCorp Vault Transit Engine.
 - **Lưu trữ phiên hoạt động (Session Register)**: Đóng gói session metadata dưới dạng nhị phân Protobuf `UserAccessSession` và đẩy xuống Redis L2 bằng cơ chế Pipeline.
-- **Trả về Cookies**: Rust ACL thiết lập HTTP `204 No Content` đi kèm 5 thẻ Set-Cookie an toàn (`access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`) thông qua Ext-Authz Denied Response gửi lại Envoy để chuyển về phía trình duyệt người dùng.
+- **Trả về Cookies**: Rust acr thiết lập HTTP `204 No Content` đi kèm 5 thẻ Set-Cookie an toàn (`access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`) thông qua Ext-Authz Denied Response gửi lại Envoy để chuyển về phía trình duyệt người dùng.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
-- **Zone Code Resolution**: [zone_resolution.rs](../../acl/src/service/zone_resolution.rs) - Phân giải cục bộ mã vùng của tenant.
-- **Stateless Token Manager**: [token.rs](../../acl/src/core/token.rs#L151-L184) - Sinh claims và thực hiện ký số Access Token (JWT) qua HashiCorp Vault.
-- **L2 Redis Session Manager**: [session.rs](../../acl/src/core/session.rs#L59-L80) - Tuần tự hóa session sang nhị phân Protobuf và ghi nhận vào Redis Cluster L2.
-- **HTTP Response Set-Cookie Generator**: [login_handler.rs](../../acl/src/service/login_handler.rs#L259-L330) - Inject các cookie Trinity Credentials vào DeniedHttpResponse để đẩy về trình duyệt.
+
+- **Zone Code Resolution**: [zone_resolution.rs](../../acr/src/service/zone_resolution.rs) - Phân giải cục bộ mã vùng của tenant.
+- **Stateless Token Manager**: [token.rs](../../acr/src/core/token.rs#L151-L184) - Sinh claims và thực hiện ký số Access Token (JWT) qua HashiCorp Vault.
+- **L2 Redis Session Manager**: [session.rs](../../acr/src/core/session.rs#L59-L80) - Tuần tự hóa session sang nhị phân Protobuf và ghi nhận vào Redis Cluster L2.
+- **HTTP Response Set-Cookie Generator**: [login_handler.rs](../../acr/src/service/login_handler.rs#L259-L330) - Inject các cookie Trinity Credentials vào DeniedHttpResponse để đẩy về trình duyệt.
 
 ---
 

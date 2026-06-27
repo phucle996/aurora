@@ -169,8 +169,15 @@ func NewModule(
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
 
+	// [COMMENT]: Khởi tạo gRPC connection đến ACR Service phục vụ phân rã & offload Trinity Session
+	acrConn, err := grpc.Dial(cfg.ACRGRPCTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, errors.New("iam module: failed to dial ACR gRPC target: " + err.Error())
+	}
+	acrClient := iamproto.NewSessionServiceClient(acrConn)
+
 	// Device Management Service
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, cacheEngine)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, cacheEngine, acrClient)
 	if deviceSvc == nil {
 		return nil, errors.New("iam module: failed to construct user device management service")
 	}
@@ -199,17 +206,10 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct IAM outbox repository")
 	}
 
-	// [COMMENT]: Khởi tạo gRPC connection đến ACL Service phục vụ phân rã & offload Trinity Session
-	aclConn, err := grpc.Dial(cfg.ACLGRPCTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, errors.New("iam module: failed to dial ACL gRPC target: " + err.Error())
-	}
-	aclClient := iamproto.NewSessionServiceClient(aclConn)
-
 	authSvc := iamSvcImpl.NewAuthService(
 		cfg, authRepo, rbacRepo, refreshSvc, deviceSvc,
 		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
-		aclClient,
+		acrClient,
 	)
 	if authSvc == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")

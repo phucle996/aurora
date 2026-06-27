@@ -176,7 +176,8 @@ func CountUsersByIdentity(ctx context.Context, t testing.TB, db *pgxpool.Pool, s
 }
 
 type SessionServiceClientMock struct {
-	ReleaseTrinitySessionFn func(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest) (*iamproto.ReleaseTrinitySessionResponse, error)
+	ReleaseTrinitySessionFn       func(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest) (*iamproto.ReleaseTrinitySessionResponse, error)
+	RevokeUserSessionsByDevicesFn func(ctx context.Context, in *iamproto.RevokeUserSessionsByDevicesRequest) (*iamproto.RevokeUserSessionsByDevicesResponse, error)
 }
 
 func (m *SessionServiceClientMock) ReleaseTrinitySession(ctx context.Context, in *iamproto.ReleaseTrinitySessionRequest, opts ...grpc.CallOption) (*iamproto.ReleaseTrinitySessionResponse, error) {
@@ -186,5 +187,14 @@ func (m *SessionServiceClientMock) ReleaseTrinitySession(ctx context.Context, in
 	// [COMMENT]: Default mock trả released=true, Login flow giờ không đọc metadata/cookie nữa
 	return &iamproto.ReleaseTrinitySessionResponse{
 		Released: true,
+	}, nil
+}
+
+func (m *SessionServiceClientMock) RevokeUserSessionsByDevices(ctx context.Context, in *iamproto.RevokeUserSessionsByDevicesRequest, opts ...grpc.CallOption) (*iamproto.RevokeUserSessionsByDevicesResponse, error) {
+	if m.RevokeUserSessionsByDevicesFn != nil {
+		return m.RevokeUserSessionsByDevicesFn(ctx, in)
+	}
+	return &iamproto.RevokeUserSessionsByDevicesResponse{
+		RevokedCount: int64(len(in.GetDeviceIds())),
 	}, nil
 }

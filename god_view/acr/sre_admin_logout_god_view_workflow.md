@@ -10,7 +10,7 @@
 
 ### ❓ Phân hệ SRE Admin Logout là gì?
 
-Phân hệ này đảm nhận vai trò kết thúc phiên làm việc khẩn cấp của SRE Admin một cách an toàn và nhanh chóng. Do SRE Admin sử dụng phiên làm việc tĩnh không gắn với thiết bị cụ thể (không có index) và không có cơ chế `refresh_token` dưới PostgreSQL, luồng logout của SRE Admin diễn ra hoàn toàn tại tầng biên (Edge Gatekeeper) thông qua **Rust ACL (ext_authz)**.
+Phân hệ này đảm nhận vai trò kết thúc phiên làm việc khẩn cấp của SRE Admin một cách an toàn và nhanh chóng. Do SRE Admin sử dụng phiên làm việc tĩnh không gắn với thiết bị cụ thể (không có index) và không có cơ chế `refresh_token` dưới PostgreSQL, luồng logout của SRE Admin diễn ra hoàn toàn tại tầng biên (Edge Gatekeeper) thông qua **Rust acr (ext_authz)**.
 
 Hành động này thực hiện:
 
@@ -28,13 +28,13 @@ graph TD
 
     UI["💻 Admin UI / CLI"]:::client
     Envoy["🛡️ Envoy Gateway (Edge Proxy)"]:::gateway
-    ACL["🛡️ ACL Service (Rust - Edge Authz)"]:::edgeService
+    acr["🛡️ acr Service (Rust - Edge Authz)"]:::edgeService
     Redis["⚡ Redis L2 (Runtime Sessions)"]:::storage
 
     UI -- "1. POST /admin/auth/logout" --> Envoy
-    Envoy -- "2. ext_authz Check" --> ACL
-    ACL -- "3. EXPIRE session 5s (Sync)" --> Redis
-    ACL -- "4. 204 response + Cookie clear" --> Envoy
+    Envoy -- "2. ext_authz Check" --> acr
+    acr -- "3. EXPIRE session 5s (Sync)" --> Redis
+    acr -- "4. 204 response + Cookie clear" --> Envoy
     Envoy -- "5. HTTP 204 No Content" --> UI
 ```
 
@@ -56,37 +56,37 @@ graph TD
 
 **Các file mã nguồn liên quan (Code References):**
 
-- [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Tiếp nhận yêu cầu từ bộ lọc `ext_authz` của Envoy, nhận diện request `/admin/auth/logout` và chuyển tiếp xử lý sang dịch vụ Logout của Admin.
-- [acl/src/service/session/revoke_session.rs](../../acl/src/service/session/revoke_session.rs): Triển khai hàm `handle_admin_logout` để xóa session trong L2 Redis, chuẩn bị response 204 kèm xóa Cookies.
-- [acl/src/core/session/admin_session.rs](../../acl/src/core/session/admin_session.rs): Cung cấp hàm `delete_admin_session` để giảm TTL của khóa Admin session trong Redis xuống còn 5 giây.
+- [acr/src/service/ext_authz.rs](../../acr/src/service/ext_authz.rs): Tiếp nhận yêu cầu từ bộ lọc `ext_authz` của Envoy, nhận diện request `/admin/auth/logout` và chuyển tiếp xử lý sang dịch vụ Logout của Admin.
+- [acr/src/service/session/revoke_session.rs](../../acr/src/service/session/revoke_session.rs): Triển khai hàm `handle_admin_logout` để xóa session trong L2 Redis, chuẩn bị response 204 kèm xóa Cookies.
+- [acr/src/core/session/admin_session.rs](../../acr/src/core/session/admin_session.rs): Cung cấp hàm `delete_admin_session` để giảm TTL của khóa Admin session trong Redis xuống còn 5 giây.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant UI as 💻 Admin UI
     participant Envoy as 🛡️ Envoy Gateway
-    participant ACL as 🛡️ ACL Service (Rust)
+    participant acr as 🛡️ acr Service (Rust)
     participant L2 as ⚡ Redis L2 (Sessions)
 
     UI->>Envoy: POST /admin/auth/logout
-    Note over Envoy,ACL: Envoy kích hoạt ext_authz filter
-    Envoy->>ACL: Check Request (Headers & Cookies)
+    Note over Envoy,acr: Envoy kích hoạt ext_authz filter
+    Envoy->>acr: Check Request (Headers & Cookies)
     
-    ACL->>ACL: Giải mã & Verify Access Token/Access Key (sub == "sre")
+    acr->>acr: Giải mã & Verify Access Token/Access Key (sub == "sre")
     
     alt Nếu verify thất bại hoặc hết hạn
-        ACL-->>Envoy: Denied Response (HTTP 204 No Content + Cookies cleared)
+        acr-->>Envoy: Denied Response (HTTP 204 No Content + Cookies cleared)
     else Verify thành công
-        ACL->>L2: EXPIRE iam:admin_access_session:<access_key> 5 (Grace Period)
+        acr->>L2: EXPIRE iam:admin_access_session:<access_key> 5 (Grace Period)
         alt Nếu tác vụ Redis lỗi (Redis Down)
-            L2-->>ACL: Redis Error
-            ACL-->>Envoy: Denied Response (HTTP 500 Internal Error)
+            L2-->>acr: Redis Error
+            acr-->>Envoy: Denied Response (HTTP 500 Internal Error)
             Envoy-->>UI: HTTP 500 Internal Server Error (Hủy bỏ logout)
         else Thành công
-            L2-->>ACL: Success
+            L2-->>acr: Success
         end
     end
 
-    ACL-->>Envoy: Denied Response (HTTP 204 No Content + Set-Cookie clear cho trinity & zone_code)
+    acr-->>Envoy: Denied Response (HTTP 204 No Content + Set-Cookie clear cho trinity & zone_code)
     Envoy-->>UI: HTTP 204 No Content
 ```

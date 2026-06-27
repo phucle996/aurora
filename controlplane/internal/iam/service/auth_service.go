@@ -45,7 +45,7 @@ type AuthService struct {
 	ott        iamSvcInterface.OneTimeTokenService
 	outboxRepo iamRepoInterface.IamOutboxRepository
 	cfg        *config.Config
-	aclClient  iamproto.SessionServiceClient
+	acrClient  iamproto.SessionServiceClient
 }
 
 func NewAuthService(cfg *config.Config,
@@ -56,7 +56,7 @@ func NewAuthService(cfg *config.Config,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	outboxRepo iamRepoInterface.IamOutboxRepository,
-	aclClient iamproto.SessionServiceClient,
+	acrClient iamproto.SessionServiceClient,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
 		repo:       repo,
@@ -67,7 +67,7 @@ func NewAuthService(cfg *config.Config,
 		ott:        ott,
 		outboxRepo: outboxRepo,
 		cfg:        cfg,
-		aclClient:  aclClient,
+		acrClient:  acrClient,
 	}
 }
 
@@ -159,7 +159,7 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 
 // [COMMENT]: VerifyUserCredentials thực hiện xác thực thông tin đăng nhập (username, password),
 // kiểm tra trạng thái tài khoản, định danh/upsert thiết bị và sinh Opaque Refresh Token (nếu được yêu cầu).
-// Phương thức này được gọi qua gRPC từ Gateway/ACL để CP đóng vai trò Data Plane (SoT).
+// Phương thức này được gọi qua gRPC từ Gateway/ACR để CP đóng vai trò Data Plane (SoT).
 func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (res *iamEntity.VerifyUserCredentialsResult, err error) {
 	var ipVal, uaVal string
 	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {

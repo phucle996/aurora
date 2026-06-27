@@ -4,7 +4,7 @@
 
 Nhằm đảm bảo trải nghiệm liền mạch cho SRE Admin khi vận hành hệ thống khẩn cấp/liên tục mà không bị ngắt kết nối đột ngột (do hết hạn Token), hệ thống áp dụng cơ chế **Sliding Session (Xoay vòng thông tin xác thực tự động)**.
 
-Cơ chế này được thực thi hoàn toàn tại tầng biên (Rust ACL - ext_authz), tự động làm mới bộ ba Cookie (Trinity Cookies) của SRE khi Token sắp hết hạn mà không gây gián đoạn các request đang xử lý (Zero-Downtime Refresh).
+Cơ chế này được thực thi hoàn toàn tại tầng biên (Rust acr - ext_authz), tự động làm mới bộ ba Cookie (Trinity Cookies) của SRE khi Token sắp hết hạn mà không gây gián đoạn các request đang xử lý (Zero-Downtime Refresh).
 
 ### 🛡️ Điểm Khác Biệt Giữa User & SRE Sliding Session
 
@@ -27,7 +27,7 @@ Cơ chế này được thực thi hoàn toàn tại tầng biên (Rust ACL - ex
 
 ## 🔄 3. Chi Tiết Luồng Xoay Vòng Session (Rotation Flow)
 
-Khi một request chứa SRE Trinity Cookies được gửi đến, Rust ACL sẽ thực hiện các bước sau để xác định và xử lý xoay vòng phiên:
+Khi một request chứa SRE Trinity Cookies được gửi đến, Rust acr sẽ thực hiện các bước sau để xác định và xử lý xoay vòng phiên:
 
 ```mermaid
 flowchart TD
@@ -68,38 +68,38 @@ sequenceDiagram
     autonumber
     participant Client as SRE Client (UI/CLI)
     participant Envoy as Envoy Ingress
-    participant ACL as Rust ACL (ext_authz)
+    participant acr as Rust acr (ext_authz)
     participant Redis as Redis L2
     participant Vault as HashiCorp Vault
 
     Client->>Envoy: Request API (chứa bộ 3 Cookie cũ)
-    Envoy->>ACL: Yêu cầu xác thực (ext_authz)
+    Envoy->>acr: Yêu cầu xác thực (ext_authz)
     
-    Note over ACL: verify_token() & check Redis Session hợp lệ
-    Note over ACL: Phát hiện: claims.exp - now <= refresh_threshold
+    Note over acr: verify_token() & check Redis Session hợp lệ
+    Note over acr: Phát hiện: claims.exp - now <= refresh_threshold
     
-    ACL->>Redis: SET iam:lock:admin_refresh:old_key 1 EX 5 NX
+    acr->>Redis: SET iam:lock:admin_refresh:old_key 1 EX 5 NX
     
     alt Không lấy được Lock (Request song song khác đang thực hiện rotate)
-        Redis-->>ACL: Lock exists (false)
-        Note over ACL: Request này bỏ qua bước refresh, tiếp tục dùng session cũ đi tiếp
-        ACL-->>Envoy: OK (Cho phép request đi qua, không Set-Cookie mới)
+        Redis-->>acr: Lock exists (false)
+        Note over acr: Request này bỏ qua bước refresh, tiếp tục dùng session cũ đi tiếp
+        acr-->>Envoy: OK (Cho phép request đi qua, không Set-Cookie mới)
     else Lấy được Lock thành công (Request đầu tiên kích hoạt)
-        Redis-->>ACL: Lock acquired (true)
+        Redis-->>acr: Lock acquired (true)
         
-        Note over ACL: 1. Sinh new_access_key (UUIDv7) & new_access_secret (UUIDv4)
-        Note over ACL: 2. Tạo new_claims { sub: "sre", zone_id: "global", access_key: new_access_key }
-        ACL->>Vault: Ký JWT Access Token mới
-        Vault-->>ACL: Trả về new_access_token
+        Note over acr: 1. Sinh new_access_key (UUIDv7) & new_access_secret (UUIDv4)
+        Note over acr: 2. Tạo new_claims { sub: "sre", zone_id: "global", access_key: new_access_key }
+        acr->>Vault: Ký JWT Access Token mới
+        Vault-->>acr: Trả về new_access_token
         
-        Note over ACL: 3. Tính SHA-256 của new_access_secret
-        ACL->>Redis: Pipeline: <br>1. SET new_session (TTL: 1h) <br>2. EXPIRE old_session to 5s
-        Redis-->>ACL: Pipeline OK
+        Note over acr: 3. Tính SHA-256 của new_access_secret
+        acr->>Redis: Pipeline: <br>1. SET new_session (TTL: 1h) <br>2. EXPIRE old_session to 5s
+        Redis-->>acr: Pipeline OK
         
-        ACL->>Redis: DEL iam:lock:admin_refresh:old_key
-        Redis-->>ACL: Lock deleted
+        acr->>Redis: DEL iam:lock:admin_refresh:old_key
+        Redis-->>acr: Lock deleted
         
-        ACL-->>Envoy: OK (Inject 3 Set-Cookie mới)
+        acr-->>Envoy: OK (Inject 3 Set-Cookie mới)
     end
     
     Envoy-->>Client: Trả về kết quả API kèm theo Cookie mới

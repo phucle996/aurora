@@ -11,6 +11,7 @@ mod core;
 mod error;
 mod infra;
 mod observability;
+mod rpc;
 mod service;
 
 use crate::authz::evaluator::PolicyEvaluator;
@@ -23,7 +24,7 @@ use crate::service::auth::auth_proto::auth_service_server::AuthServiceServer;
 use crate::service::auth::AuthServiceImpl;
 use crate::service::ext_authz::ExtAuthzService;
 use crate::service::session::release_session::session_proto::session_service_server::SessionServiceServer;
-use crate::service::session::release_session::SessionServiceImpl;
+use crate::rpc::session::SessionRpcHandler;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -113,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         zone_mgr.clone(),
     );
 
-    let session_service = SessionServiceImpl::new(
+    let session_service = SessionRpcHandler::new(
         session_mgr.clone(),
         token_mgr.clone(),
         zone_mgr.clone(),

@@ -30,7 +30,7 @@ func NewRefreshTokenRepository(
 	}
 }
 
-// [COMMENT]: Xóa bỏ Refresh Token session dựa trên hash để thực hiện thu hồi/logout khi nhận tín hiệu từ ACL
+// [COMMENT]: Xóa bỏ Refresh Token session dựa trên hash để thực hiện thu hồi/logout khi nhận tín hiệu từ ACR
 func (r *RefreshTokenRepository) DeleteRefreshTokenSessionByHash(ctx context.Context, tokenHash string) (int64, error) {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.refresh_tokens

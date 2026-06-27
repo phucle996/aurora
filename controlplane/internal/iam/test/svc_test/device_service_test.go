@@ -10,6 +10,7 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	"controlplane/internal/iam/test/testutil"
 
 	"github.com/google/uuid"
 )
@@ -92,7 +93,7 @@ var _ iamRepoInterface.DeviceRepository = (*deviceRepoMock)(nil)
 var _ iamRepoInterface.RefreshTokenRepository = (*refreshRepoMock)(nil)
 
 func newDeviceService(d iamRepoInterface.DeviceRepository, r iamRepoInterface.RefreshTokenRepository) iamSvcInterface.DeviceService {
-	return iamSvcImpl.NewDeviceService(d, r, nil)
+	return iamSvcImpl.NewDeviceService(d, r, nil, &testutil.SessionServiceClientMock{})
 }
 
 func TestDeviceServiceRevokeMyDeviceNotOwned(t *testing.T) {

@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::error::AclError;
+use crate::error::AcrError;
 use prost::Message;
 use std::sync::Arc;
 
@@ -43,11 +43,11 @@ impl SessionManager {
     }
 
     // Hỗ trợ kết nối bất đồng bộ sang Redis
-    pub(crate) async fn get_connection(&self) -> Result<redis::aio::Connection, AclError> {
+    pub(crate) async fn get_connection(&self) -> Result<redis::aio::Connection, AcrError> {
         self.redis_client
             .get_tokio_connection()
             .await
-            .map_err(|e| AclError::RedisError(format!("Failed to get Redis connection: {}", e)))
+            .map_err(|e| AcrError::RedisError(format!("Failed to get Redis connection: {}", e)))
     }
 }
 

@@ -1,4 +1,4 @@
-// [COMMENT]: file proto này và file acl/proto/zone.proto phải đồng bộ với nhau
+// [COMMENT]: file proto này và file acr/proto/zone.proto phải đồng bộ với nhau
 
 syntax = "proto3";
 

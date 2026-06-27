@@ -1,34 +1,51 @@
 # ============================================================================
-# 🐳 MULTI-STAGE DOCKERFILE FOR RUST NOTIFICATION SERVICE (OPTIMIZED)
+# 🦀 RUST SERVICE (DISTROLESS - NO SHELL RUNTIME)
 # ============================================================================
 
-# Stage 1: Chuẩn bị recipe
-FROM rust:slim-bookworm AS planner
+# ----------------------------------------------------------------------------
+# Base builder (có shell để build)
+# ----------------------------------------------------------------------------
+FROM rust:1.90-slim-bookworm AS chef
+
 WORKDIR /workspace
-RUN cargo install cargo-chef
+
+RUN cargo install --locked cargo-chef
+
+# ----------------------------------------------------------------------------
+# Planner
+# ----------------------------------------------------------------------------
+FROM chef AS planner
+
 COPY . .
+
 RUN cargo chef prepare --recipe-path recipe.json
 
-# Stage 2: Caching & Build các thư viện (Dependencies)
-FROM rust:slim-bookworm AS builder
-WORKDIR /workspace
-RUN cargo install cargo-chef
-RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+# ----------------------------------------------------------------------------
+# Builder
+# ----------------------------------------------------------------------------
+FROM chef AS builder
 
-# Sao chép recipe từ Stage 1 và build trước các dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends protobuf-compiler && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=planner /workspace/recipe.json recipe.json
+
 RUN cargo chef cook --release --recipe-path recipe.json
 
-# Stage 3: Build Source Code chính
 COPY . .
+
 RUN cargo build --release
 
-# Stage 4: Runtime image tối giản
-FROM debian:bookworm-slim
-WORKDIR /app
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# ----------------------------------------------------------------------------
+# Runtime (NO SHELL - DISTROLESS)
+# ----------------------------------------------------------------------------
+FROM gcr.io/distroless/cc-debian12
 
-COPY --from=builder /workspace/target/release/notification-service /app/notification-service
+COPY --from=builder \
+    /workspace/target/release/notification-service \
+    /notification-service
 
 EXPOSE 8083
-CMD ["/app/notification-service"]
+
+ENTRYPOINT ["/notification-service"]

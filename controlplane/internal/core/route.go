@@ -5,7 +5,7 @@ import (
 )
 
 func RegisterRoutes(router *gin.Engine, module *Module) {
-	// [COMMENT]: Route tạo zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACL chặn bắt song song)
+	// [COMMENT]: Route tạo zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACR chặn bắt song song)
 	router.POST("/admin/critical/core/zones",
 		module.ZoneHandler.CreateZone,
 	)
@@ -16,7 +16,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		module.ZoneHandler.GetZone,
 	)
 
-	// [COMMENT]: Route cập nhật trạng thái zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACL chặn bắt song song)
+	// [COMMENT]: Route cập nhật trạng thái zone yêu cầu OTP + chữ ký Ed25519 (chứa /critical/ để ACR chặn bắt song song)
 	router.PATCH("/admin/critical/core/zones/status",
 		module.ZoneHandler.UpdateZoneStatus,
 	)

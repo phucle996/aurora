@@ -480,14 +480,6 @@ services:
     restart: unless-stopped
   # Đã loại bỏ dịch vụ envoy-zone2 do Dataplane không có inbound traffic.
 
-
-  # ============================================================================
-  # 📊 PHẦN 7: INDUSTRIAL 360-DEGREE OBSERVABILITY INFRASTRUCTURE
-  # ============================================================================
-  # Trục giám sát hiệu năng sản xuất tiêu chuẩn công nghiệp (Production-Grade Observability).
-  # Kết hợp Metrics (Prometheus), Logs tập trung (Loki + Promtail), Traces phân tán (Tempo),
-  # và OpenTelemetry Collector làm bộ điều phối luồng dữ liệu giám sát thống nhất.
-
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.154.0
     container_name: controlplane-otel-collector
@@ -671,20 +663,20 @@ services:
     restart: unless-stopped
 
   # ============================================================================
-  # 🛡️ PHẦN 8.2: ACL SERVICE (RUST) — AUTH GATE / DATA PLANE AUTH
+  # 🛡️ PHẦN 8.2: ACR SERVICE (RUST) — AUTH GATE / DATA PLANE AUTH
   # ============================================================================
-  # Dịch vụ ACL xác thực Trinity Token cho user trực tiếp (stateless JWT + Redis L2),
+  # Dịch vụ ACR xác thực Trinity Token cho user trực tiếp (stateless JWT + Redis L2),
   # loại bỏ hoàn toàn nhu cầu gọi ngược về Controlplane (Go) cho luồng verify user.
   # Kết nối Vault Transit để xác minh chữ ký JWT và Redis Core cho session lookup.
 
-  acl:
+  acr:
     build:
-      context: ../acl
+      context: ../acr
       dockerfile: Dockerfile
-    container_name: aurora-acl
+    container_name: aurora-acr
     init: true
     environment:
-      ACL_GRPC_PORT: "50051"
+      ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
       VAULT_TOKEN: "myroot"
@@ -693,7 +685,7 @@ services:
       VAULT_MAX_RETRIES: "3"
       SESSION_TTL_SECS: "1800"
       REFRESH_THRESHOLD_SECS: "900"
-      # [COMMENT]: ACL cần gọi ngược Controlplane cho opaque refresh token (chưa chuyển)
+      # [COMMENT]: ACR cần gọi ngược Controlplane cho opaque refresh token (chưa chuyển)
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
@@ -701,8 +693,6 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
-      controlplane1:
-        condition: service_started
       otel-collector:
         condition: service_started
     restart: unless-stopped
@@ -723,14 +713,12 @@ services:
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
       - REDIS_URL=redis://controlplane-redis-job:6379/0
-      # [COMMENT]: ACL service phục vụ toàn bộ xác thực Trinity Token (User + Admin) — internal network, không mTLS
-      - ACL_GRPC_ENDPOINT=acl:50051
+      # [COMMENT]: ACR service phục vụ toàn bộ xác thực Trinity Token (User + Admin) — internal network, không mTLS
+      - ACR_GRPC_ENDPOINT=acr:50051
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
     depends_on:
       centrifugo:
-        condition: service_started
-      acl:
         condition: service_started
       redis-job:
         condition: service_healthy

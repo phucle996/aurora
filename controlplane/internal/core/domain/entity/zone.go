@@ -27,7 +27,7 @@ type Zone struct {
 	UpdatedAt   *time.Time
 }
 
-// RPCZone đại diện cho dữ liệu tối giản của một Zone phục vụ đồng bộ qua RPC biên (ACL).
+// RPCZone đại diện cho dữ liệu tối giản của một Zone phục vụ đồng bộ qua RPC biên (ACR).
 // Thiết kế này giúp giảm thiểu tải lượng truyền tải mạng và tối ưu bộ nhớ.
 type RPCZone struct {
 	ID     uuid.UUID  // ID định danh duy nhất của zone

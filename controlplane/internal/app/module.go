@@ -13,7 +13,6 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
-	"controlplane/internal/policyengine"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,8 +30,6 @@ type Modules struct {
 	Hypervisor *hypervisor.HypervisorModule
 	// Mail là module vệ tinh Tier-1 (gửi mail). Cho phép chạy ở trạng thái suy giảm (Degraded).
 	Mail *mail.Module
-	// PolicyEngine là runtime hot-reload module cho policies.
-	PolicyEngine *policyengine.Engine
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
 	CacheEngine *cacheengine.CacheRegistry
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
@@ -44,7 +41,6 @@ type Modules struct {
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	policyEngineModule *policyengine.Engine,
 	cacheEngine *cacheengine.CacheRegistry,
 ) (*Modules, error) {
 	// ------------------------------------------------------------------------
@@ -101,11 +97,6 @@ func NewGlobalModules(cfg *config.Config,
 		return nil, errors.New("app: init critical iam module: iam module is nil")
 	}
 
-	// 6) Policy engine bootstrap (Được truyền từ ngoài vào như hạ tầng hệ thống)
-	if policyEngineModule == nil {
-		return nil, errors.New("app: init critical policy engine module: engine service is required")
-	}
-
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 3: KHỞI TẠO CÁC PHÂN HỆ TIER-1 (NON-CRITICAL) - SAI LÀ DEGRADE GRACEFUL
 	// ------------------------------------------------------------------------
@@ -133,14 +124,13 @@ func NewGlobalModules(cfg *config.Config,
 	keepProbeRunning = true
 
 	modules := &Modules{
-		Health:       health,
-		Core:         coreModule,
-		IAM:          iamModule,
-		Hypervisor:   hypervisorModule,
-		Mail:         mailModule,
-		PolicyEngine: policyEngineModule,
-		CacheEngine:  cacheEngine,
-		probeCancel:  probeCancel,
+		Health:      health,
+		Core:        coreModule,
+		IAM:         iamModule,
+		Hypervisor:  hypervisorModule,
+		Mail:        mailModule,
+		CacheEngine: cacheEngine,
+		probeCancel: probeCancel,
 	}
 
 	return modules, nil
@@ -175,9 +165,6 @@ func (m *Modules) Stop() {
 	}
 	if m.Core != nil {
 		m.Core.Stop()
-	}
-	if m.PolicyEngine != nil {
-		m.PolicyEngine.Stop()
 	}
 	if m.CacheEngine != nil && m.CacheEngine.L1 != nil {
 		m.CacheEngine.L1.Close()

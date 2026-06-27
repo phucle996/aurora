@@ -3,7 +3,7 @@
 
 > [!NOTE]
 > Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng xác thực kết nối Realtime (Centrifugo Connect Authentication) của cả End-User và Admin/SRE.
-> Mọi thay đổi về code liên quan đến xác thực kết nối, phân tách luồng qua cookie, distributed tracing và gọi gRPC verify trinity token đến ACL Service phải tuân thủ nghiêm ngặt đặc tả này.
+> Mọi thay đổi về code liên quan đến xác thực kết nối, phân tách luồng qua cookie, distributed tracing và gọi gRPC verify trinity token đến acr Service phải tuân thủ nghiêm ngặt đặc tả này.
 
 ---
 
@@ -16,13 +16,13 @@ Tài liệu được thiết kế cho các kỹ sư phát triển phân hệ Not
 ### ❓ Phân hệ Centrifugo Connect Authentication là gì?
 
 Đây là quy trình xác thực ủy quyền kết nối (Connection Proxy) khi máy khách (Browser/Client) thực hiện thiết lập kết nối WebSocket/SSE đến cụm dịch vụ **Centrifugo Engine**.
-Thay vì tự giải mã token và duy trì kết nối trực tiếp đến database/cache, Centrifugo thực hiện ủy thác kiểm tra quyền (Proxy Connect) qua giao thức HTTP POST đến **Notification Service**. Tại đây, yêu cầu sẽ được định danh, phân tách luồng bảo mật (Admin hoặc End-User) và chuyển tiếp xác thực qua kết nối mTLS gRPC tốc độ cao tới **ACL Service (Rust)**.
+Thay vì tự giải mã token và duy trì kết nối trực tiếp đến database/cache, Centrifugo thực hiện ủy thác kiểm tra quyền (Proxy Connect) qua giao thức HTTP POST đến **Notification Service**. Tại đây, yêu cầu sẽ được định danh, phân tách luồng bảo mật (Admin hoặc End-User) và chuyển tiếp xác thực qua kết nối mTLS gRPC tốc độ cao tới **acr Service (Rust)**.
 
 ### 📍 Các Biên Công Nghệ Hoạt Động
 
 - **Centrifugo Engine**: Đóng vai trò Realtime Pub/Sub Gateway, duy trì hàng ngàn kết nối WebSocket đồng thời và kích hoạt HTTP Connect Proxy đến biên `/api/v1/realtime/connect`.
 - **Notification Service (Rust)**: Cung cấp API Handler `/api/v1/realtime/connect` để nhận dạng, thiết lập trace context và chuyển tiếp gRPC xác minh Trinity Token.
-- **ACL Service (Rust)**: gRPC Server phục vụ xác thực các Trinity Credentials (JWT + Redis Session + Hash `access_secret`) hoàn toàn tại biên mà không làm phiền Go Controlplane.
+- **acr Service (Rust)**: gRPC Server phục vụ xác thực các Trinity Credentials (JWT + Redis Session + Hash `access_secret`) hoàn toàn tại biên mà không làm phiền Go Controlplane.
 - **Redis L2 (Runtime Sessions)**: Nơi lưu giữ thông tin session hiện tại phục vụ so khớp hash của `access_secret`.
 - **OpenTelemetry Collector**: Thu thập trace và metric đo lường hiệu năng của toàn bộ luồng xác thực.
 
@@ -40,14 +40,14 @@ graph TD
     Client["💻 Client (Browser/UI)"]:::client
     Centrifugo["⚡ Centrifugo Engine"]:::gateway
     Notification["✉️ Notification Service (Rust)"]:::edgeService
-    ACL["🛡️ ACL Service (Rust)"]:::edgeService
+    acr["🛡️ acr Service (Rust)"]:::edgeService
     Redis[("⚡ Redis L2 (Session Store)")]:::storage
 
     Client -- "1. Yêu cầu kết nối WS/SSE" --> Centrifugo
     Centrifugo -- "2. HTTP POST proxy (Cookies/Headers)" --> Notification
-    Notification -- "3. Verify Trinity Token (mTLS gRPC)" --> ACL
-    ACL -- "4. Kiểm tra session & Secret Hash (L2)" --> Redis
-    Notification -- "5. Response 200 OK + Channel ACL" --> Centrifugo
+    Notification -- "3. Verify Trinity Token (mTLS gRPC)" --> acr
+    acr -- "4. Kiểm tra session & Secret Hash (L2)" --> Redis
+    Notification -- "5. Response 200 OK + Channel acr" --> Centrifugo
     Centrifugo -- "6. Thiết lập kết nối thành công" --> Client
 ```
 
@@ -63,7 +63,7 @@ sequenceDiagram
     participant UI as Browser Client
     participant CF as Centrifugo Engine
     participant NS as Notification Service (Rust)
-    participant ACL as ACL Service (Rust)
+    participant acr as acr Service (Rust)
     participant L2 as Redis L2 (Session)
 
     UI->>CF: Kết nối WebSocket (mang theo cookie)
@@ -72,32 +72,32 @@ sequenceDiagram
 
     alt Trường hợp 1: Có cookie admin_api_token
         Note over NS: Luồng xác thực Admin/SRE
-        NS->>ACL: gRPC verify_admin_trinity_token(admin_api_token, access_key, access_secret)
-        ACL->>ACL: Giải mã token JWT & Verify claims.access_key
-        ACL->>L2: GET iam:admin_access_session:<AccessKey>:<ZoneID>
-        ACL->>ACL: Đối chiếu SHA-256 hash của access_secret
+        NS->>acr: gRPC verify_admin_trinity_token(admin_api_token, access_key, access_secret)
+        acr->>acr: Giải mã token JWT & Verify claims.access_key
+        acr->>L2: GET iam:admin_access_session:<AccessKey>:<ZoneID>
+        acr->>acr: Đối chiếu SHA-256 hash của access_secret
         alt Xác thực hợp lệ
-            ACL-->>NS: verify response (valid = true, user_id)
+            acr-->>NS: verify response (valid = true, user_id)
             NS-->>CF: HTTP 200 OK (user: user_id, channels: ["personal:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
-            ACL-->>NS: verify response (valid = false)
+            acr-->>NS: verify response (valid = false)
             NS-->>CF: HTTP 401 Unauthorized
             CF-->>UI: Disconnected
         end
 
     else Trường hợp 2: Có cookie access_token (End-User)
         Note over NS: Luồng xác thực End-User thông thường
-        NS->>ACL: gRPC verify_user_trinity_token(access_token, access_key, access_secret)
-        ACL->>ACL: Giải mã token JWT & Verify claims.access_key
-        ACL->>L2: Kiểm tra session hoạt động (SessionManager)
-        ACL->>ACL: Đối chiếu SHA-256 hash của access_secret
+        NS->>acr: gRPC verify_user_trinity_token(access_token, access_key, access_secret)
+        acr->>acr: Giải mã token JWT & Verify claims.access_key
+        acr->>L2: Kiểm tra session hoạt động (SessionManager)
+        acr->>acr: Đối chiếu SHA-256 hash của access_secret
         alt Xác thực hợp lệ
-            ACL-->>NS: verify response (valid = true, user_id)
+            acr-->>NS: verify response (valid = true, user_id)
             NS-->>CF: HTTP 200 OK (user: user_id, channels: ["personal:<user_id>"])
             CF-->>UI: WebSocket Connected
         else Thông tin không hợp lệ
-            ACL-->>NS: verify response (valid = false)
+            acr-->>NS: verify response (valid = false)
             NS-->>CF: HTTP 401 Unauthorized
             CF-->>UI: Disconnected
         end
@@ -112,8 +112,8 @@ sequenceDiagram
 
 - **Điều kiện kích hoạt**: Cookie chứa khóa `admin_api_token`.
 - **Trích xuất thông tin**: Lấy bộ ba `admin_api_token`, `access_key`, và `access_secret`. Nếu thiếu bất kỳ thành phần nào, lập tức phản hồi `401 Unauthorized` và ghi access log.
-- **Cuộc gọi gRPC**: Gọi đến `verify_admin_trinity_token` trên ACL Service.
-- **Quy trình kiểm tra tại ACL**:
+- **Cuộc gọi gRPC**: Gọi đến `verify_admin_trinity_token` trên acr Service.
+- **Quy trình kiểm tra tại acr**:
   1. Giải mã token stateless để lấy claims, so khớp `claims.access_key` với `access_key` truyền lên.
   2. Truy cập Redis L2 lấy thông tin session bằng key `iam:admin_access_session:<AccessKey>:<ZoneID>`.
   3. Băm `access_secret` thô bằng SHA-256, đối chiếu với `access_secret_hash` lưu trong session.
@@ -123,8 +123,8 @@ sequenceDiagram
 
 - **Điều kiện kích hoạt**: Cookie chứa khóa `access_token` và không có `admin_api_token`.
 - **Trích xuất thông tin**: Lấy bộ ba `access_token`, `access_key`, và `access_secret`. Nếu thiếu, trả về `401 Unauthorized`.
-- **Cuộc gọi gRPC**: Gọi đến `verify_user_trinity_token` trên ACL Service.
-- **Quy trình kiểm tra tại ACL**:
+- **Cuộc gọi gRPC**: Gọi đến `verify_user_trinity_token` trên acr Service.
+- **Quy trình kiểm tra tại acr**:
   1. Giải mã token stateless, so khớp `claims.access_key` với `access_key` truyền lên.
   2. Truy cập Redis L2 lấy thông tin session bằng key `iam:user_access_session:<UserID>:<AccessKey>`.
   3. Băm `access_secret` thô bằng SHA-256, đối chiếu với `ash` lưu trong session.
@@ -140,8 +140,8 @@ sequenceDiagram
 
 ### ⚡ Thiết Kế Cloud-Native & High Availability (HA)
 
-- **Connection Timeout**: Kết nối gRPC từ `Notification Service` đến `ACL Service` được thiết lập với cấu hình `connect_timeout` là 5 giây, `timeout` là 5 giây, và bật `tcp_keepalive` (15 giây) để ngăn chặn tháo nghẽn hoặc rò rỉ tài nguyên socket khi mạng chập chờn.
-- **Lazy Connection**: Dịch vụ `Notification Service` khởi tạo kết nối gRPC dạng lazy (`connect_lazy()`), giúp tiến trình startup không bị chặn đứng nếu ACL Service chưa kịp khởi động hoặc đang cập nhật.
+- **Connection Timeout**: Kết nối gRPC từ `Notification Service` đến `acr Service` được thiết lập với cấu hình `connect_timeout` là 5 giây, `timeout` là 5 giây, và bật `tcp_keepalive` (15 giây) để ngăn chặn tháo nghẽn hoặc rò rỉ tài nguyên socket khi mạng chập chờn.
+- **Lazy Connection**: Dịch vụ `Notification Service` khởi tạo kết nối gRPC dạng lazy (`connect_lazy()`), giúp tiến trình startup không bị chặn đứng nếu acr Service chưa kịp khởi động hoặc đang cập nhật.
 
 ### 🔒 Phòng Chống Race Condition & Tấn Công Bảo Mật
 
@@ -151,7 +151,7 @@ sequenceDiagram
 ### 📈 Distributed Tracing & Giám Sát (Metrics)
 
 - **Tracing Context**: Hệ thống trích xuất header `traceparent` từ Centrifugo (được lan truyền từ client ban đầu) thông qua W3C Trace Context.
-- **gRPC metadata injection**: Bơm `traceparent` vào metadata của cuộc gọi gRPC sang ACL để duy trì một Span thống nhất trên toàn bộ kiến trúc microservices.
+- **gRPC metadata injection**: Bơm `traceparent` vào metadata của cuộc gọi gRPC sang acr để duy trì một Span thống nhất trên toàn bộ kiến trúc microservices.
 - **OTel Metrics & Access Logging**: Ghi nhận thời gian xử lý (latency), mã trạng thái HTTP/gRPC để đưa lên Prometheus/Grafana phục vụ công tác SRE.
 
 ---
@@ -159,7 +159,7 @@ sequenceDiagram
 ## 🏛️ 5. Bản Đồ Tham Chiếu File Mã Nguồn (Implementation References)
 
 - **Route Handler / Connect Endpoint**: [connect.rs](../../notification-service/src/handler/connect.rs) - Tiếp nhận HTTP POST Connect Proxy từ Centrifugo, phân tách cookie và thực hiện gRPC client calls.
-- **gRPC client**: [grpc.rs](../../notification-service/src/infra/grpc.rs) - Khởi tạo gRPC client kết nối đến ACL Service và thực thi `verify_user_trinity_token` / `verify_admin_trinity_token`.
-- **Dịch vụ gRPC phía ACL**: [auth.rs](../../acl/src/service/auth.rs) - Implement AuthService server lắng nghe và xác thực thông tin Trinity qua Redis và JWT.
+- **gRPC client**: [grpc.rs](../../notification-service/src/infra/grpc.rs) - Khởi tạo gRPC client kết nối đến acr Service và thực thi `verify_user_trinity_token` / `verify_admin_trinity_token`.
+- **Dịch vụ gRPC phía acr**: [auth.rs](../../acr/src/service/auth.rs) - Implement AuthService server lắng nghe và xác thực thông tin Trinity qua Redis và JWT.
 - **Cấu hình Router**: [router.rs](../../notification-service/src/app/router.rs) - Cấu hình đường dẫn `/api/v1/realtime/connect`.
-- **Cấu hình Endpoint**: [config.rs](../../notification-service/src/config.rs) - Nạp biến môi trường cho ACL gRPC endpoint và TLS certificates.
+- **Cấu hình Endpoint**: [config.rs](../../notification-service/src/config.rs) - Nạp biến môi trường cho acr gRPC endpoint và TLS certificates.

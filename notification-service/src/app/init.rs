@@ -11,18 +11,18 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
     // [ignoring loop detection]
     Logger::sys_info("infra.init", "Initializing infrastructure services...");
 
-    // 1. Khởi tạo gRPC client kết nối đến ACL service (Rust) — xác thực Trinity Token
+    // 1. Khởi tạo gRPC client kết nối đến ACR service (Rust) — xác thực Trinity Token
     let auth_client = GrpcAuthClient::new(
-        cfg.acl_grpc_endpoint.clone(),
-        cfg.acl_grpc_ca_cert.clone(),
-        cfg.acl_grpc_client_cert.clone(),
-        cfg.acl_grpc_client_key.clone(),
-        cfg.acl_grpc_domain.clone(),
+        cfg.acr_grpc_endpoint.clone(),
+        cfg.acr_grpc_ca_cert.clone(),
+        cfg.acr_grpc_client_cert.clone(),
+        cfg.acr_grpc_client_key.clone(),
+        cfg.acr_grpc_domain.clone(),
     );
 
     Logger::sys_info(
         "infra.grpc",
-        &format!("ACL gRPC auth client initialized → {}", cfg.acl_grpc_endpoint),
+        &format!("ACR gRPC auth client initialized → {}", cfg.acr_grpc_endpoint),
     );
 
     // 2. Khởi tạo Centrifugo HTTP client chuyên dụng phục vụ việc gửi thông báo real-time

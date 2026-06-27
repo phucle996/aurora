@@ -1,8 +1,8 @@
 use std::fmt;
 
-// Định nghĩa mã lỗi của hệ thống ACL
+// Định nghĩa mã lỗi của hệ thống ACR
 #[derive(Debug)]
-pub enum AclError {
+pub enum AcrError {
     // Lỗi không tìm thấy Token hoặc Token hết hạn
     Unauthorized(String),
     // Lỗi từ chối truy cập (Bị chặn bởi Policy RBAC/ABAC)
@@ -17,41 +17,41 @@ pub enum AclError {
     Internal(String),
 }
 
-impl std::error::Error for AclError {}
+impl std::error::Error for AcrError {}
 
 // Triển khai fmt::Display để in lỗi ra log dạng chuỗi
-impl fmt::Display for AclError {
+impl fmt::Display for AcrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AclError::Unauthorized(msg) => write!(f, "Unauthorized: {}", msg),
-            AclError::Forbidden(msg) => write!(f, "Forbidden: {}", msg),
-            AclError::RedisError(msg) => write!(f, "Redis error: {}", msg),
-            AclError::TokenError(msg) => write!(f, "Token error: {}", msg),
-            AclError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
-            AclError::Internal(msg) => write!(f, "Internal error: {}", msg),
+            AcrError::Unauthorized(msg) => write!(f, "Unauthorized: {}", msg),
+            AcrError::Forbidden(msg) => write!(f, "Forbidden: {}", msg),
+            AcrError::RedisError(msg) => write!(f, "Redis error: {}", msg),
+            AcrError::TokenError(msg) => write!(f, "Token error: {}", msg),
+            AcrError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
+            AcrError::Internal(msg) => write!(f, "Internal error: {}", msg),
         }
     }
 }
 
-// Chuyển đổi từ AclError sang tonic::Status để trả về cho Envoy hoặc IAM
-impl From<AclError> for tonic::Status {
-    fn from(err: AclError) -> Self {
+// Chuyển đổi từ AcrError sang tonic::Status để trả về cho Envoy hoặc IAM
+impl From<AcrError> for tonic::Status {
+    fn from(err: AcrError) -> Self {
         match err {
-            AclError::Unauthorized(msg) => tonic::Status::unauthenticated(msg),
-            AclError::Forbidden(msg) => tonic::Status::permission_denied(msg),
-            AclError::RedisError(msg) => {
+            AcrError::Unauthorized(msg) => tonic::Status::unauthenticated(msg),
+            AcrError::Forbidden(msg) => tonic::Status::permission_denied(msg),
+            AcrError::RedisError(msg) => {
                 // Log lỗi Redis chi tiết ra console nội bộ
                 tracing::error!("Redis infrastructure error: {}", msg);
                 tonic::Status::unavailable("Session storage is temporarily unavailable")
             }
-            AclError::TokenError(msg) => {
+            AcrError::TokenError(msg) => {
                 tonic::Status::unauthenticated(format!("Invalid token: {}", msg))
             }
-            AclError::ConfigError(msg) => {
+            AcrError::ConfigError(msg) => {
                 tracing::error!("Configuration error: {}", msg);
                 tonic::Status::internal("Internal system configuration error")
             }
-            AclError::Internal(msg) => {
+            AcrError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 tonic::Status::internal("Internal server error")
             }

@@ -1,7 +1,7 @@
 pub mod evaluator;
 pub mod policy;
 
-use crate::error::AclError;
+use crate::error::AcrError;
 use serde::{Deserialize, Serialize};
 
 // Ngữ cảnh nhận diện danh tính người dùng (đã xác thực thành công)
@@ -32,5 +32,5 @@ pub trait Authorizer: Send + Sync {
     fn name(&self) -> &'static str;
 
     // Trả về true nếu được phép đi tiếp, false nếu bị chặn
-    async fn authorize(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AclError>;
+    async fn authorize(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AcrError>;
 }

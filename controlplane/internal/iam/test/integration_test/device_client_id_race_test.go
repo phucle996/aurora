@@ -24,7 +24,7 @@ func TestDeviceUpsertConcurrentSameClientDeviceID(t *testing.T) {
 	testutil.PrepareIAMSchema(t, cfg, db)
 
 	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, nil, nil)
+	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, nil, nil, &testutil.SessionServiceClientMock{})
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	authSvc := iamSvcImpl.NewAuthService(cfg, authRepo, nil, nil, deviceSvc, nil, nil, nil, &testutil.SessionServiceClientMock{})
 	_ = authSvc // keep references resolved

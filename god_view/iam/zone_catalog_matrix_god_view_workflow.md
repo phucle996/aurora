@@ -3,7 +3,7 @@
 
 > [!NOTE]
 > Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng lấy danh mục Zone (Zone Catalog API Interception) theo Ma trận phân quyền.
-> Toàn bộ logic lọc dữ liệu dựa trên vai trò (Role), trạng thái đăng nhập, và trạng thái vận hành của Zone được thực thi trực tiếp tại **ACL Service (Rust - Edge Gateway Authz)** để đảm bảo hiệu năng cực hạn, Zero-DDoS Controlplane, và tính sẵn sàng cao (High Availability).
+> Toàn bộ logic lọc dữ liệu dựa trên vai trò (Role), trạng thái đăng nhập, và trạng thái vận hành của Zone được thực thi trực tiếp tại **acr Service (Rust - Edge Gateway Authz)** để đảm bảo hiệu năng cực hạn, Zero-DDoS Controlplane, và tính sẵn sàng cao (High Availability).
 
 ---
 
@@ -15,9 +15,9 @@ Trước đây, khi client (Browser/App) gọi API lấy danh sách các Zone ho
 
 **Đột phá kiến trúc mới:**
 
-1. **Local Intercept (Đánh chặn tại biên)**: Envoy Ext_Authz (ACL Service) trực tiếp đánh chặn các HTTP requests dạng `GET /admin/core/zones/catalog` và `GET /api/v1/zones/catalog`.
-2. **L1 RAM Cache & Single Flight (Đồng bộ bất đối xứng)**: ACL Service tự quản lý L1 cache đồng bộ qua gRPC Client từ Control Plane với cơ chế **Single Flight** (tránh Thundering Herd).
-3. **Local Response (Không Upstream)**: ACL biên dịch JSON và trả về trực tiếp mã HTTP `200 OK` (thông qua cơ chế Local Denial mang payload của Envoy) về cho Client. Yêu cầu **hoàn toàn không chạm đến Control Plane Go** tại thời điểm truy vấn.
+1. **Local Intercept (Đánh chặn tại biên)**: Envoy Ext_Authz (acr Service) trực tiếp đánh chặn các HTTP requests dạng `GET /admin/core/zones/catalog` và `GET /api/v1/zones/catalog`.
+2. **L1 RAM Cache & Single Flight (Đồng bộ bất đối xứng)**: acr Service tự quản lý L1 cache đồng bộ qua gRPC Client từ Control Plane với cơ chế **Single Flight** (tránh Thundering Herd).
+3. **Local Response (Không Upstream)**: acr biên dịch JSON và trả về trực tiếp mã HTTP `200 OK` (thông qua cơ chế Local Denial mang payload của Envoy) về cho Client. Yêu cầu **hoàn toàn không chạm đến Control Plane Go** tại thời điểm truy vấn.
 
 ---
 
@@ -43,7 +43,7 @@ Dưới đây là ma trận phân bổ hiển thị danh sách Zone dựa trên 
 
 ## 🌐 3. Sơ Đồ Kiến Trúc Tổng Quan (System Architecture)
 
-Sơ đồ dưới đây mô tả cách Envoy Gateway định tuyến ext_authz và cách ACL Service tự động xử lý trả về cục bộ hoặc đồng bộ không đồng bộ qua gRPC:
+Sơ đồ dưới đây mô tả cách Envoy Gateway định tuyến ext_authz và cách acr Service tự động xử lý trả về cục bộ hoặc đồng bộ không đồng bộ qua gRPC:
 
 ```mermaid
 graph TD
@@ -55,20 +55,20 @@ graph TD
 
     UI["💻 Browser / App UI"]:::client
     Envoy["🛡️ Envoy Gateway (Edge Proxy)"]:::gateway
-    ACL["🛡️ ACL Service (Rust - Ext_Authz)"]:::edgeService
+    acr["🛡️ acr Service (Rust - Ext_Authz)"]:::edgeService
     L1Cache["⚡ L1 Cache (RwLock HashMap)"]:::edgeService
     CP["⚙️ Control Plane (Go Core)"]:::control
     DB["🗄️ PostgreSQL (Core DB)"]:::storage
 
     UI -- "1. GET /api/v1/zones/catalog" --> Envoy
-    Envoy -- "2. ext_authz Check" --> ACL
-    ACL -- "3. Read & Filter (Ma trận)" --> L1Cache
+    Envoy -- "2. ext_authz Check" --> acr
+    acr -- "3. Read & Filter (Ma trận)" --> L1Cache
     
-    L1Cache -. "4. Cache Miss / Expired (TTL 5m)" .-> ACL
-    ACL -- "5. gRPC GetZoneList (Single Flight)" --> CP
+    L1Cache -. "4. Cache Miss / Expired (TTL 5m)" .-> acr
+    acr -- "5. gRPC GetZoneList (Single Flight)" --> CP
     CP -- "6. Read database" --> DB
     
-    ACL -- "7. Direct HTTP 200 OK + JSON Body" --> Envoy
+    acr -- "7. Direct HTTP 200 OK + JSON Body" --> Envoy
     Envoy -- "8. Return JSON payload" --> UI
 ```
 
@@ -80,43 +80,43 @@ graph TD
 
 **Mã nguồn liên quan:**
 
-- [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Điểm đón nhận request gRPC Check của Envoy, điều phối xử lý sang module `zone_catalog`.
-- [acl/src/service/zone_catalog.rs](../../acl/src/service/zone_catalog.rs): Giải mã cookie, nhận diện phân quyền, lọc danh sách từ L1 Cache và serialize JSON trả về HTTP 200.
-- [acl/src/core/zone.rs](../../acl/src/core/zone.rs): Quản lý dữ liệu bộ nhớ đệm sharded L1 map và trigger sync gRPC khi cần thiết.
+- [acr/src/service/ext_authz.rs](../../acr/src/service/ext_authz.rs): Điểm đón nhận request gRPC Check của Envoy, điều phối xử lý sang module `zone_catalog`.
+- [acr/src/service/zone_catalog.rs](../../acr/src/service/zone_catalog.rs): Giải mã cookie, nhận diện phân quyền, lọc danh sách từ L1 Cache và serialize JSON trả về HTTP 200.
+- [acr/src/core/zone.rs](../../acr/src/core/zone.rs): Quản lý dữ liệu bộ nhớ đệm sharded L1 map và trigger sync gRPC khi cần thiết.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant UI as 💻 Client Browser
     participant Envoy as 🛡️ Envoy Gateway
-    participant ACL as 🛡️ ACL Service (Rust)
+    participant acr as 🛡️ acr Service (Rust)
     participant L1 as ⚡ L1 Cache (ZoneManager)
 
     UI->>Envoy: GET /api/v1/zones/catalog
-    Envoy->>ACL: gRPC CheckRequest (Headers, Cookie)
+    Envoy->>acr: gRPC CheckRequest (Headers, Cookie)
     
-    Note over ACL: Trích xuất cookie access_token & access_key
+    Note over acr: Trích xuất cookie access_token & access_key
     alt Có cookies hợp lệ
-        ACL->>ACL: Verify JWT & kiểm tra trạng thái L2 Redis
-        Note over ACL: Xác thực đăng nhập + nhận quyền (Role)
+        acr->>acr: Verify JWT & kiểm tra trạng thái L2 Redis
+        Note over acr: Xác thực đăng nhập + nhận quyền (Role)
     else Cookies trống / lỗi
-        Note over ACL: Anonymous Context (Chưa đăng nhập)
+        Note over acr: Anonymous Context (Chưa đăng nhập)
     end
     
-    ACL->>L1: get_all_zones() (Yêu cầu danh sách Zones)
-    L1-->>ACL: Trả về List Zones (id, code, name, status)
+    acr->>L1: get_all_zones() (Yêu cầu danh sách Zones)
+    L1-->>acr: Trả về List Zones (id, code, name, status)
     
-    ACL->>ACL: Lọc và định dạng danh sách dựa trên Ma Trận Phân Quyền
-    ACL->>ACL: Serialize sang JSON chuỗi danh mục
+    acr->>acr: Lọc và định dạng danh sách dựa trên Ma Trận Phân Quyền
+    acr->>acr: Serialize sang JSON chuỗi danh mục
     
-    Note over ACL,Envoy: Trả về DeniedResponse mang HttpStatusCode::Ok (200)
-    ACL-->>Envoy: gRPC CheckResponse (unauthenticated, denied_response: 200 OK + Body JSON)
+    Note over acr,Envoy: Trả về DeniedResponse mang HttpStatusCode::Ok (200)
+    acr-->>Envoy: gRPC CheckResponse (unauthenticated, denied_response: 200 OK + Body JSON)
     Envoy-->>UI: HTTP 200 OK (Mở payload Catalog)
 ```
 
 ### Phase 2: Đồng bộ hóa danh sách Zone từ Controlplane (Bảo vệ Thundering Herd)
 
-Khi L1 cache của ACL bị trống (hoặc hết hạn TTL 5 phút), ACL sẽ đồng bộ danh sách Zone thông qua giao thức gRPC gãy gọn. Để tránh nghẽn luồng (Thundering Herd) when có hàng ngàn request cùng lúc, ACL áp dụng cơ chế **Single Flight Mutex Lock**.
+Khi L1 cache của acr bị trống (hoặc hết hạn TTL 5 phút), acr sẽ đồng bộ danh sách Zone thông qua giao thức gRPC gãy gọn. Để tránh nghẽn luồng (Thundering Herd) when có hàng ngàn request cùng lúc, acr áp dụng cơ chế **Single Flight Mutex Lock**.
 
 ```mermaid
 sequenceDiagram
@@ -154,22 +154,22 @@ sequenceDiagram
 > **Distributed Tracing (Bám Vết Phân Tán)**:
 > Hệ thống áp dụng chuẩn W3C Distributed Tracing cho toàn bộ luồng truyền thông RPC:
 >
-> - **Rust ACL Client** tự động nạp định danh `traceparent` vào gRPC Metadata khi thực hiện gọi đồng bộ.
+> - **Rust acr Client** tự động nạp định danh `traceparent` vào gRPC Metadata khi thực hiện gọi đồng bộ.
 > - **Go Controlplane Server** sử dụng cặp Unary/Stream Server Interceptors được đăng ký lúc khởi tạo gRPC server để trích xuất `traceparent`, kế thừa trace context và ghi nhận span tracing một cách nhất quán (không làm đứt gãy trace chain).
 
 ## 🔒 5. Các Case Race Condition & An Toàn Bảo Mật (Fail-Safe & Security)
 
 ### 1️⃣ Tránh Đổi Zone Trái Phép & Trạng Thái Hoạt Động (Zone Lockout)
 
-- **Ràng buộc bảo mật**: Khi user thực hiện cuộc gọi API nghiệp vụ bất kỳ, ACL không chỉ xác thực token và còn đối chiếu `zone_id` (nếu user không phải Admin).
-- **Validation**: Nếu `zone_id` của user đang truy cập có trạng thái không hoạt động (`disabled` hoặc `planned`), ACL sẽ lập tức trả về `HTTP 403 Forbidden`. Điều này ngăn chặn việc user đã đăng nhập cố tình ở lại cụm server đã bị tắt hoặc chưa triển khai.
+- **Ràng buộc bảo mật**: Khi user thực hiện cuộc gọi API nghiệp vụ bất kỳ, acr không chỉ xác thực token và còn đối chiếu `zone_id` (nếu user không phải Admin).
+- **Validation**: Nếu `zone_id` của user đang truy cập có trạng thái không hoạt động (`disabled` hoặc `planned`), acr sẽ lập tức trả về `HTTP 403 Forbidden`. Điều này ngăn chặn việc user đã đăng nhập cố tình ở lại cụm server đã bị tắt hoặc chưa triển khai.
 
 ### 2️⃣ Đồng bộ dữ liệu bất đối xứng (Cache Stale & Eventual Consistency)
 
-- **Vấn đề**: Khi SRE cập nhật trạng thái zone hoặc tạo mới một zone tại Controlplane, L1 cache của ACL có thể bị lệch pha tối đa 5 phút (TTL).
+- **Vấn đề**: Khi SRE cập nhật trạng thái zone hoặc tạo mới một zone tại Controlplane, L1 cache của acr có thể bị lệch pha tối đa 5 phút (TTL).
 - **Giải pháp HA**:
   1. Khi Admin thực hiện thay đổi trạng thái Zone thành công, hệ thống Controlplane gửi tín hiệu đồng bộ.
-  2. ACL tự động phục hồi trong vòng 5 phút (self-healing) nhờ cơ chế kiểm tra thời gian hết hạn của bộ đệm.
+  2. acr tự động phục hồi trong vòng 5 phút (self-healing) nhờ cơ chế kiểm tra thời gian hết hạn của bộ đệm.
   3. Mọi thay đổi về định danh, mã code hoặc trạng thái sẽ được đồng bộ nhất quán khi chu kỳ TTL kết thúc hoặc khi cache miss xảy ra.
 
 ---
@@ -178,4 +178,4 @@ sequenceDiagram
 
 - **Go controlplane**: Build thành công và pass toàn bộ **157/157 tests**. Các API GetZoneCatalog cũ đã được gỡ bỏ hoàn toàn khỏi Controller/Router và mock tests để giải phóng bộ nhớ.
 - **Metrics & Telemetry**: Hợp nhất toàn bộ metrics của Core Service & Downstream vào duy nhất file `controlplane/internal/core/metrics/metrics.go` chuẩn hóa theo mô hình IAM. Xóa bỏ hoàn toàn file chứa danh sách outcome dư thừa `outcome.go` để tối giản cấu trúc thư mục.
-- **Rust ACL (ext_authz)**: Cấu hình intercept thành công hai endpoint `/admin/core/zones/catalog` và `/api/v1/zones/catalog`. Biên dịch ổn định không cảnh báo (Zero Warnings).
+- **Rust acr (ext_authz)**: Cấu hình intercept thành công hai endpoint `/admin/core/zones/catalog` và `/api/v1/zones/catalog`. Biên dịch ổn định không cảnh báo (Zero Warnings).

@@ -1,4 +1,4 @@
-use crate::error::AclError;
+use crate::error::AcrError;
 use std::env;
 use std::time::Duration;
 
@@ -6,7 +6,7 @@ use std::time::Duration;
 pub fn get_node_hostname() -> String {
     env::var("HOSTNAME")
         .or_else(|_| env::var("NODE_NAME"))
-        .unwrap_or_else(|_| "acl-unknown".to_string())
+        .unwrap_or_else(|_| "acr-unknown".to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -20,7 +20,7 @@ pub struct VaultConfig {
     pub max_retries: usize,
 }
 
-// Cấu trúc chứa toàn bộ biến môi trường của dịch vụ ACL
+// Cấu trúc chứa toàn bộ biến môi trường của dịch vụ ACR
 #[derive(Debug, Clone)]
 pub struct Config {
     // Port lắng nghe gRPC server (mặc định: 50051)
@@ -53,15 +53,16 @@ pub struct Config {
 
 impl Config {
     // Load cấu hình từ môi trường hệ thống
-    pub fn from_env() -> Result<Self, AclError> {
+    pub fn from_env() -> Result<Self, AcrError> {
         // Tải các biến môi trường từ file .env nếu có
         let _ = dotenvy::dotenv();
 
-        let grpc_port = env::var("ACL_GRPC_PORT")
+        let grpc_port = env::var("ACR_GRPC_PORT")
+            .or_else(|_| env::var("ACR_GRPC_PORT"))
             .unwrap_or_else(|_| "50051".to_string())
             .parse::<u16>()
             .map_err(|_| {
-                AclError::ConfigError("ACL_GRPC_PORT must be a valid port number".to_string())
+                AcrError::ConfigError("ACR_GRPC_PORT must be a valid port number".to_string())
             })?;
 
         let redis_url =
@@ -103,13 +104,13 @@ impl Config {
         let session_ttl_secs = env::var("SESSION_TTL_SECS")
             .unwrap_or_else(|_| "1800".to_string())
             .parse::<u64>()
-            .map_err(|_| AclError::ConfigError("SESSION_TTL_SECS must be a number".to_string()))?;
+            .map_err(|_| AcrError::ConfigError("SESSION_TTL_SECS must be a number".to_string()))?;
 
         let refresh_threshold_secs = env::var("REFRESH_THRESHOLD_SECS")
             .unwrap_or_else(|_| "900".to_string())
             .parse::<u64>()
             .map_err(|_| {
-                AclError::ConfigError("REFRESH_THRESHOLD_SECS must be a number".to_string())
+                AcrError::ConfigError("REFRESH_THRESHOLD_SECS must be a number".to_string())
             })?;
 
         // Endpoint OTel Collector (mặc định trỏ đến sidecar trong cùng Pod K8s)

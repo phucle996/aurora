@@ -7,7 +7,7 @@ import (
 // RegisterRoutes thực hiện đăng ký và thiết lập chuỗi phòng ngự (Security Chain) cho toàn bộ IAM API.
 // [COMMENT]: Đã loại bỏ hoàn toàn RateLimitPostAuth middleware tại đây.
 // Toàn bộ logic giới hạn tần suất (Rate Limiting) hiện đã được bàn giao (offload)
-// lên tầng Rust ACL (Edge) chạy trước Envoy để tăng tính HA và giảm tải CPU/Redis cho Control Plane.
+// lên tầng Rust ACR (Edge) chạy trước Envoy để tăng tính HA và giảm tải CPU/Redis cho Control Plane.
 func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// ========================================================================

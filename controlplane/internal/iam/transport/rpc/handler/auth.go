@@ -61,7 +61,7 @@ func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iam
 	}, nil
 }
 
-// [COMMENT]: RevokeOpaqueRefreshToken tiếp nhận và xử lý yêu cầu thu hồi refresh token từ ACL gửi qua gRPC
+// [COMMENT]: RevokeOpaqueRefreshToken tiếp nhận và xử lý yêu cầu thu hồi refresh token từ ACR gửi qua gRPC
 func (h *AuthGRPCHandler) RevokeOpaqueRefreshToken(ctx context.Context, req *iamproto.RevokeOpaqueRefreshTokenRequest) (*iamproto.RevokeOpaqueRefreshTokenResponse, error) {
 	// [COMMENT]: Gọi trực tiếp hàm nghiệp vụ tại SessionRefreshService để thu hồi token
 	err := h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)

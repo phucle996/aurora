@@ -16,7 +16,7 @@ Phân hệ này đảm nhận vai trò kết thúc phiên làm việc một các
 1. **Runtime Session (L2 Cache - Redis)**: Xóa bỏ dữ liệu phiên runtime để vô hiệu hóa tức thời quyền truy cập (Access Token).
 2. **Persistent Storage (PostgreSQL)**: Thu hồi Refresh Token nếu thiết bị được cấu hình tin cậy (Trust Device).
 
-Để đảm bảo hiệu năng tối đa (HA) và trải nghiệm người dùng tối ưu (sub-millisecond latency), luồng logout được phân tách và thực thi hoàn toàn tại **ACL Service (Rust)**. ACL Service xóa L2 Redis đồng bộ và trả về HTTP 204 lập tức cho client qua Envoy, sau đó thực hiện gọi gRPC không đồng bộ (non-blocking) sang **Control Plane (CP)** để thu hồi Refresh Token dưới database PostgreSQL nếu tồn tại cookie `refresh_token`.
+Để đảm bảo hiệu năng tối đa (HA) và trải nghiệm người dùng tối ưu (sub-millisecond latency), luồng logout được phân tách và thực thi hoàn toàn tại **acr Service (Rust)**. acr Service xóa L2 Redis đồng bộ và trả về HTTP 204 lập tức cho client qua Envoy, sau đó thực hiện gọi gRPC không đồng bộ (non-blocking) sang **Control Plane (CP)** để thu hồi Refresh Token dưới database PostgreSQL nếu tồn tại cookie `refresh_token`.
 
 ### 🌐 Sơ đồ Kiến trúc Tổng quan (System Architecture)
 
@@ -32,18 +32,18 @@ graph TD
 
     UI["💻 Browser UI (Client)"]:::client
     Envoy["🛡️ Envoy Gateway (Edge Proxy)"]:::gateway
-    ACL["🛡️ ACL Service (Rust - Edge Authz)"]:::edgeService
+    acr["🛡️ acr Service (Rust - Edge Authz)"]:::edgeService
     Redis["⚡ Redis L2 (Runtime Sessions)"]:::storage
     CP["⚙️ Control Plane (Go - CP Core)"]:::control
     DB["🗄️ PostgreSQL (Persistent DB)"]:::storage
 
     UI -- "1. POST /api/v1/auth/logout" --> Envoy
-    Envoy -- "2. ext_authz Check" --> ACL
-    ACL -- "3. DEL session (Sync)" --> Redis
-    ACL -- "4. 204 response + Cookie clear" --> Envoy
+    Envoy -- "2. ext_authz Check" --> acr
+    acr -- "3. DEL session (Sync)" --> Redis
+    acr -- "4. 204 response + Cookie clear" --> Envoy
     Envoy -- "5. HTTP 204 No Content" --> UI
     
-    ACL -. "6. gRPC Revoke (Async/Non-blocking)" .-> CP
+    acr -. "6. gRPC Revoke (Async/Non-blocking)" .-> CP
     CP -- "7. Delete Refresh Token" --> DB
 ```
 
@@ -86,33 +86,33 @@ Luồng Logout được chia thành 2 Phase độc lập với 2 sơ đồ tuầ
 
 **Các file mã nguồn liên quan (Code References):**
 
-- [acl/src/service/ext_authz.rs](../../acl/src/service/ext_authz.rs): Tiếp nhận yêu cầu từ bộ lọc `ext_authz` của Envoy, nhận diện request `/api/v1/auth/logout` và chuyển tiếp xử lý sang dịch vụ Logout.
-- [acl/src/service/revoke_session.rs](../../acl/src/service/revoke_session.rs): Xóa đồng bộ session trong L2 Redis, chuẩn bị response 204 kèm xóa Cookies, và spawn tác vụ nền gRPC gửi Control Plane.
-- [acl/src/config.rs](../../acl/src/config.rs): Cấu hình chung cho ACL Service (nơi định cấu hình bypass route).
+- [acr/src/service/ext_authz.rs](../../acr/src/service/ext_authz.rs): Tiếp nhận yêu cầu từ bộ lọc `ext_authz` của Envoy, nhận diện request `/api/v1/auth/logout` và chuyển tiếp xử lý sang dịch vụ Logout.
+- [acr/src/service/revoke_session.rs](../../acr/src/service/revoke_session.rs): Xóa đồng bộ session trong L2 Redis, chuẩn bị response 204 kèm xóa Cookies, và spawn tác vụ nền gRPC gửi Control Plane.
+- [acr/src/config.rs](../../acr/src/config.rs): Cấu hình chung cho acr Service (nơi định cấu hình bypass route).
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant UI as 💻 Browser Cloud UI
     participant Envoy as 🛡️ Envoy Gateway
-    participant ACL as 🛡️ ACL Service (Rust)
+    participant acr as 🛡️ acr Service (Rust)
     participant L2 as ⚡ Redis L2 (Sessions)
 
     UI->>Envoy: POST /api/v1/auth/logout
-    Note over Envoy,ACL: Envoy kích hoạt ext_authz filter
-    Envoy->>ACL: Check Request (Headers & Cookies)
+    Note over Envoy,acr: Envoy kích hoạt ext_authz filter
+    Envoy->>acr: Check Request (Headers & Cookies)
     
-    ACL->>ACL: Giải mã & Verify Access Token/Access Key
-    ACL->>L2: Xóa session key (DEL) & Xóa index key (SREM)
+    acr->>acr: Giải mã & Verify Access Token/Access Key
+    acr->>L2: Xóa session key (DEL) & Xóa index key (SREM)
     alt Nếu xóa L2 thất bại (Redis Down)
-        L2-->>ACL: Redis Error
-        ACL-->>Envoy: Denied Response (HTTP 500 Internal Error)
+        L2-->>acr: Redis Error
+        acr-->>Envoy: Denied Response (HTTP 500 Internal Error)
         Envoy-->>UI: HTTP 500 Internal Server Error (Hủy bỏ logout)
     else Nếu xóa L2 thành công
-        L2-->>ACL: Success
+        L2-->>acr: Success
     end
 
-    ACL-->>Envoy: Denied Response (HTTP 204 No Content + Set-Cookie clear cho trinity, refresh_token, giữ lại client_device_id)
+    acr-->>Envoy: Denied Response (HTTP 204 No Content + Set-Cookie clear cho trinity, refresh_token, giữ lại client_device_id)
     Envoy-->>UI: HTTP 204 No Content
 ```
 
@@ -122,18 +122,18 @@ Chỉ active khi có cookie refresh_token và không trả về bất cứ giá 
 
 **Các file mã nguồn liên quan (Code References):**
 
-- [controlplane/internal/iam/transport/rpc/handler/auth.go](../../controlplane/internal/iam/transport/rpc/handler/auth.go): Đăng ký gRPC handler `RevokeOpaqueRefreshToken`, tiếp nhận token thô từ ACL Service và ủy nhiệm xử lý xuống tầng Service nghiệp vụ.
+- [controlplane/internal/iam/transport/rpc/handler/auth.go](../../controlplane/internal/iam/transport/rpc/handler/auth.go): Đăng ký gRPC handler `RevokeOpaqueRefreshToken`, tiếp nhận token thô từ acr Service và ủy nhiệm xử lý xuống tầng Service nghiệp vụ.
 - [controlplane/internal/iam/service/auth_service.go](../../controlplane/internal/iam/service/auth_service.go) & [controlplane/internal/iam/service/session_refresh_service.go](../../controlplane/internal/iam/service/session_refresh_service.go): Thực hiện nghiệp vụ băm SHA-256 mã token thô và gọi Repository để thu hồi.
 - [controlplane/internal/iam/repository/refresh_token_repo.go](../../controlplane/internal/iam/repository/refresh_token_repo.go): Hiện thực tầng giao tiếp PostgreSQL để xóa bản ghi Refresh Token.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant ACL as 🛡️ ACL Service (Rust)
+    participant acr as 🛡️ acr Service (Rust)
     participant CP as ⚙️ Control Plane (Go)
     participant DB as 🗄️ PostgreSQL (Refresh Tokens)
 
-    ACL->>CP: gRPC RevokeOpaqueRefreshToken(raw_refresh_token) (Không chặn/Async spawn)
+    acr->>CP: gRPC RevokeOpaqueRefreshToken(raw_refresh_token) (Không chặn/Async spawn)
     CP->>DB: Hash token và Delete Refresh Token Session
     DB-->>CP: Success (hoặc Row Not Found)
 ```

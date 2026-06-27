@@ -1,5 +1,5 @@
 use crate::config::VaultConfig;
-use crate::error::AclError;
+use crate::error::AcrError;
 use crate::observability::logger::Logger;
 use std::time::Duration;
 
@@ -33,11 +33,11 @@ pub struct VaultClient {
 impl VaultClient {
     /// Khởi tạo VaultClient với cơ chế retry và AppRole authentication.
     /// Đồng bộ logic với controlplane/infra/vault/vault.go::NewVaultClient().
-    pub async fn new(cfg: &VaultConfig) -> Result<Self, AclError> {
+    pub async fn new(cfg: &VaultConfig) -> Result<Self, AcrError> {
         let http_client = reqwest::Client::builder()
             .timeout(cfg.timeout)
             .build()
-            .map_err(|e| AclError::Internal(format!("Failed to build Vault HTTP client: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("Failed to build Vault HTTP client: {}", e)))?;
 
         let mut last_err = String::new();
 
@@ -99,7 +99,7 @@ impl VaultClient {
             }
         }
 
-        Err(AclError::Internal(format!(
+        Err(AcrError::Internal(format!(
             "Vault: failed to establish healthy connection after {} attempts: {}",
             cfg.max_retries, last_err
         )))
@@ -111,7 +111,7 @@ impl VaultClient {
         addr: &str,
         role_id: &str,
         secret_id: &str,
-    ) -> Result<String, AclError> {
+    ) -> Result<String, AcrError> {
         let url = format!("{}/v1/auth/approle/login", addr);
         let body = serde_json::json!({
             "role_id": role_id,
@@ -123,15 +123,15 @@ impl VaultClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| AclError::Internal(format!("AppRole login request failed: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("AppRole login request failed: {}", e)))?;
 
         let status = resp.status();
         let json: serde_json::Value = resp.json().await.map_err(|e| {
-            AclError::Internal(format!("AppRole login response parse failed: {}", e))
+            AcrError::Internal(format!("AppRole login response parse failed: {}", e))
         })?;
 
         if !status.is_success() {
-            return Err(AclError::Internal(format!(
+            return Err(AcrError::Internal(format!(
                 "AppRole login HTTP {}: {:?}",
                 status, json
             )));
@@ -143,33 +143,33 @@ impl VaultClient {
             .filter(|t| !t.is_empty())
             .map(|t| t.to_string())
             .ok_or_else(|| {
-                AclError::Internal("AppRole login returned empty client_token".to_string())
+                AcrError::Internal("AppRole login returned empty client_token".to_string())
             })
     }
 
     /// Kiểm tra Vault đã initialized và unsealed.
-    async fn health_check(http: &reqwest::Client, addr: &str) -> Result<(), AclError> {
+    async fn health_check(http: &reqwest::Client, addr: &str) -> Result<(), AcrError> {
         let url = format!("{}/v1/sys/health", addr);
         let resp = http
             .get(&url)
             .send()
             .await
-            .map_err(|e| AclError::Internal(format!("Vault health check failed: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("Vault health check failed: {}", e)))?;
 
         let json: serde_json::Value = resp.json().await.map_err(|e| {
-            AclError::Internal(format!("Vault health response parse failed: {}", e))
+            AcrError::Internal(format!("Vault health response parse failed: {}", e))
         })?;
 
         let initialized = json["initialized"].as_bool().unwrap_or(false);
         let sealed = json["sealed"].as_bool().unwrap_or(true);
 
         if !initialized {
-            return Err(AclError::Internal(
+            return Err(AcrError::Internal(
                 "Vault is not initialized yet".to_string(),
             ));
         }
         if sealed {
-            return Err(AclError::Internal("Vault is sealed".to_string()));
+            return Err(AcrError::Internal("Vault is sealed".to_string()));
         }
 
         Ok(())
@@ -189,7 +189,7 @@ impl VaultClient {
         signing_input: &str,
         vault_version: &str,
         signature_b64url: &str,
-    ) -> Result<bool, AclError> {
+    ) -> Result<bool, AcrError> {
         use base64::Engine;
         let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let std_engine = base64::engine::general_purpose::STANDARD;
@@ -197,7 +197,7 @@ impl VaultClient {
         // 1. Decode chữ ký từ Base64 Raw URL sang bytes
         let sig_bytes = url_engine
             .decode(signature_b64url)
-            .map_err(|e| AclError::TokenError(format!("Failed to decode signature: {}", e)))?;
+            .map_err(|e| AcrError::TokenError(format!("Failed to decode signature: {}", e)))?;
 
         // 2. Encode lại sang Base64 Standard (Vault API yêu cầu Standard encoding)
         let sig_b64_std = std_engine.encode(&sig_bytes);
@@ -224,12 +224,12 @@ impl VaultClient {
             .send()
             .await
             .map_err(|e| {
-                AclError::Internal(format!("Vault Transit verify request failed: {}", e))
+                AcrError::Internal(format!("Vault Transit verify request failed: {}", e))
             })?;
 
         let status = resp.status();
         let json: serde_json::Value = resp.json().await.map_err(|e| {
-            AclError::Internal(format!("Vault Transit verify response parse failed: {}", e))
+            AcrError::Internal(format!("Vault Transit verify response parse failed: {}", e))
         })?;
 
         if !status.is_success() {
@@ -238,7 +238,7 @@ impl VaultClient {
                 &format!("Vault Transit verify HTTP {}", status),
                 &format!("{:?}", json),
             );
-            return Err(AclError::Internal(format!("Vault verify HTTP {}", status)));
+            return Err(AcrError::Internal(format!("Vault verify HTTP {}", status)));
         }
 
         // 6. Trích xuất kết quả xác thực
@@ -253,7 +253,7 @@ impl VaultClient {
     ///   - signing_input: "header.payload" (base64url encoded)
     ///
     /// Trả về: Chữ ký định dạng "version_signature_b64url" (ví dụ: "v1_abcd123...")
-    pub async fn sign_hmac(&self, signing_input: &str) -> Result<String, AclError> {
+    pub async fn sign_hmac(&self, signing_input: &str) -> Result<String, AcrError> {
         use base64::Engine;
         let std_engine = base64::engine::general_purpose::STANDARD;
         let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -275,11 +275,11 @@ impl VaultClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| AclError::Internal(format!("Vault Transit hmac request failed: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("Vault Transit hmac request failed: {}", e)))?;
 
         let status = resp.status();
         let json: serde_json::Value = resp.json().await.map_err(|e| {
-            AclError::Internal(format!("Vault Transit hmac response parse failed: {}", e))
+            AcrError::Internal(format!("Vault Transit hmac response parse failed: {}", e))
         })?;
 
         if !status.is_success() {
@@ -288,7 +288,7 @@ impl VaultClient {
                 &format!("Vault Transit hmac HTTP {}", status),
                 &format!("{:?}", json),
             );
-            return Err(AclError::Internal(format!("Vault hmac HTTP {}", status)));
+            return Err(AcrError::Internal(format!("Vault hmac HTTP {}", status)));
         }
 
         // 3. Trích xuất hmac signature dạng "vault:v1:base64_std_signature"
@@ -296,13 +296,13 @@ impl VaultClient {
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
-                AclError::Internal("Vault Transit hmac returned empty hmac value".to_string())
+                AcrError::Internal("Vault Transit hmac returned empty hmac value".to_string())
             })?;
 
         // 4. Split signature thành 3 phần: "vault", version, signature_b64_std
         let parts: Vec<&str> = hmac_val.split(':').collect();
         if parts.len() < 3 {
-            return Err(AclError::Internal(
+            return Err(AcrError::Internal(
                 "Malformed Vault HMAC signature format".to_string(),
             ));
         }
@@ -312,7 +312,7 @@ impl VaultClient {
 
         // 5. Decode signature từ Base64 Standard sang bytes
         let sig_bytes = std_engine.decode(sig_b64_std).map_err(|e| {
-            AclError::Internal(format!("Failed to decode Vault hmac signature: {}", e))
+            AcrError::Internal(format!("Failed to decode Vault hmac signature: {}", e))
         })?;
 
         // 6. Encode lại sang Base64 Raw URL để đúng đặc tả JWT
@@ -324,7 +324,7 @@ impl VaultClient {
 
     /// [COMMENT]: Đọc dữ liệu secret từ một đường dẫn bất kỳ trong Vault (KV v2)
     /// Hỗ trợ đọc API Key và 2FA Secret thô phục vụ xác thực tại biên (ACL).
-    pub async fn read_secret(&self, path: &str) -> Result<serde_json::Value, AclError> {
+    pub async fn read_secret(&self, path: &str) -> Result<serde_json::Value, AcrError> {
         let url = format!("{}/v1/{}", self.addr, path);
 
         let resp = self
@@ -333,13 +333,13 @@ impl VaultClient {
             .header("X-Vault-Token", &self.token)
             .send()
             .await
-            .map_err(|e| AclError::Internal(format!("Vault read request failed: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("Vault read request failed: {}", e)))?;
 
         let status = resp.status();
         let json: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| AclError::Internal(format!("Vault read response parse failed: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("Vault read response parse failed: {}", e)))?;
 
         if !status.is_success() {
             Logger::sys_error(
@@ -347,7 +347,7 @@ impl VaultClient {
                 &format!("Vault read HTTP {}", status),
                 &format!("{:?}", json),
             );
-            return Err(AclError::Internal(format!("Vault read HTTP {}", status)));
+            return Err(AcrError::Internal(format!("Vault read HTTP {}", status)));
         }
 
         Ok(json)
@@ -355,7 +355,7 @@ impl VaultClient {
 
     /// [COMMENT]: Thực hiện gửi mã OTP đến Vault TOTP Secrets Engine để kiểm tra trực tiếp
     /// Giúp bảo vệ an toàn tối đa cho 2FA Secret Key (không bao giờ rời khỏi Vault)
-    pub async fn verify_totp(&self, key_name: &str, code: &str) -> Result<bool, AclError> {
+    pub async fn verify_totp(&self, key_name: &str, code: &str) -> Result<bool, AcrError> {
         // [COMMENT]: 1. Xây dựng URL tới Vault TOTP verify endpoint
         let url = format!("{}/v1/totp/code/{}", self.addr, key_name);
 
@@ -372,11 +372,11 @@ impl VaultClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| AclError::Internal(format!("Vault TOTP verify request failed: {}", e)))?;
+            .map_err(|e| AcrError::Internal(format!("Vault TOTP verify request failed: {}", e)))?;
 
         let status = resp.status();
         let json: serde_json::Value = resp.json().await.map_err(|e| {
-            AclError::Internal(format!("Vault TOTP verify response parse failed: {}", e))
+            AcrError::Internal(format!("Vault TOTP verify response parse failed: {}", e))
         })?;
 
         // [COMMENT]: 4. Xử lý kết quả trả về từ Vault

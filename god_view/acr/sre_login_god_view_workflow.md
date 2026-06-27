@@ -2,27 +2,27 @@
 
 ## 📌 1. Tổng Quan Kiến Trúc (Architecture & Cloud-Native HA)
 
-SRE Admin là phương thức truy cập khẩn cấp/quản trị hệ thống cấp cao (Emergency Access Method) chứ không phải là một tài khoản người dùng tĩnh trong cơ sở dữ liệu Postgres. Để đảm bảo tính sẵn sàng cao (High Availability), độ trễ thấp và kiến trúc Zero-Trust trên môi trường Cloud-Native, luồng đăng nhập SRE Admin được thiết kế và thực thi hoàn toàn tại tầng biên (Edge Gatekeeper) thông qua **Rust ACL (ext_authz)** mà không đi qua Go Control Plane hay Database.
+SRE Admin là phương thức truy cập khẩn cấp/quản trị hệ thống cấp cao (Emergency Access Method) chứ không phải là một tài khoản người dùng tĩnh trong cơ sở dữ liệu Postgres. Để đảm bảo tính sẵn sàng cao (High Availability), độ trễ thấp và kiến trúc Zero-Trust trên môi trường Cloud-Native, luồng đăng nhập SRE Admin được thiết kế và thực thi hoàn toàn tại tầng biên (Edge Gatekeeper) thông qua **Rust acr (ext_authz)** mà không đi qua Go Control Plane hay Database.
 
 ### 🛡️ Ràng Buộc Bảo Mật & Phòng Chống Race Condition
 
 1. **Ủy thác và bảo vệ Secrets qua Vault (Zero-Store Plaintext & Vault Verification)**:
-   - Plaintext SRE API Key được lưu trữ tại HashiCorp Vault (`secret/data/admin/api-key`). Rust ACL chỉ nạp động từ Vault, tính băm SHA-256 rồi lưu vào L1 Cache trong vòng 24 giờ. Plaintext API Key tuyệt đối không lưu trữ lâu dài.
-   - SRE TOTP Secret không được tải về ACL. Quá trình xác minh OTP được gửi trực tiếp lên Vault TOTP secrets engine (`POST /v1/totp/code/admin`) để thực thi. Đảm bảo khóa bí mật 2FA không bao giờ xuất hiện trong không gian RAM của ACL.
+   - Plaintext SRE API Key được lưu trữ tại HashiCorp Vault (`secret/data/admin/api-key`). Rust acr chỉ nạp động từ Vault, tính băm SHA-256 rồi lưu vào L1 Cache trong vòng 24 giờ. Plaintext API Key tuyệt đối không lưu trữ lâu dài.
+   - SRE TOTP Secret không được tải về acr. Quá trình xác minh OTP được gửi trực tiếp lên Vault TOTP secrets engine (`POST /v1/totp/code/admin`) để thực thi. Đảm bảo khóa bí mật 2FA không bao giờ xuất hiện trong không gian RAM của acr.
 2. **Không áp dụng Replay Protection cho OTP**:
    - Nhằm tránh gián đoạn các kịch bản tự động hóa hoặc các thao tác khẩn cấp liên tục của SRE trong vòng 30s, hệ thống KHÔNG thực hiện khóa OTP cũ trong Redis L2.
 3. **Cơ chế Trinity Cookie & Session độc lập (Phase 3)**:
-   - Khi đăng nhập thành công, Rust ACL tự phát hành và ký số JWT Access Token (claims: `sub="sre"`, `zone_id="global"`, không có `role` hay `lvl` vì đây là tài khoản kỹ thuật quản trị khẩn cấp, không phải thực thể user).
+   - Khi đăng nhập thành công, Rust acr tự phát hành và ký số JWT Access Token (claims: `sub="sre"`, `zone_id="global"`, không có `role` hay `lvl` vì đây là tài khoản kỹ thuật quản trị khẩn cấp, không phải thực thể user).
    - Session của SRE Admin được đăng ký trực tiếp trên Redis L2 dạng `AdminAccessSession { access_secret_hash, device_public_key }` dưới key `iam:admin_access_session:<access_key>` để phục vụ xác thực phi trạng thái ở các request sau.
-   - ACL phản hồi `204 No Content` cùng các cookie `access_token`, `access_key`, `access_secret`, `zone_code=global`.
+   - acr phản hồi `204 No Content` cùng các cookie `access_token`, `access_key`, `access_secret`, `zone_code=global`.
 4. **Không mở rộng Port HTTP**:
-   - Tránh việc mở thêm các cổng lắng nghe HTTP mới trên ACL gây rủi ro an ninh mạng. Envoy Ingress bắt trực tiếp route `/admin/auth/login` (POST) và định tuyến tới Ext-Authz của ACL để thực hiện Edge Termination.
+   - Tránh việc mở thêm các cổng lắng nghe HTTP mới trên acr gây rủi ro an ninh mạng. Envoy Ingress bắt trực tiếp route `/admin/auth/login` (POST) và định tuyến tới Ext-Authz của acr để thực hiện Edge Termination.
 5. **JWT Signature L1 Cache (Vault Transit Offload)**:
    - Sau khi đăng nhập thành công, các request tiếp theo của SRE sẽ được xác thực chữ ký JWT qua L1 moka Cache (RAM, per-Pod) thay vì gọi Vault Transit mỗi request. Chi tiết kiến trúc 2 lớp xem mục 5 bên dưới.
 6. **Dynamic Device Binding & Edge Signature Verification**:
    - Khi đăng nhập SRE, client (Admin UI / CLI) tạo cặp khóa Ed25519 (private key non-extractable lưu trong IndexedDB, public key base64-encoded) gửi lên API đăng nhập qua tham số `device_public_key`.
    - Public key này được đính kèm vào `AdminAccessSession` lưu trên Redis L2.
-   - Các request Critical (đường dẫn chứa `/critical/`) bắt buộc phải gửi kèm chữ ký Ed25519, timestamp, và nonce qua các header tương ứng để Rust ACL verify trực tiếp tại biên, chống Replay và giả mạo request.
+   - Các request Critical (đường dẫn chứa `/critical/`) bắt buộc phải gửi kèm chữ ký Ed25519, timestamp, và nonce qua các header tương ứng để Rust acr verify trực tiếp tại biên, chống Replay và giả mạo request.
 
 ---
 
@@ -38,16 +38,16 @@ graph TD
 
     Client["💻 SRE Client (Admin UI / CLI)"]:::client
     Envoy["🛡️ Envoy Ingress Gateway"]:::gateway
-    ACL["🦀 Rust ACL (ext_authz)"]:::edgeService
+    acr["🦀 Rust acr (ext_authz)"]:::edgeService
     Vault["🔑 HashiCorp Vault"]:::control
     Redis["🗄️ Redis L2 Session Store"]:::cache
 
     Client -- "1. POST /admin/auth/login {api_key, totp_code}" --> Envoy
-    Envoy -- "2. Intercept check request" --> ACL
-    ACL -- "3. Lazy-load & Cache API Key Hash (24h)" --> Vault
-    ACL -- "4. Gửi TOTP code đi xác thực" --> Vault
-    ACL -- "5. Lưu AdminAccessSession" --> Redis
-    ACL -- "6. Response 204 No Content + Cookies" --> Envoy
+    Envoy -- "2. Intercept check request" --> acr
+    acr -- "3. Lazy-load & Cache API Key Hash (24h)" --> Vault
+    acr -- "4. Gửi TOTP code đi xác thực" --> Vault
+    acr -- "5. Lưu AdminAccessSession" --> Redis
+    acr -- "6. Response 204 No Content + Cookies" --> Envoy
     Envoy -- "7. Set-Cookie & Trả kết quả thành công" --> Client
 ```
 
@@ -60,45 +60,45 @@ sequenceDiagram
     autonumber
     participant Client as SRE Client (UI/CLI)
     participant Envoy as Envoy Ingress
-    participant ACL as Rust ACL (ext_authz)
+    participant acr as Rust acr (ext_authz)
     participant Vault as HashiCorp Vault
     participant Redis as Redis L2
 
     Client->>Envoy: POST /admin/auth/login {api_key, totp_code}
-    Envoy->>ACL: ext_authz check (raw body included)
+    Envoy->>acr: ext_authz check (raw body included)
     
-    Note over ACL: Intercept tại admin_login_handler
+    Note over acr: Intercept tại admin_login_handler
     
     alt L1 Cache Miss
-        ACL->>Vault: Đọc secret/data/admin/api-key
-        Vault-->>ACL: Trả về Plaintext API Key
-        Note over ACL: Băm SHA-256 & Cache vào L1 (24h)
+        acr->>Vault: Đọc secret/data/admin/api-key
+        Vault-->>acr: Trả về Plaintext API Key
+        Note over acr: Băm SHA-256 & Cache vào L1 (24h)
     else L1 Cache Hit
-        Note over ACL: Đọc băm API Key trực tiếp từ L1 RAM
+        Note over acr: Đọc băm API Key trực tiếp từ L1 RAM
     end
 
-    Note over ACL: Đối chiếu SHA256(input_api_key) == L1_cached_api_key_hash
+    Note over acr: Đối chiếu SHA256(input_api_key) == L1_cached_api_key_hash
     
     alt API Key Mismatch
-        ACL-->>Envoy: Denied (HTTP 401 Unauthorized - "Invalid credentials")
+        acr-->>Envoy: Denied (HTTP 401 Unauthorized - "Invalid credentials")
         Envoy-->>Client: Trả về 401 Unauthorized
     else API Key Match
-        ACL->>Vault: Xác thực OTP (POST /v1/totp/code/admin)
-        Vault-->>ACL: Trả về kết quả (valid: true/false)
+        acr->>Vault: Xác thực OTP (POST /v1/totp/code/admin)
+        Vault-->>acr: Trả về kết quả (valid: true/false)
         alt OTP Mismatch
-            ACL-->>Envoy: Denied (HTTP 401 Unauthorized - "Invalid credentials")
+            acr-->>Envoy: Denied (HTTP 401 Unauthorized - "Invalid credentials")
             Envoy-->>Client: Trả về 401 Unauthorized
         else OTP Match
-            Note over ACL: Sinh random access_key (UUIDv4) & access_secret (UUIDv4)
-            Note over ACL: Tạo JWT claims { sub: "sre", zone_id: "global", access_key, ... }
-            ACL->>Vault: Ký JWT qua Vault Transit Engine
-            Vault-->>ACL: Trả về JWT Access Token
+            Note over acr: Sinh random access_key (UUIDv4) & access_secret (UUIDv4)
+            Note over acr: Tạo JWT claims { sub: "sre", zone_id: "global", access_key, ... }
+            acr->>Vault: Ký JWT qua Vault Transit Engine
+            Vault-->>acr: Trả về JWT Access Token
             
-            Note over ACL: Băm SHA-256 access_secret
-            ACL->>Redis: Đăng ký AdminAccessSession (key = iam:admin_access_session:access_key)
-            Redis-->>ACL: Ghi nhận thành công
+            Note over acr: Băm SHA-256 access_secret
+            acr->>Redis: Đăng ký AdminAccessSession (key = iam:admin_access_session:access_key)
+            Redis-->>acr: Ghi nhận thành công
             
-            ACL-->>Envoy: OkResponse (HTTP 204 No Content + Cookies)
+            acr-->>Envoy: OkResponse (HTTP 204 No Content + Cookies)
             Note over Envoy: Set-Cookie: access_token, access_key, access_secret, zone_code=global
             Envoy-->>Client: Trả về 204 No Content (Login Success)
         end
@@ -109,18 +109,18 @@ sequenceDiagram
 
 ## 🏛️ 4. Bản Đồ Tham Chiếu File Mã Nguồn (Implementation References)
 
-- **Định tuyến & Intercept tại Biên**: [ext_authz.rs](../../acl/src/service/ext_authz.rs) - Định tuyến request `/admin/auth/login` qua bộ điều hướng đăng nhập tại biên.
-- **Xử lý đăng nhập SRE**: [admin_login_handler.rs](../../acl/src/service/login/admin_login_handler.rs) - Chặn bắt đường dẫn `/admin/auth/login`, phân tách payload, đối chiếu băm API Key, gửi OTP sang Vault xác thực, đăng ký session và phát hành cookies.
-- **Tương tác Vault REST Client**: [vault.rs](../../acl/src/infra/vault.rs) - Cung cấp hàm `read_secret` đọc an toàn cấu hình mật và `verify_totp` để xác thực mã OTP.
-- **Quản lý Token & Claims**: [token.rs](../../acl/src/core/token.rs) - Định nghĩa `Claims`, cung cấp cơ chế Cache L1 cho API Key Hash và L1 JWT Signature Cache (moka).
-- **L2 Cache & Session Store**: [session.rs](../../acl/src/core/session.rs) - Lưu trữ trạng thái phiên làm việc của SRE.
-- **Dependencies**: [Cargo.toml](../../acl/Cargo.toml) — `moka = { version = "0.12", features = ["future"] }`.
+- **Định tuyến & Intercept tại Biên**: [ext_authz.rs](../../acr/src/service/ext_authz.rs) - Định tuyến request `/admin/auth/login` qua bộ điều hướng đăng nhập tại biên.
+- **Xử lý đăng nhập SRE**: [admin_login_handler.rs](../../acr/src/service/login/admin_login_handler.rs) - Chặn bắt đường dẫn `/admin/auth/login`, phân tách payload, đối chiếu băm API Key, gửi OTP sang Vault xác thực, đăng ký session và phát hành cookies.
+- **Tương tác Vault REST Client**: [vault.rs](../../acr/src/infra/vault.rs) - Cung cấp hàm `read_secret` đọc an toàn cấu hình mật và `verify_totp` để xác thực mã OTP.
+- **Quản lý Token & Claims**: [token.rs](../../acr/src/core/token.rs) - Định nghĩa `Claims`, cung cấp cơ chế Cache L1 cho API Key Hash và L1 JWT Signature Cache (moka).
+- **L2 Cache & Session Store**: [session.rs](../../acr/src/core/session.rs) - Lưu trữ trạng thái phiên làm việc của SRE.
+- **Dependencies**: [Cargo.toml](../../acr/Cargo.toml) — `moka = { version = "0.12", features = ["future"] }`.
 
 ---
 
 ## 🔐 5. JWT Signature L1 Cache — Vault Transit Offload
 
-Mỗi request API đi qua Envoy Ext-Authz đều yêu cầu ACL xác thực chữ ký JWT. Nếu mỗi lần đều gọi Vault Transit (`verify_hmac`), Vault sẽ trở thành điểm nghẽn (bottleneck) và điểm sập duy nhất (SPOF) cho toàn bộ traffic hệ thống.
+Mỗi request API đi qua Envoy Ext-Authz đều yêu cầu acr xác thực chữ ký JWT. Nếu mỗi lần đều gọi Vault Transit (`verify_hmac`), Vault sẽ trở thành điểm nghẽn (bottleneck) và điểm sập duy nhất (SPOF) cho toàn bộ traffic hệ thống.
 
 **Giải pháp**: Tách xác thực JWT thành **2 lớp độc lập**:
 
@@ -176,45 +176,45 @@ graph TD
 sequenceDiagram
     autonumber
     participant Client as API Client
-    participant ACL as Rust ACL (ext_authz)
+    participant acr as Rust acr (ext_authz)
     participant Moka as L1 moka Cache (RAM)
     participant Vault as Vault Transit
     participant Redis as Redis L2
 
-    Client->>ACL: Request with JWT Cookie
-    ACL->>Moka: Lookup SHA-256(JWT)
+    Client->>acr: Request with JWT Cookie
+    acr->>Moka: Lookup SHA-256(JWT)
     
     alt L1 Cache Hit
-        Moka-->>ACL: Trả về Claims (cached)
-        Note over ACL: Kiểm tra exp > now
+        Moka-->>acr: Trả về Claims (cached)
+        Note over acr: Kiểm tra exp > now
         alt Token hết hạn
-            ACL->>Moka: Invalidate entry
-            ACL-->>Client: 401 Token expired
+            acr->>Moka: Invalidate entry
+            acr-->>Client: 401 Token expired
         else Token còn hạn
-            ACL->>Redis: Kiểm tra Session (access_key, access_secret_hash)
+            acr->>Redis: Kiểm tra Session (access_key, access_secret_hash)
             alt Session hợp lệ
-                Redis-->>ACL: Session data
-                ACL-->>Client: ✅ Allow (forward upstream)
+                Redis-->>acr: Session data
+                acr-->>Client: ✅ Allow (forward upstream)
             else Session bị thu hồi
-                Redis-->>ACL: Key not found
-                ACL-->>Client: ❌ 401 Session revoked
+                Redis-->>acr: Key not found
+                acr-->>Client: ❌ 401 Session revoked
             end
         end
     else L1 Cache Miss
-        ACL->>Vault: verify_hmac(signing_input, signature)
+        acr->>Vault: verify_hmac(signing_input, signature)
         alt Chữ ký không hợp lệ
-            Vault-->>ACL: valid = false
-            ACL-->>Client: ❌ 401 Invalid signature
+            Vault-->>acr: valid = false
+            acr-->>Client: ❌ 401 Invalid signature
         else Chữ ký hợp lệ
-            Vault-->>ACL: valid = true
-            ACL->>Moka: Insert Claims (cache key = SHA-256(JWT))
-            ACL->>Redis: Kiểm tra Session (access_key, access_secret_hash)
+            Vault-->>acr: valid = true
+            acr->>Moka: Insert Claims (cache key = SHA-256(JWT))
+            acr->>Redis: Kiểm tra Session (access_key, access_secret_hash)
             alt Session hợp lệ
-                Redis-->>ACL: Session data
-                ACL-->>Client: ✅ Allow (forward upstream)
+                Redis-->>acr: Session data
+                acr-->>Client: ✅ Allow (forward upstream)
             else Session bị thu hồi
-                Redis-->>ACL: Key not found
-                ACL-->>Client: ❌ 401 Session revoked
+                Redis-->>acr: Key not found
+                acr-->>Client: ❌ 401 Session revoked
             end
         end
     end
@@ -255,7 +255,7 @@ Sau khi xác thực thành công SRE API Key và TOTP, JWT được tạo ra đ�
 | `zone_id` | String | `"global"` | Zone quản trị tối cao của SRE |
 | `access_key` | String (UUIDv4) | `"e1a38f38-a15d-4f10-9c4c-7033502213e8"` | Key định danh phiên, dùng làm khóa tra cứu trong Redis L2 |
 | `jti` | String (UUIDv4) | `"552d76a7-0e62-4217-b087-20224e772cc4"` | ID duy nhất bảo vệ chống trùng lặp token (JWT ID) |
-| `iss` | String | `"acl"` | Nguồn phát hành (Issuer) |
+| `iss` | String | `"acr"` | Nguồn phát hành (Issuer) |
 | `exp` | i64 (Unix timestamp) | `1782278400` | Thời điểm hết hạn của Token |
 | `iat` | i64 (Unix timestamp) | `1782274800` | Thời điểm phát hành Token |
 
@@ -263,7 +263,7 @@ Sau khi xác thực thành công SRE API Key và TOTP, JWT được tạo ra đ�
 
 ### 9.2. Danh Sách Cookies Thiết Lập (Trinity Credentials)
 
-Khi đăng nhập thành công, Envoy / ACL phản hồi 4 cặp Cookie độc lập nhằm phân mảnh bảo mật:
+Khi đăng nhập thành công, Envoy / acr phản hồi 4 cặp Cookie độc lập nhằm phân mảnh bảo mật:
 
 | Tên Cookie | Giá trị lưu trữ | Phân vùng Cookie Specs | Mô tả bảo mật |
 | :--- | :--- | :--- | :--- |
@@ -280,8 +280,8 @@ Tất cả dữ liệu nhạy cảm được ủy quyền lưu trữ và xử l�
 
 | Path / Engine | Key / Parameter | Kiểu | Mô tả bảo mật |
 | :--- | :--- | :--- | :--- |
-| `/v1/secret/data/admin/api-key` | `api_key` | KV Version 2 | Lưu API Key tĩnh dạng plaintext của SRE. ACL chỉ nạp, băm SHA-256 và cache trong RAM 24h. |
-| `/v1/totp/code/admin` | `code` | TOTP Engine | Key name `admin`. ACL gửi trực tiếp code lên để xác thực. TOTP Secret Key gốc nằm hoàn toàn trong Vault. |
+| `/v1/secret/data/admin/api-key` | `api_key` | KV Version 2 | Lưu API Key tĩnh dạng plaintext của SRE. acr chỉ nạp, băm SHA-256 và cache trong RAM 24h. |
+| `/v1/totp/code/admin` | `code` | TOTP Engine | Key name `admin`. acr gửi trực tiếp code lên để xác thực. TOTP Secret Key gốc nằm hoàn toàn trong Vault. |
 | `/v1/transit/hmac/trinity` | `input`, `algorithm` | Transit Engine | Ký số JWT (`sign_hmac`) dùng thuật toán `sha2-256`. Trả về chữ ký dạng `vault:v1:base64`. |
 | `/v1/transit/verify/trinity` | `input`, `hmac` | Transit Engine | Xác thực chữ ký JWT (`verify_hmac`). Trả về trạng thái `valid: true/false`. |
 

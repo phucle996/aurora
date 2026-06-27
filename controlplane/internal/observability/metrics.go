@@ -8,7 +8,6 @@
 //   - Loại bỏ hoàn toàn dependency prometheus/client_golang.
 //
 // 🎯 SOURCE OF TRUTH (SoT):
-//   - Trực tiếp tiêu thụ cấu hình biên dịch từ `policyengine/policies/prometheus`
 //     thông qua dynamic active policy hook.
 //
 // 🔒 RANH GIỚI BẢO MẬT & NGHIỆP VỤ (SECURITY & OPERATIONAL BOUNDARIES):

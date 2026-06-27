@@ -63,7 +63,7 @@ export default function ZoneDropdown() {
     if (zoneCode.toUpperCase() === activeZoneCode) return;
 
     try {
-      // [COMMENT]: Gọi API chuyển đổi zone tường minh của Rust ACL biên.
+      // [COMMENT]: Gọi API chuyển đổi zone tường minh của Rust ACR biên.
       const result = await switchZone(zoneCode.toLowerCase());
 
       // [COMMENT]: Cập nhật state cục bộ.
@@ -131,8 +131,8 @@ export default function ZoneDropdown() {
                 <DropdownItem
                   onItemClick={() => handleZoneSwitch(z.code)}
                   className={`flex items-center justify-between w-full px-3 py-2 text-theme-sm font-medium rounded-lg text-left transition-colors duration-150 ${isSelected
-                      ? "bg-brand-50 text-brand-600 dark:bg-brand-950/30 dark:text-brand-400"
-                      : "text-gray-700 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-white/5"
+                    ? "bg-brand-50 text-brand-600 dark:bg-brand-950/30 dark:text-brand-400"
+                    : "text-gray-700 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-white/5"
                     }`}
                 >
                   <div className="flex items-center gap-2">

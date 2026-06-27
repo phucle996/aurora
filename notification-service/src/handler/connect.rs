@@ -8,7 +8,7 @@ use std::sync::Arc;
 // Trạng thái chia sẻ cho Route Handler
 #[derive(Clone)]
 pub struct AppState {
-    // [COMMENT]: gRPC client trỏ đến ACL service (Rust) — xác thực cả User và Admin Trinity Token
+    // [COMMENT]: gRPC client trỏ đến ACR service (Rust) — xác thực cả User và Admin Trinity Token
     pub auth_client: GrpcAuthClient,
 }
 

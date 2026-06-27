@@ -1,4 +1,4 @@
-use crate::error::AclError;
+use crate::error::AcrError;
 use crate::infra::vault::VaultClient;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -110,10 +110,10 @@ impl TokenManager {
     /// Giải mã và xác thực tính hợp lệ của JWT Token.
     /// Sử dụng L1 Cache (moka) để tránh gọi Vault Transit trên mỗi request.
     /// Đồng bộ 100% với controlplane/internal/security/jwt.go::Parse().
-    pub async fn verify_token(&self, token: &str) -> Result<Claims, AclError> {
+    pub async fn verify_token(&self, token: &str) -> Result<Claims, AcrError> {
         let token = token.trim();
         if token.is_empty() {
-            return Err(AclError::TokenError("Empty token".to_string()));
+            return Err(AcrError::TokenError("Empty token".to_string()));
         }
 
         // [COMMENT]: 1. Tính SHA-256 của toàn bộ JWT string làm cache key
@@ -140,7 +140,7 @@ impl TokenManager {
         // 3a. Tách token thành 3 phần: Header, Payload, Signature
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() != 3 {
-            return Err(AclError::TokenError("Malformed JWT structure".to_string()));
+            return Err(AcrError::TokenError("Malformed JWT structure".to_string()));
         }
 
         // 3b. Decode & Deserialize phần Payload sang Claims để đọc thông tin trước
@@ -149,15 +149,15 @@ impl TokenManager {
 
         let payload_bytes = url_engine
             .decode(parts[1])
-            .map_err(|e| AclError::TokenError(format!("Failed to decode JWT payload: {}", e)))?;
+            .map_err(|e| AcrError::TokenError(format!("Failed to decode JWT payload: {}", e)))?;
 
         let claims: Claims = serde_json::from_slice(&payload_bytes)
-            .map_err(|e| AclError::TokenError(format!("Failed to parse JWT claims: {}", e)))?;
+            .map_err(|e| AcrError::TokenError(format!("Failed to parse JWT claims: {}", e)))?;
 
         // 3c. Kiểm tra tính hợp lệ về mặt thời gian (Expiration)
         let now = chrono::Utc::now().timestamp();
         if now > claims.exp {
-            return Err(AclError::TokenError("Token has expired".to_string()));
+            return Err(AcrError::TokenError("Token has expired".to_string()));
         }
 
         // 3d. Kiểm tra chữ ký JWT qua Vault Transit Engine
@@ -176,7 +176,7 @@ impl TokenManager {
                     .verify_hmac(&signing_input, vault_version, signature_b64url)
                     .await?;
                 if !is_valid {
-                    return Err(AclError::TokenError(
+                    return Err(AcrError::TokenError(
                         "Invalid signature verified by Vault".to_string(),
                     ));
                 }
@@ -193,14 +193,14 @@ impl TokenManager {
         }
 
         // Nếu token không có signature prefix của Vault -> Báo lỗi do production bắt buộc dùng Vault signature.
-        Err(AclError::TokenError(
+        Err(AcrError::TokenError(
             "Token lacks Vault signature prefix or format is invalid".to_string(),
         ))
     }
 
     /// Tạo mới một JWT Token dựa trên claims cung cấp bằng cách ký qua Vault Transit Engine.
     /// Đồng bộ 100% logic với controlplane/internal/security/jwt.go::SignWithSecret().
-    pub async fn generate_token(&self, claims: &Claims) -> Result<String, AclError> {
+    pub async fn generate_token(&self, claims: &Claims) -> Result<String, AcrError> {
         use base64::Engine;
         let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -217,9 +217,9 @@ impl TokenManager {
 
         // 2. Serialize Header & Payload (Claims)
         let header_json = serde_json::to_string(&header)
-            .map_err(|e| AclError::TokenError(format!("Failed to serialize header: {}", e)))?;
+            .map_err(|e| AcrError::TokenError(format!("Failed to serialize header: {}", e)))?;
         let payload_json = serde_json::to_string(claims)
-            .map_err(|e| AclError::TokenError(format!("Failed to serialize claims: {}", e)))?;
+            .map_err(|e| AcrError::TokenError(format!("Failed to serialize claims: {}", e)))?;
 
         // 3. Base64url encode các phần
         let header_b64url = url_engine.encode(header_json.as_bytes());
@@ -237,7 +237,7 @@ impl TokenManager {
 
     /// [COMMENT]: Đọc băm Admin API Key từ L1 cache (24h) hoặc nạp từ Vault rồi tính băm và cache lại.
     /// Điều này khớp với nguyên tắc bảo mật và caching L1: không lưu plaintext API Key lâu dài.
-    pub async fn get_admin_api_key_hash(&self) -> Result<String, AclError> {
+    pub async fn get_admin_api_key_hash(&self) -> Result<String, AcrError> {
         // [COMMENT]: 1. Thử đọc từ cache L1 trước
         {
             if let Ok(cache) = self.admin_api_key_hash_cache.read() {
@@ -256,7 +256,7 @@ impl TokenManager {
             .await?;
         let api_key = secret["data"]["data"]["api_key"]
             .as_str()
-            .ok_or_else(|| AclError::Internal("api_key not found in Vault response".to_string()))?;
+            .ok_or_else(|| AcrError::Internal("api_key not found in Vault response".to_string()))?;
 
         // [COMMENT]: 3. Thực hiện băm SHA-256 của api_key để lưu trữ/đối chiếu an toàn
         use sha2::{Digest, Sha256};
@@ -275,7 +275,7 @@ impl TokenManager {
 
     /// [COMMENT]: Ủy thác xác thực OTP SRE cho Vault TOTP Secrets Engine
     /// Đảm bảo không truyền hay lưu trữ OTP Secret tại bộ nhớ của ACL
-    pub async fn verify_admin_totp(&self, code: &str) -> Result<bool, AclError> {
+    pub async fn verify_admin_totp(&self, code: &str) -> Result<bool, AcrError> {
         // [COMMENT]: Gọi trực tiếp verify_totp trên VaultClient sử dụng key name "admin"
         self.vault_client.verify_totp("admin", code).await
     }

@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
-use crate::error::AclError;
+use crate::error::AcrError;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
@@ -518,7 +518,7 @@ impl Authorization for ExtAuthzService {
                 // 8. Chạy bộ đánh giá quyền (PolicyEvaluator) - Hỗ trợ scale RBAC/ABAC/IP
                 if let Err(e) = self.evaluator.evaluate(&auth_ctx, &req_ctx).await {
                     return match e {
-                        AclError::Forbidden(msg) => {
+                        AcrError::Forbidden(msg) => {
                             Logger::authz_log(&claims.sub, &method, &path, "FORBIDDEN", &msg);
                             Ok(Response::new(CheckResponse::with_status(
                                 Status::permission_denied(msg),

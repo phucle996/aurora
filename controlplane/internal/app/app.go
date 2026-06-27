@@ -50,7 +50,6 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
-	"controlplane/internal/policyengine"
 	"controlplane/internal/security"
 	"controlplane/pkg/logger"
 	"encoding/base64"
@@ -141,7 +140,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: vault init failed: %w", err)
 	}
 	app.vault = vaultClient
-	security.InitVault(vaultClient, cfg.Vault.TransitKeyName)
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Schema bootstrap: Database migrations bắt buộc chạy trước khi modules dùng DB.
@@ -150,26 +148,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	if err := bootstrap.RunMigrations(ctx, db, cfg); err != nil {
 		app.Stop()
 		return nil, err
-	}
-
-	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Policy Engine bootstrap: khởi tạo engine điều phối cấu hình runtime hệ thống.
-	// Không có Policy Engine -> không thể tải cấu hình OTel/Prometheus/RateLimit -> abort.
-	// --------------------------------------------------------------------
-	policyModule, err := policyengine.New(cfg, rds)
-	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: policy engine init failed: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			policyModule.Stop()
-		}
-	}()
-
-	if _, err := policyModule.EngineService.Current(ctx); err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: failed to get active policy set: %w", err)
 	}
 
 	otelCfg := &observability.OTelConfig{
@@ -267,7 +245,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, policyModule, cacheEngine)
+	modules, err := NewGlobalModules(cfg, db, rds, cacheEngine)
 	if err != nil {
 		app.Stop()
 		return nil, err

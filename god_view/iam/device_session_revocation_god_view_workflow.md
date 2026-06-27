@@ -5,8 +5,8 @@
 Nhằm đảm bảo an toàn bảo mật trong môi trường Cloud-Native và High Availability (HA), khi người dùng thực hiện thu hồi một thiết bị (qua `RevokeMyDevice`, `LogoutOtherDevices` hoặc tự động evict dung lượng thiết bị `EvictExcessDevicesIfNeeded`):
 
 1. **Control Plane (Go)** cập nhật cơ sở dữ liệu bền vững (PostgreSQL) để xóa/vô hiệu hóa bản ghi thiết bị và Refresh Token.
-2. **Control Plane (Go)** thực hiện cuộc gọi gRPC `RevokeUserSessionsByDevices` sang **ACL Service (Rust)**.
-3. **ACL Service (Rust)** giải phóng/hạ TTL của các session L2 Redis liên quan đến thiết bị đó xuống còn 5 giây (Grace Period) và dọn dẹp các chỉ mục phụ (Secondary Index).
+2. **Control Plane (Go)** thực hiện cuộc gọi gRPC `RevokeUserSessionsByDevices` sang **acr Service (Rust)**.
+3. **acr Service (Rust)** giải phóng/hạ TTL của các session L2 Redis liên quan đến thiết bị đó xuống còn 5 giây (Grace Period) và dọn dẹp các chỉ mục phụ (Secondary Index).
 
 ---
 
@@ -28,21 +28,21 @@ sequenceDiagram
     actor User as 💻 User Client
     participant CP as ⚙️ Control Plane (Go)
     participant DB as 🗄️ PostgreSQL
-    participant ACL as 🛡️ ACL Service (Rust)
+    participant acr as 🛡️ acr Service (Rust)
     participant L2 as ⚡ Redis L2 (Sessions)
 
     User->>CP: POST /api/v1/devices/revoke (hoặc logout others)
     CP->>DB: Begin Transaction & Delete/Revoke DB tokens
     DB-->>CP: Thành công + Trả về danh sách Device ID bị thu hồi
     
-    Note over CP,ACL: CP gọi gRPC sang ACL Service tuần tự
-    CP->>ACL: gRPC RevokeUserSessionsByDevices(user_id, device_ids)
+    Note over CP,acr: CP gọi gRPC sang acr Service tuần tự
+    CP->>acr: gRPC RevokeUserSessionsByDevices(user_id, device_ids)
     
-    Note over ACL: ACL phân giải access_keys từ Secondary Index
-    ACL->>L2: EXPIRE session keys (5s Grace) & SREM index
-    L2-->>ACL: Thành công
+    Note over acr: acr phân giải access_keys từ Secondary Index
+    acr->>L2: EXPIRE session keys (5s Grace) & SREM index
+    L2-->>acr: Thành công
     
-    ACL-->>CP: Trả về RevokeUserSessionsByDevicesResponse
+    acr-->>CP: Trả về RevokeUserSessionsByDevicesResponse
     CP-->>User: Trả về HTTP 200/204 Success
 ```
 
@@ -51,7 +51,7 @@ sequenceDiagram
 ## 🛡️ 4. Phòng Chống Race Conditions & An Toàn Bảo Mật
 
 1. **Thứ tự thực hiện (Strict Ordering)**:
-   - Luôn cập nhật PostgreSQL (SSOT) thành công trước khi gọi gRPC sang ACL.
+   - Luôn cập nhật PostgreSQL (SSOT) thành công trước khi gọi gRPC sang acr.
    - Không gọi gRPC bên trong DB transaction để tránh giữ khóa kết nối quá lâu.
 2. **Grace Period (Thời gian ân hạn 5 giây)**:
    - Không xóa trực tiếp bằng lệnh `DEL` đối với active session mà chỉ giảm TTL về 5 giây.

@@ -27,19 +27,22 @@ import (
 )
 
 type DeviceService struct {
-	deviceRepo       iamRepoInterface.DeviceRepository
-	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
-	registry         *cacheengine.CacheRegistry
+	deviceRepo           iamRepoInterface.DeviceRepository
+	refreshTokenRepo     iamRepoInterface.RefreshTokenRepository
+	registry             *cacheengine.CacheRegistry
+	sessionServiceClient iamproto.SessionServiceClient
 }
 
 func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
+	sessionServiceClient iamproto.SessionServiceClient,
 ) iamSvcInterface.DeviceService {
 	return &DeviceService{
-		deviceRepo:       deviceRepo,
-		refreshTokenRepo: refreshTokenRepo,
-		registry:         registry,
+		deviceRepo:           deviceRepo,
+		refreshTokenRepo:     refreshTokenRepo,
+		registry:             registry,
+		sessionServiceClient: sessionServiceClient,
 	}
 }
 
@@ -164,6 +167,18 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, de
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 
+	// [COMMENT]: Gọi gRPC sang ACR Service để thu hồi phiên của thiết bị này trên Redis L2 (Grace Period 5s)
+	if s.sessionServiceClient != nil {
+		_, grpcErr := s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
+			UserId:    userID.String(),
+			DeviceIds: []string{deviceID.String()},
+		})
+		if grpcErr != nil {
+			serviceOutcome = iamMetrics.OutcomeFailureUnknown
+			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, grpcErr, "session_revocation_rpc_failed")
+		}
+	}
+
 	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByIDAndUserID", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning")
 	return nil
@@ -172,6 +187,21 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, de
 // LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác.
 // [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
 func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
+	// [COMMENT]: Lấy danh sách thiết bị trước khi thu hồi để thu thập các device ID cần gửi qua gRPC
+	devices, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
+	if listErr != nil {
+		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
+	}
+
+	var otherDeviceIDs []string
+	for _, dev := range devices {
+		if dev.Status != iamEntity.DeviceStatusRevoked {
+			if currentTrackedDeviceID == nil || dev.ID != currentTrackedDeviceID.String() {
+				otherDeviceIDs = append(otherDeviceIDs, dev.ID)
+			}
+		}
+	}
+
 	if _, revokeErr := s.deviceRepo.RevokeOtherDevicesByUserID(ctx, userID, currentTrackedDeviceID); revokeErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
@@ -179,6 +209,18 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID
 	if revokeTokenErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
+
+	// [COMMENT]: Gọi gRPC sang ACR Service để thu hồi các session của các thiết bị khác trên Redis L2
+	if len(otherDeviceIDs) > 0 && s.sessionServiceClient != nil {
+		_, grpcErr := s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
+			UserId:    userID.String(),
+			DeviceIds: otherDeviceIDs,
+		})
+		if grpcErr != nil {
+			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, grpcErr, "session_revocation_rpc_failed")
+		}
+	}
+
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning")
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 	return affected, nil
@@ -247,65 +289,16 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
 	}
 
-	// Runtime cleanup là side-effect best-effort sau DB evict thành công.
-	type sessionWithKey struct {
-		key    string
-		record iamEntity.UserAccessSession
-	}
-	indexKey := "iam:user_access_index:" + userIDStr
-	var runtimes []sessionWithKey
-	var cursor uint64
-	for len(runtimes) < 200 {
-		scanned, nextCursor, scanErr := rdb.SScan(ctx, indexKey, cursor, "*", 200).Result()
-		if scanErr != nil {
-			break
+	// [COMMENT]: Gọi gRPC sang ACR Service để thu hồi phiên của các thiết bị vượt quá dung lượng trên Redis L2 (best-effort)
+	if len(deviceIDs) > 0 && s.sessionServiceClient != nil {
+		deviceIDS := make([]string, 0, len(deviceIDs))
+		for _, dID := range deviceIDs {
+			deviceIDS = append(deviceIDS, dID.String())
 		}
-		keys := make([]string, 0, len(scanned))
-		for _, aKey := range scanned {
-			keys = append(keys, "iam:user_access_session:"+userIDStr+":"+aKey)
-		}
-		if len(keys) > 0 {
-			if values, mgetErr := rdb.MGet(ctx, keys...).Result(); mgetErr == nil {
-				for i, raw := range values {
-					if raw == nil {
-						continue
-					}
-					if rawStr, ok := raw.(string); ok {
-						var pb iamproto.UserAccessSession
-						if proto.Unmarshal(unsafeStringToBytes(rawStr), &pb) == nil {
-							record := iamEntity.UserAccessSession{
-								// [COMMENT]: Đã bỏ gán AccessSecretHash vì trường này không còn tồn tại trên domain entity.
-								TrackedDeviceID: pb.Tdid,
-								LastSeenAt:      pb.Lsa,
-							}
-							runtimes = append(runtimes, sessionWithKey{
-								key:    scanned[i],
-								record: record,
-							})
-						}
-					}
-				}
-			}
-		}
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
-	}
-
-	evictedRefs := make(map[string]struct{}, len(evicted))
-	for _, item := range evicted {
-		evictedRefs[strings.TrimSpace(item.DeviceID.String())] = struct{}{}
-	}
-	for _, rt := range runtimes {
-		if _, found := evictedRefs[strings.TrimSpace(rt.record.TrackedDeviceID)]; found {
-			delKey := "iam:user_access_session:" + userIDStr + ":" + rt.key
-			delIndexKey := "iam:user_access_index:" + userIDStr
-			pipe := rdb.TxPipeline()
-			pipe.Del(ctx, delKey)
-			pipe.SRem(ctx, delIndexKey, rt.key)
-			_, _ = pipe.Exec(ctx)
-		}
+		_, _ = s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
+			UserId:    userID.String(),
+			DeviceIds: deviceIDS,
+		})
 	}
 
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)

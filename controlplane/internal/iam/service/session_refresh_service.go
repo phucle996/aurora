@@ -82,7 +82,7 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 }
 
 // VerifyOpaqueRefreshToken thực hiện kiểm tra tính hợp lệ của Refresh Token
-// acl call để cấp trinity token mới
+// acr call để cấp trinity token mới
 func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	// [COMMENT]: 1. Thực hiện băm SHA-256 token thô từ client để so khớp với cơ sở dữ liệu
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
@@ -138,7 +138,7 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 	}, nil
 }
 
-// [COMMENT]: RevokeOpaqueRefreshToken thực hiện băm token thô nhận từ ACL gRPC và thực thi xóa khỏi database.
+// [COMMENT]: RevokeOpaqueRefreshToken thực hiện băm token thô nhận từ ACR gRPC và thực thi xóa khỏi database.
 // Trả về ErrZeroRowsAffected nếu không tìm thấy bản ghi để tầng vận chuyển tự quyết định log/phản hồi.
 func (s *SessionRefreshService) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
 	if rawRefreshToken == "" {

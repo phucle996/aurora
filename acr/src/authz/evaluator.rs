@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use crate::error::AclError;
+use crate::error::AcrError;
 use crate::authz::{Authorizer, AuthContext, RequestContext};
 use crate::authz::policy::PolicyStore;
 
@@ -22,7 +22,7 @@ impl Authorizer for RbacAuthorizer {
         "RBAC_Authorizer"
     }
 
-    async fn authorize(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AclError> {
+    async fn authorize(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AcrError> {
         // Tìm quy tắc bảo vệ của đường dẫn hiện tại
         let rule = match self.policy_store.find_rule(&req_ctx.path) {
             Some(r) => r,
@@ -68,7 +68,7 @@ impl Authorizer for IPBlacklistAuthorizer {
         "IP_Blacklist_Authorizer"
     }
 
-    async fn authorize(&self, _auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AclError> {
+    async fn authorize(&self, _auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AcrError> {
         if self.blacklist.contains(&req_ctx.client_ip.as_str()) {
             tracing::warn!("Blocked request from blacklisted IP: {}", req_ctx.client_ip);
             return Ok(false);
@@ -94,7 +94,7 @@ impl PolicyEvaluator {
     }
 
     // Đánh giá tuần tự qua tất cả các Authorizers
-    pub async fn evaluate(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<(), AclError> {
+    pub async fn evaluate(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<(), AcrError> {
         for authz in &self.authorizers {
             let name = authz.name();
             match authz.authorize(auth_ctx, req_ctx).await {
@@ -103,7 +103,7 @@ impl PolicyEvaluator {
                 }
                 Ok(false) => {
                     tracing::warn!("Forbidden by authorizer '{}' for user '{}'", name, auth_ctx.user_id);
-                    return Err(AclError::Forbidden(format!("Access denied by {}", name)));
+                    return Err(AcrError::Forbidden(format!("Access denied by {}", name)));
                 }
                 Err(e) => {
                     return Err(e);
