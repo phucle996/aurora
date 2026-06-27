@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"controlplane/internal/cacheengine"
@@ -46,6 +47,7 @@ type AuthService struct {
 	outboxRepo iamRepoInterface.IamOutboxRepository
 	cfg        *config.Config
 	acrClient  iamproto.SessionServiceClient
+	wg         sync.WaitGroup // [COMMENT]: WaitGroup theo dõi và đợi các tác vụ nền (background updates) kết thúc
 }
 
 func NewAuthService(cfg *config.Config,
@@ -77,8 +79,6 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		// Ghi nhận kết quả nghiệp vụ tổng thể của luồng đăng ký.
 		iamMetrics.ServiceCall(ctx, result)
 	}()
-
-	rdb := s.registry.L2.Client()
 
 	// Đo lường thời gian băm mật khẩu để SRE theo dõi mức sử dụng CPU (CPU-bound).
 	passwordHash, hashErr := security.HashPassword(password)
@@ -122,14 +122,30 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 
 			result = iamMetrics.OutcomePreConditionFailed
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CreateRegisteredUser", iamMetrics.OutcomePreConditionFailed, time.Since(insertStart), insertErr)
-			if usernameDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.username", user.Username); digestErr == nil {
-				if emailDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.email", user.Email); digestErr == nil {
-					pipe := rdb.Pipeline()
-					pipe.SetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
-					pipe.SetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
-					_, _ = pipe.Exec(ctx)
+
+			// [COMMENT]: Chạy cập nhật presence bitmap bất đồng bộ cho user đã trùng trong DB.
+			// Sử dụng context.WithoutCancel để tránh việc goroutine bị dừng đột ngột khi request context cha bị hủy.
+			s.wg.Add(1)
+			go func(bgCtx context.Context, username, email string) {
+				defer s.wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						// [COMMENT]: Ghi nhận log/panic tránh làm sập tiến trình Control Plane chính
+					}
+				}()
+
+				rdb := s.registry.L2.Client()
+				// [COMMENT]: Ghi nhận presence của user bị trùng vào Redis Bitmap
+				if usernameDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.username", username); digestErr == nil {
+					if emailDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.email", email); digestErr == nil {
+						pipe := rdb.Pipeline()
+						pipe.SetBit(bgCtx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
+						pipe.SetBit(bgCtx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+						_, _ = pipe.Exec(bgCtx)
+					}
 				}
-			}
+			}(context.WithoutCancel(ctx), user.Username, user.Email)
+
 			return apperr.Wrap(iamTaxonomy.ErrUserAlreadyExist, insertErr, iamMetrics.OutcomePreConditionFailed)
 		}
 		result = iamMetrics.OutcomeFailureUnknown
@@ -137,24 +153,42 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		return insertErr
 	}
 
-	// Đánh dấu presence trong cache (best-effort).
-	markStart := time.Now()
-	usernameDigest, markErr := security.PresenceHMACSHA256Hex("iam.register.username", user.Username)
-	var emailDigest string
-	if markErr == nil {
-		emailDigest, markErr = security.PresenceHMACSHA256Hex("iam.register.email", user.Email)
-	}
-	if markErr == nil {
-		pipe := rdb.Pipeline()
-		pipe.SetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
-		pipe.SetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
-		_, markErr = pipe.Exec(ctx)
-	}
-	if markErr != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindCacheEngineL2, "markPresenceExists", iamMetrics.OutcomeFailureUnknown, time.Since(markStart), markErr)
-	}
+	// [COMMENT]: Khởi chạy background goroutine bất đồng bộ để ghi nhận presence của user mới đăng ký thành công vào Redis
+	s.wg.Add(1)
+	go func(bgCtx context.Context, username, email string) {
+		defer s.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				// [COMMENT]: Bảo vệ goroutine nền không làm sập process khi xảy ra panic ngoài ý muốn
+			}
+		}()
+
+		rdb := s.registry.L2.Client()
+		markStart := time.Now()
+		usernameDigest, markErr := security.PresenceHMACSHA256Hex("iam.register.username", username)
+		var emailDigest string
+		if markErr == nil {
+			emailDigest, markErr = security.PresenceHMACSHA256Hex("iam.register.email", email)
+		}
+		if markErr == nil {
+			pipe := rdb.Pipeline()
+			pipe.SetBit(bgCtx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
+			pipe.SetBit(bgCtx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+			_, markErr = pipe.Exec(bgCtx)
+		}
+		if markErr != nil {
+			// [COMMENT]: Ghi nhận metrics đo lường latency của việc lưu cache nền
+			iamMetrics.Downstream(bgCtx, iamMetrics.KindCacheEngineL2, "markPresenceExists", iamMetrics.OutcomeFailureUnknown, time.Since(markStart), markErr)
+		}
+	}(context.WithoutCancel(ctx), user.Username, user.Email)
 
 	return nil
+}
+
+// [COMMENT]: Stop chờ toàn bộ các background worker/task chạy nền (như ghi presence bitmap)
+// hoàn thành nhiệm vụ trước khi dừng tiến trình phục vụ Graceful Shutdown.
+func (s *AuthService) Stop() {
+	s.wg.Wait()
 }
 
 // [COMMENT]: VerifyUserCredentials thực hiện xác thực thông tin đăng nhập (username, password),

@@ -181,7 +181,70 @@ export default function SignInForm() {
   };
 
   return (
-    <div className="flex flex-col flex-1 lg:w-1/2 w-full">
+    <div className="relative flex flex-col flex-1 lg:w-1/2 w-full">
+      {/* [COMMENT]: Khung chọn Zone di chuyển lên góc trên cùng bên phải của phần trắng bên trái */}
+      <div className="absolute top-6 right-6 z-40 w-44 sm:w-48">
+        <div className="relative">
+          <span className="absolute z-30 -translate-y-1/2 left-3 top-1/2 text-gray-400 dark:text-gray-500">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 20 20"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M10 1.66663C5.39762 1.66663 1.66666 5.39762 1.66666 10C1.66666 14.6023 5.39762 18.3333 10 18.3333C14.6023 18.3333 18.3333 14.6023 18.3333 10C18.3333 5.39762 14.6023 1.66663 10 1.66663ZM10 3.33329C11.1396 4.90829 11.6667 6.94996 11.6667 9.16663H8.33333C8.33333 6.94996 8.86041 4.90829 10 3.33329ZM10 16.6666C8.86041 15.0916 8.33333 13.05 8.33333 10.8333H11.6667C11.6667 13.05 11.1396 15.0916 10 16.6666ZM3.33333 10C3.33333 9.16663 3.66666 8.33329 4.16666 7.5H6.66666C6.66666 8.33329 6.66666 9.16663 6.66666 10C6.66666 10.8333 6.66666 11.6666 6.66666 12.5H4.16666C3.66666 11.667 3.33333 10.8333 3.33333 10ZM10 10.8333H13.3333C13.3333 13.05 12.8063 15.0916 11.6667 16.6666C12.8063 15.0916 13.3333 13.05 13.3333 10.8333ZM15.8333 12.5H13.3333C13.3333 11.6666 13.3333 10.8333 13.3333 10C13.3333 9.16663 13.3333 8.33329 13.3333 7.5H15.8333C16.3333 8.33329 16.6667 9.16663 16.6667 10C16.6667 10.8333 16.3333 11.667 15.8333 12.5ZM15.8333 7.5C15.3333 6.66663 14.6667 5.83329 13.8333 5.33329C14.6667 5.83329 15.3333 6.66663 15.8333 7.5Z"
+                fill="currentColor"
+              />
+            </svg>
+          </span>
+
+          {isLoadingZones ? (
+            <div className="h-9 w-full flex items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-9 text-xs dark:border-gray-700 dark:bg-gray-900 text-gray-400">
+              <span>Đang tải...</span>
+              <div className="w-3.5 h-3.5 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          ) : (
+            <select
+              className="h-9 w-full appearance-none rounded-lg border border-gray-300 bg-white pl-9 pr-8 py-1.5 text-xs shadow-theme-xs text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 focus:dark:border-brand-800 cursor-pointer"
+              value={selectedZone}
+              onChange={(e) => setSelectedZone(e.target.value)}
+            >
+              {zones.length === 0 ? (
+                <option value="" disabled>
+                  Không có zone nào
+                </option>
+              ) : (
+                zones.map((z) => (
+                  <option key={z.id} value={z.code}>
+                    {z.name}
+                  </option>
+                ))
+              )}
+            </select>
+          )}
+
+          <span className="absolute z-30 -translate-y-1/2 pointer-events-none right-3 top-1/2 text-gray-400 dark:text-gray-500">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M4 6L8 10L12 6"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+        </div>
+      </div>
+
       <div className="flex flex-col justify-center flex-1 w-full max-w-md mx-auto">
         <div>
           <div className="mb-5 sm:mb-8">
@@ -277,73 +340,7 @@ export default function SignInForm() {
                     </span>
                   </div>
                 </div>
-                {/* [COMMENT]: Khung chọn Zone động với globe icon và custom select styling để tăng tính thẩm mỹ */}
-                <div>
-                  <Label>
-                    Zone / Khu vực <span className="text-error-500">*</span>
-                  </Label>
-                  <div className="relative">
-                    <span className="absolute z-30 -translate-y-1/2 left-4 top-1/2">
-                      <svg
-                        className="text-gray-400 dark:text-gray-500"
-                        width="18"
-                        height="18"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        xmlns="http://www.w3.org/2000/svg"
-                      >
-                        <path
-                          d="M10 1.66663C5.39762 1.66663 1.66666 5.39762 1.66666 10C1.66666 14.6023 5.39762 18.3333 10 18.3333C14.6023 18.3333 18.3333 14.6023 18.3333 10C18.3333 5.39762 14.6023 1.66663 10 1.66663ZM10 3.33329C11.1396 4.90829 11.6667 6.94996 11.6667 9.16663H8.33333C8.33333 6.94996 8.86041 4.90829 10 3.33329ZM10 16.6666C8.86041 15.0916 8.33333 13.05 8.33333 10.8333H11.6667C11.6667 13.05 11.1396 15.0916 10 16.6666ZM3.33333 10C3.33333 9.16663 3.66666 8.33329 4.16666 7.5H6.66666C6.66666 8.33329 6.66666 9.16663 6.66666 10C6.66666 10.8333 6.66666 11.6666 6.66666 12.5H4.16666C3.66666 11.667 3.33333 10.8333 3.33333 10ZM10 10.8333H13.3333C13.3333 13.05 12.8063 15.0916 11.6667 16.6666C12.8063 15.0916 13.3333 13.05 13.3333 10.8333ZM15.8333 12.5H13.3333C13.3333 11.6666 13.3333 10.8333 13.3333 10C13.3333 9.16663 13.3333 8.33329 13.3333 7.5H15.8333C16.3333 8.33329 16.6667 9.16663 16.6667 10C16.6667 10.8333 16.3333 11.667 15.8333 12.5ZM15.8333 7.5C15.3333 6.66663 14.6667 5.83329 13.8333 5.33329C14.6667 5.83329 15.3333 6.66663 15.8333 7.5Z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    </span>
 
-                    {isLoadingZones ? (
-                      <div className="h-11 w-full flex items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-11 text-sm dark:border-gray-700 dark:bg-gray-900 text-gray-400">
-                        <span>Đang tải danh mục vùng...</span>
-                        <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
-                      </div>
-                    ) : (
-                      <select
-                        className="h-11 w-full appearance-none rounded-lg border border-gray-300 bg-white px-11 py-2.5 text-sm shadow-theme-xs text-gray-800 focus:border-brand-300 focus:outline-hidden focus:ring-3 focus:ring-brand-500/10 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90 focus:dark:border-brand-800"
-                        value={selectedZone}
-                        onChange={(e) => setSelectedZone(e.target.value)}
-                      >
-                        {zones.length === 0 ? (
-                          <option value="" disabled>
-                            Không có zone nào hoạt động
-                          </option>
-                        ) : (
-                          zones.map((z) => (
-                            <option key={z.id} value={z.code}>
-                              {z.name} ({z.code.toUpperCase()})
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    )}
-
-                    <span className="absolute z-30 -translate-y-1/2 pointer-events-none right-4 top-1/2">
-                      <svg
-                        className="text-gray-400 dark:text-gray-500"
-                        width="16"
-                        height="16"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        xmlns="http://www.w3.org/2000/svg"
-                      >
-                        <path
-                          d="M4 6L8 10L12 6"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </span>
-                  </div>
-                </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <Checkbox checked={isChecked} onChange={setIsChecked} />

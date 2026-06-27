@@ -168,6 +168,11 @@ static_resources:
                               retry_on: "connect-failure,refused-stream,reset"
                               num_retries: 1
                               per_try_timeout: 5s
+                          # [COMMENT]: Bỏ qua ext_authz cho các file tĩnh và giao diện để giảm thiểu latency
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
 
                     - name: adminui_dev_vhost
                       domains:
@@ -211,6 +216,11 @@ static_resources:
                               retry_on: "connect-failure,refused-stream,reset"
                               num_retries: 1
                               per_try_timeout: 5s
+                          # [COMMENT]: Bỏ qua ext_authz cho các file tĩnh và giao diện dev để giảm thiểu latency
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
                     - name: cloud_vhost
                       domains:
                         - "cloud.aurora.local"
@@ -245,6 +255,11 @@ static_resources:
                               retry_on: "connect-failure,refused-stream,reset"
                               num_retries: 1
                               per_try_timeout: 5s
+                          # [COMMENT]: Bỏ qua ext_authz cho các file tĩnh và giao diện Cloud UI để giảm thiểu latency
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
                     - name: localhost_fallback
                       domains:
                         - "localhost"
@@ -277,6 +292,18 @@ static_resources:
                   - name: envoy.filters.http.cors
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+                  # [COMMENT]: Tích hợp ext_authz để gọi sang Rust acr service xử lý xác thực và zone catalog tại biên
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: acr_cluster
+                        timeout: 2s
+                      with_request_body:
+                        max_request_bytes: 10240
+                        pack_as_bytes: true
+                      transport_api_version: V3
                   - name: envoy.filters.http.rbac
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
@@ -388,6 +415,26 @@ static_resources:
                     socket_address:
                       address: cloud-ui
                       port_value: 3000
+
+    # [COMMENT]: Cụm cluster gRPC trỏ sang Rust acr container phục vụ việc kiểm tra và xử lý phiên
+    - name: acr_cluster
+      connect_timeout: 0.25s
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: acr_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: acr
+                      port_value: 50051
 
 admin:
   access_log_path: /tmp/admin_access.log

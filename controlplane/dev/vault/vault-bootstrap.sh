@@ -1,129 +1,294 @@
 #!/usr/bin/env bash
 
 # ============================================================================
-# 🚀 HASHICORP VAULT BOOTSTRAP & SECRET CREATION SCRIPT (vault-bootstrap.sh)
+# 🔒 HashiCorp Vault Bootstrap Script (Fixed Variable Shadowing)
 # ============================================================================
-# Script tự động khởi tạo (Init), mở khóa (Unseal), cấu hình Transit Engine
-# và khởi tạo các secrets trong KV Engine cho HashiCorp Vault.
-# Hướng đến thiết lập tự động hóa, dễ bảo trì cho môi trường High Availability (HA).
+#
+# Bootstrap Vault sau khi đã Init + Unseal.
+#
+# Chức năng:
+#   - Enable Transit Engine
+#   - Tạo Transit Key: jwt-signer
+#   - Cấu hình Auto Rotation
+#   - Enable KV-v2
+#   - Cấu hình Metadata
+#   - Tạo Secrets mẫu
+#
+# Chỉ sử dụng Vault HTTP REST API.
+#
+# ============================================================================
 
-set -euo pipefail
+set -Eeuo pipefail
 
-# [COMMENT]: Định nghĩa các đường dẫn file và cấu hình cần thiết
-VAULT_CONTAINER="controlplane-vault"
-INIT_KEYS_FILE="dev/vault/init-keys.json"
-DEFAULT_ROOT_TOKEN="myroot"
+##############################################################################
+# Default Configuration
+##############################################################################
 
-# [COMMENT]: Hàm helper thực thi lệnh Vault CLI trong container với URL HTTP chính xác
-# Tránh lỗi tự động kết nối HTTPS của CLI khi Vault Server đã disable TLS
-vault_cmd() {
-  docker exec -e VAULT_ADDR="http://127.0.0.1:8200" "$VAULT_CONTAINER" vault "$@"
+VAULT_ADDR="http://localhost:8200"
+VAULT_TOKEN=""
+
+##############################################################################
+# Usage
+##############################################################################
+
+usage() {
+cat <<EOF
+Usage:
+    $0 -t <root-token> [-a <vault-address>]
+
+Options:
+    -t TOKEN      Vault Root Token (Required)
+    -a ADDRESS    Vault Address (Default: http://localhost:8200)
+    -h            Show help
+
+Example:
+    $0 -t hvs.xxxxxxxxxxxxxxxxx
+
+    $0 \\
+       -t hvs.xxxxxxxxxxxxxxxxx \\
+       -a http://192.168.1.100:8200
+EOF
 }
 
-echo "=== [1/6] Đang chờ Vault Server sẵn sàng phản hồi... ==="
-# [COMMENT]: Chờ cho đến khi Vault bắt đầu lắng nghe và phản hồi lệnh status (tránh lỗi connection refused)
-# Đọc stdout của lệnh status và lưu vào biến, sử dụng || true để tránh set -e ngắt script do pipefail hoặc exit code của Vault
-while true; do
-  STATUS_OUT=$(vault_cmd status 2>/dev/null || true)
-  if echo "$STATUS_OUT" | grep -qE "Initialized|Sealed"; then
-    break
-  fi
-  echo "Vault đang khởi động, thử lại sau 2 giây..."
-  sleep 2
+##############################################################################
+# Parse Arguments
+##############################################################################
+
+while getopts ":t:a:h" opt
+do
+    case "$opt" in
+
+        t)
+            VAULT_TOKEN="$OPTARG"
+            ;;
+
+        a)
+            VAULT_ADDR="$OPTARG"
+            ;;
+
+        h)
+            usage
+            exit 0
+            ;;
+
+        :)
+            echo "ERROR: Option -$OPTARG requires a value."
+            exit 1
+            ;;
+
+        \?)
+            echo "ERROR: Unknown option -$OPTARG"
+            usage
+            exit 1
+            ;;
+
+    esac
 done
-echo "Vault Server đã sẵn sàng phản hồi!"
 
-echo "=== [2/6] Kiểm tra trạng thái Khởi tạo (Initialization) ==="
-# [COMMENT]: Đọc JSON status trước để tách biệt các lệnh trong pipeline, tránh lỗi lặp output và pipefail
-STATUS_OUT=$(vault_cmd status -format=json 2>/dev/null || true)
-INITIALIZED=$(echo "$STATUS_OUT" | jq -r '.initialized' 2>/dev/null || echo "false")
-
-# [COMMENT]: So sánh khác "true" để bao quát toàn bộ trường hợp: false, null, hoặc empty khi command bị lỗi hoặc chưa init
-if [ "$INITIALIZED" != "true" ]; then
-  echo "Vault chưa được khởi tạo. Bắt đầu quá trình Operator Init..."
-  # [COMMENT]: Khởi tạo Vault với 1 key share và threshold = 1 (phù hợp dev/testing)
-  # Trong production thực tế nên dùng 5 key shares và threshold = 3 để đảm bảo tính an toàn HA
-  vault_cmd operator init -key-shares=1 -key-threshold=1 -format=json > "$INIT_KEYS_FILE"
-  echo "Khởi tạo thành công! Thông tin khóa được lưu tại: $INIT_KEYS_FILE"
-else
-  echo "Vault đã được khởi tạo trước đó."
-  if [ ! -f "$INIT_KEYS_FILE" ]; then
-    echo "🚨 LỖI: Không tìm thấy file $INIT_KEYS_FILE chứa Unseal Keys!"
+if [[ -z "$VAULT_TOKEN" ]]; then
+    echo "ERROR: Vault Root Token is required."
+    echo
+    usage
     exit 1
-  fi
 fi
 
-# [COMMENT]: Trích xuất Unseal Key và Root Token ban đầu từ file JSON lưu trữ
-UNSEAL_KEY=$(jq -r '.unseal_keys_b64[0]' "$INIT_KEYS_FILE")
-TEMP_ROOT_TOKEN=$(jq -r '.root_token' "$INIT_KEYS_FILE")
+##############################################################################
+# Check Dependency
+##############################################################################
 
-echo "=== [3/6] Kiểm tra trạng thái Khóa (Sealed/Unsealed) ==="
-# [COMMENT]: Đọc JSON status mới sau khi init để kiểm tra trạng thái sealed chính xác
-STATUS_OUT=$(vault_cmd status -format=json 2>/dev/null || true)
-SEALED=$(echo "$STATUS_OUT" | jq -r '.sealed' 2>/dev/null || echo "true")
+command -v curl >/dev/null || {
+    echo "curl not found."
+    exit 1
+}
 
-if [ "$SEALED" = "true" ]; then
-  echo "Vault đang bị khóa (Sealed). Thực hiện Unseal..."
-  # [COMMENT]: Gọi lệnh unseal của Vault CLI với khóa đã trích xuất
-  vault_cmd operator unseal "$UNSEAL_KEY"
-  echo "Vault đã được mở khóa (Unsealed) thành công!"
-else
-  echo "Vault đã được mở khóa trước đó."
-fi
+command -v jq >/dev/null || {
+    echo "jq not found."
+    exit 1
+}
 
-echo "=== [4/6] Khởi tạo Token tĩnh 'myroot' khớp cấu hình .env ==="
-# [COMMENT]: Sử dụng token gốc tạm thời để sinh ra token tĩnh 'myroot' với quyền 'root'
-# Điều này giúp Go Backend kết nối ngay lập tức mà không cần sửa đổi biến VAULT_TOKEN=myroot trong file .env
-docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$TEMP_ROOT_TOKEN" "$VAULT_CONTAINER" \
-  vault token create -id="$DEFAULT_ROOT_TOKEN" -policy="root" >/dev/null 2>&1 || true
+##############################################################################
+# REST Helper (FIXED: Thay PATH bằng REQ_PATH để tránh crash hệ thống)
+##############################################################################
 
-echo "=== [5/6] Cấu hình Transit Engine & Tạo Khóa ký JWT ==="
-# [COMMENT]: Kiểm tra xem transit secrets engine đã được enable chưa bằng jq
-TRANSIT_ENABLED=$(docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault secrets list -format=json 2>/dev/null | jq -e '."transit/"' >/dev/null 2>&1 && echo "true" || echo "false")
-if [ "$TRANSIT_ENABLED" = "false" ]; then
-  echo "Đang kích hoạt Transit Secrets Engine..."
-  docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault secrets enable transit
-fi
+request() {
+    local METHOD="$1"
+    local REQ_PATH="$2"
+    local BODY="${3:-}"
 
-# [COMMENT]: Tạo khóa ký đối xứng 'jwt-signer' dùng để sinh HMAC cho JWT tokens nếu chưa tồn tại
-KEY_EXISTS=$(docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault read -format=json transit/keys/jwt-signer >/dev/null 2>&1 && echo "true" || echo "false")
-if [ "$KEY_EXISTS" = "false" ]; then
-  echo "Đang tạo khóa ký đối xứng 'jwt-signer'..."
-  docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault write -f transit/keys/jwt-signer
-fi
+    echo "================================================================"
+    echo "$METHOD /v1/$REQ_PATH"
+    echo "================================================================"
 
-# [COMMENT]: Cấu hình tự động rotate khóa ký 'jwt-signer' sau mỗi 30 ngày (an toàn bảo mật Cloud-Native)
-echo "Cấu hình tự động xoay vòng khóa (Auto Rotation - 30 ngày) cho 'jwt-signer'..."
-docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" \
-  vault write transit/keys/jwt-signer/config auto_rotate_period="30d"
+    local RESPONSE
+    local HTTP_CODE
 
-echo "=== [6/6] Tạo Secret Engine và ghi dữ liệu mẫu (KV Engine) ==="
-# [COMMENT]: Kích hoạt Key-Value Version 2 (KV-v2) engine tại path 'secret' nếu chưa có
-KV_ENABLED=$(docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault secrets list -format=json 2>/dev/null | jq -e '."secret/"' >/dev/null 2>&1 && echo "true" || echo "false")
-if [ "$KV_ENABLED" = "false" ]; then
-  echo "Đang kích hoạt KV-v2 Secrets Engine..."
-  docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" vault secrets enable -path=secret kv-v2
-fi
+    # Tách làm 2 trường hợp rõ ràng để không bao giờ lỗi tham số curl
+    if [[ -n "$BODY" ]]; then
+        RESPONSE=$(curl \
+            --silent \
+            --show-error \
+            -X "$METHOD" \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" \
+            --write-out "\n%{http_code}" \
+            "$VAULT_ADDR/v1/$REQ_PATH")
+    else
+        RESPONSE=$(curl \
+            --silent \
+            --show-error \
+            -X "$METHOD" \
+            -H "X-Vault-Token: $VAULT_TOKEN" \
+            --write-out "\n%{http_code}" \
+            "$VAULT_ADDR/v1/$REQ_PATH")
+    fi
 
-# [COMMENT]: Cấu hình metadata giới hạn tối đa 2 phiên bản cho secret/admin/api-key
-echo "Cấu hình metadata max-versions=2 cho secret/admin/api-key..."
-docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" \
-  vault kv metadata put -max-versions=2 secret/admin/api-key || true
+    # Tách lấy HTTP Status Code (dòng cuối cùng)
+    HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+    
+    # Tách lấy phần JSON Body thực tế (loại bỏ dòng cuối cùng)
+    local JSON_BODY
+    JSON_BODY=$(echo "$RESPONSE" | sed '$d')
 
-# [COMMENT]: Thực hiện lưu trữ thông tin mật mã mẫu vào Vault KV
-# Đây là file config tạo secret mà hệ thống cần dùng (ví dụ: DB Password, SMTP, OTP...)
-echo "Đang tạo mật khẩu và cấu hình nhạy cảm mẫu vào 'secret/controlplane'..."
-docker exec -e VAULT_ADDR="http://127.0.0.1:8200" -e VAULT_TOKEN="$DEFAULT_ROOT_TOKEN" "$VAULT_CONTAINER" \
-  vault kv put secret/controlplane \
-    database_password="postgres_dev_password" \
-    smtp_password="smtp_dev_password" \
-    master_signing_key="super_secret_master_signing_key_512"
+    echo "HTTP Status : $HTTP_CODE"
 
-echo "============================================================================"
-echo "🎉 HOÀN THÀNH BOOTSTRAP VAULT & KHỞI TẠO SECRETS THÀNH CÔNG!"
-echo "============================================================================"
-echo "👉 Vault Address: http://localhost:8200"
-echo "👉 Static Token: $DEFAULT_ROOT_TOKEN"
-echo "👉 Transit Key: jwt-signer (Auto-rotate: 30 days)"
-echo "👉 Sample Secret written to: secret/controlplane"
-echo "============================================================================"
+    # Hiển thị và format dữ liệu JSON trả về nếu có
+    if [[ -n "$JSON_BODY" ]]; then
+        echo "$JSON_BODY" | jq . 2>/dev/null || echo "$JSON_BODY"
+    fi
+
+    echo
+
+    if [[ "$HTTP_CODE" -ge 400 ]]; then
+        echo "❌ Request failed."
+        return 1
+    else
+        echo "✅ Success."
+    fi
+}
+
+##############################################################################
+# Wait Vault
+##############################################################################
+
+echo "Waiting for Vault..."
+
+until curl --silent "$VAULT_ADDR/v1/sys/health" >/dev/null 2>&1
+do
+    sleep 2
+done
+
+echo "Vault is ready."
+
+##############################################################################
+# Enable Transit
+##############################################################################
+
+request \
+POST \
+sys/mounts/transit \
+'{
+    "type":"transit"
+}'
+
+##############################################################################
+# Create jwt-signer
+##############################################################################
+
+request \
+POST \
+transit/keys/jwt-signer \
+'{}'
+
+##############################################################################
+# Configure Auto Rotation
+##############################################################################
+
+request \
+POST \
+transit/keys/jwt-signer/config \
+'{
+    "auto_rotate_period":"30d"
+}'
+
+##############################################################################
+# Enable KV-v2
+##############################################################################
+
+request \
+POST \
+sys/mounts/secret \
+'{
+    "type":"kv",
+    "options":{
+        "version":"2"
+    }
+}'
+
+##############################################################################
+# Configure Metadata
+##############################################################################
+
+request \
+POST \
+secret/metadata/admin/api-key \
+'{
+    "max_versions":2
+}'
+
+##############################################################################
+# Write Secrets
+##############################################################################
+
+request \
+POST \
+secret/data/controlplane \
+'{
+    "data":{
+        "database_password":"postgres_dev_password",
+        "smtp_password":"smtp_dev_password",
+        "master_signing_key":"super_secret_master_signing_key_512"
+    }
+}'
+
+# [COMMENT]: Khởi tạo SRE Admin API Key dùng để đăng nhập tại Biên (Rust acr)
+request \
+POST \
+secret/data/admin/api-key \
+'{
+    "data":{
+        "api_key":"sre_admin_secret_api_key_2026"
+    }
+}'
+
+# [COMMENT]: Kích hoạt TOTP secrets engine cho việc sinh/xác thực mã OTP 2FA
+request \
+POST \
+sys/mounts/totp \
+'{
+    "type":"totp"
+}'
+
+# [COMMENT]: Cấu hình khóa bí mật 2FA static (Base32) để SRE Admin có thể lưu cố định trên app xác thực
+request \
+POST \
+totp/keys/admin \
+'{
+    "key":"AURORASRE2FASECRETKEY2226BASE32",
+    "issuer":"Aurora",
+    "account_name":"sre@aurora.local"
+}'
+
+##############################################################################
+# Finished
+##############################################################################
+
+echo
+echo "=============================================================="
+echo "Vault Bootstrap Completed"
+echo "=============================================================="
+echo
+echo "Vault Address : $VAULT_ADDR"
+echo "Transit Key   : jwt-signer"
+echo "Secret Path   : secret/controlplane"
+echo

@@ -35,6 +35,9 @@ func (s *authServiceStub) RegisterAccount(ctx context.Context, user iamEntity.Us
 	return s.err
 }
 
+// Stop thoả mãn interface AuthService
+func (s *authServiceStub) Stop() {}
+
 // [COMMENT]: Thêm stub RevokeOpaqueRefreshToken để thoả mãn interface mới
 func (s *authServiceStub) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
 	return nil

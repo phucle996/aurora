@@ -1,5 +1,5 @@
 ---
-trigger: always_on
+trigger: model_decision
 ---
 
 # RTK - Rust Token Killer (Google Antigravity)

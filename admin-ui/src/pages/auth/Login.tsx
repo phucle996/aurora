@@ -23,7 +23,6 @@ type AdminLoginState = {
 type MFAMethod = 'totp' | 'recovery_code'
 
 import { getOrCreateDeviceKeys } from '@/lib/crypto'
-import { useZoneStore } from '@/hooks/useZoneStore'
 
 async function extractBackendError(resp: Response): Promise<string> {
   try {
@@ -66,7 +65,6 @@ export default function AdminAPIKeyLoginPage() {
   const [apiKey, setAPIKey] = useState('')
   const [twoFactorCode, setTwoFactorCode] = useState('')
   const [mfaMethod, setMFAMethod] = useState<MFAMethod>('totp')
-  const { activeZone } = useZoneStore()
   const [state, setState] = useState<AdminLoginState>({
     loading: false,
     error: '',
@@ -92,18 +90,20 @@ export default function AdminAPIKeyLoginPage() {
     try {
       const deviceKeys = await getOrCreateDeviceKeys()
 
-      // SRE HA & Security Note: Truyền thêm thuộc tính zone_code xác định phân vùng muốn kết nối.
+      // [COMMENT]: Cấu hình Payload chuẩn theo Contract API của Rust acr:
+      // - api_key: Plaintext SRE API Key
+      // - totp_code: mã 2FA TOTP (6 chữ số)
+      // - device_public_key: Khóa công khai Ed25519 của trình duyệt
+      // Đăng nhập này luôn tự động vào vùng 'global', không cần/không hỗ trợ chọn zone_code.
       const resp = await Fetch('/admin/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          admin_api_key: trimmed,
-          mfa_method: mfaMethod,
-          mfa_code: trimmedMFACode,
+          api_key: trimmed,
+          totp_code: trimmedMFACode,
           device_public_key: deviceKeys.publicKey,
-          zone_code: activeZone || 'global',
         }),
       })
 

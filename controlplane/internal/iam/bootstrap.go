@@ -45,6 +45,10 @@ func (m *IAMModule) Stop() {
 		m.deviceCapCancel()
 		m.deviceCapCancel = nil
 	}
+	// [COMMENT]: Dừng các tác vụ nền bất đồng bộ của Auth Service và đợi hoàn thành (Graceful Shutdown)
+	if m.AuthService != nil {
+		m.AuthService.Stop()
+	}
 }
 
 // runDeviceCapReconciler vá drift do lock skip ở login flow (BR-009).

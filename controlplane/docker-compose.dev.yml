@@ -675,6 +675,9 @@ services:
       dockerfile: Dockerfile
     container_name: aurora-acr
     init: true
+    # [COMMENT]: Mount chứng chỉ TLS để thiết lập kết nối mTLS bảo mật đến các node Controlplane
+    volumes:
+      - ./dev/tls:/etc/acr/tls:ro
     environment:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-redis:6379/0"
@@ -685,14 +688,18 @@ services:
       VAULT_MAX_RETRIES: "3"
       SESSION_TTL_SECS: "1800"
       REFRESH_THRESHOLD_SECS: "900"
-      # [COMMENT]: ACR cần gọi ngược Controlplane cho opaque refresh token (chưa chuyển)
+      # [COMMENT]: Định cấu hình kết nối mTLS gRPC sang Controlplane phục vụ xác thực & đồng bộ zone
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
+      CONTROLPLANE_GRPC_CA_CERT: "/etc/acr/tls/ca.crt"
+      CONTROLPLANE_GRPC_CLIENT_CERT: "/etc/acr/tls/grpc-server.crt"
+      CONTROLPLANE_GRPC_CLIENT_KEY: "/etc/acr/tls/grpc-server.key"
+      CONTROLPLANE_GRPC_DOMAIN: "localhost"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
       redis:
         condition: service_healthy
       vault:
-        condition: service_healthy
+        condition: service_started
       otel-collector:
         condition: service_started
     restart: unless-stopped
@@ -725,44 +732,35 @@ services:
       otel-collector:
         condition: service_started
     restart: unless-stopped
-
   # ============================================================================
   # 🔒 PHẦN 8.5: HASHICORP VAULT - HA SECRET STORAGE BACKEND
   # ============================================================================
   # Khởi chạy Vault sử dụng file cấu hình chuyên nghiệp (vault.hcl) và Raft storage
-  # để thay thế chế độ in-memory dev tạm thời, bảo đảm dữ liệu khóa ký JWT bền vững.
   vault:
-    image: hashicorp/vault:1.15
-    container_name: controlplane-vault
-    # [COMMENT]: Chạy dưới quyền root để tránh lỗi permission denied khi ghi file vào Raft storage volume
+    image: hashicorp/vault:2.0
     user: "0:0"
-    # [COMMENT]: Khởi chạy ở chế độ server sử dụng file cấu hình HCL gắn ngoài, chỉ rõ command 'vault server' để tránh entrypoint duplicate config
-    command: vault server -config=/vault/config/vault.hcl
+
+    entrypoint: >
+      sh -c "
+        chown -R vault:vault /vault/data &&
+        export SKIP_SETCAP=1 &&
+        exec su-exec vault vault server -config=/vault/config/vault.hcl
+      "
     volumes:
-      # [COMMENT]: Gắn file cấu hình HCL từ máy host dưới dạng Read-Only
       - ./dev/vault/vault.hcl:/vault/config/vault.hcl:ro
-      # [COMMENT]: Lưu trữ dữ liệu Raft bền vững qua named volume
       - controlplane_vault_data:/vault/data
     ports:
       - "8200:8200"
-    healthcheck:
-      # [COMMENT]: Sử dụng API sys/health để kiểm tra HTTP response của server thay cho command status nhằm tránh lỗi code khi chưa unseal
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8200/v1/sys/health" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
     restart: unless-stopped
 
   stalwart:
-    image: stalwartlabs/stalwart:v0.16.9
-    container_name: controlplane-stalwart
+    image: stalwartlabs/stalwart:v0.16.11
+    container_name: stalwart
     restart: unless-stopped
     ports:
       - "8085:8080" # Admin HTTP API & Web UI (Dành cho dev cấu hình)
-      # Lưu ý: Các cổng 25, 465, 587 không cần map ra ngoài host vì Dataplane 
-      # và Stalwart giao tiếp nội bộ trong mạng Docker Network.
     environment:
-      - STALWART_RECOVERY_ADMIN=admin:your-secure-password
+      - STALWART_RECOVERY_ADMIN=admin:27102004
     volumes:
       - controlplane_stalwart_etc:/etc/stalwart
       - controlplane_stalwart_data:/var/lib/stalwart
