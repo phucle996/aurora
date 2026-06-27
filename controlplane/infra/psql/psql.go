@@ -99,11 +99,6 @@ func buildDSN(cfg *config.PsqlCfg) string {
 		}
 	}
 
-	searchPath := buildSearchPath(cfg.Schema)
-	if searchPath != "" {
-		dsn += fmt.Sprintf(" search_path=%s", searchPath)
-	}
-
 	return dsn
 }
 

@@ -11,16 +11,18 @@ import (
 	"strings"
 	"time"
 
+	// import cấu hình hệ thống để truyền cấu hình trực tiếp vào OTel
+	"controlplane/internal/config"
 	coreMetrics "controlplane/internal/core/metrics"
 	iamMetrics "controlplane/internal/iam/metrics"
 	mailMetrics "controlplane/internal/mail/metrics"
 	"controlplane/pkg/constant"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -31,28 +33,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// OTelConfig đại diện cho cấu hình tĩnh OpenTelemetry.
-type OTelConfig struct {
-	Enabled       bool
-	ExporterType  string
-	Endpoint      string
-	Insecure      bool
-	SamplingRatio float64
-	ExportTimeout time.Duration
-	BatchTimeout  time.Duration
-	BatchMaxSize  int
-	BatchMaxQueue int
-	TLS           OTelTLSConfig
-}
-
-// OTelTLSConfig chứa cấu hình bảo mật TLS/mTLS cho exporter.
-type OTelTLSConfig struct {
-	Mode       string
-	CACertPath string
-	CertPath   string
-	KeyPath    string
-}
-
 // OTel quản lý các đối tượng Tracer và Meter của OpenTelemetry.
 type OTel struct {
 	tracer        trace.Tracer
@@ -62,14 +42,10 @@ type OTel struct {
 }
 
 // InitOTel khởi tạo hệ thống tracing và metrics của OpenTelemetry tĩnh lúc khởi động.
-func InitOTel(ctx context.Context, cfg *OTelConfig, serviceName string) (*OTel, error) {
+// Nhận trực tiếp cấu hình từ gói config toàn cục
+func InitOTel(ctx context.Context, cfg *config.OTelCfg, serviceName string) (*OTel, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-
-	serviceName = strings.TrimSpace(serviceName)
-	if serviceName == "" {
-		serviceName = "aurora-controlplane"
 	}
 
 	res, err := resource.Merge(
@@ -159,7 +135,7 @@ func InitOTel(ctx context.Context, cfg *OTelConfig, serviceName string) (*OTel, 
 	}, nil
 }
 
-func newOTLPTraceExporter(ctx context.Context, cfg *OTelConfig) (sdktrace.SpanExporter, error) {
+func newOTLPTraceExporter(ctx context.Context, cfg *config.OTelCfg) (sdktrace.SpanExporter, error) {
 	endpoint := strings.TrimSpace(cfg.Endpoint)
 	if endpoint == "" {
 		return nil, fmt.Errorf("observability: otlp endpoint is required")
@@ -174,8 +150,9 @@ func newOTLPTraceExporter(ctx context.Context, cfg *OTelConfig) (sdktrace.SpanEx
 		options = append(options, otlptracegrpc.WithEndpoint(strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")))
 	}
 
-	if cfg.TLS.Mode == "tls" || cfg.TLS.Mode == "mtls" {
-		tlsCreds, err := loadOTelTLSCredentials(cfg.TLS.Mode, cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath)
+	// Đọc trực tiếp cấu hình TLS dạng phẳng
+	if cfg.TLSMode == "tls" || cfg.TLSMode == "mtls" {
+		tlsCreds, err := loadOTelTLSCredentials(cfg.TLSMode, cfg.CACertPath, cfg.CertPath, cfg.KeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("observability: load TLS credentials: %w", err)
 		}
@@ -194,7 +171,7 @@ func newOTLPTraceExporter(ctx context.Context, cfg *OTelConfig) (sdktrace.SpanEx
 	return exporter, nil
 }
 
-func newOTLPMetricExporter(ctx context.Context, cfg *OTelConfig) (sdkmetric.Exporter, error) {
+func newOTLPMetricExporter(ctx context.Context, cfg *config.OTelCfg) (sdkmetric.Exporter, error) {
 	endpoint := strings.TrimSpace(cfg.Endpoint)
 	if endpoint == "" {
 		return nil, fmt.Errorf("observability: otlp endpoint is required for metrics")
@@ -209,8 +186,9 @@ func newOTLPMetricExporter(ctx context.Context, cfg *OTelConfig) (sdkmetric.Expo
 		options = append(options, otlpmetricgrpc.WithEndpoint(strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")))
 	}
 
-	if cfg.TLS.Mode == "tls" || cfg.TLS.Mode == "mtls" {
-		tlsCreds, err := loadOTelTLSCredentials(cfg.TLS.Mode, cfg.TLS.CACertPath, cfg.TLS.CertPath, cfg.TLS.KeyPath)
+	// Đọc trực tiếp cấu hình TLS dạng phẳng
+	if cfg.TLSMode == "tls" || cfg.TLSMode == "mtls" {
+		tlsCreds, err := loadOTelTLSCredentials(cfg.TLSMode, cfg.CACertPath, cfg.CertPath, cfg.KeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("observability: load TLS credentials for metrics: %w", err)
 		}

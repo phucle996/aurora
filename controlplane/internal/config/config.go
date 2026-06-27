@@ -31,7 +31,6 @@ type Config struct {
 	Redis     RedisCfg
 	RedisJob  RedisCfg
 	GRPC      GRPCCfg
-	Telegram  TelegramCfg
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
 	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
@@ -51,11 +50,8 @@ type OTelCfg struct {
 	BatchTimeout  time.Duration
 	BatchMaxSize  int
 	BatchMaxQueue int
-	TLS           OTelTLSCfg
-}
-
-type OTelTLSCfg struct {
-	Mode       string
+	// TLS định cấu hình kết nối bảo mật TLS/mTLS cho OTel exporter
+	TLSMode    string
 	CACertPath string
 	CertPath   string
 	KeyPath    string
@@ -75,16 +71,9 @@ type AppCfg struct {
 
 // SecurityCfg lưu trữ các tham số bảo mật, thời hạn TTL của các loại Token và Session.
 type SecurityCfg struct {
-	RuntimeMasterKey          string
-	AccessSecretTTL           time.Duration
-	OneTimeTokenTTL           time.Duration
-	RefreshTokenTTL           time.Duration
-	AdminAPITokenTTL          time.Duration
-	DeviceActiveTTL           time.Duration
-	AdminSessionTTL           time.Duration
-	AdminTrustedDeviceTTL     time.Duration
-	OAuthAuthorizationCodeTTL time.Duration
-	SecretCacheTTL            time.Duration
+	RuntimeMasterKey string
+	OneTimeTokenTTL  time.Duration
+	RefreshTokenTTL  time.Duration
 }
 
 // PsqlCfg chứa các thông số kết nối cơ sở dữ liệu PostgreSQL và connection pool.
@@ -94,7 +83,6 @@ type PsqlCfg struct {
 	User          string
 	Password      string
 	DBName        string
-	Schema        string
 	SSLMode       string
 	TLSEnabled    bool
 	CACertPath    string
@@ -126,12 +114,6 @@ type RedisCfg struct {
 	PingTimeout   time.Duration
 	MaxRetries    int
 	RetryInterval time.Duration
-}
-
-// TelegramCfg lưu thông tin tích hợp thông báo lỗi và cảnh báo qua Telegram Bot.
-type TelegramCfg struct {
-	BotToken string
-	ChatID   string
 }
 
 // GRPCCfg lưu thông số kết nối của gRPC Server và cấu hình TLS/mTLS.
@@ -185,16 +167,9 @@ func LoadConfig() *Config {
 		},
 
 		Security: SecurityCfg{
-			RuntimeMasterKey:          strings.TrimSpace(getEnv("SECURITY_RUNTIME_MASTER_KEY", "")),
-			AccessSecretTTL:           30 * time.Minute,
-			OneTimeTokenTTL:           15 * time.Minute,
-			RefreshTokenTTL:           30 * 24 * time.Hour,
-			AdminAPITokenTTL:          15 * 24 * time.Hour,
-			DeviceActiveTTL:           30 * 24 * time.Hour,
-			AdminSessionTTL:           30 * time.Minute,
-			AdminTrustedDeviceTTL:     30 * 24 * time.Hour,
-			OAuthAuthorizationCodeTTL: 5 * time.Minute,
-			SecretCacheTTL:            300 * time.Second,
+			RuntimeMasterKey: strings.TrimSpace(getEnv("SECURITY_RUNTIME_MASTER_KEY", "")),
+			OneTimeTokenTTL:  15 * time.Minute,
+			RefreshTokenTTL:  30 * 24 * time.Hour,
 		},
 		Psql: PsqlCfg{
 			Host:          getEnv("PSQL_HOST", "localhost"),
@@ -256,10 +231,6 @@ func LoadConfig() *Config {
 			TLSKeyPath:       getEnv("GRPC_TLS_KEY", ""),
 			ClientCACertPath: getEnv("GRPC_CLIENT_CA", ""),
 		},
-		Telegram: TelegramCfg{
-			BotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
-			ChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
-		},
 
 		OTel: OTelCfg{
 			Enabled:       getEnvAsBool("OTEL_ENABLED", true),
@@ -272,12 +243,11 @@ func LoadConfig() *Config {
 			BatchTimeout:  getEnvAsDuration("OTEL_BSP_SCHEDULE_DELAY", 2*time.Second),
 			BatchMaxSize:  getEnvAsInt("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", 512),
 			BatchMaxQueue: getEnvAsInt("OTEL_BSP_MAX_QUEUE_SIZE", 2048),
-			TLS: OTelTLSCfg{
-				Mode:       getEnv("OTEL_TLS_MODE", "disable"),
-				CACertPath: getEnv("OTEL_TLS_CA", ""),
-				CertPath:   getEnv("OTEL_TLS_CERT", ""),
-				KeyPath:    getEnv("OTEL_TLS_KEY", ""),
-			},
+			// Cấu hình các tham số TLS dạng phẳng không lồng nhau
+			TLSMode:    getEnv("OTEL_TLS_MODE", "disable"),
+			CACertPath: getEnv("OTEL_TLS_CA", ""),
+			CertPath:   getEnv("OTEL_TLS_CERT", ""),
+			KeyPath:    getEnv("OTEL_TLS_KEY", ""),
 		},
 		SchemaSQL: SchemaSQLCfg{
 			Core: "core",

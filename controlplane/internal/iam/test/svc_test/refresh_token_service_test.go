@@ -107,7 +107,6 @@ func (m *refreshRbacRepoMock) GetUserRoleAndLevelByScope(ctx context.Context, us
 
 func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, rbacRepo iamRepoInterface.RbacRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.SessionRefreshService {
 	cfg := &config.Config{}
-	cfg.Security.AccessSecretTTL = 15 * time.Minute
 	cfg.Security.RefreshTokenTTL = 24 * time.Hour
 	return iamSvcImpl.NewSessionRefreshService(cfg, repo, rbacRepo, registry)
 }

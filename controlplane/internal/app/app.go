@@ -150,25 +150,8 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 
-	otelCfg := &observability.OTelConfig{
-		Enabled:       cfg.OTel.Enabled,
-		ExporterType:  cfg.OTel.ExporterType,
-		Endpoint:      cfg.OTel.Endpoint,
-		Insecure:      cfg.OTel.Insecure,
-		SamplingRatio: cfg.OTel.SamplingRatio,
-		ExportTimeout: cfg.OTel.ExportTimeout,
-		BatchTimeout:  cfg.OTel.BatchTimeout,
-		BatchMaxSize:  cfg.OTel.BatchMaxSize,
-		BatchMaxQueue: cfg.OTel.BatchMaxQueue,
-		TLS: observability.OTelTLSConfig{
-			Mode:       cfg.OTel.TLS.Mode,
-			CACertPath: cfg.OTel.TLS.CACertPath,
-			CertPath:   cfg.OTel.TLS.CertPath,
-			KeyPath:    cfg.OTel.TLS.KeyPath,
-		},
-	}
-
-	otelObs, err := observability.InitOTel(ctx, otelCfg, "aurora-controlplane")
+	// Khởi tạo OTel trực tiếp bằng struct cấu hình từ config
+	otelObs, err := observability.InitOTel(ctx, &cfg.OTel, cfg.App.AppName)
 	if err != nil {
 		if cfg.OTel.FailStrategy == "fail_open" {
 			logger.SysWarn("bootstrap", fmt.Sprintf("otel init failed [FAIL-OPEN]: %v. Tracing disabled, continuing startup.", err))

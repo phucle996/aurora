@@ -51,7 +51,6 @@ func NewCoreTestConfig(schema string) *config.Config {
 	cfg.Redis.Addr = envString("CORE_TEST_REDIS_ADDR", "127.0.0.1:16380")
 	cfg.Redis.Password = envString("CORE_TEST_REDIS_PASSWORD", "")
 	cfg.Redis.DB = envInt("CORE_TEST_REDIS_DB", 0)
-	cfg.Security.SecretCacheTTL = time.Hour
 	cfg.Security.RuntimeMasterKey = envString("CORE_TEST_RUNTIME_MASTER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	return cfg
 }

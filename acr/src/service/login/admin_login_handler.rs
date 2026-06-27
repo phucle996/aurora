@@ -196,7 +196,7 @@ pub async fn handle_admin_login(
         zone_id: Some("global".to_string()),
         access_key: access_key.clone(),
         jti: uuid::Uuid::new_v4().to_string(),
-        iss: Some("aurora-acl".to_string()),
+        iss: Some("aurora-acr".to_string()),
         exp: exp_unix,
         iat: now_unix,
     };
