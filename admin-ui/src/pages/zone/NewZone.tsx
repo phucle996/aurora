@@ -1,47 +1,10 @@
-/**
- * NewZone.tsx — Trang tạo Zone mới trong Aurora Admin Console.
- *
- * Zone là root topology node của toàn bộ hạ tầng — mọi dataplane, routing
- * và service discovery đều gắn với Zone. Tạo Zone là critical operation,
- * yêu cầu xác thực 3 lớp:
- *
- *   Lớp 1 — Admin API Key (cookie): AdminAPIKeyAuth middleware verify token.
- *   Lớp 2 — Ed25519 Signature: request phải được ký bằng device private key
- *            (lưu trong IndexedDB dưới dạng non-extractable CryptoKey).
- *   Lớp 3 — TOTP Step-Up 2FA: user nhập OTP từ authenticator app.
- *
- * Signature payload format (phải khớp chính xác với backend buildSigPayload):
- *
- *   METHOD\nPATH\nQUERY\nBODY_SHA256_HEX\nTIMESTAMP_UNIX\nNONCE
- *
- *   Lưu ý: accessKey KHÔNG được đưa vào payload —
- *     - Backend đọc accessKey từ HttpOnly cookie (gửi kèm request tự động).
- *     - Đưa accessKey vào payload string sẽ lộ session ID qua log/trace.
- *     - Signature bind với session thông qua device public key lookup dùng accessKey.
- *
- * Security design:
- *   - Private key lưu trong IndexedDB với extractable: false → không thể export ra JS.
- *   - Nonce được dùng 1 lần (Redis SETNX) → chống replay attack.
- *   - Timestamp trong clock skew (configurable, mặc định 5 phút) → chống stale request.
- *   - TOTP step-up tách biệt khỏi session auth → compromise session không đủ để tạo zone.
- *
- * Flow:
- *   1. User điền form (name, code, location, description, services).
- *   2. Click "Create Zone" → validate form → mở OTP dialog.
- *   3. User nhập TOTP → confirm → sign + submit.
- *   4. Backend verify: AdminAPIKeyAuth → Signature → StepUp2FA → CreateZone handler.
- *   5. Success → navigate về /zones. Error → toast error.
- */
-
 import { useState } from 'react'
 import { Link, useRouter } from '@tanstack/react-router'
 import { toast } from 'sonner'
 
-
 import { Fetch } from '@/lib/fetch'
 import { slugify } from '@/lib/slugify'
 import { PageContent } from '@/components/layout/layout'
-import { Button } from '@/components/ui/button'
 import { type ZoneLocation } from '@/components/zone/location-autocomplete'
 import { getOrCreateDeviceKeys, generateNonce, sha256Hex, signPayload } from '@/lib/crypto'
 import { OTPVerificationDialog } from '@/components/zone/OTPVerificationDialog'
@@ -154,23 +117,6 @@ export default function NewZonePage() {
     setIsOTPOpen(true)
   }
 
-  /**
-   * Xác nhận tạo zone sau khi user nhập OTP thành công.
-   *
-   * Security flow:
-   *   1. Lấy device private key từ IndexedDB (non-extractable, không thể copy).
-   *   2. Serialize request body thành JSON string.
-   *   3. Hash body bằng SHA-256 để đưa vào payload — chống body tampering.
-   *   4. Tạo nonce ngẫu nhiên — backend verify 1 lần duy nhất (Redis SETNX).
-   *   5. Build canonical payload string theo format đã thống nhất với backend.
-   *   6. Sign payload bằng Ed25519 private key.
-   *   7. Gửi request với signature + timestamp + nonce + OTP trong headers.
-   *   8. Backend verify theo thứ tự: AdminAPIKeyAuth → Signature → StepUp2FA.
-   *
-   * Error handling:
-   *   - Mọi lỗi đều catch và hiển thị qua toast.error().
-   *   - setSigning(false) trong finally để re-enable UI dù success hay fail.
-   */
   const confirmCreateZoneWithOTP = async (otpCode: string) => {
 
     setSigning(true)
@@ -213,13 +159,13 @@ export default function NewZonePage() {
       //   - Backend đọc accessKey từ HttpOnly cookie (gửi kèm request tự động).
       //   - Đưa vào payload → lộ session ID qua log/trace/network capture.
       //   - Binding với session đã được đảm bảo qua device public key lookup.
-      const payloadStr = `POST\n/admin/core/zones\n\n${bodyHash}\n${timestamp}\n${nonce}`
+      const payloadStr = `POST\n/admin/critical/core/zones\n\n${bodyHash}\n${timestamp}\n${nonce}`
 
       // Sign payload bằng Ed25519 private key từ IndexedDB.
       // Backend verify bằng device public key đã đăng ký lúc login.
       const signature = await signPayload(payloadStr, deviceKeys.privateKey)
 
-      const response = await Fetch('/admin/core/zones', {
+      const response = await Fetch('/admin/critical/core/zones', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -247,70 +193,63 @@ export default function NewZonePage() {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
-
   return (
-    <PageContent className="pb-0">
-      {/* Page header: breadcrumb + title + action buttons */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-4">
-          <nav className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-            <Link to="/zones" className="text-primary hover:underline">
-              Zone
+    <PageContent className="pb-6">
+      {/* Page header: breadcrumb + title + X button */}
+      <div className="flex items-center justify-between pb-4">
+        <div className="space-y-1">
+          <nav className="flex items-center gap-2 text-[13px] font-medium text-slate-500 dark:text-slate-400 mb-2">
+            <Link to="/" className="hover:underline">
+              Home
             </Link>
-            <span>/</span>
-            <span>Add Zone</span>
+            <span className="text-slate-400 font-light">&gt;</span>
+            <Link to="/zones" className="hover:underline">
+              Zones
+            </Link>
+            <span className="text-slate-400 font-light">&gt;</span>
+            <span className="text-slate-900 dark:text-slate-200 font-semibold">New zone</span>
           </nav>
-          <div className="space-y-2">
-            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-foreground md:text-4xl">
-              Add Zone
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">
+              New zone
             </h1>
-            <p className="text-sm text-muted-foreground md:text-base">
-              Create a new infrastructure zone for the platform.
-            </p>
           </div>
-        </div>
-
-        <div className="flex items-center gap-3 lg:pt-10">
-          <Button asChild variant="outline" className="h-12 rounded-lg px-8 text-sm font-semibold">
-            <Link to="/zones">Cancel</Link>
-          </Button>
-          {/* canSubmit = name + code + location filled && không đang sign */}
-          <Button
-            className="h-12 rounded-lg px-8 text-sm font-semibold shadow-sm"
-            onClick={handleTriggerOTP}
-            disabled={!canSubmit}
-          >
-            {signing ? 'Creating...' : 'Create Zone'}
-          </Button>
+          <p className="text-[13px] text-slate-500 dark:text-slate-400">
+            Create a new infrastructure zone to organize and deploy your platform resources.
+          </p>
         </div>
       </div>
 
-      {/* Form + Preview 2-column layout (xl breakpoint) */}
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_400px]">
-        <ZoneForm
-          zoneName={zoneName}
-          setZoneName={setZoneName}
-          zoneCode={zoneCode}
-          setZoneCode={setZoneCode}
-          isZoneCodeManuallyEdited={isZoneCodeManuallyEdited}
-          setIsZoneCodeManuallyEdited={setIsZoneCodeManuallyEdited}
-          location={location}
-          setLocation={setLocation}
-          description={description}
-          setDescription={setDescription}
-          services={services}
-          toggleService={toggleService}
-          selectLocation={selectLocation}
-        />
-        {/* Live preview — cập nhật realtime khi user gõ */}
-        <ZonePreviewCard
-          zoneName={zoneName}
-          location={location}
-          description={description}
-        />
+      {/* Form + Preview 2-column layout (bleed edge-to-edge) */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] -mx-4 md:-mx-6 -mb-4 md:-mb-5 border-t border-slate-200/60 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20">
+        <div className="bg-white dark:bg-slate-900 px-4 py-8 md:px-12 border-b xl:border-b-0 xl:border-r border-slate-200/60 dark:border-slate-800">
+          <ZoneForm
+            zoneName={zoneName}
+            setZoneName={setZoneName}
+            zoneCode={zoneCode}
+            setZoneCode={setZoneCode}
+            isZoneCodeManuallyEdited={isZoneCodeManuallyEdited}
+            setIsZoneCodeManuallyEdited={setIsZoneCodeManuallyEdited}
+            location={location}
+            setLocation={setLocation}
+            description={description}
+            setDescription={setDescription}
+            services={services}
+            toggleService={toggleService}
+            selectLocation={selectLocation}
+            onSubmit={handleTriggerOTP}
+            disabled={!canSubmit}
+          />
+        </div>
+        <div className="px-4 py-8 md:px-8 bg-transparent">
+          <ZonePreviewCard
+            zoneName={zoneName}
+            zoneCode={zoneCode}
+            location={location}
+            description={description}
+            services={services}
+          />
+        </div>
       </div>
 
       {/* ---------------------------------------------------------------------------

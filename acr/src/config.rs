@@ -15,7 +15,9 @@ pub struct VaultConfig {
     pub token: String,
     pub role_id: String,
     pub secret_id: String,
-    pub transit_key_name: String,
+    pub transit_key_path: String,
+    pub totp_key_path: String,
+    pub admin_api_key_path: String,
     pub timeout: Duration,
     pub max_retries: usize,
 }
@@ -78,8 +80,14 @@ impl Config {
 
         let vault_secret_id = env::var("VAULT_SECRET_ID").unwrap_or_else(|_| "".to_string());
 
-        let vault_transit_key_name =
-            env::var("VAULT_TRANSIT_KEY_NAME").unwrap_or_else(|_| "jwt-signer".to_string());
+        let vault_transit_key_path =
+            env::var("VAULT_TRANSIT_KEY_PATH").unwrap_or_else(|_| "transit/keys/jwt-signer".to_string());
+
+        let vault_totp_key_path =
+            env::var("VAULT_TOTP_KEY_PATH").unwrap_or_else(|_| "totp/keys/admin".to_string());
+
+        let vault_admin_api_key_path =
+            env::var("VAULT_ADMIN_API_KEY_PATH").unwrap_or_else(|_| "secret/data/admin/api-key".to_string());
 
         let vault_timeout_secs = env::var("VAULT_TIMEOUT_SECS")
             .unwrap_or_else(|_| "5".to_string())
@@ -96,7 +104,9 @@ impl Config {
             token: vault_token,
             role_id: vault_role_id,
             secret_id: vault_secret_id,
-            transit_key_name: vault_transit_key_name,
+            transit_key_path: vault_transit_key_path,
+            totp_key_path: vault_totp_key_path,
+            admin_api_key_path: vault_admin_api_key_path,
             timeout: Duration::from_secs(vault_timeout_secs),
             max_retries: vault_max_retries,
         };

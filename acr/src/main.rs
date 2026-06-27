@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Khởi tạo các Core Components và Service Layer
     let session_mgr = Arc::new(SessionManager::new(redis_client.clone(), config.clone()));
-    let token_mgr = Arc::new(TokenManager::new(vault_client.clone()));
+    let token_mgr = Arc::new(TokenManager::new(vault_client.clone(), config.vault.admin_api_key_path.clone()));
     let evaluator = Arc::new(PolicyEvaluator::new());
 
     // [COMMENT]: Khởi tạo gRPC client để kết nối đến Control Plane

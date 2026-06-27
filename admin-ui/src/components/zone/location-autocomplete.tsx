@@ -163,7 +163,7 @@ export function LocationAutocomplete({ value, onSelect, className }: LocationAut
           }}
           onFocus={() => setOpen(true)}
           placeholder="Search location, e.g. Ho Chi Minh City"
-          className="h-12 rounded-lg border-border bg-background pl-11 pr-10 shadow-none"
+          className="h-12 border-border bg-background pl-11 pr-10 shadow-none"
         />
         {isSearching && (
           <Loader2 className="pointer-events-none absolute right-4 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
@@ -172,7 +172,7 @@ export function LocationAutocomplete({ value, onSelect, className }: LocationAut
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded-md border border-border bg-popover shadow-md">
+        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 overflow-hidden rounded border border-border bg-popover shadow-md">
           <p className="px-3 py-2 text-xs text-muted-foreground">
             {showPredefined ? 'Suggested Locations' : isSearching ? 'Searching...' : 'Search Results'}
           </p>

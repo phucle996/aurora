@@ -83,8 +83,8 @@ const JWT_SIG_CACHE_MAX_CAPACITY: u64 = 50_000;
 
 pub struct TokenManager {
     vault_client: Arc<VaultClient>,
-    // [COMMENT]: Cache băm API Key của Admin trong 24h (L1) để tránh spam Vault
-    admin_api_key_hash_cache: std::sync::RwLock<Option<(String, std::time::Instant)>>,
+    // [COMMENT]: Đường dẫn động đến Admin API Key trong Vault
+    admin_api_key_path: String,
     // [COMMENT]: L1 Cache cho JWT Signature Verification (moka concurrent cache)
     // Key: SHA-256 hex digest của toàn bộ JWT token string
     // Value: Claims đã được deserialize và xác thực chữ ký bởi Vault
@@ -94,7 +94,7 @@ pub struct TokenManager {
 }
 
 impl TokenManager {
-    pub fn new(vault_client: Arc<VaultClient>) -> Self {
+    pub fn new(vault_client: Arc<VaultClient>, admin_api_key_path: String) -> Self {
         // [COMMENT]: Khởi tạo moka cache với max capacity và auto-eviction
         let jwt_sig_cache = moka::future::Cache::builder()
             .max_capacity(JWT_SIG_CACHE_MAX_CAPACITY)
@@ -102,7 +102,7 @@ impl TokenManager {
 
         Self {
             vault_client,
-            admin_api_key_hash_cache: std::sync::RwLock::new(None),
+            admin_api_key_path,
             jwt_sig_cache,
         }
     }
@@ -235,40 +235,23 @@ impl TokenManager {
         Ok(format!("{}.{}", signing_input, signature))
     }
 
-    /// [COMMENT]: Đọc băm Admin API Key từ L1 cache (24h) hoặc nạp từ Vault rồi tính băm và cache lại.
-    /// Điều này khớp với nguyên tắc bảo mật và caching L1: không lưu plaintext API Key lâu dài.
+    /// [COMMENT]: Đọc trực tiếp Admin API Key từ Vault và băm SHA-256 mà không qua cache trong bộ nhớ (RAM).
+    /// Đảm bảo an toàn tuyệt đối, tránh rò rỉ credential qua memory dump và cho phép thay đổi có hiệu lực ngay lập tức.
     pub async fn get_admin_api_key_hash(&self) -> Result<String, AcrError> {
-        // [COMMENT]: 1. Thử đọc từ cache L1 trước
-        {
-            if let Ok(cache) = self.admin_api_key_hash_cache.read() {
-                if let Some((hash, expiry)) = &*cache {
-                    if std::time::Instant::now() < *expiry {
-                        return Ok(hash.clone());
-                    }
-                }
-            }
-        }
-
-        // [COMMENT]: 2. Cache miss hoặc hết hạn, gọi Vault để đọc API Key thô
+        // [COMMENT]: Gọi trực tiếp Vault đọc API Key thô dùng đường dẫn cấu hình động
         let secret = self
             .vault_client
-            .read_secret("secret/data/admin/api-key")
+            .read_secret(&self.admin_api_key_path)
             .await?;
         let api_key = secret["data"]["data"]["api_key"]
             .as_str()
             .ok_or_else(|| AcrError::Internal("api_key not found in Vault response".to_string()))?;
 
-        // [COMMENT]: 3. Thực hiện băm SHA-256 của api_key để lưu trữ/đối chiếu an toàn
+        // [COMMENT]: Thực hiện băm SHA-256 của api_key để đối chiếu an toàn
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(api_key.as_bytes());
         let hash_hex = format!("{:x}", hasher.finalize());
-
-        // [COMMENT]: 4. Lưu mã băm vào L1 cache với thời gian hết hạn 24 giờ (86400 giây)
-        if let Ok(mut cache) = self.admin_api_key_hash_cache.write() {
-            let expiry = std::time::Instant::now() + std::time::Duration::from_secs(86400);
-            *cache = Some((hash_hex.clone(), expiry));
-        }
 
         Ok(hash_hex)
     }
@@ -276,7 +259,7 @@ impl TokenManager {
     /// [COMMENT]: Ủy thác xác thực OTP SRE cho Vault TOTP Secrets Engine
     /// Đảm bảo không truyền hay lưu trữ OTP Secret tại bộ nhớ của ACL
     pub async fn verify_admin_totp(&self, code: &str) -> Result<bool, AcrError> {
-        // [COMMENT]: Gọi trực tiếp verify_totp trên VaultClient sử dụng key name "admin"
-        self.vault_client.verify_totp("admin", code).await
+        // [COMMENT]: Gọi trực tiếp verify_totp trên VaultClient sử dụng cấu hình động
+        self.vault_client.verify_totp(code).await
     }
 }

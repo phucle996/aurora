@@ -141,6 +141,20 @@ impl Authorization for ExtAuthzService {
                     return admin_login_res;
                 }
 
+                // [COMMENT]: Chặn bắt và xác thực session SRE Admin tại biên
+                if let Some(admin_session_res) =
+                    crate::service::session::verifier::handle_admin_session_check(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                {
+                    return admin_session_res;
+                }
+
                 // [COMMENT]: Gọi handle_login để xử lý chặn bắt và xử lý đăng nhập trực tiếp tại biên
                 if let Some(login_res) = crate::service::login::login_handler::handle_login(
                     &self.session_mgr,
@@ -422,6 +436,52 @@ impl Authorization for ExtAuthzService {
                 let (mut claims, session, access_key, device_public_key) = match auth_result {
                     Ok(val) => val,
                     Err(err_msg) => {
+                        // [COMMENT]: SRE Admin không sử dụng Refresh Token để khôi phục session.
+                        // Trả về trực tiếp 401 Unauthorized và ghi log đúng ngữ cảnh.
+                        if is_critical_admin {
+                            Logger::authz_log(
+                                "unknown",
+                                &method,
+                                &path,
+                                "DENIED",
+                                &format!("SRE Admin critical auth failed: {}. Session recovery bypassed.", err_msg),
+                            );
+                            let mut denied_builder = envoy_types::ext_authz::v3::DeniedHttpResponseBuilder::new();
+                            denied_builder.set_http_status(envoy_types::ext_authz::v3::pb::HttpStatusCode::Unauthorized);
+                            let mut response = CheckResponse::new();
+                            response.set_status(Status::unauthenticated(err_msg));
+                            response.set_http_response(denied_builder);
+                            return Ok(Response::new(response));
+                        }
+
+                        // [COMMENT]: Nếu không mang theo Refresh Token -> Không thể phục hồi session, trả về 401 trực tiếp.
+                        // Điều này cũng đúng với SRE Admin khi gọi các API thường (như /api/v1/auth/session) vì Admin không có Refresh Token.
+                        let refresh_token = extract_cookie_value(&cookie_header, "refresh_token");
+                        if refresh_token.is_none() {
+                            Logger::authz_log(
+                                "unknown",
+                                &method,
+                                &path,
+                                "DENIED",
+                                &format!("Authentication failed: {}. No refresh token for recovery.", err_msg),
+                            );
+                            let mut denied_builder = envoy_types::ext_authz::v3::DeniedHttpResponseBuilder::new();
+                            denied_builder.set_http_status(envoy_types::ext_authz::v3::pb::HttpStatusCode::Unauthorized);
+                            // Xóa bộ ba Trinity Access Cookies để đồng bộ trạng thái client
+                            let cookies_to_clear = vec![
+                                "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                                "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                                "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                            ];
+                            for cookie in cookies_to_clear {
+                                denied_builder.add_header("set-cookie", cookie, None, false);
+                            }
+                            let mut response = CheckResponse::new();
+                            response.set_status(Status::unauthenticated(err_msg));
+                            response.set_http_response(denied_builder);
+                            return Ok(Response::new(response));
+                        }
+
                         // [COMMENT]: Khi xác thực Trinity Cookie thất bại, chuyển hướng sang luồng khôi phục session bằng Refresh Token
                         return crate::service::session::recovery_session::handle_session_recovery(
                             &self.session_mgr,

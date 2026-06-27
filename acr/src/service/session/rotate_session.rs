@@ -162,17 +162,17 @@ pub async fn handle_admin_session_rotation(
                 .await
             {
                 Ok(true) => {
-                    // [COMMENT]: Rotation thành công -> chuẩn bị Cookie mới trả về cho client qua Envoy
+                    // [COMMENT]: Rotation thành công -> chuẩn bị Cookie mới trả về cho SRE Admin qua Envoy
                     cookies_to_set.push(format!(
-                        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                        "access_token={}; Path=/admin; HttpOnly; Secure; SameSite=Lax",
                         new_jwt
                     ));
                     cookies_to_set.push(format!(
-                        "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                        "access_key={}; Path=/admin; HttpOnly; Secure; SameSite=Lax",
                         new_access_key
                     ));
                     cookies_to_set.push(format!(
-                        "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                        "access_secret={}; Path=/admin; HttpOnly; Secure; SameSite=Lax",
                         new_access_secret
                     ));
                     Logger::sys_info(

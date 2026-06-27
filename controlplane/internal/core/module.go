@@ -49,15 +49,13 @@ import (
 )
 
 type Module struct {
-	cfg                   *config.Config
-	SecretRepository      coreRepoInterface.SecretRepository
-	SecretRotationService coreSvcInterface.SecretRotationService
-	ZoneRepository        coreRepoInterface.ZoneRepository
-	ZoneService           coreSvcInterface.ZoneService
-	ZoneHandler           *coreHandler.ZoneHandler
-	BackpressureService   coreSvcInterface.BackpressureService
-	listenCancel          context.CancelFunc
-	L1Registry            *cacheengine.CacheRegistry
+	cfg                 *config.Config
+	ZoneRepository      coreRepoInterface.ZoneRepository
+	ZoneService         coreSvcInterface.ZoneService
+	ZoneHandler         *coreHandler.ZoneHandler
+	BackpressureService coreSvcInterface.BackpressureService
+	listenCancel        context.CancelFunc
+	L1Registry          *cacheengine.CacheRegistry
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
@@ -76,9 +74,7 @@ func NewModule(
 	}
 
 	// 1) SoT data access for secret lifecycle.
-	repo := coreRepoImpl.NewSecretRepository(cfg, db)
 	// 3) Rotation orchestration - Chỉ truyền một đối tượng cacheEngine duy nhất
-	rotationService := coreSvcImpl.NewSecretRotationService(repo, cacheEngine)
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
@@ -97,14 +93,12 @@ func NewModule(
 	}
 
 	m := &Module{
-		cfg:                   cfg,
-		SecretRepository:      repo,
-		SecretRotationService: rotationService,
-		ZoneRepository:        zoneRepo,
-		ZoneService:           zoneService,
-		ZoneHandler:           zoneHandler,
-		BackpressureService:   backpressureSvc,
-		L1Registry:            cacheEngine,
+		cfg:                 cfg,
+		ZoneRepository:      zoneRepo,
+		ZoneService:         zoneService,
+		ZoneHandler:         zoneHandler,
+		BackpressureService: backpressureSvc,
+		L1Registry:          cacheEngine,
 	}
 
 	return m, nil

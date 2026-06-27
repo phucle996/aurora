@@ -4,11 +4,11 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use std::sync::Arc;
 use tonic::{Response, Status};
 
-use crate::service::ext_authz::extract_cookie_value;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
+use crate::service::ext_authz::extract_cookie_value;
 
 // [COMMENT]: Xử lý luồng logout độc lập để làm sạch mã nguồn của ext_authz.rs
 pub async fn handle_logout(
@@ -179,7 +179,7 @@ pub async fn handle_admin_logout(
         );
         let mut denied_builder = DeniedHttpResponseBuilder::new();
         denied_builder.set_http_status(HttpStatusCode::NoContent);
-        add_clear_cookie_headers(&mut denied_builder);
+        add_clear_admin_cookie_headers(&mut denied_builder);
 
         let mut response = CheckResponse::new();
         response.set_status(tonic::Status::unauthenticated("Logged out"));
@@ -197,7 +197,7 @@ pub async fn handle_admin_logout(
             // [COMMENT]: Nếu token không hợp lệ hoặc hết hạn, trả về 204 kèm lệnh xóa cookie
             let mut denied_builder = DeniedHttpResponseBuilder::new();
             denied_builder.set_http_status(HttpStatusCode::NoContent);
-            add_clear_cookie_headers(&mut denied_builder);
+            add_clear_admin_cookie_headers(&mut denied_builder);
 
             let mut response = CheckResponse::new();
             response.set_status(tonic::Status::unauthenticated(
@@ -212,7 +212,7 @@ pub async fn handle_admin_logout(
     if claims.sub != "sre" {
         let mut denied_builder = DeniedHttpResponseBuilder::new();
         denied_builder.set_http_status(HttpStatusCode::NoContent);
-        add_clear_cookie_headers(&mut denied_builder);
+        add_clear_admin_cookie_headers(&mut denied_builder);
 
         let mut response = CheckResponse::new();
         response.set_status(tonic::Status::unauthenticated(
@@ -226,7 +226,7 @@ pub async fn handle_admin_logout(
     if claims.access_key != access_key {
         let mut denied_builder = DeniedHttpResponseBuilder::new();
         denied_builder.set_http_status(HttpStatusCode::NoContent);
-        add_clear_cookie_headers(&mut denied_builder);
+        add_clear_admin_cookie_headers(&mut denied_builder);
 
         let mut response = CheckResponse::new();
         response.set_status(tonic::Status::unauthenticated(
@@ -262,7 +262,7 @@ pub async fn handle_admin_logout(
     // [COMMENT]: Trả về HTTP 204 NoContent, xóa sạch mọi session cookie và zone_code cookie
     let mut denied_builder = DeniedHttpResponseBuilder::new();
     denied_builder.set_http_status(HttpStatusCode::NoContent);
-    add_clear_cookie_headers(&mut denied_builder);
+    add_clear_admin_cookie_headers(&mut denied_builder);
 
     let mut response = CheckResponse::new();
     response.set_status(tonic::Status::unauthenticated("Admin logout success"));
@@ -281,6 +281,21 @@ pub(crate) fn add_clear_cookie_headers(
         "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
         "refresh_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
         "zone_code=; Path=/; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    ];
+    for cookie in cookies {
+        builder.add_header("set-cookie", cookie, None, false);
+    }
+}
+
+// [COMMENT]: Helper function để thêm các HTTP Header "set-cookie" cấu hình xóa cookie của Admin dưới đường dẫn /admin.
+pub(crate) fn add_clear_admin_cookie_headers(
+    builder: &mut envoy_types::ext_authz::v3::DeniedHttpResponseBuilder,
+) {
+    let cookies = vec![
+        "access_token=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        "access_key=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        "access_secret=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        "zone_code=; Path=/admin; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
     ];
     for cookie in cookies {
         builder.add_header("set-cookie", cookie, None, false);

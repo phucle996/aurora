@@ -1,12 +1,5 @@
 services:
 
-  # ============================================================================
-  # 🛑 PHẦN 1: CONTROLPLANE CLUSTER - HIGH AVAILABILITY (HA) APPLICATION TIERS
-  # ============================================================================
-  # Cụm ba (3) thực thể Controlplane chạy song song để đảm bảo tính sẵn sàng cao.
-  # Nếu một node bị crash hoặc bảo trì, hệ thống vẫn tiếp tục vận hành bình thường.
-  # gRPC và HTTP traffic sẽ được Envoy phân phối đều dựa trên thuật toán Least Request.
-
   controlplane1:
     build:
       context: .
@@ -136,13 +129,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  # ============================================================================
-  # 🛡️ PHẦN 2: CENTRAL ENVOY EDGE INGRESS CONTROLLER
-  # ============================================================================
-  # Cổng ngõ (Ingress Gateway) phân tán tải tối ưu cho toàn bộ cụm Controlplane.
-  # Envoy chịu trách nhiệm terminate kết nối SSL/TLS, xử lý HTTP/2, gRPC proxy,
-  # và phân chia tải thông qua giải thuật LEAST_REQUEST để tối ưu hóa tài nguyên.
-
   envoy:
     image: envoyproxy/envoy:v1.33.2
     container_name: controlplane-envoy
@@ -166,12 +152,6 @@ services:
       controlplane3:
         condition: service_started
     restart: unless-stopped
-
-  # ============================================================================
-  # 📦 PHẦN 3: CENTRAL DATA & STATE PERSISTENCE LAYERS
-  # ============================================================================
-  # Hệ thống lưu trữ dữ liệu trung tâm bền vững (Centralized Storage Systems).
-  # Sử dụng PostgreSQL 17 cho dữ liệu quan hệ có cấu trúc và Redis Core cho Cache/Sessions.
 
   psql:
     image: postgres:18
@@ -293,17 +273,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # ============================================================================
-  # 🔒 PHẦN 4: ISOLATED REDIS CACHES PER GEOGRAPHIC ZONE (HIGH-AVAILABILITY)
-  # ============================================================================
-  # TRIẾT LÝ SRE VÀ THIẾT KẾ CÔ LẬP DỮ LIỆU (DATA ISOLATION & LATENCY OPTIMIZATION):
-  #   - Nhằm đạt được tính độc lập hoàn toàn giữa các vùng địa lý, loại bỏ cross-region latency.
-  #   - redis-job (Cổng 6380): Chuyên dụng để phân phối Job Queue (Streams).
-  #   - redis-dataplane-z1 (Cổng 6381): Cache cục bộ dành riêng cho Phân vùng Đông Nam Á (Zone 1).
-  #   - redis-dataplane-z2 (Cổng 6382): Cache cục bộ dành riêng cho Phân vùng US West (Zone 2).
-  #   - Nếu một Zone bị cô lập do mất kết nối mạng hoặc lỗi hạ tầng, các Zone khác vẫn hoạt động
-  #     bình thường mà không bị ảnh hưởng chéo (mục tiêu cốt lõi của tính năng SRE HA).
-
   redis-job:
     image: redis:8.8.0
     container_name: controlplane-redis-job
@@ -348,14 +317,6 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
-
-  # ============================================================================
-  # 🚀 PHẦN 5: DATAPLANE ZONE 1 (SINGLE RUST-NODE - ASIA SOUTHEAST ZONE)
-  # ============================================================================
-  # Phân vùng Địa lý 1 (Zone 1 - Asia Southeast):
-  #   - Nhận nhiệm vụ xử lý tác vụ cục bộ trong khu vực Đông Nam Á.
-  #   - Định danh duy nhất bởi UUIDv7 đã được seed vào Postgres: 01903e8c-55c1-7da3-87de-6e69622d1df7.
-  #   - Được bổ trợ cổng bảo mật gRPC Load Balancing bởi Envoy-Zone1 tại Port 8081.
 
   dataplane-z1-n1:
     build:
@@ -403,16 +364,6 @@ services:
           cpus: '0.25'
           memory: 256M
   # Đã loại bỏ dịch vụ envoy-zone1 do Dataplane không có inbound traffic.
-
-
-  # ============================================================================
-  # 🚀 PHẦN 6: DATAPLANE ZONE 2 (HIGH-AVAILABILITY CLUSTER - US WEST ZONE)
-  # ============================================================================
-  # Phân vùng Địa lý 2 (Zone 2 - US West):
-  #   - Bản thiết kế High-Availability đích thực: Chạy hai (2) nodes Rust hoạt động Active-Active.
-  #   - Định danh chung bởi UUIDv7 của Zone 2: 01903e8c-55c1-7da3-87de-6e69622d1df8.
-  #   - Phía trước là Envoy-Zone2 (Port 8082) có nhiệm vụ phân bổ tải gRPC Round-Robin
-  #     kèm theo cơ chế Active Health Checks để tự động phát hiện và loại bỏ node bị lỗi.
 
   dataplane-z2-n1:
     build:
@@ -563,12 +514,6 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ============================================================================
-  # 💻 PHẦN 8: FRONTEND DEVELOPER WORKSPACE APPLICATIONS
-  # ============================================================================
-  # Các giao diện điều khiển (User Interfaces) viết bằng React/Next.js/Vite.
-  # Phục vụ lập trình viên quản trị hệ thống, khách hàng Cloud, và quy trình xử lý sự cố.
-
   cloud-ui:
     build:
       context: ../cloud-ui
@@ -598,7 +543,7 @@ services:
       dockerfile: Dockerfile.nginx
     container_name: admin-ui-nginx
     ports:
-      - "5175:5173" # Chạy trên cổng 5175 ngoài máy host để tránh trùng port 5173 dev
+      - "5175:5173"
     restart: unless-stopped
 
   job-proxy:
@@ -662,13 +607,6 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ============================================================================
-  # 🛡️ PHẦN 8.2: ACR SERVICE (RUST) — AUTH GATE / DATA PLANE AUTH
-  # ============================================================================
-  # Dịch vụ ACR xác thực Trinity Token cho user trực tiếp (stateless JWT + Redis L2),
-  # loại bỏ hoàn toàn nhu cầu gọi ngược về Controlplane (Go) cho luồng verify user.
-  # Kết nối Vault Transit để xác minh chữ ký JWT và Redis Core cho session lookup.
-
   acr:
     build:
       context: ../acr
@@ -682,8 +620,10 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "myroot"
-      VAULT_TRANSIT_KEY_NAME: "jwt-signer"
+      VAULT_TOKEN: "hvs.9BB1cBRVUuY8lUNPHx7tc5G2"
+      VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
+      VAULT_TOTP_KEY_PATH: "totp/keys/admin"
+      VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
       VAULT_TIMEOUT_SECS: "5"
       VAULT_MAX_RETRIES: "3"
       SESSION_TTL_SECS: "1800"
@@ -732,10 +672,7 @@ services:
       otel-collector:
         condition: service_started
     restart: unless-stopped
-  # ============================================================================
-  # 🔒 PHẦN 8.5: HASHICORP VAULT - HA SECRET STORAGE BACKEND
-  # ============================================================================
-  # Khởi chạy Vault sử dụng file cấu hình chuyên nghiệp (vault.hcl) và Raft storage
+
   vault:
     image: hashicorp/vault:2.0
     user: "0:0"

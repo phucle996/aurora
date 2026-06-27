@@ -26,8 +26,14 @@ pub struct VaultClient {
     addr: String,
     // Token xác thực REST API (được lấy từ AppRole login hoặc static token)
     token: String,
+    // Mount path của Transit Engine trong Vault (mặc định: transit)
+    transit_mount_path: String,
     // Tên khóa Transit dùng cho HMAC ký/xác thực JWT (mặc định: jwt-signer)
     transit_key_name: String,
+    // Mount path của TOTP Engine (mặc định: totp)
+    totp_mount_path: String,
+    // Tên khóa TOTP dùng cho OTP (mặc định: admin)
+    totp_key_name: String,
 }
 
 impl VaultClient {
@@ -78,11 +84,36 @@ impl VaultClient {
                             cfg.addr, attempt
                         ),
                     );
+                    // [COMMENT]: Phân tách mount path và key name từ đường dẫn khóa transit (ví dụ: transit/keys/jwt-signer)
+                    let transit_path = cfg.transit_key_path.trim();
+                    let (transit_mount, transit_key) = if transit_path.contains('/') {
+                        let parts: Vec<&str> = transit_path.split('/').collect();
+                        let mount_val = parts.first().cloned().unwrap_or("transit").to_string();
+                        let key_val = parts.last().cloned().unwrap_or("jwt-signer").to_string();
+                        (mount_val, key_val)
+                    } else {
+                        ("transit".to_string(), transit_path.to_string())
+                    };
+
+                    // [COMMENT]: Phân tách mount path và key name từ đường dẫn khóa TOTP (ví dụ: totp/keys/admin)
+                    let totp_path = cfg.totp_key_path.trim();
+                    let (totp_mount, totp_key) = if totp_path.contains('/') {
+                        let parts: Vec<&str> = totp_path.split('/').collect();
+                        let mount_val = parts.first().cloned().unwrap_or("totp").to_string();
+                        let key_val = parts.last().cloned().unwrap_or("admin").to_string();
+                        (mount_val, key_val)
+                    } else {
+                        ("totp".to_string(), totp_path.to_string())
+                    };
+
                     return Ok(Self {
                         http_client,
                         addr: cfg.addr.clone(),
                         token,
-                        transit_key_name: cfg.transit_key_name.clone(),
+                        transit_mount_path: transit_mount,
+                        transit_key_name: transit_key,
+                        totp_mount_path: totp_mount,
+                        totp_key_name: totp_key,
                     });
                 }
                 Err(e) => {
@@ -208,8 +239,11 @@ impl VaultClient {
         // 4. Encode signing_input sang Base64 Standard cho Vault
         let input_b64 = std_engine.encode(signing_input.as_bytes());
 
-        // 5. Gọi Vault Transit API verify
-        let url = format!("{}/v1/transit/verify/{}", self.addr, self.transit_key_name);
+        // 5. Gọi Vault Transit API verify dùng đường dẫn linh hoạt
+        let url = format!(
+            "{}/v1/{}/verify/{}",
+            self.addr, self.transit_mount_path, self.transit_key_name
+        );
         let body = serde_json::json!({
             "input": input_b64,
             "hmac": vault_hmac,
@@ -261,8 +295,11 @@ impl VaultClient {
         // 1. Encode signing_input sang Base64 Standard cho Vault Transit
         let input_b64 = std_engine.encode(signing_input.as_bytes());
 
-        // 2. Gọi Vault Transit API hmac
-        let url = format!("{}/v1/transit/hmac/{}", self.addr, self.transit_key_name);
+        // 2. Gọi Vault Transit API hmac dùng đường dẫn linh hoạt
+        let url = format!(
+            "{}/v1/{}/hmac/{}",
+            self.addr, self.transit_mount_path, self.transit_key_name
+        );
         let body = serde_json::json!({
             "input": input_b64,
             "algorithm": "sha2-256",
@@ -355,9 +392,9 @@ impl VaultClient {
 
     /// [COMMENT]: Thực hiện gửi mã OTP đến Vault TOTP Secrets Engine để kiểm tra trực tiếp
     /// Giúp bảo vệ an toàn tối đa cho 2FA Secret Key (không bao giờ rời khỏi Vault)
-    pub async fn verify_totp(&self, key_name: &str, code: &str) -> Result<bool, AcrError> {
-        // [COMMENT]: 1. Xây dựng URL tới Vault TOTP verify endpoint
-        let url = format!("{}/v1/totp/code/{}", self.addr, key_name);
+    pub async fn verify_totp(&self, code: &str) -> Result<bool, AcrError> {
+        // [COMMENT]: 1. Xây dựng URL tới Vault TOTP verify endpoint sử dụng cấu hình động
+        let url = format!("{}/v1/{}/code/{}", self.addr, self.totp_mount_path, self.totp_key_name);
 
         // [COMMENT]: 2. Chuẩn bị request body chứa OTP code từ client
         let body = serde_json::json!({

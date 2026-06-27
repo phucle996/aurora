@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	// import cấu hình hệ thống để truyền cấu hình trực tiếp vào OTel
 	"controlplane/internal/config"
 	coreMetrics "controlplane/internal/core/metrics"
 	iamMetrics "controlplane/internal/iam/metrics"

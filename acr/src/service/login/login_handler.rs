@@ -58,25 +58,30 @@ pub async fn handle_login(
 
     Logger::sys_info("login_handler", "Intercepted login request at edge");
 
-    // [COMMENT]: Trích xuất Request Body thô được Envoy gửi sang
-    let raw_body = req
+    // [COMMENT]: Trích xuất Request Body thô dạng byte nhị phân được Envoy gửi sang (hỗ trợ cả text và bytes)
+    let raw_body_bytes = req
         .attributes
         .as_ref()
         .and_then(|a| a.request.as_ref())
         .and_then(|r| r.http.as_ref())
-        .map(|h| &h.body)
-        .cloned()
+        .map(|h| {
+            if !h.body.is_empty() {
+                h.body.as_bytes().to_vec()
+            } else {
+                h.raw_body.clone()
+            }
+        })
         .unwrap_or_default();
 
-    if raw_body.is_empty() {
+    if raw_body_bytes.is_empty() {
         return Some(Ok(Response::new(build_denied_json(
             HttpStatusCode::BadRequest,
             "Request body is empty",
         ))));
     }
 
-    // [COMMENT]: Giải mã JSON payload chứa thông tin đăng nhập và thiết bị
-    let payload: LoginPayload = match serde_json::from_str(&raw_body) {
+    // [COMMENT]: Giải mã JSON payload trực tiếp từ mảng byte (Zero-copy / No intermediate String)
+    let payload: LoginPayload = match serde_json::from_slice(&raw_body_bytes) {
         Ok(p) => p,
         Err(e) => {
             Logger::sys_warn(

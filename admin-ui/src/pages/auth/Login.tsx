@@ -9,7 +9,6 @@ import {
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Fetch } from '@/lib/fetch'
 import { usePageMeta } from '@/lib/page-meta'
 import { useAdminSession } from '@/hooks/useAdminSession'
@@ -64,7 +63,7 @@ export default function AdminAPIKeyLoginPage() {
   const { refreshSession } = useAdminSession()
   const [apiKey, setAPIKey] = useState('')
   const [twoFactorCode, setTwoFactorCode] = useState('')
-  const [mfaMethod, setMFAMethod] = useState<MFAMethod>('totp')
+  const mfaMethod: MFAMethod = 'totp'
   const [state, setState] = useState<AdminLoginState>({
     loading: false,
     error: '',
@@ -139,7 +138,7 @@ export default function AdminAPIKeyLoginPage() {
   return (
     <AuthLayout>
       <div
-        className="rounded-4xl border border-[#dfe7f3] bg-white p-8 shadow-[0_40px_80px_-40px_rgba(15,23,42,0.25)] sm:p-10 dark:border-slate-700/30 dark:bg-[#0f172a]/85 dark:backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5"
+        className="rounded-2xl border border-[#dfe7f3] bg-white p-8 shadow-[0_40px_80px_-40px_rgba(15,23,42,0.25)] sm:p-10 dark:border-slate-700/30 dark:bg-[#0f172a]/85 dark:backdrop-blur-md transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-0.5"
         style={theme === 'dark' ? {
           boxShadow: '0 24px 70px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.04)'
         } : undefined}
@@ -173,29 +172,19 @@ export default function AdminAPIKeyLoginPage() {
 
           <div className="space-y-2.5">
             <label htmlFor="two-factor-code" className="text-sm font-bold text-[#334155] dark:text-slate-200">
-              {mfaMethod === 'totp' ? t('totpCodeLabel') : t('recoveryCodeLabel')}
+              {t('totpCodeLabel')}
             </label>
-            <div className="group flex h-14 w-full overflow-hidden rounded-xl border border-[#dbe5f2] bg-[#f8fbff] transition-all hover:border-primary/30 focus-within:border-primary focus-within:bg-white focus-within:ring-4 focus-within:ring-primary/10 dark:border-slate-700/40 dark:bg-[#0f172a]/70 dark:focus-within:border-blue-500 dark:focus-within:bg-[#0f172a] dark:focus-within:ring-blue-500/20">
-              <div className="h-full w-30 shrink-0 border-r border-[#dbe5f2] sm:w-33 dark:border-slate-700/40">
-                <Select value={mfaMethod} onValueChange={(value) => setMFAMethod(value as MFAMethod)} disabled={state.loading}>
-                  <SelectTrigger className="h-14! w-full items-center rounded-none border-0 bg-transparent py-0! pl-3 pr-2 text-sm font-semibold leading-none text-[#334155] shadow-none focus-visible:ring-0 dark:text-slate-200">
-                    <SelectValue placeholder={mfaMethod === 'totp' ? t('mfaMethodTotp') : t('mfaMethodRecovery')} className="leading-none" />
-                  </SelectTrigger>
-                  <SelectContent position="popper" align="start" className="min-w-33 dark:bg-[#0f172a] dark:border-slate-800">
-                    <SelectItem value="totp" className="dark:text-slate-200">{t('mfaMethodTotp')}</SelectItem>
-                    <SelectItem value="recovery_code" className="dark:text-slate-200">{t('mfaMethodRecovery')}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="group relative">
+              <Lock className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-[#95a2b8] transition-colors group-focus-within:text-primary dark:group-focus-within:text-[#60A5FA]" />
               <Input
                 id="two-factor-code"
-                inputMode={mfaMethod === 'totp' ? 'numeric' : 'text'}
+                inputMode="numeric"
                 autoComplete="one-time-code"
-                placeholder={mfaMethod === 'totp' ? t('totpPlaceholder') : t('recoveryPlaceholder')}
+                placeholder={t('totpPlaceholder')}
                 value={twoFactorCode}
                 onChange={(event) => setTwoFactorCode(event.target.value)}
                 disabled={state.loading}
-                className="h-full w-full border-0 bg-transparent py-0 pl-3 text-[15px] font-semibold leading-none text-[#1e293b] shadow-none ring-0 placeholder:font-medium placeholder:text-[#94a3b8] focus-visible:ring-0 disabled:opacity-70 dark:text-slate-100 dark:placeholder:text-slate-500"
+                className="h-14 w-full rounded-xl border-[#dbe5f2] bg-[#f8fbff] pl-12 text-base font-semibold text-[#1e293b] shadow-none ring-offset-white transition-all placeholder:font-medium placeholder:text-[#94a3b8] hover:border-primary/30 focus-visible:border-primary focus-visible:bg-white focus-visible:ring-4 focus-visible:ring-primary/10 disabled:opacity-70 dark:border-slate-700/40 dark:bg-[#0f172a]/70 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus-visible:border-blue-500 dark:focus-visible:bg-[#0f172a] dark:focus-visible:ring-blue-500/20"
               />
             </div>
           </div>

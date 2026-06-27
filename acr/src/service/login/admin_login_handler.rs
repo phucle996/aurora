@@ -50,25 +50,30 @@ pub async fn handle_admin_login(
 
     Logger::sys_info("SRE-Login", "Intercepted SRE Admin login request at edge");
 
-    // [COMMENT]: Trích xuất Request Body thô được Envoy gửi sang
-    let raw_body = req
+    // [COMMENT]: Trích xuất Request Body thô dạng byte nhị phân được Envoy gửi sang (hỗ trợ cả text và bytes)
+    let raw_body_bytes = req
         .attributes
         .as_ref()
         .and_then(|a| a.request.as_ref())
         .and_then(|r| r.http.as_ref())
-        .map(|h| &h.body)
-        .cloned()
+        .map(|h| {
+            if !h.body.is_empty() {
+                h.body.as_bytes().to_vec()
+            } else {
+                h.raw_body.clone()
+            }
+        })
         .unwrap_or_default();
 
-    if raw_body.is_empty() {
+    if raw_body_bytes.is_empty() {
         return Some(Ok(Response::new(build_denied_json(
             HttpStatusCode::BadRequest,
             "Request body is empty",
         ))));
     }
 
-    // [COMMENT]: Giải mã JSON payload chứa thông tin đăng nhập khẩn cấp của SRE Admin
-    let payload: AdminLoginPayload = match serde_json::from_str(&raw_body) {
+    // [COMMENT]: Giải mã JSON payload trực tiếp từ mảng byte (Zero-copy / No intermediate String)
+    let payload: AdminLoginPayload = match serde_json::from_slice(&raw_body_bytes) {
         Ok(p) => p,
         Err(e) => {
             Logger::sys_warn(
@@ -270,28 +275,28 @@ pub async fn handle_admin_login(
 
     // [COMMENT]: Set-Cookie access_token
     let access_cookie = format!(
-        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        "access_token={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
         access_token, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Set-Cookie access_key
     let key_cookie = format!(
-        "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        "access_key={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
         access_key, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &key_cookie, None, false);
 
     // [COMMENT]: Set-Cookie access_secret
     let secret_cookie = format!(
-        "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        "access_secret={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
         access_secret, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &secret_cookie, None, false);
 
     // [COMMENT]: Set-Cookie zone_code=global để trình duyệt lưu vết
     let zone_cookie = format!(
-        "zone_code=global; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        "zone_code=global; Path=/admin; Secure; SameSite=Lax; Max-Age=31536000{}",
         domain_str
     );
     denied_builder.add_header("set-cookie", &zone_cookie, None, false);

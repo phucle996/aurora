@@ -108,22 +108,6 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		return err
 	}
 
-	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog phục vụ API public, không còn dùng cache cho zone_list nữa
-	s.l1Registry.L1.Delete("zone_catalog")
-	coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
-
-	// [COMMENT]: Phát tán thông báo xóa cache zone_catalog tới các replica khác qua pub/sub
-	detachedCtx := context.WithoutCancel(ctx)
-	go func() {
-		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
-			} else {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
-			}
-		}
-	}()
-
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }

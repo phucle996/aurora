@@ -76,8 +76,7 @@ export default function AuthLayout({ children }: AuthLayoutProps) {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* [COMMENT]: Khóa thiết bị được kiểm soát tự động tại biên, không yêu cầu chọn zone thủ công */}
-            <div className="inline-flex items-center gap-2 rounded-full border border-[#d7e1f0] bg-white/90 px-4 py-2 text-sm font-semibold text-[#5f6e86] shadow-sm backdrop-blur dark:border-slate-700/30 dark:bg-[#0f172a]/70 dark:text-[#CBD5E1] dark:shadow-[0_8px_24px_rgba(0,0,0,0.22)]">
+            <div className="inline-flex items-center gap-2 rounded-md border border-[#d7e1f0] bg-white/90 px-4 py-2 text-sm font-semibold text-[#5f6e86] shadow-sm backdrop-blur dark:border-slate-700/30 dark:bg-[#0f172a]/70 dark:text-[#CBD5E1] dark:shadow-[0_8px_24px_rgba(0,0,0,0.22)]">
               <ShieldCheck className="h-4 w-4 text-[#5f6e86] dark:text-[#CBD5E1]" />
               {t('socInfo')}
             </div>

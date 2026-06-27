@@ -1,31 +1,25 @@
-import type { ElementType, ReactNode } from 'react'
-import { Brain, Database, Boxes, Mail, Server } from 'lucide-react'
-
 import { LocationAutocomplete, type ZoneLocation } from '@/components/zone/location-autocomplete'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Button } from '@/components/ui/button'
+import { Link } from '@tanstack/react-router'
 import { slugify } from '@/lib/slugify'
 
 export type ServiceKey = 'hypervisor' | 'storage' | 'mail' | 'k8s' | 'ai'
 
-const serviceItems: Array<{ key: ServiceKey; label: string; icon: ElementType }> = [
-  { key: 'hypervisor', label: 'Hypervisor', icon: Server },
-  { key: 'storage', label: 'Storage', icon: Database },
-  { key: 'mail', label: 'Mail', icon: Mail },
-  { key: 'k8s', label: 'Kubernetes', icon: Boxes },
-  { key: 'ai', label: 'AI', icon: Brain },
+const serviceItems: Array<{ key: ServiceKey; label: string; description: string }> = [
+  { key: 'hypervisor', label: 'Hypervisor', description: 'Compute virtualization and VM management.' },
+  { key: 'storage', label: 'Storage', description: 'Block, file, and object storage services.' },
+  { key: 'k8s', label: 'Kubernetes', description: 'Managed Kubernetes clusters.' },
+  { key: 'ai', label: 'AI Services', description: 'AI/ML workloads and GPU acceleration.' },
+  { key: 'mail', label: 'Mail Services', description: 'Email and messaging services.' },
 ]
 
-function FieldHint({ children }: { children: ReactNode }) {
-  return <p className="mt-2 text-sm text-muted-foreground">{children}</p>
-}
-
 function Required() {
-  return <span className="text-destructive">*</span>
+  return <span className="text-destructive ml-0.5">*</span>
 }
-
 
 interface ZoneFormProps {
   zoneName: string
@@ -41,6 +35,8 @@ interface ZoneFormProps {
   services: Record<ServiceKey, boolean>
   toggleService: (key: ServiceKey) => void
   selectLocation: (item: ZoneLocation) => void
+  onSubmit: () => void
+  disabled: boolean
 }
 
 export default function ZoneForm({
@@ -56,88 +52,134 @@ export default function ZoneForm({
   services,
   toggleService,
   selectLocation,
+  onSubmit,
+  disabled,
 }: ZoneFormProps) {
   return (
-    <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
-      <h2 className="text-xl font-semibold tracking-[-0.02em] text-foreground">Zone Details</h2>
+    <div className="space-y-8">
+      <div>
+        <div className="space-y-6">
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label className="text-sm font-semibold text-slate-700 dark:text-slate-350">
+                Zone name <Required />
+              </Label>
+              <Input
+                value={zoneName}
+                onChange={(event) => {
+                  const val = event.target.value
+                  setZoneName(val)
+                  if (!isZoneCodeManuallyEdited) {
+                    setZoneCode(slugify(val))
+                  }
+                }}
+                placeholder="US East 1"
+                className="h-10 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 text-sm focus-visible:ring-blue-500/20"
+              />
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1.5">A friendly name to identify this zone.</p>
+            </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <div>
-          <Label className="text-sm font-semibold text-foreground">
-            Zone Name <Required />
-          </Label>
-          <Input
-            value={zoneName}
-            onChange={(event) => {
-              const val = event.target.value
-              setZoneName(val)
-              if (!isZoneCodeManuallyEdited) {
-                setZoneCode(slugify(val))
-              }
-            }}
-            placeholder="e.g., US East 1"
-            className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"
-          />
-          <FieldHint>A friendly name to identify this zone.</FieldHint>
-        </div>
+            <div className="space-y-2">
+              <Label className="text-sm font-semibold text-slate-700 dark:text-slate-350">
+                Zone code <Required />
+              </Label>
+              <Input
+                value={zoneCode}
+                onChange={(event) => {
+                  const val = event.target.value
+                  setIsZoneCodeManuallyEdited(val !== '')
+                  setZoneCode(slugify(val))
+                }}
+                placeholder="us-east-1"
+                className="h-10 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-955 px-3 text-sm focus-visible:ring-blue-500/20"
+              />
+              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1.5">A unique code used for API and automation.</p>
+            </div>
+          </div>
 
-        <div>
-          <Label className="text-sm font-semibold text-foreground">
-            Zone Code <Required />
-          </Label>
-          <Input
-            value={zoneCode}
-            onChange={(event) => {
-              const val = event.target.value
-              setIsZoneCodeManuallyEdited(val !== '')
-              setZoneCode(slugify(val))
-            }}
-            placeholder="e.g., us-east-1"
-            className="mt-3 h-12 rounded-lg border-border bg-background px-4 shadow-none"
-          />
-          <FieldHint>A unique code used for API and automation.</FieldHint>
-        </div>
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold text-slate-700 dark:text-slate-350">
+              Location <Required />
+            </Label>
+            <LocationAutocomplete value={location} onSelect={selectLocation} className="mt-0" />
+            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1.5">Select the geographic location for this zone.</p>
+          </div>
 
-        <div className="lg:col-span-2">
-          <Label className="text-sm font-semibold text-foreground">
-            Location <Required />
-          </Label>
-          <LocationAutocomplete value={location} onSelect={selectLocation} />
-          <FieldHint>Search and select the geographic location for this zone.</FieldHint>
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold text-slate-700 dark:text-slate-350">Description</Label>
+            <Textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Primary zone for US East region. Supports general workloads, managed services, and tenant deployments."
+              rows={4}
+              className="border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-2 text-sm focus-visible:ring-blue-500/20"
+            />
+            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1.5">Provide details about this zone and its intended use.</p>
+          </div>
         </div>
       </div>
 
-      <div className="mt-7">
-        <Label className="text-sm font-semibold text-foreground">Description</Label>
-        <Textarea
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          placeholder="Describe the purpose, capacity, and intended workloads..."
-          className="mt-3 min-h-28 rounded-lg border-border bg-background px-4 py-3 text-sm shadow-none"
-        />
-        <FieldHint>Provide details about this zone and its intended use.</FieldHint>
+      {/* Platform Capabilities Section */}
+      <div>
+        <div className="border border-slate-200/80 dark:border-slate-800 rounded overflow-hidden bg-white dark:bg-slate-955">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-950/20">
+                <th className="p-4 pl-6 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/4">Service</th>
+                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/4">Status</th>
+                <th className="p-4 pr-6 text-xs font-semibold text-slate-500 uppercase tracking-wider">Description</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-150 dark:divide-slate-800/80">
+              {serviceItems.map((item) => {
+                const isEnabled = services[item.key]
+                return (
+                  <tr key={item.key} className="hover:bg-slate-50/25 dark:hover:bg-slate-955/10 transition-colors">
+                    <td className="p-4 pl-6">
+                      <label className="flex items-center gap-3 cursor-pointer select-none">
+                        <Checkbox
+                          checked={isEnabled}
+                          onCheckedChange={() => toggleService(item.key)}
+                          className="data-checked:bg-blue-600 data-checked:border-blue-600 dark:data-checked:bg-blue-600"
+                        />
+                        <span className="text-[13px] font-semibold text-slate-800 dark:text-slate-200">{item.label}</span>
+                      </label>
+                    </td>
+                    <td className="p-4">
+                      {isEnabled ? (
+                        <span className="text-[13px] font-semibold text-emerald-600 dark:text-emerald-400">
+                          Enabled
+                        </span>
+                      ) : (
+                        <span className="text-[13px] font-semibold text-slate-400 dark:text-slate-500">
+                          Disabled
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-4 pr-6 text-[13px] text-slate-500 dark:text-slate-400">
+                      {item.description}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <div className="mt-8">
-        <h3 className="text-sm font-semibold text-foreground">Enabled Services</h3>
-        <p className="mt-2 text-sm text-muted-foreground">Select the platform services to enable in this zone.</p>
-        <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-          {serviceItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <div
-                key={item.key}
-                className="flex h-16 items-center justify-between rounded-lg border border-border bg-background px-4 text-left shadow-xs transition-colors hover:bg-muted/40"
-              >
-                <span className="flex items-center gap-3 text-sm font-medium text-foreground">
-                  <Icon className="size-5 text-primary" />
-                  {item.label}
-                </span>
-                <Switch checked={services[item.key]} onCheckedChange={() => toggleService(item.key)} />
-              </div>
-            )
-          })}
-        </div>
+      {/* Action Buttons Section */}
+      <div className="flex items-center gap-3 pt-2">
+        <Button
+          type="button"
+          onClick={onSubmit}
+          disabled={disabled}
+          className="h-11 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 shadow-md shadow-blue-500/10 disabled:opacity-50"
+        >
+          Review + create
+        </Button>
+        <Button asChild variant="outline" className="h-11 rounded-lg px-6 font-semibold border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-955 hover:bg-slate-50 text-slate-700 dark:text-slate-300">
+          <Link to="/zones">Cancel</Link>
+        </Button>
       </div>
     </div>
   )

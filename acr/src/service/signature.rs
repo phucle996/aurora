@@ -3,11 +3,11 @@
 //            Bộ xác thực chữ ký Ed25519 tại biên (Edge Signature Verification) cho SRE Critical API
 // ======================================================================================================
 
-use std::sync::Arc;
-use tonic::Status;
-use envoy_types::pb::envoy::service::auth::v3::CheckRequest;
 use crate::core::session::SessionManager;
 use crate::observability::logger::Logger;
+use envoy_types::pb::envoy::service::auth::v3::CheckRequest;
+use std::sync::Arc;
+use tonic::Status;
 
 // [COMMENT]: Hàm chính xử lý xác thực chữ ký Ed25519, kiểm tra Clock Skew và replay prevention
 pub async fn verify_admin_signature(
@@ -40,16 +40,18 @@ pub async fn verify_admin_signature(
             "Missing critical signature headers for SRE request",
             path,
         );
-        return Err(Status::unauthenticated("Missing critical signature headers"));
+        return Err(Status::unauthenticated(
+            "Missing critical signature headers",
+        ));
     }
 
     // [COMMENT]: Chống tràn số (overflow/underflow) khi tính toán Clock Skew từ timestamp người dùng gửi lên
-    let ts_unix = ts_raw.parse::<i64>().map_err(|_| {
-        Status::unauthenticated("Invalid signature timestamp format")
-    })?;
-    
+    let ts_unix = ts_raw
+        .parse::<i64>()
+        .map_err(|_| Status::unauthenticated("Invalid signature timestamp format"))?;
+
     let now_unix = chrono::Utc::now().timestamp();
-    
+
     // Sử dụng checked_sub và checked_abs để đảm bảo không bị crash hệ thống khi kẻ tấn công gửi timestamp độc hại
     let diff = ts_unix
         .checked_sub(now_unix)
@@ -79,7 +81,7 @@ pub async fn verify_admin_signature(
     })?;
 
     let nonce_key = format!("iam:nonce:{}", nonce);
-    
+
     // Sử dụng lệnh SET key value EX 120 NX để ghi khóa nonce một cách nguyên tử (atomic)
     let success: bool = redis::cmd("SET")
         .arg(&nonce_key)
@@ -110,19 +112,24 @@ pub async fn verify_admin_signature(
         ));
     }
 
-    // [COMMENT]: Lấy Raw Body của request để tính SHA-256 hash làm canonical payload
-    let raw_body = req
+    // [COMMENT]: Lấy Raw Body của request dưới dạng byte nhị phân để tính băm SHA-256 (tối ưu hóa zero-copy)
+    let raw_body_bytes = req
         .attributes
         .as_ref()
         .and_then(|a| a.request.as_ref())
         .and_then(|r| r.http.as_ref())
-        .map(|h| &h.body)
-        .cloned()
+        .map(|h| {
+            if !h.body.is_empty() {
+                h.body.as_bytes().to_vec()
+            } else {
+                h.raw_body.clone()
+            }
+        })
         .unwrap_or_default();
 
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(raw_body.as_bytes());
+    hasher.update(&raw_body_bytes);
     let body_hash_hex = format!("{:x}", hasher.finalize());
 
     // [COMMENT]: Phân tách path và query string độc lập để xây dựng canonical request
@@ -168,11 +175,7 @@ pub async fn verify_admin_signature(
 }
 
 // [COMMENT]: Helper xác thực chữ ký Ed25519 bằng base64-encoded public key và base64-encoded signature
-pub fn verify_ed25519_signature(
-    pubkey_b64: &str,
-    payload: &str,
-    signature_b64: &str,
-) -> bool {
+pub fn verify_ed25519_signature(pubkey_b64: &str, payload: &str, signature_b64: &str) -> bool {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
