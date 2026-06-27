@@ -48,7 +48,6 @@ type LoginRequest struct {
 	TrustDevice     bool
 	DeviceName      string
 	ClientDeviceID  uuid.UUID
-	ZoneCode        string
 }
 
 // VerifySessionResult chứa thông tin phản hồi sau khi xác thực Trinity session thành công
@@ -78,4 +77,3 @@ type VerifyUserCredentialsResult struct {
 	ClientDeviceID string
 	RefreshToken   string
 }
-

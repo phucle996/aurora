@@ -48,10 +48,7 @@ pub async fn handle_admin_login(
         return None;
     }
 
-    Logger::sys_info(
-        "admin_login_handler",
-        "Intercepted SRE Admin login request at edge",
-    );
+    Logger::sys_info("SRE-Login", "Intercepted SRE Admin login request at edge");
 
     // [COMMENT]: Trích xuất Request Body thô được Envoy gửi sang
     let raw_body = req
@@ -75,7 +72,7 @@ pub async fn handle_admin_login(
         Ok(p) => p,
         Err(e) => {
             Logger::sys_warn(
-                "admin_login_handler",
+                "SRE-Login",
                 &format!("Failed to parse Admin login JSON body: {}", e),
                 "",
             );
@@ -107,7 +104,7 @@ pub async fn handle_admin_login(
     };
 
     Logger::sys_info(
-        "admin_login_handler",
+        "SRE-Login",
         &format!(
             "Attempting SRE verification with TOTP length: {}",
             totp_code.len()
@@ -119,7 +116,7 @@ pub async fn handle_admin_login(
         Ok(hash) => hash,
         Err(e) => {
             Logger::sys_error(
-                "admin_login_handler",
+                "SRE-Login",
                 "Failed to retrieve admin api key hash",
                 &e.to_string(),
             );
@@ -137,11 +134,7 @@ pub async fn handle_admin_login(
     let input_hash = format!("{:x}", hasher.finalize());
 
     if input_hash != admin_api_key_hash {
-        Logger::sys_warn(
-            "admin_login_handler",
-            "SRE Admin login failed: API Key mismatch",
-            "",
-        );
+        Logger::sys_warn("SRE-Login", "SRE Admin login failed: API Key mismatch", "");
         return Some(Ok(Response::new(build_denied_json(
             HttpStatusCode::Unauthorized,
             "Invalid API key or OTP code",
@@ -149,7 +142,7 @@ pub async fn handle_admin_login(
     }
 
     Logger::sys_info(
-        "admin_login_handler",
+        "SRE-Login",
         "API Key validated successfully. Triggering Vault TOTP verification...",
     );
 
@@ -159,7 +152,7 @@ pub async fn handle_admin_login(
         Ok(valid) => valid,
         Err(e) => {
             Logger::sys_error(
-                "admin_login_handler",
+                "SRE-Login",
                 "Failed to verify TOTP code with Vault",
                 &e.to_string(),
             );
@@ -172,7 +165,7 @@ pub async fn handle_admin_login(
 
     if !is_totp_valid {
         Logger::sys_warn(
-            "admin_login_handler",
+            "SRE-Login",
             "SRE Admin login failed: TOTP verification failed",
             "",
         );
@@ -183,7 +176,7 @@ pub async fn handle_admin_login(
     }
 
     Logger::sys_info(
-        "admin_login_handler",
+        "SRE-Login",
         "SRE Admin TOTP verified successfully. Generating SRE session...",
     );
 
@@ -213,7 +206,7 @@ pub async fn handle_admin_login(
         Ok(t) => t,
         Err(e) => {
             Logger::sys_error(
-                "admin_login_handler",
+                "SRE-Login",
                 "Vault JWT signing failed for SRE",
                 &e.to_string(),
             );
@@ -239,7 +232,7 @@ pub async fn handle_admin_login(
         };
         if !is_valid {
             Logger::sys_warn(
-                "admin_login_handler",
+                "SRE-Login",
                 "SRE Admin login failed: Invalid device_public_key format or length",
                 "",
             );
@@ -255,7 +248,7 @@ pub async fn handle_admin_login(
         .await
     {
         Logger::sys_error(
-            "admin_login_handler",
+            "SRE-Login",
             "Redis admin session registration failed",
             &e.to_string(),
         );
@@ -308,7 +301,7 @@ pub async fn handle_admin_login(
     response.set_http_response(denied_builder);
 
     Logger::sys_info(
-        "admin_login_handler",
+        "SRE-Login",
         &format!(
             "SRE Login session registered successfully. access_key={}",
             access_key
