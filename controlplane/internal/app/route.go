@@ -15,7 +15,7 @@
 package app
 
 import (
-	"controlplane/internal/core"
+	"controlplane/internal/zone"
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"

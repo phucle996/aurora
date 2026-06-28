@@ -10,6 +10,9 @@ import {
   Database,
   Layers3,
   PackageCheck,
+  Box,
+  Clock,
+  Cpu,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -49,12 +52,13 @@ import { OTPVerificationDialog } from '@/components/zone/OTPVerificationDialog'
 import { getOrCreateDeviceKeys, generateNonce, sha256Hex, signPayload } from '@/lib/crypto'
 
 // Section imports
-import ZoneKpiSection from './sections/ZoneKpiSection'
-import ZoneOverviewPanel from './sections/ZoneOverviewPanel'
 import ZoneWorkspacesPanel, { type ZoneWorkspace } from './sections/ZoneWorkspacesPanel'
-import ZoneServicesPanel, { type ZoneServiceHealth } from './sections/ZoneServicesPanel'
+import { type ZoneServiceHealth } from './sections/ZoneServicesPanel'
 import ZoneInventoryPanel, { type ZoneInventoryMetric } from './sections/ZoneInventoryPanel'
 import ZoneActivityPanel, { type ZoneActivity } from './sections/ZoneActivityPanel'
+import ZoneEssentialsSection from './sections/ZoneEssentialsSection'
+import ZoneServicesSection from './sections/ZoneServicesSection'
+import ZoneQuickLinksSection from './sections/ZoneQuickLinksSection'
 
 // ─── Domain Types ───────────────────────────────────────────────────────────
 // Mirrors the API contract from GET /admin/core/zones/:zone_id
@@ -103,21 +107,21 @@ type ZoneDetailResponse = {
 
 // Human-readable labels for each zone lifecycle status
 const statusLabels: Record<ZoneStatus, string> = {
-  planned:     'Planned',
-  active:      'Active',
-  draining:    'Draining',
+  planned: 'Planned',
+  active: 'Active',
+  draining: 'Draining',
   maintenance: 'Maintenance',
-  disabled:    'Disabled',
+  disabled: 'Disabled',
 }
 
 // Mirrors backend state machine in zone_service.go → UpdateZoneStatus().
 // Only transitions listed here are permitted; all others are rejected by the API.
 const ALLOWED_TRANSITIONS: Record<ZoneStatus, ZoneStatus[]> = {
-  planned:     ['active', 'disabled'],
-  active:      ['draining', 'maintenance', 'disabled'],
-  draining:    ['active', 'maintenance', 'disabled'],
+  planned: ['active', 'disabled'],
+  active: ['draining', 'maintenance', 'disabled'],
+  draining: ['active', 'maintenance', 'disabled'],
   maintenance: ['active', 'disabled'],
-  disabled:    ['active'],
+  disabled: ['active'],
 }
 
 // Static catalog of zone services shown in the Manage Services drawer
@@ -189,6 +193,34 @@ async function readErrorMessage(response: Response) {
   }
 }
 
+function formatDateLong(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).format(date)
+}
+
+function formatRelative(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  const seconds = Math.max(1, Math.floor((Date.now() - date.getTime()) / 1000))
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 // Normalize raw API data: coerce types, fill missing fields with safe defaults
 function normalizeDetail(value: ZoneDetail): ZoneDetail {
   return {
@@ -240,6 +272,12 @@ export default function ZoneDetailPage() {
 
   // ── Delete zone dialog ────────────────────────────────────────────────────
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [otpAction, setOtpAction] = useState<'status' | 'delete' | null>(null)
+
+  // ── Tab state & Layout customization ──────────────────────────────────────
+  const tabs = ['Overview', 'Workspaces', 'Inventory', 'Monitoring', 'Activity log', 'Access control', 'Tags']
+  const [activeTab, setActiveTab] = useState('Overview')
+
 
   // Fetch and normalize zone detail from API; also seeds draft state for editing
   const loadZoneDetail = useCallback(async () => {
@@ -296,8 +334,6 @@ export default function ZoneDetailPage() {
     )
   }
 
-  const hypervisorMetric = detail.resource_inventory.find((item) => item.key === 'hypervisors')
-
   const activeEnabledServices = detail.enabled_services.filter((s) => s.status === 'healthy')
   const deleteBlockers = [
     detail.workspaces.total > 0 ? `${detail.workspaces.total} workspace${detail.workspaces.total === 1 ? '' : 's'}` : '',
@@ -311,7 +347,7 @@ export default function ZoneDetailPage() {
   // ── Inline edit handlers ─────────────────────────────────────────────────
 
   // Reset drafts to current values before entering edit mode
-  const beginEdit = (field: 'name' | 'description') => {
+  const beginEdit = (field: 'description') => {
     setDraftName(detail.zone.name)
     setDraftDescription(detail.zone.description)
     setEditingField(field)
@@ -319,7 +355,6 @@ export default function ZoneDetailPage() {
 
   // Discard drafts and exit edit mode without saving
   const cancelEdit = () => {
-    setDraftName(detail.zone.name)
     setDraftDescription(detail.zone.description)
     setEditingField(null)
   }
@@ -409,10 +444,10 @@ export default function ZoneDetailPage() {
       const bodyHash = await sha256Hex(bodyString)
       const timestamp = Math.floor(Date.now() / 1000).toString()
       const nonce = generateNonce()
-      const payloadStr = `PATCH\n/admin/core/zones/status\n\n${bodyHash}\n${timestamp}\n${nonce}`
+      const payloadStr = `PATCH\n/admin/critical/core/zones/status\n\n${bodyHash}\n${timestamp}\n${nonce}`
       const signature = await signPayload(payloadStr, deviceKeys.privateKey)
 
-      const response = await Fetch(`/admin/core/zones/status`, {
+      const response = await Fetch(`/admin/critical/core/zones/status`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -431,6 +466,7 @@ export default function ZoneDetailPage() {
       // Close dialog and clear state only after successful API call
       setIsOTPOpen(false)
       setPendingStatus(null)
+      setOtpAction(null)
       await loadZoneDetail()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Cannot update zone status')
@@ -439,47 +475,285 @@ export default function ZoneDetailPage() {
     }
   }
 
-  const confirmDeleteZone = () => {
+  const confirmDeleteZone = async (otpCode: string) => {
     if (!canDeleteZone) return
-    setDeleteDialogOpen(false)
-    void Fetch(`/admin/core/zones/${encodeURIComponent(zoneID)}`, { method: 'DELETE' })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await readErrorMessage(response))
-        window.location.assign('/zones')
+    setSigning(true)
+
+    try {
+      const deviceKeys = await getOrCreateDeviceKeys()
+      if (!deviceKeys.privateKey) {
+        throw new Error('Security keys are missing on this device. Please log out and sign in again to register your keys.')
+      }
+
+      const path = `/admin/critical/core/zones/${encodeURIComponent(zoneID)}`
+      const bodyHash = await sha256Hex("")
+      const timestamp = Math.floor(Date.now() / 1000).toString()
+      const nonce = generateNonce()
+      const payloadStr = `DELETE\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`
+      const signature = await signPayload(payloadStr, deviceKeys.privateKey)
+
+      const response = await Fetch(path, {
+        method: 'DELETE',
+        headers: {
+          'X-Admin-Signature': signature,
+          'X-Admin-Timestamp': timestamp,
+          'X-Admin-Nonce': nonce,
+          'X-Admin-StepUp-Code': otpCode,
+        },
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Cannot delete zone'))
+
+      if (!response.ok) {
+        throw new Error(await readErrorMessage(response))
+      }
+
+      setIsOTPOpen(false)
+      setOtpAction(null)
+      window.location.assign('/zones')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cannot delete zone')
+    } finally {
+      setSigning(false)
+    }
   }
 
-  return (
-    <>
-      <PageContent className="pb-0">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-3">
-            <nav className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-              <Link to="/zones" className="text-primary hover:underline">Zone</Link>
-              <span>/</span>
-              <span className="text-foreground">{detail.zone.code}</span>
-            </nav>
-            <div>
-              <h1 className="text-3xl font-semibold tracking-[-0.03em] text-foreground md:text-4xl">{detail.zone.code}</h1>
-              <p className="mt-2 text-sm text-muted-foreground md:text-base">View resources, services, and workspaces inside this zone.</p>
+  const InventoryIcon = ({ metricKey }: { metricKey: string }) => {
+    const Icon = metricKey === 'hypervisors'
+      ? Server
+      : metricKey === 'clusters'
+        ? Layers3
+        : metricKey === 'vms'
+          ? Cpu
+          : metricKey === 'storage_accounts'
+            ? Database
+            : metricKey === 'networks'
+              ? Layers3
+              : Box
+    return <Icon className="size-4 text-muted-foreground/80" />
+  }
+
+  const inventoryItems = [
+    { key: 'hypervisors', label: 'Hypervisors', value: detail.resource_inventory.find(m => m.key === 'hypervisors')?.value ?? 0 },
+    { key: 'clusters', label: 'Clusters', value: detail.resource_inventory.find(m => m.key === 'clusters')?.value ?? 0 },
+    { key: 'vms', label: 'Virtual machines', value: detail.resource_inventory.find(m => m.key === 'vms')?.value ?? 0 },
+    { key: 'storage_accounts', label: 'Storage accounts', value: detail.resource_inventory.find(m => m.key === 'storage_accounts')?.value ?? 0 },
+    { key: 'networks', label: 'Networks', value: detail.resource_inventory.find(m => m.key === 'networks')?.value ?? 0 },
+    { key: 'images', label: 'Images', value: detail.resource_inventory.find(m => m.key === 'images')?.value ?? 0 },
+  ]
+
+  const renderTabContent = () => {
+    switch (activeTab) {
+      case 'Overview':
+        return (
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px] items-start">
+            {/* Cột trái */}
+            <div className="space-y-6">
+              {/* Essentials Section Component */}
+              <ZoneEssentialsSection
+                zoneName={detail.zone.name}
+                zoneCode={detail.zone.code}
+                location={detail.zone.location}
+                status={detail.zone.status}
+                description={detail.zone.description}
+                created_at={detail.zone.created_at}
+                updated_at={detail.zone.updated_at}
+                statusDotColor={statusDotColor}
+                titleCase={titleCase}
+                formatDateLong={formatDateLong}
+                formatRelative={formatRelative}
+                editingField={editingField}
+                draftDescription={draftDescription}
+                setDraftDescription={setDraftDescription}
+                beginEdit={beginEdit}
+                cancelEdit={cancelEdit}
+                saveInlineEdit={saveInlineEdit}
+              />
+
+              {/* Enabled Services Section Component */}
+              <ZoneServicesSection
+                enabledServices={detail.enabled_services}
+              />
+
+              {/* Workspaces Block */}
+              <div className="border border-border bg-card rounded-lg overflow-hidden shadow-[0_1px_2px_rgba(0,0,0,0.02)] p-5">
+                <h3 className="text-sm font-bold text-foreground mb-4">
+                  Workspaces in this zone ({detail.workspaces.total})
+                </h3>
+                {detail.workspaces.items.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center border border-dashed border-border rounded-lg p-10 bg-muted/5">
+                    <Box className="size-8 text-muted-foreground/50 mb-3" />
+                    <p className="text-xs text-muted-foreground mb-1">No workspaces in this zone yet.</p>
+                    <button type="button" className="text-xs font-semibold text-primary hover:underline">
+                      + Create workspace
+                    </button>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-border text-muted-foreground font-medium text-left">
+                          <th className="pb-2.5 font-medium">Workspace</th>
+                          <th className="pb-2.5 font-medium">Tenant</th>
+                          <th className="pb-2.5 font-medium">Status</th>
+                          <th className="pb-2.5 font-medium">Services</th>
+                          <th className="pb-2.5 font-medium text-right">Updated</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/50">
+                        {detail.workspaces.items.map((ws) => (
+                          <tr key={ws.id} className="hover:bg-accent/5">
+                            <td className="py-3 font-semibold text-primary">{ws.name}</td>
+                            <td className="py-3 text-foreground">{ws.tenant_name || '—'}</td>
+                            <td className="py-3">
+                              <span className={cn(
+                                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+                                ws.status === 'active' ? "bg-emerald-500/10 text-emerald-600" : "bg-slate-400/10 text-slate-500"
+                              )}>
+                                {ws.status}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              <div className="flex flex-wrap gap-1">
+                                {ws.services.map((svc) => (
+                                  <span key={svc} className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                                    {titleCase(svc)}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="py-3 text-right text-muted-foreground">{formatRelative(ws.updated_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('Workspaces')}
+                  className="text-xs font-semibold text-primary hover:underline mt-4 block text-left"
+                >
+                  View all workspaces
+                </button>
+              </div>
+            </div>
+
+            {/* Cột phải (Sidebar) */}
+            <div className="space-y-6">
+              {/* Resource Inventory Card */}
+              <div className="border border-border bg-card rounded-lg overflow-hidden shadow-[0_1px_2px_rgba(0,0,0,0.02)] p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-foreground">Resource inventory</h3>
+                  <button type="button" onClick={() => setActiveTab('Inventory')} className="text-xs font-semibold text-primary hover:underline">
+                    View all
+                  </button>
+                </div>
+                <div className="divide-y divide-border/40 text-xs">
+                  {inventoryItems.map((item) => (
+                    <div key={item.key} className="flex items-center justify-between py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        <InventoryIcon metricKey={item.key} />
+                        <span className="font-medium text-foreground">{item.label}</span>
+                      </div>
+                      <span className="font-bold text-foreground">{item.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Recent Activity Card */}
+              <div className="border border-border bg-card rounded-lg overflow-hidden shadow-[0_1px_2px_rgba(0,0,0,0.02)] p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-foreground">Recent activity</h3>
+                  <button type="button" onClick={() => setActiveTab('Activity log')} className="text-xs font-semibold text-primary hover:underline">
+                    View all
+                  </button>
+                </div>
+
+                {detail.recent_activity.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-center bg-muted/5 rounded-lg border border-dashed border-border/80">
+                    <Clock className="size-8 text-muted-foreground/35 mb-2" />
+                    <p className="text-xs text-muted-foreground">No recent activity for this zone.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-border text-muted-foreground font-medium text-left">
+                          <th className="pb-2 font-medium w-1/4">Time</th>
+                          <th className="pb-2 font-medium">Activity</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/50">
+                        {detail.recent_activity.slice(0, 5).map((act) => (
+                          <tr key={act.id}>
+                            <td className="py-2.5 text-muted-foreground">{formatRelative(act.created_at)}</td>
+                            <td className="py-2.5 font-medium text-foreground leading-normal">{act.message}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Quick Links Section Component */}
+              <ZoneQuickLinksSection
+                zoneStatus={detail.zone.status}
+                onManageServices={() => setServiceDrawerOpen(true)}
+              />
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3 lg:pt-10">
+        )
+      case 'Workspaces':
+        return <ZoneWorkspacesPanel workspaces={detail.workspaces.items} totalCount={detail.workspaces.total} />
+      case 'Inventory':
+        return <ZoneInventoryPanel metrics={detail.resource_inventory} />
+      case 'Activity log':
+        return <ZoneActivityPanel activities={detail.recent_activity} />
+      default:
+        return (
+          <div className="border border-border bg-card rounded-lg p-10 text-center text-sm text-muted-foreground shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+            No data available under {activeTab} for this zone.
+          </div>
+        )
+    }
+  }
+  return (
+    <>
+      <PageContent className="pb-8 bg-background">
+        {/* Breadcrumb */}
+        <nav className="flex items-center gap-1.5 text-xs text-muted-foreground mb-4">
+          <Link to="/" className="hover:text-foreground transition-colors">Home</Link>
+          <span className="text-muted-foreground/60">&gt;</span>
+          <Link to="/zones" className="hover:text-foreground transition-colors">Zones</Link>
+          <span className="text-muted-foreground/60">&gt;</span>
+          <span className="text-foreground font-medium">{detail.zone.code}</span>
+        </nav>
+
+        {/* Title Block */}
+        <div className="flex flex-col gap-1.5 mb-4">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">{detail.zone.name}</h1>
+          </div>
+          <p className="text-xs text-muted-foreground">{detail.zone.code}</p>
+        </div>
+
+        {/* Action Bar */}
+        <div className="flex flex-wrap items-center justify-between border-y border-border/80 py-2 mb-4 gap-3 bg-card/30 px-3 rounded-md">
+          <div className="flex items-center gap-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" className="h-11 gap-2 rounded-lg px-4 text-sm font-semibold shadow-sm">
-                  <span className={cn('size-2.5 rounded-full', statusDotColor(detail.zone.status))} />
+                <button type="button" className="flex items-center gap-1.5  px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-accent/40 focus:outline-none">
+                  <span className={cn('size-2 rounded-full', statusDotColor(detail.zone.status))} />
                   <span>{statusLabels[detail.zone.status] ?? titleCase(detail.zone.status || 'unknown')}</span>
-                  <ChevronDown className="size-4 text-muted-foreground" />
-                </Button>
+                  <ChevronDown className="size-3 text-muted-foreground" />
+                </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuContent align="start" className="w-48">
                 <DropdownMenuLabel>Update status</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {(Object.keys(statusLabels) as ZoneStatus[]).map((status) => {
                   const isCurrent = status === detail.zone.status
-                  // A transition is valid if it appears in ALLOWED_TRANSITIONS for the current status
                   const isAllowed = ALLOWED_TRANSITIONS[detail.zone.status]?.includes(status) ?? false
                   const isDisabled = isCurrent || !isAllowed
                   return (
@@ -487,7 +761,7 @@ export default function ZoneDetailPage() {
                       key={status}
                       disabled={isDisabled}
                       onSelect={() => requestStatusChange(status)}
-                      className="flex items-center justify-between gap-3"
+                      className="flex items-center justify-between gap-3 text-xs"
                     >
                       <span>{statusLabels[status]}</span>
                       {isCurrent && <span className="text-xs text-muted-foreground">Current</span>}
@@ -496,69 +770,56 @@ export default function ZoneDetailPage() {
                 })}
               </DropdownMenuContent>
             </DropdownMenu>
-            <Button variant="destructive" className="h-11 rounded-lg px-4 text-sm font-semibold shadow-sm" onClick={() => setDeleteDialogOpen(true)}>
-              <Trash2 className="size-4" />
-              Delete Zone
-            </Button>
-            {/* Only allowed in maintenance mode — backend enforces the same constraint */}
-            <Button
-              className="h-11 rounded-lg px-6 text-sm font-semibold shadow-sm"
+
+            <button
+              type="button"
+              onClick={() => setDeleteDialogOpen(true)}
+              className="flex items-center gap-1.5 bg-card px-2.5 py-1 text-xs font-semibold text-red-300 hover:bg-accent/40 transition-colors"
+            >
+              <Trash2 className="size-3.5" />
+              <span>Delete zone</span>
+            </button>
+
+            <button
+              type="button"
               disabled={detail.zone.status !== 'maintenance'}
               title={detail.zone.status !== 'maintenance' ? 'Zone must be in Maintenance status to manage services' : undefined}
               onClick={() => setServiceDrawerOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-accent/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              <Settings2 className="size-4" />
-              Manage Services
-            </Button>
+              <Settings2 className="size-3.5" />
+              <span>Manage services</span>
+            </button>
           </div>
         </div>
 
-        <ZoneKpiSection
-          location={detail.zone.location}
-          status={detail.zone.status}
-          hypervisorsValue={hypervisorMetric ? String(hypervisorMetric.value) : undefined}
-          workspacesCount={detail.summary.workspaces}
-          enabledServicesCount={detail.summary.enabled_services}
-        />
-
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.82fr)]">
-          <div className="space-y-6">
-            <ZoneOverviewPanel
-              zoneName={detail.zone.name}
-              zoneCode={detail.zone.code}
-              description={detail.zone.description}
-              created_at={detail.zone.created_at}
-              updated_at={detail.zone.updated_at}
-              editingField={editingField}
-              draftName={draftName}
-              setDraftName={setDraftName}
-              draftDescription={draftDescription}
-              setDraftDescription={setDraftDescription}
-              beginEdit={beginEdit}
-              cancelEdit={cancelEdit}
-              saveInlineEdit={saveInlineEdit}
-            />
-
-            <ZoneWorkspacesPanel
-              workspaces={detail.workspaces.items}
-              totalCount={detail.workspaces.total}
-            />
-          </div>
-
-          <div className="space-y-6">
-            <ZoneServicesPanel
-              enabledServices={detail.enabled_services.filter((s) => s.status === 'healthy')}
-            />
-
-            <ZoneInventoryPanel
-              metrics={detail.resource_inventory}
-            />
-
-            <ZoneActivityPanel
-              activities={detail.recent_activity}
-            />
-          </div>
+        {/* Tabs navigation */}
+        <div className="flex items-center gap-6 border-b border-border/60 pb-0.5 mb-5 overflow-x-auto scrollbar-none">
+          {tabs.map((tab) => {
+            const isActive = activeTab === tab
+            return (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab)}
+                className={cn(
+                  "text-xs font-semibold transition-all relative pb-2 whitespace-nowrap focus:outline-none",
+                  isActive
+                    ? "text-foreground font-bold"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tab}
+                {isActive && (
+                  <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+                )}
+              </button>
+            )
+          })}
         </div>
+
+        {/* Tab Content Display */}
+        {renderTabContent()}
       </PageContent>
 
       <Sheet open={serviceDrawerOpen} onOpenChange={setServiceDrawerOpen}>
@@ -614,6 +875,7 @@ export default function ZoneDetailPage() {
             }}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => {
               setIsStatusConfirmOpen(false)
+              setOtpAction('status')
               setIsOTPOpen(true)
             }}>OK</AlertDialogAction>
           </AlertDialogFooter>
@@ -623,16 +885,17 @@ export default function ZoneDetailPage() {
       <OTPVerificationDialog
         open={isOTPOpen}
         onOpenChange={(open) => {
-          // Do not allow closing the dialog while signing is in progress
-          // to prevent clearing pendingStatus before the API call completes
           if (signing) return
           setIsOTPOpen(open)
-          if (!open) setPendingStatus(null)
+          if (!open) {
+            setPendingStatus(null)
+            setOtpAction(null)
+          }
         }}
-        onConfirm={confirmStatusChange}
-        title="Security Verification"
-        description={`Changing zone status to ${pendingStatus ? statusLabels[pendingStatus] : ''} is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action.`}
-        confirmText="Verify & Update"
+        onConfirm={(code) => otpAction === 'delete' ? confirmDeleteZone(code) : confirmStatusChange(code)}
+        title={otpAction === 'delete' ? "Verify Zone Deletion" : "Security Verification"}
+        description={otpAction === 'delete' ? "Deleting this zone is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action." : `Changing zone status to ${pendingStatus ? statusLabels[pendingStatus] : ''} is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action.`}
+        confirmText={otpAction === 'delete' ? "Verify & Delete" : "Verify & Update"}
         loading={signing}
       />
 
@@ -647,8 +910,12 @@ export default function ZoneDetailPage() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" disabled={!canDeleteZone} onClick={confirmDeleteZone}>Delete Zone</AlertDialogAction>
+            <AlertDialogCancel onClick={() => setOtpAction(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={!canDeleteZone} onClick={() => {
+              setDeleteDialogOpen(false)
+              setOtpAction('delete')
+              setIsOTPOpen(true)
+            }}>Delete Zone</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

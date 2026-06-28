@@ -20,11 +20,11 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
+use crate::rpc::session::SessionRpcHandler;
 use crate::service::auth::auth_proto::auth_service_server::AuthServiceServer;
 use crate::service::auth::AuthServiceImpl;
 use crate::service::ext_authz::ExtAuthzService;
 use crate::service::session::release_session::session_proto::session_service_server::SessionServiceServer;
-use crate::rpc::session::SessionRpcHandler;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,7 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Khởi tạo các Core Components và Service Layer
     let session_mgr = Arc::new(SessionManager::new(redis_client.clone(), config.clone()));
-    let token_mgr = Arc::new(TokenManager::new(vault_client.clone(), config.vault.admin_api_key_path.clone()));
+    let token_mgr = Arc::new(TokenManager::new(
+        vault_client.clone(),
+        config.vault.admin_api_key_path.clone(),
+    ));
     let evaluator = Arc::new(PolicyEvaluator::new());
 
     // [COMMENT]: Khởi tạo gRPC client để kết nối đến Control Plane

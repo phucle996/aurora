@@ -94,13 +94,14 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
    */
   /**
    * Xử lý chuyển đổi Zone an toàn (Zone-Aware Switch Flow).
-   * Gửi request POST tới `/admin/auth/refresh?zone_code=...` để backend thực hiện chuyển vùng,
+   * Gửi request POST tới `/admin/zone/go-to-zone?zone_code=...` để biên thực hiện chuyển vùng,
    * ký lại bộ token mới và ghi nhận cookie/phân vùng mới cho Admin.
    */
   const handleZoneChange = async (zoneCode: string | null) => {
+    if (zoneCode === activeZone) return
     try {
       const target = zoneCode || 'global'
-      const resp = await Fetch(`/admin/auth/refresh?zone_code=${encodeURIComponent(target)}`, { method: 'POST' })
+      const resp = await Fetch(`/admin/zone/go-to-zone?zone_code=${encodeURIComponent(target)}`, { method: 'POST' })
       if (!resp.ok) {
         throw new Error('Failed to refresh session for the selected zone')
       }

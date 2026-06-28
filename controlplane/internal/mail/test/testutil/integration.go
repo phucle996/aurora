@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	coretestutil "controlplane/internal/core/test/testutil"
+	coretestutil "controlplane/internal/zone/test/testutil"
 	mailmigrations "controlplane/internal/mail/migrations"
 	"controlplane/internal/security"
 

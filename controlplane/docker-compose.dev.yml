@@ -523,20 +523,6 @@ services:
       - NEXT_PUBLIC_CONTROLPLANE_URL=https://envoy:8443
     restart: unless-stopped
 
-  admin-ui:
-    image: node:20-alpine
-    container_name: admin-ui-dev
-    working_dir: /workspace
-    volumes:
-      - ../admin-ui:/workspace
-      - admin_ui_node_modules:/workspace/node_modules
-    command: [ "sh", "-c", "npm install --legacy-peer-deps && npm run dev -- --host 0.0.0.0 --port 5173" ]
-    ports:
-      - "5173:5173" # Cổng truy cập của Admin Portal dành cho Quản trị viên tối cao
-    environment:
-      CHOKIDAR_USEPOLLING: "true"
-    restart: unless-stopped
-
   admin-ui-nginx:
     build:
       context: ../admin-ui

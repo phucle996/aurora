@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	coretestutil "controlplane/internal/core/test/testutil"
+	coretestutil "controlplane/internal/zone/test/testutil"
 	iammigrations "controlplane/internal/iam/migrations"
 	"controlplane/internal/security"
 

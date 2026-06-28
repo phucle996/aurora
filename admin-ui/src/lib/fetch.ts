@@ -22,7 +22,7 @@
 //   override chỉ text() và json() để strip prefix.
 // =============================================================================
 
-import { emitAdminUnauthorized, emitAdminSessionRefresh } from '@/lib/admin-auth-events'
+import { emitAdminUnauthorized } from '@/lib/admin-auth-events'
 
 // URL gốc của Controlplane API, đọc từ biến môi trường Vite tại build-time.
 // Nếu không set → fallback thành '' → các request sẽ dùng relative URL (same-origin).
@@ -246,77 +246,13 @@ function request(baseURL: string, input: string, init?: RequestInit): Promise<Re
     ].some((route) => normalizedPath.startsWith(route))
 
     // =========================================================================
-    // Cơ chế 1: Reactive Self-Healing — Tự phục hồi khi gặp 401 Unauthorized
-    //
-    // Kịch bản: Access token hết hạn giữa chừng khi user đang làm việc.
-    // Thay vì logout ngay, client thử refresh token trước, rồi replay request.
-    //
-    // Cross-tab coordination qua localStorage lock:
-    //   - Nhiều tab có thể gặp 401 đồng thời → chỉ 1 tab được thực hiện refresh
-    //   - Tab thắng: set lock → refresh → remove lock → replay request
-    //   - Tab thua: đợi 1.5s (lock timeout) → replay request (dùng token mới)
-    //   - Lock TTL = 10s: nếu tab crash giữa chừng, lock tự expire
+    // SRE Admin không sử dụng cơ chế Opaque Refresh Token để khôi phục phiên.
+    // Khi nhận phản hồi 401 Unauthorized từ biên (session thực sự hết hạn hoặc bị thu hồi),
+    // client trực tiếp phát đi sự kiện đăng xuất để chuyển trạng thái giao diện về unauthenticated.
     // =========================================================================
     if (response.status === 401 && !isAuthRoute) {
-      const lockKey = 'admin_session_refresh_lock'
-      const lockVal = localStorage.getItem(lockKey)
-      const now = Date.now()
-      let shouldRefresh = false
-
-      if (!lockVal) {
-        // Chưa có lock → tab này sẽ thực hiện refresh
-        shouldRefresh = true
-      } else {
-        const lockTime = parseInt(lockVal)
-        // Lock cũ hơn 10s → tab trước đó có thể đã crash, cho phép refresh lại
-        if (isNaN(lockTime) || now - lockTime > 10000) {
-          shouldRefresh = true
-        }
-      }
-
-      if (shouldRefresh) {
-        // Đặt lock với timestamp để các tab khác biết có người đang refresh
-        localStorage.setItem(lockKey, now.toString())
-        return fetch(toAbsoluteURL(baseURL, '/admin/auth/refresh'), {
-          method: 'POST',
-          credentials: 'include',
-        })
-          .then((refreshRes) => {
-            localStorage.removeItem(lockKey)
-            if (refreshRes.ok) {
-              // Refresh thành công → emit event để các component cập nhật UI
-              emitAdminSessionRefresh()
-              // Replay request ban đầu với session mới — wrap để strip XSSI prefix
-              return fetch(toAbsoluteURL(baseURL, input), reqInit).then(wrapResponse)
-            } else {
-              // Refresh thất bại (refresh token hết hạn) → buộc logout
-              emitAdminUnauthorized()
-              return response
-            }
-          })
-          .catch(() => {
-            // Network error trong quá trình refresh → cleanup lock và logout
-            localStorage.removeItem(lockKey)
-            emitAdminUnauthorized()
-            return response
-          })
-      } else {
-        // Tab khác đang refresh → đợi 1.5s để token mới được set
-        // rồi replay request với hy vọng cookie đã được cập nhật
-        return new Promise<Response>((resolve) => {
-          setTimeout(() => {
-            resolve(fetch(toAbsoluteURL(baseURL, input), reqInit))
-          }, 1500)
-        }).then((rawRetryRes) => {
-          // Wrap retry response — có thể vẫn có XSSI prefix
-          const retryRes = wrapResponse(rawRetryRes)
-          if (retryRes.status === 401) {
-            // Retry vẫn 401 → session thực sự đã hết, logout
-            emitAdminUnauthorized()
-          }
-          return retryRes
-        })
-      }
+      emitAdminUnauthorized()
+      return response
     }
 
     // [COMMENT]: Cơ chế trượt phiên làm việc (sliding session) hiện tại được thực thi tự động và transparent ở Edge (Envoy + Rust ACL)
