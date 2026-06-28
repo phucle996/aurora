@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { I18nProvider } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/sonner";
+import { UserSessionProvider } from "@/hooks/UserSessionProvider";
 import "@fontsource-variable/inter";
 import "./globals.css";
 
@@ -21,12 +22,14 @@ export default function RootLayout({
       className="h-full antialiased"
     >
       <body className="min-h-full flex flex-col">
-        {/* [COMMENT]: Bọc ứng dụng trong I18nProvider để đồng bộ hóa ngôn ngữ toàn hệ thống */}
+        {/* [COMMENT]: Bọc ứng dụng trong I18nProvider & UserSessionProvider để đồng bộ hoá ngôn ngữ và phiên làm việc */}
         <I18nProvider>
-          <TooltipProvider>
-            {children}
-            <Toaster />
-          </TooltipProvider>
+          <UserSessionProvider>
+            <TooltipProvider>
+              {children}
+              <Toaster />
+            </TooltipProvider>
+          </UserSessionProvider>
         </I18nProvider>
       </body>
     </html>

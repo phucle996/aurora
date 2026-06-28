@@ -1,9 +1,9 @@
 <!-- markdownlint-disable MD033 -->
-# End-User Session Refresh & Sliding Session - Workflow God View
+# End-User Session Lifecycle & Post-Login Management - Workflow God View
 
 > [!NOTE]
-> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng gia hạn và khôi phục phiên chạy (Session Refresh) của End-User.
-> Mọi thay đổi về code liên quan đến luồng gia hạn/phục hồi phiên tại Frontend hoặc Controlplane phải tuân thủ nghiêm ngặt đặc tả này.
+> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho vòng đời phiên làm việc của End-User (Session Lifecycle), bao gồm luồng kiểm tra phiên (/session), gia hạn tự động (Sliding Trinity Session), và tự động phục hồi phiên (Opaque Recovery).
+> Mọi thay đổi về code tại Frontend Client (Console UI), Edge (ACR), hoặc Backend (Controlplane) liên quan đến quản lý phiên phải tuân thủ nghiêm ngặt đặc tả này.
 
 ---
 
@@ -11,15 +11,17 @@
 
 ### 👥 Tài Liệu Này Dành Cho Ai?
 
-Tài liệu dành cho đội ngũ kỹ sư Frontend phát triển HTTP Client (fetcher), và Backend IAM chịu trách nhiệm về cơ chế bảo mật phiên và tối ưu trải nghiệm người dùng (UX) không bị gián đoạn.
+Tài liệu dành cho đội ngũ kỹ sư phát triển Frontend phát triển HTTP Client (fetcher), Edge (ACR), và Backend IAM chịu trách nhiệm về cơ chế bảo mật phiên và tối ưu trải nghiệm người dùng (UX) không bị gián đoạn.
 
-### ❓ Phân Hệ Session Refresh là gì?
+### ❓ Vòng Đời Phiên Làm Việc (Session Lifecycle)
 
-Hệ thống áp dụng mô hình quản lý phiên hai tầng (Multi-tier session renewal) để cân bằng giữa bảo mật và trải nghiệm người dùng:
+Hệ thống áp dụng mô hình quản lý phiên phân lớp (Multi-tier session lifecycle) được xác thực và xử lý chính tại Edge (ACR) nhằm đạt hiệu năng tối đa và tính sẵn sàng cao (HA):
 
-1. **Kiểu 1 — Trinity Refresh (Sliding Session)**:
-   - Khi người dùng đang hoạt động tích cực, nếu thời gian hết hạn của phiên hoạt động còn lại $\le 900$ giây, hệ thống sẽ thực hiện hoán đổi bộ thông tin xác thực cũ lấy bộ thông tin mới (Xoay vòng JWT, Access Key, Access Secret) để trượt cửa sổ phiên dài thêm 30 phút.
-2. **Kiểu 2 — Opaque Refresh Token (Session Recovery)**:
+1. **Kiểm tra phiên hoạt động (Session Status Check — GET /api/v1/auth/session)**:
+   - Được gọi mỗi khi Client khởi động hoặc mount ứng dụng. Cuộc gọi này được **ACR (Edge ext_authz) chặn bắt và xác thực hoàn toàn**. Nếu hợp lệ, request mới được cho phép đi tiếp vào Controlplane (đóng vai trò stub trả về `200 OK`).
+2. **Kiểu 1 — Trinity Refresh (Sliding Session)**:
+   - Khi người dùng đang hoạt động tích cực, nếu thời gian hết hạn của phiên hoạt động còn lại $\le 900$ giây, ACR tự động thực hiện hoán đổi bộ thông tin xác thực cũ lấy bộ thông tin mới (Xoay vòng JWT, Access Key, Access Secret) để trượt cửa sổ phiên dài thêm 30 phút.
+3. **Kiểu 2 — Opaque Refresh Token (Session Recovery)**:
    - Dành cho các thiết bị tin cậy (`TrustDevice = true`). Khi phiên hoạt động (Access Session) đã chết hoàn toàn (nhận HTTP 401), Client tự động dùng token đục dài hạn lưu trong cơ sở dữ liệu để phục hồi phiên hoạt động mới mà không buộc người dùng đăng nhập lại từ đầu.
 
 ### 🌐 Sơ đồ Kiến trúc Tổng quan (System Architecture)
@@ -42,7 +44,7 @@ graph TD
     Redis[("⚡ Redis L2 (Runtime Sessions)")]:::storage
     DB[("🗄️ PostgreSQL (Refresh Tokens SoT)")]:::storage
 
-    Client -- "1. Request bất kỳ" --> Envoy
+    Client -- "1. Request bất kỳ / GET /session" --> Envoy
     Envoy -- "2. ext_authz check" --> acr
     acr -- "3a. Verify JWT & Session" --> Redis
     acr -- "3b. TTL thấp → Sign JWT mới" --> Vault
@@ -92,7 +94,61 @@ Dưới đây là toàn bộ các khóa lưu trữ tại mọi phân tầng (L1 
 
 ## 🏛️ 2. Chi Tiết Thực Thi Nghiệp Vụ & Sơ Đồ Trình Tự
 
-Quy trình Refresh được chia thành hai nhánh độc lập tùy thuộc vào điều kiện trạng thái phiên làm việc hiện tại của Client:
+### 🔄 Luồng Kiểm Tra Phiên Làm Việc (Session Check - GET /api/v1/auth/session)
+
+Mỗi khi Client khởi động, nó thực hiện cuộc gọi `GET /api/v1/auth/session` để kiểm tra trạng thái đăng nhập. Cuộc gọi này được xử lý hoàn toàn tại **Edge (ACR ext_authz)**. 
+
+#### Sơ đồ tuần tự: Luồng Kiểm tra Session hoạt động thông qua ACR
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Browser Client
+    participant Envoy as Envoy Ingress Gateway
+    participant acr as Rust acr (ext_authz)
+    participant CP as Controlplane (Go stub)
+    participant RDS as Redis L2 Cluster
+
+    UI->>Envoy: GET /api/v1/auth/session (Mang theo Cookies)
+    Envoy->>acr: ext_authz Check
+
+    alt Nhánh A: Trinity Cookies hợp lệ (Đã đăng nhập)
+        acr->>RDS: GET "iam:user_access_session:{UserID}:{AccessKey}"
+        RDS-->>acr: Trả về session metadata
+        acr->>acr: Xác thực thành công
+        acr-->>Envoy: OK (Cho phép request đi tiếp)
+        Envoy->>CP: Forward GET /api/v1/auth/session
+        CP-->>Envoy: 200 OK {"data": {"authenticated": true}}
+        Envoy-->>UI: 200 OK {"data": {"authenticated": true}}
+
+    else Nhánh B: Trinity Cookies hết hạn / không hợp lệ, CÓ refresh_token (Thử Recovery)
+        acr->>acr: Phát hiện Trinity lỗi, có refresh_token
+        Note over acr: Khởi động Opaque Recovery Flow
+        critical Thử phục hồi phiên (Opaque Recovery)
+            acr->>CP: gRPC VerifyOpaqueRefreshToken(refresh_token)
+            CP-->>acr: Trả về kết quả xác thực
+        end
+        alt Phục hồi THÀNH CÔNG
+            acr->>acr: Sinh bộ Trinity Cookies mới
+            acr-->>Envoy: OK + Set-Cookie Trinity mới
+            Envoy->>CP: Forward GET /api/v1/auth/session
+            CP-->>Envoy: 200 OK {"data": {"authenticated": true}}
+            Envoy-->>UI: 200 OK + Set-Cookie Trinity mới
+        else Phục hồi THẤT BẠI
+            acr->>acr: Xoá bỏ toàn bộ cookie Trinity & Refresh
+            acr-->>Envoy: DENIED 401 Unauthorized + Set-Cookie xóa
+            Envoy-->>UI: 401 Unauthorized (Báo lỗi & Xoá cookie)
+            Note over UI: Dispatch event "iam:unauthorized" -> Chuyển sang /signin
+        end
+
+    else Nhánh C: Trinity Cookies không hợp lệ, KHÔNG CÓ refresh_token
+        acr->>acr: Xác thực thất bại và không có refresh_token
+        acr-->>Envoy: DENIED 401 Unauthorized + Set-Cookie xóa
+        Envoy-->>UI: 401 Unauthorized
+        Note over UI: Dispatch event "iam:unauthorized" -> Chuyển sang /signin
+    end
+```
+
+---
 
 ### Sơ đồ nhánh 1 — Transparent Trinity Refresh (Sliding Session tại acr)
 

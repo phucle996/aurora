@@ -1,6 +1,9 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useUserSession } from "@/hooks/useUserSession";
+import { toast } from "sonner";
 import SidebarConsole from "@/components/sidebar-console";
 import HeaderConsole from "@/components/header-console";
 import CommandPalette from "@/components/command-palette";
@@ -40,16 +43,114 @@ interface VMData {
   uptime: string;
 }
 
+// [COMMENT]: Giao diện Skeleton Loading cao cấp khi chờ tải phiên làm việc
+function ConsoleSkeleton() {
+  return (
+    <div className="flex min-h-screen bg-[#F8FAFC] dark:bg-[#070A13]">
+      {/* Sidebar Skeleton */}
+      <div className="w-[272px] border-r border-slate-200 dark:border-slate-800/40 p-6 space-y-6 hidden md:block bg-white dark:bg-[#0B0F19]">
+        <div className="flex items-center gap-3 animate-pulse">
+          <div className="h-8 w-8 rounded-lg bg-slate-200 dark:bg-slate-800" />
+          <div className="space-y-2">
+            <div className="h-4 w-24 rounded bg-slate-200 dark:bg-slate-800" />
+            <div className="h-3 w-16 rounded bg-slate-200 dark:bg-slate-800" />
+          </div>
+        </div>
+        <div className="space-y-4 pt-8 animate-pulse">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 h-10 px-3 rounded-lg bg-slate-100/50 dark:bg-slate-900/30">
+              <div className="h-4 w-4 rounded bg-slate-200 dark:bg-slate-800" />
+              <div className="h-4 w-28 rounded bg-slate-200 dark:bg-slate-800" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Main Panel Skeleton */}
+      <div className="flex-1 flex flex-col min-h-screen">
+        {/* Header Skeleton */}
+        <div className="h-14 border-b border-slate-200 dark:border-slate-800/40 px-6 flex items-center justify-between bg-white dark:bg-[#0B0F19] animate-pulse">
+          <div className="flex items-center gap-4">
+            <div className="h-4 w-24 rounded bg-slate-200 dark:bg-slate-800" />
+            <div className="h-4 w-32 rounded bg-slate-200 dark:bg-slate-800" />
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="h-8 w-8 rounded-full bg-slate-200 dark:bg-slate-800" />
+            <div className="h-8 w-8 rounded bg-slate-200 dark:bg-slate-800" />
+            <div className="h-8 w-16 rounded bg-slate-200 dark:bg-slate-800" />
+          </div>
+        </div>
+
+        {/* Content Skeleton */}
+        <main className="flex-1 p-6 md:p-8 max-w-[1400px] w-full mx-auto space-y-6 animate-pulse">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800/40 bg-white dark:bg-[#0B0F19] p-6 space-y-4">
+            <div className="h-6 w-48 rounded bg-slate-200 dark:bg-slate-800" />
+            <div className="h-4 w-96 rounded bg-slate-200 dark:bg-slate-800" />
+          </div>
+          <div className="grid gap-6 md:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="rounded-xl border border-slate-200 dark:border-slate-800/40 bg-white dark:bg-[#0B0F19] p-5 space-y-4">
+                <div className="h-4 w-24 rounded bg-slate-200 dark:bg-slate-800" />
+                <div className="h-8 w-16 rounded bg-slate-200 dark:bg-slate-800" />
+                <div className="h-3 w-32 rounded bg-slate-200 dark:bg-slate-800" />
+              </div>
+            ))}
+          </div>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800/40 bg-white dark:bg-[#0B0F19] p-6 space-y-4">
+            <div className="h-5 w-32 rounded bg-slate-200 dark:bg-slate-800" />
+            <div className="space-y-3">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="h-10 rounded bg-slate-100 dark:bg-slate-900/50" />
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export default function ConsoleDashboard() {
+  const router = useRouter();
+
+  // [COMMENT]: Lấy dữ liệu phiên đăng nhập hiện tại từ User Session Provider
+  const { loading, authenticated, notice, consumeNotice } = useUserSession();
+
+  // [COMMENT]: Chuyển hướng người dùng về trang đăng nhập nếu không có phiên làm việc hợp lệ
+  useEffect(() => {
+    if (!loading && !authenticated) {
+      router.push("/signin");
+    }
+  }, [loading, authenticated, router]);
+
+  // [COMMENT]: Hiển thị thông báo khi phiên đăng nhập hết hạn và đã tự động logout
+  useEffect(() => {
+    if (notice === "session_expired") {
+      toast.info("Session expired. Please sign in again.", {
+        id: "user-session-expired",
+        duration: 3200,
+      });
+      consumeNotice();
+    }
+  }, [notice, consumeNotice]);
+
   // [COMMENT]: State chia sẻ giữa Sidebar và Main Panel để điều khiển layout co giãn mượt mà
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [activeId, setActiveId] = useState("overview");
 
-  // [COMMENT]: State quản lý theme sáng/tối và trạng thái mở Command Palette
+  // [COMMENT]: State quản lý theme sáng/tối — đọc từ localStorage, mặc định "dark" nếu chưa có
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
-  // [COMMENT]: Cập nhật class 'dark' lên document element tương ứng với theme được chọn
+  // [COMMENT]: Khôi phục theme đã lưu trong localStorage khi component mount lần đầu
+  useEffect(() => {
+    const saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") {
+      setTheme(saved);
+    }
+  }, []);
+
+  // [COMMENT]: Đồng bộ class 'dark' trên <html> và ghi theme xuống localStorage mỗi khi thay đổi
   useEffect(() => {
     const root = window.document.documentElement;
     if (theme === "dark") {
@@ -57,7 +158,13 @@ export default function ConsoleDashboard() {
     } else {
       root.classList.remove("dark");
     }
+    localStorage.setItem("theme", theme);
   }, [theme]);
+
+  // [COMMENT]: Trả về Skeleton Loading nếu đang tải phiên đăng nhập hoặc chưa được xác thực
+  if (loading || !authenticated) {
+    return <ConsoleSkeleton />;
+  }
 
   // [COMMENT]: Mock data chi tiết cho các domain hạ tầng vật lý và mạng
   const mockZones: ZoneData[] = [

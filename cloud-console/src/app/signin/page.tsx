@@ -1,24 +1,19 @@
 "use client";
 
-import React, { useState, useCallback, useEffect, Suspense } from "react";
+import React, { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
+import { useUserSession } from "@/hooks/useUserSession";
 
 // [COMMENT]: Import i18n hooks phục vụ đa ngôn ngữ toàn hệ thống
 import { useTranslation, type Language } from "@/lib/i18n";
 
-// [COMMENT]: Import shadcn components — enterprise-grade UI primitives
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Separator } from "@/components/ui/separator";
-
-// [COMMENT]: Import các API và security modules đã port từ codebase cũ
-import { authAPI, type LoginRequest } from "@/lib/api/auth";
+// [COMMENT]: Import API module zone catalog
 import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
-import { ensureDevicePublicKey, DeviceKeyUnsupportedError } from "@/lib/security/deviceKey";
+
+// [COMMENT]: Import các form component con — mỗi form tự quản lý state nội bộ
+import SignInForm from "./signin-form";
+import SignUpForm from "./signup-form";
 
 // [COMMENT]: Icon SVG nhỏ gọn cho Logo thương hiệu
 function AuroraLogo() {
@@ -36,82 +31,54 @@ function AuroraLogo() {
   );
 }
 
-// [COMMENT]: Icon cho các SSO providers
-function MicrosoftIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <rect x="1" y="1" width="6.5" height="6.5" fill="#F25022" />
-      <rect x="8.5" y="1" width="6.5" height="6.5" fill="#7FBA00" />
-      <rect x="1" y="8.5" width="6.5" height="6.5" fill="#00A4EF" />
-      <rect x="8.5" y="8.5" width="6.5" height="6.5" fill="#FFB900" />
-    </svg>
-  );
-}
-
-function GoogleIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <path d="M15.68 8.18c0-.57-.05-1.12-.15-1.64H8v3.1h4.31a3.68 3.68 0 01-1.6 2.42v2h2.59c1.51-1.39 2.38-3.44 2.38-5.88z" fill="#4285F4" />
-      <path d="M8 16c2.16 0 3.97-.72 5.3-1.94l-2.59-2a4.77 4.77 0 01-7.13-2.51H.96v2.06A8 8 0 008 16z" fill="#34A853" />
-      <path d="M3.58 9.55a4.8 4.8 0 010-3.1V4.39H.96a8 8 0 000 7.22l2.62-2.06z" fill="#FBBC05" />
-      <path d="M8 3.16a4.34 4.34 0 013.07 1.2l2.3-2.3A7.72 7.72 0 008 0 8 8 0 00.96 4.39l2.62 2.06A4.77 4.77 0 018 3.16z" fill="#EA4335" />
-    </svg>
-  );
-}
-
-function GitHubIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-    </svg>
-  );
-}
-
-function CircleIcon({ active }: { active: boolean }) {
-  return (
-    <span
-      className={`inline-block h-2 w-2 rounded-full border-2 transition-all duration-300 ${active
-        ? "border-emerald-600 bg-emerald-600 dark:border-emerald-400 dark:bg-emerald-400"
-        : "border-slate-300 dark:border-slate-700"
-        }`}
-    />
-  );
-}
-
-function SignInContent() {
-  const router = useRouter();
+// [COMMENT]: Component chính điều phối layout xác thực với horizontal slide animation
+function AuthPageContent() {
   const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // [COMMENT]: Kiểm tra trạng thái phiên đăng nhập hiện tại
+  const { authenticated, loading } = useUserSession();
+
+  // [COMMENT]: Chuyển hướng người dùng về trang dashboard nếu đã đăng nhập thành công
+  useEffect(() => {
+    if (!loading && authenticated) {
+      router.push("/");
+    }
+  }, [loading, authenticated, router]);
 
   // [COMMENT]: Móc nối dịch thuật đa ngôn ngữ toàn cục
   const { lang, setLang, t } = useTranslation();
 
-  // [COMMENT]: Quản lý trạng thái form hiển thị: signin (đăng nhập) hoặc signup (đăng ký)
+  // [COMMENT]: Mode điều khiển form nào đang hiển thị (signin / signup)
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
-  // [COMMENT]: Quản lý các bước xác thực email của Đăng ký: form -> verify-email -> verified
-  const [signupStep, setSignupStep] = useState<"form" | "verify-email" | "verified">("form");
+  // [COMMENT]: State theme sáng/tối — đồng bộ với localStorage
+  const [theme, setTheme] = useState("light");
 
-  // [COMMENT]: State dữ liệu chung
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-
-  // [COMMENT]: State Đăng nhập
-  const [trustDevice, setTrustDevice] = useState(false);
+  // [COMMENT]: Danh sách active zones lấy từ ACR edge
   const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
   const [selectedZoneCode, setSelectedZoneCode] = useState("");
 
-  // [COMMENT]: State Đăng ký
-  const [fullname, setFullname] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
+  // [COMMENT]: Ref tới flex container chứa 2 form panel — dùng cho slide animation
+  const sliderRef = useRef<HTMLDivElement>(null);
 
-  const [isLoading, setIsLoading] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(59);
+  // [COMMENT]: Chiều cao card được tính động theo panel đang active — tránh khoảng trắng thừa
+  const [containerHeight, setContainerHeight] = useState<number>(0);
 
-  // [COMMENT]: State theme sáng/tối
-  const [theme, setTheme] = useState("light");
+  // [COMMENT]: Nếu đang tải session hoặc đã đăng nhập, hiển thị loading spinner để tránh flash form
+  if (loading || authenticated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC] dark:bg-[#0B0F19]">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#2563EB]/30 border-t-[#2563EB]" />
+      </div>
+    );
+  }
 
-  // [COMMENT]: Đồng bộ hóa tham số query của URL để quyết định mode hiển thị
+  // =========================================================================
+  // EFFECTS: Khởi tạo và đồng bộ trạng thái
+  // =========================================================================
+
+  // [COMMENT]: Đồng bộ mode từ URL query params khi trang được load lần đầu
   useEffect(() => {
     if (searchParams) {
       const modeParam = searchParams.get("mode");
@@ -119,10 +86,6 @@ function SignInContent() {
         setMode("signup");
       } else {
         setMode("signin");
-      }
-
-      if (searchParams.get("verified") === "true") {
-        setSignupStep("verified");
       }
     }
   }, [searchParams]);
@@ -133,18 +96,14 @@ function SignInContent() {
       if (typeof window !== "undefined") {
         const params = new URLSearchParams(window.location.search);
         const modeParam = params.get("mode");
-        if (modeParam === "signup") {
-          setMode("signup");
-        } else {
-          setMode("signin");
-        }
+        setMode(modeParam === "signup" ? "signup" : "signin");
       }
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  // [COMMENT]: Tra cứu danh sách active zones
+  // [COMMENT]: Tra cứu danh sách active zones từ ACR edge khi mount
   useEffect(() => {
     let active = true;
     fetchZoneCatalog()
@@ -159,12 +118,10 @@ function SignInContent() {
       .catch((err) => {
         console.error("[Auth] Failed to fetch active zones list", err);
       });
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, []);
 
-  // [COMMENT]: Đồng bộ và kích hoạt theme từ localstorage
+  // [COMMENT]: Khôi phục theme đã lưu trong localStorage khi mount
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") || "light";
     setTheme(savedTheme);
@@ -175,19 +132,47 @@ function SignInContent() {
     }
   }, []);
 
-  // [COMMENT]: Countdown timer kích hoạt gửi lại email
+  // =========================================================================
+  // HEIGHT OBSERVER: Theo dõi chiều cao panel đang active
+  // =========================================================================
+  // [COMMENT]: Dùng ResizeObserver để tự động cập nhật chiều cao card khi nội dung panel thay đổi
+  // (ví dụ: password strength indicators xuất hiện, hoặc signup chuyển step verify-email → verified)
   useEffect(() => {
-    if (mode !== "signup" || signupStep !== "verify-email") return;
-    if (timeLeft <= 0) return;
+    if (!sliderRef.current) return;
 
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => prev - 1);
-    }, 1000);
+    const activeIndex = mode === "signin" ? 0 : 1;
+    const activePanel = sliderRef.current.children[activeIndex] as HTMLElement;
+    if (!activePanel) return;
 
-    return () => clearInterval(timer);
-  }, [mode, signupStep, timeLeft]);
+    // [COMMENT]: Đo chiều cao ngay lập tức trước khi ResizeObserver kịp fire
+    const updateHeight = () => {
+      setContainerHeight(activePanel.scrollHeight);
+    };
+    updateHeight();
 
-  // [COMMENT]: Logic thay đổi theme
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(activePanel);
+
+    return () => observer.disconnect();
+  }, [mode]);
+
+  // =========================================================================
+  // CALLBACKS: Chuyển đổi mode và theme
+  // =========================================================================
+
+  // [COMMENT]: Chuyển mode với pushState (zero-reload) — animation được trigger bởi CSS transition
+  const switchMode = useCallback((newMode: "signin" | "signup") => {
+    if (typeof window !== "undefined") {
+      window.history.pushState(
+        null,
+        "",
+        newMode === "signin" ? "/signin" : "/signin?mode=signup"
+      );
+    }
+    setMode(newMode);
+  }, []);
+
+  // [COMMENT]: Thay đổi theme và lưu xuống localStorage — đồng bộ với console dashboard
   const handleThemeChange = useCallback((newTheme: string) => {
     setTheme(newTheme);
     localStorage.setItem("theme", newTheme);
@@ -198,173 +183,16 @@ function SignInContent() {
     }
   }, []);
 
-  // [COMMENT]: Chuyển đổi qua lại giữa Đăng nhập và Đăng ký không tải lại trang
-  const switchMode = useCallback((newMode: "signin" | "signup") => {
-    if (typeof window !== "undefined") {
-      window.history.pushState(
-        null,
-        "",
-        newMode === "signin" ? "/signin?mode=signin" : "/signin?mode=signup"
-      );
-    }
-    setMode(newMode);
-    setPassword("");
-  }, []);
-
-  // [COMMENT]: Logic xử lý Đăng nhập
-  const handleSignIn = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!username.trim()) {
-      toast.error(t.auth.usernameReq);
-      return;
-    }
-    if (!password.trim()) {
-      toast.error(t.auth.passwordReq);
-      return;
-    }
-    if (password.length < 8) {
-      toast.error(t.auth.passwordLen);
-      return;
-    }
-    if (!selectedZoneCode) {
-      toast.error(t.auth.zoneReq);
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      let devicePublicKey = "";
-      try {
-        devicePublicKey = await ensureDevicePublicKey();
-      } catch (err) {
-        if (err instanceof DeviceKeyUnsupportedError) {
-          console.warn("[SignIn] Ed25519 not supported, proceeding without device key");
-        } else {
-          throw err;
-        }
-      }
-
-      const payload: LoginRequest = {
-        username,
-        password,
-        device_public_key: devicePublicKey,
-        trust_device: trustDevice,
-        zone_code: selectedZoneCode,
-      };
-
-      await authAPI.login(payload);
-      router.push("/");
-    } catch (err: unknown) {
-      const apiError = err as { status?: number; message?: string };
-      const msg = apiError?.message || "An unexpected error occurred. Please try again.";
-      toast.error(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [username, password, trustDevice, selectedZoneCode, t, router]);
-
-  // [COMMENT]: Live password constraints cho đăng ký
-  const hasMinLength = password.length >= 8;
-  const hasUppercase = /[A-Z]/.test(password);
-  const hasNumber = /[0-9]/.test(password);
-  const isPasswordValid = hasMinLength && hasUppercase && hasNumber;
-
-  const getDetectedLocation = () => {
-    const browserLang = typeof navigator !== "undefined" ? navigator.language : "en-US";
-    const countryCode = browserLang.includes("-") ? browserLang.split("-")[1] : browserLang;
-    return countryCode.toUpperCase().substring(0, 2);
-  };
-
-  // [COMMENT]: Logic xử lý Đăng ký
-  const handleSignUp = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!username.trim()) {
-      toast.error(t.auth.usernameReq);
-      return;
-    }
-    if (!fullname.trim()) {
-      toast.error(t.auth.fullnameReq);
-      return;
-    }
-    if (!email.trim()) {
-      toast.error(t.auth.emailReq);
-      return;
-    }
-    if (!password.trim()) {
-      toast.error(t.auth.passwordReq);
-      return;
-    }
-    if (!isPasswordValid) {
-      toast.error(t.auth.passwordLen);
-      return;
-    }
-
-    setIsLoading(true);
-
-    try {
-      const detectedLocation = getDetectedLocation();
-      const detectedTimezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC";
-
-      await authAPI.register({
-        username,
-        fullname,
-        email,
-        password,
-        phone: phone.trim() || undefined,
-        location: detectedLocation,
-        timezone: detectedTimezone,
-      });
-
-      setSignupStep("verify-email");
-      setTimeLeft(59);
-    } catch (err: unknown) {
-      const apiError = err as { status?: number; message?: string };
-      const msg = apiError?.message || "Registration failed. Please try again.";
-      toast.error(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [username, fullname, email, phone, password, isPasswordValid, t]);
-
-  const handleResendEmail = useCallback(async () => {
-    if (timeLeft > 0) return;
-    setIsLoading(true);
-    try {
-      const detectedLocation = getDetectedLocation();
-      const detectedTimezone = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC";
-
-      await authAPI.register({
-        username,
-        fullname,
-        email,
-        password,
-        phone: phone.trim() || undefined,
-        location: detectedLocation,
-        timezone: detectedTimezone,
-      });
-      toast.success("Verification email resent!");
-      setTimeLeft(59);
-    } catch (err: unknown) {
-      const apiError = err as { status?: number; message?: string };
-      const msg = apiError?.message || "Resend failed. Please try again.";
-      toast.error(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [username, fullname, email, phone, password, timeLeft]);
-
-  // [COMMENT]: Dynamic key giúp kích hoạt CSS transition mượt mà giữa các form
-  const activeKey = mode === "signup" ? `signup-${signupStep}` : "signin";
+  // =========================================================================
+  // RENDER
+  // =========================================================================
 
   return (
     <div className="flex min-h-screen flex-col bg-[#F8FAFC] dark:bg-[#0B0F19]">
       <div className="flex flex-1 items-center justify-center px-4 py-12">
         <div className="w-full max-w-[480px] space-y-6 transition-all duration-300">
-          
-          {/* LOGO & BRANDING */}
+
+          {/* ===== LOGO & BRANDING ===== */}
           <div className="space-y-1">
             <div className="flex items-center gap-3">
               <AuroraLogo />
@@ -379,386 +207,48 @@ function SignInContent() {
             </div>
           </div>
 
-          {/* DYNAMIC TRANSITION CONTAINER */}
+          {/* ===== SLIDING CARD CONTAINER ===== */}
+          {/* [COMMENT]: Card bọc ngoài có overflow hidden để tạo hiệu ứng slide.
+              Height được animate mượt mà nhờ transition-[height] + ResizeObserver tracking.
+              Khi mode thay đổi, flex container bên trong trượt ngang bằng translateX. */}
           <div
-            key={activeKey}
-            className="rounded-xl border border-[#E5E7EB] dark:border-slate-800 bg-white dark:bg-slate-900/50 shadow-none transition-all duration-300 transform opacity-100 scale-100"
+            className="rounded-xl border border-[#E5E7EB] dark:border-slate-800 bg-white dark:bg-slate-900/50 overflow-hidden transition-[height] duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
+            style={{ height: containerHeight > 0 ? `${containerHeight}px` : "auto" }}
           >
-            <div className="p-8 space-y-6">
-
-              {/* CHẾ ĐỘ 1: ĐĂNG NHẬP */}
-              {mode === "signin" && (
-                <div className="space-y-5 animate-in fade-in duration-300">
-                  <div className="space-y-1">
-                    <h2 className="text-base font-semibold text-foreground">{t.auth.signIn}</h2>
-                    <p className="text-sm text-muted-foreground">
-                      {t.auth.subtitleSignIn}
-                    </p>
-                  </div>
-
-                  <form onSubmit={handleSignIn} className="space-y-4" id="signin-form" noValidate>
-                    <div className="space-y-2">
-                      <Label htmlFor="username" className="text-sm font-normal text-foreground">
-                        {t.auth.username}
-                      </Label>
-                      <Input
-                        id="username"
-                        type="text"
-                        placeholder={t.auth.placeholderUsername}
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        autoComplete="username"
-                        disabled={isLoading}
-                        className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="password" className="text-sm font-normal text-foreground">
-                          {t.auth.password}
-                        </Label>
-                        <a
-                          href="#"
-                          className="text-xs text-[#2563EB] hover:text-[#1D4ED8] transition-colors"
-                        >
-                          {t.auth.forgotPassword}
-                        </a>
-                      </div>
-                      <Input
-                        id="password"
-                        type="password"
-                        placeholder="••••••••"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        autoComplete="current-password"
-                        disabled={isLoading}
-                        className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <Checkbox
-                        id="remember"
-                        checked={trustDevice}
-                        onCheckedChange={(checked) => setTrustDevice(checked === true)}
-                        disabled={isLoading}
-                      />
-                      <Label htmlFor="remember" className="text-sm font-normal text-muted-foreground cursor-pointer select-none">
-                        {t.auth.trustDevice}
-                      </Label>
-                    </div>
-
-                    <Button
-                      type="submit"
-                      className="w-full h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px]"
-                      disabled={isLoading}
-                      id="signin-button"
-                    >
-                      {isLoading ? (
-                        <span className="flex items-center gap-2">
-                          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                          {t.auth.btnSigningIn}
-                        </span>
-                      ) : (
-                        t.auth.btnSignIn
-                      )}
-                    </Button>
-                  </form>
-
-                  <div className="relative">
-                    <Separator />
-                    <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-3 text-xs text-muted-foreground dark:bg-slate-900 dark:text-slate-400">
-                      {t.auth.orSSO}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <Button
-                      variant="outline"
-                      className="h-9 text-xs font-normal gap-1.5 rounded-[8px]"
-                      disabled={isLoading}
-                      id="sso-microsoft"
-                    >
-                      <MicrosoftIcon />
-                      Microsoft
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="h-9 text-xs font-normal gap-1.5 rounded-[8px]"
-                      disabled={isLoading}
-                      id="sso-google"
-                    >
-                      <GoogleIcon />
-                      Google
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="h-9 text-xs font-normal gap-1.5 rounded-[8px]"
-                      disabled={isLoading}
-                      id="sso-github"
-                    >
-                      <GitHubIcon />
-                      GitHub
-                    </Button>
-                  </div>
-
-                  <div className="text-center text-xs text-muted-foreground pt-1 select-none">
-                    {t.auth.noAccount}{" "}
-                    <button
-                      onClick={() => switchMode("signup")}
-                      className="font-medium text-[#2563EB] hover:text-[#1D4ED8] transition-colors cursor-pointer"
-                    >
-                      {t.auth.signUp}
-                    </button>
-                  </div>
+            {/* [COMMENT]: Flex row chứa 2 panel — mỗi panel chiếm 100% width.
+                Transform translateX(-100%) để trượt sang panel signup.
+                Cubic-bezier easing tạo cảm giác mượt tự nhiên. */}
+            <div
+              ref={sliderRef}
+              className="flex transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              style={{
+                transform: mode === "signup" ? "translateX(-100%)" : "translateX(0)",
+              }}
+            >
+              {/* [COMMENT]: Panel 1 — Sign In Form */}
+              <div className="w-full shrink-0">
+                <div className="p-8">
+                  <SignInForm
+                    zones={zones}
+                    selectedZoneCode={selectedZoneCode}
+                    onZoneChange={setSelectedZoneCode}
+                    onSwitchToSignUp={() => switchMode("signup")}
+                  />
                 </div>
-              )}
+              </div>
 
-              {/* CHẾ ĐỘ 2: ĐĂNG KÝ (STAGE 1: FORM) */}
-              {mode === "signup" && signupStep === "form" && (
-                <div className="space-y-5 animate-in fade-in duration-300">
-                  <div className="space-y-1">
-                    <h2 className="text-base font-semibold text-foreground">{t.auth.createAuroraIdentity}</h2>
-                    <p className="text-sm text-muted-foreground">
-                      {t.auth.subtitleSignUpIdentity}
-                    </p>
-                  </div>
-
-                  <form onSubmit={handleSignUp} className="space-y-5" id="signup-form" noValidate>
-                    {/* SECTION 1: Account */}
-                    <div className="space-y-3">
-                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                        {t.auth.secAccount}
-                      </span>
-                      <div className="border-t border-slate-100 dark:border-slate-800/80 mb-2" />
-
-                      <div className="space-y-2">
-                        <Label htmlFor="username" className="text-sm font-normal text-foreground">
-                          {t.auth.username}
-                        </Label>
-                        <Input
-                          id="username"
-                          type="text"
-                          placeholder={t.auth.placeholderUsername}
-                          value={username}
-                          onChange={(e) => setUsername(e.target.value)}
-                          disabled={isLoading}
-                          className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="email" className="text-sm font-normal text-foreground">
-                          {t.auth.email}
-                        </Label>
-                        <Input
-                          id="email"
-                          type="email"
-                          placeholder={t.auth.placeholderEmail}
-                          value={email}
-                          onChange={(e) => setEmail(e.target.value)}
-                          disabled={isLoading}
-                          className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                        />
-                      </div>
-                    </div>
-
-                    {/* SECTION 2: Profile & Security */}
-                    <div className="space-y-3 pt-2">
-                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                        {t.auth.secProfile}
-                      </span>
-                      <div className="border-t border-slate-100 dark:border-slate-800/80 mb-2" />
-
-                      <div className="space-y-2">
-                        <Label htmlFor="fullname" className="text-sm font-normal text-foreground">
-                          {t.auth.fullname}
-                        </Label>
-                        <Input
-                          id="fullname"
-                          type="text"
-                          placeholder={t.auth.placeholderFullname}
-                          value={fullname}
-                          onChange={(e) => setFullname(e.target.value)}
-                          disabled={isLoading}
-                          className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="phone" className="text-sm font-normal text-foreground">
-                          {t.auth.phone}
-                        </Label>
-                        <Input
-                          id="phone"
-                          type="tel"
-                          placeholder={t.auth.placeholderPhone}
-                          value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
-                          disabled={isLoading}
-                          className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="password" className="text-sm font-normal text-foreground">
-                          {t.auth.password}
-                        </Label>
-                        <Input
-                          id="password"
-                          type="password"
-                          placeholder={t.auth.placeholderPassword}
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          disabled={isLoading}
-                          className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-                        />
-                        {password.length > 0 && (
-                          <div className="space-y-1.5 pt-1 text-xs select-none">
-                            <div className="flex items-center gap-2">
-                              <CircleIcon active={hasMinLength} />
-                              <span className={hasMinLength ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
-                                {t.auth.pwdAtLeast8}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <CircleIcon active={hasUppercase} />
-                              <span className={hasUppercase ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
-                                {t.auth.pwdOneUppercase}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <CircleIcon active={hasNumber} />
-                              <span className={hasNumber ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
-                                {t.auth.pwdOneNumber}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <Button
-                      type="submit"
-                      className="w-full h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px] mt-4 cursor-pointer font-medium"
-                      disabled={isLoading}
-                      id="signup-button"
-                    >
-                      {isLoading ? (
-                        <span className="flex items-center gap-2">
-                          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                          {t.auth.btnCreatingAccount}
-                        </span>
-                      ) : (
-                        t.auth.btnCreateAccount
-                      )}
-                    </Button>
-                  </form>
-
-                  <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
-
-                  <div className="text-center text-xs text-muted-foreground pt-1 select-none">
-                    {t.auth.alreadyAccount}{" "}
-                    <button
-                      onClick={() => switchMode("signin")}
-                      className="font-medium text-[#2563EB] hover:text-[#1D4ED8] transition-colors cursor-pointer"
-                    >
-                      {t.auth.signIn}
-                    </button>
-                  </div>
+              {/* [COMMENT]: Panel 2 — Sign Up Form */}
+              <div className="w-full shrink-0">
+                <div className="p-8">
+                  <SignUpForm
+                    onSwitchToSignIn={() => switchMode("signin")}
+                  />
                 </div>
-              )}
-
-              {/* STAGE 2: VERIFY EMAIL */}
-              {signupStep === "verify-email" && (
-                <div className="text-center space-y-6 py-4 select-none animate-in fade-in duration-300">
-                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M22 13V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h9" />
-                      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-                      <path d="m16 19 2 2 4-4" />
-                    </svg>
-                  </div>
-
-                  <div className="space-y-2">
-                    <h2 className="text-lg font-semibold text-foreground">{t.auth.verifyEmailTitle}</h2>
-                    <p className="text-sm text-muted-foreground px-4">
-                      {t.auth.verifyEmailSent}
-                    </p>
-                    <p className="text-sm font-semibold text-foreground break-all">{email}</p>
-                    <p className="text-xs text-slate-400 pt-1">
-                      {t.auth.verifyEmailInbox}
-                    </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    <a
-                      href="https://mail.google.com"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px] flex items-center justify-center font-medium transition-colors"
-                    >
-                      {t.auth.btnOpenGmail}
-                    </a>
-
-                    <div className="text-xs text-muted-foreground">
-                      {timeLeft > 0 ? (
-                        <span>
-                          {t.auth.resendIn} {timeLeft}s
-                        </span>
-                      ) : (
-                        <button
-                          onClick={handleResendEmail}
-                          disabled={isLoading}
-                          className="font-medium text-[#2563EB] hover:text-[#1D4ED8] transition-colors cursor-pointer"
-                        >
-                          {t.auth.resendEmail}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="pt-2">
-                    <button
-                      onClick={() => setSignupStep("form")}
-                      className="text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-300 transition-colors cursor-pointer"
-                    >
-                      {t.auth.useAnotherEmail}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* STAGE 3: VERIFIED SUCCESS */}
-              {signupStep === "verified" && (
-                <div className="text-center space-y-6 py-4 select-none animate-in fade-in duration-300">
-                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 animate-bounce">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  </div>
-
-                  <div className="space-y-2">
-                    <h2 className="text-lg font-semibold text-foreground">{t.auth.emailVerifiedTitle}</h2>
-                    <p className="text-sm text-muted-foreground">
-                      {t.auth.emailVerifiedSubtitle}
-                    </p>
-                  </div>
-
-                  <Button
-                    onClick={() => switchMode("signin")}
-                    className="w-full h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px] font-medium"
-                  >
-                    {t.auth.continueSignIn}
-                  </Button>
-                </div>
-              )}
-
+              </div>
             </div>
           </div>
 
-          {/* DOCUMENTATION & SUPPORT LINKS */}
+          {/* ===== DOCUMENTATION & SUPPORT LINKS ===== */}
           <div className="flex items-center justify-center gap-3 text-xs text-muted-foreground font-medium select-none">
             <a href="#" className="hover:text-foreground transition-colors">Documentation</a>
             <span>·</span>
@@ -772,8 +262,10 @@ function SignInContent() {
         </div>
       </div>
 
-      {/* FOOTER IN RESPONSIVE COLOR SCHEMES */}
+      {/* ===== FOOTER ===== */}
+      {/* [COMMENT]: Footer chứa status, version, zone selector, theme selector, language selector */}
       <div className="w-full py-4 border-t border-[#E5E7EB] dark:border-slate-800 bg-white dark:bg-slate-950/60 text-xs text-muted-foreground flex items-center justify-center gap-4 mt-auto select-none">
+        {/* [COMMENT]: System status indicator */}
         <span className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-500">
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
@@ -781,9 +273,11 @@ function SignInContent() {
           </span>
           {t.auth.operational}
         </span>
+
         <span className="text-slate-300 dark:text-slate-800">|</span>
         <span className="font-mono text-slate-500 dark:text-slate-400">v1.0.0</span>
-        
+
+        {/* [COMMENT]: Zone selector — chỉ hiển thị ở mode signin */}
         {zones.length > 0 && mode === "signin" && (
           <>
             <span className="text-slate-300 dark:text-slate-800">|</span>
@@ -803,6 +297,7 @@ function SignInContent() {
           </>
         )}
 
+        {/* [COMMENT]: Theme selector — đồng bộ với localStorage key "theme" */}
         <span className="text-slate-300 dark:text-slate-800">|</span>
         <div className="flex items-center gap-1">
           <select
@@ -822,6 +317,7 @@ function SignInContent() {
           </select>
         </div>
 
+        {/* [COMMENT]: Language selector — đa ngôn ngữ toàn hệ thống */}
         <span className="text-slate-300 dark:text-slate-800">|</span>
         <div className="flex items-center gap-1">
           <select
@@ -841,6 +337,7 @@ function SignInContent() {
   );
 }
 
+// [COMMENT]: Entry point — Suspense boundary cho useSearchParams() (Next.js 16 yêu cầu)
 export default function SignInPage() {
   return (
     <Suspense fallback={
@@ -848,7 +345,7 @@ export default function SignInPage() {
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#2563EB]/30 border-t-[#2563EB]" />
       </div>
     }>
-      <SignInContent />
+      <AuthPageContent />
       <Toaster />
     </Suspense>
   );

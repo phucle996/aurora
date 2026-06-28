@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Menu,
   Search,
@@ -20,6 +20,9 @@ import {
 import { cn } from "@/lib/utils";
 import { fetchZoneCatalog, switchZone, type ZoneCatalogItem } from "@/lib/api/zone";
 import { toast } from "sonner";
+import { useRouter } from "next/navigation";
+import { authAPI } from "@/lib/api/auth";
+import { useUserSession } from "@/hooks/useUserSession";
 
 // [COMMENT]: Định nghĩa Interfaces cho các sự kiện dữ liệu Header
 interface HeaderConsoleProps {
@@ -39,6 +42,22 @@ export default function HeaderConsole({
   setTheme,
   onOpenCommandPalette
 }: HeaderConsoleProps) {
+
+  const router = useRouter();
+  const { clearSession } = useUserSession();
+
+  // [COMMENT]: Xử lý đăng xuất phiên làm việc của user
+  const handleLogout = useCallback(async () => {
+    setUserOpen(false);
+    try {
+      await authAPI.logout();
+    } catch (e) {
+      console.error("[Logout] Failed to call logout endpoint", e);
+    } finally {
+      clearSession();
+      router.push("/signin");
+    }
+  }, [clearSession, router]);
 
   // [COMMENT]: Quản lý state đóng/mở cho các menu Dropdown trong Header
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -423,7 +442,7 @@ export default function HeaderConsole({
 
               <button
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs font-semibold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 cursor-pointer text-left"
-                onClick={() => setUserOpen(false)}
+                onClick={handleLogout}
               >
                 <LogOut className="h-4.5 w-4.5" />
                 <span>Log Out</span>

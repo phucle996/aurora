@@ -101,3 +101,233 @@ pub async fn handle_admin_session_check(
 
     Some(Ok(Response::new(response)))
 }
+
+// [COMMENT]: Xử lý chặn bắt endpoint GET /api/v1/auth/session tại biên để kiểm tra trạng thái đăng nhập của User
+pub async fn handle_user_session_check(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<TokenManager>,
+    zone_mgr: &Arc<crate::core::zone::ZoneManager>,
+    control_plane_client: &Arc<crate::infra::controlplane::ControlPlaneClient>,
+    config: &crate::config::Config,
+    client_headers: &std::collections::HashMap<String, String>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    // [COMMENT]: Chỉ intercept HTTP GET /api/v1/auth/session
+    if !(method == "GET" && path == "/api/v1/auth/session") {
+        return None;
+    }
+
+    Logger::sys_info(
+        "User-Session",
+        "Intercepted User session check request at edge",
+    );
+
+    let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+
+    // 1. Thực hiện kiểm tra bộ ba Trinity Credentials của user
+    let verify_trinity = async {
+        let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+            .ok_or("Missing access_token cookie")?;
+        let access_key = extract_cookie_value(&cookie_header, "access_key")
+            .ok_or("Missing access_key cookie")?;
+        let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+            .ok_or("Missing access_secret cookie")?;
+
+        let claims = token_mgr.verify_token(&jwt_token).await.map_err(|e| {
+            Logger::sys_debug("User-Session", &format!("JWT verification failed: {}", e));
+            "Invalid access_token"
+        })?;
+
+        if claims.access_key != access_key {
+            return Err("Access Key Mismatch");
+        }
+
+        let sess = session_mgr
+            .get_session(&claims.sub, &access_key)
+            .await
+            .map_err(|_| "Redis query error")?
+            .ok_or("Session Expired or Revoked")?;
+
+        let incoming_hash = sha256_hash(&access_secret);
+        if sess.ash != incoming_hash {
+            return Err("Access Secret Mismatch");
+        }
+
+        Ok((claims, sess))
+    };
+
+    match verify_trinity.await {
+        Ok((claims, sess)) => {
+            // [COMMENT]: Cập nhật Last Seen At (throttle 30s)
+            let _ = session_mgr
+                .update_last_seen(&claims.sub, &claims.access_key, sess.lsa)
+                .await;
+
+            // [COMMENT]: Kiểm tra xem có cần tự động Sliding Session (Trinity Rotation) không
+            let rotation_cookies =
+                crate::service::session::rotate_session::handle_session_rotation(
+                    session_mgr,
+                    token_mgr,
+                    config,
+                    &claims,
+                    &sess,
+                    &claims.access_key,
+                )
+                .await;
+
+            let mut denied_builder = DeniedHttpResponseBuilder::new();
+            denied_builder.set_http_status(HttpStatusCode::Ok);
+            denied_builder.add_header("content-type", "application/json", None, false);
+            denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
+
+            for cookie in rotation_cookies {
+                denied_builder.add_header("set-cookie", &cookie, None, false);
+            }
+
+            let mut response = CheckResponse::new();
+            response.set_status(Status::unauthenticated("User session status"));
+            response.set_http_response(denied_builder);
+
+            Some(Ok(Response::new(response)))
+        }
+        Err(err_msg) => {
+            // [COMMENT]: Trinity Cookies không hợp lệ. Kiểm tra xem có refresh_token cookie không để tự động phục hồi (Recovery)
+            let refresh_token = extract_cookie_value(&cookie_header, "refresh_token");
+
+            if refresh_token.is_some() {
+                Logger::sys_info(
+                    "User-Session",
+                    &format!(
+                        "Trinity auth failed: {}. Attempting session recovery at Edge.",
+                        err_msg
+                    ),
+                );
+
+                // [COMMENT]: Gọi hàm handle_session_recovery dùng chung
+                let recovery_res =
+                    crate::service::session::recovery_session::handle_session_recovery(
+                        session_mgr,
+                        token_mgr,
+                        zone_mgr,
+                        control_plane_client,
+                        config,
+                        &cookie_header,
+                        client_headers,
+                        err_msg,
+                        method,
+                        path,
+                    )
+                    .await;
+
+                match recovery_res {
+                    Ok(resp) => {
+                        let inner = resp.into_inner();
+                        let mut denied_builder = DeniedHttpResponseBuilder::new();
+                        denied_builder.set_http_status(HttpStatusCode::Ok);
+                        denied_builder.add_header("content-type", "application/json", None, false);
+
+                        // [COMMENT]: Phân tích response từ recovery_session để xây dựng body phù hợp
+                        if inner.status.is_some() && inner.status.as_ref().unwrap().code == 0 {
+                            // [COMMENT]: Phục hồi thành công! Trích xuất và đẩy cookies sang client
+                            denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
+
+                            if let Some(http_resp) = inner.http_response {
+                                use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
+                                if let HttpResponse::OkResponse(ok) = http_resp {
+                                    for header_opt in ok.response_headers_to_add {
+                                        if let Some(header) = header_opt.header {
+                                            if header.key.to_lowercase() == "set-cookie" {
+                                                denied_builder.add_header(
+                                                    "set-cookie",
+                                                    &header.value,
+                                                    None,
+                                                    false,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // [COMMENT]: Phục hồi thất bại! Xoá toàn bộ cookie cũ
+                            denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+
+                            if let Some(http_resp) = inner.http_response {
+                                use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
+                                if let HttpResponse::DeniedResponse(denied) = http_resp {
+                                    for header_opt in denied.headers {
+                                        if let Some(header) = header_opt.header {
+                                            if header.key.to_lowercase() == "set-cookie" {
+                                                denied_builder.add_header(
+                                                    "set-cookie",
+                                                    &header.value,
+                                                    None,
+                                                    false,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let mut response = CheckResponse::new();
+                        response.set_status(Status::unauthenticated("User session status"));
+                        response.set_http_response(denied_builder);
+                        Some(Ok(Response::new(response)))
+                    }
+                    Err(status) => {
+                        // [COMMENT]: Lỗi hệ thống khi gọi gRPC/Vault... Trả về 200 OK với authenticated=false kèm xoá cookies
+                        Logger::sys_error(
+                            "User-Session",
+                            "Recovery failed with system error status",
+                            &status.to_string(),
+                        );
+
+                        let mut denied_builder = DeniedHttpResponseBuilder::new();
+                        denied_builder.set_http_status(HttpStatusCode::Ok);
+                        denied_builder.add_header("content-type", "application/json", None, false);
+                        denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+
+                        let cookies_to_clear = vec![
+                            "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                            "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                            "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                            "refresh_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                        ];
+                        for cookie in cookies_to_clear {
+                            denied_builder.add_header("set-cookie", cookie, None, false);
+                        }
+
+                        let mut response = CheckResponse::new();
+                        response.set_status(Status::unauthenticated("User session status"));
+                        response.set_http_response(denied_builder);
+                        Some(Ok(Response::new(response)))
+                    }
+                }
+            } else {
+                // [COMMENT]: Trinity hỏng và không mang refresh_token -> Trả về authenticated=false kèm dọn dẹp cookies
+                let mut denied_builder = DeniedHttpResponseBuilder::new();
+                denied_builder.set_http_status(HttpStatusCode::Ok);
+                denied_builder.add_header("content-type", "application/json", None, false);
+                denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+
+                let cookies_to_clear = vec![
+                    "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                    "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                    "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                ];
+                for cookie in cookies_to_clear {
+                    denied_builder.add_header("set-cookie", cookie, None, false);
+                }
+
+                let mut response = CheckResponse::new();
+                response.set_status(Status::unauthenticated("User session status"));
+                response.set_http_response(denied_builder);
+
+                Some(Ok(Response::new(response)))
+            }
+        }
+    }
+}

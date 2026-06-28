@@ -155,6 +155,23 @@ impl Authorization for ExtAuthzService {
                     return admin_session_res;
                 }
 
+                // [COMMENT]: Chặn bắt và xác thực session User tại biên
+                if let Some(user_session_res) =
+                    crate::service::session::verifier::handle_user_session_check(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.zone_mgr,
+                        &self.control_plane_client,
+                        &self.config,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                {
+                    return user_session_res;
+                }
+
                 // [COMMENT]: Gọi handle_login để xử lý chặn bắt và xử lý đăng nhập trực tiếp tại biên
                 if let Some(login_res) = crate::service::login::login_handler::handle_login(
                     &self.session_mgr,
