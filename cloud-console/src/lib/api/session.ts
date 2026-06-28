@@ -13,11 +13,13 @@ export class UserUnauthorizedError extends Error {
 
 export async function getUserSession(signal?: AbortSignal): Promise<UserSession> {
   try {
-    // [COMMENT]: Gọi trực tiếp API Endpoint v1 tại Envoy Gateway để kiểm tra phiên làm việc
-    await fetchJSON<{ data?: { authenticated?: boolean } }>("/api/v1/auth/session", {
+    const res = await fetchJSON<{ data?: { authenticated?: boolean } }>("/api/v1/auth/session", {
       method: "GET",
       signal,
     });
+    if (res?.data?.authenticated !== true) {
+      throw new UserUnauthorizedError();
+    }
     return { authenticated: true };
   } catch (error) {
     const apiErr = error as APIError;

@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use crate::error::AcrError;
-use crate::authz::{Authorizer, AuthContext, RequestContext};
 use crate::authz::policy::PolicyStore;
+use crate::authz::{AuthContext, Authorizer, RequestContext};
+use crate::error::AcrError;
+use std::sync::Arc;
 
 // Triển khai Engine kiểm tra quyền dựa trên Vai trò (RBAC Engine)
 pub struct RbacAuthorizer {
@@ -22,7 +22,11 @@ impl Authorizer for RbacAuthorizer {
         "RBAC_Authorizer"
     }
 
-    async fn authorize(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AcrError> {
+    async fn authorize(
+        &self,
+        auth_ctx: &AuthContext,
+        req_ctx: &RequestContext,
+    ) -> Result<bool, AcrError> {
         // Tìm quy tắc bảo vệ của đường dẫn hiện tại
         let rule = match self.policy_store.find_rule(&req_ctx.path) {
             Some(r) => r,
@@ -68,7 +72,11 @@ impl Authorizer for IPBlacklistAuthorizer {
         "IP_Blacklist_Authorizer"
     }
 
-    async fn authorize(&self, _auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<bool, AcrError> {
+    async fn authorize(
+        &self,
+        _auth_ctx: &AuthContext,
+        req_ctx: &RequestContext,
+    ) -> Result<bool, AcrError> {
         if self.blacklist.contains(&req_ctx.client_ip.as_str()) {
             tracing::warn!("Blocked request from blacklisted IP: {}", req_ctx.client_ip);
             return Ok(false);
@@ -87,14 +95,18 @@ impl PolicyEvaluator {
     pub fn new() -> Self {
         let rbac = Arc::new(RbacAuthorizer::new());
         let ip_check = Arc::new(IPBlacklistAuthorizer::new());
-        
+
         Self {
             authorizers: vec![ip_check, rbac],
         }
     }
 
     // Đánh giá tuần tự qua tất cả các Authorizers
-    pub async fn evaluate(&self, auth_ctx: &AuthContext, req_ctx: &RequestContext) -> Result<(), AcrError> {
+    pub async fn evaluate(
+        &self,
+        auth_ctx: &AuthContext,
+        req_ctx: &RequestContext,
+    ) -> Result<(), AcrError> {
         for authz in &self.authorizers {
             let name = authz.name();
             match authz.authorize(auth_ctx, req_ctx).await {
@@ -102,7 +114,11 @@ impl PolicyEvaluator {
                     tracing::debug!("Authorizer '{}' passed", name);
                 }
                 Ok(false) => {
-                    tracing::warn!("Forbidden by authorizer '{}' for user '{}'", name, auth_ctx.user_id);
+                    tracing::warn!(
+                        "Forbidden by authorizer '{}' for user '{}'",
+                        name,
+                        auth_ctx.user_id
+                    );
                     return Err(AcrError::Forbidden(format!("Access denied by {}", name)));
                 }
                 Err(e) => {

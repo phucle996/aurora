@@ -15,7 +15,7 @@ use prost::Message;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use crate::core::session::SessionManager;
+use crate::core::session::{AdminAccessSession, SessionManager};
 use crate::core::token::TokenManager;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
@@ -26,7 +26,7 @@ pub mod auth_proto {
 }
 
 use auth_proto::{
-    auth_service_server::AuthService, AdminAccessSession, RevokeOpaqueRefreshTokenRequest,
+    auth_service_server::AuthService, RevokeOpaqueRefreshTokenRequest,
     RevokeOpaqueRefreshTokenResponse, VerifyAdminTrinityTokenRequest,
     VerifyAdminTrinityTokenResponse, VerifyOpaqueRefreshTokenRequest,
     VerifyOpaqueRefreshTokenResponse, VerifyUserCredentialsRequest, VerifyUserCredentialsResponse,

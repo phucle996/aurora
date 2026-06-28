@@ -1,20 +1,18 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import { useUserSession } from "@/hooks/useUserSession";
-import { toast } from "sonner";
 import SidebarConsole from "@/components/sidebar-console";
 import HeaderConsole from "@/components/header-console";
 import CommandPalette from "@/components/command-palette";
-import { 
-  Activity, 
-  Cpu, 
-  Database, 
-  Layers, 
-  Plus, 
+import {
+  Activity,
+  Cpu,
+  Database,
+  Layers,
+  Plus,
   RefreshCw,
-  ShieldAlert, 
+  ShieldAlert,
   Terminal,
   Server,
   Zap,
@@ -111,28 +109,8 @@ function ConsoleSkeleton() {
 }
 
 export default function ConsoleDashboard() {
-  const router = useRouter();
-
   // [COMMENT]: Lấy dữ liệu phiên đăng nhập hiện tại từ User Session Provider
-  const { loading, authenticated, notice, consumeNotice } = useUserSession();
-
-  // [COMMENT]: Chuyển hướng người dùng về trang đăng nhập nếu không có phiên làm việc hợp lệ
-  useEffect(() => {
-    if (!loading && !authenticated) {
-      router.push("/signin");
-    }
-  }, [loading, authenticated, router]);
-
-  // [COMMENT]: Hiển thị thông báo khi phiên đăng nhập hết hạn và đã tự động logout
-  useEffect(() => {
-    if (notice === "session_expired") {
-      toast.info("Session expired. Please sign in again.", {
-        id: "user-session-expired",
-        duration: 3200,
-      });
-      consumeNotice();
-    }
-  }, [notice, consumeNotice]);
+  const { loading, authenticated } = useUserSession();
 
   // [COMMENT]: State chia sẻ giữa Sidebar và Main Panel để điều khiển layout co giãn mượt mà
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -337,9 +315,8 @@ export default function ConsoleDashboard() {
                     <div className="flex items-center gap-2">
                       <h3 className="font-bold text-slate-800 dark:text-slate-200">{zone.name}</h3>
                       <span className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 px-2 py-0.5 rounded font-mono">{zone.code}</span>
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        zone.status === "operational" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                      }`}>
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${zone.status === "operational" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                        }`}>
                         {zone.status}
                       </span>
                     </div>
@@ -394,15 +371,13 @@ export default function ConsoleDashboard() {
                     {mockVMs.map((vm) => (
                       <tr key={vm.name} className="hover:bg-slate-55/40 dark:hover:bg-slate-800/20 text-slate-700 dark:text-slate-300">
                         <td className="py-3.5 font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                          <span className={`h-1.5 w-1.5 rounded-full ${
-                            vm.status === "running" ? "bg-emerald-500" : vm.status === "updating" ? "bg-blue-500" : "bg-slate-500"
-                          }`} />
+                          <span className={`h-1.5 w-1.5 rounded-full ${vm.status === "running" ? "bg-emerald-500" : vm.status === "updating" ? "bg-blue-500" : "bg-slate-500"
+                            }`} />
                           {vm.name}
                         </td>
                         <td className="py-3.5">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                            vm.status === "running" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : vm.status === "updating" ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                          }`}>
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${vm.status === "running" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : vm.status === "updating" ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                            }`}>
                             {vm.status}
                           </span>
                         </td>
@@ -485,7 +460,7 @@ export default function ConsoleDashboard() {
       {/* [COMMENT]: Khối Main Layout Panel. 
           Khoảng cách lề trái co giãn đồng bộ theo trạng thái Sidebar (ml-[272px] hoặc ml-[60px]).
           Sử dụng transition-all cho trải nghiệm mượt mà. */}
-      <div 
+      <div
         className="flex-1 min-w-0 transition-all duration-300 ease-in-out flex flex-col min-h-screen"
         style={{ marginLeft: isCollapsed ? "60px" : "272px" }}
       >
@@ -518,10 +493,10 @@ export default function ConsoleDashboard() {
       </div>
 
       {/* [COMMENT]: Khối Command Palette điều hướng nhanh kích hoạt qua Cmd+K hoặc click Search */}
-      <CommandPalette 
-        isOpen={commandPaletteOpen} 
-        setIsOpen={setCommandPaletteOpen} 
-        setActivePage={setActiveId} 
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        setIsOpen={setCommandPaletteOpen}
+        setActivePage={setActiveId}
       />
     </div>
   );

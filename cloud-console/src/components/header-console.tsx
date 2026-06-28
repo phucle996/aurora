@@ -24,6 +24,15 @@ import { useRouter } from "next/navigation";
 import { authAPI } from "@/lib/api/auth";
 import { useUserSession } from "@/hooks/useUserSession";
 
+// [COMMENT]: Helper để đọc giá trị cookie từ document.cookie ở client-side
+function getCookie(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop()?.split(";").shift() || null;
+  return null;
+}
+
 // [COMMENT]: Định nghĩa Interfaces cho các sự kiện dữ liệu Header
 interface HeaderConsoleProps {
   isCollapsed: boolean;
@@ -148,8 +157,13 @@ export default function HeaderConsole({
         if (active && data) {
           setZones(data);
           if (data.length > 0) {
-            // Đặt Zone đầu tiên là Active Zone mặc định
-            setActiveZone(data[0].code.toUpperCase());
+            // Đọc zone_code hiện tại từ cookie (do ACR set)
+            const currentZoneCode = getCookie("zone_code") || data[0].code;
+            const matchedZone = data.find(
+              (z) => z.code.toLowerCase() === currentZoneCode.toLowerCase()
+            );
+            // Hiển thị Zone Name trực tiếp, không tự động viết hoa (toUpperCase)
+            setActiveZone(matchedZone ? matchedZone.name : data[0].name);
           }
         }
       })
@@ -263,7 +277,7 @@ export default function HeaderConsole({
                   onClick={async () => {
                     try {
                       await switchZone(z.code);
-                      setActiveZone(z.code.toUpperCase());
+                      setActiveZone(z.name);
                       setZoneOpen(false);
                       toast.success(`Switched to zone: ${z.name}`);
                       // [COMMENT]: Làm mới trang để đồng bộ và cập nhật lại toàn bộ tài nguyên VM/Incident của Zone mới
@@ -273,8 +287,8 @@ export default function HeaderConsole({
                     }
                   }}
                   className={cn(
-                    "w-full text-left px-3 py-2 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-slate-700 dark:text-slate-300",
-                    z.code.toUpperCase() === activeZone && "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40"
+                    "w-full text-left px-3 py-2 text-xs font-semibold hover:bg-slate-55 dark:hover:bg-slate-800/50 cursor-pointer text-slate-700 dark:text-slate-300",
+                    z.name === activeZone && "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40"
                   )}
                 >
                   <div className="font-bold">{z.name}</div>

@@ -17,6 +17,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useRouter, usePathname } from "next/navigation";
+import { toast } from "sonner";
 
 import { getUserSession, UserUnauthorizedError, type UserSession } from "@/lib/api/session";
 import {
@@ -114,9 +116,39 @@ function resolveUserSession(): Promise<UserSessionState> {
 }
 
 export function UserSessionProvider({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+
   // [COMMENT]: Đọc state ban đầu từ cache module-level nếu đã tồn tại
   const [state, setState] = useState<UserSessionState>(() => cachedState ?? initialState);
   const mountedRef = useRef(true);
+
+  // [COMMENT]: Tự động chuyển hướng người dùng nếu phiên bị huỷ (authenticated = false)
+  useEffect(() => {
+    if (!state.loading && !state.authenticated) {
+      if (pathname && !pathname.startsWith("/signin")) {
+        router.push("/signin");
+      }
+    }
+  }, [state.loading, state.authenticated, pathname, router]);
+
+  // [COMMENT]: Hiển thị thông báo khi hết hạn phiên làm việc và dọn dẹp notice
+  useEffect(() => {
+    if (state.notice === "session_expired") {
+      toast.info("Session expired. Please sign in again.", {
+        id: "user-session-expired",
+        duration: 3200,
+      });
+      // Dọn dẹp notice ngay lập tức
+      cachedState = {
+        ...(cachedState ?? unauthenticatedState),
+        notice: "",
+      };
+      if (mountedRef.current) {
+        setState((current) => ({ ...current, notice: "" }));
+      }
+    }
+  }, [state.notice]);
 
   // [COMMENT]: Lắng nghe sự kiện iam:unauthorized để tự động logout khi nhận mã 401
   useEffect(() => {
