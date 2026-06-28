@@ -507,11 +507,11 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  cloud-ui:
+  cloud-console:
     build:
-      context: ../cloud-ui
+      context: ../cloud-console
       dockerfile: Dockerfile.prod
-    container_name: cloud-ui-dev
+    container_name: cloud-console-dev
     environment:
       - NEXT_PUBLIC_CONTROLPLANE_URL=https://envoy:8443
     restart: unless-stopped
