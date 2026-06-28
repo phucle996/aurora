@@ -187,8 +187,11 @@ export async function fetchJSON<T>(
 
       let retryMessage = "request failed";
       try {
-        const payload = (await retryResponse.json()) as { message?: string };
-        if (typeof payload?.message === "string" && payload.message.trim() !== "") {
+        /* [COMMENT]: Hỗ trợ parse cả message và error_message (iam: invalid credentials) từ backend trả về */
+        const payload = (await retryResponse.json()) as { message?: string; error_message?: string };
+        if (typeof payload?.error_message === "string" && payload.error_message.trim() !== "") {
+          retryMessage = payload.error_message;
+        } else if (typeof payload?.message === "string" && payload.message.trim() !== "") {
           retryMessage = payload.message;
         }
       } catch {
@@ -212,8 +215,11 @@ export async function fetchJSON<T>(
 
     let message = "request failed";
     try {
-      const payload = (await response.json()) as { message?: string };
-      if (typeof payload?.message === "string" && payload.message.trim() !== "") {
+      /* [COMMENT]: Hỗ trợ parse cả message và error_message (iam: invalid credentials) từ backend trả về */
+      const payload = (await response.json()) as { message?: string; error_message?: string };
+      if (typeof payload?.error_message === "string" && payload.error_message.trim() !== "") {
+        message = payload.error_message;
+      } else if (typeof payload?.message === "string" && payload.message.trim() !== "") {
         message = payload.message;
       }
     } catch {
