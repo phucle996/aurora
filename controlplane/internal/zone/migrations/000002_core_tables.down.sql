@@ -1,2 +1,0 @@
-DROP TABLE IF EXISTS zone_services;
-DROP TABLE IF EXISTS zones;

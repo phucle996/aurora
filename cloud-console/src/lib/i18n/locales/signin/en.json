@@ -26,6 +26,7 @@
     "alreadyAccount": "Already have an account?",
     "operational": "All Systems Operational",
     "usernameReq": "Username is required.",
+    "usernameLen": "Username must be at least 6 characters.",
     "fullnameReq": "Full name is required.",
     "emailReq": "Email address is required.",
     "passwordReq": "Password is required.",
@@ -40,8 +41,10 @@
     "secAccount": "Account",
     "secProfile": "Profile & Security",
     "pwdAtLeast8": "At least 8 characters",
+    "pwdOneLowercase": "One lowercase letter",
     "pwdOneUppercase": "One uppercase letter",
     "pwdOneNumber": "One number",
+    "pwdOneSpecial": "One special character",
     "pwdMatch": "Passwords match",
     "pwdNotMatch": "Passwords do not match",
     "btnCreateAccount": "Create account",
@@ -57,6 +60,7 @@
     "emailVerifiedSubtitle": "Your Aurora Identity is now active.",
     "continueSignIn": "Continue to sign in →",
     "phone": "Phone Number",
-    "placeholderPhone": "+84 90 123 4567"
+    "placeholderPhone": "+84 90 123 4567",
+    "phoneInvalid": "Please enter a valid phone number (e.g., +84901234567 or 0901234567)."
   }
 }

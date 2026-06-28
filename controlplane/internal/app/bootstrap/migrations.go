@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"controlplane/internal/config"
-	"controlplane/internal/zone"
+	"controlplane/internal/hierarchy"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
 	"controlplane/pkg/logger"

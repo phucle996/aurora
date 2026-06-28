@@ -14,6 +14,9 @@ import { Label } from "@/components/ui/label";
 // [COMMENT]: Import API module đăng ký
 import { authAPI } from "@/lib/api/auth";
 
+// [COMMENT]: Import icons từ lucide-react
+import { ChevronLeft, ChevronRight } from "lucide-react";
+
 // [COMMENT]: Icon hiển thị trạng thái live check password constraints
 function CircleIcon({ active }: { active: boolean }) {
   return (
@@ -26,6 +29,27 @@ function CircleIcon({ active }: { active: boolean }) {
   );
 }
 
+// [COMMENT]: Hàm chuyển đổi số điện thoại thô sang định dạng E.164 (ví dụ: 0346287974 -> +84346287974)
+// Hàm này sẽ tự động thêm mã quốc gia Việt Nam (+84) làm mặc định nếu số điện thoại bắt đầu bằng 0.
+const formatPhoneToE164 = (rawPhone: string) => {
+  let cleaned = rawPhone.replace(/[^\d+]/g, "");
+  if (!cleaned) return "";
+
+  if (cleaned.startsWith("+")) {
+    return cleaned;
+  }
+
+  if (cleaned.startsWith("0")) {
+    return "+84" + cleaned.slice(1);
+  }
+
+  if (cleaned.startsWith("84") && cleaned.length === 11) {
+    return "+" + cleaned;
+  }
+
+  return "+" + cleaned;
+};
+
 // [COMMENT]: Props interface cho SignUpForm — chỉ cần callback chuyển mode
 export interface SignUpFormProps {
   onSwitchToSignIn: () => void;
@@ -36,6 +60,9 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
 
   // [COMMENT]: Quản lý các bước xác thực email: form → verify-email → verified
   const [signupStep, setSignupStep] = useState<"form" | "verify-email" | "verified">("form");
+
+  // [COMMENT]: Chia nhỏ form đăng ký thành 2 step để gọn gàng giao diện
+  const [formStep, setFormStep] = useState<1 | 2>(1);
 
   // [COMMENT]: State nội bộ cho form đăng ký — tách biệt khỏi signin form
   const [username, setUsername] = useState("");
@@ -58,11 +85,13 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
     return () => clearInterval(timer);
   }, [signupStep, timeLeft]);
 
-  // [COMMENT]: Live password constraints — check realtime khi user nhập
+  // [COMMENT]: Live password constraints — check realtime khi user nhập đúng 100% với backend Go (isStrongPassword)
   const hasMinLength = password.length >= 8;
+  const hasLowercase = /[a-z]/.test(password);
   const hasUppercase = /[A-Z]/.test(password);
   const hasNumber = /[0-9]/.test(password);
-  const isPasswordValid = hasMinLength && hasUppercase && hasNumber;
+  const hasSpecial = /[^A-Za-z0-9]/.test(password);
+  const isPasswordValid = hasMinLength && hasLowercase && hasUppercase && hasNumber && hasSpecial;
 
   // [COMMENT]: Lấy location ước lượng từ ngôn ngữ trình duyệt (fallback cho GeoIP phía server)
   const getDetectedLocation = () => {
@@ -71,20 +100,48 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
     return countryCode.toUpperCase().substring(0, 2);
   };
 
-  // [COMMENT]: Logic xử lý Đăng ký — validate → call API → chuyển sang verify email step
-  const handleSignUp = useCallback(async (e: React.FormEvent) => {
+  // [COMMENT]: Tiến hành chuyển đổi sang Step 2 sau khi kiểm tra hợp lệ các trường của Step 1
+  const handleNextStep = (e: React.MouseEvent) => {
     e.preventDefault();
-
     if (!username.trim()) {
       toast.error(t.auth.usernameReq);
       return;
     }
-    if (!fullname.trim()) {
-      toast.error(t.auth.fullnameReq);
+    // [COMMENT]: Kiểm tra độ dài tối thiểu của tên đăng nhập (phải từ 6 ký tự trở lên theo yêu cầu backend)
+    if (username.trim().length < 6) {
+      toast.error(t.auth.usernameLen);
       return;
     }
     if (!email.trim()) {
       toast.error(t.auth.emailReq);
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    setFormStep(2);
+  };
+
+  // [COMMENT]: Logic xử lý Đăng ký — validate → call API → chuyển sang verify email step
+  const handleSignUp = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // Đối chiếu đầy đủ ở cả 2 bước đề phòng bypass
+    if (!username.trim() || !email.trim()) {
+      setFormStep(1);
+      toast.error("Please complete the account credentials step.");
+      return;
+    }
+    // [COMMENT]: Kiểm tra lại độ dài tối thiểu của tên đăng nhập trước khi submit
+    if (username.trim().length < 6) {
+      setFormStep(1);
+      toast.error(t.auth.usernameLen);
+      return;
+    }
+    if (!fullname.trim()) {
+      toast.error(t.auth.fullnameReq);
       return;
     }
     if (!password.trim()) {
@@ -94,6 +151,18 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
     if (!isPasswordValid) {
       toast.error(t.auth.passwordLen);
       return;
+    }
+
+    // [COMMENT]: Định dạng số điện thoại sang chuẩn E.164 trước khi gọi API
+    let formattedPhone: string | undefined = undefined;
+    if (phone.trim()) {
+      formattedPhone = formatPhoneToE164(phone.trim());
+      // [COMMENT]: Regex kiểm tra định dạng E.164: bắt đầu bằng + và theo sau bởi 1-14 chữ số
+      const phoneRegex = /^\+[1-9]\d{1,14}$/;
+      if (!phoneRegex.test(formattedPhone)) {
+        toast.error(t.auth.phoneInvalid);
+        return;
+      }
     }
 
     setIsLoading(true);
@@ -109,7 +178,7 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
         fullname,
         email,
         password,
-        phone: phone.trim() || undefined,
+        phone: formattedPhone,
         location: detectedLocation,
         timezone: detectedTimezone,
       });
@@ -130,6 +199,13 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
   const handleResendEmail = useCallback(async () => {
     if (timeLeft > 0) return;
     setIsLoading(true);
+
+    // [COMMENT]: Định dạng số điện thoại sang chuẩn E.164 khi gửi lại email đăng ký
+    let formattedPhone: string | undefined = undefined;
+    if (phone.trim()) {
+      formattedPhone = formatPhoneToE164(phone.trim());
+    }
+
     try {
       const detectedLocation = getDetectedLocation();
       const detectedTimezone = typeof Intl !== "undefined"
@@ -141,7 +217,7 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
         fullname,
         email,
         password,
-        phone: phone.trim() || undefined,
+        phone: formattedPhone,
         location: detectedLocation,
         timezone: detectedTimezone,
       });
@@ -161,142 +237,180 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
   // =====================================================
   if (signupStep === "form") {
     return (
-      <div className="space-y-5">
-        <div className="space-y-1">
-          <h2 className="text-base font-semibold text-foreground">{t.auth.createAuroraIdentity}</h2>
-          <p className="text-sm text-muted-foreground">{t.auth.subtitleSignUpIdentity}</p>
+      <div className="space-y-4">
+        {/* Step Header & Indicators */}
+        <div className="flex items-center justify-between pb-1 select-none">
+          <div className="space-y-0.5">
+            <h2 className="text-base font-semibold text-foreground">{t.auth.createAuroraIdentity}</h2>
+            <p className="text-xs text-muted-foreground">
+              {formStep === 1 ? "Step 1: Account credentials" : "Step 2: Profile & Security"}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className={`h-1 w-5 rounded-full transition-all duration-300 ${formStep === 1 ? "bg-[#2563EB]" : "bg-slate-200 dark:bg-slate-800"}`} />
+            <div className={`h-1 w-5 rounded-full transition-all duration-300 ${formStep === 2 ? "bg-[#2563EB]" : "bg-slate-200 dark:bg-slate-800"}`} />
+          </div>
         </div>
 
-        <form onSubmit={handleSignUp} className="space-y-5" id="signup-form" noValidate>
-          {/* SECTION 1: Account */}
-          <div className="space-y-3">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              {t.auth.secAccount}
-            </span>
-            <div className="border-t border-slate-100 dark:border-slate-800/80 mb-2" />
+        <form onSubmit={handleSignUp} className="space-y-4" id="signup-form" noValidate>
+          {formStep === 1 ? (
+            /* =====================================================
+               STEP 1: ACCOUNT CREDENTIALS
+               ===================================================== */
+            <div className="space-y-3 animate-in fade-in slide-in-from-right-2 duration-200">
+              <div className="space-y-2">
+                <Label htmlFor="signup-username" className="text-sm font-normal text-foreground">
+                  {t.auth.username}
+                </Label>
+                <Input
+                  id="signup-username"
+                  type="text"
+                  placeholder={t.auth.placeholderUsername}
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  disabled={isLoading}
+                  className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="signup-username" className="text-sm font-normal text-foreground">
-                {t.auth.username}
-              </Label>
-              <Input
-                id="signup-username"
-                type="text"
-                placeholder={t.auth.placeholderUsername}
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                disabled={isLoading}
-                className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-              />
+              <div className="space-y-2">
+                <Label htmlFor="signup-email" className="text-sm font-normal text-foreground">
+                  {t.auth.email}
+                </Label>
+                <Input
+                  id="signup-email"
+                  type="email"
+                  placeholder={t.auth.placeholderEmail}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={isLoading}
+                  className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
+                />
+              </div>
+
+              <Button
+                type="button"
+                onClick={handleNextStep}
+                className="w-full h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px] mt-4 cursor-pointer font-medium flex items-center justify-center gap-1.5 transition-colors"
+              >
+                Continue
+                <ChevronRight className="h-4 w-4" />
+              </Button>
             </div>
+          ) : (
+            /* =====================================================
+               STEP 2: PROFILE & SECURITY
+               ===================================================== */
+            <div className="space-y-3 animate-in fade-in slide-in-from-right-2 duration-200">
+              <div className="space-y-2">
+                <Label htmlFor="signup-fullname" className="text-sm font-normal text-foreground">
+                  {t.auth.fullname}
+                </Label>
+                <Input
+                  id="signup-fullname"
+                  type="text"
+                  placeholder={t.auth.placeholderFullname}
+                  value={fullname}
+                  onChange={(e) => setFullname(e.target.value)}
+                  disabled={isLoading}
+                  className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
+                />
+              </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="signup-email" className="text-sm font-normal text-foreground">
-                {t.auth.email}
-              </Label>
-              <Input
-                id="signup-email"
-                type="email"
-                placeholder={t.auth.placeholderEmail}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={isLoading}
-                className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-              />
-            </div>
-          </div>
+              <div className="space-y-2">
+                <Label htmlFor="signup-phone" className="text-sm font-normal text-foreground">
+                  {t.auth.phone}
+                </Label>
+                <Input
+                  id="signup-phone"
+                  type="tel"
+                  placeholder={t.auth.placeholderPhone}
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  disabled={isLoading}
+                  className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
+                />
+              </div>
 
-          {/* SECTION 2: Profile & Security */}
-          <div className="space-y-3 pt-2">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              {t.auth.secProfile}
-            </span>
-            <div className="border-t border-slate-100 dark:border-slate-800/80 mb-2" />
-
-            <div className="space-y-2">
-              <Label htmlFor="signup-fullname" className="text-sm font-normal text-foreground">
-                {t.auth.fullname}
-              </Label>
-              <Input
-                id="signup-fullname"
-                type="text"
-                placeholder={t.auth.placeholderFullname}
-                value={fullname}
-                onChange={(e) => setFullname(e.target.value)}
-                disabled={isLoading}
-                className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="signup-phone" className="text-sm font-normal text-foreground">
-                {t.auth.phone}
-              </Label>
-              <Input
-                id="signup-phone"
-                type="tel"
-                placeholder={t.auth.placeholderPhone}
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                disabled={isLoading}
-                className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="signup-password" className="text-sm font-normal text-foreground">
-                {t.auth.password}
-              </Label>
-              <Input
-                id="signup-password"
-                type="password"
-                placeholder={t.auth.placeholderPassword}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={isLoading}
-                className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
-              />
-              {/* [COMMENT]: Live checklist hiển thị khi user bắt đầu nhập password */}
-              {password.length > 0 && (
-                <div className="space-y-1.5 pt-1 text-xs select-none">
-                  <div className="flex items-center gap-2">
-                    <CircleIcon active={hasMinLength} />
-                    <span className={hasMinLength ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
-                      {t.auth.pwdAtLeast8}
-                    </span>
+              <div className="space-y-2">
+                <Label htmlFor="signup-password" className="text-sm font-normal text-foreground">
+                  {t.auth.password}
+                </Label>
+                <Input
+                  id="signup-password"
+                  type="password"
+                  placeholder={t.auth.placeholderPassword}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={isLoading}
+                  className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
+                />
+                {/* [COMMENT]: Live checklist hiển thị khi user bắt đầu nhập password */}
+                {password.length > 0 && (
+                  <div className="space-y-1.5 pt-1 text-xs select-none">
+                    <div className="flex items-center gap-2">
+                      <CircleIcon active={hasMinLength} />
+                      <span className={hasMinLength ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
+                        {t.auth.pwdAtLeast8}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CircleIcon active={hasLowercase} />
+                      <span className={hasLowercase ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
+                        {t.auth.pwdOneLowercase}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CircleIcon active={hasUppercase} />
+                      <span className={hasUppercase ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
+                        {t.auth.pwdOneUppercase}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CircleIcon active={hasNumber} />
+                      <span className={hasNumber ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
+                        {t.auth.pwdOneNumber}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CircleIcon active={hasSpecial} />
+                      <span className={hasSpecial ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
+                        {t.auth.pwdOneSpecial}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <CircleIcon active={hasUppercase} />
-                    <span className={hasUppercase ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
-                      {t.auth.pwdOneUppercase}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <CircleIcon active={hasNumber} />
-                    <span className={hasNumber ? "text-emerald-600 dark:text-emerald-400 font-medium" : "text-slate-400 dark:text-slate-600"}>
-                      {t.auth.pwdOneNumber}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+                )}
+              </div>
 
-          <Button
-            type="submit"
-            className="w-full h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px] mt-4 cursor-pointer font-medium"
-            disabled={isLoading}
-            id="signup-button"
-          >
-            {isLoading ? (
-              <span className="flex items-center gap-2">
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                {t.auth.btnCreatingAccount}
-              </span>
-            ) : (
-              t.auth.btnCreateAccount
-            )}
-          </Button>
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setFormStep(1)}
+                  className="flex-1 h-11 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 rounded-[8px] cursor-pointer font-medium flex items-center justify-center gap-1.5 transition-colors"
+                  disabled={isLoading}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Back
+                </Button>
+                <Button
+                  type="submit"
+                  className="flex-[2] h-11 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-[8px] cursor-pointer font-medium flex items-center justify-center"
+                  disabled={isLoading}
+                  id="signup-button"
+                >
+                  {isLoading ? (
+                    <span className="flex items-center gap-2">
+                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                      {t.auth.btnCreatingAccount}
+                    </span>
+                  ) : (
+                    t.auth.btnCreateAccount
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
         </form>
 
         <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />

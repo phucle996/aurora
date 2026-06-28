@@ -26,6 +26,7 @@
     "alreadyAccount": "すでにアカウントをお持ちですか？",
     "operational": "すべてのシステムが正常に稼働中",
     "usernameReq": "ユーザー名は必須です。",
+    "usernameLen": "ユーザー名は6文字以上である必要があります。",
     "fullnameReq": "氏名は必須です。",
     "emailReq": "メールアドレスは必須です。",
     "passwordReq": "パスワードは必須です。",
@@ -40,8 +41,10 @@
     "secAccount": "アカウント情報",
     "secProfile": "プロファイルとセキュリティ",
     "pwdAtLeast8": "8文字以上",
+    "pwdOneLowercase": "小文字1文字以上",
     "pwdOneUppercase": "大文字1文字以上",
     "pwdOneNumber": "数字1文字以上",
+    "pwdOneSpecial": "特殊文字1文字以上",
     "pwdMatch": "パスワードが一致しています",
     "pwdNotMatch": "パスワードが一致しません",
     "btnCreateAccount": "アカウント作成",
@@ -57,6 +60,7 @@
     "emailVerifiedSubtitle": "Aurora Identity が有効になりました。",
     "continueSignIn": "サインインへ進む →",
     "phone": "電話番号",
-    "placeholderPhone": "+81 90 1234 5678"
+    "placeholderPhone": "+81 90 1234 5678",
+    "phoneInvalid": "有効な電話番号を入力してください（例：+84901234567 または 0901234567）。"
   }
 }

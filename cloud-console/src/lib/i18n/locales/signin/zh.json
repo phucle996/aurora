@@ -26,6 +26,7 @@
     "alreadyAccount": "已经有账号？",
     "operational": "所有系统运行正常",
     "usernameReq": "用户名是必填项。",
+    "usernameLen": "用户名长度必须至少为 6 个字符。",
     "fullnameReq": "姓名是必填项。",
     "emailReq": "电子邮件地址是必填项。",
     "passwordReq": "密码是必填项。",
@@ -40,8 +41,10 @@
     "secAccount": "账户信息",
     "secProfile": "个人资料与安全",
     "pwdAtLeast8": "至少 8 个字符",
+    "pwdOneLowercase": "至少一个小写字母",
     "pwdOneUppercase": "至少一个大写字母",
     "pwdOneNumber": "至少一个数字",
+    "pwdOneSpecial": "至少一个特殊字符",
     "pwdMatch": "密码一致",
     "pwdNotMatch": "密码不一致",
     "btnCreateAccount": "创建账户",
@@ -57,6 +60,7 @@
     "emailVerifiedSubtitle": "您的 Aurora Identity 现已激活。",
     "continueSignIn": "继续登录 →",
     "phone": "电话号码",
-    "placeholderPhone": "+86 139 1234 5678"
+    "placeholderPhone": "+86 139 1234 5678",
+    "phoneInvalid": "请输入有效的电话号码（例如：+84901234567 或 0901234567）。"
   }
 }

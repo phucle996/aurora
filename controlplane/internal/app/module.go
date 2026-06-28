@@ -8,7 +8,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	"controlplane/internal/zone"
+	"controlplane/internal/hierarchy"
 	healthhandler "controlplane/internal/http/handler"
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
-	coreEntity "controlplane/internal/zone/domain/entity"
+	coreEntity "controlplane/internal/hierarchy/domain/entity"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"

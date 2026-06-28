@@ -127,9 +127,9 @@ type GRPCCfg struct {
 
 // SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
-	Core string
-	IAM  string
-	Mail string
+	Hierarchy string
+	IAM       string
+	Mail      string
 }
 
 // [COMMENT]: VaultCfg chứa thông tin kết nối và quản lý định danh khóa trong Vault Transit
@@ -167,9 +167,8 @@ func LoadConfig() *Config {
 		},
 
 		Security: SecurityCfg{
-			RuntimeMasterKey: strings.TrimSpace(getEnv("SECURITY_RUNTIME_MASTER_KEY", "")),
-			OneTimeTokenTTL:  15 * time.Minute,
-			RefreshTokenTTL:  30 * 24 * time.Hour,
+			OneTimeTokenTTL: 15 * time.Minute,
+			RefreshTokenTTL: 30 * 24 * time.Hour,
 		},
 		Psql: PsqlCfg{
 			Host:          getEnv("PSQL_HOST", "localhost"),
@@ -250,9 +249,9 @@ func LoadConfig() *Config {
 			KeyPath:    getEnv("OTEL_TLS_KEY", ""),
 		},
 		SchemaSQL: SchemaSQLCfg{
-			Core: "core",
-			IAM:  "iam",
-			Mail: "mail",
+			Hierarchy: "hierarchy",
+			IAM:       "iam",
+			Mail:      "mail",
 		},
 		// [COMMENT]: Nạp cấu hình Vault từ môi trường (env) để khởi tạo client
 		Vault: VaultCfg{
@@ -265,10 +264,7 @@ func LoadConfig() *Config {
 			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),
 		},
 		ACRGRPCTarget: func() string {
-			if target := getEnv("ACR_GRPC_TARGET", ""); target != "" {
-				return target
-			}
-			return getEnv("ACL_GRPC_TARGET", "acr:50051")
+			return getEnv("ACR_GRPC_TARGET", "acr:50051")
 		}(),
 	}
 }

@@ -190,8 +190,7 @@ function AuthPageContent() {
   return (
     <div className="flex min-h-screen flex-col bg-[#F8FAFC] dark:bg-[#0B0F19]">
       <div className="flex flex-1 items-center justify-center px-4 py-12">
-        <div className="w-full max-w-[480px] space-y-6 transition-all duration-300">
-
+        <div className="mx-auto w-full max-w-[420px] space-y-4 transition-all duration-300">
           {/* ===== LOGO & BRANDING ===== */}
           <div className="space-y-1">
             <div className="flex items-center gap-3">
@@ -220,14 +219,14 @@ function AuthPageContent() {
                 Cubic-bezier easing tạo cảm giác mượt tự nhiên. */}
             <div
               ref={sliderRef}
-              className="flex transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              className="flex items-start transition-transform duration-500 ease-[cubic-bezier(0.4,0,0.2,1)]"
               style={{
                 transform: mode === "signup" ? "translateX(-100%)" : "translateX(0)",
               }}
             >
               {/* [COMMENT]: Panel 1 — Sign In Form */}
               <div className="w-full shrink-0">
-                <div className="p-8">
+                <div className="px-7 py-6">
                   <SignInForm
                     zones={zones}
                     selectedZoneCode={selectedZoneCode}
@@ -239,7 +238,7 @@ function AuthPageContent() {
 
               {/* [COMMENT]: Panel 2 — Sign Up Form */}
               <div className="w-full shrink-0">
-                <div className="p-8">
+                <div className="px-7 py-6">
                   <SignUpForm
                     onSwitchToSignIn={() => switchMode("signin")}
                   />

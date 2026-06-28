@@ -84,7 +84,7 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	var request requestdto.RegisterRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind register request failed")
-		apires.RespondBadRequest(c, "invalid request")
+		apires.RespondBadRequest(c, "Invalid request")
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	}
 	if !isStrongPassword(password) {
 		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
-		apires.RespondBadRequest(c, "invalid request")
+		apires.RespondBadRequest(c, "Invalid request")
 		return
 	}
 
@@ -134,15 +134,15 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "register validation failed")
-			apires.RespondBadRequest(c, "invalid request")
+			apires.RespondBadRequest(c, "Invalid request")
 			return
 		case errors.Is(err, iamTaxonomy.ErrUserAlreadyExist):
 			logger.HandlerWarn(c, op, err, "register conflict")
-			apires.RespondConflict(c, "resource already exists")
+			apires.RespondConflict(c, "Account has been existed in aurora. Please using another username or email and try again.")
 			return
 		default:
 			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
+			apires.RespondInternalError(c, "Internal server error")
 			return
 		}
 	}

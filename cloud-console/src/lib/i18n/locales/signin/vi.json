@@ -26,6 +26,7 @@
     "alreadyAccount": "Đã có tài khoản?",
     "operational": "Tất cả hệ thống hoạt động ổn định",
     "usernameReq": "Tên đăng nhập không được để trống.",
+    "usernameLen": "Tên đăng nhập phải dài ít nhất 6 ký tự.",
     "fullnameReq": "Họ và tên không được để trống.",
     "emailReq": "Địa chỉ Email không được để trống.",
     "passwordReq": "Mật khẩu không được để trống.",
@@ -40,8 +41,10 @@
     "secAccount": "Tài khoản",
     "secProfile": "Hồ sơ & Bảo mật",
     "pwdAtLeast8": "Tối thiểu 8 ký tự",
+    "pwdOneLowercase": "Ít nhất một chữ thường",
     "pwdOneUppercase": "Ít nhất một chữ hoa",
     "pwdOneNumber": "Ít nhất một chữ số",
+    "pwdOneSpecial": "Ít nhất một ký tự đặc biệt",
     "pwdMatch": "Mật khẩu trùng khớp",
     "pwdNotMatch": "Mật khẩu không trùng khớp",
     "btnCreateAccount": "Tạo tài khoản",
@@ -57,6 +60,7 @@
     "emailVerifiedSubtitle": "Aurora Identity của bạn đã được kích hoạt thành công.",
     "continueSignIn": "Tiếp tục đăng nhập →",
     "phone": "Số điện thoại",
-    "placeholderPhone": "+84 90 123 4567"
+    "placeholderPhone": "+84 90 123 4567",
+    "phoneInvalid": "Vui lòng nhập số điện thoại hợp lệ (Ví dụ: +84901234567 hoặc 0901234567)."
   }
 }

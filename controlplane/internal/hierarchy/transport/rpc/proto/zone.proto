@@ -1,0 +1,24 @@
+// [COMMENT]: file proto này và file acr/proto/zone.proto phải đồng bộ với nhau
+
+syntax = "proto3";
+
+package core.rpc;
+
+option go_package = "controlplane/internal/hierarchy/transport/rpc/proto";
+
+message GetZoneListRequest {}
+
+message ZoneEntry {
+  string zone_id = 1;
+  string zone_code = 2;
+  string status = 3; // Trạng thái hoạt động của zone (active, planned, draining, etc.)
+  string name = 4;
+}
+
+message GetZoneListResponse {
+  repeated ZoneEntry zones = 1;
+}
+
+service ZoneService {
+  rpc GetZoneList (GetZoneListRequest) returns (GetZoneListResponse);
+}

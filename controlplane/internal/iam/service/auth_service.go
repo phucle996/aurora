@@ -32,10 +32,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	defaultLocale   = "vi-VN"
-	defaultTimezone = "Asia/Ho_Chi_Minh"
-)
+// [COMMENT]: Bỏ hằng số mặc định để ưu tiên nhận locale & timezone trực tiếp từ client
+
 
 type AuthService struct {
 	repo       iamRepoInterface.AuthRepository
@@ -103,12 +101,7 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	profile.UserID = userID
 	profile.AvatarURL = nil
 	profile.Bio = nil
-	if profile.Locale == "" {
-		profile.Locale = defaultLocale
-	}
-	if profile.Timezone == "" {
-		profile.Timezone = defaultTimezone
-	}
+	// [COMMENT]: Lưu trực tiếp thông tin Locale và Timezone từ client gửi lên mà không áp đặt default locale cứng ở tầng domain service
 	profile.CreatedAt = now
 	profile.UpdatedAt = now
 
@@ -153,6 +146,12 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		return insertErr
 	}
 
+	// [COMMENT]: Đẩy outbox job gửi mail kích hoạt tài khoản ngay sau khi đăng ký thành công (best-effort)
+	// Nếu có lỗi ghi outbox ở đây, ta chỉ ghi nhận log cảnh báo chứ không fail toàn bộ luồng đăng ký vì người dùng có thể kích hoạt lại khi đăng nhập.
+	if mailErr := s.pushVerifyAccountOutboxJob(ctx, user.ID, user.Username, user.Email); mailErr != nil {
+		// [COMMENT]: Ghi nhận lỗi nhưng không trả về lỗi để tránh ảnh hưởng đến giao diện người dùng
+	}
+
 	// [COMMENT]: Khởi chạy background goroutine bất đồng bộ để ghi nhận presence của user mới đăng ký thành công vào Redis
 	s.wg.Add(1)
 	go func(bgCtx context.Context, username, email string) {
@@ -189,6 +188,66 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 // hoàn thành nhiệm vụ trước khi dừng tiến trình phục vụ Graceful Shutdown.
 func (s *AuthService) Stop() {
 	s.wg.Wait()
+}
+
+// [COMMENT]: pushVerifyAccountOutboxJob sinh mã One-Time Token (OTT) và chèn một bản ghi IamOutboxRecord
+// để CDC worker quét và gửi mail kích hoạt tài khoản bất đồng bộ một cách đáng tin cậy.
+func (s *AuthService) pushVerifyAccountOutboxJob(ctx context.Context, userID uuid.UUID, username, email string) error {
+	if s.ott == nil || s.outboxRepo == nil {
+		return apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamMetrics.OutcomePreConditionFailed)
+	}
+
+	// [COMMENT]: Phát hành mã OTT kích hoạt tài khoản
+	verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", userID)
+	if issueErr != nil {
+		return fmt.Errorf("failed to issue verification token: %w", issueErr)
+	}
+
+	idempotencyKey := uuid.Must(uuid.NewV7())
+
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	// [COMMENT]: Đóng gói thông tin email thành Protobuf cấu hình gửi mail
+	mailConfig := &mailproto.SendMailConfig{
+		To:       email,
+		Subject:  "Kích hoạt tài khoản của bạn",
+		BodyHtml: "Vui lòng sử dụng token sau để kích hoạt tài khoản của bạn.",
+		TemplateVariables: map[string]string{
+			"fullname":     username,
+			"verify_token": verificationToken,
+			"purpose":      "account_verify",
+		},
+	}
+
+	payloadBytes, marshalErr := proto.Marshal(mailConfig)
+	if marshalErr != nil {
+		return fmt.Errorf("failed to marshal verification mail payload: %w", marshalErr)
+	}
+
+	record := &iamEntity.IamOutboxRecord{
+		EventID:              idempotencyKey,
+		RoutingScope:         "platform",
+		JobTopic:             "mail.system.verify_account",
+		Payload:              payloadBytes,
+		UserID:               userID.String(),
+		Status:               iamEntity.IamOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           "verify_account",
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 60,
+	}
+
+	// [COMMENT]: Ghi nhận job vào Outbox Database Table
+	if insertErr := s.outboxRepo.Create(ctx, record); insertErr != nil {
+		return fmt.Errorf("failed to insert verification mail record into outbox: %w", insertErr)
+	}
+
+	return nil
 }
 
 // [COMMENT]: VerifyUserCredentials thực hiện xác thực thông tin đăng nhập (username, password),
@@ -234,58 +293,10 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	// [COMMENT]: 3. Kiểm tra trạng thái tài khoản của người dùng
 	switch user.Status {
 	case iamEntity.UserStatusPendingActive:
-		// [COMMENT]: Nếu tài khoản chưa kích hoạt, phát hành mã OTT kích hoạt và gửi email xác nhận qua Outbox
-		if s.ott == nil || s.outboxRepo == nil {
-			loginOutcome = iamMetrics.OutcomePreConditionFailed
-			return nil, apperr.Wrap(iamTaxonomy.ErrVerificationRequired, nil, iamMetrics.OutcomePreConditionFailed)
-		}
-		verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", user.ID)
-		if issueErr != nil {
+		// [COMMENT]: Nếu tài khoản chưa kích hoạt, tự động đẩy outbox job gửi mail kích hoạt tài khoản dùng chung helper
+		if err := s.pushVerifyAccountOutboxJob(ctx, user.ID, user.Username, user.Email); err != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, issueErr, iamMetrics.OutcomeFailureUnknown)
-		}
-		idempotencyKey := uuid.Must(uuid.NewV7())
-
-		var traceID []byte
-		if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-			tid := spanCtx.TraceID()
-			traceID = tid[:]
-		}
-
-		mailConfig := &mailproto.SendMailConfig{
-			To:       user.Email,
-			Subject:  "Kích hoạt tài khoản của bạn",
-			BodyHtml: "Vui lòng sử dụng token sau để kích hoạt tài khoản của bạn.",
-			TemplateVariables: map[string]string{
-				"fullname":     user.Username,
-				"verify_token": verificationToken,
-				"purpose":      "account_verify",
-			},
-		}
-
-		payloadBytes, marshalErr := proto.Marshal(mailConfig)
-		if marshalErr != nil {
-			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return nil, fmt.Errorf("%w: failed to marshal verification mail config: %v", iamTaxonomy.ErrAuthenticationUnavailable, marshalErr)
-		}
-
-		record := &iamEntity.IamOutboxRecord{
-			EventID:              idempotencyKey,
-			RoutingScope:         "platform",
-			JobTopic:             "mail.system.verify_account",
-			Payload:              payloadBytes,
-			UserID:               user.ID.String(),
-			Status:               iamEntity.IamOutboxStatusPending,
-			JobVersion:           1,
-			ResourceID:           "verify_account",
-			PayloadSchemaVersion: 1,
-			TraceID:              traceID,
-			Idle:                 60,
-		}
-
-		if insertErr := s.outboxRepo.Create(ctx, record); insertErr != nil {
-			loginOutcome = iamMetrics.OutcomeFailureUnknown
-			return nil, fmt.Errorf("%w: failed to create iam outbox record: %v", iamTaxonomy.ErrAuthenticationUnavailable, insertErr)
+			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 		}
 
 		loginOutcome = iamMetrics.OutcomePreConditionFailed

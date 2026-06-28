@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	coreMetrics "controlplane/internal/zone/metrics"
+	coreMetrics "controlplane/internal/hierarchy/metrics"
 	iamMetrics "controlplane/internal/iam/metrics"
 	mailMetrics "controlplane/internal/mail/metrics"
 	"controlplane/pkg/constant"
