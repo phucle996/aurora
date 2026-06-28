@@ -151,11 +151,13 @@ pub async fn handle_zone_catalog(
         }
     };
 
-    // [COMMENT]: Xây dựng phản hồi HTTP 200 OK trực tiếp tại biên (Local Intercept)
+    // [COMMENT]: Xây dựng phản hồi HTTP 200 OK trực tiếp tại biên (Local Intercept) kèm tiền tố XSSI
+    let xssi_json_body = format!(")]}}',\n{}", json_body);
+
     let mut denied_builder = DeniedHttpResponseBuilder::new();
     denied_builder.set_http_status(HttpStatusCode::Ok);
     denied_builder.add_header("content-type", "application/json", None, false);
-    denied_builder.set_body(json_body);
+    denied_builder.set_body(xssi_json_body);
 
     let mut response = CheckResponse::new();
     // [COMMENT]: Envoy yêu cầu gRPC status không phải OK để kích hoạt DeniedResponse cục bộ

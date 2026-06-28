@@ -42,7 +42,12 @@ export const useZoneStore = create<ZoneState>((set, get) => ({
         const resp = await Fetch('/admin/core/zones/catalog')
         if (!resp.ok) throw new Error('Cannot load zones.')
         const body = await resp.json()
-        const items: Zone[] = body.data?.items || []
+        const rawItems = Array.isArray(body) ? body : (body.data?.items || [])
+        const items: Zone[] = rawItems.map((item: any) => ({
+          id: item.id || item.code,
+          code: item.code,
+          name: item.name
+        }))
 
         set({
           zones: items,

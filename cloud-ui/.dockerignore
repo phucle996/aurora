@@ -3,4 +3,8 @@ node_modules
 out
 .git
 .idea
-.vscode
+Dockerfile*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache

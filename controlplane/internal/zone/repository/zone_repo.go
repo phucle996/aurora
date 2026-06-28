@@ -68,7 +68,6 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			ORDER BY created_at DESC
 		`, schema),
 		rpcListZonesQuery: fmt.Sprintf(`
-			// [COMMENT]: Chỉ SELECT 4 trường id, code, name, status để tối ưu hiệu năng truyền tải
 			SELECT id, code, name, status 
 			FROM %s.zones 
 			ORDER BY created_at DESC
