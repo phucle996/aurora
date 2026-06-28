@@ -61,7 +61,7 @@ pub async fn handle_zone_catalog(
                 .ok()??;
         } else {
             let _user_session = session_mgr
-                .get_session(&claims.sub, &access_key)
+                .get_session(&claims.uid, &access_key)
                 .await
                 .ok()??;
         }

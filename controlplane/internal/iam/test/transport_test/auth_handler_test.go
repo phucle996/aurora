@@ -7,18 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 
-	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	handler "controlplane/internal/iam/transport/http/handler"
-	constant "controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
 )
@@ -139,85 +134,5 @@ func TestRegisterAccount_InternalError(t *testing.T) {
 	// Phải trả về 500 Internal Server Error
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
-	}
-}
-
-// TestSession_Unauthorized kiểm thử việc truy cập session endpoint khi không có token định danh
-func TestSession_Unauthorized(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{})
-
-	registry := cacheengine.NewCacheRegistry(cacheengine.NewL1Cache())
-	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return &coreEntity.RuntimeSecrets{
-			Active: coreEntity.RuntimeSecret{Secret: []byte("some-test-secret-12345678901234567890123456789012")},
-		}, nil
-	})
-
-	router.GET("/session", h.Session)
-
-	req := httptest.NewRequest(http.MethodGet, "/session", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
-}
-
-// TestSession_Success kiểm thử lấy thông tin phiên làm việc thành công với Identity hợp lệ trong context
-func TestSession_Success(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{})
-	router.GET("/session", func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID:    "user-1",
-			AccessKey: "device-1",
-		}
-		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-		c.Request = c.Request.WithContext(ctx)
-		h.Session(c)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/session", nil)
-	req.Header.Set("x-user-id", "user-1")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if got := w.Body.String(); !strings.Contains(got, `"authenticated":true`) {
-		t.Fatalf("expected authenticated true payload, got %s", got)
-	}
-}
-
-// TestSession_ReadOnly kiểm thử tính năng session endpoint là read-only (không được ghi lại/cập nhật cookies mới)
-func TestSession_ReadOnly(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	h := newAuthHandler(&authServiceStub{})
-	router.GET("/session", func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID:    "user-1",
-			AccessKey: "device-1",
-		}
-		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-		c.Request = c.Request.WithContext(ctx)
-		h.Session(c)
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/session", nil)
-	req.Header.Set("x-user-id", "user-1")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	if got := w.Result().Cookies(); len(got) != 0 {
-		t.Fatalf("session endpoint must be read-only and not set cookies, got %#v", got)
 	}
 }

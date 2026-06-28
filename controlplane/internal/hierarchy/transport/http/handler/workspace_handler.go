@@ -3,7 +3,7 @@
 //            HTTP Handler cho luồng quản lý Workspace
 // ======================================================================================================
 
-package zoneHandler
+package hierarchyHandler
 
 import (
 	"context"
@@ -104,24 +104,25 @@ func (h *WorkspaceHandler) CreateWorkspace(c *gin.Context) {
 	}
 
 	// [COMMENT]: Gọi service layer tạo workspace
-	workspace, err := h.workspaceSvc.CreateWorkspace(ctx, coreEntity.CreateWorkspaceInput{
+	workspace, err := h.workspaceSvc.CreateWorkspace(ctx, coreEntity.Workspace{
 		Name:     strings.TrimSpace(request.Name),
+		Code:     strings.ToLower(strings.TrimSpace(request.Code)),
 		ZoneID:   zoneID,
 		TenantID: tenantID,
 		OwnerID:  ownerID,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceInvalidInput):
-			logger.HandlerWarn(c, op, err, "create workspace invalid input")
-			apires.RespondBadRequest(c, "Invalid request")
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceZoneNotFound):
+		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
 			logger.HandlerWarn(c, op, err, "create workspace zone not found or not active")
 			apires.RespondNotFound(c, "zone not found or not active")
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceTenantNotFound):
+		case errors.Is(err, coreTaxonomy.ErrTenantNotFound):
 			logger.HandlerWarn(c, op, err, "create workspace tenant not found or not active")
 			apires.RespondNotFound(c, "tenant not found or not active")
-		case errors.Is(err, coreTaxonomy.ErrWorkspaceInsertFailed):
+		case errors.Is(err, coreTaxonomy.ErrWorkspaceCodeAlreadyExists):
+			logger.HandlerWarn(c, op, err, "create workspace code conflict")
+			apires.RespondConflict(c, "workspace code already exists within this scope")
+		case errors.Is(err, coreTaxonomy.ErrNoRowAffected):
 			logger.HandlerWarn(c, op, err, "create workspace constraint violation")
 			apires.RespondBadRequest(c, "workspace creation failed")
 		default:
@@ -135,6 +136,7 @@ func (h *WorkspaceHandler) CreateWorkspace(c *gin.Context) {
 	apires.RespondCreated(c, gin.H{
 		"id":         workspace.ID,
 		"name":       workspace.Name,
+		"code":       workspace.Code,
 		"status":     workspace.Status,
 		"zone_id":    workspace.ZoneID,
 		"tenant_id":  workspace.TenantID,

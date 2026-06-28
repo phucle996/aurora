@@ -39,8 +39,8 @@ func NewWorkspaceService(
 	}
 }
 
-// [COMMENT]: CreateWorkspace tạo workspace mới — validate, sinh UUIDv7, đo metrics, gọi repo
-func (s *WorkspaceService) CreateWorkspace(ctx context.Context, input coreEntity.CreateWorkspaceInput) (*coreEntity.Workspace, error) {
+// [COMMENT]: CreateWorkspace tạo workspace mới — sinh UUIDv7, đo metrics, gọi repo
+func (s *WorkspaceService) CreateWorkspace(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
 	// [COMMENT]: Sinh UUIDv7 cho workspace mới
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
@@ -50,17 +50,10 @@ func (s *WorkspaceService) CreateWorkspace(ctx context.Context, input coreEntity
 
 	now := time.Now().UTC()
 
-	// [COMMENT]: Xây dựng entity workspace với trạng thái mặc định active
-	workspace := coreEntity.Workspace{
-		ID:        workspaceID,
-		Name:      input.Name,
-		Status:    coreEntity.WorkspaceStatusActive,
-		ZoneID:    input.ZoneID,
-		TenantID:  input.TenantID,
-		OwnerID:   input.OwnerID,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
+	workspace.ID = workspaceID
+	workspace.Status = coreEntity.WorkspaceStatusActive
+	workspace.CreatedAt = now
+	workspace.UpdatedAt = now
 
 	// [COMMENT]: Gọi repo để insert và đo latency downstream
 	start := time.Now()

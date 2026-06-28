@@ -35,4 +35,9 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	router.POST("/api/v1/workspaces",
 		module.WorkspaceHandler.CreateWorkspace,
 	)
+
+	// [COMMENT]: Route tạo tenant mới — cần x-user-id header bắt buộc, x-tenant-id phải trống
+	router.POST("/api/v1/tenants",
+		module.TenantHandler.CreateTenant,
+	)
 }

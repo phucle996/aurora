@@ -93,7 +93,7 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		SELECT
 			r.id, r.user_id, r.device_id, r.token_hash, r.tenant_id, r.expires_at,
 			r.used_at, r.revoked_at,
-			u.id, u.status,
+			u.id, u.status, u.username,
 			d.id, d.status
 		FROM %s.refresh_tokens r
 		LEFT JOIN %s.users u ON u.id = r.user_id
@@ -117,6 +117,7 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		&ctxOut.Session.RevokedAt,
 		&ctxOut.User.ID,
 		&ctxOut.User.Status,
+		&ctxOut.User.Username,
 		&deviceID,
 		&deviceSts,
 	); err != nil {

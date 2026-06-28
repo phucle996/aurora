@@ -7,10 +7,17 @@ var (
 	// generic
 	ErrGenUUID = errors.New("hierarchy: generate UUID failed")
 
+	// notfound
+	ErrZoneNotFound      = errors.New("zone not found or not active")
+	ErrTenantNotFound    = errors.New("tenant not found or not active")
+	ErrNoRowAffected     = errors.New("no row affected")
+	ErrCodeAlreadyExists = errors.New("code already exists")
+
+	// ===========================================
+
 	// Zone REST API errors.
-	ErrZoneInvalidInput             = errors.New("core zone: invalid input")
-	ErrZoneCodeAlreadyExists        = errors.New("core zone: code already exists")
-	ErrZoneNotFound                 = errors.New("core zone: not found")
+	ErrZoneInvalidInput = errors.New("core zone: invalid input")
+
 	ErrZoneInvalidTransition        = errors.New("core zone: invalid transition")
 	ErrZoneDeletePreconditionFailed = errors.New("core zone: delete precondition failed")
 	ErrZoneServiceInvalidInput      = errors.New("core zone service: invalid input")
@@ -20,8 +27,13 @@ var (
 	ErrZoneCongested                = errors.New("core zone: zone is congested, backpressure limit exceeded")
 
 	// Workspace REST API errors.
-	ErrWorkspaceInvalidInput   = errors.New("workspace: invalid input")
-	ErrWorkspaceZoneNotFound   = errors.New("workspace: zone not found or not active")
-	ErrWorkspaceTenantNotFound = errors.New("workspace: tenant not found or not active")
-	ErrWorkspaceInsertFailed   = errors.New("workspace: insert failed due to constraint violation")
+	ErrWorkspaceInvalidInput      = errors.New("workspace: invalid input")
+	ErrWorkspaceCodeAlreadyExists = errors.New("workspace: code already exists within this scope")
+	ErrWorkspaceInsertFailed      = errors.New("workspace: insert failed due to constraint violation")
+
+	// Tenant REST API errors.
+
+	ErrTenantInvalidInput    = errors.New("tenant: invalid input")
+	ErrTenantCreationBlocked = errors.New("tenant: creation blocked under tenant context")
+	ErrTenantInsertFailed    = errors.New("tenant: insert failed")
 )

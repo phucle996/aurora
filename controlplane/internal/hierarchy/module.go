@@ -58,6 +58,9 @@ type Module struct {
 	WorkspaceRepository coreRepoInterface.WorkspaceRepository
 	WorkspaceService    coreSvcInterface.WorkspaceService
 	WorkspaceHandler    *zoneHandler.WorkspaceHandler
+	TenantRepository    coreRepoInterface.TenantRepository
+	TenantService       coreSvcInterface.TenantService
+	TenantHandler       *zoneHandler.TenantHandler
 	BackpressureService coreSvcInterface.BackpressureService
 	listenCancel        context.CancelFunc
 	L1Registry          *cacheengine.CacheRegistry
@@ -108,7 +111,21 @@ func NewModule(
 		return nil, fmt.Errorf("hierarchy module: workspace handler is nil")
 	}
 
-	// 7) Backpressure service (zone-scoped, no node-level tracking)
+	// 7) Tenant management — repo, service, handler
+	tenantRepo := coreRepoImpl.NewTenantRepoImpl(cfg, db)
+	if tenantRepo == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant repository is nil")
+	}
+	tenantService := coreSvcImpl.NewTenantService(tenantRepo)
+	if tenantService == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant service is nil")
+	}
+	tenantHandler := zoneHandler.NewTenantHandler(tenantService)
+	if tenantHandler == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant handler is nil")
+	}
+
+	// 8) Backpressure service (zone-scoped, no node-level tracking)
 	backpressureSvc := coreSvcImpl.NewBackpressureService(cacheEngine)
 	if backpressureSvc == nil {
 		return nil, fmt.Errorf("zone module: backpressure service is nil")
@@ -122,6 +139,9 @@ func NewModule(
 		WorkspaceRepository: workspaceRepo,
 		WorkspaceService:    workspaceService,
 		WorkspaceHandler:    wHandler,
+		TenantRepository:    tenantRepo,
+		TenantService:       tenantService,
+		TenantHandler:       tenantHandler,
 		BackpressureService: backpressureSvc,
 		L1Registry:          cacheEngine,
 	}

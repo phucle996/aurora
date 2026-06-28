@@ -58,6 +58,7 @@ func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iam
 		TenantId: res.TenantID,
 		Role:     res.Role,
 		Level:    res.Level,
+		Username: res.Username,
 	}, nil
 }
 
@@ -133,5 +134,6 @@ func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iampro
 		TenantId:       res.TenantID,
 		ClientDeviceId: res.ClientDeviceID,
 		RefreshToken:   res.RefreshToken,
+		Username:       res.Username,
 	}, nil
 }

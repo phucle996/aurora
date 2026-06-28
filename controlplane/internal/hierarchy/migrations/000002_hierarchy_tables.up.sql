@@ -47,14 +47,18 @@ COMMENT ON COLUMN zone_services.updated_at IS 'Timestamp when zone service row w
 -- [COMMENT]: Bảng quản lý Tổ chức / Doanh nghiệp (Tenants)
 CREATE TABLE IF NOT EXISTS tenants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code VARCHAR(100) NOT NULL,
     name VARCHAR(255) NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ux_tenants_code UNIQUE (code),
+    CONSTRAINT ck_tenants_code_format CHECK (code ~ '^[a-z0-9-_]+$')
 );
 
 COMMENT ON TABLE tenants IS 'Bảng lưu trữ thông tin các Tổ chức / Doanh nghiệp sử dụng dịch vụ.';
 COMMENT ON COLUMN tenants.id IS 'ID định danh duy nhất của Tenant.';
+COMMENT ON COLUMN tenants.code IS 'Mã viết tắt định danh duy nhất của Tenant để tạo slug/namespace (ví dụ: acme).';
 COMMENT ON COLUMN tenants.name IS 'Tên của doanh nghiệp/tổ chức.';
 COMMENT ON COLUMN tenants.status IS 'Trạng thái hoạt động của Tenant (active, suspended, deleted).';
 
@@ -95,17 +99,20 @@ COMMENT ON COLUMN tenant_memberships.status IS 'Trạng thái của thành viên
 CREATE TABLE IF NOT EXISTS workspaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
+    code VARCHAR(100) NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'active',
     zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE RESTRICT,
     tenant_id UUID NULL REFERENCES tenants(id) ON DELETE CASCADE,
     owner_id UUID NOT NULL, -- references users(id) ở schema iam
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_workspaces_code_format CHECK (code ~ '^[a-z0-9-_]+$')
 );
 
 COMMENT ON TABLE workspaces IS 'Bảng quản lý các không gian làm việc (Workspaces), đơn vị chứa tài nguyên hạ tầng của khách hàng.';
 COMMENT ON COLUMN workspaces.id IS 'ID định danh duy nhất của Workspace.';
 COMMENT ON COLUMN workspaces.name IS 'Tên hiển thị của Workspace.';
+COMMENT ON COLUMN workspaces.code IS 'Mã viết tắt định danh duy nhất của Workspace trong phạm vi Tenant/Owner.';
 COMMENT ON COLUMN workspaces.status IS 'Trạng thái hoạt động của Workspace (active, suspended, deleted).';
 COMMENT ON COLUMN workspaces.zone_id IS 'ID của Zone mà Workspace này thuộc về (bắt buộc).';
 COMMENT ON COLUMN workspaces.tenant_id IS 'ID của Tenant sở hữu Workspace này (NULL nếu là Workspace cá nhân).';

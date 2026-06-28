@@ -83,7 +83,7 @@ pub async fn handle_logout(
     }
 
     // [COMMENT]: Xóa session tại Redis L2. Trả về HTTP 500 nếu gặp sự cố hạ tầng Redis
-    if let Err(e) = session_mgr.delete_session(&claims.sub, &access_key).await {
+    if let Err(e) = session_mgr.delete_session(&claims.uid, &access_key).await {
         Logger::sys_error(
             "ext_authz.logout",
             "Failed to delete L2 session in Redis during logout",

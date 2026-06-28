@@ -65,6 +65,7 @@ type VerifyOpaqueRefreshTokenResult struct {
 	TenantID string
 	Role     string
 	Level    int32
+	Username string
 }
 
 // VerifyUserCredentialsResult chứa thông tin phản hồi sau khi xác thực credentials người dùng thành công
@@ -76,4 +77,5 @@ type VerifyUserCredentialsResult struct {
 	TenantID       string
 	ClientDeviceID string
 	RefreshToken   string
+	Username       string
 }

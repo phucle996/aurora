@@ -376,7 +376,8 @@ pub async fn handle_session_recovery(
 
                 // [COMMENT]: 4. Tạo Claims mới cho JWT Access Token chứa resolved_zone_id
                 let new_claims = Claims {
-                    sub: verify_res.user_id.clone(),
+                    sub: verify_res.username.clone(),
+                    uid: verify_res.user_id.clone(),
                     role: verify_res.role.clone(),
                     lvl: verify_res.level,
                     tenant_id: if verify_res.tenant_id.is_empty() {

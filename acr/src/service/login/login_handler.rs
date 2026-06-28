@@ -217,7 +217,8 @@ pub async fn handle_login(
     let now_unix = chrono::Utc::now().timestamp();
     let exp_unix = now_unix + config.session_ttl_secs as i64;
     let claims = Claims {
-        sub: cp_res.user_id.clone(),
+        sub: cp_res.username.clone(),
+        uid: cp_res.user_id.clone(),
         role: cp_res.role.clone(),
         lvl: cp_res.level,
         tenant_id: if cp_res.tenant_id.is_empty() {

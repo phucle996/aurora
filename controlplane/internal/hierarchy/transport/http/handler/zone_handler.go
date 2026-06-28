@@ -1,4 +1,4 @@
-package zoneHandler
+package hierarchyHandler
 
 import (
 	"context"
@@ -68,7 +68,7 @@ func (h *ZoneHandler) CreateZone(c *gin.Context) {
 		case errors.Is(err, coreTaxonomy.ErrZoneInvalidInput):
 			logger.HandlerWarn(c, op, err, "create zone invalid input")
 			apires.RespondBadRequest(c, "invalid request")
-		case errors.Is(err, coreTaxonomy.ErrZoneCodeAlreadyExists):
+		case errors.Is(err, coreTaxonomy.ErrCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create zone conflict")
 			apires.RespondConflict(c, "resource already exists")
 		case errors.Is(err, coreTaxonomy.ErrZoneServiceInvalidType):

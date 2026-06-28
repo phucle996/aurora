@@ -393,6 +393,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		TenantID:       tenantID,
 		ClientDeviceID: clientDeviceID,
 		RefreshToken:   rawRefresh,
+		Username:       user.Username,
 	}, nil
 }
 

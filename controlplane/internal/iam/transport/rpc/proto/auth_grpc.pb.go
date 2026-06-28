@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.30.2
-// source: auth.proto
+// source: internal/iam/transport/rpc/proto/auth.proto
 
 package iamproto
 
@@ -36,7 +36,7 @@ type AuthServiceClient interface {
 	VerifyAdminTrinityToken(ctx context.Context, in *VerifyAdminTrinityTokenRequest, opts ...grpc.CallOption) (*VerifyAdminTrinityTokenResponse, error)
 	// Xác thực Trinity credentials cho người dùng (End-User) thông thường
 	VerifyUserTrinityToken(ctx context.Context, in *VerifyUserTrinityTokenRequest, opts ...grpc.CallOption) (*VerifyUserTrinityTokenResponse, error)
-	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ ACL Service)
+	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
 	VerifyOpaqueRefreshToken(ctx context.Context, in *VerifyOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*VerifyOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
 	RevokeOpaqueRefreshToken(ctx context.Context, in *RevokeOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*RevokeOpaqueRefreshTokenResponse, error)
@@ -112,7 +112,7 @@ type AuthServiceServer interface {
 	VerifyAdminTrinityToken(context.Context, *VerifyAdminTrinityTokenRequest) (*VerifyAdminTrinityTokenResponse, error)
 	// Xác thực Trinity credentials cho người dùng (End-User) thông thường
 	VerifyUserTrinityToken(context.Context, *VerifyUserTrinityTokenRequest) (*VerifyUserTrinityTokenResponse, error)
-	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ ACL Service)
+	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
 	VerifyOpaqueRefreshToken(context.Context, *VerifyOpaqueRefreshTokenRequest) (*VerifyOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
 	RevokeOpaqueRefreshToken(context.Context, *RevokeOpaqueRefreshTokenRequest) (*RevokeOpaqueRefreshTokenResponse, error)
@@ -283,5 +283,5 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "auth.proto",
+	Metadata: "internal/iam/transport/rpc/proto/auth.proto",
 }

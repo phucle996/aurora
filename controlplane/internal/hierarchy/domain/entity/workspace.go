@@ -20,6 +20,7 @@ const (
 type Workspace struct {
 	ID        uuid.UUID
 	Name      string
+	Code      string
 	Status    WorkspaceStatus
 	ZoneID    uuid.UUID
 	TenantID  *uuid.UUID // Con trỏ UUID cho phép giá trị NULL (workspace cá nhân)
@@ -28,10 +29,4 @@ type Workspace struct {
 	UpdatedAt time.Time
 }
 
-// [COMMENT]: CreateWorkspaceInput chứa dữ liệu đầu vào từ handler để tạo workspace mới
-type CreateWorkspaceInput struct {
-	Name     string     // Tên hiển thị của workspace
-	ZoneID   uuid.UUID  // Zone bắt buộc workspace thuộc về
-	TenantID *uuid.UUID // Tenant sở hữu, nil nếu workspace cá nhân
-	OwnerID  uuid.UUID  // User sở hữu workspace
-}
+

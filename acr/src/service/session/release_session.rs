@@ -47,7 +47,8 @@ pub async fn release_trinity_session(
     let exp_unix = now_unix + config.session_ttl_secs as i64;
 
     let claims = Claims {
-        sub: req.user_id.clone(),
+        sub: req.username.clone(),
+        uid: req.user_id.clone(),
         role: req.role.clone(),
         lvl: req.level,
         tenant_id: if req.tenant_id.is_empty() {

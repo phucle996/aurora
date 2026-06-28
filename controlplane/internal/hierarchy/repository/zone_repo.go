@@ -237,7 +237,7 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return coreTaxonomy.ErrZoneCodeAlreadyExists
+			return coreTaxonomy.ErrCodeAlreadyExists
 		}
 		return err
 	}

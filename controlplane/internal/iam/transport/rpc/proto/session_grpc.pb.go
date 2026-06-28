@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.30.2
-// source: controlplane/internal/iam/transport/rpc/proto/session.proto
+// source: internal/iam/transport/rpc/proto/session.proto
 
 package iamproto
 
@@ -159,5 +159,5 @@ var SessionService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "controlplane/internal/iam/transport/rpc/proto/session.proto",
+	Metadata: "internal/iam/transport/rpc/proto/session.proto",
 }

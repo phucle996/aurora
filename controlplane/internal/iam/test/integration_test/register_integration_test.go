@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"controlplane/internal/cacheengine"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyproto "controlplane/internal/hierarchy/transport/rpc/proto"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
@@ -236,27 +236,27 @@ func makeIntegrationRegistry(rdb *goredis.Client) *cacheengine.CacheRegistry {
 		registry.L2 = cacheengine.NewL2Cache(rdb)
 		registry.Exec = cacheengine.NewL2LuaExecutor(rdb)
 	}
-	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return &coreEntity.RuntimeSecrets{
+	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*hierarchyproto.RuntimeSecrets, error) {
+		return &hierarchyproto.RuntimeSecrets{
 			SecretType: "access_secret",
-			Active: coreEntity.RuntimeSecret{
+			Active: &hierarchyproto.RuntimeSecret{
 				Secret:      []byte("access_token-secret"),
 				Fingerprint: "fp",
 			},
-			Standby: coreEntity.RuntimeSecret{
+			Standby: &hierarchyproto.RuntimeSecret{
 				Secret:      []byte("access_token-secret"),
 				Fingerprint: "fp",
 			},
 		}, nil
 	})
-	cacheengine.Register(registry, "admin_api_key", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return &coreEntity.RuntimeSecrets{
+	cacheengine.Register(registry, "admin_api_key", 1*time.Hour, func(ctx context.Context, param string) (*hierarchyproto.RuntimeSecrets, error) {
+		return &hierarchyproto.RuntimeSecrets{
 			SecretType: "admin_api_key",
-			Active: coreEntity.RuntimeSecret{
+			Active: &hierarchyproto.RuntimeSecret{
 				Secret:      []byte("admin_api_key-secret"),
 				Fingerprint: "fp",
 			},
-			Standby: coreEntity.RuntimeSecret{
+			Standby: &hierarchyproto.RuntimeSecret{
 				Secret:      []byte("admin_api_key-secret"),
 				Fingerprint: "fp",
 			},

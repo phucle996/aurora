@@ -135,6 +135,7 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		TenantID: tenantIDStr,
 		Role:     roleCode,
 		Level:    int32(roleLevel),
+		Username: user.Username,
 	}, nil
 }
 

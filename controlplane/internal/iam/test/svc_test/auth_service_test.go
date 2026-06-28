@@ -10,7 +10,7 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	coreEntity "controlplane/internal/hierarchy/domain/entity"
+	hierarchyproto "controlplane/internal/hierarchy/transport/rpc/proto"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -62,14 +62,14 @@ func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheReg
 	}
 	registry.L2 = cacheengine.NewL2Cache(rdb)
 	registry.Exec = cacheengine.NewL2LuaExecutor(rdb)
-	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*coreEntity.RuntimeSecrets, error) {
-		return &coreEntity.RuntimeSecrets{
+	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*hierarchyproto.RuntimeSecrets, error) {
+		return &hierarchyproto.RuntimeSecrets{
 			SecretType: "access_secret",
-			Active: coreEntity.RuntimeSecret{
+			Active: &hierarchyproto.RuntimeSecret{
 				Secret:      []byte(secretKey),
 				Fingerprint: "fp",
 			},
-			Standby: coreEntity.RuntimeSecret{
+			Standby: &hierarchyproto.RuntimeSecret{
 				Secret:      []byte(secretKey),
 				Fingerprint: "fp",
 			},

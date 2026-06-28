@@ -65,6 +65,7 @@ message VerifyOpaqueRefreshTokenResponse {
   string role = 4;
   int32 level = 5;
   string error_message = 6;
+  string username = 7;
 }
 
 // [COMMENT]: Request chứa raw refresh token từ client cookie để CP hash & revoke
@@ -100,5 +101,6 @@ message VerifyUserCredentialsResponse {
   string client_device_id = 6;  // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
   string refresh_token = 7;    // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
   string error_message = 8;    // Mô tả lỗi chi tiết nếu valid = false
+  string username = 9;         // Tên đăng nhập của người dùng
 }
 

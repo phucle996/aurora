@@ -14,3 +14,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS tenant_memberships_tenant_user_uidx ON tenant_
 
 -- [COMMENT]: Index phục vụ tìm kiếm Workspace theo Zone, Tenant hoặc Chủ sở hữu cá nhân
 CREATE INDEX IF NOT EXISTS idx_workspaces_lookup ON workspaces (zone_id, tenant_id, owner_id);
+
+-- [COMMENT]: Ràng buộc duy nhất: mã workspace theo từng tenant scope (nếu thuộc tenant)
+CREATE UNIQUE INDEX IF NOT EXISTS ux_workspaces_tenant_code
+ON workspaces(tenant_id, code)
+WHERE tenant_id IS NOT NULL;
+
+-- [COMMENT]: Ràng buộc duy nhất: mã workspace theo từng owner scope (nếu là cá nhân, tenant_id is null)
+CREATE UNIQUE INDEX IF NOT EXISTS ux_workspaces_owner_code
+ON workspaces(owner_id, code)
+WHERE tenant_id IS NULL;

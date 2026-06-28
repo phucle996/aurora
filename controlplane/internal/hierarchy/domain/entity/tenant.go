@@ -18,6 +18,7 @@ const (
 // [COMMENT]: Tenant đại diện cho thực thể Tổ chức / Doanh nghiệp sử dụng dịch vụ
 type Tenant struct {
 	ID        uuid.UUID
+	Code      string
 	Name      string
 	Status    TenantStatus
 	CreatedAt time.Time

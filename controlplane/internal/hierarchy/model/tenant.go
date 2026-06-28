@@ -10,6 +10,7 @@ import (
 // [COMMENT]: Tenant đại diện cho cấu trúc database mapping của bảng tenants
 type Tenant struct {
 	ID        uuid.UUID `db:"id"`
+	Code      string    `db:"code"`
 	Name      string    `db:"name"`
 	Status    string    `db:"status"`
 	CreatedAt time.Time `db:"created_at"`
@@ -39,6 +40,7 @@ type TenantMembership struct {
 func TenantEntityToModel(e coreEntity.Tenant) Tenant {
 	return Tenant{
 		ID:        e.ID,
+		Code:      e.Code,
 		Name:      e.Name,
 		Status:    string(e.Status),
 		CreatedAt: e.CreatedAt,
@@ -50,6 +52,7 @@ func TenantEntityToModel(e coreEntity.Tenant) Tenant {
 func TenantModelToEntity(m Tenant) coreEntity.Tenant {
 	return coreEntity.Tenant{
 		ID:        m.ID,
+		Code:      m.Code,
 		Name:      m.Name,
 		Status:    coreEntity.TenantStatus(m.Status),
 		CreatedAt: m.CreatedAt,

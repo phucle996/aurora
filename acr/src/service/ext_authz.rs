@@ -365,7 +365,7 @@ impl Authorization for ExtAuthzService {
                             lsa: chrono::Utc::now().timestamp(),
                         }
                     } else {
-                        match self.session_mgr.get_session(&claims.sub, &access_key).await {
+                        match self.session_mgr.get_session(&claims.uid, &access_key).await {
                             Ok(Some(s)) => s,
                             Ok(None) => return Err("Session Expired or Revoked"),
                             Err(e) => {
@@ -580,13 +580,13 @@ impl Authorization for ExtAuthzService {
                 if !claims.is_admin() {
                     let _ = self
                         .session_mgr
-                        .update_last_seen(&claims.sub, &access_key, session.lsa)
+                        .update_last_seen(&claims.uid, &access_key, session.lsa)
                         .await;
                 }
 
                 // 7. Tạo ngữ cảnh danh tính AuthContext phục vụ đánh giá quyền hạn
                 let auth_ctx = AuthContext {
-                    user_id: claims.sub.clone(),
+                    user_id: claims.uid.clone(),
                     device_id: session.tdid.clone(),
                     tenant_id: claims.tenant_id.clone(),
                     roles: claims.get_roles(),
@@ -659,6 +659,14 @@ impl Authorization for ExtAuthzService {
                         ok.headers.push(HeaderValueOption {
                             header: Some(HeaderValue {
                                 key: "x-user-id".to_string(),
+                                value: claims.uid.clone(),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        });
+                        ok.headers.push(HeaderValueOption {
+                            header: Some(HeaderValue {
+                                key: "x-user-name".to_string(),
                                 value: claims.sub.clone(),
                                 ..Default::default()
                             }),

@@ -11,6 +11,7 @@ import (
 type Workspace struct {
 	ID        uuid.UUID  `db:"id"`
 	Name      string     `db:"name"`
+	Code      string     `db:"code"`
 	Status    string     `db:"status"`
 	ZoneID    uuid.UUID  `db:"zone_id"`
 	TenantID  *uuid.UUID `db:"tenant_id"` // NULL nếu là workspace cá nhân
@@ -24,6 +25,7 @@ func WorkspaceEntityToModel(e coreEntity.Workspace) Workspace {
 	return Workspace{
 		ID:        e.ID,
 		Name:      e.Name,
+		Code:      e.Code,
 		Status:    string(e.Status),
 		ZoneID:    e.ZoneID,
 		TenantID:  e.TenantID,
@@ -38,6 +40,7 @@ func WorkspaceModelToEntity(m Workspace) coreEntity.Workspace {
 	return coreEntity.Workspace{
 		ID:        m.ID,
 		Name:      m.Name,
+		Code:      m.Code,
 		Status:    coreEntity.WorkspaceStatus(m.Status),
 		ZoneID:    m.ZoneID,
 		TenantID:  m.TenantID,

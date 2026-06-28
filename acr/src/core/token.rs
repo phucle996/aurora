@@ -18,9 +18,13 @@ use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    // Subject (User UUID)
+    // Subject (Username)
     #[serde(rename = "sub")]
     pub sub: String,
+
+    // User UUID
+    #[serde(rename = "uid")]
+    pub uid: String,
 
     // Single role from Go controlplane JWT
     #[serde(rename = "role", default)]

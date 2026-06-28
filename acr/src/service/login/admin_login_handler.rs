@@ -195,6 +195,7 @@ pub async fn handle_admin_login(
     // Đăng nhập trực tiếp vào virtual zone "global"
     let claims = crate::core::token::Claims {
         sub: "sre".to_string(),
+        uid: "sre".to_string(),
         role: "".to_string(),
         lvl: 0,
         tenant_id: None,

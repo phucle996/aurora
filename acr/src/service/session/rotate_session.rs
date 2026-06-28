@@ -41,6 +41,7 @@ pub async fn handle_session_rotation(
 
         let new_claims = Claims {
             sub: claims.sub.clone(),
+            uid: claims.uid.clone(),
             role: claims.role.clone(),
             lvl: claims.lvl,
             tenant_id: claims.tenant_id.clone(),
@@ -56,7 +57,7 @@ pub async fn handle_session_rotation(
             // [COMMENT]: Thực hiện ghi nhận session mới lên Redis với cơ chế khóa SETNX chống race condition
             match session_mgr
                 .try_rotate_session(
-                    &claims.sub,
+                    &claims.uid,
                     access_key,
                     &new_access_key,
                     &new_ash,
@@ -140,6 +141,7 @@ pub async fn handle_admin_session_rotation(
 
         let new_claims = Claims {
             sub: claims.sub.clone(),
+            uid: claims.uid.clone(),
             role: claims.role.clone(),
             lvl: claims.lvl,
             tenant_id: claims.tenant_id.clone(),

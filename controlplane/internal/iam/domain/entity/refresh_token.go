@@ -30,8 +30,9 @@ type RefreshTokenSession struct {
 }
 
 type RefreshTokenUser struct {
-	ID     uuid.UUID
-	Status UserStatus
+	ID       uuid.UUID
+	Status   UserStatus
+	Username string
 }
 
 type RefreshTokenDevice struct {

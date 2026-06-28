@@ -209,7 +209,7 @@ impl AuthService for AuthServiceImpl {
         // 4. Kiểm tra tính hoạt động của session từ Redis trực tiếp (qua SessionManager)
         let session = match self
             .session_mgr
-            .get_session(&claims.sub, &req.access_key)
+            .get_session(&claims.uid, &req.access_key)
             .await
         {
             Ok(Some(s)) => s,
@@ -240,7 +240,7 @@ impl AuthService for AuthServiceImpl {
 
         Ok(Response::new(VerifyUserTrinityTokenResponse {
             valid: true,
-            user_id: claims.sub.clone(),
+            user_id: claims.uid.clone(),
             role: claims.role.clone(),
             zone_id: claims.zone_id.clone().unwrap_or_default(),
         }))
@@ -264,6 +264,7 @@ impl AuthService for AuthServiceImpl {
             role: res.role,
             level: res.level,
             error_message: res.error_message,
+            username: res.username,
         }))
     }
 

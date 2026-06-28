@@ -39,8 +39,9 @@ func TestWorkspaceService_CreateWorkspace(t *testing.T) {
 		tenantID, _ := uuid.NewV7()
 		ownerID, _ := uuid.NewV7()
 
-		w, err := svc.CreateWorkspace(ctx, coreEntity.CreateWorkspaceInput{
+		w, err := svc.CreateWorkspace(ctx, coreEntity.Workspace{
 			Name:     "Test Workspace",
+			Code:     "test-ws",
 			ZoneID:   zoneID,
 			TenantID: &tenantID,
 			OwnerID:  ownerID,
@@ -52,6 +53,9 @@ func TestWorkspaceService_CreateWorkspace(t *testing.T) {
 
 		if w.Name != "Test Workspace" {
 			t.Errorf("expected name Test Workspace, got %s", w.Name)
+		}
+		if w.Code != "test-ws" {
+			t.Errorf("expected code test-ws, got %s", w.Code)
 		}
 		if w.ZoneID != zoneID {
 			t.Errorf("expected zoneID %v, got %v", zoneID, w.ZoneID)
@@ -67,31 +71,18 @@ func TestWorkspaceService_CreateWorkspace(t *testing.T) {
 		}
 	})
 
-	t.Run("error empty name", func(t *testing.T) {
-		repo := &fakeWorkspaceRepo{}
-		svc := coreSvcImpl.NewWorkspaceService(repo)
-
-		_, err := svc.CreateWorkspace(ctx, coreEntity.CreateWorkspaceInput{
-			Name:   "",
-			ZoneID: uuid.New(),
-		})
-
-		if !errors.Is(err, coreErrorx.ErrWorkspaceInvalidInput) {
-			t.Errorf("expected ErrWorkspaceInvalidInput, got %v", err)
-		}
-	})
-
 	t.Run("error repo failed", func(t *testing.T) {
-		repo := &fakeWorkspaceRepo{err: coreErrorx.ErrWorkspaceZoneNotFound}
+		repo := &fakeWorkspaceRepo{err: coreErrorx.ErrZoneNotFound}
 		svc := coreSvcImpl.NewWorkspaceService(repo)
 
-		_, err := svc.CreateWorkspace(ctx, coreEntity.CreateWorkspaceInput{
+		_, err := svc.CreateWorkspace(ctx, coreEntity.Workspace{
 			Name:   "Fail WS",
+			Code:   "fail-ws",
 			ZoneID: uuid.New(),
 		})
 
-		if !errors.Is(err, coreErrorx.ErrWorkspaceZoneNotFound) {
-			t.Errorf("expected ErrWorkspaceZoneNotFound, got %v", err)
+		if !errors.Is(err, coreErrorx.ErrZoneNotFound) {
+			t.Errorf("expected ErrZoneNotFound, got %v", err)
 		}
 	})
 }

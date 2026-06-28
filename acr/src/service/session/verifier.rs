@@ -144,7 +144,7 @@ pub async fn handle_user_session_check(
         }
 
         let sess = session_mgr
-            .get_session(&claims.sub, &access_key)
+            .get_session(&claims.uid, &access_key)
             .await
             .map_err(|_| "Redis query error")?
             .ok_or("Session Expired or Revoked")?;
@@ -161,7 +161,7 @@ pub async fn handle_user_session_check(
         Ok((claims, sess)) => {
             // [COMMENT]: Cập nhật Last Seen At (throttle 30s)
             let _ = session_mgr
-                .update_last_seen(&claims.sub, &claims.access_key, sess.lsa)
+                .update_last_seen(&claims.uid, &claims.access_key, sess.lsa)
                 .await;
 
             // [COMMENT]: Kiểm tra xem có cần tự động Sliding Session (Trinity Rotation) không
