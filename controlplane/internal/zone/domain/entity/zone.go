@@ -41,11 +41,6 @@ type ZoneDetail struct {
 	Services []ZoneService
 }
 
-type ZoneCatalog struct {
-	Code string
-	Name string
-}
-
 type ZoneServiceType string
 
 const (

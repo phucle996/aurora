@@ -77,11 +77,8 @@ pub async fn handle_admin_session_check(
     denied_builder.add_header("content-type", "application/json", None, false);
 
     match is_authenticated {
-        Ok(access_key) => {
-            denied_builder.set_body(format!(
-                r#"{{"data":{{"authenticated":true,"access_key":"{}"}}}}"#,
-                access_key
-            ));
+        Ok(_) => {
+            denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
         }
         Err(_) => {
             denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);

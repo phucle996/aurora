@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/zone/domain/entity"
 	coreRepoInterface "controlplane/internal/zone/domain/repo"
 	coreSvcImpl "controlplane/internal/zone/service"
@@ -89,10 +88,7 @@ func (f *fakeZoneRepo) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 		Services: []coreEntity.ZoneService{},
 	}, nil
 }
-func (f *fakeZoneRepo) ListZoneServicesByZoneID(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
-	return []coreEntity.ZoneService{}, nil
-}
-func (f *fakeZoneRepo) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
+func (f *fakeZoneRepo) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
 	if f.zoneErr != nil {
 		return nil, "", f.zoneErr
 	}
@@ -115,16 +111,14 @@ func (f *fakeZoneRepo) UpsertZoneServiceByZoneAndType(ctx context.Context, zoneI
 var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusActive}}
-	l1Cache := cacheengine.NewShardedCache()
-	registry := cacheengine.NewCacheRegistry(l1Cache)
-	svc := coreSvcImpl.NewZoneService(repo, registry)
-	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "mail", true)
+	svc := coreSvcImpl.NewZoneService(repo)
+	_, err := svc.UpdateZoneService(context.Background(), repo.zone.ID, "mail", true)
 	if !errors.Is(err, coreErrorx.ErrZoneServiceStateConflict) {
 		t.Fatalf("expected ErrZoneServiceStateConflict, got %v", err)
 	}
 
 	repo.zone.Status = coreEntity.ZoneStatusMaintenance
-	_, err = svc.UpsertZoneService(context.Background(), repo.zone.ID, "mail", true)
+	_, err = svc.UpdateZoneService(context.Background(), repo.zone.ID, "mail", true)
 	if err != nil {
 		t.Fatalf("expected nil err, got %v", err)
 	}
@@ -132,12 +126,10 @@ func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 
 func TestZoneServiceUpsertInvalidType(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusMaintenance}}
-	l1Cache := cacheengine.NewShardedCache()
-	registry := cacheengine.NewCacheRegistry(l1Cache)
-	svc := coreSvcImpl.NewZoneService(repo, registry)
+	svc := coreSvcImpl.NewZoneService(repo)
 	// Service layer does NOT validate service type — that is the handler/transport layer's responsibility.
 	// Invalid type strings pass through to the repository; this test validates service-layer behavior only.
-	_, err := svc.UpsertZoneService(context.Background(), repo.zone.ID, "bad-type", true)
+	_, err := svc.UpdateZoneService(context.Background(), repo.zone.ID, "bad-type", true)
 	if err != nil {
 		t.Fatalf("expected nil err (service does not validate type), got %v", err)
 	}

@@ -16,7 +16,6 @@ import (
 	"context"
 	"time"
 
-	"controlplane/internal/cacheengine"
 	coreEntity "controlplane/internal/zone/domain/entity"
 	coreRepoInterface "controlplane/internal/zone/domain/repo"
 	coreSvcInterface "controlplane/internal/zone/domain/service"
@@ -28,17 +27,14 @@ import (
 )
 
 type ZoneService struct {
-	repo       coreRepoInterface.ZoneRepository
-	l1Registry *cacheengine.CacheRegistry // Tích hợp CacheRegistry từ cache-engine chứa toàn bộ L1, L2, Fanout, Exec
+	repo coreRepoInterface.ZoneRepository
 }
 
 func NewZoneService(
 	repo coreRepoInterface.ZoneRepository,
-	l1Registry *cacheengine.CacheRegistry,
 ) coreSvcInterface.ZoneService {
 	return &ZoneService{
-		repo:       repo,
-		l1Registry: l1Registry,
+		repo: repo,
 	}
 }
 
@@ -116,12 +112,16 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 
 // GetZoneDetailByID lấy thông tin chi tiết của một Zone kèm theo tất cả các dịch vụ của nó.
 func (s *ZoneService) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error) {
+
+	defer coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+	start := time.Now()
 	detail, err := s.repo.GetZoneDetailByID(ctx, id)
 	if err != nil {
-		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
+		duration := time.Since(start)
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "GetZoneDetailByID", coreMetric.OutcomeFailure, duration, err)
 		return nil, err
 	}
-	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
+
 	return detail, nil
 }
 
@@ -148,23 +148,7 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
-
-	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog cho API public
-	s.l1Registry.L1.Delete("zone_catalog")
-	coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
-
-	// [COMMENT]: Phát tán thông báo xóa cache zone_catalog tới các replica khác
-	detachedCtx := context.WithoutCancel(ctx)
-	go func() {
-		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
-			} else {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
-			}
-		}
-	}()
-
+	// todo : bắn rpc qua acr để update state zone đang cache
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }
@@ -176,22 +160,7 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
-
-	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog phục vụ API public
-	s.l1Registry.L1.Delete("zone_catalog")
-	coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
-
-	// [COMMENT]: Phát tán thông báo xóa cache zone_catalog tới các replica khác
-	detachedCtx := context.WithoutCancel(ctx)
-	go func() {
-		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
-			} else {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
-			}
-		}
-	}()
+	// todo : bắn rpc qua acr để update state zone đang cache
 
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
@@ -204,24 +173,7 @@ func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, s
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
-
-	// [COMMENT]: Chỉ dọn dẹp cache zone_catalog phục vụ API public
-	if ok := s.l1Registry.L1.Delete("zone_catalog"); ok {
-		coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeSuccess, 0, nil)
-	} else {
-		coreMetric.Downstream(ctx, coreMetric.KindCacheEngineL1, "Delete", coreMetric.OutcomeFailure, 0, nil)
-	}
-
-	detachedCtx := context.WithoutCancel(ctx)
-	go func() {
-		if s.l1Registry != nil && s.l1Registry.Fanout != nil {
-			if _, err := s.l1Registry.Fanout.Publish(detachedCtx, "zone_catalog", nil); err != nil {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeFailure, 0, err)
-			} else {
-				coreMetric.Downstream(detachedCtx, coreMetric.KindCacheEngineFanout, "Publish", coreMetric.OutcomeSuccess, 0, nil)
-			}
-		}
-	}()
+	// todo : bắn rpc qua acr để update state zone đang cache
 
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return svc, nil

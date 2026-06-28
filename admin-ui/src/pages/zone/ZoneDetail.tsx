@@ -440,14 +440,15 @@ export default function ZoneDetailPage() {
         throw new Error('Security keys are missing on this device. Please log out and sign in again to register your keys.')
       }
 
-      const bodyString = JSON.stringify({ zone_id: zoneID, status: nextStatus })
+      const bodyString = JSON.stringify({ status: nextStatus })
       const bodyHash = await sha256Hex(bodyString)
       const timestamp = Math.floor(Date.now() / 1000).toString()
       const nonce = generateNonce()
-      const payloadStr = `PATCH\n/admin/critical/core/zones/status\n\n${bodyHash}\n${timestamp}\n${nonce}`
+      const path = `/admin/critical/core/zones/${encodeURIComponent(zoneID)}/status`
+      const payloadStr = `PATCH\n${path}\n\n${bodyHash}\n${timestamp}\n${nonce}`
       const signature = await signPayload(payloadStr, deviceKeys.privateKey)
 
-      const response = await Fetch(`/admin/critical/core/zones/status`, {
+      const response = await Fetch(path, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',

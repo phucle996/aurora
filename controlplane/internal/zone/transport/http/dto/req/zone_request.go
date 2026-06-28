@@ -42,8 +42,6 @@ type CreateZoneRequest struct {
 
 // UpdateZoneStatusRequest định nghĩa dữ liệu đầu vào để cập nhật trạng thái hoạt động của một zone.
 type UpdateZoneStatusRequest struct {
-	// ZoneID là mã định danh của zone cần cập nhật. Yêu cầu định dạng UUID hợp lệ và không rỗng.
-	ZoneID uuid.UUID `json:"zone_id" binding:"required,uuid"`
 	// Status đại diện cho trạng thái tiếp theo cần chuyển đổi tới (ví dụ: "active", "draining", "maintenance").
 	Status string `json:"status"  binding:"required"`
 }

@@ -8,7 +8,7 @@ import (
 )
 
 type ZoneService interface {
-	//
+	// ListZones trả về danh sách tất cả các zone
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	// RPCListZones phục vụ luồng gRPC sync sang ACL chỉ lấy 4 thuộc tính (ID, Code, Name, Status)
 	RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error)

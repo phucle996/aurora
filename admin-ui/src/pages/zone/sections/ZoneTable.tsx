@@ -15,10 +15,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Search,
+  MoreHorizontal,
 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
@@ -28,6 +30,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 
 // ----------------------------------------------------------------------------
@@ -49,6 +57,11 @@ export type ZoneRow = {
   location: string
   description: string
   status: ZoneStatus
+  updated_at?: string
+  workspacesCount?: number
+  services?: string[]
+  updatedText?: string
+  updatedSubtext?: string
 }
 
 const statusLabels: Record<ZoneStatus, string> = {
@@ -65,24 +78,31 @@ const statusLabels: Record<ZoneStatus, string> = {
 // ----------------------------------------------------------------------------
 
 /**
- * Component Badge nhỏ biểu diễn trạng thái hoạt động trực quan cho từng Zone.
+ * Biểu diễn trạng thái hoạt động trực quan cho từng Zone dưới dạng văn bản kèm chấm màu.
  */
-export function StatusBadge({ status }: { status: ZoneStatus }) {
+export function StatusText({ status }: { status: ZoneStatus }) {
   return (
-    <Badge
-      variant="outline"
-      className={cn(
-        'h-8 rounded-lg border px-3 text-sm font-medium',
-        status === 'active' && 'border-emerald-200 bg-emerald-50 text-emerald-700',
-        status === 'draining' && 'border-amber-200 bg-amber-50 text-amber-700',
-        status === 'maintenance' && 'border-violet-200 bg-violet-50 text-violet-700',
-        status === 'disabled' && 'border-slate-200 bg-slate-50 text-slate-600',
-        status === 'planned' && 'border-sky-200 bg-sky-50 text-sky-700',
-        status === 'degraded' && 'border-red-200 bg-red-50 text-red-700',
-      )}
-    >
-      {statusLabels[status] ?? status}
-    </Badge>
+    <div className="flex items-center gap-1.5 text-xs font-semibold">
+      <span className={cn(
+        "size-2 rounded-full shrink-0 animate-pulse",
+        status === 'active' && 'bg-emerald-500',
+        status === 'draining' && 'bg-amber-500',
+        status === 'maintenance' && 'bg-purple-500',
+        status === 'disabled' && 'bg-slate-400',
+        status === 'planned' && 'bg-sky-500',
+        status === 'degraded' && 'bg-red-500',
+      )} />
+      <span className={cn(
+        status === 'active' && 'text-emerald-600 dark:text-emerald-400',
+        status === 'draining' && 'text-amber-600 dark:text-amber-400',
+        status === 'maintenance' && 'text-purple-600 dark:text-purple-400',
+        status === 'disabled' && 'text-slate-500 dark:text-slate-400',
+        status === 'planned' && 'text-sky-600 dark:text-sky-400',
+        status === 'degraded' && 'text-red-600 dark:text-red-400',
+      )}>
+        {statusLabels[status] ?? status}
+      </span>
+    </div>
   )
 }
 
@@ -111,11 +131,6 @@ interface ZoneTableProps {
 
 /**
  * Bảng dữ liệu hiển thị danh sách các Zone và điều khiển phân trang.
- *
- * Component hỗ trợ:
- * - Render hiệu ứng skeleton khi loading dữ liệu.
- * - Hiển thị empty state khi không tìm thấy kết quả phù hợp.
- * - Tích hợp điều hướng phân trang và tùy chỉnh kích thước page size.
  */
 export default function ZoneTable({
   loading,
@@ -136,92 +151,163 @@ export default function ZoneTable({
   const safePage = Math.min(currentPage, totalPages)
 
   return (
-    <div className="rounded-xl border border-border bg-card p-6 shadow-xs md:p-7">
+    <div className="rounded-xl border border-border bg-card p-6 shadow-xs min-h-[600px] flex flex-col justify-between">
       {/* Khởi tạo cấu trúc bảng dữ liệu hiển thị Zone */}
-      <Table>
-        <TableHeader>
-          <TableRow className="border-border/80 hover:bg-transparent">
-            <TableHead className="w-32 pb-4 text-sm font-medium text-muted-foreground">
-              Status
-            </TableHead>
-            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">
-              Name
-            </TableHead>
-            <TableHead className="pb-4 text-sm font-medium text-muted-foreground">
-              Code
-            </TableHead>
-            <TableHead className="min-w-50 pb-4 text-sm font-medium text-muted-foreground">
-              Location
-            </TableHead>
-            <TableHead className="min-w-125 pb-4 text-sm font-medium text-muted-foreground">
-              Description
-            </TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {/* Trạng thái 1: Đang tải dữ liệu - Render các dòng loading skeleton */}
-          {loading &&
-            Array.from({ length: pageSize }).map((_, index) => (
-              <TableRow key={index} className="border-border/80 hover:bg-transparent">
-                {Array.from({ length: 5 }).map((__, cellIndex) => (
-                  <TableCell key={cellIndex} className="py-4">
-                    <Skeleton className="h-5 w-full" />
+      <div className="overflow-x-auto flex-1">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-border/80 hover:bg-transparent">
+              <TableCell className="w-12 pb-4">
+                <Checkbox />
+              </TableCell>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Status
+              </TableHead>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Zone
+              </TableHead>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Location
+              </TableHead>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Workspaces
+              </TableHead>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Services
+              </TableHead>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Updated
+              </TableHead>
+              <TableHead className="pb-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground text-right">
+                Actions
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {/* Trạng thái 1: Đang tải dữ liệu - Render các dòng loading skeleton */}
+            {loading &&
+              Array.from({ length: pageSize }).map((_, index) => (
+                <TableRow key={index} className="border-border/80 hover:bg-transparent">
+                  <TableCell className="py-4">
+                    <Skeleton className="h-4 w-4" />
                   </TableCell>
-                ))}
+                  {Array.from({ length: 7 }).map((__, cellIndex) => (
+                    <TableCell key={cellIndex} className="py-4">
+                      <Skeleton className="h-5 w-full" />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+
+            {/* Trạng thái 2: Không có dữ liệu - Render giao diện empty state */}
+            {!loading && zones.length === 0 && (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={8} className="h-40 text-center">
+                  <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground py-8">
+                    <Search className="size-6 opacity-60" />
+                    <p className="text-sm font-semibold text-foreground">No zones found</p>
+                    <p className="text-sm">
+                      {query.trim() ? 'Try another zone name, code, location, or status.' : 'Create a zone to start topology management.'}
+                    </p>
+                  </div>
+                </TableCell>
               </TableRow>
-            ))}
+            )}
 
-          {/* Trạng thái 2: Không có dữ liệu - Render giao diện empty state */}
-          {!loading && zones.length === 0 && (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={5} className="h-40 text-center">
-                <div className="flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                  <Search className="size-6 opacity-60" />
-                  <p className="text-sm font-semibold text-foreground">No zones found</p>
-                  <p className="text-sm">
-                    {query.trim() ? 'Try another zone name, code, location, or status.' : 'Create a zone to start topology management.'}
-                  </p>
-                </div>
-              </TableCell>
-            </TableRow>
-          )}
+            {/* Trạng thái 3: Đã có dữ liệu - Duyệt và render danh sách các hàng dữ liệu Zone */}
+            {!loading && zones.map((zone) => {
+              const locFirst = zone.location.includes(',') ? zone.location.split(',')[0].trim() : zone.location
+              const locSecond = zone.location.includes(',') ? zone.location.split(',')[1].trim() : zone.location
+              const visibleServices = zone.services ? zone.services.slice(0, zone.name.toLowerCase().includes('singapore') ? 2 : 3) : []
+              const extraCount = zone.services ? zone.services.length - visibleServices.length : 0
 
-          {/* Trạng thái 3: Đã có dữ liệu - Duyệt và render danh sách các hàng dữ liệu Zone */}
-          {!loading && zones.map((zone) => (
-            <TableRow key={zone.id} className="border-border/80 hover:bg-muted/30">
-              {/* Cột 1: Trạng thái hoạt động hiển thị dưới dạng StatusBadge */}
-              <TableCell className="py-3.5">
-                <StatusBadge status={zone.status} />
-              </TableCell>
-
-              {/* Cột 2: Tên của Zone (Clickable link to detail) */}
-              <TableCell className="py-3.5 text-sm font-medium text-foreground">
-                <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="text-sm font-semibold text-primary hover:underline">
-                  {zone.name}
-                </Link>
-              </TableCell>
-
-              {/* Cột 3: Mã của Zone (Code) */}
-              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground">
-                {zone.code}
-              </TableCell>
-
-              {/* Cột 4: Vị trí địa lý của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-muted-foreground whitespace-normal wrap-break-word">
-                {zone.location}
-              </TableCell>
-
-              {/* Cột 5: Mô tả chi tiết của Zone */}
-              <TableCell className="py-3.5 text-sm font-medium text-foreground/80 whitespace-normal wrap-break-word">
-                {zone.description}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+              return (
+                <TableRow key={zone.id} className="border-border/80 hover:bg-muted/30">
+                  <TableCell className="py-3.5">
+                    <Checkbox />
+                  </TableCell>
+                  <TableCell className="py-3.5">
+                    <StatusText status={zone.status} />
+                  </TableCell>
+                  <TableCell className="py-3.5">
+                    <div className="flex flex-col">
+                      <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="text-sm font-semibold text-primary hover:underline">
+                        {zone.name}
+                      </Link>
+                      <span className="text-xs text-muted-foreground">Code: {zone.code}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-3.5">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-foreground">{locFirst}</span>
+                      <span className="text-xs text-muted-foreground">{locSecond}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-3.5">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-bold text-foreground">{zone.workspacesCount}</span>
+                      <span className="text-xs text-muted-foreground">Active</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-3.5">
+                    {zone.services && zone.services.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5 items-center">
+                        {visibleServices.map((svc) => (
+                          <Badge key={svc} variant="secondary" className="px-2.5 py-0.5 text-[11px] bg-muted/65 text-muted-foreground font-semibold rounded-md border border-border/40">
+                            {svc}
+                          </Badge>
+                        ))}
+                        {extraCount > 0 && (
+                          <Badge variant="outline" className="px-2.5 py-0.5 text-[11px] text-muted-foreground font-semibold border-dashed rounded-md">
+                            +{extraCount}
+                          </Badge>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="py-3.5">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-foreground">{zone.updatedText}</span>
+                      <span className="text-xs text-muted-foreground">{zone.updatedSubtext}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-3.5 text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg">
+                          <MoreHorizontal className="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-36">
+                        <DropdownMenuItem asChild>
+                          <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="cursor-pointer">
+                            Open
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="cursor-pointer">
+                            Manage
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link to="/zones/$zoneId" params={{ zoneId: zone.id }} className="cursor-pointer">
+                            Settings
+                          </Link>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </div>
 
       {/* Footer quản lý pagination và tùy biến page size */}
-      <div className="mt-5 flex flex-col gap-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+      <div className="mt-5 border-t border-border pt-4 flex flex-col gap-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
         {/* Phần hiển thị tổng quan số lượng kết quả */}
         <p>
           {totalZones === 0

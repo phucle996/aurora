@@ -43,37 +43,18 @@ func (s *zoneServiceStub) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID
 	return nil
 }
 func (s *zoneServiceStub) DeleteZone(ctx context.Context, zoneID uuid.UUID) error { return nil }
-func (s *zoneServiceStub) ListZoneServices(ctx context.Context, zoneID uuid.UUID) ([]coreEntity.ZoneService, error) {
-	if s.listErr != nil {
-		return nil, s.listErr
-	}
-	return []coreEntity.ZoneService{}, nil
-}
-func (s *zoneServiceStub) UpsertZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
+func (s *zoneServiceStub) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
 	if s.upsertErr != nil {
 		return nil, s.upsertErr
 	}
 	return &coreEntity.ZoneService{}, nil
 }
 
-func TestZoneHandlerListZoneServicesBadRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	h := coreHandler.NewZoneHandler(&zoneServiceStub{listErr: coreErrorx.ErrZoneServiceInvalidInput})
-	r.GET("/zones/:zone_id/services", h.ListZoneServices)
-	req := httptest.NewRequest(http.MethodGet, "/zones/not-uuid/services", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestZoneHandlerUpsertZoneServiceConflict(t *testing.T) {
+func TestZoneHandlerUpdateZoneServiceConflict(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := coreHandler.NewZoneHandler(&zoneServiceStub{upsertErr: coreErrorx.ErrZoneServiceStateConflict})
-	r.PUT("/zones/services", h.UpsertZoneService)
+	r.PUT("/zones/services", h.UpdateZoneService)
 	body, _ := json.Marshal(map[string]interface{}{
 		"zone_id":      "0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b",
 		"service_type": "mail",
@@ -88,11 +69,11 @@ func TestZoneHandlerUpsertZoneServiceConflict(t *testing.T) {
 	}
 }
 
-func TestZoneHandlerUpsertZoneServiceBadType(t *testing.T) {
+func TestZoneHandlerUpdateZoneServiceBadType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := coreHandler.NewZoneHandler(&zoneServiceStub{})
-	r.PUT("/zones/services", h.UpsertZoneService)
+	r.PUT("/zones/services", h.UpdateZoneService)
 	body, _ := json.Marshal(map[string]interface{}{
 		"zone_id":      "0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b",
 		"service_type": "nope",
@@ -107,11 +88,11 @@ func TestZoneHandlerUpsertZoneServiceBadType(t *testing.T) {
 	}
 }
 
-func TestZoneHandlerUpsertZoneServiceInternal(t *testing.T) {
+func TestZoneHandlerUpdateZoneServiceInternal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := coreHandler.NewZoneHandler(&zoneServiceStub{upsertErr: errors.New("boom")})
-	r.PUT("/zones/services", h.UpsertZoneService)
+	r.PUT("/zones/services", h.UpdateZoneService)
 	body, _ := json.Marshal(map[string]interface{}{
 		"zone_id":      "0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b",
 		"service_type": "mail",
@@ -131,12 +112,11 @@ func TestZoneHandlerUpdateZoneStatusSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := coreHandler.NewZoneHandler(&zoneServiceStub{})
-	r.PATCH("/zones/status", h.UpdateZoneStatus)
+	r.PATCH("/zones/:zone_id/status", h.UpdateZoneStatus)
 	body, _ := json.Marshal(requestdto.UpdateZoneStatusRequest{
-		ZoneID: uuid.MustParse("0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b"),
 		Status: "active",
 	})
-	req := httptest.NewRequest(http.MethodPatch, "/zones/status", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPatch, "/zones/0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b/status", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -148,26 +128,21 @@ func TestZoneHandlerUpdateZoneStatusSuccess(t *testing.T) {
 func TestZoneHandlerUpdateZoneStatusBadRequest(t *testing.T) {
 	tests := []struct {
 		name string
+		path string
 		body map[string]interface{}
 	}{
 		{
-			name: "missing zone_id",
+			name: "invalid uuid zone_id",
+			path: "/zones/invalid-uuid/status",
 			body: map[string]interface{}{
 				"status": "active",
 			},
 		},
 		{
-			name: "invalid uuid zone_id",
-			body: map[string]interface{}{
-				"zone_id": "invalid-uuid",
-				"status":  "active",
-			},
-		},
-		{
 			name: "invalid status",
+			path: "/zones/0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b/status",
 			body: map[string]interface{}{
-				"zone_id": "0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b",
-				"status":  "invalid-status",
+				"status": "invalid-status",
 			},
 		},
 	}
@@ -177,9 +152,9 @@ func TestZoneHandlerUpdateZoneStatusBadRequest(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			r := gin.New()
 			h := coreHandler.NewZoneHandler(&zoneServiceStub{})
-			r.PATCH("/zones/status", h.UpdateZoneStatus)
+			r.PATCH("/zones/:zone_id/status", h.UpdateZoneStatus)
 			body, _ := json.Marshal(tc.body)
-			req := httptest.NewRequest(http.MethodPatch, "/zones/status", bytes.NewReader(body))
+			req := httptest.NewRequest(http.MethodPatch, tc.path, bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
@@ -194,7 +169,7 @@ func TestZoneHandlerGetZoneSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := coreHandler.NewZoneHandler(&zoneServiceStub{})
-	r.GET("/zones/:zone_id", h.GetZone)
+	r.GET("/zones/:zone_id", h.GetDetailZone)
 	req := httptest.NewRequest(http.MethodGet, "/zones/0196f3aa-18ae-7a0d-8f74-f7933b6a0e9b", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

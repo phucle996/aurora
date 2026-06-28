@@ -22,7 +22,9 @@ type ZoneHandler struct {
 }
 
 func NewZoneHandler(zoneSvc coreSvcInterface.ZoneService) *ZoneHandler {
-	return &ZoneHandler{zoneSvc: zoneSvc}
+	return &ZoneHandler{
+		zoneSvc: zoneSvc,
+	}
 }
 
 // CreateZone godoc
@@ -39,7 +41,7 @@ func NewZoneHandler(zoneSvc coreSvcInterface.ZoneService) *ZoneHandler {
 // @Router       /admin/zones [post]
 // @Security     AdminAuth
 func (h *ZoneHandler) CreateZone(c *gin.Context) {
-	const op = "core.zone.create"
+	const op = "zone.create"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
@@ -104,12 +106,12 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 	rows := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, gin.H{
-			"id":          item.ID,
-			"code":        item.Code,
-			"name":        item.Name,
-			"location":    item.Location,
-			"description": item.Description,
-			"status":      string(item.Status),
+			"id":         item.ID,
+			"code":       item.Code,
+			"name":       item.Name,
+			"location":   item.Location,
+			"status":     string(item.Status),
+			"updated_at": item.UpdatedAt,
 		})
 	}
 
@@ -131,7 +133,7 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 // @Failure      500 {object} map[string]interface{} "Internal server error"
 // @Router       /admin/zones/{zone_id} [get]
 // @Security     AdminAuth
-func (h *ZoneHandler) GetZone(c *gin.Context) {
+func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 	const op = "core.zone.get"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -171,7 +173,7 @@ func (h *ZoneHandler) GetZone(c *gin.Context) {
 		default:
 			continue
 		}
-		status := "healthy"
+		status := "enable"
 		enabledCount++
 
 		key := string(s.ServiceType)
@@ -243,6 +245,13 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
+	parsedZoneID, err := uuid.Parse(c.Param("zone_id"))
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "parse zone_id uuid failed")
+		apires.RespondBadRequest(c, "invalid zone_id format")
+		return
+	}
+
 	var request requestdto.UpdateZoneStatusRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind update zone status request failed")
@@ -259,7 +268,7 @@ func (h *ZoneHandler) UpdateZoneStatus(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	err := h.zoneSvc.UpdateZoneStatus(ctx, request.ZoneID, toStatus)
+	err = h.zoneSvc.UpdateZoneStatus(ctx, parsedZoneID, toStatus)
 	if err != nil {
 		switch {
 		case errors.Is(err, coreTaxonomy.ErrZoneNotFound):
@@ -331,53 +340,53 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 // @Failure      500 {object} map[string]interface{} "Internal server error"
 // @Router       /admin/zones/{zone_id}/services [get]
 // @Security     AdminAuth
-func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
-	const op = "core.zone_service.list"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
+// func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
+// 	const op = "core.zone_service.list"
+// 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+// 	defer cancel()
 
-	zoneID := strings.TrimSpace(c.Param("zone_id"))
-	parsedZoneID, parseErr := uuid.Parse(zoneID)
-	if parseErr != nil {
-		logger.HandlerWarn(c, op, parseErr, "list zone services invalid zone_id")
-		apires.RespondBadRequest(c, "invalid request")
-		return
-	}
-	items, err := h.zoneSvc.ListZoneServices(ctx, parsedZoneID)
-	if err != nil {
-		switch {
-		case errors.Is(err, coreTaxonomy.ErrZoneServiceZoneNotFound):
-			apires.RespondNotFound(c, "resource not found")
-		default:
-			logger.HandlerError(c, op, err)
-			apires.RespondInternalError(c, "internal_error")
-		}
-		return
-	}
-	rows := make([]gin.H, 0)
-	for _, item := range items {
-		switch item.ServiceType {
-		case coreEntity.ZoneServiceTypeHypervisor,
-			coreEntity.ZoneServiceTypeStorage,
-			coreEntity.ZoneServiceTypeMail,
-			coreEntity.ZoneServiceTypeKubernetes,
-			coreEntity.ZoneServiceTypeAI,
-			coreEntity.ZoneServiceTypeDatabase:
-			// Valid
-		default:
-			continue
-		}
-		rows = append(rows, gin.H{
-			"id":           item.ID,
-			"zone_id":      item.ZoneID,
-			"service_type": string(item.ServiceType),
-			"enabled":      item.Enabled,
-			"created_at":   item.CreatedAt,
-			"updated_at":   item.UpdatedAt,
-		})
-	}
-	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zone services fetched")
-}
+// 	zoneID := strings.TrimSpace(c.Param("zone_id"))
+// 	parsedZoneID, parseErr := uuid.Parse(zoneID)
+// 	if parseErr != nil {
+// 		logger.HandlerWarn(c, op, parseErr, "list zone services invalid zone_id")
+// 		apires.RespondBadRequest(c, "invalid request")
+// 		return
+// 	}
+// 	items, err := h.zoneSvc.ListZoneServices(ctx, parsedZoneID)
+// 	if err != nil {
+// 		switch {
+// 		case errors.Is(err, coreTaxonomy.ErrZoneServiceZoneNotFound):
+// 			apires.RespondNotFound(c, "resource not found")
+// 		default:
+// 			logger.HandlerError(c, op, err)
+// 			apires.RespondInternalError(c, "internal_error")
+// 		}
+// 		return
+// 	}
+// 	rows := make([]gin.H, 0)
+// 	for _, item := range items {
+// 		switch item.ServiceType {
+// 		case coreEntity.ZoneServiceTypeHypervisor,
+// 			coreEntity.ZoneServiceTypeStorage,
+// 			coreEntity.ZoneServiceTypeMail,
+// 			coreEntity.ZoneServiceTypeKubernetes,
+// 			coreEntity.ZoneServiceTypeAI,
+// 			coreEntity.ZoneServiceTypeDatabase:
+// 			// Valid
+// 		default:
+// 			continue
+// 		}
+// 		rows = append(rows, gin.H{
+// 			"id":           item.ID,
+// 			"zone_id":      item.ZoneID,
+// 			"service_type": string(item.ServiceType),
+// 			"enabled":      item.Enabled,
+// 			"created_at":   item.CreatedAt,
+// 			"updated_at":   item.UpdatedAt,
+// 		})
+// 	}
+// 	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zone services fetched")
+// }
 
 // UpsertZoneService godoc
 // @Summary      Update zone service status
@@ -393,14 +402,14 @@ func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
 // @Failure      500 {object} map[string]interface{} "Internal server error"
 // @Router       /admin/zones/services [put]
 // @Security     AdminAuth
-func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
-	const op = "core.zone_service.upsert"
+func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
+	const op = "zone_service.update"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	var request requestdto.UpsertZoneServiceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		logger.HandlerWarn(c, op, err, "bind upsert zone service request failed")
+		logger.HandlerWarn(c, op, err, "bind update zone service request failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
@@ -414,7 +423,7 @@ func (h *ZoneHandler) UpsertZoneService(c *gin.Context) {
 		coreEntity.ZoneServiceTypeMail, coreEntity.ZoneServiceTypeKubernetes, coreEntity.ZoneServiceTypeAI,
 		coreEntity.ZoneServiceTypeDatabase:
 	default:
-		logger.HandlerWarn(c, op, nil, "upsert zone service invalid type: "+request.ServiceType)
+		logger.HandlerWarn(c, op, nil, "update zone service invalid type: "+request.ServiceType)
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}

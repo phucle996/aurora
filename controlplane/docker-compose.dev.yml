@@ -18,8 +18,6 @@ services:
       # Mount TLS certs vào đúng path mà binary prod đọc (xem GRPC_TLS_* trong .env).
       - ./dev/tls:/etc/controlplane/tls:ro
       # Binary prod chạy với WORKDIR /var/lib/controlplane và đọc policy tại
-      # 'runtime/policies/policy.yaml' (path tương đối). Mount vào đúng path tuyệt đối.
-      - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
       # Override TLS paths để khớp với mount point mới của prod container.
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
@@ -61,7 +59,6 @@ services:
       - .env
     volumes:
       - ./dev/tls:/etc/controlplane/tls:ro
-      - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
@@ -102,7 +99,6 @@ services:
       - .env
     volumes:
       - ./dev/tls:/etc/controlplane/tls:ro
-      - ./policies.yaml:/var/lib/controlplane/runtime/policies/policy.yaml:ro
     environment:
       GRPC_TLS_CERT: /etc/controlplane/tls/grpc-server.crt
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
@@ -334,10 +330,9 @@ services:
       # Mount policy config cho binary prod đọc từ path chuẩn /etc/dataplane/.
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "019eba50-596b-7b77-b3e2-966e3f8ef885"
+      ZONE_ID: "019f093b-69a4-7518-8fee-a6c5b4d2f8e2"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
-      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
@@ -378,11 +373,10 @@ services:
     volumes:
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "01903e8c-55c1-7da3-87de-6e69622d1df8"
+      ZONE_ID: "019f0c0f-aebd-7309-a021-af01e22ba418"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       # Cả hai Node trong Zone 2 đều trỏ chung về bộ đệm cách ly của Zone 2 để chia sẻ dữ liệu đồng nhất.
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z2:6379/0"
-      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-2:9090"
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       METRICS_PORT: "2112"
@@ -411,10 +405,9 @@ services:
     volumes:
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "01903e8c-55c1-7da3-87de-6e69622d1df8"
+      ZONE_ID: "019f0c0f-aebd-7309-a021-af01e22ba418"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z2:6379/0"
-      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-3:9090"
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       METRICS_PORT: "2112"

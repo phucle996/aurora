@@ -42,18 +42,18 @@ import (
 )
 
 type ZoneRepoImpl struct {
-	db                                  *pgxpool.Pool
-	schema                              string
-	listZonesQuery                      string
-	rpcListZonesQuery                   string
-	createZoneQuery                     string
-	getZoneDetailByIDQuery              string
-	updateZoneStatusQuery               string
-	deleteZoneQuery                     string
-	hasEnabledZoneSvcQuery              string
-	listZoneSvcByZoneIDQuery            string
-	upsertZoneServiceQuery              string
-	upsertZoneServiceByZoneAndTypeQuery string
+	db                           *pgxpool.Pool
+	schema                       string
+	listZonesQuery               string
+	rpcListZonesQuery            string
+	createZoneQuery              string
+	getZoneDetailByIDQuery       string
+	updateZoneStatusQuery        string
+	deleteZoneQuery              string
+	hasEnabledZoneSvcQuery       string
+	listZoneSvcByZoneIDQuery     string
+	upsertZoneServiceQuery       string
+	updateZoneServiceStatusQuery string
 }
 
 // NewZoneRepoImpl khởi tạo một thực thể Repository mới cho Zone và biên dịch sẵn các câu lệnh SQL.
@@ -63,7 +63,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		db:     db,
 		schema: schema,
 		listZonesQuery: fmt.Sprintf(`
-			SELECT id, code, name, location, description, status 
+			SELECT id, code, name, location, status, updated_at 
 			FROM %s.zones 
 			ORDER BY created_at DESC
 		`, schema),
@@ -132,7 +132,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now() 
 			RETURNING id, zone_id, service_type, enabled, created_at, updated_at
 		`, schema),
-		upsertZoneServiceByZoneAndTypeQuery: fmt.Sprintf(`
+		updateZoneServiceStatusQuery: fmt.Sprintf(`
 			WITH target_zone AS (
 				SELECT code, status FROM %s.zones WHERE id = $2
 			), upserted AS (
@@ -167,7 +167,14 @@ func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	out := make([]coreEntity.Zone, 0)
 	for rows.Next() {
 		var value coreModel.Zone
-		if err := rows.Scan(&value.ID, &value.Code, &value.Name, &value.Location, &value.Description, &value.Status); err != nil {
+		if err := rows.Scan(
+			&value.ID,
+			&value.Code,
+			&value.Name,
+			&value.Location,
+			&value.Status,
+			&value.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, coreModel.ZoneModelToEntity(value))
@@ -192,7 +199,10 @@ func (r *ZoneRepoImpl) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, 
 		var name string
 		var status string
 		// Chỉ scan 4 trường dữ liệu tối giản
-		if err := rows.Scan(&id, &code, &name, &status); err != nil {
+		if err := rows.Scan(&id,
+			&code,
+			&name,
+			&status); err != nil {
 			return nil, err
 		}
 		out = append(out, coreEntity.RPCZone{
@@ -202,7 +212,7 @@ func (r *ZoneRepoImpl) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, 
 			Status: coreEntity.ZoneStatus(status),
 		})
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // CreateZone khởi tạo Zone mới kèm theo các services cấu hình trong cùng một transaction.
@@ -214,7 +224,17 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 	defer tx.Rollback(ctx)
 
 	value := coreModel.ZoneEntityToModel(zone)
-	_, err = tx.Exec(ctx, r.createZoneQuery, value.ID, value.Code, value.Name, value.Location, value.Description, value.Status, value.CreatedAt.UTC(), value.UpdatedAt.UTC())
+	_, err = tx.Exec(ctx,
+		r.createZoneQuery,
+		value.ID,
+		value.Code,
+		value.Name,
+		value.Location,
+		value.Description,
+		value.Status,
+		value.CreatedAt.UTC(),
+		value.UpdatedAt.UTC(),
+	)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -225,7 +245,13 @@ func (r *ZoneRepoImpl) CreateZone(ctx context.Context, zone coreEntity.Zone, svc
 
 	for svcType, enabled := range svcs {
 		newID, _ := uuid.NewV7()
-		_, err = tx.Exec(ctx, r.upsertZoneServiceQuery, newID, value.ID, string(svcType), enabled)
+		_, err = tx.Exec(ctx,
+			r.upsertZoneServiceQuery,
+			newID,
+			value.ID,
+			string(svcType),
+			enabled,
+		)
 		if err != nil {
 			return err
 		}
@@ -250,8 +276,20 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 		var sEnabled *bool
 		var sCreatedAt, sUpdatedAt *time.Time
 		if err := rows.Scan(
-			&zVal.ID, &zVal.Code, &zVal.Name, &zVal.Location, &zVal.Description, &zVal.Status, &zVal.CreatedAt, &zVal.UpdatedAt,
-			&sID, &sZoneID, &sType, &sEnabled, &sCreatedAt, &sUpdatedAt,
+			&zVal.ID,
+			&zVal.Code,
+			&zVal.Name,
+			&zVal.Location,
+			&zVal.Description,
+			&zVal.Status,
+			&zVal.CreatedAt,
+			&zVal.UpdatedAt,
+			&sID,
+			&sZoneID,
+			&sType,
+			&sEnabled,
+			&sCreatedAt,
+			&sUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -297,8 +335,14 @@ func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 	var exists bool
 	var updated bool
 	// Thực hiện truy vấn kiểm tra sự tồn tại và cập nhật trạng thái theo State Machine.
-	err := r.db.QueryRow(ctx, r.updateZoneStatusQuery, id, string(status), statusStrings).Scan(
-		&exists, &updated,
+	err := r.db.QueryRow(ctx,
+		r.updateZoneStatusQuery,
+		id,
+		string(status),
+		statusStrings,
+	).Scan(
+		&exists,
+		&updated,
 	)
 	if err != nil {
 		return err
@@ -321,7 +365,15 @@ func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, er
 	var hasSvcs bool
 	var deletedCode string
 
-	err := r.db.QueryRow(ctx, r.deleteZoneQuery, id).Scan(&exists, &status, &hasSvcs, &deletedCode)
+	err := r.db.QueryRow(ctx,
+		r.deleteZoneQuery,
+		id,
+	).Scan(
+		&exists,
+		&status,
+		&hasSvcs,
+		&deletedCode,
+	)
 	if err != nil {
 		return "", err
 	}
@@ -344,9 +396,20 @@ func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 	var upsertSuccess int
 	var value coreModel.ZoneService
 
-	err := r.db.QueryRow(ctx, r.upsertZoneServiceByZoneAndTypeQuery, newID, zoneID, string(serviceType), enabled).Scan(
-		&zoneExists, &zoneStatus, &zoneCode, &upsertSuccess,
-		&value.ID, &value.CreatedAt, &value.UpdatedAt,
+	err := r.db.QueryRow(ctx,
+		r.updateZoneServiceStatusQuery,
+		newID,
+		zoneID,
+		string(serviceType),
+		enabled,
+	).Scan(
+		&zoneExists,
+		&zoneStatus,
+		&zoneCode,
+		&upsertSuccess,
+		&value.ID,
+		&value.CreatedAt,
+		&value.UpdatedAt,
 	)
 	if err != nil {
 		return nil, "", err

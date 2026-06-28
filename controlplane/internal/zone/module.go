@@ -69,29 +69,32 @@ func NewModule(
 	cacheEngine *cacheengine.CacheRegistry,
 ) (*Module, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("core module: config is required")
+		return nil, fmt.Errorf("zone module: config is required")
 	}
 	if db == nil {
-		return nil, fmt.Errorf("core module: database pool is required")
+		return nil, fmt.Errorf("zone module: database pool is required")
 	}
 
 	// 1) SoT data access for secret lifecycle.
 	// 3) Rotation orchestration - Chỉ truyền một đối tượng cacheEngine duy nhất
 	zoneRepo := coreRepoImpl.NewZoneRepoImpl(cfg, db)
 	if zoneRepo == nil {
-		return nil, fmt.Errorf("core module: zone service unavailable: zone repository is nil")
+		return nil, fmt.Errorf("zone module: zone service unavailable: zone repository is nil")
 	}
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, cacheEngine)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo)
+	if zoneService == nil {
+		return nil, fmt.Errorf("zone module: zone service unavailable: zone service is nil")
+	}
 	zoneHandler := zoneHandler.NewZoneHandler(zoneService)
 	if zoneHandler == nil {
-		return nil, fmt.Errorf("core module: zone handler is nil")
+		return nil, fmt.Errorf("zone module: zone handler is nil")
 	}
 
 	// 6) Backpressure service (zone-scoped, no node-level tracking)
 	backpressureSvc := coreSvcImpl.NewBackpressureService(cacheEngine)
 	if backpressureSvc == nil {
-		return nil, fmt.Errorf("core module: backpressure service is nil")
+		return nil, fmt.Errorf("zone module: backpressure service is nil")
 	}
 
 	m := &Module{
