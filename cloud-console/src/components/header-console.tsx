@@ -18,6 +18,8 @@ import {
   Sparkles
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { fetchZoneCatalog, switchZone, type ZoneCatalogItem } from "@/lib/api/zone";
+import { toast } from "sonner";
 
 // [COMMENT]: Định nghĩa Interfaces cho các sự kiện dữ liệu Header
 interface HeaderConsoleProps {
@@ -40,7 +42,7 @@ export default function HeaderConsole({
 
   // [COMMENT]: Quản lý state đóng/mở cho các menu Dropdown trong Header
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [regionOpen, setRegionOpen] = useState(false);
+  const [zoneOpen, setZoneOpen] = useState(false);
   const [healthOpen, setHealthOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -48,11 +50,12 @@ export default function HeaderConsole({
 
   // [COMMENT]: State quản lý context làm việc được chọn hiện tại
   const [activeWorkspace, setActiveWorkspace] = useState("Production");
-  const [activeRegion, setActiveRegion] = useState("Global");
+  const [activeZone, setActiveZone] = useState("");
+  const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
 
   // [COMMENT]: References để hỗ trợ đóng dropdown khi người dùng click ra ngoài vùng hiển thị
   const workspaceRef = useRef<HTMLDivElement>(null);
-  const regionRef = useRef<HTMLDivElement>(null);
+  const zoneRef = useRef<HTMLDivElement>(null);
   const healthRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
   const helpRef = useRef<HTMLDivElement>(null);
@@ -107,7 +110,7 @@ export default function HeaderConsole({
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
       if (workspaceRef.current && !workspaceRef.current.contains(target)) setWorkspaceOpen(false);
-      if (regionRef.current && !regionRef.current.contains(target)) setRegionOpen(false);
+      if (zoneRef.current && !zoneRef.current.contains(target)) setZoneOpen(false);
       if (healthRef.current && !healthRef.current.contains(target)) setHealthOpen(false);
       if (notifRef.current && !notifRef.current.contains(target)) setNotifOpen(false);
       if (helpRef.current && !helpRef.current.contains(target)) setHelpOpen(false);
@@ -116,6 +119,27 @@ export default function HeaderConsole({
 
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // [COMMENT]: Gọi API từ ACR/Controlplane để lấy danh sách Active Zones của User
+  useEffect(() => {
+    let active = true;
+    fetchZoneCatalog()
+      .then((data) => {
+        if (active && data) {
+          setZones(data);
+          if (data.length > 0) {
+            // Đặt Zone đầu tiên là Active Zone mặc định
+            setActiveZone(data[0].code.toUpperCase());
+          }
+        }
+      })
+      .catch((err) => {
+        console.error("[Header] Failed to fetch active zones list:", err);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
@@ -201,32 +225,41 @@ export default function HeaderConsole({
 
         <div className="h-4 w-px bg-slate-200 dark:bg-slate-800" />
 
-        {/* [COMMENT]: Dropdown chọn Region context */}
-        <div ref={regionRef} className="relative">
+        {/* [COMMENT]: Dropdown chọn Active Zone context kết nối cổng API Gateway của ACR */}
+        <div ref={zoneRef} className="relative">
           <button
-            onClick={() => setRegionOpen(!regionOpen)}
+            onClick={() => setZoneOpen(!zoneOpen)}
             className="flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-sidebar-console-hover text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
           >
-            <span className="text-slate-400 dark:text-slate-500 font-normal">Region:</span>
-            <span>{activeRegion}</span>
+            <span className="text-slate-400 dark:text-slate-500 font-normal">Zone:</span>
+            <span>{activeZone || "Loading..."}</span>
             <ChevronDown className="h-3 w-3 text-slate-400" />
           </button>
 
-          {regionOpen && (
-            <div className="absolute top-[110%] left-0 w-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 z-50 animate-in fade-in slide-in-from-top-1 duration-100">
-              {["Global", "Singapore", "Vietnam", "Japan"].map((reg) => (
+          {zoneOpen && zones.length > 0 && (
+            <div className="absolute top-[110%] left-0 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 z-50 animate-in fade-in slide-in-from-top-1 duration-100">
+              {zones.map((z) => (
                 <button
-                  key={reg}
-                  onClick={() => {
-                    setActiveRegion(reg);
-                    setRegionOpen(false);
+                  key={z.code}
+                  onClick={async () => {
+                    try {
+                      await switchZone(z.code);
+                      setActiveZone(z.code.toUpperCase());
+                      setZoneOpen(false);
+                      toast.success(`Switched to zone: ${z.name}`);
+                      // [COMMENT]: Làm mới trang để đồng bộ và cập nhật lại toàn bộ tài nguyên VM/Incident của Zone mới
+                      window.location.reload();
+                    } catch (err: any) {
+                      toast.error(err.message || "Failed to switch active zone");
+                    }
                   }}
                   className={cn(
-                    "w-full text-left px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-slate-700 dark:text-slate-300",
-                    reg === activeRegion && "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40"
+                    "w-full text-left px-3 py-2 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-slate-700 dark:text-slate-300",
+                    z.code.toUpperCase() === activeZone && "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40"
                   )}
                 >
-                  {reg}
+                  <div className="font-bold">{z.name}</div>
+                  <div className="text-[10px] text-slate-400 font-mono">{z.code}</div>
                 </button>
               ))}
             </div>

@@ -19,11 +19,6 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.AuthHandler.RegisterAccount,
 	)
 
-	// 4) Lấy thông tin phiên làm việc hiện tại
-	router.GET("/api/v1/auth/session",
-		module.AuthHandler.Session,
-	)
-
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",
 		module.DeviceHandler.ListMyDevices,

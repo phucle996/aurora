@@ -15,6 +15,7 @@ import (
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
+	"controlplane/pkg/geoip"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -49,11 +50,17 @@ func isStrongPassword(password string) bool {
 type AuthHandler struct {
 	authSvc domainservice.AuthService
 	cfg     *config.Config
+	geoIP   *geoip.Resolver
 }
 
 // NewAuthHandler tạo HTTP handler cho auth endpoints.
 func NewAuthHandler(cfg *config.Config, authSvc domainservice.AuthService) *AuthHandler {
-	return &AuthHandler{authSvc: authSvc, cfg: cfg}
+	geoResolver, _ := geoip.NewResolver("")
+	return &AuthHandler{
+		authSvc: authSvc,
+		cfg:     cfg,
+		geoIP:   geoResolver,
+	}
 }
 
 // RegisterAccount godoc
@@ -84,7 +91,6 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	username := strings.ToLower(strings.TrimSpace(request.Username))
 	email := strings.ToLower(strings.TrimSpace(request.Email))
 	password := strings.TrimSpace(request.Password)
-	rePassword := strings.TrimSpace(request.RePassword)
 	fullname := strings.TrimSpace(request.Fullname)
 
 	var phone *string
@@ -97,14 +103,15 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 		localeStr = strings.TrimSpace(*request.Location)
 	}
 
+	// [COMMENT]: Giải mã địa chỉ IP của client sang quốc gia tương ứng
+	clientIP := c.ClientIP()
+	if resolvedCountry := h.geoIP.Lookup(clientIP); resolvedCountry != "" {
+		localeStr = resolvedCountry
+	}
+
 	var timezoneStr string
 	if request.Timezone != nil {
 		timezoneStr = strings.TrimSpace(*request.Timezone)
-	}
-	if password != rePassword {
-		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
-		apires.RespondBadRequest(c, "invalid request")
-		return
 	}
 	if !isStrongPassword(password) {
 		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "register validation failed")
@@ -142,24 +149,4 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 
 	logger.HandlerInfo(c, op, "account registered")
 	apires.RespondCreated(c, nil, "account created")
-}
-
-// Session godoc
-// @Summary User session bootstrap
-// @Tags auth
-// @Produce json
-// @Success 200 {object} map[string]interface{} "authenticated"
-// @Router /api/v1/auth/session [get]
-func (h *AuthHandler) Session(c *gin.Context) {
-	const op = "iam.auth.session"
-
-	userID := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userID == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized - gateway validation required")
-		return
-	}
-
-	logger.HandlerInfo(c, op, "user session authenticated")
-	apires.RespondSuccess(c, gin.H{"authenticated": true}, "ok")
 }

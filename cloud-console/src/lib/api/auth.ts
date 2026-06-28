@@ -13,8 +13,10 @@ export type RegisterRequest = {
   username: string;
   email: string;
   password: string;
-  re_password: string;
   fullname: string;
+  phone?: string;
+  location?: string;
+  timezone?: string;
 };
 
 export async function login(
