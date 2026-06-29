@@ -12,9 +12,7 @@ import (
 	"time"
 
 	"controlplane/internal/config"
-	coretestutil "controlplane/internal/hierarchy/test/testutil"
 	iammigrations "controlplane/internal/iam/migrations"
-	"controlplane/internal/security"
 
 
 	"github.com/jackc/pgx/v5"
@@ -145,16 +143,6 @@ func PrepareIAMSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 		defer cancel()
 		_, _ = db.Exec(cleanupCtx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", cfg.SchemaSQL.IAM))
 	})
-}
-
-func SetRuntimeMasterKeyFromConfig(t testing.TB, cfg *config.Config) {
-	t.Helper()
-	key, err := coretestutil.DecodeRuntimeMasterKey(cfg.Security.RuntimeMasterKey)
-	if err != nil {
-		t.Fatalf("decode runtime master key: %v", err)
-	}
-	security.SetRuntimeMasterKey(key)
-	t.Cleanup(func() { security.SetRuntimeMasterKey(nil) })
 }
 
 func UniqueSchema(prefix string) string {

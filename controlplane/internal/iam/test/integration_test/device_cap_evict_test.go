@@ -16,7 +16,6 @@ import (
 
 func TestEvictExcessDevicesAtomic(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_cap_evict"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 

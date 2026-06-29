@@ -1,22 +1,17 @@
 package security
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"strings"
 )
 
+// PresenceHMACSHA256Hex băm namespace + value bằng SHA-256 (để giữ nguyên signature và tính tương thích ngược)
 func PresenceHMACSHA256Hex(namespace string, value string) (string, error) {
-	key := GetRuntimeMasterKey()
-	if len(key) != 32 {
-		return "", fmt.Errorf("security: runtime master key not set or invalid")
-	}
-
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(strings.TrimSpace(namespace)))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(strings.TrimSpace(value)))
-	return hex.EncodeToString(mac.Sum(nil)), nil
+	// [COMMENT]: Sử dụng SHA-256 thông thường thay vì HMAC để loại bỏ việc quản lý Master Key cho presence bitmap
+	h := sha256.New()
+	h.Write([]byte(strings.TrimSpace(namespace)))
+	h.Write([]byte{':'})
+	h.Write([]byte(strings.TrimSpace(value)))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

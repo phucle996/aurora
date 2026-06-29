@@ -12,7 +12,6 @@ import (
 
 	"controlplane/internal/config"
 	core "controlplane/internal/hierarchy"
-	"controlplane/internal/security"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -97,20 +96,6 @@ func PrepareCoreSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 		defer cancel()
 		_, _ = db.Exec(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", cfg.SchemaSQL.Hierarchy))
 	})
-}
-
-func SetRuntimeMasterKeyFromConfig(t testing.TB, cfg *config.Config) {
-	t.Helper()
-	key, err := DecodeRuntimeMasterKey(cfg.Security.RuntimeMasterKey)
-	if err != nil {
-		t.Fatalf("decode runtime master key: %v", err)
-	}
-	security.SetRuntimeMasterKey(key)
-	t.Cleanup(func() { security.SetRuntimeMasterKey(nil) })
-}
-
-func DecodeRuntimeMasterKey(encoded string) ([]byte, error) {
-	return decodeRuntimeMasterKey(encoded)
 }
 
 func WaitUntil(t testing.TB, timeout time.Duration, fn func() bool) {

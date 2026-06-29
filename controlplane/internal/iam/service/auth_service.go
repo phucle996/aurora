@@ -377,7 +377,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		DeviceName:           deviceName,
 		DeviceType:           &deviceType,
 		PublicKey:            req.DevicePublicKey,
-		PublicKeyAlg:         security.AlgEd25519,
+		PublicKeyAlg:         "ed25519",
 		PublicKeyFingerprint: fingerprint,
 		ClientDeviceID:       cleanOptionalString(&clientDeviceID),
 		LastSeenIP:           cleanOptionalString(&ipVal),

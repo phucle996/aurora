@@ -21,14 +21,12 @@ import (
 
 func TestIAMMigrationsApplyOnRealPostgres(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_migrate"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 }
 
 func TestRegisterAccountIntegrationSuccessWithRealPostgresRedis(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_success"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
@@ -59,7 +57,6 @@ func TestRegisterAccountIntegrationSuccessWithRealPostgresRedis(t *testing.T) {
 
 func TestRegisterAccountIntegrationDuplicateWithRealPostgresRedis(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_duplicate"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
@@ -84,7 +81,6 @@ func TestRegisterAccountIntegrationDuplicateWithRealPostgresRedis(t *testing.T) 
 
 func TestRegisterAccountIntegrationBitmapFalsePositiveStillCreatesUser(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_false_positive"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
@@ -110,7 +106,6 @@ func TestRegisterAccountIntegrationBitmapFalsePositiveStillCreatesUser(t *testin
 
 func TestRegisterAccountIntegrationRedisFallbackStillCreatesUser(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_redis_fallback"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 
@@ -133,7 +128,6 @@ func TestRegisterAccountIntegrationRedisFallbackStillCreatesUser(t *testing.T) {
 
 func TestRegisterAccountIntegrationDuplicateMarksBitmapAfterDBConflict(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_duplicate_mark"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
@@ -166,7 +160,6 @@ func TestRegisterAccountIntegrationDuplicateMarksBitmapAfterDBConflict(t *testin
 
 func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_login_success"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)
@@ -205,7 +198,6 @@ func TestLoginIntegrationSuccessWithRealPostgres(t *testing.T) {
 
 func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_login_pending"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 	rdb := testutil.OpenRedis(t, cfg)

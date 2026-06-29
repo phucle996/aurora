@@ -70,7 +70,6 @@ func (m *authRepoMock) ActivateUserWithRole(ctx context.Context, userID uuid.UUI
 }
 
 func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheRegistry {
-	security.SetRuntimeMasterKey(make([]byte, 32))
 	l1Cache := cacheengine.NewShardedCache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
 	if rdb == nil {

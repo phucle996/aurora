@@ -50,12 +50,9 @@ import (
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
 	"controlplane/internal/observability"
-	"controlplane/internal/security"
 	"controlplane/pkg/logger"
-	"encoding/base64"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -92,17 +89,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{ctx: ctx, cancel: cancel, cfg: cfg}
-
-	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Security bootstrap: RuntimeMasterKey bắt buộc cho AES-256 secret encryption.
-	// Thiếu key hoặc key sai định dạng -> abort ngay lập tức.
-	// --------------------------------------------------------------------
-	runtimeMasterKey, err := resolveRuntimeMasterKey(cfg.Security.RuntimeMasterKey)
-	if err != nil {
-		app.Stop()
-		return nil, err
-	}
-	security.SetRuntimeMasterKey(runtimeMasterKey)
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Infrastructure bootstrap: PostgreSQL.
@@ -285,27 +271,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 
 	app.httpServer = httpSrv
 	return app, nil
-}
-
-// resolveRuntimeMasterKey decode và validate SECURITY_RUNTIME_MASTER_KEY.
-// Yêu cầu: input phải là base64/base64raw hợp lệ, output phải đúng 32 bytes (AES-256).
-func resolveRuntimeMasterKey(encoded string) ([]byte, error) {
-	value := strings.TrimSpace(encoded)
-	if value == "" {
-		return nil, fmt.Errorf("bootstrap: SECURITY_RUNTIME_MASTER_KEY is required")
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil {
-		decoded, err = base64.RawStdEncoding.DecodeString(value)
-		if err != nil {
-			return nil, fmt.Errorf("bootstrap: SECURITY_RUNTIME_MASTER_KEY must be valid base64")
-		}
-	}
-	if len(decoded) != 32 {
-		return nil, fmt.Errorf("bootstrap: SECURITY_RUNTIME_MASTER_KEY must decode to exactly 32 bytes")
-	}
-	return decoded, nil
 }
 
 // Start khởi chạy HTTP và gRPC server bất đồng bộ trên các Goroutine riêng biệt.

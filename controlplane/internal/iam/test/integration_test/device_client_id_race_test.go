@@ -19,7 +19,6 @@ import (
 // với cùng (user_id, client_device_id) chỉ tạo 1 record.
 func TestDeviceUpsertConcurrentSameClientDeviceID(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_cdid_race"))
-	testutil.SetRuntimeMasterKeyFromConfig(t, cfg)
 	db := testutil.OpenPostgres(t, cfg)
 	testutil.PrepareIAMSchema(t, cfg, db)
 
