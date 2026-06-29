@@ -4,6 +4,8 @@ import (
 	"context"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
+
+	"github.com/google/uuid"
 )
 
 type AuthRepository interface {
@@ -13,4 +15,7 @@ type AuthRepository interface {
 	// Trả về LoginUser chứa thông tin user kèm TenantID và TenantCode trong struct.
 	LoginUserByUsernameAndTenantDomain(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error)
 	CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error
+	// [COMMENT]: ActivateUserWithRole thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
+	// và gán vai trò platform_user cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
+	ActivateUserWithRole(ctx context.Context, userID uuid.UUID, roleCode string) error
 }

@@ -89,7 +89,7 @@ func TestRbacHandlerCreateRoleNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := handler.NewRbacHandler(&rbacServiceStub{createRoleFn: func(ctx context.Context, role *iamEntity.Role) error {
-		return iamTaxonomy.ErrRoleNotFound
+		return iamTaxonomy.ErrNotFound
 	}})
 	r.POST("/admin/rbac/roles", func(c *gin.Context) {
 		ident := &constant.Identity{UserID: uuid.NewString()}

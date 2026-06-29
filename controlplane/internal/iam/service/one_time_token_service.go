@@ -77,10 +77,7 @@ func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userI
 		return false, apperr.Wrap(iamTaxonomy.ErrInvalidArgument, nil, "invalid_purpose_or_user")
 	}
 	if plainToken == "" {
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenRefreshExpired, nil, "invalid_or_expired")
-	}
-	if s.cacheEngine == nil {
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenUpdateFailed, errors.New("cache engine unavailable"), "cache_unavailable")
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
 	}
 
 	tokenHash := security.HashTokenSHA256(plainToken)
@@ -88,12 +85,12 @@ func (s *OneTimeTokenService) Consume(ctx context.Context, purpose string, userI
 
 	resVal, err := s.cacheEngine.Exec.Execute(ctx, consumeOneTimeTokenScript, []string{key}, tokenHash)
 	if err != nil {
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenUpdateFailed, err, "cache_unavailable")
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenConsume, err, "cache_unavailable")
 	}
 
 	result, _ := resVal.(int64)
 	if result != 1 {
-		return false, apperr.Wrap(iamTaxonomy.ErrTokenRefreshExpired, nil, "invalid_or_expired")
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
 	}
 	return true, nil
 }

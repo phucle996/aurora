@@ -108,8 +108,8 @@ func TestOneTimeTokenServiceConsumeTwice(t *testing.T) {
 	}
 
 	ok, err = svc.Consume(context.Background(), "account_verify", userID, token)
-	if !errors.Is(err, iamTaxonomy.ErrTokenRefreshExpired) {
-		t.Fatalf("expected ErrTokenRefreshExpired, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrTokenExpired) {
+		t.Fatalf("expected ErrTokenExpired, got %v", err)
 	}
 	if ok {
 		t.Fatal("second consume must be false")

@@ -16,6 +16,7 @@ import (
 	handler "controlplane/internal/iam/transport/http/handler"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // authServiceStub là mock service để kiểm thử hành vi của handler độc lập
@@ -27,6 +28,10 @@ type authServiceStub struct {
 var _ iamSvcInterface.AuthService = (*authServiceStub)(nil)
 
 func (s *authServiceStub) RegisterAccount(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, password string) error {
+	return s.err
+}
+
+func (s *authServiceStub) VerifyAccount(ctx context.Context, userID uuid.UUID, token string) error {
 	return s.err
 }
 

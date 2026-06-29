@@ -54,7 +54,7 @@ func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, e
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -96,7 +96,7 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -116,9 +116,9 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 	startRepo := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo), err)
-			return nil, iamTaxonomy.ErrRoleNotFound
+			return nil, iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo), err)
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -132,9 +132,9 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 	startRepo2 := time.Now()
 	roleWithPerms, err := s.repo.GetRoleByCode(ctx, role.Code)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByCode", "role_not_found", time.Since(startRepo2), err)
-			return nil, iamTaxonomy.ErrRoleNotFound
+			return nil, iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByCode", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo2), err)
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -152,7 +152,7 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -191,7 +191,7 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -211,9 +211,9 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 	startRepo1 := time.Now()
 	existing, err := s.repo.GetRoleByID(ctx, role.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
-			return iamTaxonomy.ErrRoleNotFound
+			return iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -246,7 +246,7 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) 
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -266,9 +266,9 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) 
 	startRepo1 := time.Now()
 	existing, err := s.repo.GetRoleByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
-			return iamTaxonomy.ErrRoleNotFound
+			return iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -301,7 +301,7 @@ func (s *RbacService) ListPermissions(ctx context.Context) (perms []*iamEntity.P
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -331,7 +331,7 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -351,9 +351,9 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
-			return iamTaxonomy.ErrRoleNotFound
+			return iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -410,7 +410,7 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -430,9 +430,9 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
-			return iamTaxonomy.ErrRoleNotFound
+			return iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -489,7 +489,7 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -509,9 +509,9 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
-			return iamTaxonomy.ErrRoleNotFound
+			return iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -558,7 +558,7 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UU
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 				outcome = iamMetrics.OutcomePreConditionFailed
-			} else if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			} else if errors.Is(err, iamTaxonomy.ErrNotFound) {
 				outcome = iamMetrics.OutcomeFailure
 			} else if errors.Is(err, iamTaxonomy.ErrPermissionNotFound) {
 				outcome = iamMetrics.OutcomeFailure
@@ -578,9 +578,9 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UU
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, iamTaxonomy.ErrNotFound) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", "role_not_found", time.Since(startRepo1), err)
-			return iamTaxonomy.ErrRoleNotFound
+			return iamTaxonomy.ErrNotFound
 		}
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetRoleByID", iamMetrics.OutcomeFailureUnknown, time.Since(startRepo1), err)
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)

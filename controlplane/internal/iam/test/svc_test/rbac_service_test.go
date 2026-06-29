@@ -108,8 +108,8 @@ func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 	ident := &constant.Identity{Level: 0}
 	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
 	_, err := svc.GetRole(ctx, roleID)
-	if !errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
-		t.Fatalf("expected ErrRoleNotFound, got %v", err)
+	if !errors.Is(err, iamTaxonomy.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 	_, ok := apperr.As(err)
 	if ok {

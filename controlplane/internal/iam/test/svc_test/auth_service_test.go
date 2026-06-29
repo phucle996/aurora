@@ -30,6 +30,7 @@ type authRepoMock struct {
 	createFn        func(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error
 	getUserFn       func(ctx context.Context, username string) (*iamEntity.LoginUser, error)
 	createRefreshFn func(ctx context.Context, token iamEntity.RefreshToken) error
+	activateFn      func(ctx context.Context, userID uuid.UUID, roleCode string) error
 }
 
 var _ iamRepoInterface.AuthRepository = (*authRepoMock)(nil)
@@ -57,6 +58,13 @@ func (m *authRepoMock) LoginUserByUsernameAndTenantDomain(ctx context.Context, u
 func (m *authRepoMock) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 	if m.createFn != nil {
 		return m.createFn(ctx, user, profile)
+	}
+	return nil
+}
+
+func (m *authRepoMock) ActivateUserWithRole(ctx context.Context, userID uuid.UUID, roleCode string) error {
+	if m.activateFn != nil {
+		return m.activateFn(ctx, userID, roleCode)
 	}
 	return nil
 }
@@ -498,5 +506,100 @@ func TestAuthServiceVerifyUserCredentialsRevokedDeviceHeals(t *testing.T) {
 	// [COMMENT]: Khẳng định ClientDeviceID mới sinh ra phải khác ClientDeviceID cũ bị revoked
 	if registeredDevice.ClientDeviceID == nil || *registeredDevice.ClientDeviceID == revokedDeviceID.String() {
 		t.Fatalf("expected revoked client device ID to be discarded and healed")
+	}
+}
+
+type oneTimeTokenServiceStub struct {
+	consumeFn func(ctx context.Context, purpose string, userID uuid.UUID, plainToken string) (bool, error)
+}
+
+func (m *oneTimeTokenServiceStub) Issue(ctx context.Context, purpose string, userID uuid.UUID) (string, time.Time, error) {
+	return "mock-token", time.Now().Add(1 * time.Hour), nil
+}
+
+func (m *oneTimeTokenServiceStub) Consume(ctx context.Context, purpose string, userID uuid.UUID, plainToken string) (bool, error) {
+	if m.consumeFn != nil {
+		return m.consumeFn(ctx, purpose, userID, plainToken)
+	}
+	return true, nil
+}
+
+func TestVerifyAccount_Success(t *testing.T) {
+	userID := uuid.New()
+	token := "valid-token"
+
+	repoCalled := false
+	repo := &authRepoMock{
+		activateFn: func(ctx context.Context, id uuid.UUID, roleCode string) error {
+			if id != userID {
+				t.Errorf("expected userID %s, got %s", userID, id)
+			}
+			if roleCode != "platform_user" {
+				t.Errorf("expected roleCode platform_user, got %s", roleCode)
+			}
+			repoCalled = true
+			return nil
+		},
+	}
+
+	ottCalled := false
+	ottSvc := &oneTimeTokenServiceStub{
+		consumeFn: func(ctx context.Context, purpose string, id uuid.UUID, tok string) (bool, error) {
+			if purpose != "account_verify" {
+				t.Errorf("expected purpose account_verify, got %s", purpose)
+			}
+			if id != userID {
+				t.Errorf("expected userID %s, got %s", userID, id)
+			}
+			if tok != token {
+				t.Errorf("expected token %s, got %s", token, tok)
+			}
+			ottCalled = true
+			return true, nil
+		},
+	}
+
+	svc := iamSvcImpl.NewAuthService(config.LoadConfig(), repo, &rbacRepoMock{}, &sessionRefreshServiceStub{}, &deviceServiceStub{}, makeTestRegistry("secret-key", nil), ottSvc, nil, &testutil.SessionServiceClientMock{})
+
+	err := svc.VerifyAccount(context.Background(), userID, token)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if !ottCalled {
+		t.Error("expected OneTimeTokenService.Consume to be called")
+	}
+	if !repoCalled {
+		t.Error("expected AuthRepository.ActivateUserWithRole to be called")
+	}
+}
+
+func TestVerifyAccount_InvalidToken(t *testing.T) {
+	userID := uuid.New()
+	token := "invalid-token"
+
+	repoCalled := false
+	repo := &authRepoMock{
+		activateFn: func(ctx context.Context, id uuid.UUID, roleCode string) error {
+			repoCalled = true
+			return nil
+		},
+	}
+
+	ottSvc := &oneTimeTokenServiceStub{
+		consumeFn: func(ctx context.Context, purpose string, id uuid.UUID, tok string) (bool, error) {
+			return false, nil
+		},
+	}
+
+	svc := iamSvcImpl.NewAuthService(config.LoadConfig(), repo, &rbacRepoMock{}, &sessionRefreshServiceStub{}, &deviceServiceStub{}, makeTestRegistry("secret-key", nil), ottSvc, nil, &testutil.SessionServiceClientMock{})
+
+	err := svc.VerifyAccount(context.Background(), userID, token)
+	if !errors.Is(err, iamTaxonomy.ErrTokenExpired) {
+		t.Fatalf("expected ErrTokenExpired, got %v", err)
+	}
+
+	if repoCalled {
+		t.Error("expected AuthRepository.ActivateUserWithRole NOT to be called on invalid token")
 	}
 }

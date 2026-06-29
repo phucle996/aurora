@@ -182,6 +182,26 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	return nil
 }
 
+// [COMMENT]: VerifyAccount kiểm tra tính hợp lệ của mã kích hoạt (OTT) thông qua OneTimeTokenService,
+// sau đó tiến hành kích hoạt tài khoản và gán role mặc định 'platform_user' cho người dùng.
+func (s *AuthService) VerifyAccount(ctx context.Context, userID uuid.UUID, token string) error {
+	// [COMMENT]: 1. Tiêu thụ token OTT. Sử dụng cơ chế Consume của OneTimeTokenService để tránh double-verify
+	consumed, err := s.ott.Consume(ctx, "account_verify", userID, token)
+	if err != nil {
+		return err
+	}
+	if !consumed {
+		return iamTaxonomy.ErrTokenExpired
+	}
+
+	// [COMMENT]: 2. Kích hoạt tài khoản và gán role mặc định 'platform_user' ở scope platform trong DB
+	if err := s.repo.ActivateUserWithRole(ctx, userID, "platform_user"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // [COMMENT]: Stop chờ toàn bộ các background worker/task chạy nền (như ghi presence bitmap)
 // hoàn thành nhiệm vụ trước khi dừng tiến trình phục vụ Graceful Shutdown.
 func (s *AuthService) Stop() {
