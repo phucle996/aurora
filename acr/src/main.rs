@@ -20,11 +20,12 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
-use crate::rpc::session::SessionRpcHandler;
+use crate::rpc::session::DeviceRpcHandler;
 use crate::service::auth::auth_proto::auth_service_server::AuthServiceServer;
 use crate::service::auth::AuthServiceImpl;
 use crate::service::ext_authz::ExtAuthzService;
-use crate::service::session::release_session::session_proto::session_service_server::SessionServiceServer;
+// [COMMENT]: Import DeviceServiceServer (đổi tên từ SessionServiceServer sau khi bỏ ReleaseTrinitySession RPC)
+use crate::service::session::release_session::device_proto::device_service_server::DeviceServiceServer;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -117,12 +118,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         zone_mgr.clone(),
     );
 
-    let session_service = SessionRpcHandler::new(
-        session_mgr.clone(),
-        token_mgr.clone(),
-        zone_mgr.clone(),
-        config.clone(),
-    );
+    // [COMMENT]: Khởi tạo DeviceRpcHandler – chỉ xử lý RevokeUserSessionsByDevices
+    let device_service = DeviceRpcHandler::new(session_mgr.clone());
 
     let auth_service = AuthServiceImpl::new(
         session_mgr.clone(),
@@ -147,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. Dựng server kèm cơ chế Shutdown tín hiệu (Graceful Shutdown)
     Server::builder()
         .add_service(AuthorizationServer::new(ext_authz_service))
-        .add_service(SessionServiceServer::new(session_service))
+        .add_service(DeviceServiceServer::new(device_service))
         .add_service(AuthServiceServer::new(auth_service))
         .serve_with_shutdown(addr, async {
             // Lắng nghe tín hiệu ngắt (SIGINT/SIGTERM) để tắt server an toàn

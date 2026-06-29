@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v6.30.2
-// source: internal/iam/transport/rpc/proto/session.proto
+// source: session.proto
 
 package iamproto
 
@@ -19,7 +19,6 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SessionService_ReleaseTrinitySession_FullMethodName       = "/iam.rpc.SessionService/ReleaseTrinitySession"
 	SessionService_RevokeUserSessionsByDevices_FullMethodName = "/iam.rpc.SessionService/RevokeUserSessionsByDevices"
 )
 
@@ -27,8 +26,6 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SessionServiceClient interface {
-	// RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
-	ReleaseTrinitySession(ctx context.Context, in *ReleaseTrinitySessionRequest, opts ...grpc.CallOption) (*ReleaseTrinitySessionResponse, error)
 	// [NEW] RPC to revoke runtime L2 sessions belonging to specific devices of a user
 	RevokeUserSessionsByDevices(ctx context.Context, in *RevokeUserSessionsByDevicesRequest, opts ...grpc.CallOption) (*RevokeUserSessionsByDevicesResponse, error)
 }
@@ -39,16 +36,6 @@ type sessionServiceClient struct {
 
 func NewSessionServiceClient(cc grpc.ClientConnInterface) SessionServiceClient {
 	return &sessionServiceClient{cc}
-}
-
-func (c *sessionServiceClient) ReleaseTrinitySession(ctx context.Context, in *ReleaseTrinitySessionRequest, opts ...grpc.CallOption) (*ReleaseTrinitySessionResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ReleaseTrinitySessionResponse)
-	err := c.cc.Invoke(ctx, SessionService_ReleaseTrinitySession_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *sessionServiceClient) RevokeUserSessionsByDevices(ctx context.Context, in *RevokeUserSessionsByDevicesRequest, opts ...grpc.CallOption) (*RevokeUserSessionsByDevicesResponse, error) {
@@ -65,8 +52,6 @@ func (c *sessionServiceClient) RevokeUserSessionsByDevices(ctx context.Context, 
 // All implementations must embed UnimplementedSessionServiceServer
 // for forward compatibility.
 type SessionServiceServer interface {
-	// RPC khởi tạo bộ Trinity Credentials & lưu phiên khi Login thành công
-	ReleaseTrinitySession(context.Context, *ReleaseTrinitySessionRequest) (*ReleaseTrinitySessionResponse, error)
 	// [NEW] RPC to revoke runtime L2 sessions belonging to specific devices of a user
 	RevokeUserSessionsByDevices(context.Context, *RevokeUserSessionsByDevicesRequest) (*RevokeUserSessionsByDevicesResponse, error)
 	mustEmbedUnimplementedSessionServiceServer()
@@ -79,9 +64,6 @@ type SessionServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedSessionServiceServer struct{}
 
-func (UnimplementedSessionServiceServer) ReleaseTrinitySession(context.Context, *ReleaseTrinitySessionRequest) (*ReleaseTrinitySessionResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReleaseTrinitySession not implemented")
-}
 func (UnimplementedSessionServiceServer) RevokeUserSessionsByDevices(context.Context, *RevokeUserSessionsByDevicesRequest) (*RevokeUserSessionsByDevicesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeUserSessionsByDevices not implemented")
 }
@@ -104,24 +86,6 @@ func RegisterSessionServiceServer(s grpc.ServiceRegistrar, srv SessionServiceSer
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&SessionService_ServiceDesc, srv)
-}
-
-func _SessionService_ReleaseTrinitySession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReleaseTrinitySessionRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(SessionServiceServer).ReleaseTrinitySession(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: SessionService_ReleaseTrinitySession_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(SessionServiceServer).ReleaseTrinitySession(ctx, req.(*ReleaseTrinitySessionRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _SessionService_RevokeUserSessionsByDevices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -150,14 +114,10 @@ var SessionService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*SessionServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "ReleaseTrinitySession",
-			Handler:    _SessionService_ReleaseTrinitySession_Handler,
-		},
-		{
 			MethodName: "RevokeUserSessionsByDevices",
 			Handler:    _SessionService_RevokeUserSessionsByDevices_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/iam/transport/rpc/proto/session.proto",
+	Metadata: "session.proto",
 }

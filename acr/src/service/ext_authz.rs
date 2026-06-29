@@ -365,7 +365,12 @@ impl Authorization for ExtAuthzService {
                             lsa: chrono::Utc::now().timestamp(),
                         }
                     } else {
-                        match self.session_mgr.get_session(&claims.uid, &access_key).await {
+                        match self.session_mgr.get_session(
+                            claims.zone_id.as_deref().unwrap_or("global"),
+                            claims.tenant_id.as_deref().unwrap_or("global"),
+                            &claims.uid,
+                            &access_key,
+                        ).await {
                             Ok(Some(s)) => s,
                             Ok(None) => return Err("Session Expired or Revoked"),
                             Err(e) => {
@@ -580,7 +585,13 @@ impl Authorization for ExtAuthzService {
                 if !claims.is_admin() {
                     let _ = self
                         .session_mgr
-                        .update_last_seen(&claims.uid, &access_key, session.lsa)
+                        .update_last_seen(
+                            claims.zone_id.as_deref().unwrap_or("global"),
+                            claims.tenant_id.as_deref().unwrap_or("global"),
+                            &claims.uid,
+                            &access_key,
+                            session.lsa,
+                        )
                         .await;
                 }
 

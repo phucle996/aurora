@@ -9,6 +9,7 @@ import (
 	"controlplane/internal/cacheengine"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
+	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -57,6 +58,24 @@ func RegisterL1Loaders(
 			return nil, err
 		}
 		return &iamproto.RoleEntry{Permissions: perms}, nil
+	})
+
+	// Loader cho "rbac:user:permissions" phục vụ gộp và phân giải quyền theo scope của User
+	cacheengine.Register(registry, "rbac:user:permissions", 15*time.Minute, func(ctx context.Context, param string) ([]string, error) {
+		userID, err := uuid.Parse(param)
+		if err != nil {
+			return nil, err
+		}
+		return modules.IAM.RbacRepository.GetUserPermissionsMerged(ctx, userID)
+	})
+
+	// Loader cho "tenant_code_by_id" để phân giải Tenant UUID sang Tenant Code
+	cacheengine.Register(registry, "tenant_code_by_id", 1*time.Hour, func(ctx context.Context, param string) (string, error) {
+		tenantID, err := uuid.Parse(param)
+		if err != nil {
+			return "", err
+		}
+		return modules.IAM.RbacRepository.GetTenantCodeByID(ctx, tenantID)
 	})
 
 	// 9. Đăng ký tĩnh loader cho "zone_backpressure" phục vụ đọc-xuyên-thấu L2 Redis khi L1 RAM cache bị miss

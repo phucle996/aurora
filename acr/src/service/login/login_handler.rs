@@ -9,11 +9,9 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tonic::{Response, Status};
-use uuid::Uuid;
-
 use crate::config::Config;
 use crate::core::session::SessionManager;
-use crate::core::token::{Claims, TokenManager};
+use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::infra::controlplane::auth::VerifyUserCredentialsRequest;
 use crate::infra::controlplane::ControlPlaneClient;
@@ -186,81 +184,39 @@ pub async fn handle_login(
         ))));
     }
 
-    // [COMMENT]: CẤP PHÁT TRINITY SESSION (Tại biên - ACL Edge)
-    Logger::sys_info(
-        "login_handler",
-        &format!(
-            "Issuing new trinity credentials for user_id={}",
-            cp_res.user_id
-        ),
-    );
-
-    // [COMMENT]: Sinh Access Key (UUIDv7) và Access Secret (UUIDv4) thô làm Trinity credentials
-    let access_key = Uuid::now_v7().to_string();
-    let access_secret = Uuid::new_v4().to_string();
-    let ash = sha256_hash(&access_secret);
-
-    // [COMMENT]: Phân giải Zone Code thành Zone ID thô (ACL tự phân giải ngữ cảnh zone để đảm bảo hiệu năng)
-    let zone_id = if let Some(ref zone_code) = payload.zone_code {
-        if let Some((resolved_id, _status)) =
-            zone_mgr.resolve_code_to_id_and_status(zone_code).await
-        {
-            Some(resolved_id)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // [COMMENT]: Chuẩn bị Claims JWT
-    let now_unix = chrono::Utc::now().timestamp();
-    let exp_unix = now_unix + config.session_ttl_secs as i64;
-    let claims = Claims {
-        sub: cp_res.username.clone(),
-        uid: cp_res.user_id.clone(),
-        role: cp_res.role.clone(),
-        lvl: cp_res.level,
-        tenant_id: if cp_res.tenant_id.is_empty() {
-            None
-        } else {
-            Some(cp_res.tenant_id.clone())
-        },
-        zone_id: zone_id.clone(),
-        access_key: access_key.clone(),
-        jti: Uuid::new_v4().to_string(),
-        iss: Some("aurora-acl".to_string()),
-        exp: exp_unix,
-        iat: now_unix,
-    };
-
-    // [COMMENT]: Ký sinh JWT qua Vault Transit Engine
-    let access_token = match token_mgr.generate_token(&claims).await {
-        Ok(t) => t,
+    // [COMMENT]: CẤP PHÁT TRINITY SESSION (Ủy nhiệm sang release_session.rs)
+    let zone_code = payload.zone_code.as_deref().unwrap_or("global");
+    let res_val = match crate::service::session::release_session::release_user_session(
+        session_mgr,
+        token_mgr,
+        zone_mgr,
+        config,
+        &cp_res.user_id,
+        &cp_res.username,
+        &cp_res.role,
+        cp_res.level,
+        &cp_res.tenant_id,
+        zone_code,
+        &cp_res.client_device_id,
+        &cp_res.client_device_id,
+        payload.trust_device.unwrap_or(false),
+        &cp_res.refresh_token,
+    )
+    .await
+    {
+        Ok(r) => r,
         Err(e) => {
-            Logger::sys_error("login_handler", "Vault JWT signing failed", &e.to_string());
+            Logger::sys_error(
+                "login_handler",
+                "Release user session failed",
+                &e.to_string(),
+            );
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::InternalServerError,
-                "Failed to issue session token",
+                "Failed to issue session state",
             ))));
         }
     };
-
-    // [COMMENT]: Đăng ký Session vào L2 Redis
-    if let Err(e) = session_mgr
-        .register_session(&cp_res.user_id, &access_key, &ash, &cp_res.client_device_id)
-        .await
-    {
-        Logger::sys_error(
-            "login_handler",
-            "Redis session registration failed",
-            &e.to_string(),
-        );
-        return Some(Ok(Response::new(build_denied_json(
-            HttpStatusCode::InternalServerError,
-            "Failed to save session state",
-        ))));
-    }
 
     // [COMMENT]: Thiết lập Cookie headers
     let domain_str = if config.app_public_domain.trim().is_empty() {
@@ -275,28 +231,28 @@ pub async fn handle_login(
     // [COMMENT]: Set-Cookie access_token
     let access_cookie = format!(
         "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        access_token, config.session_ttl_secs, domain_str
+        res_val.access_token, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Set-Cookie access_key
     let key_cookie = format!(
         "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        access_key, config.session_ttl_secs, domain_str
+        res_val.access_key, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &key_cookie, None, false);
 
     // [COMMENT]: Set-Cookie access_secret
     let secret_cookie = format!(
         "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        access_secret, config.session_ttl_secs, domain_str
+        res_val.access_secret, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &secret_cookie, None, false);
 
     // [COMMENT]: Set-Cookie client_device_id
     let cdid_cookie = format!(
         "client_device_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-        cp_res.client_device_id, domain_str
+        res_val.client_device_id, domain_str
     );
     denied_builder.add_header("set-cookie", &cdid_cookie, None, false);
 
@@ -309,6 +265,13 @@ pub async fn handle_login(
         denied_builder.add_header("set-cookie", &zone_cookie, None, false);
     }
 
+    // [COMMENT]: Set-Cookie tenant_id (chứa tnc hiện tại, mặc định là global)
+    let tenant_cookie = format!(
+        "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        res_val.tenant_id_val, domain_str
+    );
+    denied_builder.add_header("set-cookie", &tenant_cookie, None, false);
+
     // [COMMENT]: Set-Cookie refresh_token (nếu CP cấp mới)
     if !cp_res.refresh_token.is_empty() {
         let refresh_cookie = format!(
@@ -319,7 +282,7 @@ pub async fn handle_login(
     }
 
     // [COMMENT]: Trả thêm header X-Client-Device-Id cho Envoy
-    denied_builder.add_header("x-client-device-id", &cp_res.client_device_id, None, false);
+    denied_builder.add_header("x-client-device-id", &res_val.client_device_id, None, false);
 
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated("Local intercept login success"));
@@ -352,12 +315,4 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
     response.set_status(Status::unauthenticated(message));
     response.set_http_response(denied_builder);
     response
-}
-
-// [COMMENT]: Helper: Băm SHA-256 mã hóa access_secret
-fn sha256_hash(secret: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    format!("{:x}", hasher.finalize())
 }

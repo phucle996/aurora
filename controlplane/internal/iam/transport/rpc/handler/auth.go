@@ -85,7 +85,7 @@ func (h *AuthGRPCHandler) RevokeOpaqueRefreshToken(ctx context.Context, req *iam
 // [COMMENT]: VerifyUserCredentials tiếp nhận và xử lý yêu cầu xác thực credentials & thiết bị qua gRPC từ Gateway
 func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iamproto.VerifyUserCredentialsRequest) (*iamproto.VerifyUserCredentialsResponse, error) {
 	// [COMMENT]: Kiểm tra các tham số đầu vào cơ bản
-	const op = "SRE-Login"
+	const op = "VerifyUserCredentials"
 	if req.Username == "" || req.Password == "" {
 		logger.SysWarn(op, "Username and password are required")
 		return &iamproto.VerifyUserCredentialsResponse{

@@ -185,84 +185,29 @@ pub async fn handle_admin_login(
         "SRE Admin TOTP verified successfully. Generating SRE session...",
     );
 
-    // [COMMENT]: Sinh Session IDs và Token
-    let access_key = uuid::Uuid::new_v4().to_string();
-    let access_secret = uuid::Uuid::new_v4().to_string();
-    let now_unix = chrono::Utc::now().timestamp();
-    let exp_unix = now_unix + config.session_ttl_secs as i64;
-
-    // [COMMENT]: Khởi tạo Claims cho SRE: Không có role hay lvl phân quyền cụ thể
-    // Đăng nhập trực tiếp vào virtual zone "global"
-    let claims = crate::core::token::Claims {
-        sub: "sre".to_string(),
-        uid: "sre".to_string(),
-        role: "".to_string(),
-        lvl: 0,
-        tenant_id: None,
-        zone_id: Some("global".to_string()),
-        access_key: access_key.clone(),
-        jti: uuid::Uuid::new_v4().to_string(),
-        iss: Some("aurora-acr".to_string()),
-        exp: exp_unix,
-        iat: now_unix,
-    };
-
-    // [COMMENT]: Ký sinh JWT qua Vault Transit Engine
-    let access_token = match token_mgr.generate_token(&claims).await {
-        Ok(t) => t,
+    // [COMMENT]: CẤP PHÁT TRINITY SESSION (Ủy nhiệm sang release_session.rs)
+    let device_pubkey = payload.device_public_key.as_deref().unwrap_or("");
+    let res_val = match crate::service::session::release_session::release_admin_session(
+        session_mgr,
+        token_mgr,
+        config,
+        device_pubkey,
+    )
+    .await
+    {
+        Ok(r) => r,
         Err(e) => {
             Logger::sys_error(
                 "SRE-Login",
-                "Vault JWT signing failed for SRE",
+                "Release admin session failed",
                 &e.to_string(),
             );
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::InternalServerError,
-                "Failed to issue session token",
+                e.message(),
             ))));
         }
     };
-
-    // [COMMENT]: Băm SHA-256 access_secret
-    let ash = sha256_hash(&access_secret);
-
-    // [COMMENT]: Đăng ký Session vào L2 Redis dưới key: "iam:admin_access_session:<access_key>" kèm theo device_public_key
-    let device_pubkey = payload.device_public_key.as_deref().unwrap_or("");
-
-    // [COMMENT]: Thực hiện giải mã thử và kiểm tra độ dài public key để phát hiện lỗi sớm trước khi ghi nhận login thành công
-    if !device_pubkey.is_empty() {
-        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-        let is_valid = match BASE64.decode(device_pubkey) {
-            Ok(bytes) => bytes.len() == 32,
-            Err(_) => false,
-        };
-        if !is_valid {
-            Logger::sys_warn(
-                "SRE-Login",
-                "SRE Admin login failed: Invalid device_public_key format or length",
-                "",
-            );
-            return Some(Ok(Response::new(build_denied_json(
-                HttpStatusCode::BadRequest,
-                "Invalid device_public_key format or length (must be a valid 32-byte Base64-encoded key)",
-            ))));
-        }
-    }
-
-    if let Err(e) = session_mgr
-        .register_admin_session(&access_key, &ash, device_pubkey)
-        .await
-    {
-        Logger::sys_error(
-            "SRE-Login",
-            "Redis admin session registration failed",
-            &e.to_string(),
-        );
-        return Some(Ok(Response::new(build_denied_json(
-            HttpStatusCode::InternalServerError,
-            "Failed to save session state",
-        ))));
-    }
 
     // [COMMENT]: Thiết lập Cookie headers
     let domain_str = if config.app_public_domain.trim().is_empty() {
@@ -277,21 +222,21 @@ pub async fn handle_admin_login(
     // [COMMENT]: Set-Cookie access_token
     let access_cookie = format!(
         "access_token={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        access_token, config.session_ttl_secs, domain_str
+        res_val.access_token, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Set-Cookie access_key
     let key_cookie = format!(
         "access_key={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        access_key, config.session_ttl_secs, domain_str
+        res_val.access_key, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &key_cookie, None, false);
 
     // [COMMENT]: Set-Cookie access_secret
     let secret_cookie = format!(
         "access_secret={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        access_secret, config.session_ttl_secs, domain_str
+        res_val.access_secret, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &secret_cookie, None, false);
 
@@ -310,7 +255,7 @@ pub async fn handle_admin_login(
         "SRE-Login",
         &format!(
             "SRE Login session registered successfully. access_key={}",
-            access_key
+            res_val.access_key
         ),
     );
 
@@ -333,12 +278,4 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
     response.set_status(Status::unauthenticated(message));
     response.set_http_response(denied_builder);
     response
-}
-
-// [COMMENT]: Helper: Băm SHA-256 mã hóa access_secret
-fn sha256_hash(secret: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    format!("{:x}", hasher.finalize())
 }

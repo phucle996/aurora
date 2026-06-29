@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"unsafe"
-
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -23,7 +21,6 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
 )
 
 type DeviceService struct {
@@ -57,7 +54,7 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, lim
 	presenceByTracked := make(map[string]iamEntity.UserAccessSession, 10) // Mặc định 10 để tối ưu RAM
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(1)
 
 	// [COMMENT]: Nhánh 1: Truy vấn PostgreSQL (I/O Bound) chạy trong goroutine riêng biệt.
 	go func() {
@@ -65,58 +62,7 @@ func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, lim
 		items, listErr = s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
 	}()
 
-	// [COMMENT]: Nhánh 2: Quét L2 Redis Cache (I/O Bound) chạy song song với DB query.
-	go func() {
-		defer wg.Done()
-		rdb := s.registry.L2.Client()
-		userIDStr := userID.String()
-		indexKey := "iam:user_access_index:" + userIDStr
-
-		// [COMMENT]: Duyệt lấy tối đa 200 sessions trong Redis.
-		keys := make([]string, 0, 10)
-		var cursor uint64
-		for len(keys) < 200 {
-			scanned, nextCursor, scanErr := rdb.SScan(ctx, indexKey, cursor, "*", 200).Result()
-			if scanErr != nil {
-				break
-			}
-			for _, accessKey := range scanned {
-				keys = append(keys, "iam:user_access_session:"+userIDStr+":"+accessKey)
-				if len(keys) >= 200 {
-					break
-				}
-			}
-			cursor = nextCursor
-			if cursor == 0 {
-				break
-			}
-		}
-
-		if len(keys) > 0 {
-			if values, err := rdb.MGet(ctx, keys...).Result(); err == nil {
-				for _, raw := range values {
-					if raw == nil {
-						continue
-					}
-					if rawStr, ok := raw.(string); ok {
-						// [COMMENT]: Sử dụng zero-copy conversion từ string sang []byte để triệt tiêu allocations.
-						var pb iamproto.UserAccessSession
-						if proto.Unmarshal(unsafeStringToBytes(rawStr), &pb) == nil {
-							key := strings.TrimSpace(pb.Tdid)
-							if key != "" {
-								presenceByTracked[key] = iamEntity.UserAccessSession{
-									TrackedDeviceID: pb.Tdid,
-									LastSeenAt:      pb.Lsa,
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}()
-
-	// [COMMENT]: Chờ cả 2 tác vụ I/O hoàn thành song song.
+	// [COMMENT]: Chờ tác vụ I/O hoàn thành.
 	wg.Wait()
 
 	if listErr != nil {
@@ -352,9 +298,4 @@ func (s *DeviceService) GetActiveDeviceID(ctx context.Context, userID uuid.UUID,
 	// [COMMENT]: Gọi trực tiếp xuống repository để kiểm tra xem có thiết bị đang hoạt động nào khớp với fingerprint này không.
 	// Cách này tối ưu hóa I/O vì repo chỉ trả về client_device_id dạng string chứ không quét nguyên cả struct Device cồng kềnh.
 	return s.deviceRepo.GetActiveDeviceID(ctx, userID, fingerprint)
-}
-
-// [COMMENT]: Chuyển đổi zero-copy từ string sang slice byte để tránh allocations bộ nhớ phụ trên heap.
-func unsafeStringToBytes(s string) []byte {
-	return unsafe.Slice(unsafe.StringData(s), len(s))
 }

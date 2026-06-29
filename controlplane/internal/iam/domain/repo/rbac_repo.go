@@ -37,4 +37,6 @@ type RbacRepository interface {
 
 	GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error)
 	GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error)
+	GetUserPermissionsMerged(ctx context.Context, userID uuid.UUID) ([]string, error)
+	GetTenantCodeByID(ctx context.Context, tenantID uuid.UUID) (string, error)
 }

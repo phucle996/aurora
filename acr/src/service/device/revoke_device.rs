@@ -5,7 +5,8 @@
 
 use crate::core::session::SessionManager;
 use crate::observability::logger::Logger;
-use crate::service::session::release_session::session_proto;
+// [COMMENT]: Import device_proto (đổi tên từ session_proto) để lấy message types của DeviceService
+use crate::service::session::release_session::device_proto;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -13,8 +14,8 @@ use tonic::{Request, Response, Status};
 /// Nhận diện yêu cầu, thực thi truy vấn Redis L2 (SMEMBERS & pipeline EXPIRE/SREM) và trả kết quả/lỗi gRPC Status.
 pub async fn revoke_user_sessions_by_devices(
     session_mgr: &Arc<SessionManager>,
-    request: Request<session_proto::RevokeUserSessionsByDevicesRequest>,
-) -> Result<Response<session_proto::RevokeUserSessionsByDevicesResponse>, Status> {
+    request: Request<device_proto::RevokeUserSessionsByDevicesRequest>,
+) -> Result<Response<device_proto::RevokeUserSessionsByDevicesResponse>, Status> {
     let req = request.into_inner();
     Logger::sys_info(
         "session.revoke_by_devices",
@@ -109,6 +110,6 @@ pub async fn revoke_user_sessions_by_devices(
     );
 
     Ok(Response::new(
-        session_proto::RevokeUserSessionsByDevicesResponse { revoked_count },
+        device_proto::RevokeUserSessionsByDevicesResponse { revoked_count },
     ))
 }

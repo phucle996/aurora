@@ -195,6 +195,7 @@ func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
 	if !created {
 		t.Fatal("expected repository create to be called")
 	}
+	svc.Stop()
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
 	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
@@ -272,6 +273,7 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 	if !created {
 		t.Fatalf("expected created true")
 	}
+	svc.Stop()
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
 	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
@@ -293,6 +295,7 @@ func TestAuthServiceRegisterAccountDuplicateFromRepoMarksCache(t *testing.T) {
 	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist, got %v", err)
 	}
+	svc.Stop()
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
 	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")

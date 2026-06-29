@@ -1,13 +1,19 @@
 // [COMMENT]: Implementation of SessionManager for User Sessions
 impl SessionManager {
-    // Lấy thông tin Session từ Redis L2
+    // [COMMENT]: Lấy thông tin Session từ Redis L2 sử dụng khoá phân cấp mới (zone_id:tenant_id:user_id:access_key)
     pub async fn get_session(
         &self,
+        zone_id: &str,
+        tenant_id: &str,
         user_id: &str,
         access_key: &str,
     ) -> Result<Option<UserAccessSession>, AcrError> {
         let mut conn = self.get_connection().await?;
-        let redis_key = format!("iam:user_access_session:{}:{}", user_id, access_key);
+        // [COMMENT]: Dựng key session theo định dạng phân cấp mới tối ưu cho HA & Scan
+        let redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, access_key
+        );
 
         let data: Option<Vec<u8>> = redis::cmd("GET")
             .arg(&redis_key)
@@ -25,16 +31,22 @@ impl SessionManager {
         }
     }
 
-    // Đăng ký Session mới (Gọi khi Login thành công từ IAM)
+    // [COMMENT]: Đăng ký Session mới dùng khoá phân cấp và ghi nhận full key vào index set
     pub async fn register_session(
         &self,
+        zone_id: &str,
+        tenant_id: &str,
         user_id: &str,
         access_key: &str,
         ash: &str,
         device_id: &str,
     ) -> Result<(), AcrError> {
         let mut conn = self.get_connection().await?;
-        let redis_key = format!("iam:user_access_session:{}:{}", user_id, access_key);
+        // [COMMENT]: Xây dựng Redis key phân cấp: zone_id -> tenant_id -> user_id -> access_key
+        let redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, access_key
+        );
 
         let now = chrono::Utc::now().timestamp();
         let session = UserAccessSession {
@@ -49,8 +61,7 @@ impl SessionManager {
             .encode(&mut buf)
             .map_err(|e| AcrError::Internal(format!("Protobuf encode failed: {}", e)))?;
 
-        // [COMMENT]: Ghi session kèm thời gian sống (TTL) và đồng bộ index set của user
-        // [COMMENT]: Bổ sung Secondary Index (iam:device_access_index) ánh xạ Device -> AccessKeys phục vụ HA & Revoke tối ưu.
+        // [COMMENT]: Lưu full redis key thay vì chỉ access_key thô để đảm bảo Control Plane (Go) có thể scan/delete
         let index_key = format!("iam:user_access_index:{}", user_id);
         let dev_index_key = format!("iam:device_access_index:{}", device_id);
         redis::pipe()
@@ -63,13 +74,13 @@ impl SessionManager {
             .arg(self.config.session_ttl_secs)
             .cmd("SADD")
             .arg(&index_key)
-            .arg(access_key)
+            .arg(&redis_key) // [COMMENT]: Thêm full key phân cấp vào User Index
             .cmd("EXPIRE")
             .arg(&index_key)
             .arg(self.config.session_ttl_secs * 3)
             .cmd("SADD")
             .arg(&dev_index_key)
-            .arg(access_key)
+            .arg(&redis_key) // [COMMENT]: Thêm full key phân cấp vào Device Index
             .cmd("EXPIRE")
             .arg(&dev_index_key)
             .arg(self.config.session_ttl_secs * 3)
@@ -82,9 +93,11 @@ impl SessionManager {
         Ok(())
     }
 
-    // Throttled update cho Last Seen At (Giảm tải số lệnh ghi vào Redis L2)
+    // [COMMENT]: Cập nhật Last Seen At cho khoá phân cấp (giảm tải bằng cách throttle 30s)
     pub async fn update_last_seen(
         &self,
+        zone_id: &str,
+        tenant_id: &str,
         user_id: &str,
         access_key: &str,
         last_lsa: i64,
@@ -97,7 +110,10 @@ impl SessionManager {
         }
 
         let mut conn = self.get_connection().await?;
-        let redis_key = format!("iam:user_access_session:{}:{}", user_id, access_key);
+        let redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, access_key
+        );
 
         // Lấy session hiện tại
         let data: Option<Vec<u8>> = redis::cmd("GET")
@@ -140,9 +156,11 @@ impl SessionManager {
         Ok(())
     }
 
-    // Xoay vòng Session (Trinity Refresh) có bảo vệ chống Race Condition bằng Distributed Lock
+    // [COMMENT]: Xoay vòng session phân cấp nguyên tử có lock distributed
     pub async fn try_rotate_session(
         &self,
+        zone_id: &str,
+        tenant_id: &str,
         user_id: &str,
         old_access_key: &str,
         new_access_key: &str,
@@ -169,8 +187,14 @@ impl SessionManager {
         }
 
         // 2. Tiến hành xoay vòng session
-        let old_redis_key = format!("iam:user_access_session:{}:{}", user_id, old_access_key);
-        let new_redis_key = format!("iam:user_access_session:{}:{}", user_id, new_access_key);
+        let old_redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, old_access_key
+        );
+        let new_redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, new_access_key
+        );
         let index_key = format!("iam:user_access_index:{}", user_id);
 
         let now = chrono::Utc::now().timestamp();
@@ -187,9 +211,9 @@ impl SessionManager {
 
         // 3. Thực thi Pipeline nguyên tử:
         // - Tạo session mới với đầy đủ TTL
-        // - [COMMENT]: Chuyển session cũ sang thời gian sống ngắn hạn (Grace Period - hardcode 5 giây) để tránh lỗi 401 cho các request đang bay lơ lửng.
-        // - [COMMENT]: Thêm AccessKey mới vào index và xoá AccessKey cũ để đảm bảo tính năng đăng xuất thiết bị khác/thu hồi hoạt động chính xác.
-        // - [COMMENT]: Cập nhật song song Secondary Index của thiết bị (SADD key mới, SREM key cũ).
+        // - Chuyển session cũ sang thời gian sống ngắn hạn (Grace Period - hardcode 5 giây) để tránh lỗi 401 cho các request đang bay lơ lửng.
+        // - Thêm full key mới vào index và xoá full key cũ để đảm bảo thu hồi chính xác.
+        // - Cập nhật song song Secondary Index của thiết bị.
         let dev_index_key = format!("iam:device_access_index:{}", device_id);
         redis::pipe()
             .atomic()
@@ -201,22 +225,22 @@ impl SessionManager {
             .arg(self.config.session_ttl_secs)
             .cmd("EXPIRE")
             .arg(&old_redis_key)
-            .arg(5) // [COMMENT]: Hardcode grace period 5 giây để giải phóng nhanh RAM và nâng cao bảo mật (thu hẹp replay attack window).
+            .arg(5) // grace period 5 giây
             .cmd("SADD")
             .arg(&index_key)
-            .arg(new_access_key)
+            .arg(&new_redis_key)
             .cmd("SREM")
             .arg(&index_key)
-            .arg(old_access_key)
+            .arg(&old_redis_key)
             .cmd("EXPIRE")
             .arg(&index_key)
             .arg(self.config.session_ttl_secs * 3)
             .cmd("SADD")
             .arg(&dev_index_key)
-            .arg(new_access_key)
+            .arg(&new_redis_key)
             .cmd("SREM")
             .arg(&dev_index_key)
-            .arg(old_access_key)
+            .arg(&old_redis_key)
             .cmd("EXPIRE")
             .arg(&dev_index_key)
             .arg(self.config.session_ttl_secs * 3)
@@ -237,10 +261,18 @@ impl SessionManager {
     // [COMMENT]: Thực hiện giảm TTL của session xuống còn 5 giây thay vì xoá ngay lập tức (DEL)
     // để tránh gây lỗi 401 bất ngờ cho các request song song khác đang bay lơ lửng,
     // đồng thời loại bỏ access key khỏi user index để ngắt liên kết.
-    // [COMMENT]: Phân tích và truy xuất session cũ từ Redis để xác định tdid (Device ID) nhằm xóa access key khỏi Secondary Index.
-    pub async fn delete_session(&self, user_id: &str, access_key: &str) -> Result<(), AcrError> {
+    pub async fn delete_session(
+        &self,
+        zone_id: &str,
+        tenant_id: &str,
+        user_id: &str,
+        access_key: &str,
+    ) -> Result<(), AcrError> {
         let mut conn = self.get_connection().await?;
-        let redis_key = format!("iam:user_access_session:{}:{}", user_id, access_key);
+        let redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, access_key
+        );
         let index_key = format!("iam:user_access_index:{}", user_id);
 
         // [COMMENT]: Lấy dữ liệu session thô để decode tdid của thiết bị
@@ -268,11 +300,11 @@ impl SessionManager {
             .arg(5)
             .cmd("SREM")
             .arg(&index_key)
-            .arg(access_key);
+            .arg(&redis_key); // [COMMENT]: Xoá full key khỏi user index
 
         if let Some(ref device_id) = device_id_opt {
             let dev_index_key = format!("iam:device_access_index:{}", device_id);
-            pipe.cmd("SREM").arg(&dev_index_key).arg(access_key);
+            pipe.cmd("SREM").arg(&dev_index_key).arg(&redis_key); // [COMMENT]: Xoá full key khỏi device index
         }
 
         pipe.query_async::<_, ()>(&mut conn)

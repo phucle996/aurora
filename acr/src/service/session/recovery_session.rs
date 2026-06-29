@@ -7,9 +7,12 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
 use crate::config::Config;
 use crate::core::session::{RecoverySessionCache, SessionManager};
-use crate::core::token::{Claims, TokenManager};
+use crate::core::token::TokenManager;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
+// [COMMENT]: Dùng release_user_session để gen Trinity (access_key, access_secret, JWT, Redis L2)
+// thay vì viết lại logic từ đầu
+use crate::service::session::release_session::release_user_session;
 use crate::service::ext_authz::{extract_cookie_value, sha256_hash};
 
 // [COMMENT]: Giải phóng lock recovery session trong Redis L2
@@ -167,13 +170,7 @@ pub async fn handle_session_recovery(
                     &format!("Requested zone code not found: {}", code)
                 }
             };
-            Logger::authz_log(
-                "unknown",
-                method,
-                path,
-                "DENIED",
-                msg,
-            );
+            Logger::authz_log("unknown", method, path, "DENIED", msg);
             let mut denied_builder = DeniedHttpResponseBuilder::new();
             denied_builder.set_http_status(HttpStatusCode::BadRequest);
             let mut response = CheckResponse::new();
@@ -190,12 +187,17 @@ pub async fn handle_session_recovery(
             method,
             path,
             "DENIED",
-            &format!("Forbidden access to inactive zone ({}): user_id=unknown", resolved_zone_code),
+            &format!(
+                "Forbidden access to inactive zone ({}): user_id=unknown",
+                resolved_zone_code
+            ),
         );
         let mut denied_builder = DeniedHttpResponseBuilder::new();
         denied_builder.set_http_status(HttpStatusCode::Forbidden);
         let mut response = CheckResponse::new();
-        response.set_status(Status::permission_denied("Forbidden access to inactive zone"));
+        response.set_status(Status::permission_denied(
+            "Forbidden access to inactive zone",
+        ));
         response.set_http_response(denied_builder);
         return Ok(Response::new(response));
     }
@@ -341,14 +343,18 @@ pub async fn handle_session_recovery(
             Ok(verify_res) if verify_res.valid => {
                 // [COMMENT]: Kiểm tra ràng buộc admin với zone global
                 if !verify_res.role.eq_ignore_ascii_case("admin")
-                    && (resolved_zone_code == "global" || resolved_zone_id == "00000000-0000-0000-0000-000000000000")
+                    && (resolved_zone_code == "global"
+                        || resolved_zone_id == "00000000-0000-0000-0000-000000000000")
                 {
                     Logger::authz_log(
                         &verify_res.user_id,
                         method,
                         path,
                         "DENIED",
-                        &format!("Forbidden global zone access for non-admin: user_id={}", verify_res.user_id),
+                        &format!(
+                            "Forbidden global zone access for non-admin: user_id={}",
+                            verify_res.user_id
+                        ),
                     );
                     if is_leader {
                         release_recovery_lock(session_mgr, &token_hash).await;
@@ -356,131 +362,96 @@ pub async fn handle_session_recovery(
                     let mut denied_builder = DeniedHttpResponseBuilder::new();
                     denied_builder.set_http_status(HttpStatusCode::Forbidden);
                     let mut response = CheckResponse::new();
-                    response.set_status(Status::permission_denied("Forbidden access to global zone"));
+                    response
+                        .set_status(Status::permission_denied("Forbidden access to global zone"));
                     response.set_http_response(denied_builder);
                     return Ok(Response::new(response));
                 }
 
-                // [COMMENT]: 1. Sinh bộ Trinity Credentials mới gồm Access Key và Access Secret
-                let new_access_key = uuid::Uuid::now_v7().to_string();
-                let new_access_secret = uuid::Uuid::new_v4().to_string();
-                let new_ash = sha256_hash(&new_access_secret);
-
-                // [COMMENT]: 2. Lấy client_device_id từ cookie hoặc sinh ngẫu nhiên nếu thiếu để tracking thiết bị
+                // [COMMENT]: Gọi release_user_session để tái sử dụng logic gen Trinity:
+                // sinh access_key/secret, ký JWT qua Vault, ghi session vào Redis L2.
+                // Truyền resolved_zone_id trực tiếp (đã là UUID) để tránh gọi ZoneManager lần nữa.
                 let device_id = extract_cookie_value(cookie_header, "client_device_id")
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-                // [COMMENT]: 3. Tính toán thời hạn hết hạn của phiên dựa trên cấu hình session_ttl_secs
-                let now_unix = chrono::Utc::now().timestamp();
-                let exp_unix = now_unix + config.session_ttl_secs as i64;
+                match release_user_session(
+                    session_mgr,
+                    token_mgr,
+                    zone_mgr,
+                    config,
+                    &verify_res.user_id,
+                    &verify_res.username,
+                    &verify_res.role,
+                    verify_res.level,
+                    &verify_res.tenant_id,
+                    &resolved_zone_id, // đã resolved sang UUID rồi, ZoneManager sẽ dùng trực tiếp
+                    &device_id,
+                    &device_id,
+                    false,             // trust_device không áp dụng cho recovery flow
+                    "",               // refresh_token raw không cần thiết ở đây
+                )
+                .await
+                {
+                    Ok(res) => {
+                        Logger::sys_info(
+                            "ext_authz.recovery_session",
+                            &format!(
+                                "Transparent session recovery successful for user_id={}",
+                                verify_res.user_id
+                            ),
+                        );
 
-                // [COMMENT]: 4. Tạo Claims mới cho JWT Access Token chứa resolved_zone_id
-                let new_claims = Claims {
-                    sub: verify_res.username.clone(),
-                    uid: verify_res.user_id.clone(),
-                    role: verify_res.role.clone(),
-                    lvl: verify_res.level,
-                    tenant_id: if verify_res.tenant_id.is_empty() {
-                        None
-                    } else {
-                        Some(verify_res.tenant_id.clone())
-                    },
-                    zone_id: Some(resolved_zone_id.clone()),
-                    access_key: new_access_key.clone(),
-                    jti: uuid::Uuid::new_v4().to_string(),
-                    iss: Some("aurora-acl".to_string()),
-                    exp: exp_unix,
-                    iat: now_unix,
-                };
-
-                // [COMMENT]: 5. Ký JWT Token mới thông qua Vault Transit Engine
-                match token_mgr.generate_token(&new_claims).await {
-                    Ok(new_jwt) => {
-                        // [COMMENT]: 6. Lưu session mới vào Redis L2 và đồng bộ active index key của user
-                        match session_mgr
-                            .register_session(
-                                &verify_res.user_id,
-                                &new_access_key,
-                                &new_ash,
-                                &device_id,
-                             )
-                            .await
-                        {
-                            Ok(_) => {
-                                Logger::sys_info(
-                                    "ext_authz.recovery_session",
-                                    &format!(
-                                        "Transparent session recovery successful for user_id={}",
-                                        verify_res.user_id
-                                    ),
-                                );
-
-                                // [COMMENT]: Lưu thông tin phục hồi thành công vào cache để các request song song khác đọc
-                                let cache_item = RecoverySessionCache {
-                                    user_id: verify_res.user_id.clone(),
-                                    role: verify_res.role.clone(),
-                                    level: verify_res.level,
-                                    tenant_id: verify_res.tenant_id.clone(),
-                                    new_jwt: new_jwt.clone(),
-                                    new_access_key: new_access_key.clone(),
-                                    new_access_secret: new_access_secret.clone(),
-                                    zone_id: resolved_zone_id.clone(),
-                                    zone_code: resolved_zone_code.clone(),
-                                };
-                                if is_leader {
-                                    if let Err(e) = session_mgr
-                                        .set_recovery_cache(&token_hash, &cache_item)
-                                        .await
-                                    {
-                                        Logger::sys_error(
-                                            "ext_authz.recovery_session",
-                                            "Failed to cache recovery session in Redis L2",
-                                            &e.to_string(),
-                                        );
-                                    }
-                                }
-
-                                return build_success_response(
-                                    &verify_res.user_id,
-                                    &verify_res.role,
-                                    verify_res.level,
-                                    &verify_res.tenant_id,
-                                    &new_jwt,
-                                    &new_access_key,
-                                    &new_access_secret,
-                                    cookie_header,
-                                    &resolved_zone_id,
-                                    &resolved_zone_code,
-                                );
-                            }
-                            Err(e) => {
+                        // [COMMENT]: Lưu kết quả recovery vào Redis cache để các request song song dùng lại
+                        let cache_item = RecoverySessionCache {
+                            user_id: verify_res.user_id.clone(),
+                            role: verify_res.role.clone(),
+                            level: verify_res.level,
+                            tenant_id: verify_res.tenant_id.clone(),
+                            new_jwt: res.access_token.clone(),
+                            new_access_key: res.access_key.clone(),
+                            new_access_secret: res.access_secret.clone(),
+                            zone_id: resolved_zone_id.clone(),
+                            zone_code: resolved_zone_code.clone(),
+                        };
+                        if is_leader {
+                            if let Err(e) = session_mgr
+                                .set_recovery_cache(&token_hash, &cache_item)
+                                .await
+                            {
                                 Logger::sys_error(
                                     "ext_authz.recovery_session",
-                                    "Failed to register recovered session in Redis L2",
+                                    "Failed to cache recovery session in Redis L2",
                                     &e.to_string(),
                                 );
-                                if is_leader {
-                                    release_recovery_lock(session_mgr, &token_hash).await;
-                                }
-                                // [COMMENT]: Lỗi hạ tầng Redis -> KHÔNG xóa refresh_token để giữ phiên cho client thử lại sau
-                                clear_refresh_token = false;
-                                final_err_msg =
-                                    format!("infra error: redis register failed ({})", e);
                             }
                         }
+
+                        return build_success_response(
+                            &verify_res.user_id,
+                            &verify_res.role,
+                            verify_res.level,
+                            &verify_res.tenant_id,
+                            &res.access_token,
+                            &res.access_key,
+                            &res.access_secret,
+                            cookie_header,
+                            &resolved_zone_id,
+                            &resolved_zone_code,
+                        );
                     }
                     Err(e) => {
+                        // [COMMENT]: release_user_session thất bại (Vault hoặc Redis lỗi)
+                        // -> KHÔNG xóa refresh_token để client có thể thử lại sau
                         Logger::sys_error(
                             "ext_authz.recovery_session",
-                            "Failed to generate recovered JWT token via Vault",
-                            &e.to_string(),
+                            "release_user_session failed during session recovery",
+                            &e.message(),
                         );
                         if is_leader {
                             release_recovery_lock(session_mgr, &token_hash).await;
                         }
-                        // [COMMENT]: Lỗi hạ tầng Vault -> KHÔNG xóa refresh_token để giữ phiên cho client thử lại sau
                         clear_refresh_token = false;
-                        final_err_msg = format!("infra error: vault sign failed ({})", e);
+                        final_err_msg = format!("infra error: release_user_session failed ({})", e.message());
                     }
                 }
             }

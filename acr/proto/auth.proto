@@ -97,10 +97,15 @@ message VerifyUserCredentialsResponse {
   string user_id = 2;          // UUID của người dùng dưới dạng chuỗi
   string role = 3;             // Quyền của người dùng (RBAC role - ví dụ: user, admin)
   int32 level = 4;             // Cấp độ quyền (level)
-  string tenant_id = 5;        // ID của Tenant liên đới (nếu có)
+  string tenant_id = 5;              // ID/Context của Tenant liên đới (nếu có)
   string client_device_id = 6;  // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
   string refresh_token = 7;    // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
   string error_message = 8;    // Mô tả lỗi chi tiết nếu valid = false
   string username = 9;         // Tên đăng nhập của người dùng
+}
+
+// [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2
+message RoleEntry {
+  repeated string permissions = 1;
 }
 

@@ -133,7 +133,14 @@ pub async fn handle_zone_switch(
         }
 
         // [COMMENT]: 5. Lấy session hiện tại từ Redis L2
-        let session = match session_mgr.get_session(&claims.uid, &access_key).await {
+        let session = match session_mgr
+            .get_session(
+                claims.zone_id.as_deref().unwrap_or("global"),
+                claims.tenant_id.as_deref().unwrap_or("global"),
+                &claims.uid,
+                &access_key,
+            )
+            .await {
             Ok(Some(s)) => s,
             Ok(None) => return Err("Session Expired or Revoked"),
             Err(e) => {

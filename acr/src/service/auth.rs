@@ -206,10 +206,14 @@ impl AuthService for AuthServiceImpl {
             }));
         }
 
-        // 4. Kiểm tra tính hoạt động của session từ Redis trực tiếp (qua SessionManager)
         let session = match self
             .session_mgr
-            .get_session(&claims.uid, &req.access_key)
+            .get_session(
+                claims.zone_id.as_deref().unwrap_or("global"),
+                claims.tenant_id.as_deref().unwrap_or("global"),
+                &claims.uid,
+                &req.access_key,
+            )
             .await
         {
             Ok(Some(s)) => s,

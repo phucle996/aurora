@@ -34,12 +34,12 @@ pub struct Claims {
     #[serde(rename = "lvl", default)]
     pub lvl: i32,
 
-    // Tenant ID
-    #[serde(rename = "tenant_id", default)]
+    // Tenant Context
+    #[serde(rename = "tnc", default)]
     pub tenant_id: Option<String>,
 
     // Zone ID
-    #[serde(rename = "zone_id", default)]
+    #[serde(rename = "zid", default)]
     pub zone_id: Option<String>,
 
     // Access key binding the JWT to a Redis session

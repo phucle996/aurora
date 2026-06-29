@@ -57,6 +57,8 @@ pub async fn handle_session_rotation(
             // [COMMENT]: Thực hiện ghi nhận session mới lên Redis với cơ chế khóa SETNX chống race condition
             match session_mgr
                 .try_rotate_session(
+                    claims.zone_id.as_deref().unwrap_or("global"),
+                    claims.tenant_id.as_deref().unwrap_or("global"),
                     &claims.uid,
                     access_key,
                     &new_access_key,

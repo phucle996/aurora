@@ -154,6 +154,7 @@ func TestRegisterAccountIntegrationDuplicateMarksBitmapAfterDBConflict(t *testin
 	if !errors.Is(err, iamTaxonomy.ErrUserAlreadyExist) {
 		t.Fatalf("expected ErrUserAlreadyExist after DB conflict, got %v", err)
 	}
+	svc.Stop()
 
 	usernameHit, emailHit, err := presence.Check(ctx, username, email)
 	if err != nil {
@@ -216,6 +217,7 @@ func TestLoginIntegrationPendingActiveBlocked(t *testing.T) {
 	if err := svc.RegisterAccount(context.Background(), iamEntity.User{Username: username, Email: email}, iamEntity.UserProfile{Fullname: "Pending User"}, "secret123"); err != nil {
 		t.Fatalf("seed register should succeed: %v", err)
 	}
+	svc.Stop()
 	_, err := svc.VerifyUserCredentials(context.Background(), iamEntity.LoginRequest{Username: username, Password: "secret123", DevicePublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})
 	if !errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
 		t.Fatalf("expected verification required, got %v", err)

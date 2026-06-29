@@ -1,59 +1,32 @@
 // ======================================================================================================
 // 📂 MODULE: acl/src/rpc/session.rs
-//            Triển khai gRPC SessionService Handler (Transport/Presentation Layer)
+//            Triển khai gRPC DeviceService Handler (Transport/Presentation Layer)
+//            Lưu ý: Đổi tên từ SessionService sang DeviceService sau khi bỏ ReleaseTrinitySession RPC.
 // ======================================================================================================
 
 use crate::core::session::SessionManager;
-use crate::core::token::TokenManager;
-use crate::service::session::release_session::session_proto::{
-    session_service_server::SessionService, ReleaseTrinitySessionRequest,
-    ReleaseTrinitySessionResponse, RevokeUserSessionsByDevicesRequest,
+use crate::service::session::release_session::device_proto::{
+    // [COMMENT]: Import DeviceService server trait và các message của RevokeUserSessionsByDevices
+    device_service_server::DeviceService,
+    RevokeUserSessionsByDevicesRequest,
     RevokeUserSessionsByDevicesResponse,
 };
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-pub struct SessionRpcHandler {
+pub struct DeviceRpcHandler {
     session_mgr: Arc<SessionManager>,
-    token_mgr: Arc<TokenManager>,
-    zone_mgr: Arc<crate::core::zone::ZoneManager>,
-    config: crate::config::Config,
 }
 
-impl SessionRpcHandler {
-    pub fn new(
-        session_mgr: Arc<SessionManager>,
-        token_mgr: Arc<TokenManager>,
-        zone_mgr: Arc<crate::core::zone::ZoneManager>,
-        config: crate::config::Config,
-    ) -> Self {
-        Self {
-            session_mgr,
-            token_mgr,
-            zone_mgr,
-            config,
-        }
+impl DeviceRpcHandler {
+    pub fn new(session_mgr: Arc<SessionManager>) -> Self {
+        Self { session_mgr }
     }
 }
 
 #[tonic::async_trait]
-impl SessionService for SessionRpcHandler {
-    // [COMMENT]: Nhận RPC cấp mới Trinity Session, dispatch sang service/session/release_session.rs
-    async fn release_trinity_session(
-        &self,
-        request: Request<ReleaseTrinitySessionRequest>,
-    ) -> Result<Response<ReleaseTrinitySessionResponse>, Status> {
-        crate::service::session::release_session::release_trinity_session(
-            &self.session_mgr,
-            &self.token_mgr,
-            &self.zone_mgr,
-            &self.config,
-            request,
-        )
-        .await
-    }
-
-    // [COMMENT]: Nhận RPC thu hồi các session thuộc danh sách các thiết bị, dispatch sang service/device/revoke_device.rs
+impl DeviceService for DeviceRpcHandler {
+    // [COMMENT]: Nhận RPC thu hồi session thuộc danh sách thiết bị, dispatch sang service/device/revoke_device.rs
     async fn revoke_user_sessions_by_devices(
         &self,
         request: Request<RevokeUserSessionsByDevicesRequest>,

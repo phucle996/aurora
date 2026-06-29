@@ -42,6 +42,8 @@ type RbacRepository struct {
 	listSystemRoleEntriesQuery        string
 	getUserRoleAndLevelByScopeQuery   string
 	getUserFallbackRoleAndLevelQuery  string
+	getUserPermissionsMergedQuery     string
+	getTenantCodeByIDQuery            string
 }
 
 func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.RbacRepository {
@@ -143,6 +145,19 @@ func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.Rb
 			`SELECT r.code, r.role_level FROM %s.user_role_assignments ura JOIN %s.roles r ON ura.role_id = r.id WHERE ura.user_id = $1 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) AND ura.revoked_at IS NULL ORDER BY r.role_level ASC LIMIT 1`,
 			schema,
 			schema,
+		),
+		getUserPermissionsMergedQuery: fmt.Sprintf(
+			`SELECT ura.scope_type, COALESCE(t.code, ''), COALESCE(w.code, ''), p.code FROM %s.user_role_assignments ura JOIN %s.roles r ON ura.role_id = r.id JOIN %s.role_permissions rp ON rp.role_id = r.id JOIN %s.permissions p ON rp.permission_id = p.id LEFT JOIN %s.tenants t ON ura.tenant_id = t.id LEFT JOIN %s.workspaces w ON ura.workspace_id = w.id WHERE ura.user_id = $1 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) AND ura.revoked_at IS NULL`,
+			schema,
+			schema,
+			schema,
+			schema,
+			cfg.SchemaSQL.Hierarchy,
+			cfg.SchemaSQL.Hierarchy,
+		),
+		getTenantCodeByIDQuery: fmt.Sprintf(
+			`SELECT code FROM %s.tenants WHERE id = $1`,
+			cfg.SchemaSQL.Hierarchy,
 		),
 	}
 }
@@ -454,4 +469,65 @@ func (r *RbacRepository) GetUserRoleAndLevelByScope(ctx context.Context, userID 
 		return "", 999999, fmt.Errorf("iam rbac repo: get user role by scope: %w", err)
 	}
 	return code, level, nil
+}
+
+func (r *RbacRepository) GetUserPermissionsMerged(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := r.db.Query(ctx, r.getUserPermissionsMergedQuery, userID)
+	if err != nil {
+		return nil, fmt.Errorf("iam rbac repo: get user permissions merged: %w", err)
+	}
+	defer rows.Close()
+
+	var perms []string
+	seen := make(map[string]struct{})
+
+	for rows.Next() {
+		var scopeType, tenantCode, workspaceCode, permCode string
+		if err := rows.Scan(&scopeType, &tenantCode, &workspaceCode, &permCode); err != nil {
+			return nil, fmt.Errorf("iam rbac repo: scan user permissions merged: %w", err)
+		}
+
+		var finalPerm string
+		permCode = strings.TrimSpace(permCode)
+		if strings.HasPrefix(permCode, "personal:") || strings.HasPrefix(permCode, "platform:") {
+			finalPerm = permCode
+		} else {
+			switch scopeType {
+			case "platform":
+				finalPerm = "platform:" + permCode
+			case "tenant":
+				if tenantCode != "" {
+					finalPerm = tenantCode + ":" + permCode
+				} else {
+					finalPerm = "tenant:" + permCode
+				}
+			case "workspace":
+				if workspaceCode != "" {
+					finalPerm = workspaceCode + ":" + permCode
+				} else {
+					finalPerm = "workspace:" + permCode
+				}
+			default:
+				finalPerm = permCode
+			}
+		}
+
+		if _, ok := seen[finalPerm]; !ok {
+			seen[finalPerm] = struct{}{}
+			perms = append(perms, finalPerm)
+		}
+	}
+	return perms, nil
+}
+
+func (r *RbacRepository) GetTenantCodeByID(ctx context.Context, tenantID uuid.UUID) (string, error) {
+	var code string
+	err := r.db.QueryRow(ctx, r.getTenantCodeByIDQuery, tenantID).Scan(&code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("iam rbac repo: get tenant code by id: %w", err)
+	}
+	return code, nil
 }

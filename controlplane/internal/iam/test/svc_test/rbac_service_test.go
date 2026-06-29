@@ -90,6 +90,12 @@ func (m *rbacRepoMock) GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID
 func (m *rbacRepoMock) GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error) {
 	return "platform_user", 8, nil
 }
+func (m *rbacRepoMock) GetUserPermissionsMerged(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	return nil, nil
+}
+func (m *rbacRepoMock) GetTenantCodeByID(ctx context.Context, tenantID uuid.UUID) (string, error) {
+	return "", nil
+}
 
 func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 	roleID := uuid.New()

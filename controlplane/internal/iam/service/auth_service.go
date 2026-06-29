@@ -295,6 +295,10 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	case iamEntity.UserStatusPendingActive:
 		// [COMMENT]: Nếu tài khoản chưa kích hoạt, tự động đẩy outbox job gửi mail kích hoạt tài khoản dùng chung helper
 		if err := s.pushVerifyAccountOutboxJob(ctx, user.ID, user.Username, user.Email); err != nil {
+			if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
+				loginOutcome = iamMetrics.OutcomePreConditionFailed
+				return nil, err
+			}
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 		}
