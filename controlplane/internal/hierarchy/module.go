@@ -31,6 +31,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
@@ -52,6 +54,7 @@ import (
 
 type Module struct {
 	cfg                 *config.Config
+	rds                 *goredis.Client
 	ZoneRepository      coreRepoInterface.ZoneRepository
 	ZoneService         coreSvcInterface.ZoneService
 	ZoneHandler         *zoneHandler.ZoneHandler
@@ -87,8 +90,9 @@ func NewModule(
 	if zoneRepo == nil {
 		return nil, fmt.Errorf("zone module: zone service unavailable: zone repository is nil")
 	}
+
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds)
 	if zoneService == nil {
 		return nil, fmt.Errorf("zone module: zone service unavailable: zone service is nil")
 	}
@@ -120,19 +124,20 @@ func NewModule(
 	if tenantService == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant service is nil")
 	}
-	tenantHandler := zoneHandler.NewTenantHandler(tenantService)
-	if tenantHandler == nil {
+	tHandler := zoneHandler.NewTenantHandler(tenantService)
+	if tHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: tenant handler is nil")
 	}
 
-	// 8) Backpressure service (zone-scoped, no node-level tracking)
-	backpressureSvc := coreSvcImpl.NewBackpressureService(cacheEngine)
-	if backpressureSvc == nil {
-		return nil, fmt.Errorf("zone module: backpressure service is nil")
+	// 8) Backpressure service
+	backpressureService := coreSvcImpl.NewBackpressureService(cacheEngine)
+	if backpressureService == nil {
+		return nil, fmt.Errorf("hierarchy module: backpressure service is nil")
 	}
 
-	m := &Module{
+	return &Module{
 		cfg:                 cfg,
+		rds:                 rds,
 		ZoneRepository:      zoneRepo,
 		ZoneService:         zoneService,
 		ZoneHandler:         zHandler,
@@ -141,12 +146,10 @@ func NewModule(
 		WorkspaceHandler:    wHandler,
 		TenantRepository:    tenantRepo,
 		TenantService:       tenantService,
-		TenantHandler:       tenantHandler,
-		BackpressureService: backpressureSvc,
+		TenantHandler:       tHandler,
+		BackpressureService: backpressureService,
 		L1Registry:          cacheEngine,
-	}
-
-	return m, nil
+	}, nil
 }
 
 // RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
@@ -164,11 +167,89 @@ func (m *Module) RegisterGRPCServices(server *grpc.Server) {
 		zoneProto.RegisterZoneServiceServer(server, zoneHandler)
 		logger.SysInfo("grpc", "registered ZoneService onto gRPC server")
 	}
+	if m.TenantService != nil {
+		tenantHandler := zoneRpcHandler.NewTenantGRPCHandler(m.TenantService)
+		zoneProto.RegisterTenantServiceServer(server, tenantHandler)
+		logger.SysInfo("grpc", "registered TenantService onto gRPC server")
+	}
 }
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
+	if m == nil || m.rds == nil {
+		return nil
+	}
+
+	// [COMMENT]: Khởi tạo sub-context riêng biệt để kiểm soát luồng background listener
+	subCtx, cancel := context.WithCancel(ctx)
+	m.listenCancel = cancel
+
+	go func() {
+		pubsub := m.rds.Subscribe(subCtx, "gateway:sync:requests")
+		defer pubsub.Close()
+
+		logger.SysInfo("hierarchy.pubsub", "Gateway sync requests listener started.")
+
+		ch := pubsub.Channel()
+		for {
+			select {
+			case <-subCtx.Done():
+				logger.SysInfo("hierarchy.pubsub", "Gateway sync requests listener stopped (context done).")
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				logger.SysInfoFields("hierarchy.pubsub", "Received sync request from edge", logger.Fields{
+					"payload": msg.Payload,
+				})
+				m.handleSyncRequest(subCtx, msg.Payload)
+			}
+		}
+	}()
+
 	return nil
+}
+
+// handleSyncRequest phân tích yêu cầu từ Edge, đọc database và publish ngược lại gateway:sync
+func (m *Module) handleSyncRequest(ctx context.Context, payload string) {
+	// Parse thủ công đơn giản: {"type": "zone", "code": "vn"}
+	// Lọc code
+	var code string
+	if idx := strings.Index(payload, `"code"`); idx != -1 {
+		sub := payload[idx:]
+		if start := strings.Index(sub, `":"`); start != -1 {
+			valSub := sub[start+3:]
+			if end := strings.Index(valSub, `"`); end != -1 {
+				code = valSub[:end]
+			}
+		}
+	}
+	if code == "" {
+		return
+	}
+
+	// Đọc database lấy detail để sync
+	if m.ZoneService != nil {
+		zones, err := m.ZoneService.RPCListZones(ctx)
+		if err == nil {
+			for _, z := range zones {
+				if z.Code == code {
+					// Ghi lại Redis L2
+					redisKey := fmt.Sprintf("zone:code:%s", z.Code)
+					val := fmt.Sprintf("%s:%s", z.ID, z.Status)
+					_ = m.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
+
+					// Broadcast invalidation qua gateway:sync để Gateway reload
+					_ = m.rds.Publish(ctx, "gateway:sync", fmt.Sprintf(`{"type": "zone", "code": "%s"}`, z.Code)).Err()
+					logger.SysInfoFields("hierarchy.pubsub", "Successfully responded and warmed up cache for zone", logger.Fields{
+						"code": code,
+					})
+					return
+				}
+			}
+		}
+	}
 }
 
 // Stop hủy các background goroutine của module Core an toàn.

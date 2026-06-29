@@ -86,16 +86,17 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		`, schema, schema),
 		updateZoneStatusQuery: fmt.Sprintf(`
 			WITH target AS (
-				SELECT 1 FROM %s.zones WHERE id = $1
+				SELECT code FROM %s.zones WHERE id = $1
 			), updated AS (
 				UPDATE %s.zones
 				SET status = $2, updated_at = now()
 				WHERE id = $1 AND status = ANY($3)
-				RETURNING 1
+				RETURNING code
 			)
 			SELECT 
 				EXISTS(SELECT 1 FROM target) AS exists,
-				EXISTS(SELECT 1 FROM updated) AS updated
+				EXISTS(SELECT 1 FROM updated) AS updated,
+				COALESCE((SELECT code FROM target), '') AS zone_code
 		`, schema, schema),
 		deleteZoneQuery: fmt.Sprintf(`
 			WITH target AS (
@@ -325,7 +326,7 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 }
 
 // UpdateZoneStatus cập nhật trạng thái hoạt động của Zone.
-func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) error {
+func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (string, error) {
 	statusStrings := make([]string, len(allowedOld))
 	for i, s := range allowedOld {
 		statusStrings[i] = string(s)
@@ -333,6 +334,7 @@ func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 
 	var exists bool
 	var updated bool
+	var zoneCode string
 	// Thực hiện truy vấn kiểm tra sự tồn tại và cập nhật trạng thái theo State Machine.
 	err := r.db.QueryRow(ctx,
 		r.updateZoneStatusQuery,
@@ -342,19 +344,20 @@ func (r *ZoneRepoImpl) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 	).Scan(
 		&exists,
 		&updated,
+		&zoneCode,
 	)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// Trả lỗi nếu bản ghi không tồn tại.
 	if !exists {
-		return coreTaxonomy.ErrZoneNotFound
+		return "", coreTaxonomy.ErrZoneNotFound
 	}
 	// Trả lỗi nếu quá trình chuyển đổi trạng thái không hợp lệ.
 	if !updated {
-		return coreTaxonomy.ErrZoneInvalidTransition
+		return "", coreTaxonomy.ErrZoneInvalidTransition
 	}
-	return nil
+	return zoneCode, nil
 }
 
 // DeleteZone xóa Zone khỏi cơ sở dữ liệu (hard delete).

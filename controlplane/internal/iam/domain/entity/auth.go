@@ -39,6 +39,13 @@ type LoginUser struct {
 	Email        string
 	PasswordHash string
 	Status       UserStatus
+	// [COMMENT]: TenantID và TenantCode phục vụ flow login username@tenant_domain.
+	// Rỗng/nil nếu login global.
+	TenantID     *string
+	TenantCode   *string
+	// [COMMENT]: Role và Level được join trực tiếp từ RBAC trong repo
+	Role         string
+	Level        int32
 }
 
 type LoginRequest struct {
@@ -48,6 +55,11 @@ type LoginRequest struct {
 	TrustDevice     bool
 	DeviceName      string
 	ClientDeviceID  uuid.UUID
+	// [COMMENT]: TenantDomain được ACR tách từ username@tenant_domain trước khi gọi gRPC sang CP.
+	// Rỗng = đăng nhập global (platform scope), có giá trị = lấy tenant context qua JOIN tenant_domains.
+	TenantDomain    string
+	RemoteIP        string
+	UserAgent       string
 }
 
 // VerifySessionResult chứa thông tin phản hồi sau khi xác thực Trinity session thành công
@@ -78,4 +90,6 @@ type VerifyUserCredentialsResult struct {
 	ClientDeviceID string
 	RefreshToken   string
 	Username       string
+	// [COMMENT]: TenantCode được điền khi login qua tenant_domain. Rỗng nếu login global.
+	TenantCode     string
 }

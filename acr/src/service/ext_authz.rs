@@ -17,6 +17,7 @@ use crate::error::AcrError;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
+use crate::service::tenant::manager::TenantManager;
 
 pub struct ExtAuthzService {
     session_mgr: Arc<SessionManager>,
@@ -26,6 +27,7 @@ pub struct ExtAuthzService {
     // [COMMENT]: Client gRPC để gọi không đồng bộ sang Control Plane
     control_plane_client: Arc<ControlPlaneClient>,
     zone_mgr: Arc<ZoneManager>,
+    tenant_mgr: Arc<TenantManager>,
     // [COMMENT]: Bộ giới hạn tần suất tích hợp tại biên
     rate_limiter: Arc<crate::service::ratelimit::RateLimiter>,
 }
@@ -38,6 +40,7 @@ impl ExtAuthzService {
         config: Config,
         control_plane_client: Arc<ControlPlaneClient>,
         zone_mgr: Arc<ZoneManager>,
+        tenant_mgr: Arc<TenantManager>,
     ) -> Self {
         let rate_limiter = Arc::new(crate::service::ratelimit::RateLimiter::new(
             session_mgr.clone(),
@@ -49,6 +52,7 @@ impl ExtAuthzService {
             config,
             control_plane_client,
             zone_mgr,
+            tenant_mgr,
             rate_limiter,
         }
     }
@@ -203,7 +207,7 @@ impl Authorization for ExtAuthzService {
                     return catalog_res;
                 }
 
-                // [COMMENT]: Chặn bắt và xử lý API chuyển Active Zone tường minh tại biên (Edge Termination)
+                // [COMMENT]: Chặn bắt và xử lý API chuyển Active Zone cho SRE Admin tại biên (Edge Termination)
                 if let Some(zone_switch_res) =
                     crate::service::zone::zone_switch::handle_zone_switch(
                         &self.session_mgr,
@@ -218,6 +222,22 @@ impl Authorization for ExtAuthzService {
                     .await
                 {
                     return zone_switch_res;
+                }
+
+                // [COMMENT]: Chặn bắt và xử lý API chuyển Active Tenant tại biên
+                if let Some(tenant_switch_res) =
+                    crate::service::tenant::tenant_switch::handle_tenant_switch(
+                        &self.session_mgr,
+                        &self.token_mgr,
+                        &self.tenant_mgr,
+                        &self.config,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                {
+                    return tenant_switch_res;
                 }
 
                 // [COMMENT]: Chặn bắt và xử lý API chuyển Active Zone cho SRE Admin tại biên (Edge Termination)
@@ -581,6 +601,37 @@ impl Authorization for ExtAuthzService {
                     }
                 };
 
+                // [COMMENT]: 3.6. Phân giải và xác thực thông tin Tenant thông qua dịch vụ tenant_resolution tùy theo vai trò
+                let cookies_to_set_tenant = if claims.is_admin() {
+                    match crate::service::tenant::tenant_resolution::resolve_and_verify_tenant_admin(
+                        &self.tenant_mgr,
+                        Some(&mut claims),
+                        &cookie_header,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                    {
+                        Ok(cookies) => cookies,
+                        Err(err_res) => return err_res,
+                    }
+                } else {
+                    match crate::service::tenant::tenant_resolution::resolve_and_verify_tenant_user(
+                        &self.tenant_mgr,
+                        Some(&mut claims),
+                        &cookie_header,
+                        client_headers,
+                        &method,
+                        &path,
+                    )
+                    .await
+                    {
+                        Ok(cookies) => cookies,
+                        Err(err_res) => return err_res,
+                    }
+                };
+
                 // [COMMENT]: 6. Xử lý cập nhật Last Seen At (Throttled ghi) - Chỉ áp dụng cho user thường, bỏ qua cho SRE Admin
                 if !claims.is_admin() {
                     let _ = self
@@ -647,8 +698,9 @@ impl Authorization for ExtAuthzService {
                     .await
                 };
 
-                // Hợp nhất các cookie cập nhật zone
+                // Hợp nhất các cookie cập nhật zone & tenant
                 cookies_to_set.extend(cookies_to_set_zone);
+                cookies_to_set.extend(cookies_to_set_tenant);
 
                 // 10. Xây dựng response OK cho Envoy
                 Logger::authz_log(&claims.sub, &method, &path, "ALLOWED", "Passed all checks");

@@ -27,6 +27,33 @@ func (f *fakeTenantRepo) CreateTenant(ctx context.Context, t coreEntity.Tenant, 
 	return f.tenant, nil
 }
 
+func (f *fakeTenantRepo) ResolveTenantByDomain(ctx context.Context, domain string) (*coreEntity.Tenant, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.tenant != nil && f.tenant.Domain == domain {
+		return f.tenant, nil
+	}
+	return nil, coreErrorx.ErrTenantNotFound
+}
+
+func (f *fakeTenantRepo) ListTenantsPaged(ctx context.Context, limit, offset int) ([]coreEntity.Tenant, bool, error) {
+	if f.err != nil {
+		return nil, false, f.err
+	}
+	if f.tenant == nil {
+		return []coreEntity.Tenant{}, false, nil
+	}
+	return []coreEntity.Tenant{*f.tenant}, false, nil
+}
+
+func (f *fakeTenantRepo) CheckMembership(ctx context.Context, tenantID, userID uuid.UUID) (bool, string, error) {
+	if f.err != nil {
+		return false, "", f.err
+	}
+	return true, "member", nil
+}
+
 // [COMMENT]: Test case kiểm thử tính chính xác của nghiệp vụ tạo Tenant
 func TestTenantService_CreateTenant(t *testing.T) {
 	ctx := context.Background()

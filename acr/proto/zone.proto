@@ -1,24 +1,84 @@
-// [COMMENT]: file proto này và file controlplane/internal/core/transport/rpc/proto/zone.proto phải đồng bộ với nhau
+// [COMMENT]: File proto này phải đồng bộ với controlplane/internal/hierarchy/transport/rpc/proto/zone.proto
 
 syntax = "proto3";
 
 package core.rpc;
 
-option go_package = "controlplane/internal/core/transport/rpc/proto";
+option go_package = "controlplane/internal/hierarchy/transport/rpc/proto";
+
+// ─── Zone Messages ────────────────────────────────────────────────────────────
 
 message GetZoneListRequest {}
 
 message ZoneEntry {
-  string zone_id = 1;
+  string zone_id   = 1;
   string zone_code = 2;
-  string status = 3; // Trạng thái hoạt động của zone (active, planned, draining, etc.)
-  string name = 4;
+  string status    = 3;
+  string name      = 4;
 }
 
 message GetZoneListResponse {
   repeated ZoneEntry zones = 1;
 }
 
+message ResolveZoneRequest {
+  string zone_code = 1;
+}
+
+message ResolveZoneResponse {
+  bool   found   = 1;
+  string zone_id = 2;
+  string status  = 3;
+  string name    = 4;
+}
+
+// ─── Tenant Messages ──────────────────────────────────────────────────────────
+
+message ResolveTenantRequest {
+  string tenant_domain = 1;
+}
+
+message ResolveTenantResponse {
+  bool   found     = 1;
+  string tenant_id = 2;
+  // tenant_code đã bỏ - domain là source of truth duy nhất
+}
+
+message CheckMembershipRequest {
+  string tenant_id = 1;
+  string user_id   = 2;
+}
+
+message CheckMembershipResponse {
+  bool   is_member = 1;
+  string role      = 2;
+}
+
+message WarmupTenantsRequest {
+  int32 chunk_size = 1;
+  int32 offset     = 2;
+}
+
+message TenantWarmupEntry {
+  string tenant_id = 1;
+  string domain    = 2;
+  // tenant_code đã bỏ
+}
+
+message WarmupTenantsResponse {
+  repeated TenantWarmupEntry tenants  = 1;
+  bool                       has_more = 2;
+}
+
+// ─── Services ─────────────────────────────────────────────────────────────────
+
 service ZoneService {
-  rpc GetZoneList (GetZoneListRequest) returns (GetZoneListResponse);
+  rpc GetZoneList  (GetZoneListRequest)  returns (GetZoneListResponse);
+  rpc ResolveZone  (ResolveZoneRequest)  returns (ResolveZoneResponse);
+}
+
+service TenantService {
+  rpc ResolveTenant   (ResolveTenantRequest)   returns (ResolveTenantResponse);
+  rpc CheckMembership (CheckMembershipRequest) returns (CheckMembershipResponse);
+  rpc WarmupTenants   (WarmupTenantsRequest)   returns (WarmupTenantsResponse);
 }

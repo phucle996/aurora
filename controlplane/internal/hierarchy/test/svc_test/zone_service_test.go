@@ -44,7 +44,7 @@ func (f *fakeZoneRepo) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, 
 func (f *fakeZoneRepo) CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error {
 	return nil
 }
-func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) error {
+func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (string, error) {
 	if f.zone != nil && f.zone.ID == id {
 		// Verify that the current status is allowed before updating
 		allowed := false
@@ -55,12 +55,12 @@ func (f *fakeZoneRepo) UpdateZoneStatus(ctx context.Context, id uuid.UUID, statu
 			}
 		}
 		if !allowed {
-			return coreErrorx.ErrZoneInvalidTransition
+			return "", coreErrorx.ErrZoneInvalidTransition
 		}
 		f.zone.Status = status
-		return nil
+		return f.zone.Code, nil
 	}
-	return coreErrorx.ErrZoneNotFound
+	return "", coreErrorx.ErrZoneNotFound
 }
 func (f *fakeZoneRepo) DeleteZone(ctx context.Context, id uuid.UUID) (string, error) {
 	if f.zone != nil && f.zone.ID == id {
@@ -111,7 +111,7 @@ func (f *fakeZoneRepo) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusActive}}
-	svc := coreSvcImpl.NewZoneService(repo)
+	svc := coreSvcImpl.NewZoneService(repo, nil)
 	_, err := svc.UpdateZoneService(context.Background(), repo.zone.ID, "mail", true)
 	if !errors.Is(err, coreErrorx.ErrZoneServiceStateConflict) {
 		t.Fatalf("expected ErrZoneServiceStateConflict, got %v", err)
@@ -126,7 +126,7 @@ func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {
 
 func TestZoneServiceUpsertInvalidType(t *testing.T) {
 	repo := &fakeZoneRepo{zone: &coreEntity.Zone{ID: uuid.Must(uuid.NewV7()), Status: coreEntity.ZoneStatusMaintenance}}
-	svc := coreSvcImpl.NewZoneService(repo)
+	svc := coreSvcImpl.NewZoneService(repo, nil)
 	// Service layer does NOT validate service type — that is the handler/transport layer's responsibility.
 	// Invalid type strings pass through to the repository; this test validates service-layer behavior only.
 	_, err := svc.UpdateZoneService(context.Background(), repo.zone.ID, "bad-type", true)

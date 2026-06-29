@@ -11,6 +11,7 @@ dependencies = [
  "dotenvy",
  "ed25519-dalek",
  "envoy-types",
+ "futures-util",
  "moka",
  "opentelemetry",
  "opentelemetry-otlp",

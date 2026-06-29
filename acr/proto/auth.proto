@@ -89,6 +89,9 @@ message VerifyUserCredentialsRequest {
   bool trust_device = 8;       // Cờ xác định có cấp refresh token hay không (trusted device)
   string client_ip = 9;        // Địa chỉ IP của Client (trích xuất từ X-Forwarded-For hoặc Envoy context)
   string user_agent = 10;      // Chuỗi User-Agent của client phục vụ tracking
+  // [COMMENT]: Nếu username có định dạng user@tenant_domain, ACR sẽ tách và điền field này.
+  // Rỗng = đăng nhập global, có giá trị = đăng nhập vào tenant context.
+  string tenant_domain = 11;   // Domain của Tenant (ví dụ: acme.io) — để CP JOIN tenant_domains + tenant_memberships
 }
 
 // [COMMENT]: Response trả về trạng thái xác thực và các thông tin định danh/claim
@@ -102,6 +105,9 @@ message VerifyUserCredentialsResponse {
   string refresh_token = 7;    // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
   string error_message = 8;    // Mô tả lỗi chi tiết nếu valid = false
   string username = 9;         // Tên đăng nhập của người dùng
+  // [COMMENT]: tenant_code được CP điền khi login qua tenant_domain. ACR dùng để set cookie tenant_id.
+  // Khi đăng nhập global (không có @domain), field này rỗng.
+  string tenant_code = 10;     // Code nhận dạng ngắn của Tenant (ví dụ: acme) — dùng cho cookie và JWT claim
 }
 
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2

@@ -85,19 +85,22 @@ sequenceDiagram
     Envoy->>acr: CheckRequest (HTTP Context, Headers & Body)
     Note over acr: handle_login() intercepts
     acr->>acr: Parse JSON payload
+    acr->>acr: Tách username thành: raw_username + tenant_domain (nếu có dạng name@domain)
     acr->>acr: Extract client_device_id from cookies, client_ip, user_agent
-    acr->>CP: VerifyUserCredentials(grpc_request)
+    acr->>CP: VerifyUserCredentials(raw_username, password, client_device_id, etc)
 ```
 
 #### 2. Mô tả nghiệp vụ
 
 - **Chặn bắt tại Biên (Gateway Interception)**: Envoy Ingress chuyển tiếp toàn bộ request chứa thông tin đăng nhập đến Ext-Authz middleware (Rust acr).
-- **Phân tách và chuẩn bị dữ liệu**: Rust acr bóc tách JSON payload gửi lên, đồng thời thu thập siêu dữ liệu gồm IP khách (Client IP), User-Agent từ Header của request và `client_device_id` từ HTTP Cookies hiện có (nếu có).
+- **Phân tách và chuẩn bị dữ liệu**: 
+  - Rust acr bóc tách JSON payload gửi lên, đồng thời thu thập siêu dữ liệu gồm IP khách (Client IP), User-Agent từ Header của request và `client_device_id` từ HTTP Cookies hiện có (nếu có).
+  - **Tách lọc Tenant Domain**: Nếu tham số `username` được nhập dưới dạng email/định dạng chứa ký tự `@` (ví dụ `alice@acme.platform.io`), Rust acr sẽ tự động tách lọc thành `raw_username` (`alice`) và `tenant_domain` (`acme.platform.io`) để gửi gRPC và phân giải ngữ cảnh.
 - **Giao tiếp gRPC**: Rust acr đóng gói các tham số nhận được và gửi yêu cầu xác thực thô đến Go Controlplane thông qua gRPC method `VerifyUserCredentials`.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
 
-- **Rust Ingress Interceptor / Gateway Auth Handler**: [login_handler.rs](../../acr/src/service/login_handler.rs#L43-L182) - Chặn bắt HTTP POST `/api/v1/auth/login` tại biên, trích xuất cookie/IP/UA và chuyển tiếp qua gRPC.
+- **Rust Ingress Interceptor / Gateway Auth Handler**: [login_handler.rs](../../acr/src/service/login/login_handler.rs) - Chặn bắt HTTP POST `/api/v1/auth/login` tại biên, trích xuất cookie/IP/UA, tách domain và chuyển tiếp qua gRPC.
 - **gRPC API Definition (VerifyUserCredentials)**: [auth.proto](../../controlplane/internal/iam/transport/rpc/proto/auth.proto#L12-L28) - Định nghĩa message gRPC dùng để giao tiếp liên dịch vụ.
 
 ---
@@ -116,10 +119,10 @@ sequenceDiagram
 
     acr->>CP: VerifyUserCredentials(grpc_request)
     
-    CP->>Repo: GetLoginUserByUsername(ctx, username)
-    Repo->>DB: SELECT id, username, email, password_hash, status FROM users WHERE username = ?
-    DB-->>Repo: Trả về user record
-    Repo-->>CP: Trả về user entity
+    CP->>Repo: LoginUserByUsername (hoặc LoginUserByUsernameAndTenantDomain)
+    Repo->>DB: Query SELECT u.*, r.code, r.role_level INNER JOIN user_role_assignments & roles
+    DB-->>Repo: Trả về user record kèm role (luôn non-null nhờ DB constraints trigger)
+    Repo-->>CP: Trả về LoginUser entity (chứa Role & Level kiểu dữ liệu thô)
     
     CP->>CP: Xác thực password hash (Argon2id verify)
     
@@ -143,13 +146,14 @@ sequenceDiagram
 
 #### 2. Mô tả nghiệp vụ
 
-- **Xác thực tài khoản**: Go Controlplane truy xuất thông tin tài khoản người dùng từ PostgreSQL thông qua username. Sử dụng thuật toán Argon2id để kiểm tra mật khẩu.
+- **Xác thực tài khoản và phân quyền**: Go Controlplane truy xuất thông tin tài khoản người dùng từ PostgreSQL thông qua username. Sử dụng thuật toán Argon2id để kiểm tra mật khẩu. Phép truy vấn sử dụng `INNER JOIN` với `user_role_assignments` và `roles` để lấy kèm thông tin Role và Level kiểu dữ liệu thô (non-nullable).
+- **Ràng buộc phân quyền tại DB (Database Enforced Roles)**: Hệ thống sử dụng Postgres Constraint Triggers (`trg_auto_assign_platform_role` trên bảng `users` và `trg_auto_assign_tenant_role` trên bảng `tenant_memberships`) hoãn quét cho đến khi transaction commit (`DEFERRABLE INITIALLY DEFERRED`) để tự động gán các role mặc định (`platform_user` hoặc `tenant_member`) nếu người dùng chưa có. Điều này đảm bảo tính nhất quán dữ liệu ở mức DB (SOT) và loại bỏ hoàn toàn các lỗ hổng bypass role.
 - **Kiểm tra trạng thái tài khoản**:
   - Nếu trạng thái là `pending-active`, hệ thống sẽ trả về lỗi `VerificationRequired` và đẩy mã OTP qua luồng outbox.
   - Nếu trạng thái là `suspended` hoặc `disabled`, hệ thống trả về lỗi `InvalidCredentials`.
-- **Gắn kết thiết bị (Device Binding)**: Thực hiện logic Upsert thiết bị đăng nhập vào bảng `devices`. Trùng lặp dựa trên index duy nhất `(user_id, client_device_id)`. Các tham số nhạy cảm như `public_key` tuyệt đối không bị ghi đè để tránh tấn công chiếm quyền thiết bị.
+- **Gắn kết thiết bị (Device Binding)**: Thực hiện logic Upsert thiết bị đăng nhập vào bảng `devices`. Trùng lặp dựa trên index duy nhất `(user_id, client_device_id)`. Các tham số nhạy cảm như `public_key` tuyệt đối không bị ghi đè để tránh tấn công chiếm quyền thiết bị. Siêu dữ liệu IP khách (Client IP) và User-Agent được nạp trực tiếp qua struct `LoginRequest` entity để đảm bảo tính tường minh.
 - **Phát hành Refresh Token**: Khi tham số `trust_device` là `true`, Controlplane sinh ra Opaque Refresh Token theo cấu trúc bảo mật `<userID>_<random_entropy>` (tổng độ dài khoảng 64 - 72 ký tự) và lưu hash của nó vào bảng `refresh_tokens`.
-- **Phản hồi gRPC**: Trả về dữ liệu thành công kèm theo metadata của User, Role, Level, Refresh Token và Device ID về lại cho Rust acr.
+- **Phản hồi gRPC**: Trả về dữ liệu thành công kèm theo metadata của User, Role, Level, Refresh Token và Device ID về lại cho Rust acr. Lỗi phân quyền hoặc không tìm thấy user được che giấu dưới dạng `ErrInvalidCredentials` đối với client để ngăn chặn brute-force/user enumeration.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
 
@@ -174,15 +178,16 @@ sequenceDiagram
 
     Note over acr: Nhận VerifyUserCredentialsResponse (valid=true)
     acr->>acr: Phân giải zone_code -> zone_id thô (L1 cache)
+    acr->>acr: Phân giải tenant_domain -> tenant_id (L1 -> L2 -> gRPC)
     acr->>acr: Sinh mới access_key (UUIDv7) & access_secret (UUIDv4)
-    acr->>Vault: Ký Access Claims (Transit Engine - HMAC-SHA256)
+    acr->>Vault: Ký Access Claims (Transit Engine - HMAC-SHA256) kèm claims.tenant_id
     Vault-->>acr: Trả về signed JWT Access Token
     
     acr->>RDS: Pipeline: SET key session & SADD index set (Lưu runtime session)
     RDS-->>acr: Trả về kết quả ghi Redis (OK/Err)
     
     Note over acr: Tạo DeniedHttpResponse (HTTP 204)
-    acr->>acr: Inject Set-Cookie headers (access_token, access_key, access_secret, client_device_id, refresh_token)
+    acr->>acr: Inject Set-Cookie headers (access_token, access_key, access_secret, client_device_id, refresh_token, tenant_domain)
     acr-->>Envoy: CheckResponse (with DeniedHttpResponse & Cookies)
     Envoy-->>UI: HTTP 204 No Content + Cookies
 ```
@@ -190,17 +195,19 @@ sequenceDiagram
 #### 2. Mô tả nghiệp vụ
 
 - **Phân giải Zone**: Rust acr ánh xạ `zone_code` sang `zone_id` bằng bộ nhớ đệm L1 cục bộ nhằm tối thiểu hóa độ trễ.
+- **Phân giải Tenant**: Rust acr sử dụng `TenantManager` để phân giải `tenant_domain` đã trích xuất ở Phase 1 thành `tenant_id` (sử dụng hybrid cache: L1 in-memory -> Redis L2 shared -> gRPC fallback sang Controlplane).
 - **Khởi tạo định danh runtime**: Sinh mới cặp khóa truy cập gồm `access_key` (UUIDv7) và `access_secret` (UUIDv4).
-- **Ký số Stateless JWT**: Gửi yêu cầu ký JWT Access Token chứa các claims về phân quyền tới HashiCorp Vault Transit Engine.
+- **Ký số Stateless JWT**: Gửi yêu cầu ký JWT Access Token chứa các claims về phân quyền (bao gồm cả `tenant_id` và `zone_id` đã được giải phân) tới HashiCorp Vault Transit Engine.
 - **Lưu trữ phiên hoạt động (Session Register)**: Đóng gói session metadata dưới dạng nhị phân Protobuf `UserAccessSession` và đẩy xuống Redis L2 bằng cơ chế Pipeline.
-- **Trả về Cookies**: Rust acr thiết lập HTTP `204 No Content` đi kèm 5 thẻ Set-Cookie an toàn (`access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`) thông qua Ext-Authz Denied Response gửi lại Envoy để chuyển về phía trình duyệt người dùng.
+- **Trả về Cookies**: Rust acr thiết lập HTTP `204 No Content` đi kèm các thẻ Set-Cookie an toàn gồm `access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`, và `tenant_domain` (bỏ hoàn toàn `tenant_code` cookie) thông qua Ext-Authz Denied Response gửi lại Envoy để chuyển về phía trình duyệt người dùng.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
 
 - **Zone Code Resolution**: [zone_resolution.rs](../../acr/src/service/zone_resolution.rs) - Phân giải cục bộ mã vùng của tenant.
+- **Tenant Domain Resolution**: [manager.rs](../../acr/src/service/tenant/manager.rs) - Giải phân tenant domain thành tenant_id (L1 -> L2 -> gRPC).
 - **Stateless Token Manager**: [token.rs](../../acr/src/core/token.rs#L151-L184) - Sinh claims và thực hiện ký số Access Token (JWT) qua HashiCorp Vault.
 - **L2 Redis Session Manager**: [session.rs](../../acr/src/core/session.rs#L59-L80) - Tuần tự hóa session sang nhị phân Protobuf và ghi nhận vào Redis Cluster L2.
-- **HTTP Response Set-Cookie Generator**: [login_handler.rs](../../acr/src/service/login_handler.rs#L259-L330) - Inject các cookie Trinity Credentials vào DeniedHttpResponse để đẩy về trình duyệt.
+- **HTTP Response Set-Cookie Generator**: [login_handler.rs](../../acr/src/service/login/login_handler.rs) - Inject các cookie Trinity Credentials cùng tenant_domain vào DeniedHttpResponse để đẩy về trình duyệt.
 
 ---
 
@@ -337,6 +344,9 @@ Nhằm đảm bảo tính nhất quán giữa tài liệu Đặc tả God View (
 - **Kiểu dữ liệu Enum (User/Device status enums)**: [000001_iam_enums.up.sql](../../controlplane/internal/iam/migrations/000001_iam_enums.up.sql#L6-L47) - Tạo kiểu enum `user_status` và `device_status` trên PostgreSQL.
 - **Cấu trúc bảng và ràng buộc vật lý**: [000002_iam_tables.up.sql](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql#L4-L103) - Khởi tạo các bảng `users`, `devices`, `refresh_tokens` cùng khóa ngoại và chú thích (comment).
 - **Chỉ mục unique chống trùng lặp (Device Unique Index)**: [000003_iam_indexes.up.sql](../../controlplane/internal/iam/migrations/000003_iam_indexes.up.sql) - Thiết lập unique index chống trùng lặp client_device_id theo từng user.
+- **Ràng buộc tự động gán và kiểm tra Role (Constraint Triggers)**: 
+  - [000008_iam_role_constraints.up.sql](../../controlplane/internal/iam/migrations/000008_iam_role_constraints.up.sql) - Tự động hóa gán `platform_user` role khi đăng ký user mới.
+  - [000005_hierarchy_role_constraints.up.sql](../../controlplane/internal/hierarchy/migrations/000005_hierarchy_role_constraints.up.sql) - Tự động hóa gán `tenant_member` role khi thêm membership mới.
 
 ##### C. Cấu trúc tầng cache (Protobuf Protocol Buffer)
 

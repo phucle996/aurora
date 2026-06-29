@@ -114,7 +114,18 @@ pub async fn handle_login(
         }
     };
 
-    // [COMMENT]: Trích xuất client_device_id từ cookie (nếu có)
+    	// [COMMENT]: Parse username@tenant_domain pattern.
+	// Nếu username chứa '@', tách thành raw_username và tenant_domain để gửi sang CP.
+	// Ví dụ: "alice@acme.io" → username="alice", tenant_domain="acme.io"
+	let raw_username: String;
+	let tenant_domain: String;
+	if let Some(at_pos) = username.rfind('@') {
+		raw_username = username[..at_pos].to_string();
+		tenant_domain = username[at_pos + 1..].to_string();
+	} else {
+		raw_username = username.clone();
+		tenant_domain = String::new();
+	}
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
     let client_device_id =
         extract_cookie_value(&cookie_header, "client_device_id").unwrap_or_default();
@@ -129,19 +140,21 @@ pub async fn handle_login(
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
 
-    // [COMMENT]: Gọi gRPC VerifyUserCredentials sang Control Plane (Go) để kiểm chứng mật khẩu & trạng thái
-    let cp_req = VerifyUserCredentialsRequest {
-        username,
-        password,
-        client_device_id,
-        device_name: payload.device_name.unwrap_or_default(),
-        device_type: payload.device_type.unwrap_or_default(),
-        public_key: payload.public_key.unwrap_or_default(),
-        signature: payload.signature.unwrap_or_default(),
-        trust_device: payload.trust_device.unwrap_or(false),
-        client_ip,
-        user_agent,
-    };
+    	// [COMMENT]: Gọi gRPC VerifyUserCredentials sang Control Plane (Go) để kiểm chứng mật khẩu & trạng thái
+	let cp_req = VerifyUserCredentialsRequest {
+		username: raw_username,
+		password,
+		client_device_id,
+		device_name: payload.device_name.unwrap_or_default(),
+		device_type: payload.device_type.unwrap_or_default(),
+		public_key: payload.public_key.unwrap_or_default(),
+		signature: payload.signature.unwrap_or_default(),
+		trust_device: payload.trust_device.unwrap_or(false),
+		client_ip,
+		user_agent,
+		// [COMMENT]: tenant_domain rỗng nếu login global, có giá trị nếu login qua @tenant_domain
+		tenant_domain,
+	};
 
     Logger::sys_info(
         "login_handler",
@@ -265,12 +278,18 @@ pub async fn handle_login(
         denied_builder.add_header("set-cookie", &zone_cookie, None, false);
     }
 
-    // [COMMENT]: Set-Cookie tenant_id (chứa tnc hiện tại, mặc định là global)
-    let tenant_cookie = format!(
-        "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-        res_val.tenant_id_val, domain_str
-    );
-    denied_builder.add_header("set-cookie", &tenant_cookie, None, false);
+    	// [COMMENT]: Set-Cookie tenant_id: dùng tenant_code từ CP nếu login qua @tenant_domain,
+	// fallback sang tenant_id_val (UUID) nếu login global.
+	let tenant_cookie_val = if !cp_res.tenant_code.is_empty() {
+		cp_res.tenant_code.clone()
+	} else {
+		res_val.tenant_id_val.clone()
+	};
+	let tenant_cookie = format!(
+		"tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+		tenant_cookie_val, domain_str
+	);
+	denied_builder.add_header("set-cookie", &tenant_cookie, None, false);
 
     // [COMMENT]: Set-Cookie refresh_token (nếu CP cấp mới)
     if !cp_res.refresh_token.is_empty() {

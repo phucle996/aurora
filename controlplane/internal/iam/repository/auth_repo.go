@@ -32,44 +32,127 @@ func NewAuthRepository(
 	}
 }
 
-
-func (r *AuthRepository) GetLoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
-	// [COMMENT]: Thực hiện truy vấn trực tiếp bảng users để lấy thông tin đăng nhập mà không join sang bảng user_profiles
+func (r *AuthRepository) LoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+	// [COMMENT]: Thực hiện truy vấn JOIN bảng users với user_role_assignments & roles để lấy thông tin user kèm max role
 	query := fmt.Sprintf(`
 		SELECT 
-			id,
-			username,
-			email,
-			password_hash, 
-			status
-		FROM %s.users
-		WHERE username = $1
+			u.id,
+			u.username,
+			u.email,
+			u.password_hash, 
+			u.status,
+			r.code       AS role_code,
+			r.role_level AS role_level
+		FROM %s.users u
+		JOIN %s.user_role_assignments ura ON ura.user_id = u.id 
+		                                 AND ura.scope_type = 'platform' 
+		                                 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) 
+		                                 AND ura.revoked_at IS NULL
+		JOIN %s.roles r                 ON r.id = ura.role_id
+		WHERE u.username = $1
+		ORDER BY r.role_level ASC
 		LIMIT 1
-	`, r.schema)
+	`, r.schema, r.schema, r.schema)
 
-	// [COMMENT]: Khởi tạo đối tượng DB model đại diện cho bảng users để hứng dữ liệu quét từ DB
-	var userModel iamModel.User
+	var (
+		userModel iamModel.User
+		roleCode  string
+		roleLevel int32
+	)
 	if err := r.db.QueryRow(ctx, query, username).Scan(
 		&userModel.ID,
 		&userModel.Username,
 		&userModel.Email,
 		&userModel.PasswordHash,
 		&userModel.Status,
+		&roleCode,
+		&roleLevel,
 	); err != nil {
-		// [COMMENT]: Nếu không tìm thấy bản ghi người dùng, trả về lỗi nghiệp vụ ErrUserNotFound
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, iamTaxonomy.ErrUserNotFound
 		}
 		return nil, fmt.Errorf("iam repo: get login user by username: %w", err)
 	}
 
-	// [COMMENT]: Chuyển đổi từ cấu trúc DB Model sang Domain Entity để phục vụ Business Logic của Service
 	loginUser := &iamEntity.LoginUser{
 		ID:           userModel.ID,
 		Username:     userModel.Username,
 		Email:        userModel.Email,
 		PasswordHash: userModel.PasswordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
+		Role:         roleCode,
+		Level:        roleLevel,
+	}
+
+	return loginUser, nil
+}
+
+func (r *AuthRepository) LoginUserByUsernameAndTenantDomain(
+	ctx context.Context,
+	username string,
+	tenantDomain string,
+) (*iamEntity.LoginUser, error) {
+	// [COMMENT]: Query JOIN hierarchy.tenant_memberships, tenants, tenant_domains
+	// và INNER JOIN sang iam.user_role_assignments, iam.roles để lấy max role thuộc tenant đó.
+	query := fmt.Sprintf(`
+		SELECT
+			u.id,
+			u.username,
+			u.email,
+			u.password_hash,
+			u.status,
+			t.id::text   AS tenant_id,
+			t.code       AS tenant_code,
+			r.code       AS role_code,
+			r.role_level AS role_level
+		FROM %s.users u
+		JOIN hierarchy.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
+		JOIN hierarchy.tenants t             ON t.id = tm.tenant_id
+		JOIN hierarchy.tenant_domains td     ON td.tenant_id = t.id AND td.domain = $2
+		JOIN %s.user_role_assignments ura ON ura.user_id = u.id 
+		                                 AND ura.tenant_id = t.id 
+		                                 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) 
+		                                 AND ura.revoked_at IS NULL
+		JOIN %s.roles r                 ON r.id = ura.role_id
+		WHERE u.username = $1
+		ORDER BY r.role_level ASC
+		LIMIT 1
+	`, r.schema, r.schema, r.schema)
+
+	var (
+		userModel  iamModel.User
+		tenantID   string
+		tenantCode string
+		roleCode   string
+		roleLevel  int32
+	)
+	if err := r.db.QueryRow(ctx, query, username, tenantDomain).Scan(
+		&userModel.ID,
+		&userModel.Username,
+		&userModel.Email,
+		&userModel.PasswordHash,
+		&userModel.Status,
+		&tenantID,
+		&tenantCode,
+		&roleCode,
+		&roleLevel,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, iamTaxonomy.ErrUserNotFound
+		}
+		return nil, fmt.Errorf("iam repo: login user by username and tenant domain: %w", err)
+	}
+
+	loginUser := &iamEntity.LoginUser{
+		ID:           userModel.ID,
+		Username:     userModel.Username,
+		Email:        userModel.Email,
+		PasswordHash: userModel.PasswordHash,
+		Status:       iamEntity.UserStatus(userModel.Status),
+		TenantID:     &tenantID,
+		TenantCode:   &tenantCode,
+		Role:         roleCode,
+		Level:        roleLevel,
 	}
 
 	return loginUser, nil
@@ -154,6 +237,8 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	); err != nil {
 		return fmt.Errorf("iam repo: insert user profile: %w", err)
 	}
+
+
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("iam repo: commit register tx: %w", err)

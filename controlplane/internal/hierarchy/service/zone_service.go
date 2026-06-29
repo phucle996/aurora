@@ -14,6 +14,7 @@ package zoneSvcImpl
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	coreEntity "controlplane/internal/hierarchy/domain/entity"
@@ -24,17 +25,21 @@ import (
 	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 type ZoneService struct {
 	repo coreRepoInterface.ZoneRepository
+	rds  *goredis.Client
 }
 
 func NewZoneService(
 	repo coreRepoInterface.ZoneRepository,
+	rds *goredis.Client,
 ) coreSvcInterface.ZoneService {
 	return &ZoneService{
 		repo: repo,
+		rds:  rds,
 	}
 }
 
@@ -106,6 +111,14 @@ func (s *ZoneService) CreateZone(ctx context.Context, input coreEntity.CreateZon
 		return err
 	}
 
+	// [COMMENT]: Ghi dữ liệu zone mới vào Redis L2 và bắn event invalidation
+	if s.rds != nil {
+		redisKey := fmt.Sprintf("zone:code:%s", zone.Code)
+		val := fmt.Sprintf("%s:%s", zone.ID, zone.Status)
+		_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
+		_ = s.rds.Publish(ctx, "gateway:sync", fmt.Sprintf(`{"type": "zone", "code": "%s"}`, zone.Code)).Err()
+	}
+
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }
@@ -143,24 +156,38 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	}
 
 	allowedOld := append(allowed[toStatus], toStatus)
-	err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
+	zoneCode, err := s.repo.UpdateZoneStatus(ctx, zoneID, toStatus, allowedOld)
 	if err != nil {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
-	// todo : bắn rpc qua acr để update state zone đang cache
+	
+	// [COMMENT]: Cập nhật trạng thái mới vào Redis L2 và bắn event invalidation
+	if s.rds != nil {
+		redisKey := fmt.Sprintf("zone:code:%s", zoneCode)
+		val := fmt.Sprintf("%s:%s", zoneID, toStatus)
+		_ = s.rds.Set(ctx, redisKey, val, 24*time.Hour).Err()
+		_ = s.rds.Publish(ctx, "gateway:sync", fmt.Sprintf(`{"type": "zone", "code": "%s"}`, zoneCode)).Err()
+	}
+
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
 }
 
 // DeleteZone xóa zone khi đủ 3 preconditions.
 func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
-	_, err := s.repo.DeleteZone(ctx, zoneID)
+	deletedCode, err := s.repo.DeleteZone(ctx, zoneID)
 	if err != nil {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
-	// todo : bắn rpc qua acr để update state zone đang cache
+	
+	// [COMMENT]: Xóa cache Redis L2 và bắn event invalidation
+	if s.rds != nil {
+		redisKey := fmt.Sprintf("zone:code:%s", deletedCode)
+		_ = s.rds.Del(ctx, redisKey).Err()
+		_ = s.rds.Publish(ctx, "gateway:sync", fmt.Sprintf(`{"type": "zone", "code": "%s"}`, deletedCode)).Err()
+	}
 
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return nil
@@ -168,12 +195,16 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 
 // UpdateZoneService cập nhật enabled/disabled của một service trong zone.
 func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, error) {
-	svc, _, err := s.repo.UpdateZoneService(ctx, zoneID, serviceType, enabled)
+	svc, zoneCode, err := s.repo.UpdateZoneService(ctx, zoneID, serviceType, enabled)
 	if err != nil {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
-	// todo : bắn rpc qua acr để update state zone đang cache
+	
+	// [COMMENT]: Bắn event invalidation vì cấu hình dịch vụ thay đổi
+	if s.rds != nil {
+		_ = s.rds.Publish(ctx, "gateway:sync", fmt.Sprintf(`{"type": "zone", "code": "%s"}`, zoneCode)).Err()
+	}
 
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return svc, nil

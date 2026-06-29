@@ -3,6 +3,7 @@ package rpcHandler
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 
@@ -10,7 +11,6 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
-	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 )
 
@@ -110,19 +110,35 @@ func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iampro
 		TrustDevice:     req.TrustDevice,
 		DeviceName:      req.DeviceName,
 		ClientDeviceID:  clientDeviceID,
+		TenantDomain:    req.TenantDomain,
+		RemoteIP:        req.ClientIp,
+		UserAgent:       req.UserAgent,
 	}
-
-	// [COMMENT]: Gắn Remote IP và User Agent vào Context phục vụ cho việc ghi nhận lịch sử thiết bị
-	ctx = context.WithValue(ctx, constant.RemoteIPKey, req.ClientIp)
-	ctx = context.WithValue(ctx, constant.UserAgentKey, req.UserAgent)
 
 	// [COMMENT]: Gọi AuthService để xác thực credentials và tạo mới session (nếu trust_device=true)
 	res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
 	if err != nil {
-		logger.SysErrorFields("VerifyUserCredentials", "Failed to verify credentials", err, nil)
+		// [COMMENT]: Kiểm tra lỗi gốc để ghi log cảnh báo thích hợp trước khi che giấu lỗi với client
+		if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
+			logger.SysWarn("VerifyUserCredentials", fmt.Sprintf("Login attempt blocked: user '%s' has no active role assigned in target scope", req.Username))
+			return &iamproto.VerifyUserCredentialsResponse{
+				Valid:        false,
+				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
+			}, nil
+		}
+
+		if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
+			logger.SysWarn("VerifyUserCredentials", fmt.Sprintf("Login attempt failed: invalid credentials for user '%s'", req.Username))
+			return &iamproto.VerifyUserCredentialsResponse{
+				Valid:        false,
+				ErrorMessage: iamTaxonomy.ErrInvalidCredentials.Error(),
+			}, nil
+		}
+
+		logger.SysErrorFields("VerifyUserCredentials", "Failed to verify credentials due to system error", err, nil)
 		return &iamproto.VerifyUserCredentialsResponse{
 			Valid:        false,
-			ErrorMessage: err.Error(),
+			ErrorMessage: "authentication service temporarily unavailable",
 		}, nil
 	}
 
@@ -135,5 +151,7 @@ func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iampro
 		ClientDeviceId: res.ClientDeviceID,
 		RefreshToken:   res.RefreshToken,
 		Username:       res.Username,
+		// [COMMENT]: TenantCode được điền khi login qua tenant_domain, rỗng nếu login global.
+		TenantCode: res.TenantCode,
 	}, nil
 }

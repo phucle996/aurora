@@ -22,7 +22,7 @@ type ZoneRepository interface {
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)
 
 	// update trạng thái zone theo state machine
-	UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) error
+	UpdateZoneStatus(ctx context.Context, id uuid.UUID, status coreEntity.ZoneStatus, allowedOld []coreEntity.ZoneStatus) (string, error)
 
 	// xóa zone
 	DeleteZone(ctx context.Context, id uuid.UUID) (string, error)

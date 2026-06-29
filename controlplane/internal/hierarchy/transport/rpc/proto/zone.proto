@@ -1,5 +1,3 @@
-// [COMMENT]: file proto này và file acr/proto/zone.proto phải đồng bộ với nhau
-
 syntax = "proto3";
 
 package core.rpc;
@@ -19,6 +17,20 @@ message GetZoneListResponse {
   repeated ZoneEntry zones = 1;
 }
 
+message ResolveZoneRequest {
+  string zone_code = 1;
+}
+
+message ResolveZoneResponse {
+  bool found = 1;
+  string zone_id = 2;
+  string status = 3;
+  string name = 4;
+}
+
 service ZoneService {
   rpc GetZoneList (GetZoneListRequest) returns (GetZoneListResponse);
+  rpc ResolveZone (ResolveZoneRequest) returns (ResolveZoneResponse);
 }
+
+

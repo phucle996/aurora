@@ -112,6 +112,12 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
       toast.error(t.auth.usernameLen);
       return;
     }
+    // [COMMENT]: Chặn username chứa '@' — ký tự này được hệ thống dùng làm separator
+    // để phân biệt login global (username) và login tenant (username@tenant_domain).
+    if (username.includes("@")) {
+      toast.error("Username must not contain '@'. Please enter your email in the Email field.");
+      return;
+    }
     if (!email.trim()) {
       toast.error(t.auth.emailReq);
       return;

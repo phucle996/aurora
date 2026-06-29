@@ -1,13 +1,14 @@
 // ======================================================================================================
-// 📂 MODULE: acl/src/core/zone.rs
-//            Quản Lý & Đồng Bộ L1 Cache Cho Các Zones Từ Controlplane (mTLS gRPC)
-// ======================================================================================================
+// 📂 MODULE: acr/src/core/zone.rs
+//            Quản Lý Zone Cache - L1 in-memory → Redis L2 (shared) → gRPC CP fallback
 //
-// 📜 THIẾT KẾ & TỐI ƯU HÓA:
-//   - Duy trì bản đồ ánh xạ song hướng: zone_code <-> zone_id và lưu thêm status của từng zone trong RAM L1.
-//   - Hỗ trợ cơ chế Single Flight thông qua tokio::sync::Mutex để tránh bão request (thundering herd) lên CP.
-//   - Lưu vết last_sync để giới hạn tần suất gọi RPC: tối đa 5 phút một lần cho các trường hợp miss/không tồn tại.
+// 🔄 LUỒNG CACHE:
+//   1. L1 Cache (in-process HashMap với TTL) - riêng từng node ACR
+//   2. Redis L2 Cache (shared giữa tất cả ACR node) - node nào gRPC xong thì ghi L2
+//   3. gRPC fallback sang Controlplane - chỉ khi cả L1 và L2 đều miss
+//      → Sau khi gRPC trả về, ghi ngược lại L1 + L2 để các node khác hưởng lợi
 //
+// 🔒 NEGATIVE CACHE: key không tồn tại được ghi tombstone 3 phút để tránh stampede DB
 // ======================================================================================================
 
 use crate::infra::controlplane::ControlPlaneClient;
@@ -16,6 +17,27 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
+
+// ─── L1 Cache Primitives ────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum CacheValue<T> {
+    Found(T),
+    NotFound, // Negative cache tombstone
+}
+
+struct CacheEntry<T> {
+    value: CacheValue<T>,
+    expiry: Instant,
+}
+
+impl<T> CacheEntry<T> {
+    fn is_expired(&self) -> bool {
+        Instant::now() > self.expiry
+    }
+}
+
+// ─── ZoneItem (DTO) ─────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -26,230 +48,343 @@ pub struct ZoneItem {
     pub name: String,
 }
 
+// ─── ZoneManager ────────────────────────────────────────────────────────────
+
 pub struct ZoneManager {
-    // Client gọi gRPC sang Controlplane
     control_plane_client: Arc<ControlPlaneClient>,
+    redis_client: Arc<redis::Client>,
 
-    // Bản đồ L1 RAM cache ánh xạ từ zone_code sang zone_id
-    code_to_id: RwLock<HashMap<String, String>>,
+    // [COMMENT]: L1 in-memory cache riêng từng node - tách biệt theo chiều lookup
+    zone_code_to_id: RwLock<HashMap<String, CacheEntry<String>>>,
+    zone_id_to_status: RwLock<HashMap<String, CacheEntry<String>>>,
+    zone_id_to_name: RwLock<HashMap<String, CacheEntry<String>>>,
 
-    // Bản đồ L1 RAM cache ánh xạ từ zone_id sang zone_code
-    id_to_code: RwLock<HashMap<String, String>>,
-
-    // [COMMENT]: Bản đồ L1 RAM cache ánh xạ từ zone_id sang status của zone
-    id_to_status: RwLock<HashMap<String, String>>,
-
-    // [COMMENT]: Bản đồ L1 RAM cache ánh xạ từ zone_id sang name của zone
-    id_to_name: RwLock<HashMap<String, String>>,
-
-    // [COMMENT]: Cache chứa danh sách các zone code không hợp lệ (bad zone codes) để chống spam
-    bad_codes: RwLock<HashMap<String, Instant>>,
-
-    // Lưu Instant của lần gọi RPC đồng bộ thành công/thất bại gần nhất
-    last_sync: RwLock<Option<Instant>>,
-
-    // Mutex ngăn chặn thundering herd: chỉ cho phép tối đa 1 goroutine/task gọi gRPC tại một thời điểm (Single Flight)
+    // [COMMENT]: Single Flight Mutex - chỉ 1 goroutine trong node gọi gRPC cùng lúc
     single_flight_mutex: Mutex<()>,
 }
 
 impl ZoneManager {
-    // Khởi tạo thực thể quản lý zone cache
-    pub fn new(control_plane_client: Arc<ControlPlaneClient>) -> Self {
+    pub fn new(
+        control_plane_client: Arc<ControlPlaneClient>,
+        redis_client: Arc<redis::Client>,
+    ) -> Self {
         Self {
             control_plane_client,
-            code_to_id: RwLock::new(HashMap::new()),
-            id_to_code: RwLock::new(HashMap::new()),
-            id_to_status: RwLock::new(HashMap::new()),
-            id_to_name: RwLock::new(HashMap::new()),
-            bad_codes: RwLock::new(HashMap::new()),
-            last_sync: RwLock::new(None),
+            redis_client,
+            zone_code_to_id: RwLock::new(HashMap::new()),
+            zone_id_to_status: RwLock::new(HashMap::new()),
+            zone_id_to_name: RwLock::new(HashMap::new()),
             single_flight_mutex: Mutex::new(()),
         }
     }
 
-    // [COMMENT]: Lấy toàn bộ danh sách zone từ L1 cache (hoặc sync nếu cần)
-    pub async fn get_all_zones(&self) -> Vec<ZoneItem> {
-        // [COMMENT]: Kích hoạt đồng bộ hóa nếu bộ nhớ đệm chưa được nạp hoặc hết hạn
-        let _ = self.sync_zones_if_needed().await;
+    // ─── Public API ─────────────────────────────────────────────────────────
 
-        let code_map = self.code_to_id.read().await;
-        let status_map = self.id_to_status.read().await;
-        let name_map = self.id_to_name.read().await;
-
-        let mut items = Vec::new();
-        for (code, id) in code_map.iter() {
-            let status = status_map.get(id).cloned().unwrap_or_default();
-            let name = name_map.get(id).cloned().unwrap_or_default();
-            items.push(ZoneItem {
-                id: id.clone(),
-                code: code.clone(),
-                status,
-                name,
-            });
-        }
-        items
-    }
-
-    // [COMMENT]: Tìm kiếm zone_id dựa vào zone_code
     pub async fn resolve_code_to_id(&self, zone_code: &str) -> Option<String> {
         self.resolve_code_to_id_and_status(zone_code)
             .await
             .map(|(id, _)| id)
     }
 
-    // [COMMENT]: Tìm kiếm zone_id và status dựa vào zone_code, hỗ trợ RPC sync khi cache miss và cache bad codes
-    pub async fn resolve_code_to_id_and_status(&self, zone_code: &str) -> Option<(String, String)> {
-        // [COMMENT]: 1. Thử đọc từ RAM cache L1 xem có tồn tại không
-        {
-            let id_map = self.code_to_id.read().await;
-            let status_map = self.id_to_status.read().await;
-            if let Some(id) = id_map.get(zone_code) {
-                if let Some(status) = status_map.get(id) {
-                    return Some((id.clone(), status.clone()));
-                }
-            }
-        }
+    pub async fn get_all_zones(&self) -> Vec<ZoneItem> {
+        // [COMMENT]: Luôn sync từ gRPC để đảm bảo danh sách đầy đủ
+        self.sync_zones_from_rpc().await;
 
-        // [COMMENT]: 2. Kiểm tra danh sách bad codes xem có phải zone code không tồn tại đang bị spam không
-        {
-            let bad = self.bad_codes.read().await;
-            if let Some(expiry) = bad.get(zone_code) {
-                if *expiry > Instant::now() {
-                    Logger::sys_debug(
-                        "zone.manager",
-                        &format!("Zone code '{}' is cached as invalid. Fast failing request to prevent spam.", zone_code),
-                    );
+        let map = self.zone_code_to_id.read().await;
+        let status_map = self.zone_id_to_status.read().await;
+        let name_map = self.zone_id_to_name.read().await;
+
+        map.iter()
+            .filter_map(|(code, entry)| {
+                if entry.is_expired() {
                     return None;
                 }
-            }
-        }
-
-        // [COMMENT]: 3. Thực hiện đồng bộ qua gRPC đến Controlplane để cập nhật danh sách mới
-        if self.sync_zones_if_needed().await {
-            // [COMMENT]: Đọc lại RAM cache L1 sau khi đã đồng bộ thành công
-            let id_map = self.code_to_id.read().await;
-            let status_map = self.id_to_status.read().await;
-            if let Some(id) = id_map.get(zone_code) {
-                if let Some(status) = status_map.get(id) {
-                    return Some((id.clone(), status.clone()));
+                if let CacheValue::Found(id) = &entry.value {
+                    let status = status_map
+                        .get(id)
+                        .filter(|e| !e.is_expired())
+                        .and_then(|e| {
+                            if let CacheValue::Found(s) = &e.value {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    let name = name_map
+                        .get(id)
+                        .filter(|e| !e.is_expired())
+                        .and_then(|e| {
+                            if let CacheValue::Found(n) = &e.value {
+                                Some(n.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    Some(ZoneItem {
+                        id: id.clone(),
+                        code: code.clone(),
+                        status,
+                        name,
+                    })
+                } else {
+                    None
                 }
-            }
+            })
+            .collect()
+    }
+
+    // ─── Core Resolution: L1 → Redis L2 → gRPC → Negative Cache ────────────
+
+    /// Phân giải zone_code → (zone_id, status)
+    /// Thứ tự: L1 Cache → Redis L2 (shared) → gRPC Controlplane → Negative Cache
+    pub async fn resolve_code_to_id_and_status(&self, zone_code: &str) -> Option<(String, String)> {
+        let clean_code = zone_code.trim().to_lowercase();
+
+        // 1. L1 Cache (in-process, nhanh nhất)
+        if let Some((id, status)) = self.l1_lookup(&clean_code).await {
+            return Some((id, status));
         }
 
-        // [COMMENT]: 4. Nếu sau khi đồng bộ vẫn không tìm thấy -> đây là zone code không tồn tại. Cache lại để chặn spam.
+        // 2. Redis L2 Cache (shared giữa tất cả ACR node)
+        if let Some(result) = self.l2_lookup(&clean_code).await {
+            // [COMMENT]: Ghi ngược L1 để lần sau khỏi xuống Redis
+            if let Some((ref id, ref status)) = result {
+                self.l1_set_zone(&clean_code, id, status).await;
+            } else {
+                self.l1_set_negative(&clean_code).await;
+            }
+            return result;
+        }
+
+        // 3. gRPC Controlplane fallback (Single Flight bảo vệ)
+        // [COMMENT]: Sau khi sync gRPC, kết quả ghi vào Redis L2 để các node khác dùng
+        self.sync_zones_from_rpc().await;
+
+        // Đọc lại L1 sau sync
+        if let Some(result) = self.l1_lookup(&clean_code).await {
+            return Some(result);
+        }
+
+        // 4. Không tìm thấy - ghi Negative Cache để tránh stampede
         Logger::sys_warn(
             "zone.manager",
             &format!(
-                "Zone code '{}' not found after sync. Caching as invalid zone code.",
-                zone_code
+                "Zone code '{}' not found after all fallbacks. Caching as invalid.",
+                clean_code
             ),
             "invalid_zone_code",
         );
-        let mut bad = self.bad_codes.write().await;
-        // Cache zone lỗi trong vòng 5 phút (300 giây)
-        bad.insert(
-            zone_code.to_string(),
-            Instant::now() + Duration::from_secs(300),
-        );
+        self.l1_set_negative(&clean_code).await;
+        self.l2_set_negative(&clean_code).await;
 
         None
     }
 
-    // [COMMENT]: Tìm kiếm zone_code và status dựa vào zone_id, hỗ trợ RPC sync khi cache miss
     pub async fn resolve_id_to_code_and_status(&self, zone_id: &str) -> Option<(String, String)> {
-        // Thử đọc từ RAM cache L1 (đọc đồng thời)
-        {
-            let code_map = self.id_to_code.read().await;
-            let status_map = self.id_to_status.read().await;
-            if let Some(code) = code_map.get(zone_id) {
-                if let Some(status) = status_map.get(zone_id) {
-                    return Some((code.clone(), status.clone()));
+        // [COMMENT]: Đọc từ L1 cache theo chiều ngược lại (id → code+status)
+        let status_map = self.zone_id_to_status.read().await;
+        let name_map = self.zone_id_to_name.read().await;
+
+        if let Some(status_entry) = status_map.get(zone_id) {
+            if !status_entry.is_expired() {
+                if let CacheValue::Found(ref status) = status_entry.value {
+                    if let Some(name_entry) = name_map.get(zone_id) {
+                        if !name_entry.is_expired() {
+                            if let CacheValue::Found(ref code) = name_entry.value {
+                                return Some((code.clone(), status.clone()));
+                            }
+                        }
+                    }
                 }
             }
         }
+        drop(status_map);
+        drop(name_map);
 
-        // Cache miss, tiến hành gọi RPC đồng bộ thông qua cơ chế Single Flight
-        if self.sync_zones_if_needed().await {
-            // Đọc lại sau khi đồng bộ thành công
-            let code_map = self.id_to_code.read().await;
-            let status_map = self.id_to_status.read().await;
-            if let Some(code) = code_map.get(zone_id) {
-                if let Some(status) = status_map.get(zone_id) {
-                    return Some((code.clone(), status.clone()));
-                }
+        // Fallback: sync gRPC rồi đọc lại
+        self.sync_zones_from_rpc().await;
+
+        let status_map = self.zone_id_to_status.read().await;
+        let name_map = self.zone_id_to_name.read().await;
+        if let (Some(s_entry), Some(n_entry)) = (status_map.get(zone_id), name_map.get(zone_id)) {
+            if let (CacheValue::Found(status), CacheValue::Found(code)) =
+                (&s_entry.value, &n_entry.value)
+            {
+                return Some((code.clone(), status.clone()));
             }
         }
 
         None
     }
 
-    // [COMMENT]: Kiểm tra và tiến hành đồng bộ các Zones từ Controlplane
-    async fn sync_zones_if_needed(&self) -> bool {
-        // Kiểm tra xem lần đồng bộ trước có nằm trong vòng 5 phút (300 giây) không
-        // Nếu vừa gọi gần đây mà vẫn miss chứng tỏ zone thực sự không tồn tại, chặn spam RPC
-        {
-            let last = self.last_sync.read().await;
-            if let Some(instant) = *last {
-                if instant.elapsed() < Duration::from_secs(300) {
-                    return false;
+    // ─── L1 Cache Helpers ───────────────────────────────────────────────────
+
+    async fn l1_lookup(&self, code: &str) -> Option<(String, String)> {
+        let map = self.zone_code_to_id.read().await;
+        if let Some(entry) = map.get(code) {
+            if entry.is_expired() {
+                return None;
+            }
+            match &entry.value {
+                CacheValue::NotFound => {
+                    Logger::sys_debug("zone.manager", &format!("L1 negative cache hit: {}", code));
+                    return Some(("__NOT_FOUND__".to_string(), String::new()));
+                }
+                CacheValue::Found(id) => {
+                    let status_map = self.zone_id_to_status.read().await;
+                    if let Some(s_entry) = status_map.get(id) {
+                        if !s_entry.is_expired() {
+                            if let CacheValue::Found(status) = &s_entry.value {
+                                return Some((id.clone(), status.clone()));
+                            }
+                        }
+                    }
                 }
             }
         }
+        None
+    }
 
-        // Đăng ký/Chờ Single Flight Lock
+    async fn l1_set_zone(&self, code: &str, id: &str, status: &str) {
+        let ttl = Duration::from_secs(600); // 10 phút TTL L1
+        let expiry = Instant::now() + ttl;
+
+        self.zone_code_to_id.write().await.insert(
+            code.to_string(),
+            CacheEntry {
+                value: CacheValue::Found(id.to_string()),
+                expiry,
+            },
+        );
+        self.zone_id_to_status.write().await.insert(
+            id.to_string(),
+            CacheEntry {
+                value: CacheValue::Found(status.to_string()),
+                expiry,
+            },
+        );
+    }
+
+    async fn l1_set_negative(&self, code: &str) {
+        // [COMMENT]: Negative cache TTL = 3 phút để tránh DB stampede
+        let expiry = Instant::now() + Duration::from_secs(180);
+        self.zone_code_to_id.write().await.insert(
+            code.to_string(),
+            CacheEntry {
+                value: CacheValue::NotFound,
+                expiry,
+            },
+        );
+    }
+
+    // ─── Redis L2 Helpers (shared giữa các ACR node) ─────────────────────────
+
+    async fn l2_lookup(&self, code: &str) -> Option<Option<(String, String)>> {
+        // Returns: None = miss L2, Some(None) = negative, Some(Some(..)) = found
+        let mut conn = self.get_redis_conn().await.ok()?;
+        let redis_key = format!("zone:code:{}", code);
+        let val: Result<String, _> = redis::cmd("GET")
+            .arg(&redis_key)
+            .query_async(&mut conn)
+            .await;
+
+        match val {
+            Err(_) => None, // Redis miss
+            Ok(v) if v == "NOT_FOUND" => {
+                Logger::sys_debug("zone.manager", &format!("L2 negative cache hit: {}", code));
+                Some(None) // Negative hit
+            }
+            Ok(v) => {
+                // Format: "uuid:status"
+                if let Some(pos) = v.find(':') {
+                    let id = v[..pos].to_string();
+                    let status = v[pos + 1..].to_string();
+                    Some(Some((id, status)))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    async fn l2_set_zone(&self, code: &str, id: &str, status: &str) {
+        if let Ok(mut conn) = self.get_redis_conn().await {
+            let redis_key = format!("zone:code:{}", code);
+            let redis_val = format!("{}:{}", id, status);
+            let _: Result<(), _> = redis::cmd("SET")
+                .arg(&redis_key)
+                .arg(&redis_val)
+                .arg("EX")
+                .arg(86400u64) // TTL L2 = 1 ngày
+                .query_async(&mut conn)
+                .await;
+        }
+    }
+
+    async fn l2_set_negative(&self, code: &str) {
+        if let Ok(mut conn) = self.get_redis_conn().await {
+            let redis_key = format!("zone:code:{}", code);
+            let _: Result<(), _> = redis::cmd("SET")
+                .arg(&redis_key)
+                .arg("NOT_FOUND")
+                .arg("EX")
+                .arg(180u64) // Negative TTL L2 = 3 phút
+                .query_async(&mut conn)
+                .await;
+        }
+    }
+
+    // ─── gRPC Sync từ Controlplane ───────────────────────────────────────────
+
+    /// Sync toàn bộ zone list từ CP qua gRPC, ghi vào L1 + Redis L2.
+    /// Dùng Mutex (single flight) để chỉ 1 task trong node thực hiện tại 1 thời điểm.
+    async fn sync_zones_from_rpc(&self) {
         let _lock = self.single_flight_mutex.lock().await;
-
-        // Double check sau khi lấy được lock (có thể luồng khác vừa chạy xong)
-        {
-            let last = self.last_sync.read().await;
-            if let Some(instant) = *last {
-                if instant.elapsed() < Duration::from_secs(300) {
-                    return true;
-                }
-            }
-        }
 
         Logger::sys_info(
             "zone.manager",
-            "Triggering gRPC sync for zones from Controlplane...",
+            "Syncing zones from Controlplane via gRPC...",
         );
 
-        // Gọi RPC qua CP để lấy zone catalog
         match self.control_plane_client.get_zone_list().await {
             Ok(zones) => {
-                let mut code_map = HashMap::new();
-                let mut id_map = HashMap::new();
-                let mut status_map = HashMap::new();
-                let mut name_map = HashMap::new();
-                for z in zones {
-                    code_map.insert(z.zone_code.clone(), z.zone_id.clone());
-                    id_map.insert(z.zone_id.clone(), z.zone_code.clone());
-                    // [COMMENT]: Lưu trữ thêm status nhận từ gRPC phục vụ kiểm tra điều kiện an toàn
-                    status_map.insert(z.zone_id.clone(), z.status.clone());
-                    // [COMMENT]: Lưu trữ thêm name phục vụ trả về catalog
-                    name_map.insert(z.zone_id.clone(), z.name.clone());
+                for z in &zones {
+                    let clean_code = z.zone_code.trim().to_lowercase();
+
+                    // [COMMENT]: Ghi L1 cache cho node này
+                    self.l1_set_zone(&clean_code, &z.zone_id, &z.status).await;
+
+                    // [COMMENT]: Ghi tên vào L1 để resolve_id_to_code_and_status dùng
+                    let expiry = Instant::now() + Duration::from_secs(600);
+                    self.zone_id_to_name.write().await.insert(
+                        z.zone_id.clone(),
+                        CacheEntry {
+                            value: CacheValue::Found(clean_code.clone()),
+                            expiry,
+                        },
+                    );
+
+                    // [COMMENT]: Ghi Redis L2 để các ACR node khác trong cluster đọc được
+                    // Đây là cơ chế HA: 1 node gọi gRPC → ghi L2 → các node khác tự lấy L2
+                    self.l2_set_zone(&clean_code, &z.zone_id, &z.status).await;
                 }
-
-                // Lưu trữ kết quả vào RAM cache L1
-                *self.code_to_id.write().await = code_map;
-                *self.id_to_code.write().await = id_map;
-                *self.id_to_status.write().await = status_map;
-                *self.id_to_name.write().await = name_map;
-                *self.last_sync.write().await = Some(Instant::now());
-
-                Logger::sys_info("zone.manager", "Zone sync completed successfully.");
-                true
-            }
-            Err(status) => {
-                Logger::sys_error(
+                Logger::sys_info(
                     "zone.manager",
-                    "Failed to sync zones from Controlplane",
-                    &status.to_string(),
+                    &format!("Synced {} zones to L1 + Redis L2.", zones.len()),
                 );
-                // Cập nhật thời gian đồng bộ kể cả khi lỗi để chặn thòng gọi RPC liên tục khi CP gặp sự cố (Fail-safe)
-                *self.last_sync.write().await = Some(Instant::now());
-                false
+            }
+            Err(e) => {
+                Logger::sys_error("zone.manager", "gRPC zone sync failed", &e.to_string());
             }
         }
+    }
+
+    async fn get_redis_conn(&self) -> Result<redis::aio::Connection, String> {
+        self.redis_client
+            .get_async_connection()
+            .await
+            .map_err(|e| e.to_string())
     }
 }

@@ -64,3 +64,48 @@ func (s *TenantService) CreateTenant(ctx context.Context, tenant coreEntity.Tena
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return result, nil
 }
+
+// ResolveTenantByDomain gọi xuống repository để tìm kiếm Tenant theo domain liên kết
+func (s *TenantService) ResolveTenantByDomain(ctx context.Context, domain string) (*coreEntity.Tenant, error) {
+	start := time.Now()
+	result, err := s.repo.ResolveTenantByDomain(ctx, domain)
+	duration := time.Since(start)
+
+	if err != nil {
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ResolveTenantByDomain", coreMetric.OutcomeFailure, duration, err)
+		return nil, err
+	}
+
+	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ResolveTenantByDomain", coreMetric.OutcomeSuccess, duration, nil)
+	return result, nil
+}
+
+// ListTenantsPaged gọi xuống repository để lấy danh sách tenants phân trang cho Edge warmup
+func (s *TenantService) ListTenantsPaged(ctx context.Context, limit, offset int) ([]coreEntity.Tenant, bool, error) {
+	start := time.Now()
+	list, hasMore, err := s.repo.ListTenantsPaged(ctx, limit, offset)
+	duration := time.Since(start)
+
+	if err != nil {
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListTenantsPaged", coreMetric.OutcomeFailure, duration, err)
+		return nil, false, err
+	}
+
+	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ListTenantsPaged", coreMetric.OutcomeSuccess, duration, nil)
+	return list, hasMore, nil
+}
+
+// CheckMembership kiểm tra user có thuộc tenant không, dùng cho xác thực context switch.
+func (s *TenantService) CheckMembership(ctx context.Context, tenantID, userID uuid.UUID) (bool, string, error) {
+	start := time.Now()
+	isMember, role, err := s.repo.CheckMembership(ctx, tenantID, userID)
+	duration := time.Since(start)
+
+	if err != nil {
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "CheckMembership", coreMetric.OutcomeFailure, duration, err)
+		return false, "", err
+	}
+
+	coreMetric.Downstream(ctx, coreMetric.KindRepo, "CheckMembership", coreMetric.OutcomeSuccess, duration, nil)
+	return isMember, role, nil
+}

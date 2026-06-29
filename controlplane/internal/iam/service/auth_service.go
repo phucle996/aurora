@@ -22,7 +22,6 @@ import (
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/constant"
 	"controlplane/pkg/id"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
@@ -33,7 +32,6 @@ import (
 )
 
 // [COMMENT]: Bỏ hằng số mặc định để ưu tiên nhận locale & timezone trực tiếp từ client
-
 
 type AuthService struct {
 	repo       iamRepoInterface.AuthRepository
@@ -254,13 +252,8 @@ func (s *AuthService) pushVerifyAccountOutboxJob(ctx context.Context, userID uui
 // kiểm tra trạng thái tài khoản, định danh/upsert thiết bị và sinh Opaque Refresh Token (nếu được yêu cầu).
 // Phương thức này được gọi qua gRPC từ Gateway/ACR để CP đóng vai trò Data Plane (SoT).
 func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (res *iamEntity.VerifyUserCredentialsResult, err error) {
-	var ipVal, uaVal string
-	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
-		ipVal = v
-	}
-	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
-		uaVal = v
-	}
+	ipVal := req.RemoteIP
+	uaVal := req.UserAgent
 
 	loginOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
@@ -268,14 +261,36 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}()
 
 	// [COMMENT]: 1. Truy xuất thông tin người dùng từ cơ sở dữ liệu (Single Source of Truth)
+	// Nếu TenantDomain có giá trị (login qua username@tenant_domain), dùng query JOIN tenant_domains.
+	// Nếu không có (login global), dùng query thường.
 	now := time.Now()
-	user, loadErr := s.repo.GetLoginUserByUsername(ctx, req.Username)
-	if loadErr != nil {
-		if errors.Is(loadErr, iamTaxonomy.ErrInvalidCredentials) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetLoginUserByUsername", iamMetrics.OutcomeInvalidCredential, time.Since(now), loadErr)
-			return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, loadErr, iamMetrics.OutcomeInvalidCredential)
+	var (
+		user       *iamEntity.LoginUser
+		loadErr    error
+		tenantID   string
+		tenantCode string
+	)
+	if req.TenantDomain != "" {
+		// [COMMENT]: Login tenant context — JOIN tenant_memberships + tenant_domains
+		user, loadErr = s.repo.LoginUserByUsernameAndTenantDomain(ctx, req.Username, req.TenantDomain)
+		if user != nil {
+			if user.TenantID != nil {
+				tenantID = *user.TenantID
+			}
+			if user.TenantCode != nil {
+				tenantCode = *user.TenantCode
+			}
 		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "GetLoginUserByUsername", iamMetrics.OutcomeFailureUnknown, time.Since(now), loadErr)
+	} else {
+		// [COMMENT]: Login global context — chỉ query bảng users
+		user, loadErr = s.repo.LoginUserByUsername(ctx, req.Username)
+	}
+	if loadErr != nil {
+		if errors.Is(loadErr, iamTaxonomy.ErrUserNotFound) || errors.Is(loadErr, iamTaxonomy.ErrRoleRequired) || errors.Is(loadErr, iamTaxonomy.ErrInvalidCredentials) {
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoginUserByUsername", iamMetrics.OutcomeInvalidCredential, time.Since(now), loadErr)
+			return nil, apperr.Wrap(loadErr, loadErr, iamMetrics.OutcomeInvalidCredential)
+		}
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "LoginUserByUsername", iamMetrics.OutcomeFailureUnknown, time.Since(now), loadErr)
 		return nil, fmt.Errorf("%w: failed to get login user: %v", iamTaxonomy.ErrAuthenticationUnavailable, loadErr)
 	}
 
@@ -377,27 +392,20 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		}
 	}
 
-	// [COMMENT]: 6. Truy vấn Role và Level của người dùng trong hệ thống
-	role, levelInt, err := s.rbacRepo.GetUserRoleAndLevelByScope(ctx, user.ID, "platform")
-	if err != nil {
-		loginOutcome = iamMetrics.OutcomeFailureUnknown
-		return nil, apperr.Wrap(iamTaxonomy.ErrInternalError, err, iamMetrics.OutcomeFailureUnknown)
-	}
-	level := int32(levelInt)
-	tenantID := ""
-
 	// [COMMENT]: 7. Thu hồi bớt thiết bị vượt quá số lượng cho phép (Best effort)
 	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID)
 
 	return &iamEntity.VerifyUserCredentialsResult{
 		Valid:          true,
 		UserID:         user.ID.String(),
-		Role:           role,
-		Level:          level,
+		Role:           user.Role,
+		Level:          user.Level,
 		TenantID:       tenantID,
 		ClientDeviceID: clientDeviceID,
 		RefreshToken:   rawRefresh,
 		Username:       user.Username,
+		// [COMMENT]: TenantCode chỉ có giá trị khi login qua tenant_domain. Rỗng nếu login global.
+		TenantCode: tenantCode,
 	}, nil
 }
 

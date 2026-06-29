@@ -1,15 +1,6 @@
 // ======================================================================================================
 // 📂 MODULE: controlplane/internal/hierarchy/transport/rpc/handler/zone_grpc_handler.go
-//            Hiện Thực Hóa gRPC Server Handler Cho ZoneService Phục Vụ ACL Service
-// ======================================================================================================
-//
-// 📜 HIỆP ĐỒNG THIẾT KẾ & SỰ PHÙ HỢP AN TOÀN (DESIGN CONTRACT & ZERO TRUST):
-//   - Cung cấp cổng tiếp nhận thông tin Zone (ID và Code) phục vụ đồng bộ L1 cache cho ACL.
-//   - Logic xử lý tối giản, truy xuất qua L1 RAM cache của Core Service.
-//
-// 🔒 RANH GIỚI BẢO MẬT & KIẾN TRÚC (CRITICAL ARCHITECTURAL BOUNDARY):
-//   - Đóng vai trò là Transport Layer, chịu trách nhiệm map lỗi gRPC thô và unwrap errors.
-//
+//            gRPC Handler cho ZoneService - phục vụ đồng bộ Zone và phân giải Zone cho Edge/ACR
 // ======================================================================================================
 
 package coreRpcHandler
@@ -22,7 +13,7 @@ import (
 	"controlplane/pkg/logger"
 )
 
-// ZoneGRPCHandler tiếp nhận các yêu cầu đồng bộ danh sách Zone qua gRPC.
+// ZoneGRPCHandler tiếp nhận các yêu cầu đồng bộ Zone qua gRPC.
 type ZoneGRPCHandler struct {
 	coreProto.UnimplementedZoneServiceServer
 	service coreSvcInterface.ZoneService
@@ -30,19 +21,15 @@ type ZoneGRPCHandler struct {
 
 // NewZoneGRPCHandler khởi tạo gRPC Handler cho ZoneService.
 func NewZoneGRPCHandler(service coreSvcInterface.ZoneService) *ZoneGRPCHandler {
-	// [COMMENT]: Gán dependency ZoneService
-	return &ZoneGRPCHandler{
-		service: service,
-	}
+	return &ZoneGRPCHandler{service: service}
 }
 
-// GetZoneList trả về danh sách các Zone bao gồm ID và Code phục vụ L1 cache của ACL.
+// GetZoneList trả về danh sách Zone để ACR khởi tạo L1 cache khi boot.
 func (h *ZoneGRPCHandler) GetZoneList(ctx context.Context, req *coreProto.GetZoneListRequest) (*coreProto.GetZoneListResponse, error) {
 	const op = "core.zone.rpc.get_zone_list"
-	// [COMMENT]: Gọi xuống Service layer để lấy danh sách zone tối giản qua rpcListZones
+
 	zones, err := h.service.RPCListZones(ctx)
 	if err != nil {
-		// [COMMENT]: Sử dụng RPCHandlerWarn (log_type: handler) để ghi nhận lỗi kèm theo trace_id từ context
 		logger.RPCHandlerWarn(ctx, op, err, "failed to list zones via gRPC")
 		return nil, err
 	}
@@ -59,4 +46,29 @@ func (h *ZoneGRPCHandler) GetZoneList(ctx context.Context, req *coreProto.GetZon
 	}
 
 	return &coreProto.GetZoneListResponse{Zones: pbZones}, nil
+}
+
+// ResolveZone phân giải zone theo code, phục vụ lazy-load từ ACR khi miss L1/L2.
+func (h *ZoneGRPCHandler) ResolveZone(ctx context.Context, req *coreProto.ResolveZoneRequest) (*coreProto.ResolveZoneResponse, error) {
+	const op = "core.zone.rpc.resolve_zone"
+
+	zones, err := h.service.RPCListZones(ctx)
+	if err != nil {
+		logger.RPCHandlerWarn(ctx, op, err, "failed to list zones for resolution")
+		return nil, err
+	}
+
+	for _, z := range zones {
+		if z.Code == req.ZoneCode {
+			return &coreProto.ResolveZoneResponse{
+				Found:  true,
+				ZoneId: z.ID.String(),
+				Status: string(z.Status),
+				Name:   z.Name,
+			}, nil
+		}
+	}
+
+	// [COMMENT]: Not found trả về found=false để ACR ghi negative cache
+	return &coreProto.ResolveZoneResponse{Found: false}, nil
 }

@@ -42,6 +42,9 @@ sha2 = "0.10"
 # Url dùng để parse referer/origin url an toàn
 url = "2.5"
 
+# futures-util để handle asynchronous stream cho Redis Pub/Sub
+futures-util = "0.3"
+
 # ═══════════════════════════════════════
 # OpenTelemetry: Tracing + Metrics pipeline (đồng bộ version với dataplane)
 # ═══════════════════════════════════════

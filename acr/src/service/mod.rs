@@ -8,6 +8,7 @@ pub mod auth;
 pub mod login;
 pub mod session;
 pub mod zone;
+pub mod tenant;
 pub mod csrf;
 pub mod signature;
 pub mod ratelimit;

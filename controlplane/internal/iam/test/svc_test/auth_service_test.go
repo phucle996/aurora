@@ -10,7 +10,6 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
-	hierarchyproto "controlplane/internal/hierarchy/transport/rpc/proto"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -35,9 +34,22 @@ type authRepoMock struct {
 
 var _ iamRepoInterface.AuthRepository = (*authRepoMock)(nil)
 
-func (m *authRepoMock) GetLoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+func (m *authRepoMock) LoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 	if m.getUserFn != nil {
 		return m.getUserFn(ctx, username)
+	}
+	return nil, nil
+}
+
+func (m *authRepoMock) LoginUserByUsernameAndTenantDomain(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error) {
+	if m.getUserFn != nil {
+		user, err := m.getUserFn(ctx, username)
+		if user != nil {
+			user.TenantID = &tenantDomain
+			code := "mock-tenant"
+			user.TenantCode = &code
+		}
+		return user, err
 	}
 	return nil, nil
 }
@@ -62,19 +74,6 @@ func makeTestRegistry(secretKey string, rdb *redis.Client) *cacheengine.CacheReg
 	}
 	registry.L2 = cacheengine.NewL2Cache(rdb)
 	registry.Exec = cacheengine.NewL2LuaExecutor(rdb)
-	cacheengine.Register(registry, "access_secret", 1*time.Hour, func(ctx context.Context, param string) (*hierarchyproto.RuntimeSecrets, error) {
-		return &hierarchyproto.RuntimeSecrets{
-			SecretType: "access_secret",
-			Active: &hierarchyproto.RuntimeSecret{
-				Secret:      []byte(secretKey),
-				Fingerprint: "fp",
-			},
-			Standby: &hierarchyproto.RuntimeSecret{
-				Secret:      []byte(secretKey),
-				Fingerprint: "fp",
-			},
-		}, nil
-	})
 	cacheengine.Register(registry, "zone_by_code", 5*time.Minute, func(ctx context.Context, param string) (string, error) {
 		return "00000000-0000-0000-0000-000000000000", nil
 	})

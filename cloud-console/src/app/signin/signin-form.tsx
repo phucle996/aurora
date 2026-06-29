@@ -74,6 +74,12 @@ export default function SignInForm({
   const [trustDevice, setTrustDevice] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
+  // [COMMENT]: Parse username@tenant_domain real-time:
+  // nếu username chứa '@', tách thành rawUsername và tenantDomain để hiển thị badge và gửi lên API.
+  const atIndex = username.lastIndexOf("@");
+  const rawUsername = atIndex > 0 ? username.slice(0, atIndex) : username;
+  const tenantDomain = atIndex > 0 ? username.slice(atIndex + 1) : "";
+
   const { setAuthenticatedSession } = useUserSession();
 
   // [COMMENT]: Logic xử lý Đăng nhập — validate → generate device key → call API → redirect
@@ -113,11 +119,14 @@ export default function SignInForm({
       }
 
       const payload: LoginRequest = {
-        username,
+        // [COMMENT]: Gửi raw username (không có @domain) và tenant_domain riêng biệt.
+        // Nếu không có @domain, tenantDomain là chuỗi rỗng — CP sẽ xử lý global login.
+        username: rawUsername,
         password,
         device_public_key: devicePublicKey,
         trust_device: trustDevice,
         zone_code: selectedZoneCode,
+        tenant_domain: tenantDomain || undefined,
       };
 
       await authAPI.login(payload);
@@ -150,13 +159,25 @@ export default function SignInForm({
           <Input
             id="signin-username"
             type="text"
-            placeholder={t.auth.placeholderUsername}
+            placeholder={`${t.auth.placeholderUsername} or user@tenant.com`}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
             disabled={isLoading}
             className="h-11 rounded-[8px] border-slate-300 dark:border-slate-800"
           />
+          {/* [COMMENT]: Badge hiển thị tenant context khi user gõ username@tenant_domain */}
+          {tenantDomain && (
+            <div className="flex items-center gap-1.5 mt-1 animate-in fade-in duration-200">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:border-blue-800">
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                  <path d="M5 0a5 5 0 100 10A5 5 0 005 0zm0 1.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zM5 9a4 4 0 01-2.9-1.24C2.35 6.9 3.6 6.25 5 6.25s2.65.65 2.9 1.51A4 4 0 015 9z"/>
+                </svg>
+                Tenant: <strong>{tenantDomain}</strong>
+              </span>
+              <span className="text-[11px] text-muted-foreground">Đăng nhập vào tenant context</span>
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">

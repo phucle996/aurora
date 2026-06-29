@@ -7,6 +7,9 @@ export type LoginRequest = {
   trust_device: boolean;
   // [COMMENT]: zone_code đại diện cho zone mà user lựa chọn để đăng nhập (ví dụ: "vn", "sg")
   zone_code: string;
+  // [COMMENT]: tenant_domain được điền khi user nhập username@tenant_domain.
+  // Undefined = đăng nhập global context, có giá trị = đăng nhập tenant context.
+  tenant_domain?: string;
 };
 
 export type RegisterRequest = {

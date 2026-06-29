@@ -93,6 +93,14 @@ func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	password := strings.TrimSpace(request.Password)
 	fullname := strings.TrimSpace(request.Fullname)
 
+	// [COMMENT]: Chặn username chứa ký tự '@' để tránh conflict với format login username@tenant_domain.
+	// Ký tự '@' được dùng làm separator để phân biệt login global và login tenant context.
+	if strings.Contains(username, "@") {
+		logger.HandlerWarn(c, op, iamTaxonomy.ErrInvalidArgument, "username must not contain '@'")
+		apires.RespondBadRequest(c, "Username must not contain '@'. Use email field for email address.")
+		return
+	}
+
 	var phone *string
 	if request.Phone != nil && *request.Phone != "" {
 		phone = request.Phone

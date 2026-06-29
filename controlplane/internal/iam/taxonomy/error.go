@@ -56,6 +56,7 @@ var (
 
 	ErrRoleNotFound       = errors.New("iam: role not found")
 	ErrPermissionNotFound = errors.New("iam: permission not found")
+	ErrRoleRequired       = errors.New("iam: role required")
 )
 
 var (
