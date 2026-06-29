@@ -51,9 +51,10 @@ impl JobRunner {
         stream_key: String,
     ) {
         let lock_key = format!("locks:job:{}", payload.job_id);
-        
+
         // Hạn mức thực thi tối đa lấy từ idle (mặc định 10 phút nếu không chỉ định)
-        let limit = payload.idle
+        let limit = payload
+            .idle
             .map(|s| Duration::from_secs(s as u64))
             .unwrap_or_else(|| Duration::from_secs(600));
 
@@ -193,13 +194,14 @@ impl JobRunner {
                 )
                 .await;
 
-                // Xác nhận giải phóng tin nhắn (XACK) trên Stream khi hoàn tất xử lý (SUCCEEDED hoặc FAILED)
+                // [COMMENT]: Xác nhận giải phóng tin nhắn (XACK) trên Stream bằng group_name động tương ứng của payload
                 if report.result_status == "SUCCEEDED" || report.result_status == "FAILED" {
                     let ack_id = payload.redis_msg_id.as_deref().unwrap_or(&payload.job_id);
+                    let group_name = payload.redis_group_name.as_deref().unwrap_or("dataplane-group");
                     let _ = crate::infra::redis::query::acknowledge_message(
                         redis_job.client(),
                         &stream_key_clone,
-                        "dataplane-group",
+                        group_name,
                         ack_id,
                     )
                     .await;

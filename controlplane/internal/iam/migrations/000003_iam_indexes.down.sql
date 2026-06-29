@@ -10,10 +10,7 @@ DROP INDEX IF EXISTS admin_action_audits_resource_idx;
 DROP INDEX IF EXISTS admin_action_audits_action_created_at_idx;
 DROP INDEX IF EXISTS admin_action_audits_created_at_idx;
 
-DROP INDEX IF EXISTS admin_recovery_codes_used_at_idx;
-DROP INDEX IF EXISTS admin_recovery_codes_created_at_idx;
-DROP INDEX IF EXISTS admin_recovery_codes_code_hash_uidx;
-DROP INDEX IF EXISTS admin_2fa_settings_updated_at_idx;
+-- [COMMENT]: Bỏ drop index admin do bảng đã xóa
 DROP INDEX IF EXISTS oauth_tokens_expires_at_idx;
 DROP INDEX IF EXISTS oauth_tokens_grant_id_idx;
 DROP INDEX IF EXISTS oauth_tokens_user_id_idx;
@@ -68,13 +65,7 @@ DROP INDEX IF EXISTS mfa_challenges_user_id_idx;
 DROP INDEX IF EXISTS mfa_settings_status_idx;
 DROP INDEX IF EXISTS mfa_settings_user_id_idx;
 
-DROP INDEX IF EXISTS device_challenges_expires_at_idx;
-DROP INDEX IF EXISTS device_challenges_status_idx;
-DROP INDEX IF EXISTS device_challenges_device_id_idx;
-DROP INDEX IF EXISTS device_challenges_user_id_idx;
-DROP INDEX IF EXISTS device_challenges_nonce_uidx;
-DROP INDEX IF EXISTS idx_device_challenges_user_status_expires;
-DROP INDEX IF EXISTS idx_device_challenges_device_status_expires;
+-- [COMMENT]: Bỏ drop index device_challenges do bảng đã xóa
 
 DROP INDEX IF EXISTS devices_last_seen_at_idx;
 DROP INDEX IF EXISTS devices_status_idx;

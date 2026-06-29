@@ -51,7 +51,6 @@ func TestDeviceUpsertConcurrentSameClientDeviceID(t *testing.T) {
 				UserID:               userID,
 				DeviceName:           "race-laptop",
 				PublicKey:            pubKey,
-				PublicKeyAlg:         "Ed25519",
 				PublicKeyFingerprint: "fp-race",
 				ClientDeviceID:       &cd,
 				UpdatedAt:            time.Now().UTC(),

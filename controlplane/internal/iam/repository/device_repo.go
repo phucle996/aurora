@@ -36,10 +36,10 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 	query := fmt.Sprintf(`
 		INSERT INTO %s.devices (
 			id, user_id, device_name, device_type, os_name, browser_name,
-			public_key, public_key_alg, public_key_fingerprint, client_device_id,
+			public_key, public_key_fingerprint, client_device_id,
 			last_seen_ip, last_seen_user_agent, last_seen_at, created_at, updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$12)
 		ON CONFLICT (user_id, client_device_id)
 		WHERE client_device_id IS NOT NULL
 		DO UPDATE SET
@@ -53,7 +53,7 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 			updated_at = EXCLUDED.updated_at
 		-- [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để tránh lỗi thư viện pgx
 		-- không thể giải mã (scan) định dạng nhị phân của kiểu dữ liệu inet vào biến con trỏ chuỗi (*string) của Go.
-		RETURNING id, user_id, device_name, device_type, os_name, browser_name, public_key, public_key_alg,
+		RETURNING id, user_id, device_name, device_type, os_name, browser_name, public_key,
 		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
 		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
 	`, r.schema)
@@ -67,14 +67,13 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 		device.OSName,
 		device.BrowserName,
 		device.PublicKey,
-		device.PublicKeyAlg,
 		device.PublicKeyFingerprint,
 		device.ClientDeviceID,
 		device.LastSeenIP,
 		device.LastSeenUserAgent,
 		now,
 	).Scan(
-		&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey, &item.PublicKeyAlg,
+		&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey,
 		&item.PublicKeyFingerprint, &item.ClientDeviceID, &item.Status, &item.TrustedAt, &item.QuarantinedAt, &item.RiskFlags, &item.RevokedAt,
 		&item.LastSeenIP, &item.LastSeenUserAgent, &item.LastSeenAt, &item.CreatedAt, &item.UpdatedAt,
 	); err != nil {
@@ -87,7 +86,7 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error) {
 	// [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để pgx scan được vào Go *string.
 	query := fmt.Sprintf(`
-		SELECT id, user_id, device_name, device_type, os_name, browser_name, public_key, public_key_alg,
+		SELECT id, user_id, device_name, device_type, os_name, browser_name, public_key,
 		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
 		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
 		FROM %s.devices
@@ -104,7 +103,7 @@ func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.
 	for rows.Next() {
 		var item iamModel.Device
 		if scanErr := rows.Scan(
-			&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey, &item.PublicKeyAlg,
+			&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey,
 			&item.PublicKeyFingerprint, &item.ClientDeviceID, &item.Status, &item.TrustedAt, &item.QuarantinedAt, &item.RiskFlags, &item.RevokedAt,
 			&item.LastSeenIP, &item.LastSeenUserAgent, &item.LastSeenAt, &item.CreatedAt, &item.UpdatedAt,
 		); scanErr != nil {

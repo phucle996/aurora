@@ -547,6 +547,7 @@ services:
       RESULT_STREAM_NAME: "job_results_stream"
       APP_LOG_LEVEL: "debug"
       METRICS_PORT: "9102"
+      CDC_SOURCES: "mail.mail_outbox_records,iam.iam_outbox_records"
       CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
       CONTROLPLANE_GRPC_CA_CERT: "/etc/job-proxy/tls/ca.crt"
       CONTROLPLANE_GRPC_CLIENT_CERT: "/etc/job-proxy/tls/grpc-server.crt"

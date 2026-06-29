@@ -32,13 +32,7 @@ CREATE INDEX IF NOT EXISTS devices_user_active_seen_idx
     ON devices (user_id, last_seen_at DESC, created_at DESC)
     WHERE status != 'revoked';
 
-CREATE UNIQUE INDEX IF NOT EXISTS device_challenges_nonce_uidx ON device_challenges(nonce);
-CREATE INDEX IF NOT EXISTS device_challenges_user_id_idx ON device_challenges(user_id);
-CREATE INDEX IF NOT EXISTS device_challenges_device_id_idx ON device_challenges(device_id);
-CREATE INDEX IF NOT EXISTS device_challenges_status_idx ON device_challenges(status);
-CREATE INDEX IF NOT EXISTS device_challenges_expires_at_idx ON device_challenges(expires_at);
-CREATE INDEX IF NOT EXISTS idx_device_challenges_device_status_expires ON device_challenges(device_id, status, expires_at);
-CREATE INDEX IF NOT EXISTS idx_device_challenges_user_status_expires ON device_challenges(user_id, status, expires_at);
+-- [COMMENT]: Bỏ index device_challenges do bảng đã được xóa
 
 CREATE INDEX IF NOT EXISTS mfa_settings_user_id_idx ON mfa_settings(user_id);
 CREATE INDEX IF NOT EXISTS mfa_settings_status_idx ON mfa_settings(status);
@@ -113,11 +107,7 @@ CREATE INDEX IF NOT EXISTS admin_action_audits_action_created_at_idx ON admin_ac
 CREATE INDEX IF NOT EXISTS admin_action_audits_resource_idx ON admin_action_audits(resource_type, resource_id);
 CREATE INDEX IF NOT EXISTS admin_action_audits_status_created_at_idx ON admin_action_audits(status, created_at);
 
--- Admin 2FA/recovery v1 indexes
-CREATE INDEX IF NOT EXISTS admin_2fa_settings_updated_at_idx ON admin_2fa_settings(updated_at);
-CREATE UNIQUE INDEX IF NOT EXISTS admin_recovery_codes_code_hash_uidx ON admin_recovery_codes(code_hash);
-CREATE INDEX IF NOT EXISTS admin_recovery_codes_created_at_idx ON admin_recovery_codes(created_at);
-CREATE INDEX IF NOT EXISTS admin_recovery_codes_used_at_idx ON admin_recovery_codes(used_at);
+-- [COMMENT]: Bỏ index admin_2fa_settings và admin_recovery_codes do bảng đã được xóa
 
 -- Outbox indexes
 CREATE INDEX IF NOT EXISTS idx_iam_outbox_pending ON iam_outbox_records (status, id ASC) WHERE status = 'PENDING';

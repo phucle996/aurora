@@ -3,6 +3,7 @@ mod cdc;
 mod result_consumer;
 mod observability;
 mod transport;
+mod reverse_provider;
 
 use config::Config;
 use cdc::CdcStreamer;
@@ -11,6 +12,7 @@ use observability::logger::Logger;
 use observability::otel::OtelTracer;
 use observability::metrics::MetricsManager;
 use observability::queue_monitor::QueueMonitor;
+use reverse_provider::ReverseProvider;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,9 +51,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Khởi tạo các cấu phần proxy 2 chiều và monitor
     let streamer = CdcStreamer::new(config.clone(), redis_client.clone());
     let consumer = ResultConsumer::new(config.clone(), redis_client.clone());
+    let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone());
     let monitor = QueueMonitor::new(config, redis_client);
 
-    // 4. Chạy song song 3 luồng: Outbound, Inbound và Queue Monitor (độc lập, HA)
+    // 4. Chạy song song các luồng nền độc lập (HA)
     tokio::select! {
         res = streamer.run() => {
             if let Err(err) = res {
@@ -62,6 +65,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         res = consumer.run() => {
             if let Err(err) = res {
                 Logger::sys_error("main.run", "Result Consumer (Inbound) gặp lỗi nghiêm trọng", &err.to_string());
+                std::process::exit(1);
+            }
+        }
+        res = reverse_provider.run() => {
+            if let Err(err) = res {
+                Logger::sys_error("main.run", "Reverse Provider gặp lỗi nghiêm trọng", &err.to_string());
                 std::process::exit(1);
             }
         }

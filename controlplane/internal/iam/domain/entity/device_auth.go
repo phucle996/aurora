@@ -34,7 +34,6 @@ type Device struct {
 	OSName               *string
 	BrowserName          *string
 	PublicKey            string
-	PublicKeyAlg         string
 	PublicKeyFingerprint string
 	ClientDeviceID       *string
 	Status               DeviceStatus
@@ -47,24 +46,6 @@ type Device struct {
 	LastSeenAt           *time.Time
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
-}
-
-type DeviceChallenge struct {
-	ID               uuid.UUID
-	UserID           uuid.UUID
-	DeviceID         uuid.UUID
-	Nonce            string
-	Purpose          string
-	Status           ChallengeStatus
-	RequestMethod    *string
-	RequestPath      *string
-	PayloadHash      *string
-	ExpiresAt        time.Time
-	VerifiedAt       *time.Time
-	ConsumedAt       *time.Time
-	CreatedIP        *string
-	CreatedUserAgent *string
-	CreatedAt        time.Time
 }
 
 type DevicePresence struct {

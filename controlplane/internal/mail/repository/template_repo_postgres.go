@@ -26,12 +26,12 @@ func (r *templateRepoPostgres) Create(ctx context.Context, t *mailEntity.Templat
 	return nil
 }
 
-func (r *templateRepoPostgres) GetByID(ctx context.Context, tenantID, id string) (*mailEntity.Template, error) {
+func (r *templateRepoPostgres) GetByID(ctx context.Context, id string) (*mailEntity.Template, error) {
 	// Skeleton implementation
 	return nil, nil
 }
 
-func (r *templateRepoPostgres) List(ctx context.Context, tenantID string) ([]*mailEntity.Template, error) {
+func (r *templateRepoPostgres) List(ctx context.Context) ([]*mailEntity.Template, error) {
 	// Skeleton implementation
 	return nil, nil
 }
@@ -41,7 +41,7 @@ func (r *templateRepoPostgres) Update(ctx context.Context, t *mailEntity.Templat
 	return nil
 }
 
-func (r *templateRepoPostgres) Delete(ctx context.Context, tenantID, id string) error {
+func (r *templateRepoPostgres) Delete(ctx context.Context, id string) error {
 	// Skeleton implementation
 	return nil
 }

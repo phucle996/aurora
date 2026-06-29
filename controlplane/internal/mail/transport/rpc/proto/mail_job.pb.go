@@ -125,10 +125,7 @@ func (x *SmtpTestConfig) GetClientKeyPem() string {
 // Cấu hình gửi email giao dịch/hệ thống dùng chung (generic mail job)
 type SendMailConfig struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	To                string                 `protobuf:"bytes,1,opt,name=to,proto3" json:"to,omitempty"`                                                                                                                                  // Địa chỉ nhận email
-	Subject           string                 `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`                                                                                                                        // Tiêu đề email
-	BodyHtml          string                 `protobuf:"bytes,3,opt,name=body_html,json=bodyHtml,proto3" json:"body_html,omitempty"`                                                                                                      // Nội dung email định dạng HTML (hoặc raw text)
-	TemplateVariables map[string]string      `protobuf:"bytes,4,rep,name=template_variables,json=templateVariables,proto3" json:"template_variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Các tham số động truyền vào template
+	TemplateVariables map[string]string      `protobuf:"bytes,1,rep,name=template_variables,json=templateVariables,proto3" json:"template_variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Các tham số động truyền vào template
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -161,27 +158,6 @@ func (x *SendMailConfig) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SendMailConfig.ProtoReflect.Descriptor instead.
 func (*SendMailConfig) Descriptor() ([]byte, []int) {
 	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *SendMailConfig) GetTo() string {
-	if x != nil {
-		return x.To
-	}
-	return ""
-}
-
-func (x *SendMailConfig) GetSubject() string {
-	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *SendMailConfig) GetBodyHtml() string {
-	if x != nil {
-		return x.BodyHtml
-	}
-	return ""
 }
 
 func (x *SendMailConfig) GetTemplateVariables() map[string]string {
@@ -380,12 +356,9 @@ const file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc = "" +
 	"\x0eclient_key_pem\x18\b \x01(\tH\x02R\fclientKeyPem\x88\x01\x01B\x0e\n" +
 	"\f_ca_cert_pemB\x12\n" +
 	"\x10_client_cert_pemB\x11\n" +
-	"\x0f_client_key_pem\"\xf9\x01\n" +
-	"\x0eSendMailConfig\x12\x0e\n" +
-	"\x02to\x18\x01 \x01(\tR\x02to\x12\x18\n" +
-	"\asubject\x18\x02 \x01(\tR\asubject\x12\x1b\n" +
-	"\tbody_html\x18\x03 \x01(\tR\bbodyHtml\x12Z\n" +
-	"\x12template_variables\x18\x04 \x03(\v2+.mail.SendMailConfig.TemplateVariablesEntryR\x11templateVariables\x1aD\n" +
+	"\x0f_client_key_pem\"\xb2\x01\n" +
+	"\x0eSendMailConfig\x12Z\n" +
+	"\x12template_variables\x18\x01 \x03(\v2+.mail.SendMailConfig.TemplateVariablesEntryR\x11templateVariables\x1aD\n" +
 	"\x16TemplateVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x04\n" +

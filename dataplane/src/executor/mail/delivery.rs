@@ -29,6 +29,16 @@ pub async fn dispatch_mail_job(
     );
 
     match action {
+        // [COMMENT]: Định tuyến action verify_account sang MailVerifyAccountExecutor chuyên biệt
+        "verify_account" => {
+            let exec = super::verify_account::MailVerifyAccountExecutor::new(
+                redis_mgr,
+                zone_id.to_string(),
+                worker_pool.lmtp_pool.clone(),
+            );
+            exec.execute(payload).await
+        }
+
         // Gửi email nghiệp vụ hoặc email hệ thống thông qua MailSendExecutor
         action if action == "send" || action.starts_with("system.") => {
             let exec = super::send::MailSendExecutor::new(

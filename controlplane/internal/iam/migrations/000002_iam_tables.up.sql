@@ -87,7 +87,6 @@ CREATE TABLE IF NOT EXISTS devices (
     os_name varchar(128) NULL, -- Tên hệ điều hành
     browser_name varchar(128) NULL, -- Tên browser nếu là web login
     public_key text NOT NULL, -- Public key của device
-    public_key_alg varchar(64) NOT NULL DEFAULT 'Ed25519', -- Thuật toán public key
     public_key_fingerprint varchar(255) NOT NULL, -- Fingerprint public key, unique theo user
     status device_status NOT NULL DEFAULT 'new', -- Trạng thái device
     trusted_at timestamptz NULL, -- Thời điểm trust device
@@ -110,7 +109,6 @@ COMMENT ON COLUMN devices.device_type IS 'Type of the device such as browser, mo
 COMMENT ON COLUMN devices.os_name IS 'Operating system name of the device.';
 COMMENT ON COLUMN devices.browser_name IS 'Browser name when the device is used through a web login flow.';
 COMMENT ON COLUMN devices.public_key IS 'Public key registered for device-bound authentication. Private key must remain on the client device.';
-COMMENT ON COLUMN devices.public_key_alg IS 'Algorithm used by the stored public key. Default is Ed25519.';
 COMMENT ON COLUMN devices.public_key_fingerprint IS 'Fingerprint of the stored public key. Unique per user.';
 COMMENT ON COLUMN devices.status IS 'Current lifecycle/security status of the device. Allowed values: new, recognized, trusted, suspicious, revoked.';
 COMMENT ON COLUMN devices.trusted_at IS 'Timestamp when the device was marked trusted.';
@@ -130,42 +128,6 @@ ALTER TABLE refresh_tokens
         FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE;
 
 
-CREATE TABLE IF NOT EXISTS device_challenges (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID challenge
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- User liên quan challenge
-    device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE, -- Device cần verify
-    nonce text NOT NULL, -- Nonce/challenge unique
-    purpose varchar(120) NOT NULL, -- Mục đích challenge, enforce ở service layer
-    status challenge_status NOT NULL DEFAULT 'pending', -- Trạng thái challenge
-    request_method varchar(16) NULL, -- HTTP method bind vào challenge nếu cần
-    request_path text NULL, -- Path bind vào challenge nếu cần
-    payload_hash text NULL, -- Hash payload cần verify nếu dùng proof-of-possession
-    expires_at timestamptz NOT NULL, -- Thời điểm challenge hết hạn
-    verified_at timestamptz NULL, -- Thời điểm verify thành công
-    consumed_at timestamptz NULL, -- Thời điểm consume challenge
-    created_ip inet NULL, -- IP tạo challenge
-    created_user_agent text NULL, -- User-agent tạo challenge
-    created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo challenge
-    CONSTRAINT device_challenges_nonce_key UNIQUE (nonce),
-    CONSTRAINT device_challenges_expires_after_created_chk CHECK (expires_at > created_at)
-);
-
-COMMENT ON TABLE device_challenges IS 'Stores device verification challenges and nonces for device-bound proof flows such as refresh_token, device_trust, or sensitive actions.';
-COMMENT ON COLUMN device_challenges.id IS 'Primary key of the device challenge record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN device_challenges.user_id IS 'User related to the device challenge.';
-COMMENT ON COLUMN device_challenges.device_id IS 'Device that must prove possession or trust state.';
-COMMENT ON COLUMN device_challenges.nonce IS 'Unique nonce or challenge value issued by the server.';
-COMMENT ON COLUMN device_challenges.purpose IS 'Challenge purpose such as login_device_verify, refresh_token, sensitive_action, or device_trust. Enforced at the service layer.';
-COMMENT ON COLUMN device_challenges.status IS 'Current lifecycle status of the challenge.';
-COMMENT ON COLUMN device_challenges.request_method IS 'Optional HTTP method bound to the challenge.';
-COMMENT ON COLUMN device_challenges.request_path IS 'Optional HTTP path bound to the challenge.';
-COMMENT ON COLUMN device_challenges.payload_hash IS 'Optional hash of the signed payload for proof-of-possession.';
-COMMENT ON COLUMN device_challenges.expires_at IS 'Timestamp when the challenge expires.';
-COMMENT ON COLUMN device_challenges.verified_at IS 'Timestamp when the challenge was successfully verified.';
-COMMENT ON COLUMN device_challenges.consumed_at IS 'Timestamp when the challenge was consumed and may no longer be reused.';
-COMMENT ON COLUMN device_challenges.created_ip IS 'IP address that requested or created the challenge.';
-COMMENT ON COLUMN device_challenges.created_user_agent IS 'User agent that requested or created the challenge.';
-COMMENT ON COLUMN device_challenges.created_at IS 'Timestamp when the challenge was created.';
 
 CREATE TABLE IF NOT EXISTS mfa_settings (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID MFA setting
@@ -536,32 +498,6 @@ COMMENT ON COLUMN admin_action_audits.request_method IS 'HTTP request method of 
 COMMENT ON COLUMN admin_action_audits.error_code IS 'Optional business error code when action fails.';
 COMMENT ON COLUMN admin_action_audits.metadata IS 'JSONB metadata for contextual details while avoiding secret leakage.';
 COMMENT ON COLUMN admin_action_audits.created_at IS 'Timestamp when the admin action audit record was created.';
-
-CREATE TABLE IF NOT EXISTS admin_2fa_settings (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID cấu hình 2FA admin
-    secret_ciphertext text NULL, -- Secret 2FA dạng đã bảo vệ
-    created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo cấu hình
-    updated_at timestamptz NOT NULL DEFAULT now() -- Thời điểm cập nhật cấu hình
-);
-
-COMMENT ON TABLE admin_2fa_settings IS 'Stores dedicated 2FA settings for admin auth flow.';
-COMMENT ON COLUMN admin_2fa_settings.id IS 'Primary key of admin 2FA settings row. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN admin_2fa_settings.secret_ciphertext IS 'Protected secret material for admin 2FA factor. Never plaintext.';
-COMMENT ON COLUMN admin_2fa_settings.created_at IS 'Timestamp when admin 2FA settings record was created.';
-COMMENT ON COLUMN admin_2fa_settings.updated_at IS 'Timestamp when admin 2FA settings record was last updated.';
-
-CREATE TABLE IF NOT EXISTS admin_recovery_codes (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID recovery code
-    code_hash text NOT NULL, -- Hash recovery code one-time
-    used_at timestamptz NULL, -- Thời điểm code đã dùng
-    created_at timestamptz NOT NULL DEFAULT now() -- Thời điểm tạo code
-);
-
-COMMENT ON TABLE admin_recovery_codes IS 'Stores one-time hashed recovery codes for admin auth recovery flow.';
-COMMENT ON COLUMN admin_recovery_codes.id IS 'Primary key of admin recovery code record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN admin_recovery_codes.code_hash IS 'Hash of recovery code. Raw recovery code must never be stored.';
-COMMENT ON COLUMN admin_recovery_codes.used_at IS 'Timestamp when this recovery code was consumed.';
-COMMENT ON COLUMN admin_recovery_codes.created_at IS 'Timestamp when this recovery code record was created.';
 
 -- -------------------------------------------------------------
 -- Bảng outbox lưu trữ các sự kiện/tác vụ bất đồng bộ của module IAM để CDC đồng bộ sang Redis/Kafka

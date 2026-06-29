@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
-use tokio_postgres::NoTls;
 use std::time::Duration;
+use tokio_postgres::NoTls;
 
 /// Định nghĩa lỗi chí mạng không thể tự phục hồi (ví dụ: thiếu bảng trong DB, sai cấu hình, thiếu quyền)
 #[derive(Debug)]
@@ -39,7 +39,9 @@ fn is_unrecoverable(err: &(dyn std::error::Error + 'static)) -> bool {
 /// Khởi tạo hạ tầng Logical Replication (Publication và Replication Slot) cho PostgreSQL.
 /// Hàm này được thiết kế để chỉ chạy một lần duy nhất lúc khởi chạy ứng dụng (main.rs).
 /// Có cơ chế tự động thử lại kết nối (reconnect) theo cấp số nhân và dừng ngay lập tức (fail-fast) khi gặp lỗi cấu hình/bảng chí mạng.
-pub async fn setup_replication_infrastructure(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn setup_replication_infrastructure(
+    config: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info(
         "cdc.setup",
         "CdcSetup: Bắt đầu kiểm tra và khởi tạo hạ tầng Logical Replication...",
@@ -91,7 +93,7 @@ pub async fn setup_replication_infrastructure(config: &Config) -> Result<(), Box
 async fn try_setup(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Thực hiện kết nối PostgreSQL thông thường để cấu hình hạ tầng
     let (client, connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    
+
     // Spawn kết nối chạy ngầm để trao đổi các thông điệp giao thức của tokio-postgres
     tokio::spawn(async move {
         if let Err(e) = connection.await {
@@ -103,8 +105,10 @@ async fn try_setup(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Thiết lập search path mặc định
-    client.execute("SET search_path TO mail, public", &[]).await?;
+    // Thiết lập search path mặc định bao gồm cả schema iam
+    client
+        .execute("SET search_path TO mail, iam, public", &[])
+        .await?;
 
     // 2. Pre-check và khởi tạo Publication cho tất cả các bảng trong danh sách cdc_sources
     for source in &config.cdc_sources {
@@ -130,20 +134,22 @@ async fn try_setup(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Bước B: Đảm bảo Publication chung tồn tại
-        let pub_check = client.query(
-            "SELECT 1 FROM pg_publication WHERE pubname = $1",
-            &[&config.publication_name],
-        ).await?;
+        let pub_check = client
+            .query(
+                "SELECT 1 FROM pg_publication WHERE pubname = $1",
+                &[&config.publication_name],
+            )
+            .await?;
 
         if pub_check.is_empty() {
             Logger::sys_info(
                 "cdc.setup",
-                &format!("CdcSetup: Tạo mới publication '{}' cho cụm outbox...", config.publication_name),
+                &format!(
+                    "CdcSetup: Tạo mới publication '{}' cho cụm outbox...",
+                    config.publication_name
+                ),
             );
-            let create_pub_sql = format!(
-                "CREATE PUBLICATION {}",
-                config.publication_name
-            );
+            let create_pub_sql = format!("CREATE PUBLICATION {}", config.publication_name);
             if let Err(err) = client.execute(&create_pub_sql, &[]).await {
                 let err_str = err.to_string();
                 // Bắt lỗi trùng lặp đối tượng phòng trường hợp tranh chấp HA khi nhiều instance chạy song song
@@ -162,7 +168,10 @@ async fn try_setup(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         if table_check.is_empty() {
             Logger::sys_info(
                 "cdc.setup",
-                &format!("CdcSetup: Thêm bảng '{}.{}' vào publication '{}'...", schema, table, config.publication_name),
+                &format!(
+                    "CdcSetup: Thêm bảng '{}.{}' vào publication '{}'...",
+                    schema, table, config.publication_name
+                ),
             );
             let alter_pub_sql = format!(
                 "ALTER PUBLICATION {} ADD TABLE {}.{}",
@@ -179,15 +188,20 @@ async fn try_setup(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 3. Đảm bảo Replication Slot tồn tại với plugin pgoutput
-    let slot_check = client.query(
-        "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1 AND plugin = 'pgoutput'",
-        &[&config.slot_name],
-    ).await?;
+    let slot_check = client
+        .query(
+            "SELECT 1 FROM pg_replication_slots WHERE slot_name = $1 AND plugin = 'pgoutput'",
+            &[&config.slot_name],
+        )
+        .await?;
 
     if slot_check.is_empty() {
         Logger::sys_info(
             "cdc.setup",
-            &format!("CdcSetup: Tạo mới replication slot '{}' với plugin pgoutput...", config.slot_name),
+            &format!(
+                "CdcSetup: Tạo mới replication slot '{}' với plugin pgoutput...",
+                config.slot_name
+            ),
         );
         let create_slot_sql = format!(
             "SELECT lsn FROM pg_create_logical_replication_slot('{}', 'pgoutput')",

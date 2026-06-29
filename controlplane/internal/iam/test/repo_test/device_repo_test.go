@@ -25,8 +25,8 @@ func seedUserAndDevice(t *testing.T, schema string, repoCfg func() (string, stri
 	}
 	deviceID := uuid.New()
 	if err := exec(
-		"INSERT INTO "+schema+".devices (id,user_id,device_name,device_type,os_name,browser_name,public_key,public_key_alg,public_key_fingerprint,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'new',$10,$11)",
-		deviceID, userID, "Chrome", "browser", "Linux", "Chrome", "pk", "Ed25519", "fp-"+deviceID.String(), now, now,
+		"INSERT INTO "+schema+".devices (id,user_id,device_name,device_type,os_name,browser_name,public_key,public_key_fingerprint,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'new',$9,$10)",
+		deviceID, userID, "Chrome", "browser", "Linux", "Chrome", "pk", "fp-"+deviceID.String(), now, now,
 	); err != nil {
 		t.Fatalf("seed device: %v", err)
 	}
@@ -94,8 +94,8 @@ func TestDeviceRepositoryRevokeOtherDevices(t *testing.T) {
 	now := time.Now().UTC()
 	otherID := uuid.New()
 	_, err := db.Exec(ctx,
-		"INSERT INTO "+cfg.SchemaSQL.IAM+".devices (id,user_id,device_name,public_key,public_key_alg,public_key_fingerprint,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,'recognized',$7,$8)",
-		otherID, userID, "Firefox", "pk2", "Ed25519", "fp-"+otherID.String(), now, now,
+		"INSERT INTO "+cfg.SchemaSQL.IAM+".devices (id,user_id,device_name,public_key,public_key_fingerprint,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,'recognized',$6,$7)",
+		otherID, userID, "Firefox", "pk2", "fp-"+otherID.String(), now, now,
 	)
 	if err != nil {
 		t.Fatalf("seed second device: %v", err)

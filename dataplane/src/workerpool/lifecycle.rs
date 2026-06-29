@@ -48,7 +48,7 @@ pub struct WorkerLifecycleManager {
     tracker: Arc<TaskTracker>,
 
     /// Pool kết nối LMTP dùng chung cho các worker để gửi email qua Stalwart Cluster
-    pub lmtp_pool: Arc<crate::executor::mail::send::LmtpConnectionPool>,
+    pub lmtp_pool: Arc<crate::executor::mail::core::send::LmtpConnectionPool>,
 }
 
 /// Các loại tín hiệu điều phối vòng đời của worker
@@ -63,7 +63,7 @@ impl WorkerLifecycleManager {
     /// Khởi tạo bộ máy quản lý vòng đời, nhận thêm cấu hình Stalwart và khởi tạo Connection Pool
     pub fn new(lmtp_host: String, lmtp_port: u16) -> (Self, mpsc::Receiver<WorkerSignal>) {
         let (tx, rx) = mpsc::channel(100);
-        let pool = Arc::new(crate::executor::mail::send::LmtpConnectionPool::new(lmtp_host, lmtp_port));
+        let pool = Arc::new(crate::executor::mail::core::send::LmtpConnectionPool::new(lmtp_host, lmtp_port));
         let manager = Self {
             cancel_token: CancellationToken::new(),
             signal_sender: tx,

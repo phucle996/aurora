@@ -25,12 +25,12 @@ func (s *templateServiceImpl) CreateTemplate(ctx context.Context, params mailEnt
 	return nil, nil
 }
 
-func (s *templateServiceImpl) GetTemplate(ctx context.Context, tenantID, id string) (*mailEntity.Template, error) {
+func (s *templateServiceImpl) GetTemplate(ctx context.Context, id string) (*mailEntity.Template, error) {
 	// Skeleton implementation
 	return nil, nil
 }
 
-func (s *templateServiceImpl) ListTemplates(ctx context.Context, tenantID string) ([]*mailEntity.Template, error) {
+func (s *templateServiceImpl) ListTemplates(ctx context.Context) ([]*mailEntity.Template, error) {
 	// Skeleton implementation
 	return nil, nil
 }
@@ -40,11 +40,11 @@ func (s *templateServiceImpl) UpdateTemplate(ctx context.Context, params mailEnt
 	return nil, nil
 }
 
-func (s *templateServiceImpl) DeleteTemplate(ctx context.Context, tenantID, id string) error {
+func (s *templateServiceImpl) DeleteTemplate(ctx context.Context, id string) error {
 	// Skeleton implementation
 	return nil
 }
 
-func (s *templateServiceImpl) RenderTemplate(ctx context.Context, tenantID, id string, payload map[string]interface{}) (string, string, error) {
-	return "", "", nil
+func (s *templateServiceImpl) RenderTemplate(ctx context.Context, ownershipScope, id string, payload map[string]interface{}) (string, error) {
+	return "", nil
 }

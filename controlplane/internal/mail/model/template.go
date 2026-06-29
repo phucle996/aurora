@@ -7,11 +7,9 @@ import (
 
 type Template struct {
 	ID        string    `db:"id"`
-	TenantID  string    `db:"tenant_id"`
 	Name      string    `db:"name"`
 	Subject   string    `db:"subject"`
-	BodyHTML  string    `db:"body_html"`
-	BodyText  string    `db:"body_text"`
+	Body      string    `db:"body"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -19,11 +17,9 @@ type Template struct {
 func TemplateEntityToModel(e mailEntity.Template) Template {
 	return Template{
 		ID:        e.ID,
-		TenantID:  e.TenantID,
 		Name:      e.Name,
 		Subject:   e.Subject,
-		BodyHTML:  e.BodyHTML,
-		BodyText:  e.BodyText,
+		Body:      e.Body,
 		CreatedAt: e.CreatedAt,
 		UpdatedAt: e.UpdatedAt,
 	}
@@ -32,11 +28,9 @@ func TemplateEntityToModel(e mailEntity.Template) Template {
 func TemplateModelToEntity(m Template) mailEntity.Template {
 	return mailEntity.Template{
 		ID:        m.ID,
-		TenantID:  m.TenantID,
 		Name:      m.Name,
 		Subject:   m.Subject,
-		BodyHTML:  m.BodyHTML,
-		BodyText:  m.BodyText,
+		Body:      m.Body,
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}

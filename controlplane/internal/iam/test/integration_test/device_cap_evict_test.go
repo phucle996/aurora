@@ -13,7 +13,6 @@ import (
 	"controlplane/internal/iam/test/testutil"
 )
 
-
 func TestEvictExcessDevicesAtomic(t *testing.T) {
 	cfg := testutil.NewIAMTestConfig(testutil.UniqueSchema("iam_it_cap_evict"))
 	db := testutil.OpenPostgres(t, cfg)
@@ -37,7 +36,6 @@ func TestEvictExcessDevicesAtomic(t *testing.T) {
 			UserID:               userID,
 			DeviceName:           fmt.Sprintf("dev-%02d", i),
 			PublicKey:            fmt.Sprintf("pk-cap-%02d", i),
-			PublicKeyAlg:         "Ed25519",
 			PublicKeyFingerprint: fmt.Sprintf("fp-cap-%02d", i),
 			ClientDeviceID:       &cd,
 			UpdatedAt:            base.Add(time.Duration(i) * time.Second),

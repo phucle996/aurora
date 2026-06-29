@@ -31,6 +31,7 @@ pub struct JobConsumer;
 impl JobConsumer {
     /// Bắt đầu vòng lặp đọc dữ liệu bất đồng bộ từ Redis Stream (Ingestion loop).
     /// Phiên bản này hoạt động dưới dạng IngestionDaemon chạy xuyên suốt vòng đời app (Producer).
+    // [COMMENT]: Nhận stream_key và group_name động từ tham số đầu vào để chạy dual loops
     pub async fn start_ingestion(
         config: Arc<crate::config::Config>,
         redis_job: Arc<RedisClientManager>,
@@ -38,13 +39,14 @@ impl JobConsumer {
         tx: tokio::sync::mpsc::Sender<JobPayload>,
         cancel_token: CancellationToken,
         active_jobs: Arc<AtomicUsize>,
+        stream_key: String,
+        group_name: String,
     ) {
-        let stream_key = format!("jobs:{}", config.zone_id);
         Logger::sys_info(
             "job.ingestion",
             &format!(
-                "Starting persistent IngestionDaemon consumer loop with Admission Control & Distributed Lease Lock on stream '{}'...",
-                stream_key
+                "Starting persistent IngestionDaemon consumer loop with Admission Control & Distributed Lease Lock on stream '{}' in group '{}'...",
+                stream_key, group_name
             )
         );
 
@@ -88,7 +90,7 @@ impl JobConsumer {
             }
 
             // 5. Mạch bình thường -> Gọi Redis Stream kéo job mới (Blocking Read bọc trong select)
-            let fetch_fut = crate::infra::redis::query::fetch_next_stream_message(redis_job.client(), &stream_key);
+            let fetch_fut = crate::infra::redis::query::fetch_next_stream_message(redis_job.client(), &stream_key, &group_name);
             let opt_payload = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     Logger::sys_info(

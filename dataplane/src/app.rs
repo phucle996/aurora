@@ -78,22 +78,46 @@ impl AppContainer {
         let rx_shared = Arc::new(tokio::sync::Mutex::new(rx));
         let active_jobs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        // 0c. Khởi chạy persistent IngestionDaemon loop nhận tin từ Redis Stream
-        let config_ingest = self.config.clone();
-        let redis_job_ingest = self.redis_job.clone();
-        let redis_internal_zone_ingest = self.redis_internal_zone.clone();
-        let tx_ingest = tx;
-        let active_jobs_ingest = active_jobs.clone();
-        let cancel_token = self.worker_pool.cancel_token();
+        // 0c. [COMMENT]: Khởi chạy dual persistent IngestionDaemons: một cho Zone, một cho Platform
+        let config_ingest_zone = self.config.clone();
+        let redis_job_ingest_zone = self.redis_job.clone();
+        let redis_internal_zone_ingest_zone = self.redis_internal_zone.clone();
+        let tx_ingest_zone = tx.clone();
+        let active_jobs_ingest_zone = active_jobs.clone();
+        let cancel_token_zone = self.worker_pool.cancel_token();
+        let zone_stream = format!("jobs:{}", config_ingest_zone.zone_id);
 
         tokio::spawn(async move {
             crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
-                config_ingest,
-                redis_job_ingest,
-                redis_internal_zone_ingest,
-                tx_ingest,
-                cancel_token,
-                active_jobs_ingest,
+                config_ingest_zone,
+                redis_job_ingest_zone,
+                redis_internal_zone_ingest_zone,
+                tx_ingest_zone,
+                cancel_token_zone,
+                active_jobs_ingest_zone,
+                zone_stream,
+                "dataplane-group".to_string(),
+            )
+            .await;
+        });
+
+        let config_ingest_plat = self.config.clone();
+        let redis_job_ingest_plat = self.redis_job.clone();
+        let redis_internal_zone_ingest_plat = self.redis_internal_zone.clone();
+        let tx_ingest_plat = tx;
+        let active_jobs_ingest_plat = active_jobs.clone();
+        let cancel_token_plat = self.worker_pool.cancel_token();
+
+        tokio::spawn(async move {
+            crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
+                config_ingest_plat,
+                redis_job_ingest_plat,
+                redis_internal_zone_ingest_plat,
+                tx_ingest_plat,
+                cancel_token_plat,
+                active_jobs_ingest_plat,
+                "jobs:platform".to_string(),
+                "dataplane-platform-group".to_string(),
             )
             .await;
         });

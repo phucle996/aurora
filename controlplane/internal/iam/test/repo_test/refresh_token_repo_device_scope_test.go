@@ -32,7 +32,7 @@ func TestRefreshTokenRepoRevokeByScope(t *testing.T) {
 	d1 := uuid.New()
 	d2 := uuid.New()
 	_, err = db.Exec(ctx,
-		"INSERT INTO "+cfg.SchemaSQL.IAM+".devices (id,user_id,device_name,public_key,public_key_alg,public_key_fingerprint,status,created_at,updated_at) VALUES ($1,$2,'D1','pk1','Ed25519',$3,'recognized',$4,$5),($6,$2,'D2','pk2','Ed25519',$7,'recognized',$4,$5)",
+		"INSERT INTO "+cfg.SchemaSQL.IAM+".devices (id,user_id,device_name,public_key,public_key_fingerprint,status,created_at,updated_at) VALUES ($1,$2,'D1','pk1',$3,'recognized',$4,$5),($6,$2,'D2','pk2',$7,'recognized',$4,$5)",
 		d1, userID, "fp-"+d1.String(), now, now, d2, "fp-"+d2.String(),
 	)
 	if err != nil {

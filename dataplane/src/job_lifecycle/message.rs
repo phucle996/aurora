@@ -55,6 +55,10 @@ pub struct JobPayload {
     /// Hạn mức thời gian chạy tối đa (giây) của công việc
     pub idle: Option<u32>,
 
+    /// [COMMENT]: Tên Consumer Group của Redis Stream mà tin nhắn này được đọc ra (để XACK chính xác group)
+    #[serde(default)]
+    pub redis_group_name: Option<String>,
+
     /// Mã tin nhắn Redis Stream thực tế (Redis Message ID).
     #[serde(default)]
     pub redis_msg_id: Option<String>,

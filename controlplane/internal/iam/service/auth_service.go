@@ -229,15 +229,15 @@ func (s *AuthService) pushVerifyAccountOutboxJob(ctx context.Context, userID uui
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Đóng gói thông tin email thành Protobuf cấu hình gửi mail
+	// [COMMENT]: Đóng gói thông tin email thành Protobuf cấu hình gửi mail với đầy đủ tham số định danh, người nhận và template_id
 	mailConfig := &mailproto.SendMailConfig{
-		To:       email,
-		Subject:  "Kích hoạt tài khoản của bạn",
-		BodyHtml: "Vui lòng sử dụng token sau để kích hoạt tài khoản của bạn.",
 		TemplateVariables: map[string]string{
+			"template_id":  "platform/verify_account",
+			"to":           email,
 			"fullname":     username,
+			"user_id":      userID.String(),
 			"verify_token": verificationToken,
-			"purpose":      "account_verify",
+			"from":         "noreply@aurora.system",
 		},
 	}
 
@@ -249,7 +249,7 @@ func (s *AuthService) pushVerifyAccountOutboxJob(ctx context.Context, userID uui
 	record := &iamEntity.IamOutboxRecord{
 		EventID:              idempotencyKey,
 		RoutingScope:         "platform",
-		JobTopic:             "mail.system.verify_account",
+		JobTopic:             "mail.verify_account",
 		Payload:              payloadBytes,
 		UserID:               userID.String(),
 		Status:               iamEntity.IamOutboxStatusPending,
@@ -272,9 +272,6 @@ func (s *AuthService) pushVerifyAccountOutboxJob(ctx context.Context, userID uui
 // kiểm tra trạng thái tài khoản, định danh/upsert thiết bị và sinh Opaque Refresh Token (nếu được yêu cầu).
 // Phương thức này được gọi qua gRPC từ Gateway/ACR để CP đóng vai trò Data Plane (SoT).
 func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (res *iamEntity.VerifyUserCredentialsResult, err error) {
-	ipVal := req.RemoteIP
-	uaVal := req.UserAgent
-
 	loginOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
 		iamMetrics.ServiceCall(ctx, loginOutcome)
@@ -377,11 +374,10 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		DeviceName:           deviceName,
 		DeviceType:           &deviceType,
 		PublicKey:            req.DevicePublicKey,
-		PublicKeyAlg:         "ed25519",
 		PublicKeyFingerprint: fingerprint,
 		ClientDeviceID:       cleanOptionalString(&clientDeviceID),
-		LastSeenIP:           cleanOptionalString(&ipVal),
-		LastSeenUserAgent:    cleanOptionalString(&uaVal),
+		LastSeenIP:           cleanOptionalString(&req.RemoteIP),
+		LastSeenUserAgent:    cleanOptionalString(&req.UserAgent),
 		UpdatedAt:            now.UTC(),
 	}
 

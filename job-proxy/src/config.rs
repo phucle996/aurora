@@ -41,23 +41,22 @@ impl Config {
         // Load file .env nếu có
         let _ = dotenvy::dotenv();
 
-        let database_url = env::var("DATABASE_URL")
-            .map_err(|_| "DATABASE_URL must be set".to_string())?;
+        let database_url =
+            env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
 
-        let redis_url = env::var("REDIS_URL")
-            .map_err(|_| "REDIS_URL must be set".to_string())?;
+        let redis_url = env::var("REDIS_URL").map_err(|_| "REDIS_URL must be set".to_string())?;
 
-        let slot_name = env::var("REPLICATION_SLOT_NAME")
-            .unwrap_or_else(|_| "outbox_slot".to_string());
+        let slot_name =
+            env::var("REPLICATION_SLOT_NAME").unwrap_or_else(|_| "outbox_slot".to_string());
 
-        let publication_name = env::var("PUBLICATION_NAME")
-            .unwrap_or_else(|_| "outbox_pub".to_string());
+        let publication_name =
+            env::var("PUBLICATION_NAME").unwrap_or_else(|_| "outbox_pub".to_string());
 
-        let result_stream_name = env::var("RESULT_STREAM_NAME")
-            .unwrap_or_else(|_| "job_results_stream".to_string());
+        let result_stream_name =
+            env::var("RESULT_STREAM_NAME").unwrap_or_else(|_| "job_results_stream".to_string());
 
-        let controlplane_grpc_endpoint = env::var("CONTROLPLANE_GRPC_ENDPOINT")
-            .unwrap_or_else(|_| "127.0.0.1:9090".to_string());
+        let controlplane_grpc_endpoint =
+            env::var("CONTROLPLANE_GRPC_ENDPOINT").unwrap_or_else(|_| "127.0.0.1:9090".to_string());
 
         let controlplane_grpc_ca_cert = env::var("CONTROLPLANE_GRPC_CA_CERT").ok();
         let controlplane_grpc_client_cert = env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok();
@@ -73,7 +72,7 @@ impl Config {
 
         // Đọc danh sách các bảng CDC phân cách bởi dấu phẩy
         let cdc_sources_raw = env::var("CDC_SOURCES")
-            .unwrap_or_else(|_| "mail.mail_outbox_records".to_string());
+            .unwrap_or_else(|_| "mail.mail_outbox_records,iam.iam_outbox_records".to_string());
         let cdc_sources = cdc_sources_raw
             .split(',')
             .map(|s| s.trim().to_string())
@@ -107,11 +106,9 @@ impl Config {
 
 /// Hàm phụ trợ lấy Hostname của node hiện tại phục vụ định danh tài nguyên (Resource Attributes)
 pub fn get_node_hostname() -> String {
-    std::env::var("HOSTNAME")
-        .unwrap_or_else(|_| {
-            hostname::get()
-                .map(|h| h.into_string().unwrap_or_default())
-                .unwrap_or_default()
-        })
+    std::env::var("HOSTNAME").unwrap_or_else(|_| {
+        hostname::get()
+            .map(|h| h.into_string().unwrap_or_default())
+            .unwrap_or_default()
+    })
 }
-
