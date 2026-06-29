@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import {
   Compass,
   Globe,
@@ -37,6 +38,7 @@ interface SidebarItem {
   name: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: number;
+  path?: string;
 }
 
 interface SidebarGroup {
@@ -57,6 +59,8 @@ export default function SidebarConsole({
   activeId,
   setActiveId
 }: SidebarConsoleProps) {
+  const router = useRouter();
+  const pathname = usePathname();
   
   // [COMMENT]: Danh sách các nhóm và item menu được phân chia chuẩn hóa theo triết lý "domain-driven boundary"
   // Thay vì đặt Dashboard lên đầu, nhóm OVERVIEW và INFRASTRUCTURE được đưa lên ưu tiên.
@@ -64,56 +68,56 @@ export default function SidebarConsole({
     {
       title: "Overview",
       items: [
-        { id: "overview", name: "Overview", icon: Compass }
+        { id: "overview", name: "Overview", icon: Compass, path: "/" }
       ]
     },
     {
       title: "Infrastructure",
       items: [
-        { id: "zones", name: "Zones", icon: Globe },
-        { id: "hypervisors", name: "Hypervisors", icon: Cpu },
-        { id: "storage", name: "Storage", icon: HardDrive },
-        { id: "networks", name: "Networks", icon: Network },
-        { id: "load-balancers", name: "Load Balancers", icon: GitMerge }
+        { id: "zones", name: "Zones", icon: Globe, path: "/" },
+        { id: "hypervisors", name: "Hypervisors", icon: Cpu, path: "/" },
+        { id: "storage", name: "Storage", icon: HardDrive, path: "/" },
+        { id: "networks", name: "Networks", icon: Network, path: "/" },
+        { id: "load-balancers", name: "Load Balancers", icon: GitMerge, path: "/" }
       ]
     },
     {
       title: "Platform",
       items: [
-        { id: "kubernetes", name: "Kubernetes", icon: Layers },
-        { id: "resources", name: "Resources", icon: FolderGit },
-        { id: "templates", name: "Templates", icon: Copy }
+        { id: "kubernetes", name: "Kubernetes", icon: Layers, path: "/" },
+        { id: "resources", name: "Resources", icon: FolderGit, path: "/" },
+        { id: "templates", name: "Templates", icon: Copy, path: "/" }
       ]
     },
     {
       title: "Workspaces",
       items: [
-        { id: "tenants", name: "Tenants", icon: Building2 },
-        { id: "workspaces", name: "Workspaces", icon: LayoutGrid },
-        { id: "vms", name: "Virtual Machines", icon: Server }
+        { id: "tenants", name: "Tenants", icon: Building2, path: "/tenants" },
+        { id: "workspaces", name: "Workspaces", icon: LayoutGrid, path: "/" },
+        { id: "vms", name: "Virtual Machines", icon: Server, path: "/" }
       ]
     },
     {
       title: "Security",
       items: [
-        { id: "vault", name: "Vault", icon: Lock },
-        { id: "iam", name: "Identity & Access", icon: UserCheck },
-        { id: "audit", name: "Audit Logs", icon: History }
+        { id: "vault", name: "Vault", icon: Lock, path: "/" },
+        { id: "iam", name: "Identity & Access", icon: UserCheck, path: "/" },
+        { id: "audit", name: "Audit Logs", icon: History, path: "/" }
       ]
     },
     {
       title: "Operations",
       items: [
-        { id: "monitoring", name: "Monitoring", icon: Activity },
-        { id: "incidents", name: "Incidents", icon: AlertCircle, badge: 2 },
-        { id: "activity", name: "Activity", icon: Clock }
+        { id: "monitoring", name: "Monitoring", icon: Activity, path: "/" },
+        { id: "incidents", name: "Incidents", icon: AlertCircle, badge: 2, path: "/" },
+        { id: "activity", name: "Activity", icon: Clock, path: "/" }
       ]
     },
     {
       title: "Administration",
       items: [
-        { id: "users", name: "Users", icon: Users },
-        { id: "settings", name: "Settings", icon: Settings }
+        { id: "users", name: "Users", icon: Users, path: "/" },
+        { id: "settings", name: "Settings", icon: Settings, path: "/" }
       ]
     }
   ];
@@ -125,10 +129,10 @@ export default function SidebarConsole({
         isCollapsed ? "w-[60px]" : "w-[272px]"
       )}
     >
-      {/* [COMMENT]: Header Logo area. Chiều cao chuẩn 64px, phân tách rõ ràng */}
+      {/* [COMMENT]: Header Logo area. Chiều cao chuẩn 64px, logo sử dụng bo góc 4px chuyên nghiệp */}
       <div className="flex h-16 items-center justify-between px-4 border-b border-sidebar-console-border relative shrink-0">
         <div className="flex items-center gap-3 overflow-hidden">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 shrink-0 text-white font-bold text-lg">
+          <div className="flex h-8 w-8 items-center justify-center rounded-[4px] bg-blue-600 shrink-0 text-white font-bold text-lg">
             ☁
           </div>
           {!isCollapsed && (
@@ -143,10 +147,10 @@ export default function SidebarConsole({
           )}
         </div>
 
-        {/* [COMMENT]: Nút toggle collapse sidebar. Vị trí tuyệt đối giúp điều khiển mượt mà */}
+        {/* [COMMENT]: Nút toggle collapse sidebar. Giữ dạng nút tròn hoặc đổi dạng dẹt */}
         <button
           onClick={() => setIsCollapsed(!isCollapsed)}
-          className="absolute -right-3 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full border border-sidebar-console-border bg-[#0F172A] hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer shadow-md"
+          className="absolute -right-3 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full border border-sidebar-console-border bg-[#0F172A] hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
           title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
         >
           {isCollapsed ? (
@@ -157,40 +161,45 @@ export default function SidebarConsole({
         </button>
       </div>
 
-      {/* [COMMENT]: Vùng scroll chứa các menu items. Hỗ trợ cuộn độc lập khi nội dung quá dài */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden pt-6 pb-4 space-y-4 scrollbar-thin scrollbar-thumb-slate-800">
+      {/* [COMMENT]: Vùng scroll chứa các menu items. Spacing được rút gọn (space-y-3) để tăng mật độ thông tin */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden pt-4 pb-4 space-y-3 scrollbar-thin scrollbar-thumb-slate-800">
         {menuGroups.map((group, groupIndex) => (
           <div key={group.title} className="px-3">
-            {/* [COMMENT]: Group Header theo chuẩn Enterprise (11px uppercase gray-500 letter-spacing) */}
+            {/* [COMMENT]: Group Header theo chuẩn Enterprise (11px uppercase gray-500, khoảng cách lề mb-1 hẹp hơn) */}
             {!isCollapsed ? (
-              <h3 className="px-3 mb-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500 select-none">
+              <h3 className="px-3 mb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500 select-none">
                 {group.title}
               </h3>
             ) : (
               <div className="h-px bg-sidebar-console-border my-2 mx-1" />
             )}
 
-            <div className="space-y-[4px]">
+            <div className="space-y-[2px]">
               {group.items.map((item) => {
                 const IconComponent = item.icon;
                 const isActive = activeId === item.id;
 
-                // [COMMENT]: Khởi tạo phần tử item menu.
-                // Nếu active: đổi background, tô sáng xanh, thêm thanh border trái 3px.
-                // Nếu hover: đổi background nhạt mượt mà.
+                // [COMMENT]: Khởi tạo phần tử item menu với chiều cao rút gọn h-8, font size text-xs và bo góc 4px (rounded-[4px]).
+                // Thanh line chỉ báo active được điều chỉnh top/bottom thành 2px để ôm khít chiều cao mới.
                 const buttonContent = (
                   <button
-                    onClick={() => setActiveId(item.id)}
+                    onClick={() => {
+                      if (item.path && item.path !== pathname) {
+                        router.push(item.path);
+                      } else {
+                        setActiveId(item.id);
+                      }
+                    }}
                     className={cn(
-                      "group/item relative flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium transition-all duration-150 cursor-pointer select-none text-left outline-none",
+                      "group/item relative flex h-8 w-full items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] font-medium transition-all duration-150 cursor-pointer select-none text-left outline-none",
                       isActive
-                        ? "bg-sidebar-console-active-bg text-blue-400 font-semibold before:absolute before:left-0 before:top-[4px] before:bottom-[4px] before:w-[3px] before:rounded-r before:bg-sidebar-console-active-border"
+                        ? "bg-sidebar-console-active-bg text-blue-400 font-semibold before:absolute before:left-0 before:top-[2px] before:bottom-[2px] before:w-[3px] before:rounded-r before:bg-sidebar-console-active-border"
                         : "text-slate-400 hover:bg-sidebar-console-hover hover:text-slate-200"
                     )}
                   >
                     <IconComponent
                       className={cn(
-                        "h-4 w-4 shrink-0 transition-colors",
+                        "h-3.5 w-3.5 shrink-0 transition-colors",
                         isActive ? "text-blue-400" : "text-slate-500 group-hover/item:text-slate-300"
                       )}
                     />
@@ -200,14 +209,14 @@ export default function SidebarConsole({
                       </span>
                     )}
 
-                    {/* [COMMENT]: Badge hiển thị số lượng thông báo hoặc sự cố. Tinh tế, không chói lọi */}
+                    {/* [COMMENT]: Badge số lượng rút gọn nhỏ hơn, sử dụng bo góc 4px (rounded-[4px]) để đồng bộ */}
                     {item.badge && !isCollapsed && (
-                      <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-900/40 px-1.5 text-[10px] font-semibold text-blue-300 ring-1 ring-blue-500/20">
+                      <span className="flex h-4 min-w-4 items-center justify-center rounded-[4px] bg-blue-900/45 px-1 text-[11px] font-bold text-blue-300 ring-1 ring-blue-500/20">
                         {item.badge}
                       </span>
                     )}
                     {item.badge && isCollapsed && (
-                      <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                      <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
                     )}
                   </button>
                 );
@@ -217,11 +226,11 @@ export default function SidebarConsole({
                   return (
                     <Tooltip key={item.id}>
                       <TooltipTrigger render={buttonContent} />
-                      <TooltipContent side="right" className="bg-[#1E293B] text-slate-100 border border-slate-700 text-xs">
+                      <TooltipContent side="right" className="bg-[#1E293B] text-slate-100 border border-slate-700 text-xs rounded-[4px]">
                         <div className="flex items-center gap-2">
                           <span>{item.name}</span>
                           {item.badge && (
-                            <span className="bg-blue-500 text-white text-[9px] px-1 rounded-full font-bold">
+                            <span className="bg-blue-500 text-white text-[10px] px-1 rounded-[3px] font-bold">
                               {item.badge}
                             </span>
                           )}

@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { authAPI } from "@/lib/api/auth";
 import { useUserSession } from "@/hooks/useUserSession";
+import { type ThemeMode } from "@/context/ThemeContext";
 
 // [COMMENT]: Helper để đọc giá trị cookie từ document.cookie ở client-side
 function getCookie(name: string): string | null {
@@ -38,8 +39,8 @@ interface HeaderConsoleProps {
   isCollapsed: boolean;
   setIsCollapsed: (collapsed: boolean) => void;
   activeId: string;
-  theme: "light" | "dark";
-  setTheme: (theme: "light" | "dark") => void;
+  theme: ThemeMode;
+  setTheme: (theme: ThemeMode) => void;
   onOpenCommandPalette: () => void;
 }
 
@@ -394,11 +395,24 @@ export default function HeaderConsole({
 
         {/* [COMMENT]: Theme Switcher */}
         <button
-          onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+          onClick={() => {
+            if (theme === "light") {
+              setTheme("dark");
+            } else if (theme === "dark") {
+              setTheme("light");
+            } else {
+              const isSystemDark = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+              setTheme(isSystemDark ? "light" : "dark");
+            }
+          }}
           className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-sidebar-console-hover text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white cursor-pointer transition-colors"
           title={theme === "light" ? "Switch to Dark Mode" : "Switch to Light Mode"}
         >
-          {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+          {theme === "light" || (theme === "system" && typeof window !== "undefined" && !window.matchMedia("(prefers-color-scheme: dark)").matches) ? (
+            <Moon className="h-4 w-4" />
+          ) : (
+            <Sun className="h-4 w-4" />
+          )}
         </button>
 
         <div className="h-4 w-px bg-slate-200 dark:bg-slate-800" />

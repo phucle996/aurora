@@ -6,93 +6,164 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* [COMMENT]: Hệ thống màu sắc Light Theme dành cho môi trường Enterprise */
+  /* Sử dụng nền xám nhạt #F5F7FA tránh chói mắt khi làm việc lâu dài */
+  --background: #F5F7FA;
+  --foreground: #111827;
 
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  /* Card và Surface chính màu trắng tuyệt đối để nổi bật trên nền xám */
+  --card: #FFFFFF;
+  --card-foreground: #111827;
 
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
+  /* Popover và các bề mặt nổi khác */
+  --popover: #FFFFFF;
+  --popover-foreground: #111827;
 
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
+  --primary: #111827;
+  --primary-foreground: #FFFFFF;
 
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
+  --secondary: #F3F4F6;
+  --secondary-foreground: #111827;
 
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted: #F3F4F6;
+  --muted-foreground: #6B7280;
 
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --accent: #F3F4F6;
+  --accent-foreground: #111827;
 
-  --destructive: oklch(0.577 0.245 27.325);
+  --destructive: #EF4444;
   --destructive-foreground: #ffffff;
 
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  /* Đường border mỏng rõ ràng thay thế cho box-shadow */
+  --border: #E5E7EB;
+  --input: #E5E7EB;
+  --ring: #3B82F6;
 
-  --radius: 0.625rem;
+  /* Đồng bộ bo góc 4px toàn hệ thống */
+  --radius: 4px;
 
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* Cấu hình màu sắc của Sidebar trong Light Theme (Nền xám đậm Gray 900) */
+  --sidebar: #111827;
+  --sidebar-foreground: #F3F4F6;
+  --sidebar-primary: #3B82F6;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #1F2937;
+  --sidebar-accent-foreground: #F3F4F6;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #3B82F6;
+
+  /* [COMMENT]: Custom tokens cho Sidebar Console ở chế độ Light */
+  --sidebar-console-bg: #111827;
+  --sidebar-console-border: rgba(255, 255, 255, 0.08);
+  --sidebar-console-hover: rgba(255, 255, 255, 0.05);
+  --sidebar-console-active-bg: rgba(59, 130, 246, 0.15);
+  --sidebar-console-active-border: #3B82F6;
+
+  --chart-1: #3B82F6;
+  --chart-2: #10B981;
+  --chart-3: #F59E0B;
+  --chart-4: #8B5CF6;
+  --chart-5: #EC4899;
+
+  /* [COMMENT]: Biến màu trạng thái Toaster (Light Theme) */
+  --success-bg: #ECFDF5;
+  --success-border: #D1FAE5;
+  --success-text: #065F46;
+  --success-icon: #10B981;
+
+  --error-bg: #FEF2F2;
+  --error-border: #FEE2E2;
+  --error-text: #991B1B;
+  --error-icon: #EF4444;
+
+  --warning-bg: #FFFBEB;
+  --warning-border: #FEF3C7;
+  --warning-text: #92400E;
+  --warning-icon: #F59E0B;
+
+  --info-bg: #EFF6FF;
+  --info-border: #DBEAFE;
+  --info-text: #1E40AF;
+  --info-icon: #3B82F6;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
+  /* [COMMENT]: Hệ thống màu sắc Dark Theme dành cho môi trường Enterprise */
+  /* Sử dụng nền xám than charcoal (#111315) thay thế cho màu đen tuyền để dịu mắt */
+  --background: #111315;
+  --foreground: #F3F4F6;
 
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
+  /* Bề mặt (Surface) của Card/Page có độ sáng cao hơn nền 2% */
+  --card: #1A1D21;
+  --card-foreground: #F3F4F6;
 
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
+  /* Bề mặt nổi (Elevated Surface) như Popover/Modal */
+  --popover: #23272F;
+  --popover-foreground: #F3F4F6;
 
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: #F3F4F6;
+  --primary-foreground: #1A1D21;
 
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
+  --secondary: #23272F;
+  --secondary-foreground: #F3F4F6;
 
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
+  --muted: #23272F;
+  --muted-foreground: #A1A1AA;
 
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --accent: #23272F;
+  --accent-foreground: #F3F4F6;
 
-  --destructive: oklch(0.704 0.191 22.216);
+  --destructive: #EF4444;
   --destructive-foreground: #ffffff;
 
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  /* Border tối màu của Dark mode */
+  --border: #30343A;
+  --input: #30343A;
+  --ring: #3B82F6;
 
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* Cấu hình màu sắc của Sidebar trong Dark Theme */
+  --sidebar: #181A1E;
+  --sidebar-foreground: #F3F4F6;
+  --sidebar-primary: #3B82F6;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #23272F;
+  --sidebar-accent-foreground: #F3F4F6;
+  --sidebar-border: rgba(255, 255, 255, 0.05);
+  --sidebar-ring: #3B82F6;
+
+  /* [COMMENT]: Custom tokens cho Sidebar Console ở chế độ Dark */
+  --sidebar-console-bg: #181A1E;
+  --sidebar-console-border: rgba(255, 255, 255, 0.05);
+  --sidebar-console-hover: #23272F;
+  --sidebar-console-active-bg: rgba(59, 130, 246, 0.10);
+  --sidebar-console-active-border: #3B82F6;
+
+  --chart-1: #3B82F6;
+  --chart-2: #10B981;
+  --chart-3: #F59E0B;
+  --chart-4: #8B5CF6;
+  --chart-5: #EC4899;
+
+  /* [COMMENT]: Biến màu trạng thái Toaster (Dark Theme) */
+  --success-bg: #062F24;
+  --success-border: rgba(16, 185, 129, 0.2);
+  --success-text: #A7F3D0;
+  --success-icon: #10B981;
+
+  --error-bg: #2D1414;
+  --error-border: rgba(239, 68, 68, 0.2);
+  --error-text: #FCA5A5;
+  --error-icon: #EF4444;
+
+  --warning-bg: #2A1F0D;
+  --warning-border: rgba(245, 158, 11, 0.2);
+  --warning-text: #FDE68A;
+  --warning-icon: #F59E0B;
+
+  --info-bg: #0F1C3F;
+  --info-border: rgba(59, 130, 246, 0.2);
+  --info-text: #BFDBFE;
+  --info-icon: #3B82F6;
 }
 
 @theme {
@@ -235,11 +306,10 @@
 
   --radius-4xl: calc(var(--radius) * 2.6);
 
-  /* [COMMENT]: Định nghĩa các biến màu sắc và kiểu dáng cho Aurora Cloud Console Sidebar */
-  /* [COMMENT]: Giúp duy trì cảm giác Enterprise chuyên nghiệp và đồng bộ theo nguyên tắc thiết kế */
-  --color-sidebar-console-bg: #0F172A;
-  --color-sidebar-console-border: rgba(255, 255, 255, 0.06);
-  --color-sidebar-console-hover: rgba(255, 255, 255, 0.05);
-  --color-sidebar-console-active-bg: rgba(29, 78, 216, 0.10);
-  --color-sidebar-console-active-border: #1D4ED8;
+  /* [COMMENT]: Ánh xạ các biến màu sắc động của Sidebar Console vào hệ thống theme Tailwind */
+  --color-sidebar-console-bg: var(--sidebar-console-bg);
+  --color-sidebar-console-border: var(--sidebar-console-border);
+  --color-sidebar-console-hover: var(--sidebar-console-hover);
+  --color-sidebar-console-active-bg: var(--sidebar-console-active-bg);
+  --color-sidebar-console-active-border: var(--sidebar-console-active-border);
 }

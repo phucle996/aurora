@@ -7,6 +7,7 @@ import { useUserSession } from "@/hooks/useUserSession";
 
 // [COMMENT]: Import i18n hooks phục vụ đa ngôn ngữ toàn hệ thống
 import { useTranslation, type Language } from "@/lib/i18n";
+import { useTheme, type ThemeMode } from "@/context/ThemeContext";
 
 // [COMMENT]: Import API module zone catalog
 import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
@@ -52,8 +53,8 @@ function AuthPageContent() {
   // [COMMENT]: Mode điều khiển form nào đang hiển thị (signin / signup)
   const [mode, setMode] = useState<"signin" | "signup">("signin");
 
-  // [COMMENT]: State theme sáng/tối — đồng bộ với localStorage
-  const [theme, setTheme] = useState("light");
+  // [COMMENT]: Lấy state theme và hàm cập nhật từ ThemeProvider toàn cục
+  const { theme, setTheme } = useTheme();
 
   // [COMMENT]: Danh sách active zones lấy từ ACR edge
   const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
@@ -64,15 +65,6 @@ function AuthPageContent() {
 
   // [COMMENT]: Chiều cao card được tính động theo panel đang active — tránh khoảng trắng thừa
   const [containerHeight, setContainerHeight] = useState<number>(0);
-
-  // [COMMENT]: Nếu đang tải session hoặc đã đăng nhập, hiển thị loading spinner để tránh flash form
-  if (loading || authenticated) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC] dark:bg-[#0B0F19]">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#2563EB]/30 border-t-[#2563EB]" />
-      </div>
-    );
-  }
 
   // =========================================================================
   // EFFECTS: Khởi tạo và đồng bộ trạng thái
@@ -121,16 +113,7 @@ function AuthPageContent() {
     return () => { active = false; };
   }, []);
 
-  // [COMMENT]: Khôi phục theme đã lưu trong localStorage khi mount
-  useEffect(() => {
-    const savedTheme = localStorage.getItem("theme") || "light";
-    setTheme(savedTheme);
-    if (savedTheme === "dark" || (savedTheme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-  }, []);
+
 
   // =========================================================================
   // HEIGHT OBSERVER: Theo dõi chiều cao panel đang active
@@ -172,20 +155,23 @@ function AuthPageContent() {
     setMode(newMode);
   }, []);
 
-  // [COMMENT]: Thay đổi theme và lưu xuống localStorage — đồng bộ với console dashboard
+  // [COMMENT]: Thay đổi theme toàn cục thông qua ThemeProvider
   const handleThemeChange = useCallback((newTheme: string) => {
-    setTheme(newTheme);
-    localStorage.setItem("theme", newTheme);
-    if (newTheme === "dark" || (newTheme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches)) {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-  }, []);
+    setTheme(newTheme as ThemeMode);
+  }, [setTheme]);
 
   // =========================================================================
   // RENDER
   // =========================================================================
+
+  // [COMMENT]: Kiểm tra trạng thái phiên làm việc sau khi khởi tạo toàn bộ hooks để tránh vi phạm Rules of Hooks
+  if (loading || authenticated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#F8FAFC] dark:bg-[#0B0F19]">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#2563EB]/30 border-t-[#2563EB]" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-[#F8FAFC] dark:bg-[#0B0F19]">

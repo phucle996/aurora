@@ -13,19 +13,19 @@ const Toaster = ({ ...props }: ToasterProps) => {
       className="toaster group"
       icons={{
         success: (
-          <CircleCheckIcon className="size-4" />
+          <CircleCheckIcon className="size-4 text-[var(--success-icon)]" />
         ),
         info: (
-          <InfoIcon className="size-4" />
+          <InfoIcon className="size-4 text-[var(--info-icon)]" />
         ),
         warning: (
-          <TriangleAlertIcon className="size-4" />
+          <TriangleAlertIcon className="size-4 text-[var(--warning-icon)]" />
         ),
         error: (
-          <OctagonXIcon className="size-4" />
+          <OctagonXIcon className="size-4 text-[var(--error-icon)]" />
         ),
         loading: (
-          <Loader2Icon className="size-4 animate-spin" />
+          <Loader2Icon className="size-4 animate-spin text-blue-500" />
         ),
       }}
       style={
@@ -34,6 +34,23 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+
+          /* [COMMENT]: Định cấu hình các màu sắc riêng biệt cho từng trạng thái Toast */
+          "--success-bg": "var(--success-bg)",
+          "--success-border": "var(--success-border)",
+          "--success-text": "var(--success-text)",
+
+          "--error-bg": "var(--error-bg)",
+          "--error-border": "var(--error-border)",
+          "--error-text": "var(--error-text)",
+
+          "--warning-bg": "var(--warning-bg)",
+          "--warning-border": "var(--warning-border)",
+          "--warning-text": "var(--warning-text)",
+
+          "--info-bg": "var(--info-bg)",
+          "--info-border": "var(--info-border)",
+          "--info-text": "var(--info-text)",
         } as React.CSSProperties
       }
       toastOptions={{
