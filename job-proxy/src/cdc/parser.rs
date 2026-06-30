@@ -71,7 +71,7 @@ pub fn parse_relation_message(bytes: &[u8]) -> Result<PgOutputRelation, String> 
     let relation_name = read_string(bytes, &mut offset)?;
     let _replica_identity = read_u8(bytes, &mut offset)?;
     let num_columns = read_u16(bytes, &mut offset)?;
-    
+
     let mut columns = Vec::with_capacity(num_columns as usize);
     for _ in 0..num_columns {
         let _flags = read_u8(bytes, &mut offset)?;
@@ -80,7 +80,7 @@ pub fn parse_relation_message(bytes: &[u8]) -> Result<PgOutputRelation, String> 
         let _type_mod = read_u32(bytes, &mut offset)?;
         columns.push(name);
     }
-    
+
     Ok(PgOutputRelation {
         relation_id,
         schema_name,
@@ -90,7 +90,10 @@ pub fn parse_relation_message(bytes: &[u8]) -> Result<PgOutputRelation, String> 
 }
 
 /// Giải mã byte payload của Insert Message ('I') từ pgoutput dựa trên danh sách cột đã cache
-pub fn parse_insert_message(bytes: &[u8], columns: &[String]) -> Result<HashMap<String, String>, String> {
+pub fn parse_insert_message(
+    bytes: &[u8],
+    columns: &[String],
+) -> Result<HashMap<String, String>, String> {
     let mut offset = 0;
     let tag = read_u8(bytes, &mut offset)?;
     if tag != b'I' {
@@ -99,13 +102,20 @@ pub fn parse_insert_message(bytes: &[u8], columns: &[String]) -> Result<HashMap<
     let _relation_id = read_u32(bytes, &mut offset)?;
     let tuple_tag = read_u8(bytes, &mut offset)?;
     if tuple_tag != b'N' {
-        return Err(format!("Expected 'N' tuple tag, got '{}'", tuple_tag as char));
+        return Err(format!(
+            "Expected 'N' tuple tag, got '{}'",
+            tuple_tag as char
+        ));
     }
     let num_columns = read_u16(bytes, &mut offset)?;
     if num_columns as usize != columns.len() {
-        return Err(format!("Column count mismatch: relation has {}, insert has {}", columns.len(), num_columns));
+        return Err(format!(
+            "Column count mismatch: relation has {}, insert has {}",
+            columns.len(),
+            num_columns
+        ));
     }
-    
+
     let mut map = HashMap::new();
     for i in 0..num_columns as usize {
         let col_name = &columns[i];
@@ -134,6 +144,89 @@ pub fn parse_insert_message(bytes: &[u8], columns: &[String]) -> Result<HashMap<
             }
         }
     }
-    
+
+    Ok(map)
+}
+
+/// Giải mã byte payload của Update Message ('U') từ pgoutput dựa trên danh sách cột đã cache
+pub fn parse_update_message(
+    bytes: &[u8],
+    columns: &[String],
+) -> Result<HashMap<String, String>, String> {
+    let mut offset = 0;
+    let tag = read_u8(bytes, &mut offset)?;
+    if tag != b'U' {
+        return Err("Not an update message".to_string());
+    }
+    let _relation_id = read_u32(bytes, &mut offset)?;
+
+    // Đọc byte chỉ báo tuple tiếp theo
+    let mut tuple_tag = read_u8(bytes, &mut offset)?;
+
+    // Nếu có Old Tuple ('K' hoặc 'O'), ta cần nhảy qua (skip) nó
+    if tuple_tag == b'K' || tuple_tag == b'O' {
+        let num_old_cols = read_u16(bytes, &mut offset)?;
+        for _ in 0..num_old_cols {
+            let val_type = read_u8(bytes, &mut offset)?;
+            match val_type {
+                b'n' | b'u' => {}
+                b't' => {
+                    let len = read_u32(bytes, &mut offset)? as usize;
+                    if offset + len > bytes.len() {
+                        return Err("Truncated old tuple value".to_string());
+                    }
+                    offset += len;
+                }
+                _ => {
+                    return Err(format!(
+                        "Unknown old tuple value type: {}",
+                        val_type as char
+                    ));
+                }
+            }
+        }
+        // Đọc tiếp byte chỉ báo của New Tuple
+        tuple_tag = read_u8(bytes, &mut offset)?;
+    }
+
+    if tuple_tag != b'N' {
+        return Err(format!(
+            "Expected 'N' tuple tag for update, got '{}'",
+            tuple_tag as char
+        ));
+    }
+
+    let num_columns = read_u16(bytes, &mut offset)?;
+    if num_columns as usize != columns.len() {
+        return Err(format!(
+            "Column count mismatch: relation has {}, update has {}",
+            columns.len(),
+            num_columns
+        ));
+    }
+
+    let mut map = HashMap::new();
+    for i in 0..num_columns as usize {
+        let col_name = &columns[i];
+        let val_type = read_u8(bytes, &mut offset)?;
+        match val_type {
+            b'n' | b'u' => {
+                map.insert(col_name.clone(), String::new());
+            }
+            b't' => {
+                let len = read_u32(bytes, &mut offset)? as usize;
+                if offset + len > bytes.len() {
+                    return Err("Truncated tuple value".to_string());
+                }
+                let val = String::from_utf8_lossy(&bytes[offset..offset + len]).into_owned();
+                offset += len;
+                map.insert(col_name.clone(), val);
+            }
+            _ => {
+                return Err(format!("Unknown tuple value type: {}", val_type as char));
+            }
+        }
+    }
+
     Ok(map)
 }

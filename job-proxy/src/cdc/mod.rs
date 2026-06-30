@@ -7,7 +7,9 @@ use crate::observability::otel::OtelTracer;
 use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent};
 use std::collections::HashMap;
 
-use parser::{parse_insert_message, parse_relation_message, read_u32, PgOutputRelation};
+use parser::{
+    parse_insert_message, parse_relation_message, parse_update_message, read_u32, PgOutputRelation,
+};
 use utils::parse_pg_config;
 
 /// CdcStreamer chịu trách nhiệm kết nối và duy trì luồng stream logical replication từ PostgreSQL.
@@ -117,7 +119,7 @@ impl CdcStreamer {
                                 );
                             }
                         },
-                        b'I' => {
+                        b'I' | b'U' => {
                             let mut offset = 1;
                             if let Ok(relation_id) = read_u32(&data, &mut offset) {
                                 if let Some(rel) = relation_map.get(&relation_id) {
@@ -130,15 +132,36 @@ impl CdcStreamer {
                                         });
 
                                     if is_monitored {
-                                        let fields = parse_insert_message(&data, &rel.columns)
-                                            .map_err(|e| {
-                                                std::io::Error::new(
-                                                    std::io::ErrorKind::InvalidData,
-                                                    e,
-                                                )
-                                            })?;
+                                        let fields_res = if tag == b'I' {
+                                            parse_insert_message(&data, &rel.columns)
+                                        } else {
+                                            parse_update_message(&data, &rel.columns)
+                                        };
 
-                                        self.process_insert(&fields, &mut redis_conn).await?;
+                                        match fields_res {
+                                            Ok(fields) => {
+                                                if rel.relation_name == "zones"
+                                                    || rel.relation_name == "zone_services"
+                                                {
+                                                    self.process_zone_config_change(
+                                                        &fields,
+                                                        &rel.relation_name,
+                                                        &mut redis_conn,
+                                                    )
+                                                    .await?;
+                                                } else if tag == b'I' {
+                                                    self.process_insert(&fields, &mut redis_conn)
+                                                        .await?;
+                                                }
+                                            }
+                                            Err(err) => {
+                                                Logger::sys_error(
+                                                    "cdc.parse_error",
+                                                    &format!("Lỗi phân tích message tag '{}' cho bảng {}", tag as char, rel.relation_name),
+                                                    &err,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -282,31 +305,6 @@ impl CdcStreamer {
 
                 span.set_attribute(opentelemetry::KeyValue::new("zone_id", target_zone_id));
 
-                if job_topic_clone == "zone.metadata.update" {
-                    // Đây là sự kiện cấu hình được trigger tự động ghi nhận
-                    // Publish nhị phân trực tiếp lên kênh PubSub Platform: zone:event:metadata:<zone_id>
-                    let channel = format!("zone:event:metadata:{}", resource_id_clone);
-                    let publish_res: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
-                        .arg(&channel)
-                        .arg(&payload_bytes)
-                        .query_async(redis_conn)
-                        .await;
-
-                    match publish_res {
-                        Ok(_) => {
-                            Logger::sys_info(
-                                "cdc.publish_config",
-                                &format!("CdcStreamer: Đã phát tán CDC Metadata update lên kênh PubSub {}", channel)
-                            );
-                        }
-                        Err(e) => {
-                            span.record_error(&e);
-                            return Err(Box::new(e) as Box<dyn std::error::Error>);
-                        }
-                    }
-                    return Ok(());
-                }
-
                 let mut cmd = redis::cmd("XADD");
                 cmd.arg(&stream_key).arg("*");
                 cmd.arg("job_id").arg(&event_id_clone);
@@ -347,6 +345,77 @@ impl CdcStreamer {
                 Ok(())
             })
             .await?;
+
+        Ok(())
+    }
+
+    /// Xử lý CDC trực tiếp thay đổi cấu hình từ bảng zones và zone_services
+    async fn process_zone_config_change(
+        &self,
+        fields: &HashMap<String, String>,
+        table_name: &str,
+        redis_conn: &mut redis::aio::MultiplexedConnection,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut zone_id = String::new();
+        let mut event_payload = serde_json::Value::Null;
+
+        if table_name == "zones" {
+            zone_id = fields.get("id").cloned().unwrap_or_default();
+            let status = fields.get("status").cloned().unwrap_or_default();
+            if !zone_id.is_empty() && !status.is_empty() {
+                event_payload = serde_json::json!({
+                    "event_type": "zone_status_changed",
+                    "zone_id": zone_id,
+                    "status": status
+                });
+            }
+        } else if table_name == "zone_services" {
+            zone_id = fields.get("zone_id").cloned().unwrap_or_default();
+            let service_type = fields.get("service_type").cloned().unwrap_or_default();
+            let enabled_str = fields.get("enabled").cloned().unwrap_or_default();
+            if !zone_id.is_empty() && !service_type.is_empty() {
+                let enabled = enabled_str == "t" || enabled_str == "true";
+                event_payload = serde_json::json!({
+                    "event_type": "service_status_changed",
+                    "zone_id": zone_id,
+                    "service": service_type,
+                    "enabled": enabled
+                });
+            }
+        }
+
+        if !zone_id.is_empty() && !event_payload.is_null() {
+            let channel = format!("zone:event:metadata:{}", zone_id);
+            if let Ok(payload_bin) = serde_json::to_vec(&event_payload) {
+                let publish_res: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
+                    .arg(&channel)
+                    .arg(&payload_bin[..])
+                    .query_async(redis_conn)
+                    .await;
+
+                match publish_res {
+                    Ok(_) => {
+                        Logger::sys_info(
+                            "cdc.publish_zone_config",
+                            &format!(
+                                "CdcStreamer: Đã phát tán trực tiếp CDC cấu hình bảng '{}' lên kênh PubSub {}",
+                                table_name, channel
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        Logger::sys_error(
+                            "cdc.publish_zone_config_error",
+                            &format!(
+                                "Thất bại khi gửi CDC cập nhật cấu hình cho zone {}",
+                                zone_id
+                            ),
+                            &e.to_string(),
+                        );
+                    }
+                }
+            }
+        }
 
         Ok(())
     }

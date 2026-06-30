@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng Đồng bộ Cấu hình Phân vùng (Zone Metadata Sync) và Trạng thái Vận hành (Operational State Machine) của Dataplane Cluster.
-> Mọi thay đổi liên quan đến cấu hình trạng thái Zone, CDC trigger, job-proxy CdcStreamer và luồng đồng bộ/chặn kéo job của Dataplane bắt buộc phải tuân thủ nghiêm ngặt đặc tả này.
+> Mọi thay đổi liên quan đến cấu hình trạng thái Zone, CdcStreamer và luồng đồng bộ/chặn kéo job của Dataplane bắt buộc phải tuân thủ nghiêm ngặt đặc tả này.
 
 ---
 
@@ -11,7 +11,7 @@
 Trong hệ thống Cloud-native HA (High Availability), việc điều phối trạng thái hoạt động của các phân vùng hạ tầng (Zones) và các dịch vụ chạy trong phân vùng đó (Zone Services) đóng vai trò quyết định đến tính bền vững của dữ liệu và hiệu năng tải. 
 
 Hệ thống triển khai mô hình **Hybrid Event-Driven & Pull Reconciliation** để đồng bộ trạng thái cấu hình từ database Controlplane (SoT) xuống Redis L2 của từng Zone:
-1. **CDC Real-time Event (Chính - <10ms)**: Bắt các thay đổi cấu hình qua PostgreSQL Logical Replication, phát tán tin nhắn PubSub nhị phân để Dataplane áp dụng cấu hình lập tức.
+1. **CDC Real-time Event (Chính - <10ms)**: Bắt trực tiếp các thay đổi cấu hình (`INSERT` và `UPDATE`) trên các bảng `hierarchy.zones` và `hierarchy.zone_services` qua PostgreSQL Logical Replication, phát tán tin nhắn PubSub nhị phân để Dataplane áp dụng cấu hình lập tức.
 2. **Distributed Polling Reconciliation (Phụ - 1 giờ/lần)**: Lưới an toàn tự phục hồi (Self-Healing) đối soát cấu hình, được bảo vệ bằng **Distributed Lock** chống Write Stampede và Double-query.
 
 ### 🌐 Sơ đồ Phối Hợp Sự Kiện & Dữ Liệu (Dataflow Diagram)
@@ -25,8 +25,6 @@ graph TD
 
     SRE["💻 SRE Admin / API"]:::client
     DB["💾 PostgreSQL SoT<br/>(hierarchy.zones / services)"]:::storage
-    Trigger["⚡ trigger: notify_zone_metadata_change"]:::proxy
-    Outbox["💾 iam.iam_outbox_records"]:::storage
     JP["🚀 job-proxy (CdcStreamer)"]:::proxy
     RedisL1["⚡ Redis Platform L1"]:::storage
     DP_Listener["💻 DP CDC Event Listener"]:::dataplane
@@ -36,20 +34,18 @@ graph TD
     Consumer["💻 Job Consumer (Fetcher)"]:::dataplane
 
     SRE -- "1. Update status/enabled" --> DB
-    DB -- "2. Fire Trigger" --> Trigger
-    Trigger -- "3. INSERT outbox" --> Outbox
-    Outbox -- "4. WAL Log (b'I')" --> JP
-    JP -- "5. Intercept & PUBLISH (Binary)" --> RedisL1
-    RedisL1 -- "6. Real-time PubSub Event" --> DP_Listener
-    DP_Listener -- "7. HSET metadata" --> RedisL2
+    DB -- "2. WAL Log (b'I' or b'U')" --> JP
+    JP -- "3. Parse & PUBLISH (Binary)" --> RedisL1
+    RedisL1 -- "4. Real-time PubSub Event" --> DP_Listener
+    DP_Listener -- "5. HSET metadata" --> RedisL2
 
-    DP_Sync -- "8. (Every 1h) SETNX Lock" --> RedisL2
-    DP_Sync -- "9. (If lock OK) PUBLISH Query" --> RedisL1
-    RedisL1 -- "10. Query Metadata" --> JP
-    JP -- "11. Query DB" --> DB
-    JP -- "12. PUBLISH Response (Binary)" --> RedisL1
-    RedisL1 -- "13. Response Event" --> DP_Sync
-    DP_Sync -- "14. HSET metadata" --> RedisL2
+    DP_Sync -- "6. (Every 1h) SETNX Lock" --> RedisL2
+    DP_Sync -- "7. (If lock OK) PUBLISH Query" --> RedisL1
+    RedisL1 -- "8. Query Metadata" --> JP
+    JP -- "9. Query DB" --> DB
+    JP -- "10. PUBLISH Response (Binary)" --> RedisL1
+    RedisL1 -- "11. Response Event" --> DP_Sync
+    DP_Sync -- "12. HSET metadata" --> RedisL2
 
     RedisL2 -- "Read Metadata" --> MailMonitor
     RedisL2 -- "Read Metadata" --> Consumer
@@ -74,9 +70,8 @@ sequenceDiagram
     Note over DB,JP: LUỒNG CDC THỜI GIAN THỰC (REAL-TIME PATH)
     rect rgb(20, 30, 40)
         DB->>DB: SRE thay đổi status Zone / enabled Service
-        DB->>DB: Trigger tự động INSERT vào iam.iam_outbox_records
-        DB->>JP: WAL Logical Replication Stream (INSERT b'I')
-        Note over JP: CdcStreamer nhận diện topic = "zone.metadata.update"
+        DB->>JP: WAL Logical Replication Stream (INSERT b'I' hoặc UPDATE b'U')
+        Note over JP: CdcStreamer nhận diện thay đổi trên zones/zone_services
         JP->>L1: PUBLISH zone:event:metadata:<zone_id> (Binary payload)
         par Gửi tới các node đang lắng nghe PubSub
             L1->>DP1: Tin nhắn cập nhật CDC
