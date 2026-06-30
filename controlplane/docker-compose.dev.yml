@@ -525,20 +525,20 @@ services:
       - "5175:5173"
     restart: unless-stopped
 
-  job-proxy:
+  job-orchestrator:
     build:
-      context: ../job-proxy
+      context: ../job-orchestrator
       dockerfile: Dockerfile
       args:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: aurora-job-proxy
+    container_name: aurora-job-orchestrator
     init: true
     ports:
       - "9102:9102"
     volumes:
-      - ./dev/tls:/etc/job-proxy/tls:ro
+      - ./dev/tls:/etc/job-orchestrator/tls:ro
     environment:
       DATABASE_URL: "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
       REDIS_URL: "redis://controlplane-redis-job:6379/0"
@@ -547,12 +547,7 @@ services:
       RESULT_STREAM_NAME: "job_results_stream"
       APP_LOG_LEVEL: "debug"
       METRICS_PORT: "9102"
-      CDC_SOURCES: "mail.mail_outbox_records,iam.iam_outbox_records"
-      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
-      CONTROLPLANE_GRPC_CA_CERT: "/etc/job-proxy/tls/ca.crt"
-      CONTROLPLANE_GRPC_CLIENT_CERT: "/etc/job-proxy/tls/grpc-server.crt"
-      CONTROLPLANE_GRPC_CLIENT_KEY: "/etc/job-proxy/tls/grpc-server.key"
-      CONTROLPLANE_GRPC_DOMAIN: "localhost"
+      CDC_SOURCES: "mail.mail_outbox_records,iam.iam_outbox_records,hierarchy.zones,hierarchy.zone_services"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:

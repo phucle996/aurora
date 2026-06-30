@@ -44,7 +44,7 @@ impl OtelTracer {
 
         // Định danh tài nguyên nghiệp vụ trong hệ thống giám sát tập trung
         let resource = Resource::new(vec![
-            KeyValue::new("service.name", "aurora-job-proxy"),
+            KeyValue::new("service.name", "aurora-job-orchestrator"),
             KeyValue::new("zone_id", zone_id.clone()),
             KeyValue::new("hostname", hostname),
         ]);
@@ -92,7 +92,7 @@ impl OtelTracer {
 
         // Thiết lập resource attributes mô tả nguồn gốc metrics
         let resource = Resource::new(vec![
-            KeyValue::new("service.name", "aurora-job-proxy"),
+            KeyValue::new("service.name", "aurora-job-orchestrator"),
             KeyValue::new("zone_id", zone_id.clone()),
             KeyValue::new("hostname", hostname),
         ]);

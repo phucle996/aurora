@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::init();
     OtelTracer::init(&config);
     MetricsManager::init();
-    Logger::sys_info("main.init", "Khởi động aurora-job-proxy (Mô hình 2 chiều)...");
+    Logger::sys_info("main.init", "Khởi động aurora-job-orchestrator (Mô hình 2 chiều)...");
 
     Logger::sys_info(
         "main.init",

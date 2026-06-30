@@ -31,6 +31,7 @@ pub async fn run_backpressure_listener(
     // Cache RAM lưu giữ trạng thái cuối cùng nhận được và timestamp (Dead Man's Switch)
     // Key: zone_id, Value: (last_report_timestamp, current_zone_status, current_mail_enabled)
     let mut zone_heartbeats: HashMap<String, (Instant, String, bool)> = HashMap::new();
+    let mut service_metrics_cache: HashMap<(String, String), (String, i32, Instant)> = HashMap::new();
 
     Logger::sys_info(
         "backpressure_listener.run",
@@ -222,6 +223,44 @@ pub async fn run_backpressure_listener(
                                     }
                                 }
 
+                                // 6.5 Cập nhật động status và capacity của service vào Postgres DB (Có Throttling)
+                                let now_instant = Instant::now();
+                                let mut should_update_metrics = false;
+                                if let Some((prev_status, prev_capacity, last_update)) = service_metrics_cache.get(&(zone_id.clone(), "mail".to_string())) {
+                                    if prev_status != mail_status {
+                                        should_update_metrics = true;
+                                    } else if (prev_capacity - (mail_capacity as i32)).abs() > 10 {
+                                        should_update_metrics = true;
+                                    } else if now_instant.duration_since(*last_update) > Duration::from_secs(120) {
+                                        should_update_metrics = true;
+                                    }
+                                } else {
+                                    should_update_metrics = true;
+                                }
+
+                                if should_update_metrics {
+                                    if let Err(e) = super::db::update_zone_service_metrics(
+                                        &config.database_url,
+                                        &zone_id,
+                                        "mail",
+                                        mail_status,
+                                        mail_capacity as i32,
+                                    )
+                                    .await
+                                    {
+                                        Logger::sys_error(
+                                            "backpressure_listener.metrics_db_error",
+                                            "Thất bại khi cập nhật metrics Service vào DB",
+                                            &e.to_string(),
+                                        );
+                                    } else {
+                                        service_metrics_cache.insert(
+                                            (zone_id.clone(), "mail".to_string()),
+                                            (mail_status.to_string(), mail_capacity as i32, now_instant),
+                                        );
+                                    }
+                                }
+
                                 // Ghi nhận heartbeat và ACK bản tin
                                 zone_heartbeats.insert(
                                     zone_id.clone(),
@@ -273,6 +312,22 @@ pub async fn run_backpressure_listener(
                 false,
             )
             .await;
+
+            // Cập nhật metrics service sập hoàn toàn
+            let _ = super::db::update_zone_service_metrics(
+                &config.database_url,
+                &zone_id,
+                "mail",
+                "down",
+                0,
+            )
+            .await;
+
+            // Reset metrics cache
+            service_metrics_cache.insert(
+                (zone_id.clone(), "mail".to_string()),
+                ("down".to_string(), 0, Instant::now()),
+            );
 
             // Đồng bộ cache RAM
             if let Some(val) = zone_heartbeats.get_mut(&zone_id) {

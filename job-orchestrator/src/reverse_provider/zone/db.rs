@@ -192,3 +192,52 @@ pub async fn query_zone_metadata(
 
     Ok((zone_status, services))
 }
+
+/// Cập nhật trạng thái sức khỏe vận hành và năng lực xử lý thực tế của một dịch vụ trực tiếp trong Postgres
+pub async fn update_zone_service_metrics(
+    db_url: &str,
+    zone_id: &str,
+    service_type: &str,
+    status: &str,
+    capacity: i32,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            Logger::sys_error(
+                "zone_db.connection_svc_metrics",
+                "Lỗi kết nối chạy ngầm của PostgreSQL khi cập nhật metrics Service",
+                &e.to_string(),
+            );
+        }
+    });
+
+    let svc_id_str = uuid::Uuid::new_v4().to_string();
+
+    // Thực thi câu lệnh UPSERT nguyên tử (Atomic upsert)
+    // Cập nhật status, capacity và last_heartbeat_at của service.
+    // Lưu ý: status trong CSDL là kiểu enum zone_service_status, nên ta cast $5::text::zone_service_status
+    let rows_affected = pg_client
+        .execute(
+            "INSERT INTO core.zone_services (id, zone_id, service_type, enabled, status, capacity, last_heartbeat_at, created_at, updated_at) \
+             VALUES ($1::uuid, $2::uuid, $3, false, $5::text::zone_service_status, $4, NOW(), NOW(), NOW()) \
+             ON CONFLICT (zone_id, service_type) \
+             DO UPDATE SET status = EXCLUDED.status, capacity = EXCLUDED.capacity, last_heartbeat_at = EXCLUDED.last_heartbeat_at, updated_at = NOW()",
+            &[&svc_id_str, &zone_id, &service_type, &capacity, &status],
+        )
+        .await?;
+
+    if rows_affected > 0 {
+        Logger::sys_info(
+            "zone_db.update_service_metrics",
+            &format!(
+                "Đã cập nhật chỉ số Service '{}' của Zone {} (status: '{}', capacity: {}%) trực tiếp trong DB.",
+                service_type, zone_id, status, capacity
+            ),
+        );
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}

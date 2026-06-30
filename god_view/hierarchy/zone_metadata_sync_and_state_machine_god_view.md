@@ -25,7 +25,7 @@ graph TD
 
     SRE["💻 SRE Admin / API"]:::client
     DB["💾 PostgreSQL SoT<br/>(hierarchy.zones / services)"]:::storage
-    JP["🚀 job-proxy (CdcStreamer)"]:::proxy
+    JP["🚀 job-orchestrator (CdcStreamer)"]:::proxy
     RedisL1["⚡ Redis Platform L1"]:::storage
     DP_Listener["💻 DP CDC Event Listener"]:::dataplane
     DP_Sync["💻 DP Reconciliation Loop"]:::dataplane
@@ -61,7 +61,7 @@ graph TD
 sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
-    participant JP as 🚀 job-proxy (CDC)
+    participant JP as 🚀 job-orchestrator (CDC)
     participant L1 as ⚡ Redis Platform L1
     participant DP1 as 💻 Dataplane Node A (Master)
     participant DP2 as 💻 Dataplane Node B (Replica)
