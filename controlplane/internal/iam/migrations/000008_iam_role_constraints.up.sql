@@ -21,6 +21,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_auto_assign_platform_role ON users;
+
 CREATE CONSTRAINT TRIGGER trg_auto_assign_platform_role
 AFTER INSERT OR UPDATE OF status ON users
 DEFERRABLE INITIALLY DEFERRED

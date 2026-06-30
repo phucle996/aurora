@@ -24,6 +24,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_auto_assign_tenant_role ON tenant_memberships;
+
 CREATE CONSTRAINT TRIGGER trg_auto_assign_tenant_role
 AFTER INSERT OR UPDATE OF status, tenant_id, user_id ON tenant_memberships
 DEFERRABLE INITIALLY DEFERRED
