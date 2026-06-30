@@ -1,5 +1,5 @@
 use crate::observability::logger::Logger;
-use opentelemetry::{global, KeyValue};
+use opentelemetry::global;
 use opentelemetry::metrics::{Counter, Gauge};
 use std::sync::OnceLock;
 
@@ -112,15 +112,5 @@ impl MetricsManager {
     /// Tăng số lượng thông báo realtime đã gửi thành công
     pub fn inc_notifications_sent() {
         Self::notifications_sent().add(1, &[]);
-    }
-
-    /// Cập nhật độ dài hàng đợi của một zone
-    pub fn set_queue_len(zone_id: &str, val: i64) {
-        Self::queue_len_gauge().record(val as f64, &[KeyValue::new("zone_id", zone_id.to_string())]);
-    }
-
-    /// Cập nhật số tin nhắn pending của một zone
-    pub fn set_pending_len(zone_id: &str, val: i64) {
-        Self::pending_len_gauge().record(val as f64, &[KeyValue::new("zone_id", zone_id.to_string())]);
     }
 }

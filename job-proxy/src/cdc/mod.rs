@@ -282,6 +282,31 @@ impl CdcStreamer {
 
                 span.set_attribute(opentelemetry::KeyValue::new("zone_id", target_zone_id));
 
+                if job_topic_clone == "zone.metadata.update" {
+                    // Đây là sự kiện cấu hình được trigger tự động ghi nhận
+                    // Publish nhị phân trực tiếp lên kênh PubSub Platform: zone:event:metadata:<zone_id>
+                    let channel = format!("zone:event:metadata:{}", resource_id_clone);
+                    let publish_res: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
+                        .arg(&channel)
+                        .arg(&payload_bytes)
+                        .query_async(redis_conn)
+                        .await;
+
+                    match publish_res {
+                        Ok(_) => {
+                            Logger::sys_info(
+                                "cdc.publish_config",
+                                &format!("CdcStreamer: Đã phát tán CDC Metadata update lên kênh PubSub {}", channel)
+                            );
+                        }
+                        Err(e) => {
+                            span.record_error(&e);
+                            return Err(Box::new(e) as Box<dyn std::error::Error>);
+                        }
+                    }
+                    return Ok(());
+                }
+
                 let mut cmd = redis::cmd("XADD");
                 cmd.arg(&stream_key).arg("*");
                 cmd.arg("job_id").arg(&event_id_clone);

@@ -1,22 +1,27 @@
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+use crate::infra::redis::RedisClientManager;
+use crate::observability::logger::Logger;
+use crate::workerpool::lifecycle::WorkerLifecycleManager;
 
 static CPU_USAGE_PCT: AtomicUsize = AtomicUsize::new(0);
 static RAM_USAGE_PCT: AtomicUsize = AtomicUsize::new(0);
 
 /// ============================================================================
-/// 📂 MODULE: observability/resource.rs - Giám Sát Tài Nguyên Hệ Thống Thô (Linux)
+/// 📂 MODULE: observability/resource.rs - Giám Sát & Báo Cáo Tài Nguyên Node L2
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
-///   - Đọc trực tiếp `/proc/stat` và `/proc/meminfo` để đo hiệu năng CPU và RAM.
-///   - Thu thập không đồng bộ qua luồng ngầm (non-blocking) để tránh nghẽn luồng hot-path.
-///   - Cung cấp tốc độ đọc cực cao (<1ns) cho luồng kéo Job nhờ truy xuất qua Atomics.
+///   - Đọc trực tiếp `/proc/stat` và `/proc/meminfo` để đo hiệu năng CPU và RAM của Node.
+///   - Đẩy trực tiếp các chỉ số tài nguyên cục bộ này kèm số workers lên Redis L2 (Node Reporter).
+///   - Cung cấp tốc độ đọc cực cao (<1ns) cho luồng nội bộ nhờ lưu trữ song song qua Atomics.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
-///   - Hệ thống file ảo `/proc` của hệ điều hành Linux (tương thích tuyệt đối K8s containers).
+///   - Hệ thống file ảo `/proc` của hệ điều hành Linux.
 ///
 pub struct ResourceMonitor;
 
@@ -31,14 +36,30 @@ impl ResourceMonitor {
         RAM_USAGE_PCT.load(Ordering::Relaxed) as f64 / 100.0
     }
 
-    /// Khởi chạy vòng lặp ngầm giám sát tài nguyên hệ thống (Linux /proc reader)
-    pub fn start_monitor() {
-        tokio::spawn(async {
+    /// Khởi chạy vòng lặp ngầm giám sát tài nguyên hệ thống và tự động đẩy lên Redis L2 (Self-Healing Node Reporter)
+    pub fn start_monitor(
+        node_id: String,
+        redis_internal_zone: Arc<RedisClientManager>,
+        worker_pool: Arc<WorkerLifecycleManager>,
+    ) {
+        tokio::spawn(async move {
+            Logger::sys_info(
+                "resource_monitor.start",
+                &format!(
+                    "Bắt đầu ResourceMonitor & Node Reporter cho Node ID: {}...",
+                    node_id
+                ),
+            );
+
             let mut prev_work = 0.0;
             let mut prev_total = 0.0;
 
+            // Duy trì kết nối Multiplexed động tới Redis L2
+            let mut conn_opt: Option<redis::aio::MultiplexedConnection> = None;
+
             loop {
                 // 1. Thu thập CPU từ /proc/stat
+                let mut cpu_usage = 0.0;
                 if let Ok(stat) = fs::read_to_string("/proc/stat") {
                     if let Some(first_line) = stat.lines().next() {
                         let parts: Vec<&str> = first_line.split_whitespace().collect();
@@ -58,7 +79,7 @@ impl ResourceMonitor {
                             let diff_total = total - prev_total;
 
                             if diff_total > 0.0 {
-                                let cpu_usage = (diff_active / diff_total) * 100.0;
+                                cpu_usage = (diff_active / diff_total) * 100.0;
                                 CPU_USAGE_PCT.store(cpu_usage as usize, Ordering::Relaxed);
                             }
 
@@ -69,6 +90,7 @@ impl ResourceMonitor {
                 }
 
                 // 2. Thu thập RAM từ /proc/meminfo
+                let mut ram_usage = 0.0;
                 if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
                     let mut total_mem = 0.0;
                     let mut avail_mem = 0.0;
@@ -87,12 +109,67 @@ impl ResourceMonitor {
                     }
 
                     if total_mem > 0.0 {
-                        let ram_usage = (1.0 - (avail_mem / total_mem)) * 100.0;
+                        ram_usage = (1.0 - (avail_mem / total_mem)) * 100.0;
                         RAM_USAGE_PCT.store(ram_usage as usize, Ordering::Relaxed);
                     }
                 }
 
-                sleep(Duration::from_secs(1)).await;
+                // 3. Đọc số lượng worker đang hoạt động trên Node hiện tại
+                let active_workers = worker_pool.active_worker_ids().len();
+
+                // 4. Kết nối và ghi nhận metrics của Node lên Redis L2 (Node Reporter)
+                if conn_opt.is_none() {
+                    if let Ok(conn) = redis_internal_zone
+                        .client()
+                        .get_multiplexed_tokio_connection()
+                        .await
+                    {
+                        conn_opt = Some(conn);
+                    }
+                }
+
+                if let Some(mut conn) = conn_opt.clone() {
+                    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                        Ok(dur) => dur.as_secs(),
+                        Err(_) => 0,
+                    };
+
+                    let key = format!("dataplane:node:{}", node_id);
+
+                    // Sử dụng pipeline HSET và EXPIRE bọc trong timeout 2s để tránh treo kết nối (HA & Anti-hang)
+                    let redis_write_res = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        redis::pipe()
+                            .cmd("HSET")
+                            .arg(&key)
+                            .arg("cpu")
+                            .arg(cpu_usage / 100.0) // Chuyển đổi về tỷ lệ 0.0 -> 1.0
+                            .arg("ram")
+                            .arg(ram_usage / 100.0) // Chuyển đổi về tỷ lệ 0.0 -> 1.0
+                            .arg("active_workers")
+                            .arg(active_workers)
+                            .arg("updated_at")
+                            .arg(now)
+                            .cmd("EXPIRE")
+                            .arg(&key)
+                            .arg(15) // TTL 15s để tự dọn khi node crash hoặc scale down
+                            .query_async::<_, ()>(&mut conn),
+                    )
+                    .await;
+
+                    match redis_write_res {
+                        Ok(Ok(())) => {
+                            // Ghi thành công
+                        }
+                        _ => {
+                            // Gặp lỗi ghi hoặc timeout -> Reset connection để tái khởi tạo ở chu kỳ sau
+                            conn_opt = None;
+                        }
+                    }
+                }
+
+                // Thực hiện chu kỳ quét và đẩy tài nguyên định kỳ mỗi 5 giây (đồng bộ tải CPU/IO)
+                sleep(Duration::from_secs(5)).await;
             }
         });
     }

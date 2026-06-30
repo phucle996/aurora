@@ -53,12 +53,41 @@ impl AppContainer {
 
     /// Kích hoạt các luồng giám sát và tác vụ ngầm hoạt động (Watcher, Event loop).
     pub async fn start(&self, mut worker_signal_rx: mpsc::Receiver<WorkerSignal>) {
-        // 0a. Khởi động tác vụ ngầm giám sát tài nguyên CPU/RAM hệ thống thô
-        crate::observability::resource::ResourceMonitor::start_monitor();
-
         // 0b. Khởi tạo OpenTelemetry (Traces & Metrics) kết nối tới OTel Collector
         crate::observability::otel::OtelTracer::init(&self.config);
         crate::workerpool::metrics::WorkerMetricsManager::init_registry();
+
+        // Khởi động Mail Workload Watchdog giám sát Stalwart L2 (HA & Decoupled)
+        crate::executor::mail::core::monitor::MailWorkloadMonitor::start(
+            self.config.clone(),
+            self.redis_internal_zone.clone(),
+        );
+
+        // Sinh node_id độc nhất cho instance Dataplane này (dùng hostname hoặc uuid làm fallback)
+        let node_id = hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+
+        // Khởi động ResourceMonitor kiêm Node Reporter báo cáo CPU/RAM và workers lên Redis L2 (Self-Healing L2 Node Reporter)
+        crate::observability::resource::ResourceMonitor::start_monitor(
+            node_id,
+            self.redis_internal_zone.clone(),
+            self.worker_pool.clone(),
+        );
+
+        // Khởi động Zone Gateway tổng hợp dữ liệu cụm L2 và đồng bộ lên Platform L1 (Bypass CP)
+        crate::zone_gateway::ZoneStatusGateway::start_zone_gateway(
+            self.redis_internal_zone.clone(),
+            self.redis_job.clone(),
+            self.config.clone(),
+        );
+
+        // Khởi động CDC Metadata Event Listener lắng nghe các sự kiện cập nhật cấu hình thời gian thực
+        crate::zone_gateway::ZoneStatusGateway::start_metadata_event_listener(
+            self.redis_internal_zone.clone(),
+            self.redis_job.clone(),
+            self.config.clone(),
+        );
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.active_lock_registry.clone();

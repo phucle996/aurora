@@ -6,7 +6,7 @@ pub async fn dispatch_request(
     template_id: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     // Định tuyến nghiệp vụ lấy email template
-    let (subject, body) = super::mail::template::fetch_template(config, template_id).await?;
+    let (subject, body) = super::template::fetch_template(config, template_id).await?;
 
     Ok(serde_json::json!({
         "subject": subject,

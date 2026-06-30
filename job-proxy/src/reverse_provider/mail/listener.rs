@@ -124,7 +124,8 @@ pub async fn run_listener(
                     }
                 }
             })
-            .await;
+            .await
+            .map_err(|e| e.to_string());
 
         match dispatch_result {
             Ok(res_data) => {

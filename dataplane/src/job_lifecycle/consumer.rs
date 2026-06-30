@@ -5,8 +5,8 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 // Sử dụng các module message và admission từ thư mục job_lifecycle mới đổi tên
-use crate::job_lifecycle::message::JobPayload;
 use crate::job_lifecycle::admission::AdmissionController;
+use crate::job_lifecycle::message::JobPayload;
 // Đã loại bỏ import PolicyEngine
 use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
@@ -14,7 +14,7 @@ use crate::observability::logger::Logger;
 /// ============================================================================
 /// 📂 MODULE: job_receiver/consumer.rs - Trình Phân Phối Nghiệp Vụ Trung Tâm
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đóng vai trò là Ingestion Engine chính của hệ thống.
 ///   - Gọi module tách biệt `AdmissionController` quản lý sức chứa và ngắt mạch (Circuit Breaker).
@@ -51,8 +51,63 @@ impl JobConsumer {
         );
 
         let mut admission_controller = AdmissionController::new();
+        let mut last_logged_status = String::new();
 
         loop {
+            // 0. Đọc metadata của Zone từ Redis L2 để thực thi State Machine
+            let mut zone_status = "active".to_string();
+
+            if let Ok(mut conn) = redis_internal_zone
+                .client()
+                .get_multiplexed_tokio_connection()
+                .await
+            {
+                let metadata_res: Result<
+                    std::collections::HashMap<String, String>,
+                    redis::RedisError,
+                > = redis::cmd("HGETALL")
+                    .arg("infra:zone:metadata")
+                    .query_async(&mut conn)
+                    .await;
+                if let Ok(metadata) = metadata_res {
+                    if let Some(s) = metadata.get("status") {
+                        zone_status = s.clone();
+                    }
+                }
+            }
+
+            // Nếu trạng thái Zone không phải ACTIVE (planned, disabled, maintenance, draining) -> Tạm dừng kéo Job
+            if zone_status != "active" {
+                if zone_status != last_logged_status {
+                    Logger::sys_info(
+                        "job.ingestion",
+                        &format!(
+                            "Tạm dừng kéo job mới từ Platform L1 vì Zone ở trạng thái: '{}'.",
+                            zone_status
+                        ),
+                    );
+                    last_logged_status = zone_status.clone();
+                }
+
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        Logger::sys_info(
+                            "job.ingestion",
+                            "IngestionDaemon Ingestion Loop cancelled (Zone Paused state). Exiting gracefully..."
+                        );
+                        break;
+                    }
+                    _ = sleep(Duration::from_secs(1)) => {}
+                }
+                continue;
+            } else if !last_logged_status.is_empty() {
+                Logger::sys_info(
+                    "job.ingestion",
+                    "Zone đã quay lại trạng thái ACTIVE. Tiếp tục kéo job mới.",
+                );
+                last_logged_status.clear();
+            }
+
             // 1. Trích xuất giới hạn max_workers tĩnh trực tiếp từ Config
             let max_workers = config.max_workers;
 
@@ -90,7 +145,11 @@ impl JobConsumer {
             }
 
             // 5. Mạch bình thường -> Gọi Redis Stream kéo job mới (Blocking Read bọc trong select)
-            let fetch_fut = crate::infra::redis::query::fetch_next_stream_message(redis_job.client(), &stream_key, &group_name);
+            let fetch_fut = crate::infra::redis::query::fetch_next_stream_message(
+                redis_job.client(),
+                &stream_key,
+                &group_name,
+            );
             let opt_payload = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     Logger::sys_info(
@@ -140,13 +199,18 @@ impl JobConsumer {
                 &payload.job_topic,
                 payload.attempt,
                 "job.received",
-                "IngestionDaemon successfully claimed raw job message from Redis Stream"
+                "IngestionDaemon successfully claimed raw job message from Redis Stream",
             );
 
             let lock_key = format!("locks:job:{}", payload.job_id);
 
             // 7. Thiết lập khóa phân phối Lease Lock trên redis_internal_zone
-            match crate::infra::redis::query::acquire_lease_lock(redis_internal_zone.client(), &lock_key).await {
+            match crate::infra::redis::query::acquire_lease_lock(
+                redis_internal_zone.client(),
+                &lock_key,
+            )
+            .await
+            {
                 Ok(acquired) => {
                     if !acquired {
                         Logger::sys_warn(
@@ -186,10 +250,14 @@ impl JobConsumer {
                 Logger::sys_error(
                     "job.ingestion",
                     &format!("Failed to dispatch job: {}. Releasing lock.", err_msg),
-                    "CHANNEL_DISPATCH_ERROR"
+                    "CHANNEL_DISPATCH_ERROR",
                 );
                 active_jobs.fetch_sub(1, Ordering::SeqCst);
-                let _ = crate::infra::redis::query::release_lease_lock(redis_internal_zone.client(), &lock_key).await;
+                let _ = crate::infra::redis::query::release_lease_lock(
+                    redis_internal_zone.client(),
+                    &lock_key,
+                )
+                .await;
             }
         }
     }
@@ -230,11 +298,10 @@ impl JobConsumer {
                     worker_pool,
                     redis_mgr,
                     zone_id,
-                ).await
+                )
+                .await
             }
-            "vps" => {
-                crate::executor::hypervisor::dispatch_vps_job(action, payload).await
-            }
+            "vps" => crate::executor::hypervisor::dispatch_vps_job(action, payload).await,
             _ => Err(crate::executor::ExecutorError::ExecutionFailed(format!(
                 "Unsupported workload type: {}",
                 workload
