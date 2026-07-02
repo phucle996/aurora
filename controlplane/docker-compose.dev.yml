@@ -422,7 +422,6 @@ services:
       otel-collector:
         condition: service_started
     restart: unless-stopped
-  # Đã loại bỏ dịch vụ envoy-zone2 do Dataplane không có inbound traffic.
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.154.0
@@ -595,7 +594,7 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.9BB1cBRVUuY8lUNPHx7tc5G2"
+      VAULT_TOKEN: "hvs.zPDagLKiHxrMrt3WUh1UTUR22"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"

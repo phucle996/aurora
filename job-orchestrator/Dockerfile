@@ -18,8 +18,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry/ \
     --mount=type=cache,target=/workspace/target/ \
     --mount=type=bind,source=.,target=/src \
     export CARGO_TARGET_DIR=/workspace/target && \
-    cargo build --manifest-path /src/Cargo.toml --release --bin aurora-job-proxy && \
-    cp /workspace/target/release/aurora-job-proxy /usr/local/bin/aurora-job-proxy
+    cargo build --manifest-path /src/Cargo.toml --release --bin aurora-job-orchestrator && \
+    cp /workspace/target/release/aurora-job-orchestrator /usr/local/bin/aurora-job-orchestrator
 
 # ============================================================================
 # Stage 2: Runtime - debian slim tối giản, non-root user
@@ -38,9 +38,9 @@ RUN apt-get update \
     && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/job-proxy /var/log/job-proxy /etc/job-proxy
 
 # Lấy binary từ đường dẫn ngoài đã copy ở stage trước
-COPY --from=builder /usr/local/bin/aurora-job-proxy /usr/local/bin/aurora-job-proxy
+COPY --from=builder /usr/local/bin/aurora-job-orchestrator /usr/local/bin/aurora-job-orchestrator
 
 WORKDIR /var/lib/job-proxy
 USER ${LOCAL_USER}:${LOCAL_USER}
 
-ENTRYPOINT ["/usr/local/bin/aurora-job-proxy"]
+ENTRYPOINT ["/usr/local/bin/aurora-job-orchestrator"]
