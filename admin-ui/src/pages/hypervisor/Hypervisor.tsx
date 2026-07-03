@@ -191,6 +191,41 @@ export default function HypervisorPage() {
   const totalRam = nodes.reduce((acc, n) => acc + n.ram_mb_total, 0)
   const usedRam = nodes.reduce((acc, n) => acc + n.ram_mb_used, 0)
   const onlineCount = nodes.filter(n => n.status === 'connected').length
+  
+  // [COMMENT]: Nếu ở ngữ cảnh Global zone, render giao diện thông báo yêu cầu chọn Zone cụ thể (tương tự 404)
+  if (!activeZone || activeZone === 'global') {
+    return (
+      <PageContent>
+        {/* Breadcrumbs & Header */}
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-2">
+            <nav className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+              <span className="text-muted-foreground/80 hover:text-foreground cursor-pointer">Hypervisor</span>
+              <span>/</span>
+              <span className="text-foreground">Nodes</span>
+            </nav>
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">Hypervisor Nodes</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Manage and monitor all nodes in your infrastructure
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <section className="rounded-3xl border border-border/60 bg-card px-6 py-16 text-center shadow-sm max-w-2xl mx-auto mt-12 backdrop-blur-md">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+            <Server className="size-8" />
+          </div>
+          <p className="mt-5 text-xs font-bold uppercase tracking-[0.24em] text-amber-600 dark:text-amber-400">Zone Context Required</p>
+          <h2 className="mt-3 text-2xl font-bold tracking-tight text-foreground">Global Context Not Supported</h2>
+          <p className="mt-3 text-sm text-muted-foreground max-w-md mx-auto leading-relaxed">
+            Hypervisor nodes belong to physical zone clusters. Please select a specific infrastructure zone from the header dropdown above to start monitoring.
+          </p>
+        </section>
+      </PageContent>
+    )
+  }
 
   return (
     <PageContent>

@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package zone;
+
+message DataplaneCluster {
+    int64 active_nodes = 1;
+    double avg_cpu_usage = 2;
+    double avg_ram_usage = 3;
+    int64 total_active_workers = 4;
+    int64 total_max_workers = 5;
+}
+
+message MailWorkload {
+    string status = 1;
+    int32 capacity = 2;
+}
+
+message HypervisorNode {
+    string node_code = 1;
+    string status = 2;
+    int64 cpu_cores_total = 3;
+    int64 cpu_cores_used = 4;
+    int64 ram_mb_total = 5;
+    int64 ram_mb_used = 6;
+    int64 storage_gb_total = 7;
+    int64 storage_gb_used = 8;
+    int64 updated_at = 9;
+}
+
+message Workloads {
+    MailWorkload mail = 1;
+    repeated HypervisorNode hypervisors = 2;
+}
+
+message ZoneReport {
+    string zone_id = 1;
+    int64 timestamp = 2;
+    DataplaneCluster dataplane_cluster = 3;
+    Workloads workloads = 4;
+}

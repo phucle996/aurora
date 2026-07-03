@@ -1,7 +1,12 @@
 use futures_util::StreamExt;
+use prost::Message;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+pub mod zone_proto {
+    include!(concat!(env!("OUT_DIR"), "/zone.rs"));
+}
 
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
@@ -159,27 +164,79 @@ impl ZoneStatusGateway {
                         .and_then(|c| c.parse().ok())
                         .unwrap_or(0);
 
-                    // 3. Đóng gói payload JSON của Zone
-                    let payload = serde_json::json!({
-                        "zone_id": config.zone_id,
-                        "timestamp": now,
-                        "dataplane_cluster": {
-                            "active_nodes": alive_nodes_count,
-                            "avg_cpu_usage": avg_cpu,
-                            "avg_ram_usage": avg_ram,
-                            "total_active_workers": total_active_workers,
-                            "total_max_workers": config.max_workers * alive_nodes_count.max(1)
-                        },
-                        "workloads": {
-                            "mail": {
-                                "status": mail_status,
-                                "capacity": mail_capacity
-                            }
+                    // 2b. Đọc trạng thái hypervisor workload từ Redis L2 (infra:hypervisor)
+                    // HypervisorMonitor ghi vào hash này mỗi 15s, ZoneStatusGateway đọc mỗi 5s
+                    let hypervisor_raw: std::collections::HashMap<String, String> =
+                        redis::cmd("HGETALL")
+                            .arg("infra:hypervisor")
+                            .query_async(&mut conn_l2)
+                            .await
+                            .unwrap_or_default();
+
+                    // [COMMENT]: Map JSON từ Redis L2 sang các struct Protobuf tương ứng
+                    #[derive(serde::Deserialize)]
+                    struct HypervisorCache {
+                        status: String,
+                        cpu_cores_total: i64,
+                        cpu_cores_used: i64,
+                        ram_mb_total: i64,
+                        ram_mb_used: i64,
+                        storage_gb_total: i64,
+                        storage_gb_used: i64,
+                        updated_at: i64,
+                    }
+
+                    let mut hypervisors = Vec::new();
+                    for (node_code, json_str) in &hypervisor_raw {
+                        if let Ok(cache) = serde_json::from_str::<HypervisorCache>(json_str) {
+                            hypervisors.push(zone_proto::HypervisorNode {
+                                node_code: node_code.clone(),
+                                status: cache.status,
+                                cpu_cores_total: cache.cpu_cores_total,
+                                cpu_cores_used: cache.cpu_cores_used,
+                                ram_mb_total: cache.ram_mb_total,
+                                ram_mb_used: cache.ram_mb_used,
+                                storage_gb_total: cache.storage_gb_total,
+                                storage_gb_used: cache.storage_gb_used,
+                                updated_at: cache.updated_at,
+                            });
                         }
-                    });
+                    }
+
+                    // 3. Đóng gói payload bằng struct Protobuf (ZoneReport)
+                    let report = zone_proto::ZoneReport {
+                        zone_id: config.zone_id.clone(),
+                        timestamp: now as i64,
+                        dataplane_cluster: Some(zone_proto::DataplaneCluster {
+                            active_nodes: alive_nodes_count as i64,
+                            avg_cpu_usage: avg_cpu,
+                            avg_ram_usage: avg_ram,
+                            total_active_workers: total_active_workers as i64,
+                            total_max_workers: (config.max_workers * alive_nodes_count.max(1)) as i64,
+                        }),
+                        workloads: Some(zone_proto::Workloads {
+                            mail: Some(zone_proto::MailWorkload {
+                                status: mail_status,
+                                capacity: mail_capacity as i32,
+                            }),
+                            hypervisors,
+                        }),
+                    };
 
                     // 4. Bắn báo cáo lên Platform Redis L1
-                    let payload_str = payload.to_string();
+                    // [COMMENT]: Serialize sang binary dùng Protobuf format để tối ưu hóa băng thông, dung lượng lưu trữ Redis.
+                    let mut payload_bytes = Vec::new();
+                    if let Err(e) = report.encode(&mut payload_bytes) {
+                        Logger::sys_error(
+                            "zone_gateway.serialize_error",
+                            "Không thể serialize payload sang Protobuf, bỏ qua chu kỳ này",
+                            &e.to_string(),
+                        );
+                        sleep(Duration::from_secs(5)).await;
+                        counter += 1;
+                        continue;
+                    }
+
                     let xadd_res = tokio::time::timeout(
                         Duration::from_secs(2),
                         redis::cmd("XADD")
@@ -191,7 +248,7 @@ impl ZoneStatusGateway {
                             .arg("zone_id")
                             .arg(&config.zone_id)
                             .arg("payload")
-                            .arg(&payload_str)
+                            .arg(&payload_bytes[..])  // binary payload
                             .query_async::<_, ()>(&mut conn_l1),
                     )
                     .await;

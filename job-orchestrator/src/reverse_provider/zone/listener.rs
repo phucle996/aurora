@@ -1,8 +1,14 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use futures_util::StreamExt;
+use prost::Message;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+pub mod zone_proto {
+    include!(concat!(env!("OUT_DIR"), "/zone.rs"));
+}
+
 
 /// Khởi chạy vòng lặp lắng nghe báo cáo tài nguyên Zone từ Redis Stream L1 (Platform Level Stream Listener)
 /// Task này kiêm luôn vai trò Dead Man's Switch để tự động đánh dấu Zone sập nếu mất kết nối.
@@ -31,7 +37,13 @@ pub async fn run_backpressure_listener(
     // Cache RAM lưu giữ trạng thái cuối cùng nhận được và timestamp (Dead Man's Switch)
     // Key: zone_id, Value: (last_report_timestamp, current_zone_status, current_mail_enabled)
     let mut zone_heartbeats: HashMap<String, (Instant, String, bool)> = HashMap::new();
-    let mut service_metrics_cache: HashMap<(String, String), (String, i32, Instant)> = HashMap::new();
+    let mut service_metrics_cache: HashMap<(String, String), (String, i32, Instant)> =
+        HashMap::new();
+
+    // [COMMENT]: Cache node-level heartbeat cho Dead Man's Switch 45s (Luồng B §5.4 SoT)
+    // Key: (zone_id, node_code), Value: (last_seen_instant)
+    // Nếu một node vắng mặt khỏi report > 45s -> mark disconnected trong DB
+    let mut node_heartbeats: HashMap<(String, String), Instant> = HashMap::new();
 
     Logger::sys_info(
         "backpressure_listener.run",
@@ -73,7 +85,9 @@ pub async fn run_backpressure_listener(
                                 };
 
                                 let mut zone_id = String::new();
-                                let mut payload_str = String::new();
+                                // [COMMENT]: Payload bây giờ là MessagePack binary blob.
+                                // Đọc raw bytes từ Redis Data variant, không UTF-8 decode.
+                                let mut payload_bytes: Vec<u8> = Vec::new();
 
                                 // Trích xuất các trường từ Stream entry
                                 for chunk in fields_val.chunks(2) {
@@ -88,41 +102,41 @@ pub async fn run_backpressure_listener(
                                             }
                                         } else if k == "payload" {
                                             if let redis::Value::Data(d) = &chunk[1] {
-                                                payload_str =
-                                                    String::from_utf8_lossy(d).into_owned();
+                                                // Lấy raw bytes, không convert sang String
+                                                payload_bytes = d.clone();
                                             }
                                         }
                                     }
                                 }
 
-                                if zone_id.is_empty() || payload_str.is_empty() {
+                                if zone_id.is_empty() || payload_bytes.is_empty() {
                                     continue;
                                 }
 
-                                // 2. Phân tích cú pháp JSON payload nhận từ Dataplane
-                                let payload: serde_json::Value =
-                                    match serde_json::from_str(&payload_str) {
+                                // 2. Decode Protobuf binary payload nhận từ Dataplane
+                                // [COMMENT]: Giải mã trực tiếp sang struct ZoneReport tự động sinh ra bởi prost.
+                                // Loại bỏ toàn bộ chi phí parsing chuỗi JSON/MessagePack và lookup string keys.
+                                let payload: zone_proto::ZoneReport =
+                                    match zone_proto::ZoneReport::decode(&payload_bytes[..]) {
                                         Ok(v) => v,
-                                        Err(_) => continue,
+                                        Err(e) => {
+                                            Logger::sys_error(
+                                                "backpressure_listener.decode_error",
+                                                "Thất bại khi decode Protobuf payload từ Stream L1",
+                                                &e.to_string(),
+                                            );
+                                            continue;
+                                        }
                                     };
 
-                                let avg_cpu = payload
-                                    .pointer("/dataplane_cluster/avg_cpu_usage")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(0.0);
-                                let avg_ram = payload
-                                    .pointer("/dataplane_cluster/avg_ram_usage")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(0.0);
-                                let mail_status = payload
-                                    .pointer("/workloads/mail/status")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("down");
-                                let mail_capacity = payload
-                                    .pointer("/workloads/mail/capacity")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0)
-                                    as usize;
+                                let cluster = payload.dataplane_cluster.clone().unwrap_or_default();
+                                let avg_cpu = cluster.avg_cpu_usage;
+                                let avg_ram = cluster.avg_ram_usage;
+
+                                let workloads = payload.workloads.clone().unwrap_or_default();
+                                let mail_workload = workloads.mail.clone().unwrap_or_default();
+                                let mail_status = &mail_workload.status;
+                                let mail_capacity = mail_workload.capacity as usize;
 
                                 // 3. Đo đạc độ ứ đọng hàng đợi hiện tại trong Platform Redis
                                 let stream_key_jobs = format!("jobs:{}", zone_id);
@@ -226,12 +240,17 @@ pub async fn run_backpressure_listener(
                                 // 6.5 Cập nhật động status và capacity của service vào Postgres DB (Có Throttling)
                                 let now_instant = Instant::now();
                                 let mut should_update_metrics = false;
-                                if let Some((prev_status, prev_capacity, last_update)) = service_metrics_cache.get(&(zone_id.clone(), "mail".to_string())) {
+                                if let Some((prev_status, prev_capacity, last_update)) =
+                                    service_metrics_cache
+                                        .get(&(zone_id.clone(), "mail".to_string()))
+                                {
                                     if prev_status != mail_status {
                                         should_update_metrics = true;
                                     } else if (prev_capacity - (mail_capacity as i32)).abs() > 10 {
                                         should_update_metrics = true;
-                                    } else if now_instant.duration_since(*last_update) > Duration::from_secs(120) {
+                                    } else if now_instant.duration_since(*last_update)
+                                        > Duration::from_secs(120)
+                                    {
                                         should_update_metrics = true;
                                     }
                                 } else {
@@ -256,7 +275,11 @@ pub async fn run_backpressure_listener(
                                     } else {
                                         service_metrics_cache.insert(
                                             (zone_id.clone(), "mail".to_string()),
-                                            (mail_status.to_string(), mail_capacity as i32, now_instant),
+                                            (
+                                                mail_status.to_string(),
+                                                mail_capacity as i32,
+                                                now_instant,
+                                            ),
                                         );
                                     }
                                 }
@@ -266,6 +289,59 @@ pub async fn run_backpressure_listener(
                                     zone_id.clone(),
                                     (Instant::now(), current_status, current_mail_enabled),
                                 );
+
+                                // --- Luồng B: Xử lý workloads.hypervisors[] ---
+                                // [COMMENT]: Đọc trực tiếp danh sách hypervisor nodes từ Protobuf struct.
+                                // Timestamp của bản tin stream được dùng làm sent_at để race-condition guard.
+                                let sent_at = payload.timestamp;
+
+                                for node_proto in &workloads.hypervisors {
+                                    let node_code = &node_proto.node_code;
+                                    if node_code.is_empty() {
+                                        continue; // node_code bắt buộc
+                                    }
+
+                                    let node_status = &node_proto.status;
+                                    let cpu_cores_total = node_proto.cpu_cores_total;
+                                    let cpu_cores_used = node_proto.cpu_cores_used;
+                                    let ram_mb_total = node_proto.ram_mb_total;
+                                    let ram_mb_used = node_proto.ram_mb_used;
+                                    let storage_gb_total = node_proto.storage_gb_total;
+                                    let storage_gb_used = node_proto.storage_gb_used;
+
+                                    // [COMMENT]: Upsert vào DB với race-condition guard (last_active_at < sent_at)
+                                    // Lỗi upsert được log nhưng không interrupt vòng lặp
+                                    if let Err(e) = super::db::upsert_hypervisor_node(
+                                        &config.database_url,
+                                        &zone_id,
+                                        node_code,
+                                        node_status,
+                                        cpu_cores_total,
+                                        cpu_cores_used,
+                                        ram_mb_total,
+                                        ram_mb_used,
+                                        storage_gb_total,
+                                        storage_gb_used,
+                                        sent_at,
+                                    )
+                                    .await
+                                    {
+                                        Logger::sys_error(
+                                            "backpressure_listener.hypervisor_upsert",
+                                            &format!(
+                                                "Lỗi upsert hypervisor node '{}' của Zone {}",
+                                                node_code, zone_id
+                                            ),
+                                            &e.to_string(),
+                                        );
+                                    }
+
+                                    // Cập nhật node heartbeat cache (Dead Man's Switch node-level)
+                                    node_heartbeats.insert(
+                                        (zone_id.clone(), node_code.clone()),
+                                        Instant::now(),
+                                    );
+                                }
 
                                 let _: redis::RedisResult<()> = redis::cmd("XACK")
                                     .arg(stream_key)
@@ -334,6 +410,46 @@ pub async fn run_backpressure_listener(
                 val.0 = Instant::now(); // Reset timer
                 val.1 = "inactive".to_string();
                 val.2 = false;
+            }
+        }
+
+        // 7b. Dead Man's Switch NODE-LEVEL (Luồng B §5.4 SoT: 45 giây node vắng mặt -> disconnected)
+        // [COMMENT]: Gom danh sách các node vắng mặt khỏi report quá 45 giây (per zone).
+        // Không cần lock vì node_heartbeats chỉ được truy cập bởi 1 tokio task (single-threaded loop).
+        let mut nodes_to_disconnect: HashMap<String, Vec<String>> = HashMap::new();
+        let node_timeout = Duration::from_secs(45);
+
+        node_heartbeats.retain(|(zone_id, node_code), last_seen| {
+            if now_instant.duration_since(*last_seen) > node_timeout {
+                // Node vắng mặt > 45s -> đưa vào danh sách cần mark disconnected
+                nodes_to_disconnect
+                    .entry(zone_id.clone())
+                    .or_default()
+                    .push(node_code.clone());
+                false // Xóa khỏi cache (tránh re-trigger)
+            } else {
+                true // Giữ lại trong cache
+            }
+        });
+
+        // Batch mark disconnected theo từng zone (1 DB round-trip mỗi zone)
+        for (zone_id, dead_nodes) in nodes_to_disconnect {
+            if let Err(e) = super::db::mark_hypervisor_nodes_disconnected(
+                &config.database_url,
+                &zone_id,
+                &dead_nodes,
+            )
+            .await
+            {
+                Logger::sys_error(
+                    "backpressure_listener.node_deadman",
+                    &format!(
+                        "Lỗi mark {} node của Zone {} sang disconnected",
+                        dead_nodes.len(),
+                        zone_id
+                    ),
+                    &e.to_string(),
+                );
             }
         }
     }

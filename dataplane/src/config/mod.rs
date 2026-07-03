@@ -94,6 +94,19 @@ pub struct Config {
     pub stalwart_lmtp_host: String,
     /// Cổng kết nối Stalwart LMTP (thường là 24)
     pub stalwart_lmtp_port: u16,
+
+    // ============================================================================
+    // 🔒 CẤU HÌNH PROXMOX HYPERVISOR API (Chỉ lưu tại Dataplane — Không lên Controlplane)
+    // ============================================================================
+    /// Base URL của Proxmox API endpoint (ví dụ: https://pve.example.com:8006)
+    /// Credentials này TUYỆT ĐỐI không được đẩy lên Controlplane DB (Blast Radius)
+    pub proxmox_api_url: String,
+    /// API Token theo định dạng Proxmox: `PVEAPIToken=user@realm!tokenid=<secret>`
+    /// Phân quyền tối thiểu (Least Privilege): chỉ cấp quyền đọc node list & metrics
+    pub proxmox_api_token: String,
+    /// Bỏ qua TLS certificate verification (CHỈ dùng cho môi trường dev/test)
+    /// Trên production bắt buộc phải đặt là false để đảm bảo an toàn kết nối
+    pub proxmox_tls_insecure: bool,
 }
 
 impl Config {
@@ -161,6 +174,20 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse::<u16>().ok())
                 .unwrap_or(24),
+
+            // ============================================================================
+            // 🔒 CẤU HÌNH PROXMOX HYPERVISOR (Least Privilege API Token — env-only)
+            // ============================================================================
+            // Base URL Proxmox cluster, mặc định rỗng (Dataplane hoạt động degraded nếu không set)
+            proxmox_api_url: env::var("PROXMOX_API_URL")
+                .unwrap_or_else(|_| String::new()),
+            // Token theo định dạng: PVEAPIToken=monitor@pve!aurora-token=<uuid-secret>
+            proxmox_api_token: env::var("PROXMOX_API_TOKEN")
+                .unwrap_or_else(|_| String::new()),
+            // Chỉ bật trên môi trường dev/staging khi dùng self-signed cert
+            proxmox_tls_insecure: env::var("PROXMOX_TLS_INSECURE")
+                .map(|v| v.to_ascii_lowercase() == "true" || v == "1")
+                .unwrap_or(false),
         }
     }
 }

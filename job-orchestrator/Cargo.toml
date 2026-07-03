@@ -22,6 +22,7 @@ opentelemetry-otlp = { version = "0.16.0", features = ["grpc-tonic", "metrics"] 
 hostname = "0.4"
 tonic = { version = "0.11", features = ["tls"] }
 
+
 [build-dependencies]
 prost-build = "0.12"
 tonic-build = "0.11"
