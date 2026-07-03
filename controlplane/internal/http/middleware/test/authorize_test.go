@@ -34,11 +34,8 @@ func TestAuthorize_PlatformScope(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID: userID,
-			Role:   "platform_admin",
-		}
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), constant.IdentityKey, ident))
+		c.Request.Header.Set(constant.HeaderXUserID, userID)
+		c.Request.Header.Set(constant.HeaderXUserRole, "platform_admin")
 		c.Next()
 	})
 
@@ -90,12 +87,9 @@ func TestAuthorize_TenantScope(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID:   userID,
-			Role:     "tenant_admin",
-			TenantID: tenantID,
-		}
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), constant.IdentityKey, ident))
+		c.Request.Header.Set(constant.HeaderXUserID, userID)
+		c.Request.Header.Set(constant.HeaderXUserRole, "tenant_admin")
+		c.Request.Header.Set(constant.HeaderXTenantID, tenantID)
 		c.Next()
 	})
 
@@ -156,11 +150,8 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID: userID,
-			Role:   "platform_user",
-		}
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), constant.IdentityKey, ident))
+		c.Request.Header.Set(constant.HeaderXUserID, userID)
+		c.Request.Header.Set(constant.HeaderXUserRole, "platform_user")
 		c.Next()
 	})
 
@@ -186,11 +177,8 @@ func TestAuthorize_PlatformRootBypass(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID: userID,
-			Role:   "platform_root", // Root role bypass
-		}
-		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), constant.IdentityKey, ident))
+		c.Request.Header.Set(constant.HeaderXUserID, userID)
+		c.Request.Header.Set(constant.HeaderXUserRole, "platform_root") // Root role bypass
 		c.Next()
 	})
 

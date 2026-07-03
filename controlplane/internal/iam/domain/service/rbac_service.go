@@ -50,33 +50,33 @@ const (
 
 type RbacService interface {
 	// ListRoles trả về danh sách các vai trò mà Actor hiện tại có quyền xem (role_level của vai trò > role_level của Actor).
-	ListRoles(ctx context.Context) ([]*iamEntity.Role, error)
+	ListRoles(ctx context.Context, actorLevel int) ([]*iamEntity.Role, error)
 
 	// GetRole chi tiết thông tin vai trò cùng danh sách quyền hạn đi kèm.
-	GetRole(ctx context.Context, id uuid.UUID) (*iamEntity.RoleWithPermissions, error)
+	GetRole(ctx context.Context, actorLevel int, id uuid.UUID) (*iamEntity.RoleWithPermissions, error)
 
 	// CreateRole tạo vai trò mới (vai trò mới phải có role_level > role_level của Actor).
-	CreateRole(ctx context.Context, role *iamEntity.Role) error
+	CreateRole(ctx context.Context, actorLevel int, role *iamEntity.Role) error
 
 	// UpdateRole cập nhật thông tin vai trò (chỉ vai trò do custom tạo ra và có role_level > role_level của Actor).
-	UpdateRole(ctx context.Context, role *iamEntity.Role) error
+	UpdateRole(ctx context.Context, actorLevel int, role *iamEntity.Role) error
 
 	// DeleteRole xóa vai trò khỏi hệ thống (chỉ vai trò custom và có role_level > role_level của Actor).
-	DeleteRole(ctx context.Context, id uuid.UUID) error
+	DeleteRole(ctx context.Context, actorLevel int, id uuid.UUID) error
 
 	// ListPermissions lấy toàn bộ danh sách các permission hiện có trong hệ thống.
 	ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error)
 
 	// AssignPermission gán một permission cho một vai trò custom (yêu cầu role_level của vai trò > role_level của Actor).
-	AssignPermission(ctx context.Context, roleID, permID uuid.UUID) error
+	AssignPermission(ctx context.Context, actorLevel int, roleID, permID uuid.UUID) error
 
 	// RevokePermission thu hồi permission khỏi vai trò custom (yêu cầu role_level của vai trò > role_level của Actor).
-	RevokePermission(ctx context.Context, roleID, permID uuid.UUID) error
+	RevokePermission(ctx context.Context, actorLevel int, roleID, permID uuid.UUID) error
 
 	// AssignUserRole gán vai trò cho user với scope, thời hạn tương ứng (yêu cầu role_level của vai trò > role_level của Actor).
-	AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error
+	AssignUserRole(ctx context.Context, actorLevel int, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error
 
 	// RevokeUserRole thu hồi vai trò khỏi user (yêu cầu role_level của vai trò > role_level của Actor).
-	RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error
+	RevokeUserRole(ctx context.Context, actorLevel int, userID, roleID uuid.UUID) error
 }
 

@@ -1,26 +1,14 @@
 package iamReq
 
 type CreateRoleRequest struct {
-	Code          string  `json:"code"`
-	Name          string  `json:"name"`
-	RoleLevel     int     `json:"role_level"`
-	ScopeType     string  `json:"scope_type"`
+	Code          string  `json:"code" binding:"required"`
+	Name          string  `json:"name" binding:"required"`
 	OwnerTenantID *string `json:"owner_tenant_id,omitempty"`
 }
 
 type UpdateRoleRequest struct {
-	Code          string  `json:"code"`
 	Name          string  `json:"name"`
-	RoleLevel     int     `json:"role_level"`
-	ScopeType     string  `json:"scope_type"`
 	OwnerTenantID *string `json:"owner_tenant_id,omitempty"`
-}
-
-type CreatePermissionRequest struct {
-	Code     string `json:"code"`
-	Name     string `json:"name"`
-	Resource string `json:"resource"`
-	Action   string `json:"action"`
 }
 
 type AssignPermissionRequest struct {
@@ -28,9 +16,6 @@ type AssignPermissionRequest struct {
 }
 
 type AssignUserRoleRequest struct {
-	UserID      string  `json:"user_id"`
-	ScopeType   string  `json:"scope_type"`
-	TenantID    *string `json:"tenant_id,omitempty"`
-	WorkspaceID *string `json:"workspace_id,omitempty"`
-	ExpiresAt   *string `json:"expires_at,omitempty"` // RFC3339 string format
+	UserID    string  `json:"user_id"`
+	ExpiresAt *string `json:"expires_at,omitempty"` // RFC3339 string format
 }

@@ -11,7 +11,6 @@ import (
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -105,9 +104,8 @@ func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
 		},
 	}, nil)
 
-	ident := &constant.Identity{Level: 0}
-	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
-	_, err := svc.GetRole(ctx, roleID)
+	ctx := context.Background()
+	_, err := svc.GetRole(ctx, 0, roleID)
 	if !errors.Is(err, iamTaxonomy.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -125,9 +123,8 @@ func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
 		},
 	}, nil)
 
-	ident := &constant.Identity{Level: 0}
-	ctx := context.WithValue(context.Background(), constant.IdentityKey, ident)
-	_, err := svc.ListRoles(ctx)
+	ctx := context.Background()
+	_, err := svc.ListRoles(ctx, 0)
 	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
 		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
 	}

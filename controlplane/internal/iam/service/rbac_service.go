@@ -14,7 +14,6 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -35,18 +34,7 @@ func NewRbacService(
 	}
 }
 
-// getActorLevel Lấy max privilege level của Actor từ Go Context (level nhỏ nhất đại diện quyền cao nhất)
-// Tránh truy xuất database dư thừa trên mỗi request nghiệp vụ.
-func getActorLevel(ctx context.Context) (int, error) {
-	// Lấy giá trị Level từ Go Standard Context (đã được middleware Access inject sẵn)
-	if ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		return ident.Level, nil
-	}
-	// Mặc định trả về level thấp nhất và báo lỗi hành động không được phép nếu thiếu context
-	return 999999, iamTaxonomy.ErrActionNotAllowed
-}
-
-func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, err error) {
+func (s *RbacService) ListRoles(ctx context.Context, actorLevel int) (roles []*iamEntity.Role, err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -64,12 +52,6 @@ func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, e
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return nil, err
-	}
 
 	startRepo := time.Now()
 	repoRoles, err := s.repo.ListRoles(ctx)
@@ -88,7 +70,7 @@ func (s *RbacService) ListRoles(ctx context.Context) (roles []*iamEntity.Role, e
 	return out, nil
 }
 
-func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity.RoleWithPermissions, err error) {
+func (s *RbacService) GetRole(ctx context.Context, actorLevel int, id uuid.UUID) (res *iamEntity.RoleWithPermissions, err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -106,12 +88,6 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return nil, err
-	}
 
 	startRepo := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, id)
@@ -144,7 +120,7 @@ func (s *RbacService) GetRole(ctx context.Context, id uuid.UUID) (res *iamEntity
 	return roleWithPerms, nil
 }
 
-func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err error) {
+func (s *RbacService) CreateRole(ctx context.Context, actorLevel int, role *iamEntity.Role) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -163,11 +139,6 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
 
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 	if role.RoleLevel <= actorLevel {
 		return iamTaxonomy.ErrActionNotAllowed
 	}
@@ -183,7 +154,7 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role) (err
 	return nil
 }
 
-func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err error) {
+func (s *RbacService) UpdateRole(ctx context.Context, actorLevel int, role *iamEntity.Role) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -201,12 +172,6 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 
 	startRepo1 := time.Now()
 	existing, err := s.repo.GetRoleByID(ctx, role.ID)
@@ -238,7 +203,7 @@ func (s *RbacService) UpdateRole(ctx context.Context, role *iamEntity.Role) (err
 	return nil
 }
 
-func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) {
+func (s *RbacService) DeleteRole(ctx context.Context, actorLevel int, id uuid.UUID) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -256,12 +221,6 @@ func (s *RbacService) DeleteRole(ctx context.Context, id uuid.UUID) (err error) 
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 
 	startRepo1 := time.Now()
 	existing, err := s.repo.GetRoleByID(ctx, id)
@@ -323,7 +282,7 @@ func (s *RbacService) ListPermissions(ctx context.Context) (perms []*iamEntity.P
 	return permissions, nil
 }
 
-func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.UUID) (err error) {
+func (s *RbacService) AssignPermission(ctx context.Context, actorLevel int, roleID, permID uuid.UUID) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -341,12 +300,6 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
@@ -402,7 +355,7 @@ func (s *RbacService) AssignPermission(ctx context.Context, roleID, permID uuid.
 	return nil
 }
 
-func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.UUID) (err error) {
+func (s *RbacService) RevokePermission(ctx context.Context, actorLevel int, roleID, permID uuid.UUID) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -420,12 +373,6 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
@@ -481,7 +428,7 @@ func (s *RbacService) RevokePermission(ctx context.Context, roleID, permID uuid.
 	return nil
 }
 
-func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) (err error) {
+func (s *RbacService) AssignUserRole(ctx context.Context, actorLevel int, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -499,12 +446,6 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)
@@ -550,7 +491,7 @@ func (s *RbacService) AssignUserRole(ctx context.Context, userID, roleID uuid.UU
 	return nil
 }
 
-func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) (err error) {
+func (s *RbacService) RevokeUserRole(ctx context.Context, actorLevel int, userID, roleID uuid.UUID) (err error) {
 	defer func() {
 		outcome := iamMetrics.OutcomeSuccess
 		if err != nil {
@@ -568,12 +509,6 @@ func (s *RbacService) RevokeUserRole(ctx context.Context, userID, roleID uuid.UU
 		}
 		iamMetrics.ServiceCall(ctx, outcome)
 	}()
-
-	// Lấy actorLevel trực tiếp từ Go Context thay vì query DB
-	actorLevel, err := getActorLevel(ctx)
-	if err != nil {
-		return err
-	}
 
 	startRepo1 := time.Now()
 	role, err := s.repo.GetRoleByID(ctx, roleID)

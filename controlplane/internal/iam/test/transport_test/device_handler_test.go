@@ -67,14 +67,8 @@ var _ iamSvcInterface.DeviceService = (*deviceServiceStub)(nil)
 // [COMMENT]: Cấu hình middleware giả lập định danh người dùng cả ở Context lẫn HTTP header.
 func withUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ident := &constant.Identity{
-			UserID:          "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a",
-			AccessKey:       "runtime-device-1",
-			TrackedDeviceID: "177682fc-3e96-4a5a-84eb-b5e9c71af721",
-		}
-		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-		c.Request = c.Request.WithContext(ctx)
-		c.Request.Header.Set("x-user-id", "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
+		c.Request.Header.Set(constant.HeaderXUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
+		c.Request.Header.Set(constant.HeaderXDeviceID, "177682fc-3e96-4a5a-84eb-b5e9c71af721")
 		c.Next()
 	}
 }
@@ -150,13 +144,7 @@ func TestDeviceHandlerLogoutOthersRequiresTrackedDeviceID(t *testing.T) {
 	h := handler.NewDeviceHandler(&deviceServiceStub{logoutOthersN: 3})
 	router.POST("/devices/logout-others",
 		func(c *gin.Context) {
-			ident := &constant.Identity{
-				UserID:    "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a",
-				AccessKey: "runtime-device-1",
-			}
-			ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-			c.Request = c.Request.WithContext(ctx)
-			c.Request.Header.Set("x-user-id", "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
+			c.Request.Header.Set(constant.HeaderXUserID, "3b9f2af0-8d95-4380-9d4e-90f0f7191f4a")
 			c.Next()
 		},
 		h.LogoutOtherDevices,

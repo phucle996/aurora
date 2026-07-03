@@ -1,20 +1,39 @@
 package constant
 
-// Admin header
+// Định nghĩa các HTTP Header dùng để truyền danh tính từ Edge Gateway (ACR) tới Upstream Services.
 const (
-	HeaderAdminStepUpMethod = "X-Admin-StepUp-Method"
-	HeaderAdminStepUpCode   = "X-Admin-StepUp-Code"
-
-	HeaderAdminSignature = "X-Admin-Signature"
-	HeaderAdminTimestamp = "X-Admin-Timestamp"
-	HeaderAdminNonce     = "X-Admin-Nonce"
-
-	HeaderRateLimitLimit     = "X-RateLimit-Limit"
-	HeaderRateLimitRemaining = "X-RateLimit-Remaining"
-	HeaderRateLimitReset     = "X-RateLimit-Reset"
-	HeaderRetryAfter         = "Retry-After"
-
-	// Tracing and Request ID headers
+	HeaderXUserID     = "X-User-ID"
+	HeaderXUserName   = "X-User-Name"
+	HeaderXDeviceID   = "X-Device-ID"
+	HeaderXTenantID   = "X-Tenant-ID"
+	HeaderXTenantCode = "X-Tenant-Code"
+	HeaderXZoneID     = "X-Zone-ID"
+	HeaderXUserRole   = "X-User-Role"
+	HeaderXUserLevel  = "X-User-Level"
 	HeaderTraceparent = "traceparent"
 	HeaderXRequestID  = "X-Request-ID"
+)
+
+// Context Keys dùng để truyền danh tính trong Go Context giữa tầng HTTP Handler và Service/Repo
+type ContextKeyUserRoleType struct{}
+type ContextKeyUserLevelType struct{}
+type ContextKeyTenantIDType struct{}
+type ContextKeyZoneIDType struct{}
+type ContextKeyDeviceIDType struct{}
+
+var (
+	ContextKeyUserRole  = ContextKeyUserRoleType{}
+	ContextKeyUserLevel = ContextKeyUserLevelType{}
+	ContextKeyTenantID  = ContextKeyTenantIDType{}
+	ContextKeyZoneID    = ContextKeyZoneIDType{}
+	ContextKeyDeviceID  = ContextKeyDeviceIDType{}
+)
+
+// Context Keys cho Remote IP và User Agent
+type RemoteIPKeyType struct{}
+type UserAgentKeyType struct{}
+
+var (
+	RemoteIPKey  = RemoteIPKeyType{}
+	UserAgentKey = UserAgentKeyType{}
 )

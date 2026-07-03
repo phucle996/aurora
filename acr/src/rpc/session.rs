@@ -1,14 +1,6 @@
-// ======================================================================================================
-// 📂 MODULE: acl/src/rpc/session.rs
-//            Triển khai gRPC DeviceService Handler (Transport/Presentation Layer)
-//            Lưu ý: Đổi tên từ SessionService sang DeviceService sau khi bỏ ReleaseTrinitySession RPC.
-// ======================================================================================================
-
 use crate::core::session::SessionManager;
 use crate::service::session::release_session::device_proto::{
-    // [COMMENT]: Import DeviceService server trait và các message của RevokeUserSessionsByDevices
-    device_service_server::DeviceService,
-    RevokeUserSessionsByDevicesRequest,
+    device_service_server::DeviceService, RevokeUserSessionsByDevicesRequest,
     RevokeUserSessionsByDevicesResponse,
 };
 use std::sync::Arc;

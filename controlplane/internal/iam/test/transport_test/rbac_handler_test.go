@@ -27,37 +27,37 @@ type rbacServiceStub struct {
 var _ iamSvcInterface.RbacService = (*rbacServiceStub)(nil)
 
 func (s *rbacServiceStub) WarmUp(ctx context.Context) error { return nil }
-func (s *rbacServiceStub) ListRoles(ctx context.Context) ([]*iamEntity.Role, error) {
+func (s *rbacServiceStub) ListRoles(ctx context.Context, actorLevel int) ([]*iamEntity.Role, error) {
 	return nil, nil
 }
-func (s *rbacServiceStub) GetRole(ctx context.Context, id uuid.UUID) (*iamEntity.RoleWithPermissions, error) {
+func (s *rbacServiceStub) GetRole(ctx context.Context, actorLevel int, id uuid.UUID) (*iamEntity.RoleWithPermissions, error) {
 	return nil, nil
 }
-func (s *rbacServiceStub) CreateRole(ctx context.Context, role *iamEntity.Role) error {
+func (s *rbacServiceStub) CreateRole(ctx context.Context, actorLevel int, role *iamEntity.Role) error {
 	if s.createRoleFn != nil {
 		return s.createRoleFn(ctx, role)
 	}
 	return nil
 }
-func (s *rbacServiceStub) UpdateRole(ctx context.Context, role *iamEntity.Role) error {
+func (s *rbacServiceStub) UpdateRole(ctx context.Context, actorLevel int, role *iamEntity.Role) error {
 	return nil
 }
-func (s *rbacServiceStub) DeleteRole(ctx context.Context, id uuid.UUID) error {
+func (s *rbacServiceStub) DeleteRole(ctx context.Context, actorLevel int, id uuid.UUID) error {
 	return nil
 }
 func (s *rbacServiceStub) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
 	return nil, nil
 }
-func (s *rbacServiceStub) AssignPermission(ctx context.Context, roleID, permID uuid.UUID) error {
+func (s *rbacServiceStub) AssignPermission(ctx context.Context, actorLevel int, roleID, permID uuid.UUID) error {
 	return nil
 }
-func (s *rbacServiceStub) RevokePermission(ctx context.Context, roleID, permID uuid.UUID) error {
+func (s *rbacServiceStub) RevokePermission(ctx context.Context, actorLevel int, roleID, permID uuid.UUID) error {
 	return nil
 }
-func (s *rbacServiceStub) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error {
+func (s *rbacServiceStub) AssignUserRole(ctx context.Context, actorLevel int, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error {
 	return nil
 }
-func (s *rbacServiceStub) RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error {
+func (s *rbacServiceStub) RevokeUserRole(ctx context.Context, actorLevel int, userID, roleID uuid.UUID) error {
 	return nil
 }
 
@@ -67,16 +67,12 @@ func TestRbacHandlerCreateRoleInvalidArgument(t *testing.T) {
 	h := handler.NewRbacHandler(&rbacServiceStub{createRoleFn: func(ctx context.Context, role *iamEntity.Role) error {
 		return iamTaxonomy.ErrInvalidArgument
 	}})
-	r.POST("/admin/rbac/roles", func(c *gin.Context) {
-		ident := &constant.Identity{UserID: uuid.NewString()}
-		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-		c.Request = c.Request.WithContext(ctx)
-		h.CreateRole(c)
-	})
+	r.POST("/admin/rbac/roles", h.CreateRole)
 
 	body, _ := json.Marshal(map[string]any{"code": "admin", "name": "Admin", "scope_type": "platform"})
 	req := httptest.NewRequest(http.MethodPost, "/admin/rbac/roles", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constant.HeaderXUserLevel, "0")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -91,16 +87,12 @@ func TestRbacHandlerCreateRoleNotFound(t *testing.T) {
 	h := handler.NewRbacHandler(&rbacServiceStub{createRoleFn: func(ctx context.Context, role *iamEntity.Role) error {
 		return iamTaxonomy.ErrNotFound
 	}})
-	r.POST("/admin/rbac/roles", func(c *gin.Context) {
-		ident := &constant.Identity{UserID: uuid.NewString()}
-		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-		c.Request = c.Request.WithContext(ctx)
-		h.CreateRole(c)
-	})
+	r.POST("/admin/rbac/roles", h.CreateRole)
 
 	body, _ := json.Marshal(map[string]any{"code": "admin", "name": "Admin", "scope_type": "platform"})
 	req := httptest.NewRequest(http.MethodPost, "/admin/rbac/roles", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constant.HeaderXUserLevel, "0")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -115,16 +107,12 @@ func TestRbacHandlerCreateRoleInternal(t *testing.T) {
 	h := handler.NewRbacHandler(&rbacServiceStub{createRoleFn: func(ctx context.Context, role *iamEntity.Role) error {
 		return errors.New("db timeout")
 	}})
-	r.POST("/admin/rbac/roles", func(c *gin.Context) {
-		ident := &constant.Identity{UserID: uuid.NewString()}
-		ctx := context.WithValue(c.Request.Context(), constant.IdentityKey, ident)
-		c.Request = c.Request.WithContext(ctx)
-		h.CreateRole(c)
-	})
+	r.POST("/admin/rbac/roles", h.CreateRole)
 
 	body, _ := json.Marshal(map[string]any{"code": "admin", "name": "Admin", "scope_type": "platform"})
 	req := httptest.NewRequest(http.MethodPost, "/admin/rbac/roles", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(constant.HeaderXUserLevel, "0")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 

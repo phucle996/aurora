@@ -743,6 +743,24 @@ impl Authorization for ExtAuthzService {
                             }),
                             ..Default::default()
                         });
+                        if !claims.role.is_empty() {
+                            ok.headers.push(HeaderValueOption {
+                                header: Some(HeaderValue {
+                                    key: "x-user-role".to_string(),
+                                    value: claims.role.clone(),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            });
+                        }
+                        ok.headers.push(HeaderValueOption {
+                            header: Some(HeaderValue {
+                                key: "x-user-level".to_string(),
+                                value: claims.lvl.to_string(),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        });
                         if let Some(t_id) = claims.tenant_id {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {

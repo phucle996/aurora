@@ -234,14 +234,10 @@ services:
     restart: unless-stopped
     command: [ "--disable-default-metrics", "--no-collector.database", "--no-collector.locks", "--no-collector.replication", "--no-collector.replication_slot", "--no-collector.roles", "--no-collector.stat_bgwriter", "--no-collector.stat_database", "--no-collector.stat_progress_vacuum", "--no-collector.stat_user_tables", "--no-collector.statio_user_tables", "--no-collector.wal" ]
 
-  # 📊 PHẦN 3.5: REDIS EXPORTER - THU THẬP METRICS CHO CẢ 4 INSTANCES REDIS (HA SCRAPER)
-  # - Sử dụng oliver006/redis_exporter để cào metrics qua cơ chế multi-target /scrape.
-  # - Chỉ cần chạy 1 container duy nhất để tối ưu hóa tài nguyên phần cứng (Optimization).
   redis-exporter:
     image: oliver006/redis_exporter:v1.85.0
     container_name: controlplane-redis-exporter
     environment:
-      # Địa chỉ mặc định để exporter tự kiểm tra khi cào không có tham số target
       - REDIS_ADDR=redis://controlplane-redis:6379
     depends_on:
       redis:
@@ -317,8 +313,6 @@ services:
   dataplane-vn-n1:
     build:
       context: ../dataplane
-      # Dockerfile.prod: multi-stage Rust build → binary tĩnh tối giản trong debian:slim.
-      # Không cargo-watch, không source mount, không signal routing issue.
       dockerfile: Dockerfile.prod
       args:
         LOCAL_USER: phucle

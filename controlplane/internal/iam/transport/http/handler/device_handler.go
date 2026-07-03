@@ -157,10 +157,7 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	var currentTrackedDeviceID string
-	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil {
-		currentTrackedDeviceID = ident.TrackedDeviceID
-	}
+	currentTrackedDeviceID := strings.TrimSpace(c.GetHeader(constant.HeaderXDeviceID))
 	if currentTrackedDeviceID == "" {
 		apires.RespondUnauthorized(c, "unauthorized")
 		return

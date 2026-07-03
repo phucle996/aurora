@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +44,16 @@ func (h *RbacHandler) ListRoles(c *gin.Context) {
 	const op = "iam.rbac.list_roles"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
-	roles, err := h.rbacSvc.ListRoles(ctx)
+
+	levelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
+	level, err := strconv.Atoi(levelStr)
+	if levelStr == "" || err != nil {
+		logger.HandlerWarn(c, op, nil, "rbac unauthorized")
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
+	roles, err := h.rbacSvc.ListRoles(ctx, level)
 	if err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
@@ -76,18 +87,27 @@ func (h *RbacHandler) CreateRole(c *gin.Context) {
 	const op = "iam.rbac.create_role"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
+
+	levelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
+	level, err := strconv.Atoi(levelStr)
+	if levelStr == "" || err != nil {
+		logger.HandlerWarn(c, op, nil, "rbac unauthorized")
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
 	var req iamReq.CreateRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		logger.HandlerWarn(c, op, err, "bind failed")
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	role := &iamEntity.Role{Code: strings.TrimSpace(strings.ToLower(req.Code)), Name: strings.TrimSpace(req.Name), ScopeType: iamEntity.RoleScopeTypePlatform}
-	if role.Code == "" || role.Name == "" {
-		apires.RespondBadRequest(c, "invalid request")
-		return
+	role := &iamEntity.Role{
+		Code:      strings.TrimSpace(strings.ToLower(req.Code)),
+		Name:      strings.TrimSpace(req.Name),
+		ScopeType: iamEntity.RoleScopeTypePlatform,
 	}
-	if err := h.rbacSvc.CreateRole(ctx, role); err != nil {
+	if err := h.rbacSvc.CreateRole(ctx, level, role); err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
@@ -121,6 +141,15 @@ func (h *RbacHandler) UpdateRole(c *gin.Context) {
 	const op = "iam.rbac.update_role"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
+
+	levelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
+	actorLevel, err := strconv.Atoi(levelStr)
+	if levelStr == "" || err != nil {
+		logger.HandlerWarn(c, op, nil, "rbac unauthorized")
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := uuid.Parse(idStr)
 	if err != nil || id == uuid.Nil {
@@ -134,7 +163,7 @@ func (h *RbacHandler) UpdateRole(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	role, err := h.rbacSvc.GetRole(ctx, id)
+	role, err := h.rbacSvc.GetRole(ctx, actorLevel, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
@@ -149,9 +178,7 @@ func (h *RbacHandler) UpdateRole(c *gin.Context) {
 		}
 		return
 	}
-	role.Role.Code = strings.TrimSpace(strings.ToLower(req.Code))
-	role.Role.Name = strings.TrimSpace(req.Name)
-	if err := h.rbacSvc.UpdateRole(ctx, role.Role); err != nil {
+	if err := h.rbacSvc.UpdateRole(ctx, actorLevel, role.Role); err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")
@@ -183,6 +210,15 @@ func (h *RbacHandler) DeleteRole(c *gin.Context) {
 	const op = "iam.rbac.delete_role"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
+
+	levelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
+	actorLevel, err := strconv.Atoi(levelStr)
+	if levelStr == "" || err != nil {
+		logger.HandlerWarn(c, op, nil, "rbac unauthorized")
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := uuid.Parse(idStr)
 	if err != nil || id == uuid.Nil {
@@ -190,7 +226,7 @@ func (h *RbacHandler) DeleteRole(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid request")
 		return
 	}
-	if err := h.rbacSvc.DeleteRole(ctx, id); err != nil {
+	if err := h.rbacSvc.DeleteRole(ctx, actorLevel, id); err != nil {
 		switch {
 		case errors.Is(err, iamTaxonomy.ErrInvalidArgument):
 			logger.HandlerWarn(c, op, err, "rbac invalid argument")

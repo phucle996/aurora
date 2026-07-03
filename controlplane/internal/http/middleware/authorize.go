@@ -49,18 +49,18 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
-		// 1. Trích xuất User ID từ Go Context (được inject từ Access/Auth Middleware)
-		var userID string
-		ident, ok := ctx.Value(constant.IdentityKey).(*constant.Identity)
-		if !ok || ident == nil || ident.UserID == "" {
+		// 1. Trích xuất User ID trực tiếp từ HTTP Header (được Edge Proxy/ACR inject sau xác thực)
+		userID := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
+		if userID == "" {
 			apires.RespondUnauthorized(c, "unauthorized")
 			c.Abort()
 			return
 		}
-		userID = ident.UserID
+
+		userRole := strings.TrimSpace(c.GetHeader(constant.HeaderXUserRole))
 
 		// Root/System bypass để nâng cao hiệu năng hệ thống quản trị tối cao
-		if strings.EqualFold(ident.Role, "platform_root") {
+		if strings.EqualFold(userRole, "platform_root") {
 			c.Next()
 			return
 		}
@@ -131,16 +131,16 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 	}
 }
 
-// resolveTenantCode phân giải mã định danh tenant_code từ header, query, path, hoặc context session
+// resolveTenantCode phân giải mã định danh tenant_code từ header, query, hoặc path
 func resolveTenantCode(c *gin.Context, cacheEngine *cacheengine.CacheRegistry) (string, error) {
 	// 1) Đọc trực tiếp từ Custom header x-tenant-code (đã phân giải ở Envoy/ACR hoặc admin UI)
-	tenantCode := c.GetHeader("x-tenant-code")
+	tenantCode := c.GetHeader(constant.HeaderXTenantCode)
 	if tenantCode != "" {
 		return strings.ToLower(strings.TrimSpace(tenantCode)), nil
 	}
 
 	// 2) Tìm x-tenant-id từ Header, query, hoặc params để lấy UUID rồi map sang code qua cache engine
-	tenantIDStr := c.GetHeader("x-tenant-id")
+	tenantIDStr := c.GetHeader(constant.HeaderXTenantID)
 	if tenantIDStr == "" {
 		tenantIDStr = c.Query("tenant_id")
 		if tenantIDStr == "" {
@@ -150,16 +150,6 @@ func resolveTenantCode(c *gin.Context, cacheEngine *cacheengine.CacheRegistry) (
 
 	if tenantIDStr != "" {
 		val, err := cacheEngine.GetOrLoad(c.Request.Context(), "tenant_code_by_id", tenantIDStr)
-		if err == nil && val != nil {
-			if code, ok := val.(string); ok {
-				return strings.ToLower(code), nil
-			}
-		}
-	}
-
-	// 3) Fallback: lấy Tenant ID từ Identity session hiện tại được lưu trong context
-	if ident, ok := c.Request.Context().Value(constant.IdentityKey).(*constant.Identity); ok && ident != nil && ident.TenantID != "" {
-		val, err := cacheEngine.GetOrLoad(c.Request.Context(), "tenant_code_by_id", ident.TenantID)
 		if err == nil && val != nil {
 			if code, ok := val.(string); ok {
 				return strings.ToLower(code), nil

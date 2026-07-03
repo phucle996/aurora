@@ -1,8 +1,3 @@
-// ======================================================================================================
-// 📂 MODULE: controlplane/internal/hierarchy/transport/http/handler/workspace_handler.go
-//            HTTP Handler cho luồng quản lý Workspace
-// ======================================================================================================
-
 package hierarchyHandler
 
 import (
