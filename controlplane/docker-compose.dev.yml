@@ -594,7 +594,7 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.zPDagLKiHxrMrt3WUh1UTUR22"
+      VAULT_TOKEN: "hvs.zPDagLKiHxrMrt3WUh1UTUR2"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
@@ -675,6 +675,10 @@ services:
     volumes:
       - controlplane_stalwart_etc:/etc/stalwart
       - controlplane_stalwart_data:/var/lib/stalwart
+    networks:
+      default:
+        aliases:
+          - stalwart-mail
 
 volumes:
   # Thư mục lưu cấu hình và dữ liệu của Stalwart Mail Server

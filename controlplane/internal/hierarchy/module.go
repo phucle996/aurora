@@ -64,7 +64,6 @@ type Module struct {
 	TenantRepository    coreRepoInterface.TenantRepository
 	TenantService       coreSvcInterface.TenantService
 	TenantHandler       *zoneHandler.TenantHandler
-	BackpressureService coreSvcInterface.BackpressureService
 	listenCancel        context.CancelFunc
 	L1Registry          *cacheengine.CacheRegistry
 }
@@ -129,11 +128,7 @@ func NewModule(
 		return nil, fmt.Errorf("hierarchy module: tenant handler is nil")
 	}
 
-	// 8) Backpressure service
-	backpressureService := coreSvcImpl.NewBackpressureService(cacheEngine)
-	if backpressureService == nil {
-		return nil, fmt.Errorf("hierarchy module: backpressure service is nil")
-	}
+	// [COMMENT]: Lược bỏ việc khởi tạo BackpressureService do đã chuyển đổi hoàn toàn sang mô hình event-driven ở job-orchestrator.
 
 	return &Module{
 		cfg:                 cfg,
@@ -147,7 +142,6 @@ func NewModule(
 		TenantRepository:    tenantRepo,
 		TenantService:       tenantService,
 		TenantHandler:       tHandler,
-		BackpressureService: backpressureService,
 		L1Registry:          cacheEngine,
 	}, nil
 }
@@ -157,11 +151,7 @@ func (m *Module) RegisterGRPCServices(server *grpc.Server) {
 	if m == nil {
 		return
 	}
-	if m.BackpressureService != nil {
-		handler := zoneRpcHandler.NewBackpressureGRPCHandler(m.BackpressureService)
-		zoneProto.RegisterBackpressureServiceServer(server, handler)
-		logger.SysInfo("grpc", "registered BackpressureService onto gRPC server")
-	}
+	// [COMMENT]: Loại bỏ RegisterBackpressureServiceServer do luồng báo tải gRPC đã được dọn dẹp theo God View.
 	if m.ZoneService != nil {
 		zoneHandler := zoneRpcHandler.NewZoneGRPCHandler(m.ZoneService)
 		zoneProto.RegisterZoneServiceServer(server, zoneHandler)
