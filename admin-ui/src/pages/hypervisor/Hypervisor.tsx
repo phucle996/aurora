@@ -116,7 +116,6 @@ function isNodeActive(dateStr?: string): boolean {
 export default function HypervisorPage() {
   // [COMMENT]: Đọc ngữ cảnh activeZone toàn cục từ Zustand store (đồng bộ trực tiếp từ Header)
   const activeZone = useZoneStore((state) => state.activeZone)
-  const zones = useZoneStore((state) => state.zones)
 
   const [nodes, setNodes] = useState<HypervisorNodeItem[]>([])
   const [searchQuery, setSearchQuery] = useState<string>('')
@@ -192,10 +191,6 @@ export default function HypervisorPage() {
   const totalRam = nodes.reduce((acc, n) => acc + n.ram_mb_total, 0)
   const usedRam = nodes.reduce((acc, n) => acc + n.ram_mb_used, 0)
   const onlineCount = nodes.filter(n => n.status === 'connected').length
-
-  // Định dạng hiển thị tên Zone hiện tại từ Header context code
-  const currentZoneObj = zones.find(z => z.code === activeZone)
-  const zoneDisplayName = (currentZoneObj ? `${currentZoneObj.code.toUpperCase()} · ${currentZoneObj.name}` : activeZone) || ''
 
   return (
     <PageContent>
