@@ -314,7 +314,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  dataplane-z1-n1:
+  dataplane-vn-n1:
     build:
       context: ../dataplane
       # Dockerfile.prod: multi-stage Rust build → binary tĩnh tối giản trong debian:slim.
@@ -324,13 +324,13 @@ services:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: dataplane-z1-n1
+    container_name: dataplane-vn-n1
     init: true
     volumes:
       # Mount policy config cho binary prod đọc từ path chuẩn /etc/dataplane/.
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "019f093b-69a4-7518-8fee-a6c5b4d2f8e2"
+      ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
@@ -360,7 +360,7 @@ services:
           memory: 256M
   # Đã loại bỏ dịch vụ envoy-zone1 do Dataplane không có inbound traffic.
 
-  dataplane-z2-n1:
+  dataplane-vn-n2:
     build:
       context: ../dataplane
       dockerfile: Dockerfile.prod
@@ -368,15 +368,15 @@ services:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: dataplane-z2-n1
+    container_name: dataplane-vn-n2
     init: true
     volumes:
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "019f0c0f-aebd-7309-a021-af01e22ba418"
+      ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       # Cả hai Node trong Zone 2 đều trỏ chung về bộ đệm cách ly của Zone 2 để chia sẻ dữ liệu đồng nhất.
-      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z2:6379/0"
+      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       METRICS_PORT: "2112"
@@ -386,13 +386,13 @@ services:
         condition: service_started
       redis-job:
         condition: service_healthy
-      redis-dataplane-z2:
+      redis-dataplane-z1:
         condition: service_healthy
       otel-collector:
         condition: service_started
     restart: unless-stopped
 
-  dataplane-z2-n2:
+  dataplane-vn-n3:
     build:
       context: ../dataplane
       dockerfile: Dockerfile.prod
@@ -400,14 +400,14 @@ services:
         LOCAL_USER: phucle
         LOCAL_UID: 1000
         LOCAL_GID: 1000
-    container_name: dataplane-z2-n2
+    container_name: dataplane-vn-n3
     init: true
     volumes:
       - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
-      ZONE_ID: "019f0c0f-aebd-7309-a021-af01e22ba418"
+      ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
-      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z2:6379/0"
+      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       METRICS_PORT: "2112"
@@ -417,7 +417,7 @@ services:
         condition: service_started
       redis-job:
         condition: service_healthy
-      redis-dataplane-z2:
+      redis-dataplane-z1:
         condition: service_healthy
       otel-collector:
         condition: service_started

@@ -1,4 +1,4 @@
-pub mod monitor;
+pub mod core;
 pub mod vps;
 
 use crate::executor::{ExecutionResult, Executor, ExecutorError};

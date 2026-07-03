@@ -78,7 +78,7 @@ impl AppContainer {
         // Khởi động HypervisorMonitor polling Proxmox Cluster API mỗi 15 giây (Luồng B Auto-Discovery)
         // Monitor này ghi trạng thái node vật lý vào Redis L2 `infra:hypervisor` để ZoneStatusGateway tổng hợp.
         // Nếu PROXMOX_API_URL hoặc PROXMOX_API_TOKEN chưa set, monitor tự degraded gracefully.
-        crate::executor::hypervisor::monitor::HypervisorMonitor::start(
+        crate::executor::hypervisor::core::monitor::HypervisorMonitor::start(
             self.config.clone(),
             self.redis_internal_zone.clone(),
         );

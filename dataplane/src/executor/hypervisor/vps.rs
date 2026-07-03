@@ -1,4 +1,4 @@
-use crate::executor::{Executor, ExecutorError, ExecutionResult};
+use crate::executor::{ExecutionResult, Executor, ExecutorError};
 // Sử dụng JobPayload từ module job_lifecycle mới đổi tên
 use crate::job_lifecycle::message::JobPayload;
 use async_trait::async_trait;
@@ -6,7 +6,7 @@ use async_trait::async_trait;
 /// ============================================================================
 /// 📂 MODULE: executor/hypervisor/vps.rs - Bộ Thực Thi Nghiệp Vụ Ảo Hóa VPS
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Triển khai logic thực thi vật lý cho các nghiệp vụ ảo hóa VPS (tạo, thay đổi cấu hình VPS).
 ///   - Trực tiếp gọi đến các API cấp thấp của Hypervisor (KVM, QEMU, Libvirt...).
@@ -46,16 +46,19 @@ impl Executor for VpsExecutor {
                 payload.job_topic, payload.resource_id
             ),
         );
-        
+
         // Trên môi trường Production thực tế:
         //   - Step 1: sqlite_db.check_idempotency(&payload.job_id, payload.job_version)
         //   - Step 2: Cài đặt thời gian timeout tối đa cho phép (ví dụ: 120 giây)
         //             tokio::time::timeout(Duration::from_secs(120), self.invoke_libvirt_api(...))
         //   - Step 3: Ghi nhận kết quả SQLite sau khi hoàn thành.
-        
+
         // Khởi tạo ExecutionResult đã tinh gọn, chỉ giữ lại trường message để tối ưu luồng truyền tin.
         Ok(ExecutionResult {
-            message: format!("Hypervisor: VPS orchestration task successfully completed for resource {}", payload.resource_id),
+            message: format!(
+                "Hypervisor: VPS orchestration task successfully completed for resource {}",
+                payload.resource_id
+            ),
         })
     }
 }
