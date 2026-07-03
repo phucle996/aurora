@@ -127,9 +127,10 @@ type GRPCCfg struct {
 
 // SchemaSQLCfg định nghĩa tên SQL Schema cho từng phân hệ trong PostgreSQL.
 type SchemaSQLCfg struct {
-	Hierarchy string
-	IAM       string
-	Mail      string
+	Hierarchy  string
+	IAM        string
+	Mail       string
+	Hypervisor string // [NEW COMMENT]: Tên SQL schema lưu trữ thông tin của phân hệ Hypervisor Nodes
 }
 
 // [COMMENT]: VaultCfg chứa thông tin kết nối và quản lý định danh khóa trong Vault Transit
@@ -249,9 +250,10 @@ func LoadConfig() *Config {
 			KeyPath:    getEnv("OTEL_TLS_KEY", ""),
 		},
 		SchemaSQL: SchemaSQLCfg{
-			Hierarchy: "hierarchy",
-			IAM:       "iam",
-			Mail:      "mail",
+			Hierarchy:  "hierarchy",
+			IAM:        "iam",
+			Mail:       "mail",
+			Hypervisor: "hypervisor", // [NEW COMMENT]: Khởi tạo giá trị mặc định là schema 'hypervisor'
 		},
 		// [COMMENT]: Nạp cấu hình Vault từ môi trường (env) để khởi tạo client
 		Vault: VaultCfg{

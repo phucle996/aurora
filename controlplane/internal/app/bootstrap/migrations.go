@@ -6,6 +6,7 @@ import (
 
 	"controlplane/internal/config"
 	"controlplane/internal/hierarchy"
+	"controlplane/internal/hypervisor" // [NEW COMMENT]: Import phân hệ Hypervisor để thực thi migrations
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
 	"controlplane/pkg/logger"
@@ -63,6 +64,11 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 
 	// mail migrations
 	if err := mail.ApplyMigrations(ctx, conn, cfg); err != nil {
+		return err
+	}
+
+	// [NEW COMMENT]: hypervisor migrations thực thi độc lập bằng transactional lock
+	if err := hypervisor.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}
 

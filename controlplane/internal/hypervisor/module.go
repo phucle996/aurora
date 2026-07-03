@@ -5,6 +5,11 @@ import (
 	"errors"
 
 	"controlplane/internal/config"
+	hypervisorRepoInterface "controlplane/internal/hypervisor/domain/repo"
+	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
+	hypervisorRepoImpl "controlplane/internal/hypervisor/repository"
+	hypervisorSvcImpl "controlplane/internal/hypervisor/service"
+	hypervisorHandler "controlplane/internal/hypervisor/transport/http/handler"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -13,10 +18,13 @@ import (
 // Đây là module Tier-1 (Non-Critical): Lỗi khởi tạo phân hệ này không được phép
 // gây sập hệ thống (Crash-Loopback) mà chỉ làm suy giảm tính năng (Graceful Degradation).
 type HypervisorModule struct {
-	enabled bool
-	err     error // Lưu vết lỗi khởi tạo để phục vụ Observability (SRE monitor)
-	db      *pgxpool.Pool
-	cfg     *config.Config
+	enabled        bool
+	err            error // Lưu vết lỗi khởi tạo để phục vụ Observability (SRE monitor)
+	db             *pgxpool.Pool
+	cfg            *config.Config
+	NodeRepository hypervisorRepoInterface.NodeRepository
+	NodeService    hypervisorSvcInterface.NodeService
+	NodeHandler    *hypervisorHandler.NodeHandler
 }
 
 // IsEnabled trả về true nếu module được khởi tạo thành công và sẵn sàng phục vụ.
@@ -32,9 +40,7 @@ func (m *HypervisorModule) GetError() error {
 	return m.err
 }
 
-// NewModule khởi tạo HypervisorModule.
-// Giả lập: Nếu không cấu hình Hostname ảo hóa hoặc cấu hình bị lỗi, module sẽ trả về lỗi
-// để kích hoạt cơ chế Degrade tại App-Layer.
+// NewModule khởi tạo HypervisorModule với đầy đủ các layered dependencies.
 func NewModule(cfg *config.Config, db *pgxpool.Pool) (*HypervisorModule, error) {
 	if cfg == nil {
 		return nil, errors.New("hypervisor module: config is required")
@@ -43,10 +49,18 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*HypervisorModule, error) 
 		return nil, errors.New("hypervisor module: database connection pool is required")
 	}
 
+	// [COMMENT]: Wire dependencies theo nguyên lý Clean Architecture / Domain Driven Design
+	nodeRepo := hypervisorRepoImpl.NewNodeRepoPostgres(cfg, db)
+	nodeSvc := hypervisorSvcImpl.NewNodeService(nodeRepo)
+	nodeHandler := hypervisorHandler.NewNodeHandler(nodeSvc)
+
 	return &HypervisorModule{
-		enabled: true,
-		db:      db,
-		cfg:     cfg,
+		enabled:        true,
+		db:             db,
+		cfg:            cfg,
+		NodeRepository: nodeRepo,
+		NodeService:    nodeSvc,
+		NodeHandler:    nodeHandler,
 	}, nil
 }
 
@@ -75,3 +89,5 @@ func (m *HypervisorModule) Stop() {
 	}
 	// Dừng an toàn các workers
 }
+
+

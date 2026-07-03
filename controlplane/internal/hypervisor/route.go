@@ -6,11 +6,13 @@ import (
 
 // RegisterRoutes thực hiện đăng ký các API endpoints cho HypervisorModule khi nó hoạt động bình thường.
 func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
-	if router == nil || module == nil || !module.IsEnabled() {
+	if !module.IsEnabled() {
 		return
 	}
 
-	// Group định tuyến cho hypervisor được bảo vệ bởi middleware bảo mật Access
+	router.GET("/admin/hypervisor/nodes", module.NodeHandler.ListNodes)
+
+	// Group định tuyến cho hypervisor cũ
 	group := router.Group("/api/v1/hypervisor")
 	{
 		group.GET("/status", func(c *gin.Context) {
@@ -21,7 +23,6 @@ func RegisterRoutes(router *gin.Engine, module *HypervisorModule) {
 		})
 
 		group.GET("/vms", func(c *gin.Context) {
-			// Giả lập trả về danh sách máy ảo
 			c.JSON(200, gin.H{
 				"vms": []gin.H{
 					{"id": "vm-01", "name": "SRE-Bastion-Host", "status": "running"},
