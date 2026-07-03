@@ -13,12 +13,12 @@ import (
 // của cả End-User và SRE Admin nhằm tối ưu hóa hiệu năng, giảm tải (de-bloat) cho các service khác.
 type SessionRefreshService interface {
 	// CreateRefreshToken tạo mới một session refresh token đục (opaque) khi đăng nhập thành công trên thiết bị tin cậy.
-	CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
+	CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error)
 
 
 	// [COMMENT]: Xóa bỏ refresh token theo giá trị raw nhận được từ cookie (băm và xóa)
 	RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error
 
-	// Xác thực Opaque Refresh Token read-only từ gRPC có kèm theo context scope
-	VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error)
+	// [COMMENT]: Xác thực Opaque Refresh Token dựa trên user và tenant
+	VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, tenantID *uuid.UUID, userID uuid.UUID) (*iamEntity.VerifyOpaqueRefreshTokenResult, error)
 }

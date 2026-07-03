@@ -195,7 +195,7 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID uuid.UUID, token
 	}
 
 	// [COMMENT]: 2. Kích hoạt tài khoản và gán role mặc định 'platform_user' ở scope platform trong DB
-	if err := s.repo.ActivateUserWithRole(ctx, userID, "platform_user"); err != nil {
+	if err := s.repo.ActivateUser(ctx, userID, "platform_user"); err != nil {
 		return err
 	}
 
@@ -289,18 +289,15 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	)
 	if req.TenantDomain != "" {
 		// [COMMENT]: Login tenant context — JOIN tenant_memberships + tenant_domains
-		user, loadErr = s.repo.LoginUserByUsernameAndTenantDomain(ctx, req.Username, req.TenantDomain)
+		user, loadErr = s.repo.LoginUserTenant(ctx, req.Username, req.TenantDomain)
 		if user != nil {
 			if user.TenantID != nil {
 				tenantID = *user.TenantID
 			}
-			if user.TenantCode != nil {
-				tenantCode = *user.TenantCode
-			}
 		}
 	} else {
 		// [COMMENT]: Login global context — chỉ query bảng users
-		user, loadErr = s.repo.LoginUserByUsername(ctx, req.Username)
+		user, loadErr = s.repo.LoginUserGlobal(ctx, req.Username)
 	}
 	if loadErr != nil {
 		if errors.Is(loadErr, iamTaxonomy.ErrUserNotFound) || errors.Is(loadErr, iamTaxonomy.ErrRoleRequired) || errors.Is(loadErr, iamTaxonomy.ErrInvalidCredentials) {
@@ -400,8 +397,18 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	// [COMMENT]: 5. Sinh Refresh Token nếu thiết bị được đánh dấu tin cậy (Trust Device)
 	var rawRefresh string
 	if req.TrustDevice {
+		var tenantUUIDPtr *uuid.UUID
+		if tenantID != "" {
+			parsed, err := uuid.Parse(tenantID)
+			if err != nil {
+				loginOutcome = iamMetrics.OutcomeFailureUnknown
+				return nil, fmt.Errorf("failed to parse tenant ID: %w", err)
+			}
+			tenantUUIDPtr = &parsed
+		}
+
 		var refreshErr error
-		rawRefresh, _, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID)
+		rawRefresh, _, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, tenantUUIDPtr)
 		if refreshErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			return nil, refreshErr
@@ -412,9 +419,10 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID)
 
 	return &iamEntity.VerifyUserCredentialsResult{
-		Valid:          true,
-		UserID:         user.ID.String(),
-		Role:           user.Role,
+		Valid:  true,
+		UserID: user.ID.String(),
+		// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
+		RoleID:         user.RoleID,
 		Level:          user.Level,
 		TenantID:       tenantID,
 		ClientDeviceID: clientDeviceID,

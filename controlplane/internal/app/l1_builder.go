@@ -2,8 +2,8 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"controlplane/internal/cacheengine"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
+	"google.golang.org/protobuf/proto"
 )
 
 // InitCacheEngine khởi tạo toàn bộ hạ tầng Cache Engine (L1, L2, Fanout, Exec) tập trung.
@@ -51,50 +52,74 @@ func RegisterL1Loaders(
 	modules *Modules,
 ) {
 
-	// 6. Đăng ký tĩnh loader cho "rbac_role" phục vụ phân quyền RBAC (sử dụng GetPermissionCodesByRoleCode tối ưu hơn)
+	// 6. Đăng ký loader cho "rbac_role" phục vụ phân quyền RBAC theo mô hình ID-based 5 cấp.
+	//
+	// Hai dạng param:
+	//   - Nhánh Tenant:   "<role_id>:<tenant_id>:<workspace_id>"
+	//   - Nhánh Personal: "personal:<user_id>:<workspace_id>"
+	//
+	// DB đã lưu sẵn full 5-part key nên repo trả về danh sách key hoàn chỉnh.
+	// Loader chỉ cần gọi đúng repo method và đóng gói kết quả vào binary Protobuf.
 	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
-		perms, err := modules.IAM.RbacRepository.GetPermissionCodesByRoleCode(ctx, param)
-		if err != nil {
-			return nil, err
+		// [COMMENT]: Phân tách tham số param thành 3 phần ngăn cách bởi ":"
+		parts := strings.SplitN(param, ":", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("rbac_role loader: invalid param format %q, expected <role_id|'personal'>:<id>:<workspace_id>", param)
 		}
-		return &iamproto.RoleEntry{Permissions: perms}, nil
+
+		var binaryData []byte
+		var err error
+
+		if strings.EqualFold(parts[0], "personal") {
+			// [COMMENT]: Nhánh Personal — trích xuất user_id và workspace_id để query trực tiếp từ user_role
+			userID, parseErr := uuid.Parse(parts[1])
+			if parseErr != nil {
+				return nil, fmt.Errorf("rbac_role loader: invalid user_id %q: %w", parts[1], parseErr)
+			}
+			workspaceID, parseErr := uuid.Parse(parts[2])
+			if parseErr != nil {
+				return nil, fmt.Errorf("rbac_role loader: invalid workspace_id %q: %w", parts[2], parseErr)
+			}
+
+			// [COMMENT]: Lấy raw binary permissions từ DB thông qua repository
+			binaryData, err = modules.IAM.RbacRepository.GetUserRolePermissions(ctx, userID, workspaceID)
+			if err != nil {
+				return nil, fmt.Errorf("rbac_role loader: load user role permissions: %w", err)
+			}
+		} else {
+			// [COMMENT]: Nhánh Tenant — trích xuất role_id, tenant_id, và workspace_id
+			roleID, parseErr := uuid.Parse(parts[0])
+			if parseErr != nil {
+				return nil, fmt.Errorf("rbac_role loader: invalid role_id %q: %w", parts[0], parseErr)
+			}
+			tenantID, parseErr := uuid.Parse(parts[1])
+			if parseErr != nil {
+				return nil, fmt.Errorf("rbac_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
+			}
+			workspaceID, parseErr := uuid.Parse(parts[2])
+			if parseErr != nil {
+				return nil, fmt.Errorf("rbac_role loader: invalid workspace_id %q: %w", parts[2], parseErr)
+			}
+
+			// [COMMENT]: Lấy raw binary permissions của tenant từ DB
+			binaryData, err = modules.IAM.RbacRepository.GetTenantRolePermissions(ctx, tenantID, workspaceID, roleID)
+			if err != nil {
+				return nil, fmt.Errorf("rbac_role loader: load tenant role permissions: %w", err)
+			}
+		}
+
+		// [COMMENT]: Nếu không có dữ liệu binary trả về, trả về RoleEntry rỗng để tránh lỗi nil pointer
+		if len(binaryData) == 0 {
+			return &iamproto.RoleEntry{Permissions: []string{}}, nil
+		}
+
+		// [COMMENT]: Giải mã raw binary bytes (Protobuf format) thành đối tượng RoleEntry để lưu trữ trên L1 cache RAM
+		var roleEntry iamproto.RoleEntry
+		if err := proto.Unmarshal(binaryData, &roleEntry); err != nil {
+			return nil, fmt.Errorf("rbac_role loader: failed to unmarshal binary role entry: %w", err)
+		}
+
+		return &roleEntry, nil
 	})
 
-	// Loader cho "rbac:user:permissions" phục vụ gộp và phân giải quyền theo scope của User
-	cacheengine.Register(registry, "rbac:user:permissions", 15*time.Minute, func(ctx context.Context, param string) ([]string, error) {
-		userID, err := uuid.Parse(param)
-		if err != nil {
-			return nil, err
-		}
-		return modules.IAM.RbacRepository.GetUserPermissionsMerged(ctx, userID)
-	})
-
-	// Loader cho "tenant_code_by_id" để phân giải Tenant UUID sang Tenant Code
-	cacheengine.Register(registry, "tenant_code_by_id", 1*time.Hour, func(ctx context.Context, param string) (string, error) {
-		tenantID, err := uuid.Parse(param)
-		if err != nil {
-			return "", err
-		}
-		return modules.IAM.RbacRepository.GetTenantCodeByID(ctx, tenantID)
-	})
-
-	// 9. Đăng ký tĩnh loader cho "zone_backpressure" phục vụ đọc-xuyên-thấu L2 Redis khi L1 RAM cache bị miss
-	cacheengine.Register(registry, "zone_backpressure", 30*time.Second, func(ctx context.Context, param string) (map[string]interface{}, error) {
-		key := "zone_backpressure:" + param
-		payload, _, exists, err := registry.L2.Get(ctx, key)
-		if err != nil {
-			return nil, err
-		}
-		if !exists {
-			return map[string]interface{}{
-				"zone_id":   param,
-				"congested": false,
-			}, nil
-		}
-		var result map[string]interface{}
-		if err := json.Unmarshal(payload, &result); err != nil {
-			return nil, err
-		}
-		return result, nil
-	})
 }

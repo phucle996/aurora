@@ -29,7 +29,7 @@ async fn release_recovery_lock(session_mgr: &SessionManager, token_hash: &str) {
 // [COMMENT]: Dựng response OK cho Envoy để tiếp tục chuyển tiếp request lên upstream
 fn build_success_response(
     user_id: &str,
-    role: &str,
+    role_id: &str,
     level: i32,
     tenant_id: &str,
     new_jwt: &str,
@@ -45,6 +45,10 @@ fn build_success_response(
     // [COMMENT]: Lấy client_device_id từ cookie hoặc sinh ngẫu nhiên nếu thiếu để tracking thiết bị
     let device_id = extract_cookie_value(cookie_header, "client_device_id")
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // [COMMENT]: Lấy workspace_id từ cookie client gửi lên (user luôn có ít nhất 1 workspace)
+    // ACR forward trực tiếp xuống CP qua header x-workspace-id mà không đưa vào JWT session
+    let workspace_id = extract_cookie_value(cookie_header, "workspace_id");
 
     if let Some(ref mut http_resp) = ok_response.http_response {
         use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
@@ -66,10 +70,11 @@ fn build_success_response(
                 }),
                 ..Default::default()
             });
+            // [COMMENT]: Inject x-user-role-id — UUID của role đang hoạt động, dùng cho L1 cache lookup
             ok.headers.push(HeaderValueOption {
                 header: Some(HeaderValue {
-                    key: "x-user-role".to_string(),
-                    value: role.to_string(),
+                    key: "x-user-role-id".to_string(),
+                    value: role_id.to_string(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -87,6 +92,19 @@ fn build_success_response(
                     header: Some(HeaderValue {
                         key: "x-tenant-id".to_string(),
                         value: tenant_id.to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+
+            // [COMMENT]: Forward workspace_id cookie thành x-workspace-id header cho upstream CP
+            // Không lưu workspace_id trong JWT — chỉ đọc từ cookie và forward trực tiếp
+            if let Some(ws_id) = workspace_id {
+                ok.headers.push(HeaderValueOption {
+                    header: Some(HeaderValue {
+                        key: "x-workspace-id".to_string(),
+                        value: ws_id,
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -227,7 +245,7 @@ pub async fn handle_session_recovery(
                 );
                 return build_success_response(
                     &cached.user_id,
-                    &cached.role,
+                    &cached.role_id,
                     cached.level,
                     &cached.tenant_id,
                     &cached.new_jwt,
@@ -278,7 +296,7 @@ pub async fn handle_session_recovery(
                             );
                             return build_success_response(
                                 &cached.user_id,
-                                &cached.role,
+                                &cached.role_id,
                                 cached.level,
                                 &cached.tenant_id,
                                 &cached.new_jwt,
@@ -404,7 +422,7 @@ pub async fn handle_session_recovery(
                         // [COMMENT]: Lưu kết quả recovery vào Redis cache để các request song song dùng lại
                         let cache_item = RecoverySessionCache {
                             user_id: verify_res.user_id.clone(),
-                            role: verify_res.role.clone(),
+                            role_id: verify_res.role.clone(),
                             level: verify_res.level,
                             tenant_id: verify_res.tenant_id.clone(),
                             new_jwt: res.access_token.clone(),

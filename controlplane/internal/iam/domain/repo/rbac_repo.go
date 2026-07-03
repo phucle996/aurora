@@ -2,41 +2,29 @@ package iamRepoInterface
 
 import (
 	"context"
-	"time"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 
 	"github.com/google/uuid"
 )
 
+// [COMMENT]: RbacRepository định nghĩa interface tối giản (skeleton) cho các thao tác dữ liệu liên quan đến user_role và tenant_role
 type RbacRepository interface {
-	// GetRoleByCode retrieves a role and its associated permissions by the role code.
-	GetRoleByCode(ctx context.Context, code string) (*iamEntity.RoleWithPermissions, error)
+	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions dạng binary (bytea) của user trong workspace
+	GetUserRolePermissions(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error)
 
-	// GetPermissionCodesByRoleCode retrieves only the permission codes associated with a role code.
-	// Used for lightweight lazy-loaded L1/L2 cache fallback.
-	GetPermissionCodesByRoleCode(ctx context.Context, roleCode string) ([]string, error)
+	// [COMMENT]: GetTenantRolePermissions lấy danh sách permissions dạng binary (bytea) của tenant trong workspace
+	GetTenantRolePermissions(ctx context.Context, tenantID uuid.UUID, workspaceID uuid.UUID, roleID uuid.UUID) ([]byte, error)
 
-	// ListSystemRoleEntries retrieves all system/protected roles and their permissions for startup warming up.
-	ListSystemRoleEntries(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error)
+	// [COMMENT]: AssignUserRole gán role và permissions tĩnh cho user trong một workspace
+	AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error
 
-	ListRoles(ctx context.Context) ([]*iamEntity.Role, error)
-	GetRoleByID(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error)
-	CreateRole(ctx context.Context, role *iamEntity.Role) error
-	UpdateRole(ctx context.Context, role *iamEntity.Role) error
-	DeleteRole(ctx context.Context, id uuid.UUID) error
+	// [COMMENT]: AssignTenantRole gán role và permissions tĩnh cho tenant trong một workspace
+	AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error
 
-	ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error)
-	GetPermissionByID(ctx context.Context, id uuid.UUID) (*iamEntity.Permission, error)
-	GetPermissionByCode(ctx context.Context, code string) (*iamEntity.Permission, error)
-	AssignPermission(ctx context.Context, roleID, permissionID uuid.UUID) error
-	RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error
+	// [COMMENT]: GetRoleIDByUserID lấy role_id và level của user tại platform scope (nil UUID)
+	GetRoleIDByUserID(ctx context.Context, userID uuid.UUID) (string, int32, error)
 
-	AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error
-	RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error
-
-	GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error)
-	GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error)
-	GetUserPermissionsMerged(ctx context.Context, userID uuid.UUID) ([]string, error)
-	GetTenantCodeByID(ctx context.Context, tenantID uuid.UUID) (string, error)
+	// [COMMENT]: GetRoleIDByTenantID lấy role_id và level của tenant tại platform scope (nil UUID)
+	GetRoleIDByTenantID(ctx context.Context, tenantID uuid.UUID) (string, int32, error)
 }

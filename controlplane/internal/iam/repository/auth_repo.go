@@ -11,11 +11,13 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/proto"
 )
 
 type AuthRepository struct {
@@ -33,8 +35,8 @@ func NewAuthRepository(
 	}
 }
 
-func (r *AuthRepository) LoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
-	// [COMMENT]: Thực hiện truy vấn JOIN bảng users với user_role_assignments & roles để lấy thông tin user kèm max role
+func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+	// [COMMENT]: Thực hiện trọuy vấn JOIN bảng users với user_role_assignments & roles để lấy thông tin user kèm max role
 	query := fmt.Sprintf(`
 		SELECT 
 			u.id,
@@ -42,7 +44,7 @@ func (r *AuthRepository) LoginUserByUsername(ctx context.Context, username strin
 			u.email,
 			u.password_hash, 
 			u.status,
-			r.code       AS role_code,
+			r.id::text   AS role_id,
 			r.role_level AS role_level
 		FROM %s.users u
 		JOIN %s.user_role_assignments ura ON ura.user_id = u.id 
@@ -57,7 +59,7 @@ func (r *AuthRepository) LoginUserByUsername(ctx context.Context, username strin
 
 	var (
 		userModel iamModel.User
-		roleCode  string
+		roleID    string // UUID dưới dạng chuỗi
 		roleLevel int32
 	)
 	if err := r.db.QueryRow(ctx, query, username).Scan(
@@ -66,7 +68,7 @@ func (r *AuthRepository) LoginUserByUsername(ctx context.Context, username strin
 		&userModel.Email,
 		&userModel.PasswordHash,
 		&userModel.Status,
-		&roleCode,
+		&roleID,
 		&roleLevel,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -81,14 +83,15 @@ func (r *AuthRepository) LoginUserByUsername(ctx context.Context, username strin
 		Email:        userModel.Email,
 		PasswordHash: userModel.PasswordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
-		Role:         roleCode,
-		Level:        roleLevel,
+		// [COMMENT]: RoleID là UUID của role đang hoạt động, dùng cho RBAC lookup key bằng ID
+		RoleID: roleID,
+		Level:  roleLevel,
 	}
 
 	return loginUser, nil
 }
 
-func (r *AuthRepository) LoginUserByUsernameAndTenantDomain(
+func (r *AuthRepository) LoginUserTenant(
 	ctx context.Context,
 	username string,
 	tenantDomain string,
@@ -104,7 +107,7 @@ func (r *AuthRepository) LoginUserByUsernameAndTenantDomain(
 			u.status,
 			t.id::text   AS tenant_id,
 			t.code       AS tenant_code,
-			r.code       AS role_code,
+			r.id::text   AS role_id,
 			r.role_level AS role_level
 		FROM %s.users u
 		JOIN hierarchy.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
@@ -121,11 +124,10 @@ func (r *AuthRepository) LoginUserByUsernameAndTenantDomain(
 	`, r.schema, r.schema, r.schema)
 
 	var (
-		userModel  iamModel.User
-		tenantID   string
-		tenantCode string
-		roleCode   string
-		roleLevel  int32
+		userModel iamModel.User
+		tenantID  string
+		roleID    string // UUID dưới dạng chuỗi
+		roleLevel int32
 	)
 	if err := r.db.QueryRow(ctx, query, username, tenantDomain).Scan(
 		&userModel.ID,
@@ -134,8 +136,7 @@ func (r *AuthRepository) LoginUserByUsernameAndTenantDomain(
 		&userModel.PasswordHash,
 		&userModel.Status,
 		&tenantID,
-		&tenantCode,
-		&roleCode,
+		&roleID,
 		&roleLevel,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -151,9 +152,9 @@ func (r *AuthRepository) LoginUserByUsernameAndTenantDomain(
 		PasswordHash: userModel.PasswordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
 		TenantID:     &tenantID,
-		TenantCode:   &tenantCode,
-		Role:         roleCode,
-		Level:        roleLevel,
+		// [COMMENT]: RoleID là UUID của role đang hoạt động, dùng cho RBAC lookup key bằng ID
+		RoleID: roleID,
+		Level:  roleLevel,
 	}
 
 	return loginUser, nil
@@ -246,68 +247,124 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 	return nil
 }
 
-// [COMMENT]: ActivateUserWithRole thực hiện kích hoạt tài khoản và gán vai trò platform_user mặc định
-// bằng 1 câu query duy nhất sử dụng CTE (Common Table Expressions) để tối ưu hóa I/O và giảm thiểu round-trip mạng.
-func (r *AuthRepository) ActivateUserWithRole(ctx context.Context, userID uuid.UUID, roleCode string) error {
-	// [COMMENT]: Sử dụng CTE để:
-	// 1. UPDATE status của user thành active nếu nó đang ở trạng thái pending-active.
-	// 2. INSERT một bản ghi user_role_assignments cho platform_user dựa trên kết quả cập nhật ở bước 1.
-	// 3. Trả về thông tin trạng thái để code Go kiểm tra tính tồn tại và xử lý tính idempotent.
-	query := fmt.Sprintf(`
-		WITH updated_user AS (
-			UPDATE %s.users 
-			SET status = 'active', updated_at = NOW() 
-			WHERE id = $1 AND status = 'pending-active'
-			RETURNING id
-		),
-		inserted_role AS (
-			INSERT INTO %s.user_role_assignments (
-				id, user_id, role_id, scope_type, tenant_id, workspace_id, assigned_by, assigned_at
-			)
-			SELECT $2, $1, r.id, 'platform', NULL, NULL, $1, NOW()
-			FROM %s.roles r
-			WHERE r.code = $3 AND r.scope_type = 'platform' 
-			  AND EXISTS (SELECT 1 FROM updated_user)
-			ON CONFLICT DO NOTHING
-			RETURNING user_id
-		)
-		SELECT 
-			EXISTS (SELECT 1 FROM updated_user) AS activated,
-			EXISTS (SELECT 1 FROM %s.users WHERE id = $1) AS user_exists,
-			COALESCE((SELECT status FROM %s.users WHERE id = $1), '') AS current_status;
-	`, r.schema, r.schema, r.schema, r.schema, r.schema)
-
-	assignmentID := uuid.Must(uuid.NewV7())
-
-	var (
-		activated     bool
-		userExists    bool
-		currentStatus string
-	)
-
-	// [COMMENT]: Thực thi câu query duy nhất
-	err := r.db.QueryRow(ctx, query, userID, assignmentID, roleCode).Scan(
-		&activated,
-		&userExists,
-		&currentStatus,
-	)
+// [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
+// và gán vai trò tương ứng cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
+func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string) error {
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("iam repo: begin activate tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	// [COMMENT]: 1. Cập nhật status của user thành active, đồng thời SELECT ra username để build key 5 cấp
+	var username string
+	var status string
+	queryUpdate := fmt.Sprintf(`
+		UPDATE %s.users 
+		SET status = 'active', updated_at = NOW() 
+		WHERE id = $1 AND status = 'pending-active'
+		RETURNING username, status
+	`, r.schema)
+
+	err = tx.QueryRow(ctx, queryUpdate, userID).Scan(&username, &status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// [COMMENT]: Idempotent check: Kiểm tra nếu user đã active từ trước
+			var currentStatus string
+			errCheck := r.db.QueryRow(ctx, fmt.Sprintf("SELECT status FROM %s.users WHERE id = $1", r.schema), userID).Scan(&currentStatus)
+			if errCheck != nil {
+				if errors.Is(errCheck, pgx.ErrNoRows) {
+					return iamTaxonomy.ErrUserNotFound
+				}
+				return errCheck
+			}
+			if currentStatus == "active" {
+				return nil
+			}
+			return fmt.Errorf("user status is %s, cannot activate", currentStatus)
+		}
 		return err
 	}
 
-	// [COMMENT]: 1. Nếu user không tồn tại trong DB, trả về lỗi ErrUserNotFound
-	if !userExists {
-		return iamTaxonomy.ErrUserNotFound
+	// [COMMENT]: 2. Truy vấn danh sách permissions tĩnh (3 cấp) của role tương ứng từ DB dựa trên roleCode
+	queryRolePerms := fmt.Sprintf(`
+		SELECT r.id, r.name, r.role_level, COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
+		FROM %s.roles r
+		LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id
+		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
+		WHERE r.code = $1
+	`, r.schema, r.schema, r.schema)
+
+	rows, err := tx.Query(ctx, queryRolePerms, roleCode)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var roleID uuid.UUID
+	var roleName string
+	var roleLevel int
+	var perms []string
+	roleFound := false
+
+	for rows.Next() {
+		roleFound = true
+		var mod, obj, beh string
+		if err := rows.Scan(&roleID, &roleName, &roleLevel, &mod, &obj, &beh); err != nil {
+			return fmt.Errorf("iam repo: scan role permission row: %w", err)
+		}
+		if mod != "" && obj != "" && beh != "" {
+			// [COMMENT]: Ghép thành key 5 cấp định dạng: <username>:<workspace_id>:<module>:<object>:<behavior>
+			// WorkspaceID sử dụng nil UUID ("00000000-0000-0000-0000-000000000000") đại diện cho platform scope
+			permKey := fmt.Sprintf("%s:00000000-0000-0000-0000-000000000000:%s:%s:%s", username, mod, obj, beh)
+			perms = append(perms, permKey)
+		}
 	}
 
-	// [COMMENT]: 2. Nếu không active được (do trạng thái hiện tại khác 'pending-active')
-	if !activated {
-		// [COMMENT]: Idempotent: Nếu đã active từ trước thì coi như thành công và bỏ qua
-		if currentStatus == "active" {
-			return nil
-		}
-		// [COMMENT]: Nếu ở các trạng thái khác (như suspended, disabled), trả về lỗi nghiệp vụ
-		return fmt.Errorf("user status is %s, cannot activate", currentStatus)
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// [COMMENT]: Nếu không tìm thấy thông tin role nào từ câu query JOIN ở trên
+	if !roleFound {
+		return iamTaxonomy.ErrRoleNotFound
+	}
+
+	// [COMMENT]: 3. Serialize danh sách permissions thành Protobuf binary byte array
+	roleEntry := &iamproto.RoleEntry{
+		Permissions: perms,
+	}
+	binaryBytes, err := proto.Marshal(roleEntry)
+	if err != nil {
+		return fmt.Errorf("iam repo: marshal role entry: %w", err)
+	}
+
+	// [COMMENT]: 4. Chèn mapping user_role mới vào database
+	queryInsertRole := fmt.Sprintf(`
+		INSERT INTO %s.user_role (
+			id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+		ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING
+	`, r.schema)
+
+	_, err = tx.Exec(ctx, queryInsertRole,
+		uuid.Must(uuid.NewV7()),
+		userID,
+		username,
+		uuid.Nil, // workspace_id (nil UUID)
+		roleID,
+		roleName,
+		roleLevel,
+		binaryBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("iam repo: insert user role assignment: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("iam repo: commit activate tx: %w", err)
 	}
 
 	return nil

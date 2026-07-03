@@ -8,11 +8,17 @@ const (
 	HeaderXTenantID   = "X-Tenant-ID"
 	HeaderXTenantCode = "X-Tenant-Code"
 	HeaderXZoneID     = "X-Zone-ID"
-	HeaderXUserRole   = "X-User-Role"
-	HeaderXUserLevel  = "X-User-Level"
-	HeaderTraceparent = "traceparent"
-	HeaderXRequestID  = "X-Request-ID"
+	// HeaderXUserRole chứa role code của user — dùng cho root bypass ở middleware
+	HeaderXUserRole = "X-User-Role"
+	// HeaderXUserRoleID chứa UUID của role đang hoạt động do ACR inject từ JWT claims
+	HeaderXUserRoleID = "X-User-Role-ID"
+	// HeaderXWorkspaceID chứa UUID của workspace đang hoạt động do ACR inject từ cookie client
+	HeaderXWorkspaceID = "X-Workspace-ID"
+	HeaderXUserLevel   = "X-User-Level"
+	HeaderTraceparent  = "traceparent"
+	HeaderXRequestID   = "X-Request-ID"
 )
+
 
 // Context Keys dùng để truyền danh tính trong Go Context giữa tầng HTTP Handler và Service/Repo
 type ContextKeyUserRoleType struct{}

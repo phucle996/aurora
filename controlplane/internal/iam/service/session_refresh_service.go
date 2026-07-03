@@ -43,7 +43,8 @@ func NewSessionRefreshService(
 	}
 }
 
-func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+// [COMMENT]: CreateRefreshToken tạo mới một session refresh token opaque khi đăng nhập thành công.
+func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error) {
 	// [COMMENT]: 1. Tạo chuỗi entropy ngẫu nhiên dài 32 ký tự
 	entropy, err := security.GenerateToken(32)
 	if err != nil {
@@ -53,7 +54,7 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 	// [COMMENT]: 2. Kết hợp với userID để tạo token hoàn chỉnh định dạng user_token (tổng cộng 36 + 1 + 32 = 69 ký tự)
 	rawRefresh := fmt.Sprintf("%s_%s", userID.String(), entropy)
 
-	// [COMMENT]: 3. Tạo UUID v7 cho ID (phục vụ mục đích truy vết tuyến tính và rotation)
+	// [COMMENT]: 3. Tạo UUID v7 cho ID
 	refreshID, err := uuid.NewV7()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("session refresh: failed to generate refresh ID: %w", err)
@@ -62,18 +63,18 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 	now := time.Now().UTC()
 	refreshExp := now.Add(s.cfg.Security.RefreshTokenTTL)
 
-	// [COMMENT]: 4. Chuẩn bị struct thực thể refresh token
+	// [COMMENT]: 4. Chuẩn bị struct thực thể refresh token, lưu con trỏ tenantID nhận từ tham số
 	rt := iamEntity.RefreshToken{
 		ID:        refreshID,
 		UserID:    userID,
 		DeviceID:  &deviceID,
 		TokenHash: security.HashTokenSHA256(rawRefresh),
-		TenantID:  nil,
+		TenantID:  tenantID,
 		IssuedAt:  now,
 		ExpiresAt: refreshExp,
 	}
 
-	// [COMMENT]: 5. Ghi trực tiếp xuống DB PostgreSQL thông qua Repository của RefreshToken
+	// [COMMENT]: 5. Ghi trực tiếp xuống DB PostgreSQL
 	if err := s.repo.CreateRefreshTokenSession(ctx, rt); err != nil {
 		return "", time.Time{}, fmt.Errorf("session refresh: failed to persist refresh session: %w", err)
 	}
@@ -81,15 +82,13 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 	return rawRefresh, refreshExp, nil
 }
 
-// VerifyOpaqueRefreshToken thực hiện kiểm tra tính hợp lệ của Refresh Token
-// acr call để cấp trinity token mới
-func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
-	// [COMMENT]: 1. Thực hiện băm SHA-256 token thô từ client để so khớp với cơ sở dữ liệu
+// [COMMENT]: VerifyOpaqueRefreshToken thực hiện kiểm tra tính hợp lệ của Refresh Token
+func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, tenantID *uuid.UUID, userID uuid.UUID) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
+	// [COMMENT]: 1. Thực hiện băm SHA-256 token thô từ client để so khớp
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
 	refreshContext, err := s.repo.LoadRefreshContextByHash(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrNotFound) {
-			// [COMMENT]: Không tìm thấy session refresh token tương ứng
 			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 		}
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
@@ -102,9 +101,20 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 	}
 
 	user := &refreshContext.User
-	// [COMMENT]: 3. Đảm bảo bản ghi user liên kết là hợp lệ
-	if user.ID == (uuid.UUID{}) {
+	// [COMMENT]: 3. Xác minh tính khớp cấu trúc: User ID truyền lên phải khớp với token được lưu
+	if user.ID != userID {
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
+	}
+
+	// [COMMENT]: Đối chiếu Tenant ID
+	if tenantID == nil {
+		if session.TenantID != nil {
+			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
+		}
+	} else {
+		if session.TenantID == nil || *session.TenantID != *tenantID {
+			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
+		}
 	}
 
 	// [COMMENT]: 4. Kiểm tra trạng thái tài khoản user (tránh các user bị khóa/treo/chưa kích hoạt)
@@ -117,13 +127,18 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
-	// [COMMENT]: 6. Xác định role và level của user dựa trên scope truyền từ Gateway
-	roleCode, roleLevel, err := s.rbacRepo.GetUserRoleAndLevelByScope(ctx, user.ID, scope)
+	// [COMMENT]: 6. Xác định role và level của user/tenant trực tiếp từ database rbac tables
+	var roleIDStr string
+	var roleLevel int32
+	if tenantID == nil {
+		roleIDStr, roleLevel, err = s.rbacRepo.GetRoleIDByUserID(ctx, userID)
+	} else {
+		roleIDStr, roleLevel, err = s.rbacRepo.GetRoleIDByTenantID(ctx, *tenantID)
+	}
 	if err != nil {
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)
 	}
 
-	// [COMMENT]: 7. Lấy tenant_id từ session (nếu có)
 	tenantIDStr := ""
 	if session.TenantID != nil {
 		tenantIDStr = session.TenantID.String()
@@ -133,25 +148,22 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		Valid:    true,
 		UserID:   user.ID.String(),
 		TenantID: tenantIDStr,
-		Role:     roleCode,
-		Level:    int32(roleLevel),
+		RoleID:   roleIDStr,
+		Level:    roleLevel,
 		Username: user.Username,
 	}, nil
 }
 
 // [COMMENT]: RevokeOpaqueRefreshToken thực hiện băm token thô nhận từ ACR gRPC và thực thi xóa khỏi database.
-// Trả về ErrZeroRowsAffected nếu không tìm thấy bản ghi để tầng vận chuyển tự quyết định log/phản hồi.
 func (s *SessionRefreshService) RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error {
 	if rawRefreshToken == "" {
 		return nil
 	}
-	// [COMMENT]: Băm SHA-256 mã token thô để so khớp bảo mật
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
 
 	startLoad := time.Now()
 	_, err := s.repo.DeleteRefreshTokenSessionByHash(ctx, tokenHash)
 	if err != nil {
-		// [COMMENT]: Nếu là lỗi ErrZeroRowsAffected, cập nhật metric thành công và trả lỗi lên lớp trên
 		if errors.Is(err, iamTaxonomy.ErrZeroRowsAffected) {
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
 			return err

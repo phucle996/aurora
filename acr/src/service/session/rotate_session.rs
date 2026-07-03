@@ -42,7 +42,8 @@ pub async fn handle_session_rotation(
         let new_claims = Claims {
             sub: claims.sub.clone(),
             uid: claims.uid.clone(),
-            role: claims.role.clone(),
+            // [COMMENT]: Giữ nguyên role_id UUID khi rotation — không thông dịch sang role code
+            role_id: claims.role_id.clone(),
             lvl: claims.lvl,
             tenant_id: claims.tenant_id.clone(),
             zone_id: claims.zone_id.clone(),
@@ -144,7 +145,8 @@ pub async fn handle_admin_session_rotation(
         let new_claims = Claims {
             sub: claims.sub.clone(),
             uid: claims.uid.clone(),
-            role: claims.role.clone(),
+            // [COMMENT]: Giữ nguyên role_id UUID khi admin session rotation
+            role_id: claims.role_id.clone(),
             lvl: claims.lvl,
             tenant_id: claims.tenant_id.clone(),
             zone_id: claims.zone_id.clone(),

@@ -36,99 +36,133 @@ SET
     updated_at = now();
 
 -- ----------------------------------------------------------------------------
--- 2) Seed permissions (system RBAC baseline)
+-- 2) Seed permissions (3-level catalog with real random UUIDs)
 -- ----------------------------------------------------------------------------
-INSERT INTO permissions (id, code, name, description, resource, action)
+INSERT INTO permissions (id, module, object, behavior, description)
 VALUES
-    (gen_random_uuid(), 'iam.users.read', 'Read Users', 'Read user accounts', 'iam.users', 'read'),
-    (gen_random_uuid(), 'iam.users.manage', 'Manage Users', 'Create/update/disable user accounts', 'iam.users', 'manage'),
-    (gen_random_uuid(), 'iam.roles.read', 'Read Roles', 'Read RBAC roles', 'iam.roles', 'read'),
-    (gen_random_uuid(), 'iam.roles.manage', 'Manage Roles', 'Create/update RBAC roles', 'iam.roles', 'manage'),
-    (gen_random_uuid(), 'iam.permissions.read', 'Read Permissions', 'Read permission catalog', 'iam.permissions', 'read'),
-    (gen_random_uuid(), 'iam.assignments.manage', 'Manage Assignments', 'Assign/revoke roles for users', 'iam.assignments', 'manage')
-ON CONFLICT (code) DO UPDATE
+    (gen_random_uuid(), 'iam', 'users', 'read', 'Read user accounts'),
+    (gen_random_uuid(), 'iam', 'users', 'manage', 'Create/update/disable user accounts'),
+    (gen_random_uuid(), 'iam', 'roles', 'read', 'Read RBAC roles'),
+    (gen_random_uuid(), 'iam', 'roles', 'manage', 'Create/update RBAC roles'),
+    (gen_random_uuid(), 'iam', 'permissions', 'read', 'Read permission catalog'),
+    (gen_random_uuid(), 'iam', 'assignments', 'manage', 'Assign/revoke roles for users')
+ON CONFLICT (module, object, behavior) DO UPDATE
 SET
-    name = EXCLUDED.name,
     description = EXCLUDED.description,
-    resource = EXCLUDED.resource,
-    action = EXCLUDED.action,
     updated_at = now();
 
 -- ----------------------------------------------------------------------------
--- 3) Seed system roles (must satisfy roles_system_flags_consistency_check)
+-- 3) Seed system roles (with real random UUIDs)
 -- ----------------------------------------------------------------------------
-INSERT INTO roles (
-    id, code, name, description, scope_type,
-    is_system, role_level, is_protected, is_assignable, owner_tenant_id
-)
+INSERT INTO roles (id, code, name, description, role_level)
 VALUES
-    (gen_random_uuid(), 'platform_root', 'Root', 'Highest platform-level system authority', 'platform', true, 0, true, true, NULL),
-    (gen_random_uuid(), 'platform_user', 'Platform User', 'Default global role for registered user not joined to any tenant', 'platform', true, 8, true, true, NULL),
-    (gen_random_uuid(), 'platform_admin', 'System Admin', 'Platform administration role', 'platform', true, 1, true, true, NULL),
-    (gen_random_uuid(), 'platform_support_operator', 'Support Operator', 'Platform support operation role', 'platform', true, 2, true, true, NULL),
-    (gen_random_uuid(), 'tenant_owner', 'Owner', 'Tenant owner role', 'tenant', true, 3, true, true, NULL),
-    (gen_random_uuid(), 'tenant_admin', 'Admin', 'Tenant administrator role', 'tenant', true, 4, true, true, NULL),
-    (gen_random_uuid(), 'tenant_manager', 'Manager', 'Tenant manager role', 'tenant', true, 5, true, true, NULL),
-    (gen_random_uuid(), 'tenant_member', 'Member', 'Tenant member role', 'tenant', true, 6, true, true, NULL),
-    (gen_random_uuid(), 'tenant_viewer', 'Viewer', 'Tenant read-only role', 'tenant', true, 7, true, true, NULL)
+    (gen_random_uuid(), 'platform_root', 'Root', 'Highest platform-level system authority', 0),
+    (gen_random_uuid(), 'platform_user', 'Platform User', 'Default global role for registered user not joined to any tenant', 8),
+    (gen_random_uuid(), 'platform_admin', 'System Admin', 'Platform administration role', 1),
+    (gen_random_uuid(), 'platform_support_operator', 'Support Operator', 'Platform support operation role', 2),
+    (gen_random_uuid(), 'tenant_owner', 'Owner', 'Tenant owner role', 3),
+    (gen_random_uuid(), 'tenant_admin', 'Admin', 'Tenant administrator role', 4),
+    (gen_random_uuid(), 'tenant_manager', 'Manager', 'Tenant manager role', 5),
+    (gen_random_uuid(), 'tenant_member', 'Member', 'Tenant member role', 6),
+    (gen_random_uuid(), 'tenant_viewer', 'Viewer', 'Tenant read-only role', 7)
 ON CONFLICT (code) DO UPDATE
 SET
     name = EXCLUDED.name,
     description = EXCLUDED.description,
-    scope_type = EXCLUDED.scope_type,
     role_level = EXCLUDED.role_level,
-    is_assignable = EXCLUDED.is_assignable,
     updated_at = now();
 
 -- ----------------------------------------------------------------------------
--- 4) Seed role-permission mapping
+-- 4) Seed role-permission mapping (dynamic SELECT by code)
 -- ----------------------------------------------------------------------------
+-- platform_root / platform_admin get all permissions
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM roles r
-JOIN permissions p ON p.code IN (
-    'iam.users.read',
-    'iam.users.manage',
-    'iam.roles.read',
-    'iam.roles.manage',
-    'iam.permissions.read',
-    'iam.assignments.manage'
-)
+CROSS JOIN permissions p
 WHERE r.code IN ('platform_root', 'platform_admin')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
+-- platform_support_operator gets read-only permissions
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM roles r
-JOIN permissions p ON p.code IN (
-    'iam.users.read',
-    'iam.roles.read',
-    'iam.permissions.read'
-)
-WHERE r.code IN ('platform_support_operator', 'tenant_viewer')
+CROSS JOIN permissions p
+WHERE r.code = 'platform_support_operator'
+  AND p.behavior = 'read'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- ----------------------------------------------------------------------------
--- 5) Assign system users -> platform roles
+-- 5) Assign default system users -> user_role (pre-compiled binary keys, mapped dynamic role_id)
 -- ----------------------------------------------------------------------------
-INSERT INTO user_role_assignments (
-    id, user_id, role_id, scope_type, tenant_id, workspace_id, assigned_by
+-- root user role
+INSERT INTO user_role (
+    id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
 )
-SELECT
+SELECT 
     gen_random_uuid(),
     u.id,
+    'root',
+    '00000000-0000-0000-0000-000000000000'::uuid,
     r.id,
-    'platform',
-    NULL,
-    NULL,
-    u.id
-FROM users u
-JOIN (
-    VALUES
-        ('root', 'platform_root'),
-        ('sys_admin', 'platform_admin'),
-        ('support_operator', 'platform_support_operator'),
-        ('audit_viewer', 'platform_support_operator')
-) AS map(email, role_code) ON map.email = u.email
-JOIN roles r ON r.code = map.role_code
+    r.name,
+    r.role_level,
+    decode('0a3a726f6f743a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a75736572733a6d616e6167650a3a726f6f743a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a726f6c65733a6d616e616765', 'hex')
+FROM users u 
+CROSS JOIN roles r
+WHERE u.username = 'root' AND r.code = 'platform_root'
+ON CONFLICT DO NOTHING;
+
+-- sys_admin user role
+INSERT INTO user_role (
+    id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
+)
+SELECT 
+    gen_random_uuid(),
+    u.id,
+    'sys_admin',
+    '00000000-0000-0000-0000-000000000000'::uuid,
+    r.id,
+    r.name,
+    r.role_level,
+    decode('0a3d7379735f61646d696e3a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a75736572733a726561640a3f7379735f61646d696e3a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a75736572733a6d616e6167650a3d7379735f61646d696e3a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a726f6c65733a726561640a3f7379735f61646d696e3a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a726f6c65733a6d616e6167650a437379735f61646d696e3a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a7065726d697373696f6e733a726561640a457379735f61646d696e3a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a61737369676e6d656e74733a6d616e616765', 'hex')
+FROM users u 
+CROSS JOIN roles r
+WHERE u.username = 'sys_admin' AND r.code = 'platform_admin'
+ON CONFLICT DO NOTHING;
+
+-- support_operator user role
+INSERT INTO user_role (
+    id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
+)
+SELECT 
+    gen_random_uuid(),
+    u.id,
+    'support_operator',
+    '00000000-0000-0000-0000-000000000000'::uuid,
+    r.id,
+    r.name,
+    r.role_level,
+    decode('0a44737570706f72745f6f70657261746f723a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a75736572733a726561640a44737570706f72745f6f70657261746f723a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a726f6c65733a726561640a4a737570706f72745f6f70657261746f723a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a7065726d697373696f6e733a72656164', 'hex')
+FROM users u 
+CROSS JOIN roles r
+WHERE u.username = 'support_operator' AND r.code = 'platform_support_operator'
+ON CONFLICT DO NOTHING;
+
+-- audit_viewer user role (mapped to support_operator permissions)
+INSERT INTO user_role (
+    id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
+)
+SELECT 
+    gen_random_uuid(),
+    u.id,
+    'audit_viewer',
+    '00000000-0000-0000-0000-000000000000'::uuid,
+    r.id,
+    r.name,
+    r.role_level,
+    decode('0a4061756469745f7669657765723a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a75736572733a726561640a4061756469745f7669657765723a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a726f6c65733a726561640a4661756469745f7669657765723a30303030303030302d303030302d303030302d303030302d3030303030303030303030303a69616d3a7065726d697373696f6e733a72656164', 'hex')
+FROM users u 
+CROSS JOIN roles r
+WHERE u.username = 'audit_viewer' AND r.code = 'platform_support_operator'
 ON CONFLICT DO NOTHING;

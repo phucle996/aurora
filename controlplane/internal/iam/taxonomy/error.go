@@ -28,6 +28,7 @@ var (
 
 	ErrPermissionNotFound = errors.New("iam: permission not found")
 	ErrRoleRequired       = errors.New("iam: role required")
+	ErrRoleNotFound       = errors.New("iam: role not found")
 )
 
 // token

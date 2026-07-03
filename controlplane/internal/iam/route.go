@@ -48,23 +48,13 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// 🔑 PHÂN KHÚC RBAC: QUẢN LÝ VAI TRÒ & PHÂN QUYỀN (ADMIN ROLE-BASED ACCESS CONTROL)
 	// ========================================================================
 
-	// 15) Liệt kê danh sách vai trò
-	router.GET("/api/v1/rbac/roles",
-		module.RbacHandler.ListRoles,
+	// [COMMENT]: 15) Gán vai trò cho User trong workspace
+	router.POST("/api/v1/rbac/user-role",
+		module.RbacHandler.AssignUserRole,
 	)
 
-	// 16) Tạo vai trò mới
-	router.POST("/api/v1/rbac/roles",
-		module.RbacHandler.CreateRole,
-	)
-
-	// 17) Cập nhật cấu hình vai trò
-	router.PUT("/api/v1/rbac/roles/:id",
-		module.RbacHandler.UpdateRole,
-	)
-
-	// 18) Xóa bỏ vai trò
-	router.DELETE("/api/v1/rbac/roles/:id",
-		module.RbacHandler.DeleteRole,
+	// [COMMENT]: 16) Gán vai trò cho Tenant trong workspace
+	router.POST("/api/v1/rbac/tenant-role",
+		module.RbacHandler.AssignTenantRole,
 	)
 }

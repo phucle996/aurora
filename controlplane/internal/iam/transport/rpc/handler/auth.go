@@ -26,7 +26,6 @@ func NewAuthGRPCHandler(
 	authService iamSvcInterface.AuthService,
 	sessionRefreshService iamSvcInterface.SessionRefreshService,
 ) *AuthGRPCHandler {
-	// [ignoring loop detection]
 	return &AuthGRPCHandler{
 		authService:           authService,
 		sessionRefreshService: sessionRefreshService,
@@ -35,16 +34,29 @@ func NewAuthGRPCHandler(
 
 // VerifyOpaqueRefreshToken tiếp nhận và xử lý yêu cầu xác thực Opaque Refresh Token từ Gateway qua gRPC
 func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iamproto.VerifyOpaqueRefreshTokenRequest) (*iamproto.VerifyOpaqueRefreshTokenResponse, error) {
-	// [COMMENT]: 1. Kiểm tra nhanh trường dữ liệu rỗng đầu vào
-	if req.RefreshToken == "" {
+	// [COMMENT]: 2. Parse UserID và TenantID truyền từ gRPC request
+	userUUID, err := uuid.Parse(req.UserId)
+	if err != nil {
 		return &iamproto.VerifyOpaqueRefreshTokenResponse{
 			Valid:        false,
-			ErrorMessage: "empty refresh token",
+			ErrorMessage: fmt.Sprintf("invalid user id format: %v", err),
 		}, nil
 	}
 
-	// [COMMENT]: 2. Gọi hàm nghiệp vụ tại SessionRefreshService để xác thực token và phân giải scope
-	res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, req.Scope)
+	var tenantUUIDPtr *uuid.UUID
+	if req.TenantId != nil && *req.TenantId != "" {
+		parsed, err := uuid.Parse(*req.TenantId)
+		if err != nil {
+			return &iamproto.VerifyOpaqueRefreshTokenResponse{
+				Valid:        false,
+				ErrorMessage: fmt.Sprintf("invalid tenant id format: %v", err),
+			}, nil
+		}
+		tenantUUIDPtr = &parsed
+	}
+
+	// [COMMENT]: 3. Gọi hàm nghiệp vụ tại SessionRefreshService để xác thực token khớp User và Tenant
+	res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, tenantUUIDPtr, userUUID)
 	if err != nil {
 		return &iamproto.VerifyOpaqueRefreshTokenResponse{
 			Valid:        false,
@@ -56,7 +68,7 @@ func (h *AuthGRPCHandler) VerifyOpaqueRefreshToken(ctx context.Context, req *iam
 		Valid:    res.Valid,
 		UserId:   res.UserID,
 		TenantId: res.TenantID,
-		Role:     res.Role,
+		Role:     res.RoleID,
 		Level:    res.Level,
 		Username: res.Username,
 	}, nil
@@ -145,7 +157,7 @@ func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iampro
 	return &iamproto.VerifyUserCredentialsResponse{
 		Valid:          res.Valid,
 		UserId:         res.UserID,
-		Role:           res.Role,
+		RoleId:         res.RoleID,
 		Level:          res.Level,
 		TenantId:       res.TenantID,
 		ClientDeviceId: res.ClientDeviceID,

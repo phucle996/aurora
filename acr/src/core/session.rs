@@ -55,7 +55,7 @@ impl SessionManager {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RecoverySessionCache {
     pub user_id: String,
-    pub role: String,
+    pub role_id: String,
     pub level: i32,
     pub tenant_id: String,
     pub new_jwt: String,

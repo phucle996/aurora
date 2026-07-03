@@ -26,9 +26,9 @@ pub struct Claims {
     #[serde(rename = "uid")]
     pub uid: String,
 
-    // Single role from Go controlplane JWT
-    #[serde(rename = "role", default)]
-    pub role: String,
+    // Role UUID từ Go controlplane JWT — đã chuyển sang ID-based authorization
+    #[serde(rename = "role_id", default)]
+    pub role_id: String,
 
     // Level (0 = highest privilege)
     #[serde(rename = "lvl", default)]
@@ -64,13 +64,12 @@ pub struct Claims {
 }
 
 impl Claims {
-    /// Tiện ích chuyển đổi role đơn thành danh sách roles Vec<String>
-    /// để tương thích với hệ thống AuthContext / PolicyEvaluator của Rust ACL.
+    /// Tiện ích trả về role_id dưới dạng Vec để tương thích với AuthContext / PolicyEvaluator.
     pub fn get_roles(&self) -> Vec<String> {
-        if self.role.is_empty() {
+        if self.role_id.is_empty() {
             vec![]
         } else {
-            vec![self.role.clone()]
+            vec![self.role_id.clone()]
         }
     }
 

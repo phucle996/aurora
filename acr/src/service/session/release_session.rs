@@ -68,7 +68,7 @@ pub async fn release_user_session(
     let claims = Claims {
         sub: username.to_string(),
         uid: user_id.to_string(),
-        role: role.to_string(),
+        role_id: role.to_string(),
         lvl: level,
         tenant_id: if tenant_id.is_empty() {
             None
@@ -174,7 +174,7 @@ pub async fn release_admin_session(
     let claims = Claims {
         sub: "sre".to_string(),
         uid: "sre".to_string(),
-        role: "".to_string(),
+        role_id: "".to_string(),
         lvl: 0,
         tenant_id: None,
         zone_id: Some("global".to_string()),

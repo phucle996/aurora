@@ -41,11 +41,10 @@ type LoginUser struct {
 	Status       UserStatus
 	// [COMMENT]: TenantID và TenantCode phục vụ flow login username@tenant_domain.
 	// Rỗng/nil nếu login global.
-	TenantID     *string
-	TenantCode   *string
-	// [COMMENT]: Role và Level được join trực tiếp từ RBAC trong repo
-	Role         string
-	Level        int32
+	TenantID *string
+	// [COMMENT]: RoleID (UUID) và Level được join trực tiếp từ RBAC trong repo
+	RoleID string
+	Level  int32
 }
 
 type LoginRequest struct {
@@ -57,9 +56,9 @@ type LoginRequest struct {
 	ClientDeviceID  uuid.UUID
 	// [COMMENT]: TenantDomain được ACR tách từ username@tenant_domain trước khi gọi gRPC sang CP.
 	// Rỗng = đăng nhập global (platform scope), có giá trị = lấy tenant context qua JOIN tenant_domains.
-	TenantDomain    string
-	RemoteIP        string
-	UserAgent       string
+	TenantDomain string
+	RemoteIP     string
+	UserAgent    string
 }
 
 // VerifySessionResult chứa thông tin phản hồi sau khi xác thực Trinity session thành công
@@ -75,21 +74,22 @@ type VerifyOpaqueRefreshTokenResult struct {
 	Valid    bool
 	UserID   string
 	TenantID string
-	Role     string
+	RoleID   string
 	Level    int32
 	Username string
 }
 
 // VerifyUserCredentialsResult chứa thông tin phản hồi sau khi xác thực credentials người dùng thành công
 type VerifyUserCredentialsResult struct {
-	Valid          bool
-	UserID         string
-	Role           string
+	Valid  bool
+	UserID string
+	// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
+	RoleID         string
 	Level          int32
 	TenantID       string
 	ClientDeviceID string
 	RefreshToken   string
 	Username       string
 	// [COMMENT]: TenantCode được điền khi login qua tenant_domain. Rỗng nếu login global.
-	TenantCode     string
+	TenantCode string
 }

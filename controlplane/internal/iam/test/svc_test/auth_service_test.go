@@ -35,14 +35,14 @@ type authRepoMock struct {
 
 var _ iamRepoInterface.AuthRepository = (*authRepoMock)(nil)
 
-func (m *authRepoMock) LoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
+func (m *authRepoMock) LoginUserGlobal(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
 	if m.getUserFn != nil {
 		return m.getUserFn(ctx, username)
 	}
 	return nil, nil
 }
 
-func (m *authRepoMock) LoginUserByUsernameAndTenantDomain(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error) {
+func (m *authRepoMock) LoginUserTenant(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error) {
 	if m.getUserFn != nil {
 		user, err := m.getUserFn(ctx, username)
 		if user != nil {

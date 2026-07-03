@@ -9,13 +9,13 @@ import (
 )
 
 type AuthRepository interface {
-	LoginUserByUsername(ctx context.Context, username string) (*iamEntity.LoginUser, error)
+	LoginUserGlobal(ctx context.Context, username string) (*iamEntity.LoginUser, error)
 	// [COMMENT]: LoginUserByUsernameAndTenantDomain dùng cho flow login username@tenant_domain.
 	// JOIN users → tenant_memberships → tenant_domains để xác minh user là thành viên active của tenant đó.
 	// Trả về LoginUser chứa thông tin user kèm TenantID và TenantCode trong struct.
-	LoginUserByUsernameAndTenantDomain(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error)
+	LoginUserTenant(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error)
 	CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error
-	// [COMMENT]: ActivateUserWithRole thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
-	// và gán vai trò platform_user cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
-	ActivateUserWithRole(ctx context.Context, userID uuid.UUID, roleCode string) error
+	// [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
+	// và gán vai trò tương ứng cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
+	ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string) error
 }

@@ -277,7 +277,8 @@ func (x *VerifyUserTrinityTokenResponse) GetZoneId() string {
 type VerifyOpaqueRefreshTokenRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RefreshToken  string                 `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
-	Scope         string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
+	TenantId      *string                `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3,oneof" json:"tenant_id,omitempty"`
+	UserId        string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -319,9 +320,16 @@ func (x *VerifyOpaqueRefreshTokenRequest) GetRefreshToken() string {
 	return ""
 }
 
-func (x *VerifyOpaqueRefreshTokenRequest) GetScope() string {
+func (x *VerifyOpaqueRefreshTokenRequest) GetTenantId() string {
+	if x != nil && x.TenantId != nil {
+		return *x.TenantId
+	}
+	return ""
+}
+
+func (x *VerifyOpaqueRefreshTokenRequest) GetUserId() string {
 	if x != nil {
-		return x.Scope
+		return x.UserId
 	}
 	return ""
 }
@@ -633,17 +641,16 @@ type VerifyUserCredentialsResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Valid          bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`                                          // Cờ báo hiệu xác thực thông tin thành công hay thất bại
 	UserId         string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                           // UUID của người dùng dưới dạng chuỗi
-	Role           string                 `protobuf:"bytes,3,opt,name=role,proto3" json:"role,omitempty"`                                             // Quyền của người dùng (RBAC role - ví dụ: user, admin)
+	RoleId         string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`                           // UUID của Role đang hoạt động của người dùng (dưới dạng chuỗi)
 	Level          int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`                                          // Cấp độ quyền (level)
 	TenantId       string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                     // ID/Context của Tenant liên đới (nếu có)
 	ClientDeviceId string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"` // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
 	RefreshToken   string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`         // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
 	ErrorMessage   string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`         // Mô tả lỗi chi tiết nếu valid = false
 	Username       string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`                                     // Tên đăng nhập của người dùng
-	// [COMMENT]: tenant_code được CP điền khi login qua tenant_domain. ACR dùng để set cookie tenant_id.
-	TenantCode    string `protobuf:"bytes,10,opt,name=tenant_code,json=tenantCode,proto3" json:"tenant_code,omitempty"` // Code nhận dạng ngắn của Tenant (ví dụ: acme) — dùng cho cookie và JWT claim
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	TenantCode     string                 `protobuf:"bytes,10,opt,name=tenant_code,json=tenantCode,proto3" json:"tenant_code,omitempty"`              // Code nhận dạng ngắn của Tenant (ví dụ: acme) — dùng cho cookie và JWT claim
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *VerifyUserCredentialsResponse) Reset() {
@@ -690,9 +697,9 @@ func (x *VerifyUserCredentialsResponse) GetUserId() string {
 	return ""
 }
 
-func (x *VerifyUserCredentialsResponse) GetRole() string {
+func (x *VerifyUserCredentialsResponse) GetRoleId() string {
 	if x != nil {
-		return x.Role
+		return x.RoleId
 	}
 	return ""
 }
@@ -814,10 +821,13 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x12\n" +
 	"\x04role\x18\x03 \x01(\tR\x04role\x12\x17\n" +
-	"\azone_id\x18\x04 \x01(\tR\x06zoneId\"\\\n" +
+	"\azone_id\x18\x04 \x01(\tR\x06zoneId\"\x8f\x01\n" +
 	"\x1fVerifyOpaqueRefreshTokenRequest\x12#\n" +
-	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x12\x14\n" +
-	"\x05scope\x18\x02 \x01(\tR\x05scope\"\xd9\x01\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\x12 \n" +
+	"\ttenant_id\x18\x02 \x01(\tH\x00R\btenantId\x88\x01\x01\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userIdB\f\n" +
+	"\n" +
+	"_tenant_id\"\xd9\x01\n" +
 	" VerifyOpaqueRefreshTokenResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
@@ -845,11 +855,11 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\n" +
 	"user_agent\x18\n" +
 	" \x01(\tR\tuserAgent\x12#\n" +
-	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xc6\x02\n" +
+	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xcb\x02\n" +
 	"\x1dVerifyUserCredentialsResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x12\n" +
-	"\x04role\x18\x03 \x01(\tR\x04role\x12\x14\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
+	"\arole_id\x18\x03 \x01(\tR\x06roleId\x12\x14\n" +
 	"\x05level\x18\x04 \x01(\x05R\x05level\x12\x1b\n" +
 	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12(\n" +
 	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
@@ -917,6 +927,7 @@ func file_internal_iam_transport_rpc_proto_auth_proto_init() {
 	if File_internal_iam_transport_rpc_proto_auth_proto != nil {
 		return
 	}
+	file_internal_iam_transport_rpc_proto_auth_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

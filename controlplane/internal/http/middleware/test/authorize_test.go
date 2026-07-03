@@ -9,187 +9,172 @@ import (
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-func TestAuthorize_PlatformScope(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
+// makeRoleCache tạo L1 cache với mock loader cho rbac_role trả về perms cố định.
+func makeRoleCache(perms []string) *cacheengine.CacheRegistry {
 	l1Cache := cacheengine.NewL1Cache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
-
-	userID := uuid.NewString()
-	userPerms := []string{
-		"platform:iam.users.read",
-		"platform:iam.roles.read",
-	}
-
-	// Register mock loader
-	cacheengine.Register(registry, "rbac:user:permissions", 15*time.Minute, func(ctx context.Context, param string) ([]string, error) {
-		return userPerms, nil
+	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+		return &iamproto.RoleEntry{Permissions: perms}, nil
 	})
+	return registry
+}
+
+// TestAuthorize_TenantScope kiểm tra nhánh Tenant: X-Tenant-ID có → cấp 1 = tenant_uuid.
+func TestAuthorize_TenantScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tenantID := uuid.NewString()
+	workspaceID := uuid.NewString()
+	roleID := uuid.NewString()
+	userID := uuid.NewString()
+
+	// [COMMENT]: DB đã lưu sẵn full 5-part key với tenant_uuid và workspace_uuid thực tế
+	expectedPerm := tenantID + ":" + workspaceID + ":hierarchy:tenant-member:delete"
+	registry := makeRoleCache([]string{expectedPerm})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Request.Header.Set(constant.HeaderXUserID, userID)
-		c.Request.Header.Set(constant.HeaderXUserRole, "platform_admin")
+		c.Request.Header.Set(constant.HeaderXUserRole, "tenant_admin")
+		c.Request.Header.Set(constant.HeaderXUserRoleID, roleID)
+		c.Request.Header.Set(constant.HeaderXTenantID, tenantID)
+		c.Request.Header.Set(constant.HeaderXWorkspaceID, workspaceID)
 		c.Next()
 	})
 
-	router.GET("/admin/users", middleware.Authorize("platform:iam.users.read", registry), func(c *gin.Context) {
-		c.String(http.StatusOK, "allowed")
-	})
-	router.GET("/admin/write", middleware.Authorize("platform:iam.users.write", registry), func(c *gin.Context) {
-		c.String(http.StatusOK, "allowed")
-	})
+	router.DELETE("/members",
+		middleware.Authorize("hierarchy:tenant-member:delete", registry),
+		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
+	)
+	router.DELETE("/roles",
+		middleware.Authorize("iam:role:delete", registry),
+		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
+	)
 
-	// 1. Check permitted request
+	// 1. Có quyền → 200
 	w1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodGet, "/admin/users", nil)
+	req1 := httptest.NewRequest(http.MethodDelete, "/members", nil)
 	router.ServeHTTP(w1, req1)
 	if w1.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w1.Code)
 	}
 
-	// 2. Check forbidden request
+	// 2. Không có quyền → 403
 	w2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodGet, "/admin/write", nil)
+	req2 := httptest.NewRequest(http.MethodDelete, "/roles", nil)
 	router.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w2.Code)
 	}
 }
 
-func TestAuthorize_TenantScope(t *testing.T) {
+// TestAuthorize_PersonalScope kiểm tra nhánh Personal: X-Tenant-ID vắng mặt → cấp 1 = username.
+func TestAuthorize_PersonalScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	l1Cache := cacheengine.NewL1Cache()
-	registry := cacheengine.NewCacheRegistry(l1Cache)
-
+	username := "alice"
+	workspaceID := uuid.NewString()
+	roleID := uuid.NewString()
 	userID := uuid.NewString()
-	tenantID := uuid.NewString()
-	tenantCode := "tenant-a"
 
-	// Register mock loaders
-	cacheengine.Register(registry, "tenant_code_by_id", 1*time.Hour, func(ctx context.Context, param string) (string, error) {
-		return tenantCode, nil
-	})
-
-	userPerms := []string{
-		"tenant-a:hierarchy:tenant-member:delete",
-	}
-	cacheengine.Register(registry, "rbac:user:permissions", 15*time.Minute, func(ctx context.Context, param string) ([]string, error) {
-		return userPerms, nil
-	})
+	// [COMMENT]: DB đã lưu sẵn full 5-part key với username và workspace_uuid thực tế
+	expectedPerm := username + ":" + workspaceID + ":hypervisor:vps:create"
+	registry := makeRoleCache([]string{expectedPerm})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Request.Header.Set(constant.HeaderXUserID, userID)
-		c.Request.Header.Set(constant.HeaderXUserRole, "tenant_admin")
-		c.Request.Header.Set(constant.HeaderXTenantID, tenantID)
+		c.Request.Header.Set(constant.HeaderXUserName, username)
+		c.Request.Header.Set(constant.HeaderXUserRoleID, roleID)
+		c.Request.Header.Set(constant.HeaderXWorkspaceID, workspaceID)
+		// [COMMENT]: Không set X-Tenant-ID → middleware đi nhánh personal
 		c.Next()
 	})
 
-	router.DELETE("/members", middleware.Authorize("tenant:hierarchy:tenant-member:delete", registry), func(c *gin.Context) {
-		c.String(http.StatusOK, "deleted")
-	})
+	router.POST("/vps",
+		middleware.Authorize("hypervisor:vps:create", registry),
+		func(c *gin.Context) { c.String(http.StatusOK, "created") },
+	)
+	router.DELETE("/vps",
+		middleware.Authorize("hypervisor:vps:delete", registry),
+		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
+	)
 
-	// 1) Test with custom x-tenant-code header directly
+	// 1. Có quyền → 200
 	w1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodDelete, "/members", nil)
-	req1.Header.Set("x-tenant-code", "tenant-a")
+	req1 := httptest.NewRequest(http.MethodPost, "/vps", nil)
 	router.ServeHTTP(w1, req1)
 	if w1.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w1.Code)
 	}
 
-	// 2) Test resolving from x-tenant-id header
+	// 2. Không có quyền → 403
 	w2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodDelete, "/members", nil)
-	req2.Header.Set("x-tenant-id", tenantID)
+	req2 := httptest.NewRequest(http.MethodDelete, "/vps", nil)
 	router.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w2.Code)
-	}
-
-	// 3) Test resolving from fallback Identity Context TenantID
-	w3 := httptest.NewRecorder()
-	req3 := httptest.NewRequest(http.MethodDelete, "/members", nil)
-	router.ServeHTTP(w3, req3)
-	if w3.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w3.Code)
-	}
-
-	// 4) Test wrong tenant context (should be forbidden)
-	w4 := httptest.NewRecorder()
-	req4 := httptest.NewRequest(http.MethodDelete, "/members", nil)
-	req4.Header.Set("x-tenant-code", "tenant-b")
-	router.ServeHTTP(w4, req4)
-	if w4.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", w4.Code)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w2.Code)
 	}
 }
 
-func TestAuthorize_PersonalScope(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	l1Cache := cacheengine.NewL1Cache()
-	registry := cacheengine.NewCacheRegistry(l1Cache)
-
-	userID := uuid.NewString()
-	userPerms := []string{
-		"personal:vps:vps:create",
-	}
-
-	cacheengine.Register(registry, "rbac:user:permissions", 15*time.Minute, func(ctx context.Context, param string) ([]string, error) {
-		return userPerms, nil
-	})
-
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Request.Header.Set(constant.HeaderXUserID, userID)
-		c.Request.Header.Set(constant.HeaderXUserRole, "platform_user")
-		c.Next()
-	})
-
-	router.POST("/vps", middleware.Authorize("personal:vps:vps:create", registry), func(c *gin.Context) {
-		c.String(http.StatusOK, "created")
-	})
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/vps", nil)
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
-
+// TestAuthorize_PlatformRootBypass kiểm tra platform_root bypass hoàn toàn không qua perm check.
 func TestAuthorize_PlatformRootBypass(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	l1Cache := cacheengine.NewL1Cache()
-	registry := cacheengine.NewCacheRegistry(l1Cache)
-
-	userID := uuid.NewString()
+	// [COMMENT]: Cache rỗng — platform_root không cần perm nào cũng phải qua
+	registry := makeRoleCache([]string{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		c.Request.Header.Set(constant.HeaderXUserID, userID)
-		c.Request.Header.Set(constant.HeaderXUserRole, "platform_root") // Root role bypass
+		c.Request.Header.Set(constant.HeaderXUserID, uuid.NewString())
+		c.Request.Header.Set(constant.HeaderXUserRole, "platform_root")
 		c.Next()
 	})
 
-	router.GET("/restricted", middleware.Authorize("platform:some.critical.permission", registry), func(c *gin.Context) {
-		c.String(http.StatusOK, "bypassed")
-	})
+	router.GET("/restricted",
+		middleware.Authorize("iam:role:delete", registry),
+		func(c *gin.Context) { c.String(http.StatusOK, "bypassed") },
+	)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+// TestAuthorize_MissingWorkspaceID kiểm tra thiếu workspace context → 403.
+func TestAuthorize_MissingWorkspaceID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	registry := makeRoleCache([]string{"some-perm"})
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Request.Header.Set(constant.HeaderXUserID, uuid.NewString())
+		c.Request.Header.Set(constant.HeaderXUserRoleID, uuid.NewString())
+		c.Request.Header.Set(constant.HeaderXTenantID, uuid.NewString())
+		// [COMMENT]: Không set X-Workspace-ID → phải reject
+		c.Next()
+	})
+
+	router.GET("/test",
+		middleware.Authorize("iam:role:read", registry),
+		func(c *gin.Context) { c.String(http.StatusOK, "ok") },
+	)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w.Code)
 	}
 }

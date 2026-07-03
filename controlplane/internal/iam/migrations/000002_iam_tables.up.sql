@@ -201,91 +201,110 @@ COMMENT ON COLUMN mfa_recovery_codes.created_at IS 'Timestamp when the recovery 
 
 CREATE TABLE IF NOT EXISTS permissions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID permission
-    code varchar(255) NOT NULL, -- Permission code unique
-    name varchar(255) NOT NULL, -- Tên hiển thị của permission
+    module varchar(100) NOT NULL, -- Tên module (ví dụ: iam, compute)
+    object varchar(100) NOT NULL, -- Đối tượng tác động (ví dụ: users, vps)
+    behavior varchar(100) NOT NULL, -- Hành vi tác động (ví dụ: read, manage)
     description text NULL, -- Mô tả permission
-    resource varchar(255) NOT NULL, -- Resource mà permission tác động
-    action varchar(120) NOT NULL, -- Hành động của permission
     created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo permission
-    updated_at timestamptz NOT NULL DEFAULT now() -- Thời điểm cập nhật permission
+    updated_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm cập nhật permission
+    CONSTRAINT unique_module_object_behavior UNIQUE (module, object, behavior)
 );
 
-COMMENT ON TABLE permissions IS 'Stores system and custom permission definitions used by RBAC.';
+COMMENT ON TABLE permissions IS 'Stores granular static 3-level permission definitions (<module>:<object>:<behavior>).';
 COMMENT ON COLUMN permissions.id IS 'Primary key of the permission record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN permissions.code IS 'Unique permission code, for example compute.vps.create or workspace.members.invite.';
-COMMENT ON COLUMN permissions.name IS 'Display name of the permission.';
+COMMENT ON COLUMN permissions.module IS 'Module category, e.g., hypervisor, billing, iam.';
+COMMENT ON COLUMN permissions.object IS 'Target object inside the module, e.g., vps, invoice, user.';
+COMMENT ON COLUMN permissions.behavior IS 'Action performed on the object, e.g., create, read, update, delete.';
 COMMENT ON COLUMN permissions.description IS 'Optional human-readable description of the permission.';
-COMMENT ON COLUMN permissions.resource IS 'Resource targeted by the permission, for example compute.vps or workspace.members.';
-COMMENT ON COLUMN permissions.action IS 'Action represented by the permission, for example read, create, update, delete, invite, or manage.';
 COMMENT ON COLUMN permissions.created_at IS 'Timestamp when the permission was created.';
 COMMENT ON COLUMN permissions.updated_at IS 'Timestamp when the permission was last updated.';
 
 CREATE TABLE IF NOT EXISTS roles (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID role
-    code varchar(255) NOT NULL, -- Role code unique
+    code varchar(255) NOT NULL UNIQUE, -- Role code unique (ví dụ: workspace_admin)
     name varchar(255) NOT NULL, -- Tên hiển thị role
     description text NULL, -- Mô tả role
-    scope_type role_scope_type NOT NULL, -- Scope role: platform, tenant, workspace
-    is_system boolean NOT NULL DEFAULT true, -- Role hệ thống hay custom
     role_level integer NOT NULL DEFAULT 100, -- Hierarchy level của role, càng nhỏ càng cao
-    is_protected boolean NOT NULL DEFAULT false, -- Không cho mutate/delete nếu true
-    is_assignable boolean NOT NULL DEFAULT true, -- Có cho phép assign trực tiếp cho user không
-    owner_tenant_id uuid NULL, -- Tenant sở hữu custom role, null với system/shared role
     created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo role
     updated_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm cập nhật role
     CONSTRAINT roles_role_level_check CHECK (role_level >= 0)
 );
 
-COMMENT ON TABLE roles IS 'Stores RBAC roles. Scope type is limited to platform, tenant, or workspace. There is intentionally no project scope.';
-COMMENT ON COLUMN roles.id IS 'Primary key of the role record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN roles.code IS 'Unique role code, for example platform_admin or workspace_member.';
+COMMENT ON TABLE roles IS 'Stores system and custom roles with hierarchy levels.';
+COMMENT ON COLUMN roles.id IS 'Primary key of the role record.';
+COMMENT ON COLUMN roles.code IS 'Unique string identifier for the role.';
 COMMENT ON COLUMN roles.name IS 'Display name of the role.';
-COMMENT ON COLUMN roles.description IS 'Optional human-readable description of the role.';
-COMMENT ON COLUMN roles.scope_type IS 'Scope type of the role. Allowed values are platform, tenant, and workspace.';
-COMMENT ON COLUMN roles.is_system IS 'Whether this role is a built-in system role or a custom role.';
-COMMENT ON COLUMN roles.role_level IS 'Role hierarchy level for hidden authority checks. Lower value means higher authority.';
-COMMENT ON COLUMN roles.is_protected IS 'When true, role is protected from regular mutation or deletion paths.';
-COMMENT ON COLUMN roles.is_assignable IS 'When true, role can be assigned to users by assignment flows.';
-COMMENT ON COLUMN roles.owner_tenant_id IS 'Optional owner tenant id for tenant-owned custom roles. Null for platform/shared roles.';
+COMMENT ON COLUMN roles.description IS 'Optional description of the role.';
+COMMENT ON COLUMN roles.role_level IS 'Hierarchy ranking of the role. Lower is more powerful.';
 COMMENT ON COLUMN roles.created_at IS 'Timestamp when the role was created.';
 COMMENT ON COLUMN roles.updated_at IS 'Timestamp when the role was last updated.';
 
 CREATE TABLE IF NOT EXISTS role_permissions (
-    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE, -- Role được gán permission
-    permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE CASCADE, -- Permission được gán vào role
+    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE, -- ID của Role
+    permission_id uuid NOT NULL REFERENCES permissions(id) ON DELETE CASCADE, -- ID của Permission 3 cấp
     created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm gán permission vào role
     PRIMARY KEY (role_id, permission_id)
 );
 
-COMMENT ON TABLE role_permissions IS 'Join table that maps roles to the permissions they grant.';
-COMMENT ON COLUMN role_permissions.role_id IS 'Role that receives the permission.';
-COMMENT ON COLUMN role_permissions.permission_id IS 'Permission attached to the role.';
-COMMENT ON COLUMN role_permissions.created_at IS 'Timestamp when the permission was attached to the role.';
+COMMENT ON TABLE role_permissions IS 'Maps roles to their granular 3-level static permissions.';
+COMMENT ON COLUMN role_permissions.role_id IS 'Foreign key referencing the role.';
+COMMENT ON COLUMN role_permissions.permission_id IS 'Foreign key referencing the 3-level permission.';
+COMMENT ON COLUMN role_permissions.created_at IS 'Timestamp when mapped.';
 
-CREATE TABLE IF NOT EXISTS user_role_assignments (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID user-role assignment
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- User được gán role
-    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE, -- Role được gán
-    scope_type role_scope_type NOT NULL, -- Scope role: platform, tenant, workspace
-    tenant_id uuid NULL, -- Tenant scope, nullable
-    workspace_id uuid NULL, -- Workspace scope, nullable
-    assigned_by uuid NULL REFERENCES users(id) ON DELETE SET NULL, -- Actor đã gán role
-    assigned_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm gán role
-    expires_at timestamptz NULL, -- Thời điểm role hết hạn
-    revoked_at timestamptz NULL -- Thời điểm role bị revoke
+CREATE TABLE IF NOT EXISTS user_role (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID user_role mapping
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- ID người dùng được gán role
+    username varchar(64) NOT NULL, -- Cache username tĩnh bất biến để check nhanh
+    workspace_id uuid NOT NULL, -- ID workspace áp dụng role (nil UUID đại diện platform scope)
+    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE, -- ID role được gán (liên kết với bảng roles)
+    role_name varchar(255) NOT NULL, -- Cache tên hiển thị role
+    role_level integer NOT NULL, -- Cache role level để check phân cấp nhanh
+    list_perm bytea NOT NULL, -- Danh sách key 5 cấp tĩnh dạng binary (Protobuf serialized RoleEntry)
+    created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm gán role
+    updated_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm cập nhật role
+    CONSTRAINT unique_user_workspace_role UNIQUE (user_id, workspace_id, role_id)
 );
 
-COMMENT ON TABLE user_role_assignments IS 'Stores role assignments for users across platform, tenant, or workspace scope. There is intentionally no project_id column.';
-COMMENT ON COLUMN user_role_assignments.id IS 'Primary key of the user role assignment record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN user_role_assignments.user_id IS 'User who receives the role assignment.';
-COMMENT ON COLUMN user_role_assignments.role_id IS 'Role that is assigned to the user.';
-COMMENT ON COLUMN user_role_assignments.scope_type IS 'Scope type of the assignment. Allowed values are platform, tenant, and workspace.';
-COMMENT ON COLUMN user_role_assignments.tenant_id IS 'Tenant scope of the role assignment. Must be null for platform scope.';
-COMMENT ON COLUMN user_role_assignments.workspace_id IS 'Workspace scope of the role assignment. Must be null for platform scope and for tenant-only scope.';
-COMMENT ON COLUMN user_role_assignments.assigned_by IS 'User who created the role assignment. Nullable.';
-COMMENT ON COLUMN user_role_assignments.assigned_at IS 'Timestamp when the role was assigned.';
-COMMENT ON COLUMN user_role_assignments.expires_at IS 'Optional timestamp when the role assignment expires.';
-COMMENT ON COLUMN user_role_assignments.revoked_at IS 'Optional timestamp when the role assignment was revoked.';
+COMMENT ON TABLE user_role IS 'Stores denormalized user roles and binary computed 5-level static permissions per workspace.';
+COMMENT ON COLUMN user_role.id IS 'Primary key of the assignment.';
+COMMENT ON COLUMN user_role.user_id IS 'User receiving the role mapping.';
+COMMENT ON COLUMN user_role.username IS 'Cached canonical username of the user.';
+COMMENT ON COLUMN user_role.workspace_id IS 'Workspace UUID scope (nil UUID for platform level).';
+COMMENT ON COLUMN user_role.role_id IS 'Static Role ID from system taxonomy.';
+COMMENT ON COLUMN user_role.role_name IS 'Cached name of the role.';
+COMMENT ON COLUMN user_role.role_level IS 'Cached numeric hierarchy rank.';
+COMMENT ON COLUMN user_role.list_perm IS 'Protobuf serialized binary RoleEntry containing pre-built 5-level static keys.';
+COMMENT ON COLUMN user_role.created_at IS 'Timestamp of assignment.';
+COMMENT ON COLUMN user_role.updated_at IS 'Timestamp of update.';
+
+CREATE TABLE IF NOT EXISTS tenant_role (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID tenant_role mapping
+    tenant_id uuid NOT NULL, -- ID tenant được gán role
+    workspace_id uuid NOT NULL, -- ID workspace áp dụng role (nil UUID đại diện platform scope)
+    role_id uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE, -- ID role được gán (liên kết với bảng roles)
+    role_name varchar(255) NOT NULL, -- Cache tên hiển thị role
+    role_level integer NOT NULL, -- Cache role level để check phân cấp nhanh
+    list_perm bytea NOT NULL, -- Danh sách key 5 cấp tĩnh dạng binary (Protobuf serialized RoleEntry)
+    created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm gán role
+    updated_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm cập nhật role
+    CONSTRAINT unique_tenant_workspace_role UNIQUE (tenant_id, workspace_id, role_id)
+);
+
+COMMENT ON TABLE tenant_role IS 'Stores denormalized tenant roles and binary computed 5-level static permissions per workspace.';
+COMMENT ON COLUMN tenant_role.id IS 'Primary key of the assignment.';
+COMMENT ON COLUMN tenant_role.tenant_id IS 'Tenant receiving the role mapping.';
+COMMENT ON COLUMN tenant_role.workspace_id IS 'Workspace UUID scope (nil UUID for platform level).';
+COMMENT ON COLUMN tenant_role.role_id IS 'Static Role ID from system taxonomy.';
+COMMENT ON COLUMN tenant_role.role_name IS 'Cached name of the role.';
+COMMENT ON COLUMN tenant_role.role_level IS 'Cached numeric hierarchy rank.';
+COMMENT ON COLUMN tenant_role.list_perm IS 'Protobuf serialized binary RoleEntry containing pre-built 5-level static keys.';
+COMMENT ON COLUMN tenant_role.created_at IS 'Timestamp of assignment.';
+COMMENT ON COLUMN tenant_role.updated_at IS 'Timestamp of update.';
+
+-- Index phục vụ query cực nhanh ở read-path không cần JOIN
+CREATE INDEX IF NOT EXISTS idx_user_role_lookup ON user_role (user_id, workspace_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_role_lookup ON tenant_role (tenant_id, workspace_id, role_id);
+
 
 CREATE TABLE IF NOT EXISTS admin_devices (
     id uuid PRIMARY KEY,
