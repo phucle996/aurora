@@ -326,15 +326,11 @@ services:
         LOCAL_GID: 1000
     container_name: dataplane-vn-n1
     init: true
-    volumes:
-      # Mount policy config cho binary prod đọc từ path chuẩn /etc/dataplane/.
-      - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
       ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
-      POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       # Cổng export Prometheus metrics endpoint /metrics
       METRICS_PORT: "2112"
@@ -358,7 +354,6 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-  # Đã loại bỏ dịch vụ envoy-zone1 do Dataplane không có inbound traffic.
 
   dataplane-vn-n2:
     build:
@@ -370,14 +365,10 @@ services:
         LOCAL_GID: 1000
     container_name: dataplane-vn-n2
     init: true
-    volumes:
-      - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
       ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
-      # Cả hai Node trong Zone 2 đều trỏ chung về bộ đệm cách ly của Zone 2 để chia sẻ dữ liệu đồng nhất.
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
-      POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       METRICS_PORT: "2112"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
@@ -402,13 +393,10 @@ services:
         LOCAL_GID: 1000
     container_name: dataplane-vn-n3
     init: true
-    volumes:
-      - ../dataplane/config/policy.yaml:/etc/dataplane/policy.yaml:ro
     environment:
       ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
-      POLICY_FILE: /etc/dataplane/policy.yaml
       APP_LOG_LEVEL: "info"
       METRICS_PORT: "2112"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
