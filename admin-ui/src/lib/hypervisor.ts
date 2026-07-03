@@ -63,12 +63,9 @@ async function readEnvelope<T>(response: Response, fallback: string): Promise<T>
   return payload.data
 }
 
-// fetchHypervisorNodes lấy danh sách các nodes trong zone chỉ định
-export async function fetchHypervisorNodes(zoneId: string): Promise<HypervisorNodeItem[]> {
-  if (!zoneId || zoneId === 'global') {
-    return []
-  }
-  const response = await Fetch(`/admin/hypervisor/nodes?zone_id=${encodeURIComponent(zoneId)}`)
+// fetchHypervisorNodes gọi API Go /admin/hypervisor/nodes trực tiếp (zone context tự động đi kèm từ header)
+export async function fetchHypervisorNodes(): Promise<HypervisorNodeItem[]> {
+  const response = await Fetch('/admin/hypervisor/nodes')
   const data = await readEnvelope<{ nodes: HypervisorNodeItem[] }>(response, 'Cannot load hypervisor nodes')
   return data.nodes ?? []
 }

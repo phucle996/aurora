@@ -230,6 +230,8 @@ function request(baseURL: string, input: string, init?: RequestInit): Promise<Re
     ...init,
   }
 
+
+
   return fetch(toAbsoluteURL(baseURL, input), reqInit).then((rawResponse) => {
     // Bước 1: Wrap response để enable XSSI stripping cho mọi .text()/.json() call
     const response = wrapResponse(rawResponse)

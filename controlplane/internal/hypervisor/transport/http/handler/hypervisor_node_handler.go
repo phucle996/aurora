@@ -33,15 +33,16 @@ func (h *NodeHandler) ListNodes(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	zoneIDStr := strings.TrimSpace(c.Query("zone_id"))
+	// [COMMENT]: 2. Đọc ngữ cảnh zone_id (UUID) từ header HTTP X-Zone-Context do Gateway/Proxy (ACR) phân giải và tiêm vào
+	zoneIDStr := strings.TrimSpace(c.GetHeader("X-Zone-Context"))
 
-	if zoneIDStr == "global" {
-		logger.HandlerWarn(c, op, nil, "global zone is not allowed in this action")
-		apires.RespondBadRequest(c, "global zone is not allowed in this action")
+	if zoneIDStr == "" || zoneIDStr == "global" {
+		logger.HandlerWarn(c, op, nil, "zone context is missing or global zone is not allowed in this action")
+		apires.RespondBadRequest(c, "zone context is missing or global zone is not allowed")
 		return
 	}
 
-	// [COMMENT]: 2. Ràng buộc bắt buộc truyền tham số zone_id cụ thể không chấp nhận global zone
+	// [COMMENT]: 3. Ràng buộc bắt buộc truyền tham số zone_id cụ thể hợp lệ
 	zoneID, err := uuid.Parse(zoneIDStr)
 	if err != nil {
 		logger.HandlerError(c, op, err)

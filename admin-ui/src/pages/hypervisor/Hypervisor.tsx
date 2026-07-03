@@ -1,8 +1,9 @@
 /**
  * Hypervisor.tsx — Trang quản lý và giám sát hạ tầng các Hypervisor Nodes.
  *
- * Cho phép SRE giám sát dung lượng CPU, RAM, Storage của từng Hypervisor Node
- * thuộc về một Zone cụ thể. Hỗ trợ tìm kiếm nhanh, reload và phân trang.
+ * SRE giám sát dung lượng CPU, RAM, Storage của từng Hypervisor Node.
+ * Vùng dữ liệu (Zone Context) được tự động đồng bộ từ Dropdown chọn Zone trên Header
+ * toàn cục (Zustand useZoneStore). Không chọn zone cục bộ tại page content.
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -12,7 +13,6 @@ import {
   RefreshCw,
   MoreVertical,
   Server,
-  MapPin,
   ChevronLeft,
   ChevronRight,
   FileDown,
@@ -47,11 +47,10 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
-  fetchTopologyZones,
   fetchHypervisorNodes,
-  type ZoneOption,
   type HypervisorNodeItem
 } from '@/lib/hypervisor'
+import { useZoneStore } from '@/hooks/useZoneStore'
 import { cn } from '@/lib/utils'
 import { PageContent } from '@/components/layout/layout'
 
@@ -115,12 +114,14 @@ function isNodeActive(dateStr?: string): boolean {
 // ----------------------------------------------------------------------------
 
 export default function HypervisorPage() {
-  const [zones, setZones] = useState<ZoneOption[]>([])
-  const [selectedZoneId, setSelectedZoneId] = useState<string>('')
+  // [COMMENT]: Đọc ngữ cảnh activeZone toàn cục từ Zustand store (đồng bộ trực tiếp từ Header)
+  const activeZone = useZoneStore((state) => state.activeZone)
+  const zones = useZoneStore((state) => state.zones)
+
   const [nodes, setNodes] = useState<HypervisorNodeItem[]>([])
   const [searchQuery, setSearchQuery] = useState<string>('')
-  
-  const [loading, setLoading] = useState<boolean>(true)
+
+  const [loading, setLoading] = useState<boolean>(false)
   const [refreshing, setRefreshing] = useState<boolean>(false)
   const [error, setError] = useState<string>('')
 
@@ -128,36 +129,22 @@ export default function HypervisorPage() {
   const [currentPage, setCurrentPage] = useState<number>(1)
   const [pageSize, setPageSize] = useState<number>(10)
 
-  // 1. Fetch danh sách Zone ban đầu
-  useEffect(() => {
-    async function initZones() {
-      try {
-        setLoading(true)
-        const zoneItems = await fetchTopologyZones()
-        setZones(zoneItems)
-        // [COMMENT]: Mặc định chọn Zone đầu tiên để tải dữ liệu tự động
-        if (zoneItems.length > 0) {
-          setSelectedZoneId(zoneItems[0].id)
-        } else {
-          setLoading(false)
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Cannot load zones')
-        setLoading(false)
-      }
-    }
-    void initZones()
-  }, [])
-
-  // 2. Fetch danh sách Nodes khi selectedZoneId thay đổi
+  // 1. Fetch danh sách Nodes khi activeZone thay đổi
   const loadNodes = useCallback(async (isRefresh = false) => {
-    if (!selectedZoneId) return
+    // [COMMENT]: Nếu đang ở Global zone, luồng SRE Hypervisor Nodes không cho phép
+    if (!activeZone || activeZone === 'global') {
+      setNodes([])
+      setLoading(false)
+      setRefreshing(false)
+      return
+    }
+
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
-    
+
     setError('')
     try {
-      const nodeList = await fetchHypervisorNodes(selectedZoneId)
+      const nodeList = await fetchHypervisorNodes()
       setNodes(nodeList)
       setCurrentPage(1)
     } catch (err) {
@@ -167,7 +154,7 @@ export default function HypervisorPage() {
       setLoading(false)
       setRefreshing(false)
     }
-  }, [selectedZoneId])
+  }, [activeZone])
 
   useEffect(() => {
     void loadNodes()
@@ -178,7 +165,7 @@ export default function HypervisorPage() {
     void loadNodes(true)
   }
 
-  // 3. Thực hiện lọc danh sách Nodes client-side theo searchQuery
+  // 2. Thực hiện lọc danh sách Nodes client-side theo searchQuery
   const filteredNodes = nodes.filter((node) => {
     const term = searchQuery.toLowerCase().trim()
     if (!term) return true
@@ -205,6 +192,10 @@ export default function HypervisorPage() {
   const totalRam = nodes.reduce((acc, n) => acc + n.ram_mb_total, 0)
   const usedRam = nodes.reduce((acc, n) => acc + n.ram_mb_used, 0)
   const onlineCount = nodes.filter(n => n.status === 'connected').length
+
+  // Định dạng hiển thị tên Zone hiện tại từ Header context code
+  const currentZoneObj = zones.find(z => z.code === activeZone)
+  const zoneDisplayName = (currentZoneObj ? `${currentZoneObj.code.toUpperCase()} · ${currentZoneObj.name}` : activeZone) || ''
 
   return (
     <PageContent>
@@ -280,33 +271,9 @@ export default function HypervisorPage() {
 
       {/* Main Console Box */}
       <div className="space-y-5 rounded-2xl border border-border/60 bg-card p-6 shadow-sm">
-        {/* Filter bar */}
+        {/* Filter bar (Đã bỏ Dropdown chọn Zone, chỉ lấy từ Header context) */}
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-col gap-3 md:flex-row md:items-center">
-            {/* Zone Selector */}
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-muted-foreground flex items-center gap-1">
-                <MapPin className="size-4" /> Zone:
-              </span>
-              <Select
-                value={selectedZoneId}
-                onValueChange={(val) => {
-                  setSelectedZoneId(val)
-                }}
-              >
-                <SelectTrigger className="h-10 w-52 rounded-lg border-border/60 bg-background text-sm font-medium">
-                  <SelectValue placeholder="Select zone..." />
-                </SelectTrigger>
-                <SelectContent className="border-border/60 bg-background">
-                  {zones.map((z) => (
-                    <SelectItem key={z.id} value={z.id} className="text-sm font-medium">
-                      {z.code.toUpperCase()} · {z.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
             {/* Search Input */}
             <div className="relative min-w-0 md:w-80">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -315,6 +282,7 @@ export default function HypervisorPage() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search by node code or name..."
                 className="h-10 rounded-lg border-border/60 bg-background pl-10 text-sm shadow-none focus-visible:ring-1"
+                disabled={!activeZone || activeZone === 'global'}
               />
             </div>
           </div>
@@ -326,7 +294,7 @@ export default function HypervisorPage() {
               size="icon"
               className="h-10 w-10 rounded-lg border-border/60"
               onClick={handleRefresh}
-              disabled={loading || !selectedZoneId}
+              disabled={loading || !activeZone || activeZone === 'global'}
             >
               <RefreshCw className={cn('size-4 text-muted-foreground', (loading || refreshing) && 'animate-spin')} />
             </Button>
@@ -394,15 +362,15 @@ export default function HypervisorPage() {
                   </TableRow>
                 ))}
 
-              {!loading && !selectedZoneId && (
+              {!loading && (!activeZone || activeZone === 'global') && (
                 <TableRow>
                   <TableCell colSpan={9} className="h-32 text-center text-sm font-medium text-muted-foreground">
-                    Please select a zone to load hypervisor nodes.
+                    Global zone is not supported for hypervisor nodes. Please select a specific zone from the header context to view nodes.
                   </TableCell>
                 </TableRow>
               )}
 
-              {!loading && selectedZoneId && paginatedNodes.length === 0 && (
+              {!loading && activeZone && activeZone !== 'global' && paginatedNodes.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={9} className="h-32 text-center text-sm font-medium text-muted-foreground">
                     No nodes found matching search filters.
@@ -410,7 +378,7 @@ export default function HypervisorPage() {
                 </TableRow>
               )}
 
-              {!loading &&
+              {!loading && activeZone && activeZone !== 'global' &&
                 paginatedNodes.map((item) => {
                   const cpuPercent = item.cpu_cores_total > 0 ? (item.cpu_cores_used / item.cpu_cores_total) * 100 : 0
                   const ramPercent = item.ram_mb_total > 0 ? (item.ram_mb_used / item.ram_mb_total) * 100 : 0
@@ -419,7 +387,7 @@ export default function HypervisorPage() {
 
                   return (
                     <TableRow key={item.id} className="border-b border-border/50 hover:bg-muted/20">
-                      {/* Node Code Link (ID is removed as requested) */}
+                      {/* Node Code Link */}
                       <TableCell className="font-semibold text-foreground">
                         <Link
                           to="/hypervisor/$agentId"
@@ -429,7 +397,7 @@ export default function HypervisorPage() {
                           {item.node_code.toUpperCase()}
                         </Link>
                       </TableCell>
-                      
+
                       {/* Name */}
                       <TableCell className="text-sm font-medium text-muted-foreground">
                         {item.name}
