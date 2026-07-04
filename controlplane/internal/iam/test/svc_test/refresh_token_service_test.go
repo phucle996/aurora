@@ -95,14 +95,14 @@ func (m *refreshTokenRepoMock) DeleteRefreshTokenSessionByHash(ctx context.Conte
 
 type refreshRbacRepoMock struct {
 	iamRepoInterface.RbacRepository
-	getUserRoleAndLevelByScopeFn func(ctx context.Context, userID uuid.UUID, scope string) (string, int, error)
+	getRoleIDByUserIDFn func(ctx context.Context, userID uuid.UUID) (string, int32, error)
 }
 
-func (m *refreshRbacRepoMock) GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error) {
-	if m.getUserRoleAndLevelByScopeFn != nil {
-		return m.getUserRoleAndLevelByScopeFn(ctx, userID, scope)
+func (m *refreshRbacRepoMock) GetRoleIDByUserID(ctx context.Context, userID uuid.UUID) (string, int32, error) {
+	if m.getRoleIDByUserIDFn != nil {
+		return m.getRoleIDByUserIDFn(ctx, userID)
 	}
-	return "user", 1, nil
+	return "user-role-id", 1, nil
 }
 
 func newRefreshTokenService(repo iamRepoInterface.RefreshTokenRepository, rbacRepo iamRepoInterface.RbacRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.SessionRefreshService {
@@ -115,7 +115,7 @@ func TestRefreshTokenServiceInvalidSessionWhenSessionNotFound(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, nil
 	}}, nil, nil)
-	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, uuid.New())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -128,7 +128,7 @@ func TestRefreshTokenServiceNoRowsSessionMapsInvalidSession(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, iamTaxonomy.ErrNotFound
 	}}, nil, nil)
-	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, uuid.New())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -142,7 +142,7 @@ func TestRefreshTokenServiceDatabaseError(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return nil, dbErr
 	}}, nil, nil)
-	_, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	_, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, uuid.New())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -152,7 +152,7 @@ func TestRefreshTokenServiceInvalidSessionWhenExpired(t *testing.T) {
 	svc := newRefreshTokenService(&refreshTokenRepoMock{getSessionFn: func(ctx context.Context, tokenHash string) (*iamEntity.RefreshTokenSession, error) {
 		return &iamEntity.RefreshTokenSession{ID: uuid.New(), UserID: uuid.New(), TokenHash: tokenHash, ExpiresAt: time.Now().UTC().Add(-time.Minute)}, nil
 	}}, nil, nil)
-	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, uuid.New())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -172,7 +172,7 @@ func TestRefreshTokenServiceInvalidSessionWhenUserStatusBlocked(t *testing.T) {
 			return &iamEntity.RefreshTokenUser{ID: userID, Status: iamEntity.UserStatusDisabled}, nil
 		},
 	}, nil, nil)
-	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, uuid.New())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -192,7 +192,7 @@ func TestRefreshTokenServiceNoRowsUserMapsInvalidSession(t *testing.T) {
 			return nil, pgx.ErrNoRows
 		},
 	}, nil, nil)
-	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, uuid.New())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -215,12 +215,12 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 			return &iamEntity.RefreshTokenDevice{ID: deviceID, Status: iamEntity.DeviceStatusRecognized}, nil
 		},
 	}, &refreshRbacRepoMock{
-		getUserRoleAndLevelByScopeFn: func(ctx context.Context, uID uuid.UUID, scope string) (string, int, error) {
-			return "admin", 99, nil
+		getRoleIDByUserIDFn: func(ctx context.Context, uID uuid.UUID) (string, int32, error) {
+			return "admin-role-uuid", 99, nil
 		},
 	}, nil)
 
-	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", "user")
+	res, err := svc.VerifyOpaqueRefreshToken(context.Background(), "raw-refresh", nil, userID)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -230,7 +230,7 @@ func TestRefreshTokenServiceSuccess(t *testing.T) {
 	if res.UserID != userID.String() {
 		t.Fatalf("expected user ID %s, got %s", userID.String(), res.UserID)
 	}
-	if res.Role != "admin" || res.Level != 99 {
-		t.Fatalf("unexpected role or level: %s, %d", res.Role, res.Level)
+	if res.RoleID != "admin-role-uuid" || res.Level != 99 {
+		t.Fatalf("unexpected role or level: %s, %d", res.RoleID, res.Level)
 	}
 }

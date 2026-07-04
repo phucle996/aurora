@@ -4,7 +4,6 @@ import (
 	"errors"
 	"strconv"
 	"strings"
-	"sync"
 
 	"controlplane/internal/cacheengine"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
@@ -15,33 +14,6 @@ import (
 )
 
 var ErrRoleNotFound = errors.New("role not found")
-
-// SystemRoleRegistry theo dõi các vai trò nào là do hệ thống định nghĩa.
-// Sử dụng bản đồ thread-safe để tra cứu O(1).
-type SystemRoleRegistry struct {
-	mu    sync.RWMutex
-	roles map[string]struct{}
-}
-
-// Thể hiện toàn cục duy nhất của SystemRoleRegistry.
-var GlobalSystemRoleRegistry = &SystemRoleRegistry{
-	roles: make(map[string]struct{}),
-}
-
-// RegisterSystemRole đăng ký một vai trò là vai trò hệ thống.
-func RegisterSystemRole(roleCode string) {
-	GlobalSystemRoleRegistry.mu.Lock()
-	defer GlobalSystemRoleRegistry.mu.Unlock()
-	GlobalSystemRoleRegistry.roles[strings.ToLower(strings.TrimSpace(roleCode))] = struct{}{}
-}
-
-// IsSystemRole kiểm tra xem roleCode có thuộc vai trò hệ thống hay không.
-func IsSystemRole(roleCode string) bool {
-	GlobalSystemRoleRegistry.mu.RLock()
-	defer GlobalSystemRoleRegistry.mu.RUnlock()
-	_, ok := GlobalSystemRoleRegistry.roles[strings.ToLower(strings.TrimSpace(roleCode))]
-	return ok
-}
 
 // Authorize kiểm tra Actor hiện tại có đủ quyền thực hiện hành động theo scope yêu cầu hay không.
 //

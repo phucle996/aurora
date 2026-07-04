@@ -35,24 +35,17 @@ DROP INDEX IF EXISTS oauth_clients_status_idx;
 DROP INDEX IF EXISTS oauth_clients_tenant_workspace_idx;
 DROP INDEX IF EXISTS oauth_clients_owner_user_id_idx;
 
-DROP INDEX IF EXISTS user_role_assignments_tenant_workspace_idx;
-DROP INDEX IF EXISTS user_role_assignments_scope_type_idx;
-DROP INDEX IF EXISTS user_role_assignments_role_id_idx;
-DROP INDEX IF EXISTS user_role_assignments_user_id_idx;
-DROP INDEX IF EXISTS user_role_assignments_platform_scope_uidx;
-DROP INDEX IF EXISTS user_role_assignments_tenant_scope_uidx;
-DROP INDEX IF EXISTS user_role_assignments_workspace_scope_uidx;
+
 
 DROP INDEX IF EXISTS role_permissions_permission_id_idx;
 
-DROP INDEX IF EXISTS roles_scope_type_idx;
+DROP INDEX IF EXISTS roles_scope_idx;
 DROP INDEX IF EXISTS roles_scope_name_uidx;
 DROP INDEX IF EXISTS roles_code_uidx;
 
-DROP INDEX IF EXISTS permissions_action_idx;
-DROP INDEX IF EXISTS permissions_resource_idx;
-DROP INDEX IF EXISTS permissions_resource_action_uidx;
-DROP INDEX IF EXISTS permissions_code_uidx;
+DROP INDEX IF EXISTS permissions_behavior_idx;
+DROP INDEX IF EXISTS permissions_object_idx;
+DROP INDEX IF EXISTS permissions_module_idx;
 
 DROP INDEX IF EXISTS mfa_recovery_codes_used_at_idx;
 DROP INDEX IF EXISTS mfa_recovery_codes_user_id_idx;

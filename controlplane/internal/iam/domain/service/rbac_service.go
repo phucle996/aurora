@@ -21,4 +21,7 @@ type RbacService interface {
 
 	// [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
 	ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error)
+
+	// [COMMENT]: ListTenantRoles lấy danh sách roles gán cho tenant cụ thể
+	ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error)
 }

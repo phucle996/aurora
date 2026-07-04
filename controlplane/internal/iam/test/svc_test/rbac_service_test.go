@@ -4,141 +4,172 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcImpl "controlplane/internal/iam/service"
-	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	"controlplane/pkg/apperr"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 type rbacRepoMock struct {
-	getRoleByIDFn                  func(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error)
-	getRoleByCodeFn                func(ctx context.Context, code string) (*iamEntity.RoleWithPermissions, error)
-	listRolesFn                    func(ctx context.Context) ([]*iamEntity.Role, error)
-	getPermissionCodesByRoleCodeFn func(ctx context.Context, roleCode string) ([]string, error)
-	listSystemRoleEntriesFn        func(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error)
+	getUserRolePermissionsFn   func(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error)
+	getTenantRolePermissionsFn func(ctx context.Context, tenantID uuid.UUID, workspaceID uuid.UUID, roleID uuid.UUID) ([]byte, error)
+	assignUserRoleFn           func(ctx context.Context, userRole *iamEntity.UserRole) error
+	assignTenantRoleFn         func(ctx context.Context, tenantRole *iamEntity.TenantRole) error
+	getRoleIDByUserIDFn        func(ctx context.Context, userID uuid.UUID) (string, int32, error)
+	getRoleIDByTenantIDFn      func(ctx context.Context, tenantID uuid.UUID) (string, int32, error)
+	listPlatformRolesFn        func(ctx context.Context) ([]iamEntity.Role, error)
+	listTenantRolesFn          func(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error)
 }
 
 var _ iamRepoInterface.RbacRepository = (*rbacRepoMock)(nil)
 
-func (m *rbacRepoMock) GetRoleByCode(ctx context.Context, code string) (*iamEntity.RoleWithPermissions, error) {
-	if m.getRoleByCodeFn != nil {
-		return m.getRoleByCodeFn(ctx, code)
+func (m *rbacRepoMock) GetUserRolePermissions(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error) {
+	if m.getUserRolePermissionsFn != nil {
+		return m.getUserRolePermissionsFn(ctx, userID, workspaceID)
 	}
 	return nil, nil
-}
-func (m *rbacRepoMock) GetPermissionCodesByRoleCode(ctx context.Context, roleCode string) ([]string, error) {
-	if m.getPermissionCodesByRoleCodeFn != nil {
-		return m.getPermissionCodesByRoleCodeFn(ctx, roleCode)
-	}
-	return nil, nil
-}
-func (m *rbacRepoMock) ListSystemRoleEntries(ctx context.Context) ([]*iamEntity.RoleWithPermissions, error) {
-	if m.listSystemRoleEntriesFn != nil {
-		return m.listSystemRoleEntriesFn(ctx)
-	}
-	return nil, nil
-}
-func (m *rbacRepoMock) ListRoles(ctx context.Context) ([]*iamEntity.Role, error) {
-	if m.listRolesFn != nil {
-		return m.listRolesFn(ctx)
-	}
-	return nil, nil
-}
-func (m *rbacRepoMock) GetRoleByID(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error) {
-	if m.getRoleByIDFn != nil {
-		return m.getRoleByIDFn(ctx, id)
-	}
-	return nil, nil
-}
-func (m *rbacRepoMock) CreateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
-func (m *rbacRepoMock) UpdateRole(ctx context.Context, role *iamEntity.Role) error { return nil }
-func (m *rbacRepoMock) DeleteRole(ctx context.Context, id uuid.UUID) error         { return nil }
-func (m *rbacRepoMock) ListPermissions(ctx context.Context) ([]*iamEntity.Permission, error) {
-	return nil, nil
-}
-func (m *rbacRepoMock) GetPermissionByID(ctx context.Context, id uuid.UUID) (*iamEntity.Permission, error) {
-	return nil, nil
-}
-func (m *rbacRepoMock) GetPermissionByCode(ctx context.Context, code string) (*iamEntity.Permission, error) {
-	return nil, nil
-}
-func (m *rbacRepoMock) CreatePermission(ctx context.Context, perm *iamEntity.Permission) error {
-	return nil
-}
-func (m *rbacRepoMock) AssignPermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
-	return nil
-}
-func (m *rbacRepoMock) RevokePermission(ctx context.Context, roleID, permissionID uuid.UUID) error {
-	return nil
-}
-func (m *rbacRepoMock) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, scopeType iamEntity.RoleScopeType, tenantID, workspaceID *uuid.UUID, expiresAt *time.Time) error {
-	return nil
-}
-func (m *rbacRepoMock) RevokeUserRole(ctx context.Context, userID, roleID uuid.UUID) error {
-	return nil
-}
-func (m *rbacRepoMock) GetUserMaxRoleLevel(ctx context.Context, userID uuid.UUID) (int, error) {
-	return 999999, nil
-}
-func (m *rbacRepoMock) GetUserRoleAndLevelByScope(ctx context.Context, userID uuid.UUID, scope string) (string, int, error) {
-	return "platform_user", 8, nil
-}
-func (m *rbacRepoMock) GetUserPermissionsMerged(ctx context.Context, userID uuid.UUID) ([]string, error) {
-	return nil, nil
-}
-func (m *rbacRepoMock) GetPermissionCodesByRoleID(ctx context.Context, roleID uuid.UUID) ([]string, error) {
-	return nil, nil
-}
-func (m *rbacRepoMock) GetTenantCodeByID(ctx context.Context, tenantID uuid.UUID) (string, error) {
-	return "", nil
 }
 
-func TestRbacServiceGetRoleNoRowsMapsRoleNotFound(t *testing.T) {
-	roleID := uuid.New()
-	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{
-		getRoleByIDFn: func(ctx context.Context, id uuid.UUID) (*iamEntity.Role, error) {
-			return nil, pgx.ErrNoRows
+func (m *rbacRepoMock) GetTenantRolePermissions(ctx context.Context, tenantID uuid.UUID, workspaceID uuid.UUID, roleID uuid.UUID) ([]byte, error) {
+	if m.getTenantRolePermissionsFn != nil {
+		return m.getTenantRolePermissionsFn(ctx, tenantID, workspaceID, roleID)
+	}
+	return nil, nil
+}
+
+func (m *rbacRepoMock) AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error {
+	if m.assignUserRoleFn != nil {
+		return m.assignUserRoleFn(ctx, userRole)
+	}
+	return nil
+}
+
+func (m *rbacRepoMock) AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error {
+	if m.assignTenantRoleFn != nil {
+		return m.assignTenantRoleFn(ctx, tenantRole)
+	}
+	return nil
+}
+
+func (m *rbacRepoMock) GetRoleIDByUserID(ctx context.Context, userID uuid.UUID) (string, int32, error) {
+	if m.getRoleIDByUserIDFn != nil {
+		return m.getRoleIDByUserIDFn(ctx, userID)
+	}
+	return "", 0, nil
+}
+
+func (m *rbacRepoMock) GetRoleIDByTenantID(ctx context.Context, tenantID uuid.UUID) (string, int32, error) {
+	if m.getRoleIDByTenantIDFn != nil {
+		return m.getRoleIDByTenantIDFn(ctx, tenantID)
+	}
+	return "", 0, nil
+}
+
+func (m *rbacRepoMock) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
+	if m.listPlatformRolesFn != nil {
+		return m.listPlatformRolesFn(ctx)
+	}
+	return nil, nil
+}
+
+func (m *rbacRepoMock) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error) {
+	if m.listTenantRolesFn != nil {
+		return m.listTenantRolesFn(ctx, tenantID)
+	}
+	return nil, nil
+}
+
+// TestRbacService_ListPlatformRoles kiểm tra logic service chuyển tiếp truy vấn list platform roles.
+func TestRbacService_ListPlatformRoles(t *testing.T) {
+	mockRoles := []iamEntity.Role{
+		{
+			ID:        uuid.New(),
+			Code:      "platform_admin",
+			Name:      "Admin",
+			RoleLevel: 1,
+			Scope:     "platform",
 		},
-	}, nil)
-
-	ctx := context.Background()
-	_, err := svc.GetRole(ctx, 0, roleID)
-	if !errors.Is(err, iamTaxonomy.ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
-	_, ok := apperr.As(err)
-	if ok {
-		t.Fatalf("expected raw error, not wrapped app error envelope")
+	repo := &rbacRepoMock{
+		listPlatformRolesFn: func(ctx context.Context) ([]iamEntity.Role, error) {
+			return mockRoles, nil
+		},
+	}
+	svc := iamSvcImpl.NewRbacService(repo, nil)
+
+	roles, err := svc.ListPlatformRoles(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(roles) != 1 || roles[0].Code != "platform_admin" {
+		t.Errorf("unexpected roles result returned: %+v", roles)
 	}
 }
 
-func TestRbacServiceListRolesDependencyMapsInternal(t *testing.T) {
-	raw := errors.New("db down")
-	svc := iamSvcImpl.NewRbacService(&rbacRepoMock{
-		listRolesFn: func(ctx context.Context) ([]*iamEntity.Role, error) {
-			return nil, raw
+// TestRbacService_ListPlatformRoles_Error kiểm tra logic service xử lý lỗi từ repo.
+func TestRbacService_ListPlatformRoles_Error(t *testing.T) {
+	expectedErr := errors.New("db query error")
+	repo := &rbacRepoMock{
+		listPlatformRolesFn: func(ctx context.Context) ([]iamEntity.Role, error) {
+			return nil, expectedErr
 		},
-	}, nil)
+	}
+	svc := iamSvcImpl.NewRbacService(repo, nil)
 
-	ctx := context.Background()
-	_, err := svc.ListRoles(ctx, 0)
-	if !errors.Is(err, iamTaxonomy.ErrAuthenticationUnavailable) {
-		t.Fatalf("expected ErrAuthenticationUnavailable, got %v", err)
+	_, err := svc.ListPlatformRoles(context.Background())
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
-	appErr, ok := apperr.As(err)
-	if !ok || appErr == nil {
-		t.Fatalf("expected app error envelope")
+}
+
+// TestRbacService_ListTenantRoles kiểm tra logic service chuyển tiếp truy vấn list tenant roles.
+func TestRbacService_ListTenantRoles(t *testing.T) {
+	tenantID := uuid.New()
+	mockRoles := []iamEntity.Role{
+		{
+			ID:        uuid.New(),
+			Code:      "tenant_admin",
+			Name:      "Tenant Administrator",
+			RoleLevel: 2,
+			Scope:     "tenant",
+		},
 	}
-	if appErr.Outcome != "failure_unknown" {
-		t.Fatalf("unexpected outcome: %q", appErr.Outcome)
+	repo := &rbacRepoMock{
+		listTenantRolesFn: func(ctx context.Context, tid uuid.UUID) ([]iamEntity.Role, error) {
+			if tid != tenantID {
+				return nil, errors.New("unexpected tenant id")
+			}
+			return mockRoles, nil
+		},
 	}
-	if !errors.Is(appErr.Cause, raw) {
-		t.Fatalf("expected raw cause preserved")
+	svc := iamSvcImpl.NewRbacService(repo, nil)
+
+	roles, err := svc.ListTenantRoles(context.Background(), tenantID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(roles) != 1 || roles[0].Code != "tenant_admin" {
+		t.Errorf("unexpected roles result returned: %+v", roles)
+	}
+}
+
+// TestRbacService_ListTenantRoles_Error kiểm tra logic service xử lý lỗi từ repo khi query tenant roles.
+func TestRbacService_ListTenantRoles_Error(t *testing.T) {
+	tenantID := uuid.New()
+	expectedErr := errors.New("db error query tenant roles")
+	repo := &rbacRepoMock{
+		listTenantRolesFn: func(ctx context.Context, tid uuid.UUID) ([]iamEntity.Role, error) {
+			return nil, expectedErr
+		},
+	}
+	svc := iamSvcImpl.NewRbacService(repo, nil)
+
+	_, err := svc.ListTenantRoles(context.Background(), tenantID)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
 }

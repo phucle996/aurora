@@ -47,8 +47,6 @@ func (m *authRepoMock) LoginUserTenant(ctx context.Context, username, tenantDoma
 		user, err := m.getUserFn(ctx, username)
 		if user != nil {
 			user.TenantID = &tenantDomain
-			code := "mock-tenant"
-			user.TenantCode = &code
 		}
 		return user, err
 	}
@@ -62,7 +60,7 @@ func (m *authRepoMock) CreateRegisteredUser(ctx context.Context, user iamEntity.
 	return nil
 }
 
-func (m *authRepoMock) ActivateUserWithRole(ctx context.Context, userID uuid.UUID, roleCode string) error {
+func (m *authRepoMock) ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string) error {
 	if m.activateFn != nil {
 		return m.activateFn(ctx, userID, roleCode)
 	}
@@ -131,19 +129,19 @@ func (s *deviceServiceStub) GetActiveDeviceID(ctx context.Context, userID uuid.U
 }
 
 type sessionRefreshServiceStub struct {
-	createRefreshTokenFn func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error)
+	createRefreshTokenFn func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error)
 }
 
 var _ iamSvcInterface.SessionRefreshService = (*sessionRefreshServiceStub)(nil)
 
-func (s *sessionRefreshServiceStub) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+func (s *sessionRefreshServiceStub) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error) {
 	if s.createRefreshTokenFn != nil {
-		return s.createRefreshTokenFn(ctx, userID, deviceID)
+		return s.createRefreshTokenFn(ctx, userID, deviceID, tenantID)
 	}
 	return "mock-refresh-token", time.Now().UTC().Add(24 * time.Hour), nil
 }
 
-func (s *sessionRefreshServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, scope string) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
+func (s *sessionRefreshServiceStub) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, tenantID *uuid.UUID, userID uuid.UUID) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	return nil, nil
 }
 
@@ -158,7 +156,7 @@ func (s *sessionRefreshServiceStub) RevokeOpaqueRefreshToken(ctx context.Context
 
 func newAuthService(repo iamRepoInterface.AuthRepository, registry *cacheengine.CacheRegistry) iamSvcInterface.AuthService {
 	refreshStub := &sessionRefreshServiceStub{
-		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error) {
 			token := iamEntity.RefreshToken{
 				ID:        uuid.New(),
 				UserID:    userID,
@@ -479,7 +477,7 @@ func TestAuthServiceVerifyUserCredentialsRevokedDeviceHeals(t *testing.T) {
 	}
 
 	refreshStub := &sessionRefreshServiceStub{
-		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (string, time.Time, error) {
+		createRefreshTokenFn: func(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error) {
 			return "mock-refresh-token", time.Now().UTC().Add(24 * time.Hour), nil
 		},
 	}

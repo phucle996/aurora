@@ -1,9 +1,17 @@
 package iamHandler
 
 import (
+	"context"
+	"strings"
+	"time"
+
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	"controlplane/pkg/apires"
+	"controlplane/pkg/constant"
+	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: RbacHandler xử lý các HTTP endpoints cho IAM RBAC (dạng skeleton cho phase tiếp theo)
@@ -19,43 +27,82 @@ func NewRbacHandler(rbacSvc iamSvcInterface.RbacService) *RbacHandler {
 // [COMMENT]: AssignUserRole gán role và permissions cho user (skeleton HTTP handler)
 func (h *RbacHandler) AssignUserRole(c *gin.Context) {
 	// [COMMENT]: Sẽ được hiện thực hóa ở phase tiếp theo
-	c.JSON(200, gin.H{"message": "skeleton"})
+	apires.RespondSuccess(c, gin.H{"message": "skeleton"}, "success")
 }
 
 // [COMMENT]: AssignTenantRole gán role và permissions cho tenant (skeleton HTTP handler)
 func (h *RbacHandler) AssignTenantRole(c *gin.Context) {
 	// [COMMENT]: Sẽ được hiện thực hóa ở phase tiếp theo
-	c.JSON(200, gin.H{"message": "skeleton"})
+	apires.RespondSuccess(c, gin.H{"message": "skeleton"}, "success")
 }
 
-// RoleResponse định nghĩa thông tin vai trò trả về cho API Client
-type RoleResponse struct {
-	ID        string `json:"id"`
-	Code      string `json:"code"`
-	Name      string `json:"name"`
-	RoleLevel int    `json:"role_level"`
-	Scope     string `json:"scope"`
-}
-
-// [COMMENT]: ListPlatformRoles trả về toàn bộ danh sách platform-scoped roles
+// [COMMENT]: ListPlatformRoles trả về toàn bộ danh sách platform-scoped roles bọc trong gin.H
 func (h *RbacHandler) ListPlatformRoles(c *gin.Context) {
-	ctx := c.Request.Context()
+
+	const op = "iam.rbac.list_platform_roles"
+
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
 	roles, err := h.rbacSvc.ListPlatformRoles(ctx)
 	if err != nil {
-		c.JSON(500, gin.H{"error_message": err.Error()})
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal error occurred")
 		return
 	}
 
-	resp := make([]RoleResponse, 0, len(roles))
+	resp := make([]gin.H, 0, len(roles))
 	for _, r := range roles {
-		resp = append(resp, RoleResponse{
-			ID:        r.ID.String(),
-			Code:      r.Code,
-			Name:      r.Name,
-			RoleLevel: r.RoleLevel,
-			Scope:     r.Scope,
+		resp = append(resp, gin.H{
+			"id":         r.ID.String(),
+			"code":       r.Code,
+			"name":       r.Name,
+			"role_level": r.RoleLevel,
+			"scope":      r.Scope,
 		})
 	}
 
-	c.JSON(200, resp)
+	apires.RespondSuccess(c, gin.H{"roles": resp}, "success")
+}
+
+// [COMMENT]: ListTenantRoles trả về danh sách roles được gán cho tenant cụ thể lấy từ header X-Tenant-ID
+func (h *RbacHandler) ListTenantRoles(c *gin.Context) {
+
+	const op = "iam.rbac.list_tenant_roles"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	if tenantIDStr == "" {
+		logger.HandlerWarn(c, op, nil, "missing tenant context header X-Tenant-ID")
+		apires.RespondBadRequest(c, "missing tenant context")
+		return
+	}
+
+	tenantID, err := uuid.Parse(tenantIDStr)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "invalid tenant id format")
+		apires.RespondBadRequest(c, "invalid tenant id format")
+		return
+	}
+
+	roles, err := h.rbacSvc.ListTenantRoles(ctx, tenantID)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal error occurred")
+		return
+	}
+
+	resp := make([]gin.H, 0, len(roles))
+	for _, r := range roles {
+		resp = append(resp, gin.H{
+			"id":         r.ID.String(),
+			"code":       r.Code,
+			"name":       r.Name,
+			"role_level": r.RoleLevel,
+			"scope":      r.Scope,
+		})
+	}
+
+	apires.RespondSuccess(c, gin.H{"roles": resp}, "success")
 }

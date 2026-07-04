@@ -50,3 +50,8 @@ func (s *RbacService) AssignTenantRole(ctx context.Context, tenantRole *iamEntit
 func (s *RbacService) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
 	return s.repo.ListPlatformRoles(ctx)
 }
+
+// [COMMENT]: ListTenantRoles lấy danh sách roles gán cho tenant cụ thể
+func (s *RbacService) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error) {
+	return s.repo.ListTenantRoles(ctx, tenantID)
+}

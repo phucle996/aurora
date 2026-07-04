@@ -248,3 +248,50 @@ func (r *RbacRepository) ListPlatformRoles(ctx context.Context) ([]iamEntity.Rol
 
 	return roles, nil
 }
+
+func (r *RbacRepository) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error) {
+	query := fmt.Sprintf(`
+		SELECT DISTINCT
+			r.id,
+			r.code,
+			r.name,
+			r.role_level,
+			r.scope,
+			r.created_at,
+			r.updated_at
+		FROM %s.roles r
+		JOIN %s.tenant_role tr ON tr.role_id = r.id
+		WHERE tr.tenant_id = $1
+		ORDER BY r.role_level ASC
+	`, r.schema, r.schema)
+
+	rows, err := r.db.Query(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("rbac repo: query tenant roles: %w", err)
+	}
+	defer rows.Close()
+
+	var roles []iamEntity.Role
+	for rows.Next() {
+		var role iamModel.Role
+		err := rows.Scan(
+			&role.ID,
+			&role.Code,
+			&role.Name,
+			&role.RoleLevel,
+			&role.Scope,
+			&role.CreatedAt,
+			&role.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("rbac repo: scan tenant role row: %w", err)
+		}
+		roles = append(roles, iamModel.RoleModelToEntity(role))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return roles, nil
+}

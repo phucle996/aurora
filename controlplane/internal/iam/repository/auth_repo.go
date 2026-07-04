@@ -36,7 +36,7 @@ func NewAuthRepository(
 }
 
 func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (*iamEntity.LoginUser, error) {
-	// [COMMENT]: Thực hiện trọuy vấn JOIN bảng users với user_role_assignments & roles để lấy thông tin user kèm max role
+	// [COMMENT]: Thực hiện truy vấn JOIN bảng users với user_role để lấy thông tin user kèm max role ở platform scope (workspace nil UUID)
 	query := fmt.Sprintf(`
 		SELECT 
 			u.id,
@@ -44,22 +44,19 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 			u.email,
 			u.password_hash, 
 			u.status,
-			r.id::text   AS role_id,
-			r.role_level AS role_level
+			COALESCE(ur.role_id::text, '') AS role_id,
+			COALESCE(ur.role_level, 99)    AS role_level
 		FROM %s.users u
-		JOIN %s.user_role_assignments ura ON ura.user_id = u.id 
-		                                 AND ura.scope_type = 'platform' 
-		                                 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) 
-		                                 AND ura.revoked_at IS NULL
-		JOIN %s.roles r                 ON r.id = ura.role_id
+		LEFT JOIN %s.user_role ur ON ur.user_id = u.id 
+		                         AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
 		WHERE u.username = $1
-		ORDER BY r.role_level ASC
+		ORDER BY ur.role_level ASC NULLS LAST
 		LIMIT 1
-	`, r.schema, r.schema, r.schema)
+	`, r.schema, r.schema)
 
 	var (
 		userModel iamModel.User
-		roleID    string // UUID dưới dạng chuỗi
+		roleID    string
 		roleLevel int32
 	)
 	if err := r.db.QueryRow(ctx, query, username).Scan(
@@ -83,9 +80,8 @@ func (r *AuthRepository) LoginUserGlobal(ctx context.Context, username string) (
 		Email:        userModel.Email,
 		PasswordHash: userModel.PasswordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
-		// [COMMENT]: RoleID là UUID của role đang hoạt động, dùng cho RBAC lookup key bằng ID
-		RoleID: roleID,
-		Level:  roleLevel,
+		RoleID:       roleID,
+		Level:        roleLevel,
 	}
 
 	return loginUser, nil
@@ -97,7 +93,7 @@ func (r *AuthRepository) LoginUserTenant(
 	tenantDomain string,
 ) (*iamEntity.LoginUser, error) {
 	// [COMMENT]: Query JOIN hierarchy.tenant_memberships, tenants, tenant_domains
-	// và INNER JOIN sang iam.user_role_assignments, iam.roles để lấy max role thuộc tenant đó.
+	// và LEFT JOIN sang iam.user_role để lấy max role thuộc tenant đó.
 	query := fmt.Sprintf(`
 		SELECT
 			u.id,
@@ -106,27 +102,23 @@ func (r *AuthRepository) LoginUserTenant(
 			u.password_hash,
 			u.status,
 			t.id::text   AS tenant_id,
-			t.code       AS tenant_code,
-			r.id::text   AS role_id,
-			r.role_level AS role_level
+			COALESCE(ur.role_id::text, '') AS role_id,
+			COALESCE(ur.role_level, 99)    AS role_level
 		FROM %s.users u
 		JOIN hierarchy.tenant_memberships tm ON tm.user_id = u.id AND tm.status = 'active'
 		JOIN hierarchy.tenants t             ON t.id = tm.tenant_id
 		JOIN hierarchy.tenant_domains td     ON td.tenant_id = t.id AND td.domain = $2
-		JOIN %s.user_role_assignments ura ON ura.user_id = u.id 
-		                                 AND ura.tenant_id = t.id 
-		                                 AND (ura.expires_at IS NULL OR ura.expires_at > NOW()) 
-		                                 AND ura.revoked_at IS NULL
-		JOIN %s.roles r                 ON r.id = ura.role_id
+		LEFT JOIN %s.user_role ur            ON ur.user_id = u.id 
+		                                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
 		WHERE u.username = $1
-		ORDER BY r.role_level ASC
+		ORDER BY ur.role_level ASC NULLS LAST
 		LIMIT 1
-	`, r.schema, r.schema, r.schema)
+	`, r.schema, r.schema)
 
 	var (
 		userModel iamModel.User
 		tenantID  string
-		roleID    string // UUID dưới dạng chuỗi
+		roleID    string
 		roleLevel int32
 	)
 	if err := r.db.QueryRow(ctx, query, username, tenantDomain).Scan(
@@ -152,9 +144,8 @@ func (r *AuthRepository) LoginUserTenant(
 		PasswordHash: userModel.PasswordHash,
 		Status:       iamEntity.UserStatus(userModel.Status),
 		TenantID:     &tenantID,
-		// [COMMENT]: RoleID là UUID của role đang hoạt động, dùng cho RBAC lookup key bằng ID
-		RoleID: roleID,
-		Level:  roleLevel,
+		RoleID:       roleID,
+		Level:        roleLevel,
 	}
 
 	return loginUser, nil

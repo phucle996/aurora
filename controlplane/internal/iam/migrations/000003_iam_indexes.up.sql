@@ -45,27 +45,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS mfa_recovery_codes_user_hash_uidx ON mfa_recov
 CREATE INDEX IF NOT EXISTS mfa_recovery_codes_user_id_idx ON mfa_recovery_codes(user_id);
 CREATE INDEX IF NOT EXISTS mfa_recovery_codes_used_at_idx ON mfa_recovery_codes(used_at);
 
-CREATE UNIQUE INDEX IF NOT EXISTS permissions_code_uidx ON permissions(code);
-CREATE UNIQUE INDEX IF NOT EXISTS permissions_resource_action_uidx ON permissions(resource, action);
-CREATE INDEX IF NOT EXISTS permissions_resource_idx ON permissions(resource);
-CREATE INDEX IF NOT EXISTS permissions_action_idx ON permissions(action);
+CREATE INDEX IF NOT EXISTS permissions_module_idx ON permissions(module);
+CREATE INDEX IF NOT EXISTS permissions_object_idx ON permissions(object);
+CREATE INDEX IF NOT EXISTS permissions_behavior_idx ON permissions(behavior);
 
 CREATE UNIQUE INDEX IF NOT EXISTS roles_code_uidx ON roles(code);
-CREATE UNIQUE INDEX IF NOT EXISTS roles_scope_name_uidx ON roles(scope_type, name);
-CREATE INDEX IF NOT EXISTS roles_scope_type_idx ON roles(scope_type);
+CREATE UNIQUE INDEX IF NOT EXISTS roles_scope_name_uidx ON roles(scope, name);
+CREATE INDEX IF NOT EXISTS roles_scope_idx ON roles(scope);
 
 CREATE INDEX IF NOT EXISTS role_permissions_permission_id_idx ON role_permissions(permission_id);
 
-CREATE INDEX IF NOT EXISTS user_role_assignments_user_id_idx ON user_role_assignments(user_id);
-CREATE INDEX IF NOT EXISTS user_role_assignments_role_id_idx ON user_role_assignments(role_id);
-CREATE INDEX IF NOT EXISTS user_role_assignments_scope_type_idx ON user_role_assignments(scope_type);
-CREATE INDEX IF NOT EXISTS user_role_assignments_tenant_workspace_idx ON user_role_assignments(tenant_id, workspace_id);
-CREATE UNIQUE INDEX IF NOT EXISTS user_role_assignments_platform_scope_uidx ON user_role_assignments(user_id, role_id, scope_type)
-    WHERE tenant_id IS NULL AND workspace_id IS NULL AND revoked_at IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS user_role_assignments_tenant_scope_uidx ON user_role_assignments(user_id, role_id, scope_type, tenant_id)
-    WHERE tenant_id IS NOT NULL AND workspace_id IS NULL AND revoked_at IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS user_role_assignments_workspace_scope_uidx ON user_role_assignments(user_id, role_id, scope_type, tenant_id, workspace_id)
-    WHERE tenant_id IS NOT NULL AND workspace_id IS NOT NULL AND revoked_at IS NULL;
+
 
 -- [COMMENT]: Cho phép đăng ký lại thiết bị khi thiết bị cũ bị revoked bằng cách chỉ áp dụng unique cho active devices
 CREATE UNIQUE INDEX IF NOT EXISTS admin_devices_fingerprint_uidx ON admin_devices(public_key_fingerprint) WHERE revoked_at IS NULL;

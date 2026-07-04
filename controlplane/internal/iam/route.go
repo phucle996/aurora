@@ -1,6 +1,8 @@
 package iam
 
 import (
+	"controlplane/internal/http/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -58,8 +60,15 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.RbacHandler.AssignTenantRole,
 	)
 
-	// [COMMENT]: 17) Lấy toàn bộ danh sách platform-scoped roles (không qua middleware authorize)
+	// [COMMENT]: 17) Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:list và level 2)
 	router.GET("/api/v1/iam/rbac/role",
+		middleware.Authorize("iam:role:list", module.L1Registry, "2"),
 		module.RbacHandler.ListPlatformRoles,
+	)
+
+	// [COMMENT]: 18) Lấy toàn bộ danh sách tenant-scoped roles của tenant cụ thể (yêu cầu quyền iam:role:list và level *)
+	router.GET("/api/v1/iam/rbac/role/tenant",
+		middleware.Authorize("iam:role:list", module.L1Registry, "*"),
+		module.RbacHandler.ListTenantRoles,
 	)
 }

@@ -21,6 +21,8 @@ use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 
 // [COMMENT]: Nạp các cấu trúc tự động sinh từ proto/auth.proto & proto/session.proto
+#[allow(dead_code)]
+#[allow(unused_imports)]
 pub mod auth_proto {
     tonic::include_proto!("iam.rpc");
 }

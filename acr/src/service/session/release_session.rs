@@ -12,6 +12,8 @@ use uuid::Uuid;
 
 // [COMMENT]: Import protobuf sinh ra từ proto/device.proto (đổi tên từ session.proto).
 // Module này chỉ còn chứa DeviceService (RevokeUserSessionsByDevices).
+#[allow(dead_code)]
+#[allow(unused_imports)]
 pub mod device_proto {
     tonic::include_proto!("iam.rpc");
 }

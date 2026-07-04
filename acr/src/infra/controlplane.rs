@@ -1,4 +1,6 @@
 // [COMMENT]: Sinh mã Rust từ gRPC protobuf definitions dựa trên package name 'iam.rpc' tương thích Go
+#[allow(dead_code)]
+#[allow(unused_imports)]
 pub mod auth {
     tonic::include_proto!("iam.rpc");
 }
