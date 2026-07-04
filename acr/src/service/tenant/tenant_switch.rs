@@ -1,14 +1,13 @@
 // ======================================================================================================
 // 📂 MODULE: acr/src/service/tenant/tenant_switch.rs
-//            Xử Lý Tenant Context Switch tại Edge
+//            Xử Lý Tenant Context Switch tại Edge (Stateless & Zero RPC)
 //
 // 🔄 LUỒNG:
-//   POST /api/v1/tenant/go-to-tenant?tenant_domain=acme.platform.io
+//   POST /api/v1/tenant/go-to-tenant?tenant_domain=acme.io&tenant_id=uuid-tenant
 //   1. Xác thực Trinity Credentials (JWT + access_key + access_secret)
-//   2. Phân giải tenant_domain → tenant_id (L1 → L2 → gRPC)
-//   3. CheckMembership(tenant_id, user_id) - xác nhận user thuộc tenant đó
-//   4. Re-issue JWT mới chứa tenant_id cập nhật
-//   5. Set cookie tenant_domain (không HttpOnly để JS đọc được)
+//   2. Parse tenant_id và tenant_domain từ query parameters
+//   3. Re-issue JWT mới chứa tenant_id cập nhật
+//   4. Set cookies: access_token, tenant_domain, tenant_id
 // ======================================================================================================
 
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
@@ -23,12 +22,12 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
-use crate::service::tenant::manager::TenantManager;
 
 // [COMMENT]: Response JSON trả về client khi switch tenant thành công
 #[derive(Serialize)]
 pub struct TenantSwitchSuccessResponse {
     pub tenant_domain: String,
+    pub tenant_id: String,
 }
 
 // [COMMENT]: Response JSON lỗi chung
@@ -77,14 +76,23 @@ fn parse_tenant_domain(path: &str) -> Option<String> {
     })
 }
 
+/// [COMMENT]: Parse tenant_id từ query param
+fn parse_tenant_id(path: &str) -> Option<String> {
+    path.find('?').and_then(|pos| {
+        let query_str = &path[pos + 1..];
+        query_str
+            .split('&')
+            .find(|pair| pair.starts_with("tenant_id="))
+            .map(|pair| pair["tenant_id=".len()..].to_string())
+    })
+}
+
 // ─── Main Handler ────────────────────────────────────────────────────────────
 
 /// [COMMENT]: Xử lý POST /api/v1/tenant/go-to-tenant
-/// Intercepted ở Envoy ext_authz trước khi request đến backend
 pub async fn handle_tenant_switch(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    tenant_mgr: &Arc<TenantManager>,
     config: &Config,
     client_headers: &std::collections::HashMap<String, String>,
     method: &str,
@@ -107,7 +115,19 @@ pub async fn handle_tenant_switch(
             Logger::sys_warn("tenant_switch", "Missing tenant_domain in query params", "");
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::BadRequest,
-                "Tenant unavailable",
+                "Tenant domain is required",
+            ))));
+        }
+    };
+
+    // [COMMENT]: Parse tenant_id từ query param
+    let tenant_id = match parse_tenant_id(path) {
+        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
+        _ => {
+            Logger::sys_warn("tenant_switch", "Missing tenant_id in query params", "");
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::BadRequest,
+                "Tenant ID is required",
             ))));
         }
     };
@@ -139,14 +159,14 @@ pub async fn handle_tenant_switch(
                 &access_key,
             )
             .await
-        {
-            Ok(Some(s)) => s,
-            Ok(None) => return Err("Session Expired or Revoked"),
-            Err(e) => {
-                Logger::sys_error("tenant_switch", "Redis session error", &e.to_string());
-                return Err("Authentication service unavailable");
-            }
-        };
+            {
+                Ok(Some(s)) => s,
+                Ok(None) => return Err("Session Expired or Revoked"),
+                Err(e) => {
+                    Logger::sys_error("tenant_switch", "Redis session error", &e.to_string());
+                    return Err("Authentication service unavailable");
+                }
+            };
 
         let access_secret = extract_cookie_value(&cookie_header, "access_secret")
             .ok_or("Missing access_secret cookie")?;
@@ -171,45 +191,7 @@ pub async fn handle_tenant_switch(
         }
     };
 
-    // ─── Bước 2: Resolve tenant_domain → tenant_id ──────────────────────────
-    // [COMMENT]: L1 → Redis L2 → gRPC CP (single flight trong node)
-    let tenant_id = match tenant_mgr.resolve_tenant_id(&tenant_domain).await {
-        Some(id) => id,
-        None => {
-            Logger::sys_warn(
-                "tenant_switch",
-                &format!("Tenant domain '{}' not found", tenant_domain),
-                "",
-            );
-            return Some(Ok(Response::new(build_denied_json(
-                HttpStatusCode::BadRequest,
-                "Tenant unavailable",
-            ))));
-        }
-    };
-
-    // ─── Bước 3: CheckMembership(tenant_id, user_id) ────────────────────────
-    // [COMMENT]: L1 (5 min TTL) → gRPC CheckMembership
-    // Fail-closed: nếu gRPC lỗi, mặc định từ chối
-    let membership = tenant_mgr.check_membership(&tenant_id, &claims.uid).await;
-
-    if !membership.is_member {
-        Logger::sys_warn(
-            "tenant_switch",
-            &format!(
-                "User '{}' is not a member of tenant '{}'",
-                claims.uid, tenant_domain
-            ),
-            "membership_denied",
-        );
-        return Some(Ok(Response::new(build_denied_json(
-            HttpStatusCode::Forbidden,
-            "Tenant access denied",
-        ))));
-    }
-
-    // ─── Bước 4: Re-issue JWT với tenant_id mới ─────────────────────────────
-    // [COMMENT]: Cập nhật tenant_id trong claims, giữ nguyên các field khác
+    // ─── Bước 2: Re-issue JWT với tenant_id mới ─────────────────────────────
     claims.tenant_id = Some(tenant_id.clone());
 
     let new_jwt = match token_mgr.generate_token(&claims).await {
@@ -223,7 +205,7 @@ pub async fn handle_tenant_switch(
         }
     };
 
-    // ─── Bước 5: Set cookies và trả response ────────────────────────────────
+    // ─── Bước 3: Set cookies và trả response ────────────────────────────────
     let domain_str = if config.app_public_domain.trim().is_empty() {
         String::new()
     } else {
@@ -232,6 +214,7 @@ pub async fn handle_tenant_switch(
 
     let tenant_body = serde_json::to_string(&TenantSwitchSuccessResponse {
         tenant_domain: tenant_domain.clone(),
+        tenant_id: tenant_id.clone(),
     })
     .unwrap_or_default();
     // [COMMENT]: XSSI prefix cộng dồn để tránh lỗi escape brace trong format!
@@ -250,12 +233,18 @@ pub async fn handle_tenant_switch(
     builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Set tenant_domain cookie (không HttpOnly để JS đọc được cho UI)
-    // tenant_code đã bỏ hoàn toàn - client dùng domain làm tenant identifier
     let tenant_cookie = format!(
         "tenant_domain={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
         tenant_domain, domain_str
     );
     builder.add_header("set-cookie", &tenant_cookie, None, false);
+
+    // [COMMENT]: Set tenant_id cookie (không HttpOnly để JS đọc được cho UI)
+    let tenant_id_cookie = format!(
+        "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        tenant_id, domain_str
+    );
+    builder.add_header("set-cookie", &tenant_id_cookie, None, false);
 
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated(
@@ -269,8 +258,8 @@ pub async fn handle_tenant_switch(
         path,
         "ALLOWED",
         &format!(
-            "Tenant switch to '{}' (role: {})",
-            tenant_domain, membership.role
+            "Tenant switch to '{}' (ID: {})",
+            tenant_domain, tenant_id
         ),
     );
 

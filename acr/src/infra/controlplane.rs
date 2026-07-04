@@ -12,15 +12,12 @@ use auth::auth_service_client::AuthServiceClient;
 use auth::RevokeOpaqueRefreshTokenRequest;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use zone_proto::zone_service_client::ZoneServiceClient;
-use zone_proto::tenant_service_client::TenantServiceClient;
 
 // [COMMENT]: Client tương tác với Control Plane gRPC server để thực hiện các cuộc gọi nghiệp vụ nội bộ
 #[derive(Clone)]
 pub struct ControlPlaneClient {
     client: AuthServiceClient<Channel>,
     zone_client: ZoneServiceClient<Channel>,
-    // [COMMENT]: tenant_client dùng cho resolve_tenant, check_membership, warmup_tenants
-    tenant_client: TenantServiceClient<Channel>,
 }
 
 impl ControlPlaneClient {
@@ -83,13 +80,11 @@ impl ControlPlaneClient {
         // [COMMENT]: Khởi tạo kênh kết nối lazy (không block startup của ACL nếu Controlplane chưa sẵn sàng)
         let channel = endpoint_configured.connect_lazy();
         let client = AuthServiceClient::new(channel.clone());
-        let zone_client = ZoneServiceClient::new(channel.clone());
-        let tenant_client = TenantServiceClient::new(channel);
+        let zone_client = ZoneServiceClient::new(channel);
 
         Self {
             client,
             zone_client,
-            tenant_client,
         }
     }
 
@@ -180,61 +175,6 @@ impl ControlPlaneClient {
         Ok(response.into_inner().zones)
     }
 
-    // [COMMENT]: Phân giải tenant_domain → tenant_id qua gRPC CP (L1/L2 miss fallback)
-    // domain là source of truth duy nhất, không dùng tenant_code nữa
-    pub async fn resolve_tenant(
-        &self,
-        domain: &str,
-    ) -> Result<zone_proto::ResolveTenantResponse, tonic::Status> {
-        let mut client = self.tenant_client.clone();
-        let mut request = tonic::Request::new(zone_proto::ResolveTenantRequest {
-            tenant_domain: domain.to_string(),
-        });
-        self.inject_traceparent(request.metadata_mut());
-        let response = client.resolve_tenant(request).await?;
-        Ok(response.into_inner())
-    }
 
-    // [COMMENT]: Kiểm tra user có thuộc tenant không - dùng trong context switch
-    // Kết quả cache ở ACR L1 với TTL 5 phút (membership ít thay đổi nhưng vẫn cần fresh)
-    pub async fn check_membership(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-    ) -> Result<zone_proto::CheckMembershipResponse, tonic::Status> {
-        let mut client = self.tenant_client.clone();
-        let mut request = tonic::Request::new(zone_proto::CheckMembershipRequest {
-            tenant_id: tenant_id.to_string(),
-            user_id: user_id.to_string(),
-        });
-        self.inject_traceparent(request.metadata_mut());
-        let response = client.check_membership(request).await?;
-        Ok(response.into_inner())
-    }
 
-    // [COMMENT]: Lấy batch tenant entries để warmup Redis L2 khi ACR bootstrap
-    // Mỗi entry: {tenant_id, domain}. Gọi theo chunk offset để tránh spike DB
-    pub async fn warmup_tenants(
-        &self,
-        chunk_size: i32,
-        offset: i32,
-    ) -> Result<zone_proto::WarmupTenantsResponse, tonic::Status> {
-        let mut client = self.tenant_client.clone();
-        let mut request =
-            tonic::Request::new(zone_proto::WarmupTenantsRequest { chunk_size, offset });
-        self.inject_traceparent(request.metadata_mut());
-        let response = client.warmup_tenants(request).await?;
-        Ok(response.into_inner())
-    }
-
-    // [COMMENT]: Helper tái sử dụng inject traceparent W3C vào gRPC metadata
-    fn inject_traceparent(&self, metadata: &mut tonic::metadata::MetadataMap) {
-        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
-            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
-            if let Ok(meta_val) = tonic::metadata::MetadataValue::try_from(&traceparent) {
-                metadata.insert("traceparent", meta_val);
-            }
-        }
-    }
 }

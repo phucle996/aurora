@@ -65,6 +65,21 @@ func (s *TenantService) CreateTenant(ctx context.Context, tenant coreEntity.Tena
 	return result, nil
 }
 
+// ResolveTenantByDomain gọi xuống repository để tìm kiếm Tenant theo domain liên kết
+func (s *TenantService) ResolveTenantByDomain(ctx context.Context, domain string) (*coreEntity.Tenant, error) {
+	start := time.Now()
+	result, err := s.repo.ResolveTenantByDomain(ctx, domain)
+	duration := time.Since(start)
+
+	if err != nil {
+		coreMetric.Downstream(ctx, coreMetric.KindRepo, "ResolveTenantByDomain", coreMetric.OutcomeFailure, duration, err)
+		return nil, err
+	}
+
+	coreMetric.Downstream(ctx, coreMetric.KindRepo, "ResolveTenantByDomain", coreMetric.OutcomeSuccess, duration, nil)
+	return result, nil
+}
+
 // ListTenantsPaged gọi xuống repository để lấy danh sách tenants phân trang cho Edge warmup
 func (s *TenantService) ListTenantsPaged(ctx context.Context, limit, offset int) ([]coreEntity.Tenant, bool, error) {
 	start := time.Now()

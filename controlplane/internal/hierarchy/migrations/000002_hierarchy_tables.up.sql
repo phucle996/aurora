@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     user_id UUID NOT NULL,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
+    is_ownership BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -92,7 +93,6 @@ COMMENT ON COLUMN tenant_memberships.id IS 'ID định danh duy nhất của th�
 COMMENT ON COLUMN tenant_memberships.tenant_id IS 'ID của Tenant sở hữu thành viên này.';
 COMMENT ON COLUMN tenant_memberships.user_id IS 'ID của User liên kết (từ schema iam).';
 COMMENT ON COLUMN tenant_memberships.status IS 'Trạng thái của thành viên (active, suspended, disabled).';
-
 
 -- [COMMENT]: Bảng quản lý Không gian làm việc (Workspaces)
 -- Một workspace bắt buộc phải thuộc về 1 Zone cụ thể và có thể liên kết với 1 Tenant (doanh nghiệp) hoặc độc lập (cá nhân).

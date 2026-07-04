@@ -111,18 +111,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         redis_client.clone(),
     ));
 
-    // [COMMENT]: Khởi tạo TenantManager quản lý resolution và membership của tenant
-    let tenant_mgr = crate::service::tenant::manager::TenantManager::new(
-        control_plane_client.clone(),
-        redis_client.clone(),
-    );
-
-    // [COMMENT]: Warmup tenant domains lên Redis L2 nếu cần trước khi xử lý request
-    let tenant_mgr_clone = tenant_mgr.clone();
-    tokio::spawn(async move {
-        tenant_mgr_clone.warmup_if_needed().await;
-    });
-
     let ext_authz_service = ExtAuthzService::new(
         session_mgr.clone(),
         token_mgr.clone(),
@@ -130,7 +118,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.clone(),
         control_plane_client.clone(),
         zone_mgr.clone(),
-        tenant_mgr.clone(),
     );
 
     // [COMMENT]: Khởi tạo DeviceRpcHandler – chỉ xử lý RevokeUserSessionsByDevices

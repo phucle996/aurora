@@ -157,11 +157,6 @@ func (m *Module) RegisterGRPCServices(server *grpc.Server) {
 		zoneProto.RegisterZoneServiceServer(server, zoneHandler)
 		logger.SysInfo("grpc", "registered ZoneService onto gRPC server")
 	}
-	if m.TenantService != nil {
-		tenantHandler := zoneRpcHandler.NewTenantGRPCHandler(m.TenantService)
-		zoneProto.RegisterTenantServiceServer(server, tenantHandler)
-		logger.SysInfo("grpc", "registered TenantService onto gRPC server")
-	}
 }
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.

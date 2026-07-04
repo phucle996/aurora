@@ -2,6 +2,5 @@
 // 📂 MODULE: acr/src/service/tenant/mod.rs
 // ======================================================================================================
 
-pub mod manager;
 pub mod tenant_resolution;
 pub mod tenant_switch;

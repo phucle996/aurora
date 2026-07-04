@@ -245,7 +245,7 @@ impl AuthService for AuthServiceImpl {
         Ok(Response::new(VerifyUserTrinityTokenResponse {
             valid: true,
             user_id: claims.uid.clone(),
-            role: claims.role.clone(),
+            role: claims.role_id.clone(),
             zone_id: claims.zone_id.clone().unwrap_or_default(),
         }))
     }
