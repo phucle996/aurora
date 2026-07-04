@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -59,12 +60,12 @@ func IsSystemRole(roleCode string) bool {
 //
 // Ví dụ:
 //
-//	Authorize("hypervisor:vps:create", cache) với X-Tenant-ID="uuid-tenant" và X-Workspace-ID="uuid-ws"
-//	→ expected key = "uuid-tenant:uuid-ws:hypervisor:vps:create"
+//	Authorize("hypervisor:vps:create", cache, "2") với X-Tenant-ID="uuid-tenant" và X-Workspace-ID="uuid-ws"
+//	→ expected key = "uuid-tenant:uuid-ws:hypervisor:vps:create" và checks user level <= 2
 //
-//	Authorize("hypervisor:vps:list", cache) không có X-Tenant-ID, X-User-Name="alice", X-Workspace-ID="uuid-ws"
-//	→ expected key = "alice:uuid-ws:hypervisor:vps:list"
-func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry) gin.HandlerFunc {
+//	Authorize("hypervisor:vps:list", cache, "*") không có X-Tenant-ID, X-User-Name="alice", X-Workspace-ID="uuid-ws"
+//	→ expected key = "alice:uuid-ws:hypervisor:vps:list" và skips level check
+func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry, requiredLevel string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 
@@ -76,12 +77,32 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 			return
 		}
 
-		// 2. Root bypass: platform_root không cần qua kiểm tra RBAC 5 cấp.
-		// Đây là SRE-level bypass, không có perm check nào áp dụng.
-		userRole := strings.TrimSpace(c.GetHeader(constant.HeaderXUserRole))
-		if strings.EqualFold(userRole, "platform_root") {
-			c.Next()
-			return
+		// [COMMENT]: 2.1. Kiểm tra User Level nếu requiredLevel khác "*"
+		if requiredLevel != "*" {
+			userLevelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
+			if userLevelStr == "" {
+				apires.RespondForbidden(c, "missing user level context")
+				c.Abort()
+				return
+			}
+			actorLevel, err := strconv.Atoi(userLevelStr)
+			if err != nil {
+				apires.RespondInternalError(c, "invalid user level format")
+				c.Abort()
+				return
+			}
+			reqLevel, err := strconv.Atoi(requiredLevel)
+			if err != nil {
+				apires.RespondInternalError(c, "invalid required level configuration")
+				c.Abort()
+				return
+			}
+			// Càng nhỏ level càng cao: Root=0, Admin=1... User=8
+			if actorLevel > reqLevel {
+				apires.RespondForbidden(c, "insufficient level hierarchy")
+				c.Abort()
+				return
+			}
 		}
 
 		// 3. Trích xuất Role UUID từ Header X-User-Role-ID (inject bởi ACR từ JWT claims)

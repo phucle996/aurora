@@ -50,11 +50,11 @@ func TestAuthorize_TenantScope(t *testing.T) {
 	})
 
 	router.DELETE("/members",
-		middleware.Authorize("hierarchy:tenant-member:delete", registry),
+		middleware.Authorize("hierarchy:tenant-member:delete", registry, "*"),
 		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
 	)
 	router.DELETE("/roles",
-		middleware.Authorize("iam:role:delete", registry),
+		middleware.Authorize("iam:role:delete", registry, "*"),
 		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
 	)
 
@@ -99,11 +99,11 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 	})
 
 	router.POST("/vps",
-		middleware.Authorize("hypervisor:vps:create", registry),
+		middleware.Authorize("hypervisor:vps:create", registry, "*"),
 		func(c *gin.Context) { c.String(http.StatusOK, "created") },
 	)
 	router.DELETE("/vps",
-		middleware.Authorize("hypervisor:vps:delete", registry),
+		middleware.Authorize("hypervisor:vps:delete", registry, "*"),
 		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
 	)
 
@@ -124,32 +124,7 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 	}
 }
 
-// TestAuthorize_PlatformRootBypass kiểm tra platform_root bypass hoàn toàn không qua perm check.
-func TestAuthorize_PlatformRootBypass(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
-	// [COMMENT]: Cache rỗng — platform_root không cần perm nào cũng phải qua
-	registry := makeRoleCache([]string{})
-
-	router := gin.New()
-	router.Use(func(c *gin.Context) {
-		c.Request.Header.Set(constant.HeaderXUserID, uuid.NewString())
-		c.Request.Header.Set(constant.HeaderXUserRole, "platform_root")
-		c.Next()
-	})
-
-	router.GET("/restricted",
-		middleware.Authorize("iam:role:delete", registry),
-		func(c *gin.Context) { c.String(http.StatusOK, "bypassed") },
-	)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/restricted", nil)
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-}
 
 // TestAuthorize_MissingWorkspaceID kiểm tra thiếu workspace context → 403.
 func TestAuthorize_MissingWorkspaceID(t *testing.T) {
@@ -167,7 +142,7 @@ func TestAuthorize_MissingWorkspaceID(t *testing.T) {
 	})
 
 	router.GET("/test",
-		middleware.Authorize("iam:role:read", registry),
+		middleware.Authorize("iam:role:read", registry, "*"),
 		func(c *gin.Context) { c.String(http.StatusOK, "ok") },
 	)
 
@@ -176,5 +151,74 @@ func TestAuthorize_MissingWorkspaceID(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", w.Code)
+	}
+}
+
+// TestAuthorize_UserLevelChecking kiểm tra logic xác thực hierarchy level của Actor
+func TestAuthorize_UserLevelChecking(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tenantID := uuid.NewString()
+	workspaceID := uuid.NewString()
+	roleID := uuid.NewString()
+	userID := uuid.NewString()
+
+	expectedPerm := tenantID + ":" + workspaceID + ":hierarchy:tenant-member:delete"
+	registry := makeRoleCache([]string{expectedPerm})
+
+	// Thiết lập router với middleware gán headers động
+	setupRouter := func(level string) *gin.Engine {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			c.Request.Header.Set(constant.HeaderXUserID, userID)
+			c.Request.Header.Set(constant.HeaderXUserRole, "tenant_admin")
+			c.Request.Header.Set(constant.HeaderXUserRoleID, roleID)
+			c.Request.Header.Set(constant.HeaderXTenantID, tenantID)
+			c.Request.Header.Set(constant.HeaderXWorkspaceID, workspaceID)
+			if level != "" {
+				c.Request.Header.Set(constant.HeaderXUserLevel, level)
+			}
+			c.Next()
+		})
+		return r
+	}
+
+	// 1. Actor level 1 <= requiredLevel 2 → Cho phép (200)
+	r1 := setupRouter("1")
+	r1.DELETE("/members",
+		middleware.Authorize("hierarchy:tenant-member:delete", registry, "2"),
+		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
+	)
+	w1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodDelete, "/members", nil)
+	r1.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w1.Code)
+	}
+
+	// 2. Actor level 8 > requiredLevel 2 → Bị chặn (403)
+	r2 := setupRouter("8")
+	r2.DELETE("/members",
+		middleware.Authorize("hierarchy:tenant-member:delete", registry, "2"),
+		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
+	)
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodDelete, "/members", nil)
+	r2.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w2.Code)
+	}
+
+	// 3. Thiếu header user level context → Bị chặn (403)
+	r3 := setupRouter("")
+	r3.DELETE("/members",
+		middleware.Authorize("hierarchy:tenant-member:delete", registry, "2"),
+		func(c *gin.Context) { c.String(http.StatusOK, "deleted") },
+	)
+	w3 := httptest.NewRecorder()
+	req3 := httptest.NewRequest(http.MethodDelete, "/members", nil)
+	r3.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", w3.Code)
 	}
 }
