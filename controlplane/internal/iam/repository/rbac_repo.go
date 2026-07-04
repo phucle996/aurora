@@ -9,6 +9,7 @@ import (
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
+	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
@@ -206,4 +207,44 @@ func (r *RbacRepository) GetRoleIDByTenantID(ctx context.Context, tenantID uuid.
 	}
 
 	return roleIDStr, roleLevel, nil
+}
+
+// [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
+func (r *RbacRepository) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
+	query := fmt.Sprintf(`
+		SELECT id, code, name, role_level, scope, created_at, updated_at
+		FROM %s.roles
+		WHERE scope = 'platform'
+		ORDER BY role_level ASC
+	`, r.schema)
+
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("rbac repo: query platform roles: %w", err)
+	}
+	defer rows.Close()
+
+	var roles []iamEntity.Role
+	for rows.Next() {
+		var role iamModel.Role
+		err := rows.Scan(
+			&role.ID,
+			&role.Code,
+			&role.Name,
+			&role.RoleLevel,
+			&role.Scope,
+			&role.CreatedAt,
+			&role.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("rbac repo: scan platform role row: %w", err)
+		}
+		roles = append(roles, iamModel.RoleModelToEntity(role))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return roles, nil
 }

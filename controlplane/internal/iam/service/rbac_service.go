@@ -45,3 +45,8 @@ func (s *RbacService) AssignTenantRole(ctx context.Context, tenantRole *iamEntit
 	// [COMMENT]: Logic nghiệp vụ gán role và build binary list_perm sẽ được viết ở phase tiếp theo
 	return nil
 }
+
+// [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
+func (s *RbacService) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
+	return s.repo.ListPlatformRoles(ctx)
+}

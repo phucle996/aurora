@@ -54,22 +54,23 @@ SET
 -- ----------------------------------------------------------------------------
 -- 3) Seed system roles (with real random UUIDs)
 -- ----------------------------------------------------------------------------
-INSERT INTO roles (id, code, name, description, role_level)
+INSERT INTO roles (id, code, name, description, role_level, scope)
 VALUES
-    (gen_random_uuid(), 'platform_root', 'Root', 'Highest platform-level system authority', 0),
-    (gen_random_uuid(), 'platform_user', 'Platform User', 'Default global role for registered user not joined to any tenant', 8),
-    (gen_random_uuid(), 'platform_admin', 'System Admin', 'Platform administration role', 1),
-    (gen_random_uuid(), 'platform_support_operator', 'Support Operator', 'Platform support operation role', 2),
-    (gen_random_uuid(), 'tenant_owner', 'Owner', 'Tenant owner role', 3),
-    (gen_random_uuid(), 'tenant_admin', 'Admin', 'Tenant administrator role', 4),
-    (gen_random_uuid(), 'tenant_manager', 'Manager', 'Tenant manager role', 5),
-    (gen_random_uuid(), 'tenant_member', 'Member', 'Tenant member role', 6),
-    (gen_random_uuid(), 'tenant_viewer', 'Viewer', 'Tenant read-only role', 7)
+    (gen_random_uuid(), 'platform_root', 'Root', 'Highest platform-level system authority', 0, 'platform'),
+    (gen_random_uuid(), 'platform_user', 'Platform User', 'Default global role for registered user not joined to any tenant', 8, 'platform'),
+    (gen_random_uuid(), 'platform_admin', 'System Admin', 'Platform administration role', 1, 'platform'),
+    (gen_random_uuid(), 'platform_support_operator', 'Support Operator', 'Platform support operation role', 2, 'platform'),
+    (gen_random_uuid(), 'tenant_owner', 'Owner', 'Tenant owner role', 3, 'tenant'),
+    (gen_random_uuid(), 'tenant_admin', 'Admin', 'Tenant administrator role', 4, 'tenant'),
+    (gen_random_uuid(), 'tenant_manager', 'Manager', 'Tenant manager role', 5, 'tenant'),
+    (gen_random_uuid(), 'tenant_member', 'Member', 'Tenant member role', 6, 'tenant'),
+    (gen_random_uuid(), 'tenant_viewer', 'Viewer', 'Tenant read-only role', 7, 'tenant')
 ON CONFLICT (code) DO UPDATE
 SET
     name = EXCLUDED.name,
     description = EXCLUDED.description,
     role_level = EXCLUDED.role_level,
+    scope = EXCLUDED.scope,
     updated_at = now();
 
 -- ----------------------------------------------------------------------------

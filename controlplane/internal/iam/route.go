@@ -57,4 +57,9 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.POST("/api/v1/rbac/tenant-role",
 		module.RbacHandler.AssignTenantRole,
 	)
+
+	// [COMMENT]: 17) Lấy toàn bộ danh sách platform-scoped roles (không qua middleware authorize)
+	router.GET("/api/v1/iam/rbac/role",
+		module.RbacHandler.ListPlatformRoles,
+	)
 }

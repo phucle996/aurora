@@ -27,3 +27,35 @@ func (h *RbacHandler) AssignTenantRole(c *gin.Context) {
 	// [COMMENT]: Sẽ được hiện thực hóa ở phase tiếp theo
 	c.JSON(200, gin.H{"message": "skeleton"})
 }
+
+// RoleResponse định nghĩa thông tin vai trò trả về cho API Client
+type RoleResponse struct {
+	ID        string `json:"id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	RoleLevel int    `json:"role_level"`
+	Scope     string `json:"scope"`
+}
+
+// [COMMENT]: ListPlatformRoles trả về toàn bộ danh sách platform-scoped roles
+func (h *RbacHandler) ListPlatformRoles(c *gin.Context) {
+	ctx := c.Request.Context()
+	roles, err := h.rbacSvc.ListPlatformRoles(ctx)
+	if err != nil {
+		c.JSON(500, gin.H{"error_message": err.Error()})
+		return
+	}
+
+	resp := make([]RoleResponse, 0, len(roles))
+	for _, r := range roles {
+		resp = append(resp, RoleResponse{
+			ID:        r.ID.String(),
+			Code:      r.Code,
+			Name:      r.Name,
+			RoleLevel: r.RoleLevel,
+			Scope:     r.Scope,
+		})
+	}
+
+	c.JSON(200, resp)
+}

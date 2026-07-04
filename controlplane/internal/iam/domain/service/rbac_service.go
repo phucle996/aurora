@@ -18,4 +18,7 @@ type RbacService interface {
 
 	// [COMMENT]: AssignTenantRole gán role và permissions tĩnh cho tenant trong một workspace
 	AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error
+
+	// [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
+	ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error)
 }

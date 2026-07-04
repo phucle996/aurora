@@ -96,3 +96,27 @@ func TenantRoleModelToEntity(input TenantRole) iamEntity.TenantRole {
 		UpdatedAt:   input.UpdatedAt,
 	}
 }
+
+// [COMMENT]: Role đại diện cho bảng roles trong PostgreSQL
+type Role struct {
+	ID        uuid.UUID `db:"id"`
+	Code      string    `db:"code"`
+	Name      string    `db:"name"`
+	RoleLevel int       `db:"role_level"`
+	Scope     string    `db:"scope"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+}
+
+// [COMMENT]: RoleModelToEntity chuyển đổi DB model sang thực thể domain
+func RoleModelToEntity(input Role) iamEntity.Role {
+	return iamEntity.Role{
+		ID:        input.ID,
+		Code:      input.Code,
+		Name:      input.Name,
+		RoleLevel: input.RoleLevel,
+		Scope:     input.Scope,
+		CreatedAt: input.CreatedAt,
+		UpdatedAt: input.UpdatedAt,
+	}
+}

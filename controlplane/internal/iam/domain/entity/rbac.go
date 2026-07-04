@@ -32,3 +32,14 @@ type TenantRole struct {
 	CreatedAt   time.Time // Thời điểm tạo
 	UpdatedAt   time.Time // Thời điểm cập nhật
 }
+
+// [COMMENT]: Role đại diện cho định nghĩa vai trò hệ thống (Platform/Tenant scope)
+type Role struct {
+	ID        uuid.UUID
+	Code      string
+	Name      string
+	RoleLevel int
+	Scope     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
