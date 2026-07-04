@@ -572,6 +572,7 @@ export default function ZoneDetailPage() {
               {/* Enabled Services Section Component */}
               <ZoneServicesSection
                 enabledServices={detail.enabled_services}
+                zoneStatus={detail.zone.status}
               />
 
               {/* Workspaces Block */}
