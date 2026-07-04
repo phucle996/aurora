@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +23,6 @@ import (
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/id"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
@@ -130,8 +130,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 				if usernameDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.username", username); digestErr == nil {
 					if emailDigest, digestErr := security.PresenceHMACSHA256Hex("iam.register.email", email); digestErr == nil {
 						pipe := rdb.Pipeline()
-						pipe.SetBit(bgCtx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
-						pipe.SetBit(bgCtx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+						pipe.SetBit(bgCtx, "iam:register:bitmap:username", computeBitmapIndex(usernameDigest), 1)
+						pipe.SetBit(bgCtx, "iam:register:bitmap:email", computeBitmapIndex(emailDigest), 1)
 						_, _ = pipe.Exec(bgCtx)
 					}
 				}
@@ -169,8 +169,8 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		}
 		if markErr == nil {
 			pipe := rdb.Pipeline()
-			pipe.SetBit(bgCtx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
-			pipe.SetBit(bgCtx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+			pipe.SetBit(bgCtx, "iam:register:bitmap:username", computeBitmapIndex(usernameDigest), 1)
+			pipe.SetBit(bgCtx, "iam:register:bitmap:email", computeBitmapIndex(emailDigest), 1)
 			_, markErr = pipe.Exec(bgCtx)
 		}
 		if markErr != nil {
@@ -469,4 +469,11 @@ func cleanString(value *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*value)
+}
+
+const registerBitmapSize = 1 << 20
+
+func computeBitmapIndex(value string) int64 {
+	val := strings.ToLower(strings.TrimSpace(value))
+	return int64(crc32.ChecksumIEEE([]byte(val)) % registerBitmapSize)
 }

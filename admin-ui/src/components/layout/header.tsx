@@ -57,7 +57,7 @@ type AppHeaderProps = {
 export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppHeaderProps) {
   // Hook quản lý session của Admin (lưu trữ token, thông tin user và cơ chế xóa session).
   const { clearSession } = useAdminSession()
-  
+
   // Hook kết nối tới global store quản lý danh sách Zone và Zone hiện tại đang active.
   // Trong môi trường Cloud Native & High Availability (HA), hệ thống được chia làm nhiều Zone vật lý/logic 
   // để tăng tính cô lập lỗi (fault isolation) và giảm độ trễ (latency).
@@ -125,7 +125,7 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
     // Sử dụng sticky header để cố định thanh điều hướng ở trên cùng khi cuộn trang, giúp admin truy cập nhanh các chức năng.
     <header className="sticky top-0 z-20 border-b border-border/70 bg-card shadow-[0_1px_0_rgba(15,23,42,0.03)]">
       <div className="flex min-h-14 flex-wrap items-center gap-3 px-4 py-3 md:px-6 md:py-0">
-        
+
         {/* Nút Trigger Sidebar dành cho Mobile (Hiện ở màn hình < lg) */}
         <button
           type="button"
@@ -180,23 +180,25 @@ export default function AppHeader({ onToggleSidebar, onOpenMobileSidebar }: AppH
               <DropdownMenuItem onClick={() => handleZoneChange(null)} className="cursor-pointer">
                 Global (All Zones)
               </DropdownMenuItem>
-              {/* Render danh sách các Zone lấy về từ API */}
-              {zones.map((zone) => (
-                <DropdownMenuItem
-                  key={zone.id}
-                  onClick={() => handleZoneChange(zone.code)}
-                  className="cursor-pointer"
-                >
-                  {zone.name}
-                </DropdownMenuItem>
-              ))}
+              {/* Render danh sách các Zone lấy về từ API, loại bỏ zone ảo 'global' để tránh trùng lặp hiển thị */}
+              {zones
+                .filter((zone) => zone.code !== 'global')
+                .map((zone) => (
+                  <DropdownMenuItem
+                    key={zone.id}
+                    onClick={() => handleZoneChange(zone.code)}
+                    className="cursor-pointer"
+                  >
+                    {zone.name}
+                  </DropdownMenuItem>
+                ))}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
 
         {/* Khối chức năng bên phải Header (Thông báo, Trợ giúp, Theme, Profile) */}
         <div className="order-2 ml-auto flex items-center gap-1 md:order-3 md:gap-2">
-          
+
           {/* Nút Thông báo (Notifications) với chấm đỏ primary báo hiệu tin nhắn mới */}
           <button
             type="button"

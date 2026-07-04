@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,6 @@ import (
 	"controlplane/internal/iam/test/testutil"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/id"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
@@ -203,8 +203,8 @@ func TestAuthServiceRegisterAccountSuccessOnBitmapMiss(t *testing.T) {
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
 	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
-	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
-	emailBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
+	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", computeBitmapIndex(usernameDigest)).Result()
+	emailBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:email", computeBitmapIndex(emailDigest)).Result()
 	if usernameBit != 1 || emailBit != 1 {
 		t.Fatal("expected presence cache bits to be set in Redis")
 	}
@@ -235,7 +235,7 @@ func TestAuthServiceRegisterAccountBitmapHitAndUserExists(t *testing.T) {
 	registry := makeTestRegistry("secret-key", rdb)
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
-	rdb.SetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
+	rdb.SetBit(context.Background(), "iam:register:bitmap:username", computeBitmapIndex(usernameDigest), 1)
 
 	created := false
 	svc := newAuthService(&authRepoMock{
@@ -260,7 +260,7 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 	registry := makeTestRegistry("secret-key", rdb)
 
 	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
-	rdb.SetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+	rdb.SetBit(context.Background(), "iam:register:bitmap:email", computeBitmapIndex(emailDigest), 1)
 
 	created := false
 	svc := newAuthService(&authRepoMock{
@@ -280,7 +280,7 @@ func TestAuthServiceRegisterAccountBitmapHitFalsePositiveThenInsert(t *testing.T
 	svc.Stop()
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
-	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
+	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", computeBitmapIndex(usernameDigest)).Result()
 	if usernameBit != 1 {
 		t.Fatal("expected presence key for username to be set in Redis")
 	}
@@ -303,8 +303,8 @@ func TestAuthServiceRegisterAccountDuplicateFromRepoMarksCache(t *testing.T) {
 
 	usernameDigest, _ := security.PresenceHMACSHA256Hex("iam.register.username", "alice.nguyen")
 	emailDigest, _ := security.PresenceHMACSHA256Hex("iam.register.email", "user@example.com")
-	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
-	emailBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
+	usernameBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:username", computeBitmapIndex(usernameDigest)).Result()
+	emailBit, _ := rdb.GetBit(context.Background(), "iam:register:bitmap:email", computeBitmapIndex(emailDigest)).Result()
 	if usernameBit != 1 || emailBit != 1 {
 		t.Fatal("expected presence cache to be marked on duplicate")
 	}
@@ -599,4 +599,11 @@ func TestVerifyAccount_InvalidToken(t *testing.T) {
 	if repoCalled {
 		t.Error("expected AuthRepository.ActivateUserWithRole NOT to be called on invalid token")
 	}
+}
+
+const registerBitmapSize = 1 << 20
+
+func computeBitmapIndex(value string) int64 {
+	val := strings.ToLower(strings.TrimSpace(value))
+	return int64(crc32.ChecksumIEEE([]byte(val)) % registerBitmapSize)
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +16,6 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	testutil "controlplane/internal/iam/test/testutil"
 	"controlplane/internal/security"
-	"controlplane/pkg/id"
 
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -248,11 +249,11 @@ func (c *testRegisterPresenceCache) Check(ctx context.Context, username string, 
 	if err != nil {
 		return false, false, err
 	}
-	usernameHit, err := c.rdb.GetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest)).Result()
+	usernameHit, err := c.rdb.GetBit(ctx, "iam:register:bitmap:username", computeBitmapIndex(usernameDigest)).Result()
 	if err != nil {
 		return false, false, err
 	}
-	emailHit, err := c.rdb.GetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest)).Result()
+	emailHit, err := c.rdb.GetBit(ctx, "iam:register:bitmap:email", computeBitmapIndex(emailDigest)).Result()
 	if err != nil {
 		return false, false, err
 	}
@@ -269,8 +270,15 @@ func (c *testRegisterPresenceCache) MarkExists(ctx context.Context, username str
 		return err
 	}
 	pipe := c.rdb.Pipeline()
-	pipe.SetBit(ctx, "iam:register:bitmap:username", id.BitmapIndex(usernameDigest), 1)
-	pipe.SetBit(ctx, "iam:register:bitmap:email", id.BitmapIndex(emailDigest), 1)
+	pipe.SetBit(ctx, "iam:register:bitmap:username", computeBitmapIndex(usernameDigest), 1)
+	pipe.SetBit(ctx, "iam:register:bitmap:email", computeBitmapIndex(emailDigest), 1)
 	_, err = pipe.Exec(ctx)
 	return err
+}
+
+const registerBitmapSize = 1 << 20
+
+func computeBitmapIndex(value string) int64 {
+	val := strings.ToLower(strings.TrimSpace(value))
+	return int64(crc32.ChecksumIEEE([]byte(val)) % registerBitmapSize)
 }
