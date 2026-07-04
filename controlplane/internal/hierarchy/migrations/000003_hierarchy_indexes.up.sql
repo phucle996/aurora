@@ -6,7 +6,8 @@
 -- [COMMENT]: Indexes cho các trường trong zones và zone_services
 CREATE UNIQUE INDEX IF NOT EXISTS ux_zones_code ON zones(code);
 CREATE INDEX IF NOT EXISTS ix_zones_status ON zones(status);
-CREATE INDEX IF NOT EXISTS ix_zone_services_zone_enabled ON zone_services(zone_id, enabled);
+-- [COMMENT]: Index phục vụ tăng tốc độ lookup dịch vụ theo zone và trạng thái mong muốn
+CREATE INDEX IF NOT EXISTS ix_zone_services_zone_desired_state ON zone_services(zone_id, desired_state);
 
 -- [COMMENT]: Indexes cho các trường trong phân hệ Tenant
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_domains_domain_uidx ON tenant_domains(domain);

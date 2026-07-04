@@ -72,11 +72,11 @@ pub async fn update_zone_service_status(
     // cast các uuid dạng string sang text trước khi cast sang uuid thực tế trong SQL, và cast service_type sang enum.
     let rows_affected = pg_client
         .execute(
-            "INSERT INTO hierarchy.zone_services (id, zone_id, service_type, enabled, created_at, updated_at) \
+            "INSERT INTO hierarchy.zone_services (id, zone_id, service_type, desired_state, created_at, updated_at) \
              VALUES ($1::text::uuid, $2::text::uuid, $3::text::hierarchy.zone_service_type, $4, NOW(), NOW()) \
              ON CONFLICT (zone_id, service_type) \
-             DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW() \
-             WHERE zone_services.enabled != EXCLUDED.enabled",
+             DO UPDATE SET desired_state = EXCLUDED.desired_state, updated_at = NOW() \
+             WHERE zone_services.desired_state != EXCLUDED.desired_state",
             &[&svc_id_str, &zone_id, &service_type, &enabled],
         )
         .await?;
@@ -131,7 +131,7 @@ pub async fn query_current_state(
     // [COMMENT]: Truy vấn trạng thái Service từ bảng hierarchy.zone_services, cast zone_id và service_type
     let svc_rows = pg_client
         .query(
-            "SELECT enabled FROM hierarchy.zone_services WHERE zone_id = $1::text::uuid AND service_type = $2::text::hierarchy.zone_service_type",
+            "SELECT desired_state FROM hierarchy.zone_services WHERE zone_id = $1::text::uuid AND service_type = $2::text::hierarchy.zone_service_type",
             &[&zone_id, &service_type],
         )
         .await?;
@@ -179,7 +179,7 @@ pub async fn query_zone_metadata(
     // [COMMENT]: 2. Lấy trạng thái của toàn bộ Service từ bảng hierarchy.zone_services, cast zone_id
     let svc_rows = pg_client
         .query(
-            "SELECT service_type::text, enabled FROM hierarchy.zone_services WHERE zone_id = $1::text::uuid",
+            "SELECT service_type::text, desired_state FROM hierarchy.zone_services WHERE zone_id = $1::text::uuid",
             &[&zone_id],
         )
         .await?;
@@ -217,15 +217,14 @@ pub async fn update_zone_service_metrics(
     let svc_id_str = uuid::Uuid::new_v4().to_string();
 
     // [COMMENT]: Thực thi câu lệnh UPSERT nguyên tử (Atomic upsert) trên bảng hierarchy.zone_services.
-    // Sắp xếp các tham số tăng dần ($1 đến $5) khớp 100% với mảng Rust để Postgres suy luận kiểu chính xác.
-    // Cast các tham số dạng String/&str sang text trước khi cast sang uuid/enum (cho cả service_type và status).
+    // Loại bỏ hoàn toàn capacity và last_heartbeat_at khỏi DB, chỉ cập nhật actual_state (trước đây là status)
     let rows_affected = pg_client
         .execute(
-            "INSERT INTO hierarchy.zone_services (id, zone_id, service_type, enabled, status, capacity, last_heartbeat_at, created_at, updated_at) \
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::hierarchy.zone_service_type, false, $4::text::hierarchy.zone_service_status, $5, NOW(), NOW(), NOW()) \
+            "INSERT INTO hierarchy.zone_services (id, zone_id, service_type, desired_state, actual_state, created_at, updated_at) \
+             VALUES ($1::text::uuid, $2::text::uuid, $3::text::hierarchy.zone_service_type, false, $4::text::hierarchy.zone_service_status, NOW(), NOW()) \
              ON CONFLICT (zone_id, service_type) \
-             DO UPDATE SET status = EXCLUDED.status, capacity = EXCLUDED.capacity, last_heartbeat_at = EXCLUDED.last_heartbeat_at, updated_at = NOW()",
-            &[&svc_id_str, &zone_id, &service_type, &status, &capacity],
+             DO UPDATE SET actual_state = EXCLUDED.actual_state, updated_at = NOW()",
+            &[&svc_id_str, &zone_id, &service_type, &status],
         )
         .await?;
 

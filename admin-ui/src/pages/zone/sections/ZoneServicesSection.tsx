@@ -32,24 +32,21 @@ interface ZoneServicesSectionProps {
 
 export default function ZoneServicesSection({
   enabledServices,
-  zoneStatus = 'planned',
 }: ZoneServicesSectionProps) {
-  // Helpers to compute operational status based on enablement and zone state
-  const getServiceStatus = (isEnabled: boolean) => {
+  // [COMMENT]: Map mã màu và nhãn hiển thị cho Actual State thực tế của dịch vụ
+  const getActualServiceStatus = (actualState?: string, isEnabled?: boolean) => {
     if (!isEnabled) {
       return { label: 'Inactive', dotClass: 'bg-slate-400', textClass: 'text-slate-500' }
     }
-    switch (zoneStatus.toLowerCase()) {
-      case 'active':
+    switch ((actualState || '').toLowerCase()) {
+      case 'healthy':
         return { label: 'Healthy', dotClass: 'bg-emerald-500', textClass: 'text-emerald-600' }
-      case 'planned':
-        return { label: 'Planned', dotClass: 'bg-sky-500', textClass: 'text-sky-600' }
-      case 'maintenance':
-        return { label: 'Maintenance', dotClass: 'bg-violet-500', textClass: 'text-violet-600' }
-      case 'draining':
-        return { label: 'Draining', dotClass: 'bg-amber-500', textClass: 'text-amber-600' }
-      case 'disabled':
-        return { label: 'Disabled', dotClass: 'bg-slate-400', textClass: 'text-slate-500' }
+      case 'degraded':
+        return { label: 'Degraded', dotClass: 'bg-amber-500', textClass: 'text-amber-600' }
+      case 'unhealthy':
+        return { label: 'Unhealthy', dotClass: 'bg-rose-500', textClass: 'text-rose-600' }
+      case 'down':
+        return { label: 'Down', dotClass: 'bg-red-500', textClass: 'text-red-600' }
       default:
         return { label: 'Unknown', dotClass: 'bg-slate-300', textClass: 'text-muted-foreground' }
     }
@@ -70,8 +67,10 @@ export default function ZoneServicesSection({
           <tbody className="divide-y divide-border/50">
             {fullServiceCatalog.map((svc) => {
               const matched = enabledServices.find((s) => s.key === svc.key)
-              const isEnabled = !!matched
-              const statusInfo = getServiceStatus(isEnabled)
+              // [COMMENT]: Xác định Desired State từ API
+              const isEnabled = matched ? matched.desired_state === 'enable' : false
+              // [COMMENT]: Xác định Actual State trực tiếp từ actual_state của API
+              const statusInfo = getActualServiceStatus(matched?.actual_state, isEnabled)
 
               return (
                 <tr key={svc.key} className="hover:bg-accent/5">

@@ -7,8 +7,10 @@ import { cn } from '@/lib/utils'
 export type ZoneServiceHealth = {
   key: string
   label: string
-  status: string
-  source: string
+  desired_state: 'enable' | 'disable'
+  actual_state: string
+  status?: string
+  source?: string
 }
 
 interface ZoneServicesPanelProps {
@@ -53,6 +55,10 @@ function serviceStatusLabel(status?: string) {
     case 'degraded':
     case 'warning':
       return 'Degraded'
+    case 'unhealthy':
+      return 'Unhealthy'
+    case 'down':
+      return 'Down'
     case 'disabled':
       return 'Disabled'
     default:
@@ -68,6 +74,10 @@ function serviceStatusDotTone(status?: string) {
     case 'degraded':
     case 'warning':
       return 'bg-amber-500'
+    case 'unhealthy':
+      return 'bg-rose-500'
+    case 'down':
+      return 'bg-red-500'
     case 'disabled':
       return 'bg-slate-400'
     default:
@@ -83,6 +93,10 @@ function serviceStatusTextTone(status?: string) {
     case 'degraded':
     case 'warning':
       return 'text-amber-600'
+    case 'unhealthy':
+      return 'text-rose-600'
+    case 'down':
+      return 'text-red-600'
     case 'disabled':
       return 'text-slate-500'
     default:
@@ -93,11 +107,14 @@ function serviceStatusTextTone(status?: string) {
 export default function ZoneServicesPanel({
   enabledServices,
 }: ZoneServicesPanelProps) {
+  // [COMMENT]: Chỉ hiển thị những service được kích hoạt (desired_state = enable) ở panel tóm tắt này
+  const activeServices = enabledServices.filter((s) => s.desired_state === 'enable')
+
   return (
     <Panel title="Enabled Services" icon={PackageCheck}>
       <div className="grid gap-4 sm:grid-cols-2">
-        {enabledServices.length === 0 && <EmptyPanelText>No enabled services configured yet.</EmptyPanelText>}
-        {enabledServices.map((service) => (
+        {activeServices.length === 0 && <EmptyPanelText>No enabled services configured yet.</EmptyPanelText>}
+        {activeServices.map((service) => (
           <div
             key={service.key}
             className="flex h-12 items-center justify-between rounded-lg border border-border bg-background px-4 shadow-xs transition-colors hover:border-primary/25 hover:bg-primary/3"
@@ -107,8 +124,8 @@ export default function ZoneServicesPanel({
               <p className="text-sm font-medium text-primary">{service.label || titleCase(service.key)}</p>
             </div>
             <div className="flex shrink-0 items-center gap-2 text-sm font-medium">
-              <span className={cn('size-2 rounded-full', serviceStatusDotTone(service.status))} />
-              <span className={serviceStatusTextTone(service.status)}>{serviceStatusLabel(service.status)}</span>
+              <span className={cn('size-2 rounded-full', serviceStatusDotTone(service.actual_state))} />
+              <span className={serviceStatusTextTone(service.actual_state)}>{serviceStatusLabel(service.actual_state)}</span>
             </div>
           </div>
         ))}

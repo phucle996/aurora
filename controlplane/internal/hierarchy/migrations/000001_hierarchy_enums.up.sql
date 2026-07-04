@@ -48,4 +48,27 @@ BEGIN
 END
 $$;
 
+-- [COMMENT]: Tạo kiểu ENUM cho trạng thái sức khỏe vận hành thực tế của dịch vụ (actual_state)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'zone_service_status' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE zone_service_status AS ENUM ('unknown', 'healthy', 'degraded', 'unhealthy', 'down');
+    END IF;
+END
+$$;
+DO $$
+BEGIN
+    EXECUTE format('ALTER TYPE %I.zone_service_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'unknown');
+    EXECUTE format('ALTER TYPE %I.zone_service_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'healthy');
+    EXECUTE format('ALTER TYPE %I.zone_service_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'degraded');
+    EXECUTE format('ALTER TYPE %I.zone_service_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'unhealthy');
+    EXECUTE format('ALTER TYPE %I.zone_service_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'down');
+END
+$$;
+
 

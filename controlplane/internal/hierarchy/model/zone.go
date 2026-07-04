@@ -19,12 +19,13 @@ type Zone struct {
 }
 
 type ZoneService struct {
-	ID          uuid.UUID `db:"id"`
-	ZoneID      uuid.UUID `db:"zone_id"`
-	ServiceType string    `db:"service_type"`
-	Enabled     bool      `db:"enabled"`
-	CreatedAt   time.Time `db:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at"`
+	ID           uuid.UUID `db:"id"`
+	ZoneID       uuid.UUID `db:"zone_id"`
+	ServiceType  string    `db:"service_type"`
+	DesiredState bool      `db:"desired_state"` // [COMMENT]: Map với cột desired_state trong DB
+	ActualState  string    `db:"actual_state"`  // [COMMENT]: Map với cột actual_state trong DB
+	CreatedAt    time.Time `db:"created_at"`
+	UpdatedAt    time.Time `db:"updated_at"`
 }
 
 func ZoneEntityToModel(e coreEntity.Zone) Zone {
@@ -53,24 +54,28 @@ func ZoneModelToEntity(m Zone) coreEntity.Zone {
 	}
 }
 
+// ZoneServiceEntityToModel chuyển đổi thực thể domain thành database model để thực thi câu lệnh SQL.
 func ZoneServiceEntityToModel(e coreEntity.ZoneService) ZoneService {
 	return ZoneService{
-		ID:          e.ID,
-		ZoneID:      e.ZoneID,
-		ServiceType: string(e.ServiceType),
-		Enabled:     e.Enabled,
-		CreatedAt:   e.CreatedAt,
-		UpdatedAt:   e.UpdatedAt,
+		ID:           e.ID,
+		ZoneID:       e.ZoneID,
+		ServiceType:  string(e.ServiceType),
+		DesiredState: e.DesiredState,
+		ActualState:  e.ActualState,
+		CreatedAt:    e.CreatedAt,
+		UpdatedAt:    e.UpdatedAt,
 	}
 }
 
+// ZoneServiceModelToEntity chuyển đổi database model thành thực thể domain phục vụ logic nghiệp vụ.
 func ZoneServiceModelToEntity(m ZoneService) coreEntity.ZoneService {
 	return coreEntity.ZoneService{
-		ID:          m.ID,
-		ZoneID:      m.ZoneID,
-		ServiceType: coreEntity.ZoneServiceType(m.ServiceType),
-		Enabled:     m.Enabled,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+		ID:           m.ID,
+		ZoneID:       m.ZoneID,
+		ServiceType:  coreEntity.ZoneServiceType(m.ServiceType),
+		DesiredState: m.DesiredState,
+		ActualState:  m.ActualState,
+		CreatedAt:    m.CreatedAt,
+		UpdatedAt:    m.UpdatedAt,
 	}
 }

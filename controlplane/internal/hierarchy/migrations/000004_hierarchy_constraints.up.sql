@@ -45,8 +45,8 @@ COMMENT ON CONSTRAINT ck_zone_services_update_precondition ON zone_services IS
 
 -- Add index for efficient zone deletion precondition checks
 CREATE INDEX IF NOT EXISTS idx_zone_services_enabled_by_zone
-ON zone_services(zone_id, enabled)
-WHERE enabled = true;
+ON zone_services(zone_id, desired_state)
+WHERE desired_state = true;
 
 COMMENT ON INDEX idx_zone_services_enabled_by_zone IS
 'Index for efficient query: HasEnabledZoneServicesByZone check during zone deletion.';

@@ -79,7 +79,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		getZoneDetailByIDQuery: fmt.Sprintf(`
 			SELECT 
 				z.id, z.code, z.name, z.location, z.description, z.status, z.created_at, z.updated_at,
-				s.id, s.zone_id, s.service_type, s.enabled, s.created_at, s.updated_at
+				s.id, s.zone_id, s.service_type, s.desired_state, s.actual_state, s.created_at, s.updated_at
 			FROM %s.zones z
 			LEFT JOIN %s.zone_services s ON z.id = s.zone_id
 			WHERE z.id = $1
@@ -102,12 +102,12 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			WITH target AS (
 				SELECT status FROM %s.zones WHERE id = $1
 			), svcs_exist AS (
-				SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND enabled = true) AS val
+				SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND desired_state = true) AS val
 			), deleted AS (
 				DELETE FROM %s.zones
 				WHERE id = $1 
 				  AND status = 'disabled'
-				  AND NOT EXISTS (SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND enabled = true)
+				  AND NOT EXISTS (SELECT 1 FROM %s.zone_services WHERE zone_id = $1 AND desired_state = true)
 				RETURNING code
 			)
 			SELECT 
@@ -117,32 +117,32 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 				COALESCE((SELECT code FROM deleted), '') AS deleted_code
 		`, schema, schema, schema, schema),
 		hasEnabledZoneSvcQuery: fmt.Sprintf(`
-			SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id=$1 AND enabled=true)
+			SELECT EXISTS(SELECT 1 FROM %s.zone_services WHERE zone_id=$1 AND desired_state=true)
 		`, schema),
 		listZoneSvcByZoneIDQuery: fmt.Sprintf(`
-			SELECT id, zone_id, service_type, enabled, created_at, updated_at 
+			SELECT id, zone_id, service_type, desired_state, actual_state, created_at, updated_at 
 			FROM %s.zone_services 
 			WHERE zone_id=$1 
 			ORDER BY service_type
 		`, schema),
 		upsertZoneServiceQuery: fmt.Sprintf(`
-			INSERT INTO %s.zone_services (id, zone_id, service_type, enabled, created_at, updated_at) 
+			INSERT INTO %s.zone_services (id, zone_id, service_type, desired_state, created_at, updated_at) 
 			VALUES ($1,$2,$3,$4,now(),now()) 
 			ON CONFLICT (zone_id, service_type) 
-			DO UPDATE SET enabled=EXCLUDED.enabled, updated_at=now() 
-			RETURNING id, zone_id, service_type, enabled, created_at, updated_at
+			DO UPDATE SET desired_state=EXCLUDED.desired_state, updated_at=now() 
+			RETURNING id, zone_id, service_type, desired_state, actual_state, created_at, updated_at
 		`, schema),
 		updateZoneServiceStatusQuery: fmt.Sprintf(`
 			WITH target_zone AS (
 				SELECT code, status FROM %s.zones WHERE id = $2
 			), upserted AS (
-				INSERT INTO %s.zone_services (id, zone_id, service_type, enabled, created_at, updated_at)
+				INSERT INTO %s.zone_services (id, zone_id, service_type, desired_state, created_at, updated_at)
 				SELECT $1, id, $3, $4, now(), now()
 				FROM %s.zones
 				WHERE id = $2 AND status = 'maintenance'
 				ON CONFLICT (zone_id, service_type)
-				DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
-				RETURNING id, zone_id, service_type, enabled, created_at, updated_at
+				DO UPDATE SET desired_state = EXCLUDED.desired_state, updated_at = now()
+				RETURNING id, zone_id, service_type, desired_state, actual_state, created_at, updated_at
 			)
 			SELECT 
 				(SELECT COUNT(*) FROM target_zone) AS zone_exists,
@@ -150,6 +150,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 				COALESCE((SELECT code FROM target_zone), '') AS zone_code,
 				(SELECT COUNT(*) FROM upserted) AS upsert_success,
 				COALESCE((SELECT id FROM upserted), '00000000-0000-0000-0000-000000000000'::uuid) AS svc_id,
+				COALESCE((SELECT actual_state FROM upserted), 'unknown') AS svc_actual_state,
 				COALESCE((SELECT created_at FROM upserted), now()) AS svc_created,
 				COALESCE((SELECT updated_at FROM upserted), now()) AS svc_updated
 		`, schema, schema, schema),
@@ -273,7 +274,8 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 		var zVal coreModel.Zone
 		var sID, sZoneID *uuid.UUID
 		var sType *string
-		var sEnabled *bool
+		var sDesiredState *bool
+		var sActualState *string
 		var sCreatedAt, sUpdatedAt *time.Time
 		if err := rows.Scan(
 			&zVal.ID,
@@ -287,7 +289,8 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 			&sID,
 			&sZoneID,
 			&sType,
-			&sEnabled,
+			&sDesiredState,
+			&sActualState,
 			&sCreatedAt,
 			&sUpdatedAt,
 		); err != nil {
@@ -302,14 +305,20 @@ func (r *ZoneRepoImpl) GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*co
 			}
 		}
 
-		if sID != nil && sZoneID != nil && sType != nil && sEnabled != nil {
+		// [COMMENT]: Map các cột từ bảng zone_services bao gồm cả desired_state và actual_state
+		if sID != nil && sZoneID != nil && sType != nil && sDesiredState != nil {
+			actualStateVal := "unknown"
+			if sActualState != nil {
+				actualStateVal = *sActualState
+			}
 			detail.Services = append(detail.Services, coreEntity.ZoneService{
-				ID:          *sID,
-				ZoneID:      *sZoneID,
-				ServiceType: coreEntity.ZoneServiceType(*sType),
-				Enabled:     *sEnabled,
-				CreatedAt:   *sCreatedAt,
-				UpdatedAt:   *sUpdatedAt,
+				ID:           *sID,
+				ZoneID:       *sZoneID,
+				ServiceType:  coreEntity.ZoneServiceType(*sType),
+				DesiredState: *sDesiredState,
+				ActualState:  actualStateVal,
+				CreatedAt:    *sCreatedAt,
+				UpdatedAt:    *sUpdatedAt,
 			})
 		}
 	}
@@ -389,7 +398,7 @@ func (r *ZoneRepoImpl) DeleteZone(ctx context.Context, id uuid.UUID) (string, er
 	return deletedCode, nil
 }
 
-// UpdateZoneService cập nhật cấu hình dịch vụ của Zone.
+// UpdateZoneService cập nhật cấu hình dịch vụ của Zone (DesiredState).
 func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, serviceType coreEntity.ZoneServiceType, enabled bool) (*coreEntity.ZoneService, string, error) {
 	newID, _ := uuid.NewV7()
 	var zoneExists int
@@ -398,6 +407,7 @@ func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 	var upsertSuccess int
 	var value coreModel.ZoneService
 
+	// [COMMENT]: Thực hiện cập nhật trạng thái mong muốn của dịch vụ trong phân vùng
 	err := r.db.QueryRow(ctx,
 		r.updateZoneServiceStatusQuery,
 		newID,
@@ -410,6 +420,7 @@ func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 		&zoneCode,
 		&upsertSuccess,
 		&value.ID,
+		&value.ActualState, // [COMMENT]: Scan actual_state từ database trả về
 		&value.CreatedAt,
 		&value.UpdatedAt,
 	)
@@ -429,7 +440,7 @@ func (r *ZoneRepoImpl) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 
 	value.ZoneID = zoneID
 	value.ServiceType = string(serviceType)
-	value.Enabled = enabled
+	value.DesiredState = enabled // [COMMENT]: Cấu hình desired_state tương ứng với biến enabled nhận vào
 
 	ent := coreModel.ZoneServiceModelToEntity(value)
 	return &ent, zoneCode, nil

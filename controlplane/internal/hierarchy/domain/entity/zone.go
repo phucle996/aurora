@@ -52,13 +52,15 @@ const (
 	ZoneServiceTypeDatabase   ZoneServiceType = "database"
 )
 
+// ZoneService defines the configuration and operational health status of a service inside a specific zone.
 type ZoneService struct {
-	ID          uuid.UUID
-	ZoneID      uuid.UUID
-	ServiceType ZoneServiceType
-	Enabled     bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID           uuid.UUID
+	ZoneID       uuid.UUID
+	ServiceType  ZoneServiceType
+	DesiredState bool   // [COMMENT]: Trạng thái cấu hình mong muốn (true: enable, false: disable)
+	ActualState  string // [COMMENT]: Trạng thái vận hành thực tế nhận từ Dataplane agent (healthy, degraded, down, unknown)
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type CreateZoneInput struct {

@@ -159,9 +159,7 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 	var enabledCount int
 	serviceRows := make([]gin.H, 0)
 	for _, s := range detail.Services {
-		if !s.Enabled {
-			continue
-		}
+		// [COMMENT]: Kiểm tra tính hợp lệ của loại service
 		switch s.ServiceType {
 		case coreEntity.ZoneServiceTypeHypervisor,
 			coreEntity.ZoneServiceTypeStorage,
@@ -173,8 +171,19 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 		default:
 			continue
 		}
-		status := "enable"
-		enabledCount++
+
+		// [COMMENT]: desiredStateString biểu diễn trạng thái mong muốn: enable hoặc disable
+		desiredStateString := "disable"
+		if s.DesiredState {
+			desiredStateString = "enable"
+			enabledCount++
+		}
+
+		// [COMMENT]: actualStateString biểu diễn trạng thái vận hành thực tế
+		actualStateString := s.ActualState
+		if actualStateString == "" {
+			actualStateString = "unknown"
+		}
 
 		key := string(s.ServiceType)
 		label := string(s.ServiceType)
@@ -194,9 +203,10 @@ func (h *ZoneHandler) GetDetailZone(c *gin.Context) {
 		}
 
 		serviceRows = append(serviceRows, gin.H{
-			"key":    key,
-			"label":  label,
-			"status": status,
+			"key":           key,
+			"label":         label,
+			"desired_state": desiredStateString,
+			"actual_state":  actualStateString,
 		})
 	}
 
@@ -328,66 +338,6 @@ func (h *ZoneHandler) DeleteZone(c *gin.Context) {
 	apires.RespondSuccess(c, nil, "zone deleted")
 }
 
-// ListZoneServices godoc
-// @Summary      List zone services
-// @Description  Retrieve all zone services (enabled/disabled status) for a specific zone
-// @Tags         zone-services
-// @Produce      json
-// @Param        zone_id path string true "Zone ID (UUID)"
-// @Success      200 {object} map[string]interface{} "Zone services fetched successfully"
-// @Failure      400 {object} map[string]interface{} "Invalid zone_id format"
-// @Failure      404 {object} map[string]interface{} "Zone not found"
-// @Failure      500 {object} map[string]interface{} "Internal server error"
-// @Router       /admin/zones/{zone_id}/services [get]
-// @Security     AdminAuth
-// func (h *ZoneHandler) ListZoneServices(c *gin.Context) {
-// 	const op = "core.zone_service.list"
-// 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-// 	defer cancel()
-
-// 	zoneID := strings.TrimSpace(c.Param("zone_id"))
-// 	parsedZoneID, parseErr := uuid.Parse(zoneID)
-// 	if parseErr != nil {
-// 		logger.HandlerWarn(c, op, parseErr, "list zone services invalid zone_id")
-// 		apires.RespondBadRequest(c, "invalid request")
-// 		return
-// 	}
-// 	items, err := h.zoneSvc.ListZoneServices(ctx, parsedZoneID)
-// 	if err != nil {
-// 		switch {
-// 		case errors.Is(err, coreTaxonomy.ErrZoneServiceZoneNotFound):
-// 			apires.RespondNotFound(c, "resource not found")
-// 		default:
-// 			logger.HandlerError(c, op, err)
-// 			apires.RespondInternalError(c, "internal_error")
-// 		}
-// 		return
-// 	}
-// 	rows := make([]gin.H, 0)
-// 	for _, item := range items {
-// 		switch item.ServiceType {
-// 		case coreEntity.ZoneServiceTypeHypervisor,
-// 			coreEntity.ZoneServiceTypeStorage,
-// 			coreEntity.ZoneServiceTypeMail,
-// 			coreEntity.ZoneServiceTypeKubernetes,
-// 			coreEntity.ZoneServiceTypeAI,
-// 			coreEntity.ZoneServiceTypeDatabase:
-// 			// Valid
-// 		default:
-// 			continue
-// 		}
-// 		rows = append(rows, gin.H{
-// 			"id":           item.ID,
-// 			"zone_id":      item.ZoneID,
-// 			"service_type": string(item.ServiceType),
-// 			"enabled":      item.Enabled,
-// 			"created_at":   item.CreatedAt,
-// 			"updated_at":   item.UpdatedAt,
-// 		})
-// 	}
-// 	apires.RespondSuccess(c, gin.H{"items": rows, "total": len(rows)}, "zone services fetched")
-// }
-
 // UpsertZoneService godoc
 // @Summary      Update zone service status
 // @Description  Enable or disable a specific service in a zone. Only allowed when zone is in maintenance status.
@@ -441,12 +391,13 @@ func (h *ZoneHandler) UpdateZoneService(c *gin.Context) {
 		return
 	}
 	apires.RespondSuccess(c, gin.H{
-		"id":           item.ID,
-		"zone_id":      item.ZoneID,
-		"service_type": string(item.ServiceType),
-		"enabled":      item.Enabled,
-		"created_at":   item.CreatedAt,
-		"updated_at":   item.UpdatedAt,
+		"id":            item.ID,
+		"zone_id":       item.ZoneID,
+		"service_type":  string(item.ServiceType),
+		"desired_state": item.DesiredState,
+		"actual_state":  item.ActualState,
+		"created_at":    item.CreatedAt,
+		"updated_at":    item.UpdatedAt,
 	}, "zone service updated")
 }
 

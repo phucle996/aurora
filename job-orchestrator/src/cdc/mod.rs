@@ -372,7 +372,7 @@ impl CdcStreamer {
         } else if table_name == "zone_services" {
             zone_id = fields.get("zone_id").cloned().unwrap_or_default();
             let service_type = fields.get("service_type").cloned().unwrap_or_default();
-            let enabled_str = fields.get("enabled").cloned().unwrap_or_default();
+            let enabled_str = fields.get("desired_state").cloned().unwrap_or_default();
             if !zone_id.is_empty() && !service_type.is_empty() {
                 let enabled = enabled_str == "t" || enabled_str == "true";
                 event_payload = serde_json::json!({

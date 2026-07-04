@@ -106,7 +106,7 @@ func (f *fakeZoneRepo) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, 
 	if f.upsertRes != nil {
 		return f.upsertRes, code, nil
 	}
-	return &coreEntity.ZoneService{ID: uuid.Must(uuid.NewV7()), ZoneID: zoneID, ServiceType: serviceType, Enabled: enabled, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, code, nil
+	return &coreEntity.ZoneService{ID: uuid.Must(uuid.NewV7()), ZoneID: zoneID, ServiceType: serviceType, DesiredState: enabled, ActualState: "unknown", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, code, nil
 }
 var _ coreRepoInterface.ZoneRepository = (*fakeZoneRepo)(nil)
 func TestZoneServiceUpsertMaintenanceOnly(t *testing.T) {

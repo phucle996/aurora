@@ -30,17 +30,19 @@ CREATE TABLE IF NOT EXISTS zone_services (
     id UUID PRIMARY KEY,
     zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
     service_type zone_service_type NOT NULL,
-    enabled BOOLEAN NOT NULL DEFAULT false,
+    desired_state BOOLEAN NOT NULL DEFAULT false, -- [COMMENT]: Trạng thái mong muốn (true: enable, false: disable)
+    actual_state zone_service_status NOT NULL DEFAULT 'unknown', -- [COMMENT]: Trạng thái vận hành thực tế
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ux_zone_services_zone_service UNIQUE (zone_id, service_type)
 );
 
-COMMENT ON TABLE zone_services IS 'Per-zone service availability matrix indicating whether each service type is enabled in a specific zone.';
+COMMENT ON TABLE zone_services IS 'Per-zone service availability matrix indicating desired and actual status of services.';
 COMMENT ON COLUMN zone_services.id IS 'Primary key of zone service row. Must be generated as UUIDv7 by application/service layer.';
-COMMENT ON COLUMN zone_services.zone_id IS 'Foreign key to zone that owns this service availability flag.';
+COMMENT ON COLUMN zone_services.zone_id IS 'Foreign key to zone that owns this service.';
 COMMENT ON COLUMN zone_services.service_type IS 'Service type supported in zone, for example mail or hypervisor.';
-COMMENT ON COLUMN zone_services.enabled IS 'Whether the given service type is enabled for this zone.';
+COMMENT ON COLUMN zone_services.desired_state IS 'Desired state indicating if service is enabled (true) or disabled (false) for this zone.';
+COMMENT ON COLUMN zone_services.actual_state IS 'Actual operational health state of service inside this zone.';
 COMMENT ON COLUMN zone_services.created_at IS 'Timestamp when zone service row was created.';
 COMMENT ON COLUMN zone_services.updated_at IS 'Timestamp when zone service row was last updated.';
 
