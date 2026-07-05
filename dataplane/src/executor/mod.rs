@@ -1,5 +1,6 @@
 pub mod hypervisor;
 pub mod mail;
+pub mod storage;
 
 // Sử dụng JobPayload từ module job_lifecycle mới đổi tên
 use crate::job_lifecycle::message::JobPayload;

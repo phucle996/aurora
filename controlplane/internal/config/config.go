@@ -131,6 +131,7 @@ type SchemaSQLCfg struct {
 	IAM        string
 	Mail       string
 	Hypervisor string // [NEW COMMENT]: Tên SQL schema lưu trữ thông tin của phân hệ Hypervisor Nodes
+	Storage    string // [COMMENT]: Tên SQL schema dành riêng cho phân hệ Object Storage (MinIO)
 }
 
 // [COMMENT]: VaultCfg chứa thông tin kết nối và quản lý định danh khóa trong Vault Transit
@@ -254,6 +255,7 @@ func LoadConfig() *Config {
 			IAM:        "iam",
 			Mail:       "mail",
 			Hypervisor: "hypervisor", // [NEW COMMENT]: Khởi tạo giá trị mặc định là schema 'hypervisor'
+			Storage:    "storage",    // [COMMENT]: Khởi tạo tên schema mặc định cho Object Storage là 'storage'
 		},
 		// [COMMENT]: Nạp cấu hình Vault từ môi trường (env) để khởi tạo client
 		Vault: VaultCfg{

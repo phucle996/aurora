@@ -13,6 +13,7 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,6 +31,8 @@ type Modules struct {
 	Hypervisor *hypervisor.HypervisorModule
 	// Mail là module vệ tinh Tier-1 (gửi mail). Cho phép chạy ở trạng thái suy giảm (Degraded).
 	Mail *mail.Module
+	// Storage là module vệ tinh Tier-2 (lưu trữ object). Cho phép chạy ở trạng thái suy giảm (Degraded).
+	Storage *storage.StorageModule
 	// L1Registry là bộ đăng ký in-memory cache L1 tĩnh.
 	CacheEngine *cacheengine.CacheRegistry
 	// DeltaEngine điều phối đồng bộ động cấu hình trong RAM, DB, NATS.
@@ -119,6 +122,13 @@ func NewGlobalModules(cfg *config.Config,
 		mailModule = mail.NewDegradedModule(err)
 	}
 
+	// [COMMENT]: Khởi tạo phân hệ Storage (Tier 2). Hỗ trợ chạy ở chế độ suy giảm (Degraded Mode).
+	storageModule, err := storage.NewModule(cfg, db, rds, cacheEngine)
+	if err != nil {
+		logger.SysError("graceful.degradation.storage", fmt.Sprintf("Failed to initialize storage module: %v. Running in degraded mode.", err))
+		storageModule = storage.NewDegradedModule(err)
+	}
+
 	// 8) Chỉ mark ready khi toàn bộ module graph đã dựng xong.
 	health.MarkReady()
 	keepProbeRunning = true
@@ -129,6 +139,7 @@ func NewGlobalModules(cfg *config.Config,
 		IAM:         iamModule,
 		Hypervisor:  hypervisorModule,
 		Mail:        mailModule,
+		Storage:     storageModule,
 		CacheEngine: cacheEngine,
 		probeCancel: probeCancel,
 	}
@@ -162,6 +173,9 @@ func (m *Modules) Stop() {
 	}
 	if m.Mail != nil {
 		_ = m.Mail.Stop(context.Background())
+	}
+	if m.Storage != nil {
+		m.Storage.Stop()
 	}
 	if m.Core != nil {
 		m.Core.Stop()

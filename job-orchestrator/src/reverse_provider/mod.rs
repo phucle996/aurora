@@ -1,5 +1,9 @@
+pub mod decision;
+pub mod hypervisor;
 pub mod mail;
+pub mod storage;
 pub mod zone;
+
 
 use crate::config::Config;
 use crate::observability::logger::Logger;

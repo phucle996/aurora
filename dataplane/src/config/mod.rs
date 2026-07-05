@@ -1,34 +1,5 @@
 use std::env;
 
-/// ============================================================================
-/// 📂 MODULE: config/mod.rs - Bộ Nạp Cấu Hình Dataplane (aurora-dataplane)
-/// ============================================================================
-///
-/// 📌 VAI TRÒ (ROLE):
-///   - Nạp toàn bộ cấu hình hạ tầng và định danh từ các biến môi trường (.env / system ENV).
-///   - Cung cấp một struct `Config` có trạng thái bất biến (immutable) sau khi khởi động.
-///
-/// 🎯 SOURCE OF TRUTH (SoT):
-///   - Môi trường chạy hệ thống (Environment Variables). File `.env` đóng vai trò SoT local
-///     trong quá trình phát triển (development). Trên production, SoT được quyết định bởi
-///     K8s ConfigMap/Secret hoặc Systemd Environment.
-///
-/// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
-///   - Module này chỉ nạp cấu hình hệ thống cấp thấp (infrastructure-level).
-///   - Tuyệt đối KHÔNG chứa hoặc nạp các thông tin cấp độ Tenant (`tenant_id`) hay thông tin
-///     nhạy cảm của người dùng cuối. Mọi cấu hình liên quan đến Tenant đều do Controlplane (CP)
-///     quản lý và phân lập trước khi phân phối lệnh.
-///
-/// 🔄 CALLSITE FLOW:
-///   - Được gọi duy nhất tại điểm bắt đầu (`entry point`) trong `src/main.rs` ngay khi boot:
-///     `let cfg = Config::load();`
-///   - Thực thể `Config` sau đó sẽ được đóng gói bằng `Arc<Config>` và phân phối (clone reference)
-///     cho các module: WorkerPool, JobReceiver, RPC Client/Server, PolicyEngine, Infra Connections.
-///
-/// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
-///   - Nếu thay đổi các biến môi trường này, hệ thống BẮT BUỘC phải thực hiện rolling restart
-///     để cấu hình mới có hiệu lực. Nếu muốn cấu hình động không downtime, hãy sử dụng `policyengine/`.
-///
 use std::str::FromStr;
 
 /// 🛡️ CHẾ ĐỘ BẢO MẬT TRUYỀN DẪN REDIS (REDIS SECURITY MODE)
@@ -94,6 +65,11 @@ pub struct Config {
     pub stalwart_lmtp_host: String,
     /// Cổng kết nối Stalwart LMTP (thường là 24)
     pub stalwart_lmtp_port: u16,
+
+    /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
+    pub minio_host: Option<String>,
+    /// [COMMENT]: Cổng API dịch vụ MinIO (thường là 9000) (Optional)
+    pub minio_port: Option<u16>,
 
     // ============================================================================
     // 🔒 CẤU HÌNH PROXMOX HYPERVISOR API (Chỉ lưu tại Dataplane — Không lên Controlplane)
@@ -174,6 +150,10 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse::<u16>().ok())
                 .unwrap_or(24),
+
+            // [COMMENT]: Nạp cấu hình MinIO (không có fallback mặc định để hỗ trợ báo trạng thái unknown khi thiếu config)
+            minio_host: env::var("MINIO_HOST").ok(),
+            minio_port: env::var("MINIO_PORT").ok().and_then(|p| p.parse().ok()),
 
             // ============================================================================
             // 🔒 CẤU HÌNH PROXMOX HYPERVISOR (Least Privilege API Token — env-only)

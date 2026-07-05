@@ -16,11 +16,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// makeRoleCache tạo L1 cache với mock loader cho rbac_role trả về perms cố định.
+// makeRoleCache tạo L1 cache với mock loader cho tenant_role và user_role trả về perms cố định.
 func makeRoleCache(perms []string) *cacheengine.CacheRegistry {
 	l1Cache := cacheengine.NewL1Cache()
 	registry := cacheengine.NewCacheRegistry(l1Cache)
-	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+	cacheengine.Register(registry, "tenant_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+		return &iamproto.RoleEntry{Permissions: perms}, nil
+	})
+	cacheengine.Register(registry, "user_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
 		return &iamproto.RoleEntry{Permissions: perms}, nil
 	})
 	return registry

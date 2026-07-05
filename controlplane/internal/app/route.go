@@ -19,6 +19,7 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/storage"
 	"controlplane/pkg/apires"
 
 	"github.com/gin-gonic/gin"
@@ -68,6 +69,16 @@ func NewGlobalRoutes(router *gin.Engine, m *Modules) {
 		fallbackGroup := router.Group("/api/v1/mail")
 		fallbackGroup.Any("/*any", func(c *gin.Context) {
 			apires.RespondServiceUnavailable(c, "MAIL_MODULE_DEGRADED: Phân hệ gửi Mail hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
+		})
+	}
+
+	// [COMMENT]: 3. Storage Module (Tier 2) hỗ trợ Fallback Route trả về HTTP 503 khi disabled hoặc degraded
+	if m.Storage != nil && m.Storage.IsEnabled() {
+		storage.RegisterRoutes(router, m.Storage)
+	} else {
+		fallbackGroup := router.Group("/api/v1/storage")
+		fallbackGroup.Any("/*any", func(c *gin.Context) {
+			apires.RespondServiceUnavailable(c, "STORAGE_MODULE_DEGRADED: Phân hệ Object Storage hiện đang tạm ngưng hoạt động do lỗi cấu hình hạ tầng.")
 		})
 	}
 }

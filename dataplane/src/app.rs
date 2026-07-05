@@ -63,6 +63,12 @@ impl AppContainer {
             self.redis_internal_zone.clone(),
         );
 
+        // [COMMENT]: Khởi động Storage Workload Watchdog giám sát MinIO L2 (HA & Decoupled)
+        crate::executor::storage::StorageWorkloadMonitor::start(
+            self.config.clone(),
+            self.redis_internal_zone.clone(),
+        );
+
         // Sinh node_id độc nhất cho instance Dataplane này (dùng hostname hoặc uuid làm fallback)
         let node_id = hostname::get()
             .map(|h| h.to_string_lossy().into_owned())

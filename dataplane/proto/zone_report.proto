@@ -15,6 +15,11 @@ message MailWorkload {
     int32 capacity = 2;
 }
 
+message StorageWorkload {
+    string status = 1;
+    int32 capacity = 2;
+}
+
 message HypervisorNode {
     string node_code = 1;
     string status = 2;
@@ -30,6 +35,7 @@ message HypervisorNode {
 message Workloads {
     MailWorkload mail = 1;
     repeated HypervisorNode hypervisors = 2;
+    StorageWorkload storage = 3; // [NEW]: Thêm thông tin giám sát lưu trữ (MinIO Cluster)
 }
 
 message ZoneReport {
