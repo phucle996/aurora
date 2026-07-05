@@ -360,3 +360,5 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 
 	return nil
 }
+
+

@@ -12,7 +12,7 @@
  */
 
 import { createContext, useContext } from "react";
-import type { UserSession } from "@/lib/api/session";
+import type { UserSession, RenderContext, UserProfile } from "@/lib/api/session";
 
 // [COMMENT]: Định nghĩa notice để hiển thị một lần duy nhất khi phiên hết hạn
 export type UserSessionNotice = "session_expired" | "";
@@ -22,6 +22,8 @@ export type UserSessionState = {
   loading: boolean;
   authenticated: boolean;
   session: UserSession | null;
+  renderContext: RenderContext | null; // [COMMENT]: Lưu thông tin menu động và capabilities của actor
+  profile: UserProfile | null;         // [COMMENT]: Lưu thông tin cá nhân hiển thị trên console header
   error: string;
   notice: UserSessionNotice;
 };
@@ -36,6 +38,8 @@ export type UserSessionContextValue = UserSessionState & {
   clearSession: () => void;
   // [COMMENT]: Xoá thông báo one-shot sau khi đã hiển thị toast xong
   consumeNotice: () => void;
+  // [COMMENT]: Hàm check permission động hỗ trợ wildcard match
+  checkPermission: (matchKey: string, action: string) => boolean;
 };
 
 // [COMMENT]: Khởi tạo React Context cho User Session

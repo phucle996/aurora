@@ -105,33 +105,30 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		// Format DB đã lưu sẵn: <cấp1>:<workspace_uuid>:<module>:<object>:<behavior>
 		tenantID := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
 
-		var scopeCtx string   // cấp 1: tenant_uuid hoặc username
-		var cacheParam string // param để tra cứu L1 cache
+		var scopeCtx string
+		var cacheParam string
+		var cacheNamespace string
 
 		if tenantID != "" {
-			// [COMMENT]: Nhánh Tenant — cấp 1 là tenant_uuid
-			// DB lưu key dạng: tenant_uuid:workspace_uuid:module:object:behavior
+			// [COMMENT]: Nhánh Tenant — cache key bậc 1: tenant_role:<role_id>:<tenant_id>
 			scopeCtx = tenantID
-			cacheParam = roleID + ":" + tenantID + ":" + workspaceID
+			cacheParam = roleID + ":" + tenantID
+			cacheNamespace = "tenant_role"
 		} else {
-			// [COMMENT]: Nhánh Personal — cấp 1 là username (sub từ JWT, không phải user_uuid)
-			// Cần cả X-User-Name để build key và X-User-ID để query DB
+			// [COMMENT]: Nhánh Personal — cache key bậc 1: user_role:<userID>
 			username := strings.TrimSpace(c.GetHeader(constant.HeaderXUserName))
 			if username == "" {
 				apires.RespondForbidden(c, "missing username context for personal scope")
 				c.Abort()
 				return
 			}
-			// DB lưu key dạng: username:workspace_uuid:module:object:behavior
 			scopeCtx = username
-			cacheParam = "personal:" + userID + ":" + workspaceID
+			cacheParam = userID
+			cacheNamespace = "user_role"
 		}
 
-		// 7. Build expected permission key 5 cấp đầy đủ
-		expectedKey := scopeCtx + ":" + workspaceID + ":" + requiredPermission
-
-		// 8. Tra cứu L1 cache rbac_role theo param context đã xác định
-		val, err := cacheEngine.GetOrLoad(ctx, "rbac_role", cacheParam)
+		// 8. Tra cứu L1 cache theo namespace tương ứng
+		val, err := cacheEngine.GetOrLoad(ctx, cacheNamespace, cacheParam)
 		if err != nil || val == nil {
 			apires.RespondForbidden(c, "role permissions not found")
 			c.Abort()
@@ -145,11 +142,13 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 			return
 		}
 
-		// 9. So khớp exact expected key với danh sách quyền tĩnh 5 cấp đã lưu sẵn trong cache.
-		// DB đã build key đầy đủ nên không có bất kỳ logic runtime nào có thể bị bypass.
+		// 9. So khớp expected key hoặc wildcard platform key với danh sách quyền tĩnh đã gộp trong cache.
+		expectedKey := scopeCtx + ":" + workspaceID + ":" + requiredPermission
+		wildcardExpectedKey := scopeCtx + ":00000000-0000-0000-0000-000000000000:" + requiredPermission
+
 		hasPermission := false
 		for _, p := range roleEntry.Permissions {
-			if strings.EqualFold(p, expectedKey) {
+			if strings.EqualFold(p, expectedKey) || strings.EqualFold(p, wildcardExpectedKey) {
 				hasPermission = true
 				break
 			}

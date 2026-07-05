@@ -106,3 +106,50 @@ func (h *RbacHandler) ListTenantRoles(c *gin.Context) {
 
 	apires.RespondSuccess(c, gin.H{"roles": resp}, "success")
 }
+
+// [COMMENT]: GetRenderContext trả về cấu hình Navigation và Capabilities cho console UI dựa theo user id
+func (h *RbacHandler) GetRenderContext(c *gin.Context) {
+	const op = "iam.rbac.get_render_context"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// [COMMENT]: Lấy userID trực tiếp từ x-user-id header do Edge Gateway/acr chuyển tiếp xuống
+	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
+	if userIDStr == "" {
+		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
+		apires.RespondUnauthorized(c, "unauthorized")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "invalid user id format")
+		apires.RespondBadRequest(c, "invalid request")
+		return
+	}
+
+	renderContext, err := h.rbacSvc.GetRenderContext(ctx, userID)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal error occurred")
+		return
+	}
+
+	type navItemDTO struct {
+		Key     string   `json:"key"`
+		Actions []string `json:"actions"`
+	}
+	navDTOs := make([]navItemDTO, 0, len(renderContext.Navigation))
+	for _, nav := range renderContext.Navigation {
+		navDTOs = append(navDTOs, navItemDTO{
+			Key:     nav.Key,
+			Actions: nav.Actions,
+		})
+	}
+
+	apires.RespondSuccess(c, gin.H{
+		"navigation":   navDTOs,
+		"capabilities": renderContext.Capabilities,
+	}, "success")
+}
+

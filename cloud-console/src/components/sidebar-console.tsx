@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useUserSession } from "@/hooks/useUserSession";
 
 // [COMMENT]: Định nghĩa cấu trúc Item trong Sidebar. 
 // Đảm bảo kiểu dữ liệu chặt chẽ cho từng Domain và Menu Item.
@@ -59,68 +60,83 @@ export default function SidebarConsole({
   activeId,
   setActiveId
 }: SidebarConsoleProps) {
+  const { renderContext } = useUserSession();
   const router = useRouter();
   const pathname = usePathname();
-  
-  // [COMMENT]: Danh sách các nhóm và item menu được phân chia chuẩn hóa theo triết lý "domain-driven boundary"
-  // Thay vì đặt Dashboard lên đầu, nhóm OVERVIEW và INFRASTRUCTURE được đưa lên ưu tiên.
-  const menuGroups: SidebarGroup[] = [
-    {
-      title: "Overview",
-      items: [
-        { id: "overview", name: "Overview", icon: Compass, path: "/" }
-      ]
-    },
-    {
-      title: "Infrastructure",
-      items: [
-        { id: "zones", name: "Zones", icon: Globe, path: "/" },
-        { id: "hypervisors", name: "Hypervisors", icon: Cpu, path: "/" },
-        { id: "storage", name: "Storage", icon: HardDrive, path: "/" },
-        { id: "networks", name: "Networks", icon: Network, path: "/" },
-        { id: "load-balancers", name: "Load Balancers", icon: GitMerge, path: "/" }
-      ]
-    },
-    {
-      title: "Platform",
-      items: [
-        { id: "kubernetes", name: "Kubernetes", icon: Layers, path: "/" },
-        { id: "resources", name: "Resources", icon: FolderGit, path: "/" },
-        { id: "templates", name: "Templates", icon: Copy, path: "/" }
-      ]
-    },
-    {
-      title: "Workspaces",
-      items: [
-        { id: "tenants", name: "Tenants", icon: Building2, path: "/tenants" },
-        { id: "workspaces", name: "Workspaces", icon: LayoutGrid, path: "/" },
-        { id: "vms", name: "Virtual Machines", icon: Server, path: "/" }
-      ]
-    },
-    {
-      title: "Security",
-      items: [
-        { id: "vault", name: "Vault", icon: Lock, path: "/" },
-        { id: "iam", name: "Identity & Access", icon: UserCheck, path: "/" },
-        { id: "audit", name: "Audit Logs", icon: History, path: "/" }
-      ]
-    },
-    {
-      title: "Operations",
-      items: [
-        { id: "monitoring", name: "Monitoring", icon: Activity, path: "/" },
-        { id: "incidents", name: "Incidents", icon: AlertCircle, badge: 2, path: "/" },
-        { id: "activity", name: "Activity", icon: Clock, path: "/" }
-      ]
-    },
-    {
-      title: "Administration",
-      items: [
-        { id: "users", name: "Users", icon: Users, path: "/" },
-        { id: "settings", name: "Settings", icon: Settings, path: "/" }
-      ]
+
+  const hasAccess = React.useCallback((matchKey: string): boolean => {
+    const navs = renderContext?.navigation;
+    if (!navs) return false;
+
+    // Super admin match all
+    if (navs.some(n => n.key === "*")) return true;
+
+    const matchParts = matchKey.split(":");
+    if (matchParts.length !== 4) return false;
+
+    return navs.some(nav => {
+      const navParts = nav.key.split(":");
+      if (navParts.length !== 4) return false;
+      return matchParts.every((part, i) => part === "*" || part === navParts[i]);
+    });
+  }, [renderContext]);
+
+  // [COMMENT]: Map các menu động từ renderContext nhận từ API
+  const menuGroups = React.useMemo(() => {
+    if (!renderContext?.navigation) return [];
+
+    const allItems = [
+      {
+        id: "workspaces",
+        name: "Workspaces",
+        icon: LayoutGrid,
+        path: "/workspaces",
+        matchKey: "*:*:tenant:workspaces"
+      },
+      {
+        id: "admin-users",
+        name: "User Directory",
+        icon: Users,
+        path: "/admin/users",
+        matchKey: "*:*:iam:users"
+      },
+      {
+        id: "admin-rbac",
+        name: "Access Control (RBAC)",
+        icon: Lock,
+        path: "/admin/rbac",
+        matchKey: "*:*:iam:rbac"
+      }
+    ];
+
+    const consoleItems: SidebarItem[] = [];
+    const adminItems: SidebarItem[] = [];
+
+    for (const item of allItems) {
+      if (hasAccess(item.matchKey)) {
+        if (item.id.startsWith("admin-")) {
+          adminItems.push(item);
+        } else {
+          consoleItems.push(item);
+        }
+      }
     }
-  ];
+
+    const groups = [];
+    if (consoleItems.length > 0) {
+      groups.push({
+        title: "Console",
+        items: consoleItems,
+      });
+    }
+    if (adminItems.length > 0) {
+      groups.push({
+        title: "System Administration",
+        items: adminItems,
+      });
+    }
+    return groups;
+  }, [renderContext, hasAccess]);
 
   return (
     <aside

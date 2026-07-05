@@ -65,9 +65,6 @@ func (f *RedisFanout) SetCallbacks(onMessage func(key string, payload []byte, ve
 // Publish thực thi Lua script để tự động tăng version theo key và phát sự kiện đồng bộ.
 // Trả về số phiên bản mới sinh ra và lỗi (nếu có).
 func (f *RedisFanout) Publish(ctx context.Context, key string, payload []byte) (int64, error) {
-	if f == nil || f.rdb == nil {
-		return 0, nil
-	}
 
 	// Xây dựng version key độc lập cho từng key cụ thể theo định dạng {module_name}:version:{namespace}:{params}
 	var versionKey string

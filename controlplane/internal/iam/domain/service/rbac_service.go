@@ -10,8 +10,8 @@ import (
 
 // [COMMENT]: RbacService định nghĩa interface tối giản (skeleton) cho các business logic liên quan đến RBAC
 type RbacService interface {
-	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions dạng binary (bytea) của user trong workspace
-	GetUserRolePermissions(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error)
+	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions dạng binary (bytea) của user trên toàn bộ workspaces theo user id
+	GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error)
 
 	// [COMMENT]: AssignUserRole gán role và permissions tĩnh cho user trong một workspace
 	AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error
@@ -24,4 +24,7 @@ type RbacService interface {
 
 	// [COMMENT]: ListTenantRoles lấy danh sách roles gán cho tenant cụ thể
 	ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error)
+
+	// [COMMENT]: GetRenderContext sinh cấu hình Navigation và Capabilities từ bytes RBAC L1 cache theo user id
+	GetRenderContext(ctx context.Context, userID uuid.UUID) (*iamEntity.RenderContext, error)
 }

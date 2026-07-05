@@ -22,6 +22,7 @@ type User struct {
 	Phone        *string
 	PasswordHash string
 	Status       UserStatus
+	Level        int32 // [COMMENT]: Level thô (chỉ dùng nội bộ ở Service/Repo, ẩn khi trả về Client)
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

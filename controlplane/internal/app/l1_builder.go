@@ -52,71 +52,64 @@ func RegisterL1Loaders(
 	modules *Modules,
 ) {
 
-	// 6. Đăng ký loader cho "rbac_role" phục vụ phân quyền RBAC theo mô hình ID-based 5 cấp.
-	//
-	// Hai dạng param:
-	//   - Nhánh Tenant:   "<role_id>:<tenant_id>:<workspace_id>"
-	//   - Nhánh Personal: "personal:<user_id>:<workspace_id>"
-	//
-	// DB đã lưu sẵn full 5-part key nên repo trả về danh sách key hoàn chỉnh.
-	// Loader chỉ cần gọi đúng repo method và đóng gói kết quả vào binary Protobuf.
-	cacheengine.Register(registry, "rbac_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
-		// [COMMENT]: Phân tách tham số param thành 3 phần ngăn cách bởi ":"
-		parts := strings.SplitN(param, ":", 3)
-		if len(parts) != 3 {
-			return nil, fmt.Errorf("rbac_role loader: invalid param format %q, expected <role_id|'personal'>:<id>:<workspace_id>", param)
+	// [COMMENT]: 6. Đăng ký loader cho "user_role" lưu trữ toàn bộ permissions của user theo user id
+	cacheengine.Register(registry, "user_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+		userIDStr := strings.TrimSpace(param)
+		if userIDStr == "" {
+			return nil, fmt.Errorf("user_role loader: empty user id parameter")
+		}
+		userID, parseErr := uuid.Parse(userIDStr)
+		if parseErr != nil {
+			return nil, fmt.Errorf("user_role loader: invalid userID %q: %w", userIDStr, parseErr)
 		}
 
-		var binaryData []byte
-		var err error
-
-		if strings.EqualFold(parts[0], "personal") {
-			// [COMMENT]: Nhánh Personal — trích xuất user_id và workspace_id để query trực tiếp từ user_role
-			userID, parseErr := uuid.Parse(parts[1])
-			if parseErr != nil {
-				return nil, fmt.Errorf("rbac_role loader: invalid user_id %q: %w", parts[1], parseErr)
-			}
-			workspaceID, parseErr := uuid.Parse(parts[2])
-			if parseErr != nil {
-				return nil, fmt.Errorf("rbac_role loader: invalid workspace_id %q: %w", parts[2], parseErr)
-			}
-
-			// [COMMENT]: Lấy raw binary permissions từ DB thông qua repository
-			binaryData, err = modules.IAM.RbacRepository.GetUserRolePermissions(ctx, userID, workspaceID)
-			if err != nil {
-				return nil, fmt.Errorf("rbac_role loader: load user role permissions: %w", err)
-			}
-		} else {
-			// [COMMENT]: Nhánh Tenant — trích xuất role_id, tenant_id, và workspace_id
-			roleID, parseErr := uuid.Parse(parts[0])
-			if parseErr != nil {
-				return nil, fmt.Errorf("rbac_role loader: invalid role_id %q: %w", parts[0], parseErr)
-			}
-			tenantID, parseErr := uuid.Parse(parts[1])
-			if parseErr != nil {
-				return nil, fmt.Errorf("rbac_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
-			}
-			workspaceID, parseErr := uuid.Parse(parts[2])
-			if parseErr != nil {
-				return nil, fmt.Errorf("rbac_role loader: invalid workspace_id %q: %w", parts[2], parseErr)
-			}
-
-			// [COMMENT]: Lấy raw binary permissions của tenant từ DB
-			binaryData, err = modules.IAM.RbacRepository.GetTenantRolePermissions(ctx, tenantID, workspaceID, roleID)
-			if err != nil {
-				return nil, fmt.Errorf("rbac_role loader: load tenant role permissions: %w", err)
-			}
+		// [COMMENT]: Lấy raw binary permissions từ DB thông qua repository theo userID
+		binaryData, err := modules.IAM.RbacRepository.GetUserRolePermissions(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("user_role loader: load user role permissions by userID: %w", err)
 		}
 
-		// [COMMENT]: Nếu không có dữ liệu binary trả về, trả về RoleEntry rỗng để tránh lỗi nil pointer
 		if len(binaryData) == 0 {
 			return &iamproto.RoleEntry{Permissions: []string{}}, nil
 		}
 
-		// [COMMENT]: Giải mã raw binary bytes (Protobuf format) thành đối tượng RoleEntry để lưu trữ trên L1 cache RAM
 		var roleEntry iamproto.RoleEntry
 		if err := proto.Unmarshal(binaryData, &roleEntry); err != nil {
-			return nil, fmt.Errorf("rbac_role loader: failed to unmarshal binary role entry: %w", err)
+			return nil, fmt.Errorf("user_role loader: failed to unmarshal binary role entry: %w", err)
+		}
+
+		return &roleEntry, nil
+	})
+
+	// [COMMENT]: 7. Đăng ký loader cho "tenant_role" lưu trữ toàn bộ permissions của tenant theo role
+	cacheengine.Register(registry, "tenant_role", 15*time.Minute, func(ctx context.Context, param string) (*iamproto.RoleEntry, error) {
+		parts := strings.SplitN(param, ":", 2) // <role_id>:<tenant_id>
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("tenant_role loader: invalid param format %q, expected <role_id>:<tenant_id>", param)
+		}
+
+		roleID, parseErr := uuid.Parse(parts[0])
+		if parseErr != nil {
+			return nil, fmt.Errorf("tenant_role loader: invalid role_id %q: %w", parts[0], parseErr)
+		}
+		tenantID, parseErr := uuid.Parse(parts[1])
+		if parseErr != nil {
+			return nil, fmt.Errorf("tenant_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
+		}
+
+		// [COMMENT]: Lấy raw binary permissions của tenant từ DB theo tenantID và roleID
+		binaryData, err := modules.IAM.RbacRepository.GetTenantRolePermissions(ctx, tenantID, roleID)
+		if err != nil {
+			return nil, fmt.Errorf("tenant_role loader: load tenant role permissions: %w", err)
+		}
+
+		if len(binaryData) == 0 {
+			return &iamproto.RoleEntry{Permissions: []string{}}, nil
+		}
+
+		var roleEntry iamproto.RoleEntry
+		if err := proto.Unmarshal(binaryData, &roleEntry); err != nil {
+			return nil, fmt.Errorf("tenant_role loader: failed to unmarshal binary role entry: %w", err)
 		}
 
 		return &roleEntry, nil

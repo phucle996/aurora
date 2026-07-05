@@ -2,13 +2,18 @@ package iamSvcImpl
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: RbacService thực hiện interface RbacService tối giản dạng skeleton cho phase tiếp theo
@@ -28,10 +33,94 @@ func NewRbacService(
 	}
 }
 
-// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user trong workspace (skeleton)
-func (s *RbacService) GetUserRolePermissions(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error) {
-	// [COMMENT]: Logic nghiệp vụ và kiểm tra cache sẽ được viết ở phase tiếp theo
-	return nil, nil
+// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user trên tất cả workspaces theo user id
+func (s *RbacService) GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error) {
+	// [COMMENT]: Sử dụng cacheengine registry và loader "user_role" với key là userID
+	val, err := s.cacheEngine.GetOrLoad(ctx, "user_role", userID.String())
+	if err != nil {
+		return nil, fmt.Errorf("rbac service: get or load user role permissions from cache: %w", err)
+	}
+
+	roleEntry, ok := val.(*iamproto.RoleEntry)
+	if !ok {
+		return nil, errors.New("rbac service: cached item is not of type *RoleEntry")
+	}
+
+	// [COMMENT]: Marshal ngược struct sang binary để khớp interface []byte
+	bytes, err := proto.Marshal(roleEntry)
+	if err != nil {
+		return nil, fmt.Errorf("rbac service: marshal role entry to binary: %w", err)
+	}
+	return bytes, nil
+}
+
+// [COMMENT]: GetRenderContext sinh cấu hình Navigation và Capabilities từ bytes RBAC L1 cache theo user id
+func (s *RbacService) GetRenderContext(ctx context.Context, userID uuid.UUID) (*iamEntity.RenderContext, error) {
+	// [COMMENT]: Lấy danh sách permissions của user thông qua key user_role:<userID>
+	val, err := s.cacheEngine.GetOrLoad(ctx, "user_role", userID.String())
+	if err != nil {
+		return nil, fmt.Errorf("rbac service: get render context from cache: %w", err)
+	}
+
+	roleEntry, ok := val.(*iamproto.RoleEntry)
+	if !ok {
+		return nil, errors.New("rbac service: cached item is not of type *RoleEntry")
+	}
+
+	// [COMMENT]: Map gom nhóm permissions theo 4 phần đầu tiên
+	groupMap := make(map[string][]string)
+	hasWildcard := false
+	capabilities := make(map[string]bool)
+
+	for _, p := range roleEntry.Permissions {
+		capabilities[p] = true
+
+		if p == "*" || p == "*:*:*" || p == "*:*" {
+			hasWildcard = true
+			continue
+		}
+
+		parts := strings.Split(p, ":")
+		if len(parts) < 5 {
+			continue
+		}
+
+		key := strings.Join(parts[0:4], ":")
+		behavior := parts[4]
+
+		// Tránh add behavior trùng lặp
+		exists := false
+		for _, b := range groupMap[key] {
+			if b == behavior {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			groupMap[key] = append(groupMap[key], behavior)
+		}
+	}
+
+	var navigation []iamEntity.NavigationItem
+	if hasWildcard {
+		// [COMMENT]: Tài khoản Super Admin sẽ nhận wildcard Key * để được match đầy đủ menu
+		navigation = append(navigation, iamEntity.NavigationItem{
+			Key:     "*",
+			Actions: []string{"*"},
+		})
+	}
+
+	for k, actions := range groupMap {
+		navigation = append(navigation, iamEntity.NavigationItem{
+			Key:     k,
+			Actions: actions,
+		})
+	}
+
+	return &iamEntity.RenderContext{
+		Navigation:   navigation,
+		Capabilities: capabilities,
+	}, nil
 }
 
 // [COMMENT]: AssignUserRole gán role và permissions cho user (skeleton)

@@ -477,3 +477,5 @@ func computeBitmapIndex(value string) int64 {
 	val := strings.ToLower(strings.TrimSpace(value))
 	return int64(crc32.ChecksumIEEE([]byte(val)) % registerBitmapSize)
 }
+
+

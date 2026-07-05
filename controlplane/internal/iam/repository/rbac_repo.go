@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -35,24 +34,20 @@ func NewRbacRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.Rb
 	}
 }
 
-// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user trong workspace
-func (r *RbacRepository) GetUserRolePermissions(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error) {
-	// [COMMENT]: Query toàn bộ list_perm của user_role tương ứng với userID.
-	// Hỗ trợ lấy cả quyền cụ thể cho workspaceID và quyền wildcard (nil UUID '00000000-0000-0000-0000-000000000000').
+// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user trên tất cả workspaces theo user id
+func (r *RbacRepository) GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error) {
 	query := fmt.Sprintf(`
 		SELECT list_perm FROM %s.user_role
-		WHERE user_id = $1 AND (workspace_id = $2 OR workspace_id = '00000000-0000-0000-0000-000000000000')
+		WHERE user_id = $1
 	`, r.schema)
 
-	rows, err := r.db.Query(ctx, query, userID, workspaceID)
+	rows, err := r.db.Query(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("rbac repo: query user role permissions: %w", err)
 	}
 	defer rows.Close()
 
 	var mergedPerms []string
-	nilUUIDStr := "00000000-0000-0000-0000-000000000000"
-	targetWSStr := workspaceID.String()
 
 	for rows.Next() {
 		var binaryData []byte
@@ -68,21 +63,14 @@ func (r *RbacRepository) GetUserRolePermissions(ctx context.Context, userID uuid
 			return nil, fmt.Errorf("rbac repo: unmarshal user role entry: %w", err)
 		}
 
-		// [COMMENT]: Map động Nil UUID thành workspaceID thực tế trước khi gộp vào cache
-		for _, p := range roleEntry.Permissions {
-			mappedPerm := p
-			if workspaceID != uuid.Nil {
-				mappedPerm = strings.ReplaceAll(p, ":"+nilUUIDStr+":", ":"+targetWSStr+":")
-			}
-			mergedPerms = append(mergedPerms, mappedPerm)
-		}
+		mergedPerms = append(mergedPerms, roleEntry.Permissions...)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// [COMMENT]: Đóng gói danh sách quyền đã gộp và map động trở lại thành binary Protobuf
+	// [COMMENT]: Đóng gói danh sách quyền đã gộp trở lại thành binary Protobuf
 	mergedEntry := &iamproto.RoleEntry{
 		Permissions: mergedPerms,
 	}
@@ -94,24 +82,20 @@ func (r *RbacRepository) GetUserRolePermissions(ctx context.Context, userID uuid
 	return mergedBytes, nil
 }
 
-// [COMMENT]: GetTenantRolePermissions lấy danh sách permissions binary của tenant trong workspace
-func (r *RbacRepository) GetTenantRolePermissions(ctx context.Context, tenantID uuid.UUID, workspaceID uuid.UUID, roleID uuid.UUID) ([]byte, error) {
-	// [COMMENT]: Query toàn bộ list_perm của tenant_role tương ứng với tenantID và roleID.
-	// Hỗ trợ lấy cả quyền cụ thể cho workspaceID và quyền wildcard (nil UUID '00000000-0000-0000-0000-000000000000').
+// [COMMENT]: GetTenantRolePermissions lấy danh sách permissions binary của tenant trên tất cả workspaces theo role
+func (r *RbacRepository) GetTenantRolePermissions(ctx context.Context, tenantID uuid.UUID, roleID uuid.UUID) ([]byte, error) {
 	query := fmt.Sprintf(`
 		SELECT list_perm FROM %s.tenant_role
-		WHERE tenant_id = $1 AND role_id = $2 AND (workspace_id = $3 OR workspace_id = '00000000-0000-0000-0000-000000000000')
+		WHERE tenant_id = $1 AND role_id = $2
 	`, r.schema)
 
-	rows, err := r.db.Query(ctx, query, tenantID, roleID, workspaceID)
+	rows, err := r.db.Query(ctx, query, tenantID, roleID)
 	if err != nil {
 		return nil, fmt.Errorf("rbac repo: query tenant role permissions: %w", err)
 	}
 	defer rows.Close()
 
 	var mergedPerms []string
-	nilUUIDStr := "00000000-0000-0000-0000-000000000000"
-	targetWSStr := workspaceID.String()
 
 	for rows.Next() {
 		var binaryData []byte
@@ -127,21 +111,14 @@ func (r *RbacRepository) GetTenantRolePermissions(ctx context.Context, tenantID 
 			return nil, fmt.Errorf("rbac repo: unmarshal tenant role entry: %w", err)
 		}
 
-		// [COMMENT]: Map động Nil UUID thành workspaceID thực tế trước khi gộp vào cache
-		for _, p := range roleEntry.Permissions {
-			mappedPerm := p
-			if workspaceID != uuid.Nil {
-				mappedPerm = strings.ReplaceAll(p, ":"+nilUUIDStr+":", ":"+targetWSStr+":")
-			}
-			mergedPerms = append(mergedPerms, mappedPerm)
-		}
+		mergedPerms = append(mergedPerms, roleEntry.Permissions...)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// [COMMENT]: Đóng gói danh sách quyền đã gộp và map động trở lại thành binary Protobuf
+	// [COMMENT]: Đóng gói danh sách quyền đã gộp trở lại thành binary Protobuf
 	mergedEntry := &iamproto.RoleEntry{
 		Permissions: mergedPerms,
 	}

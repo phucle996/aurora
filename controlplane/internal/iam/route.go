@@ -26,6 +26,23 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.AuthHandler.VerifyAccount,
 	)
 
+	// [COMMENT]: 1.2) Lấy danh sách users hệ thống (yêu cầu quyền iam:users:list)
+	router.GET("/api/v1/iam/users",
+		middleware.Authorize("iam:users:list", module.L1Registry, "2"),
+		module.UserHandler.ListUsers,
+	)
+
+	// [COMMENT]: 1.3) Xóa user hệ thống (yêu cầu quyền iam:users:delete)
+	router.DELETE("/api/v1/iam/users/:id",
+		middleware.Authorize("iam:users:delete", module.L1Registry, "2"),
+		module.UserHandler.UpdateUserStatus,
+	)
+
+	// 5.5) Lấy thông tin cá nhân (Profile) của user hiện tại
+	router.GET("/api/v1/me/profile",
+		module.UserHandler.GetMyProfile,
+	)
+
 	// 6) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",
 		module.DeviceHandler.ListMyDevices,
@@ -70,5 +87,10 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	router.GET("/api/v1/iam/rbac/role/tenant",
 		middleware.Authorize("iam:role:list", module.L1Registry, "*"),
 		module.RbacHandler.ListTenantRoles,
+	)
+
+	// [COMMENT]: 19) Lấy cấu hình render context cho console UI (chỉ yêu cầu auth session, bypass authz check)
+	router.GET("/api/v1/iam/context",
+		module.RbacHandler.GetRenderContext,
 	)
 }

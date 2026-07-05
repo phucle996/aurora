@@ -95,12 +95,14 @@ type IAMModule struct {
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler         *iamHandler.AuthHandler
+	UserHandler         *iamHandler.UserHandler
 	DeviceHandler       *iamHandler.DeviceHandler
 	RbacHandler         *iamHandler.RbacHandler
 
 	// Core Services & Sync Engines
 	RbacRepository        iamRepoInterface.RbacRepository
 	AuthService           iamSvcInterface.AuthService
+	UserService           iamSvcInterface.UserService
 	SessionRefreshService iamSvcInterface.SessionRefreshService
 	deviceCapCancel       context.CancelFunc
 	deviceSvcImpl         iamSvcInterface.DeviceService // giữ interface type để tránh type assertion
@@ -144,6 +146,12 @@ func NewModule(
 	authRepo := iamRepoImpl.NewAuthRepository(cfg, db)
 	if authRepo == nil {
 		return nil, errors.New("iam module: failed to construct auth repository (database mismatch)")
+	}
+
+	// User Repository (PostgreSQL)
+	userRepo := iamRepoImpl.NewUserRepository(cfg, db)
+	if userRepo == nil {
+		return nil, errors.New("iam module: failed to construct user repository")
 	}
 
 	// Device Repository (PostgreSQL)
@@ -220,6 +228,16 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
 	}
 
+	userService := iamSvcImpl.NewUserService(userRepo, rbacRepo, cacheEngine)
+	if userService == nil {
+		return nil, errors.New("iam module: failed to construct core user service implementation")
+	}
+
+	userHandler := iamHandler.NewUserHandler(userService)
+	if userHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP user handler")
+	}
+
 	// ------------------------------------------------------------------------
 	// 🛡️ GIAI ĐOẠN 5: RBAC SYSTEM BOOTSTRAPPING & SYNC
 	// ------------------------------------------------------------------------
@@ -249,6 +267,8 @@ func NewModule(
 		L1Registry:            cacheEngine,
 		AuthService:           authSvc,
 		AuthHandler:           authHandler,
+		UserService:           userService,
+		UserHandler:           userHandler,
 		DeviceHandler:         deviceHandler,
 		RbacHandler:           rbacHandler,
 		RbacRepository:        rbacRepo,

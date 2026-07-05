@@ -20,18 +20,35 @@ import {
 import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
 
-import { getUserSession, UserUnauthorizedError, type UserSession } from "@/lib/api/session";
+import { getUserSession, getRenderContext, getUserProfile, UserUnauthorizedError, type UserSession, type RenderContext, type UserProfile } from "@/lib/api/session";
 import {
   UserSessionContext,
   type UserSessionState,
   type UserSessionContextValue,
 } from "@/hooks/user-session-context";
 
+// [COMMENT]: Load cached context từ LocalStorage ở Client-side để render lập tức (Instant Render)
+let localRenderContext: RenderContext | null = null;
+let localProfile: UserProfile | null = null;
+
+if (typeof window !== "undefined") {
+  try {
+    const r = localStorage.getItem("iam:render_context");
+    if (r) localRenderContext = JSON.parse(r);
+    const p = localStorage.getItem("iam:user_profile");
+    if (p) localProfile = JSON.parse(p);
+  } catch (e) {
+    console.error("Failed to read from localStorage:", e);
+  }
+}
+
 // [COMMENT]: Khởi tạo state mặc định cho phiên làm việc (chờ tải)
 const initialState: UserSessionState = {
   loading: true,
-  authenticated: false,
-  session: null,
+  authenticated: localRenderContext !== null,
+  session: localRenderContext ? { authenticated: true } : null,
+  renderContext: localRenderContext,
+  profile: localProfile,
   error: "",
   notice: "",
 };
@@ -41,6 +58,8 @@ const unauthenticatedState: UserSessionState = {
   loading: false,
   authenticated: false,
   session: null,
+  renderContext: null,
+  profile: null,
   error: "",
   notice: "",
 };
@@ -55,11 +74,17 @@ let cachedState: UserSessionState | null = null;
 let activeResolvePromise: Promise<UserSessionState> | null = null;
 
 // [COMMENT]: Hàm builder tạo state khi đã đăng nhập thành công
-function buildAuthenticatedState(session: UserSession): UserSessionState {
+function buildAuthenticatedState(
+  session: UserSession,
+  renderContext: RenderContext | null,
+  profile: UserProfile | null
+): UserSessionState {
   return {
     loading: false,
     authenticated: true,
     session,
+    renderContext,
+    profile,
     error: "",
     notice: "",
   };
@@ -70,7 +95,7 @@ function buildUnauthenticatedState(overrides?: Partial<UserSessionState>): UserS
   return { ...unauthenticatedState, ...overrides };
 }
 
-// [COMMENT]: Thực hiện gọi API lấy thông tin phiên làm việc hiện tại từ Edge/Controlplane
+// [COMMENT]: Thực hiện gọi API lấy thông tin phiên làm việc hiện tại và context hiển thị từ Edge/Controlplane
 function resolveUserSession(): Promise<UserSessionState> {
   if (activeResolvePromise) return activeResolvePromise;
 
@@ -79,13 +104,43 @@ function resolveUserSession(): Promise<UserSessionState> {
 
     while (true) {
       try {
-        const session = await getUserSession();
-        const nextState = buildAuthenticatedState(session);
+        // [COMMENT]: Gọi song song ba API để tăng tốc độ tải và giảm độ trễ (Tối ưu hoá Cloud Native/Edge)
+        const [session, renderCtx, profile] = await Promise.all([
+          getUserSession(),
+          getRenderContext().catch((err) => {
+            console.error("Failed to load render context, degrading gracefully:", err);
+            return null;
+          }),
+          getUserProfile().catch((err) => {
+            console.error("Failed to load user profile, degrading gracefully:", err);
+            return null;
+          }),
+        ]);
+
+        // [COMMENT]: Ghi đè cấu hình hiển thị và profile mới vào LocalStorage để phục vụ lần tải trang sau
+        if (typeof window !== "undefined") {
+          try {
+            if (renderCtx) localStorage.setItem("iam:render_context", JSON.stringify(renderCtx));
+            if (profile) localStorage.setItem("iam:user_profile", JSON.stringify(profile));
+          } catch (e) {
+            console.error("Failed to persist session cache to localStorage:", e);
+          }
+        }
+
+        const nextState = buildAuthenticatedState(session, renderCtx, profile);
         cachedState = nextState;
         return nextState;
       } catch (error) {
-        // [COMMENT]: Nếu lỗi 401 (chưa đăng nhập), chuyển thẳng về unauthenticated state
+        // [COMMENT]: Nếu lỗi 401 (chưa đăng nhập hoặc hết hạn), xoá sạch LocalStorage để bảo mật
         if (error instanceof UserUnauthorizedError) {
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.removeItem("iam:render_context");
+              localStorage.removeItem("iam:user_profile");
+            } catch (e) {
+              console.error("Failed to clear session cache from localStorage:", e);
+            }
+          }
           cachedState = unauthenticatedState;
           return unauthenticatedState;
         }
@@ -233,13 +288,21 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
 
   // [COMMENT]: Cập nhật state đăng nhập thành công trực tiếp (tiết kiệm 1 lượt API check session sau đăng nhập)
   const setAuthenticatedSession = useCallback((session: UserSession) => {
-    const nextState = buildAuthenticatedState(session);
+    const nextState = buildAuthenticatedState(session, null, null);
     cachedState = nextState;
     if (mountedRef.current) setState(nextState);
   }, []);
 
   // [COMMENT]: Xoá session (dùng sau khi gọi API logout thành công)
   const clearSession = useCallback(() => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.removeItem("iam:render_context");
+        localStorage.removeItem("iam:user_profile");
+      } catch (e) {
+        console.error("Failed to clear session cache from localStorage:", e);
+      }
+    }
     cachedState = unauthenticatedState;
     if (mountedRef.current) setState(unauthenticatedState);
   }, []);
@@ -255,6 +318,36 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // [COMMENT]: checkPermission kiểm tra xem user có quyền thực hiện hành động trên đối tượng hay không
+  const checkPermission = useCallback((matchKey: string, action: string): boolean => {
+    const navs = state.renderContext?.navigation;
+    if (!navs) return false;
+
+    // 1. Kiểm tra tài khoản Super Admin (wildcard Key "*")
+    const superAdmin = navs.find(n => n.key === "*");
+    if (superAdmin && superAdmin.actions.includes("*")) {
+      return true;
+    }
+
+    const matchParts = matchKey.split(":");
+    if (matchParts.length !== 4) return false;
+
+    for (const nav of navs) {
+      const navParts = nav.key.split(":");
+      if (navParts.length !== 4) continue;
+
+      const isMatch = matchParts.every((part, i) => part === "*" || part === navParts[i]);
+      if (isMatch) {
+        // Kiểm tra action cụ thể hoặc wildcard action
+        if (nav.actions.includes(action) || nav.actions.includes("*")) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }, [state.renderContext]);
+
   // [COMMENT]: Memoize value để tối ưu hoá hiệu năng render của các component con
   const value = useMemo<UserSessionContextValue>(
     () => ({
@@ -263,8 +356,9 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
       setAuthenticatedSession,
       clearSession,
       consumeNotice,
+      checkPermission,
     }),
-    [clearSession, consumeNotice, refreshSession, setAuthenticatedSession, state]
+    [clearSession, consumeNotice, refreshSession, setAuthenticatedSession, checkPermission, state]
   );
 
   return <UserSessionContext.Provider value={value}>{children}</UserSessionContext.Provider>;

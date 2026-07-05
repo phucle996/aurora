@@ -43,3 +43,16 @@ type Role struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// [COMMENT]: NavigationItem định nghĩa cấu trúc menu gom nhóm 4 cấp kèm theo các hành động (behavior/action) được phép
+type NavigationItem struct {
+	Key     string     // format: <scope>:<workspace_uuid>:<module>:<object>
+	Actions []string   // các action (behavior) tương ứng, ví dụ ["list", "delete"] hoặc ["*"]
+}
+
+// [COMMENT]: RenderContext bọc danh sách menu và capabilities tương ứng của Actor
+type RenderContext struct {
+	Navigation   []NavigationItem
+	Capabilities map[string]bool
+}
+

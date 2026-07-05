@@ -54,7 +54,7 @@ export default function HeaderConsole({
 }: HeaderConsoleProps) {
 
   const router = useRouter();
-  const { clearSession } = useUserSession();
+  const { clearSession, renderContext, profile } = useUserSession();
 
   // [COMMENT]: Xử lý đăng xuất phiên làm việc của user
   const handleLogout = useCallback(async () => {
@@ -393,6 +393,8 @@ export default function HeaderConsole({
           )}
         </div>
 
+
+
         {/* [COMMENT]: Theme Switcher */}
         <button
           onClick={() => {
@@ -417,21 +419,29 @@ export default function HeaderConsole({
 
         <div className="h-4 w-px bg-slate-200 dark:bg-slate-800" />
 
-        {/* [COMMENT]: User Profile Dropdown (double lines: System Admin, Platform Administrator) */}
+        {/* [COMMENT]: User Profile Dropdown (double lines: Fullname, Bio) */}
         <div ref={userRef} className="relative">
           <button
             onClick={() => setUserOpen(!userOpen)}
             className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-sidebar-console-hover cursor-pointer transition-colors text-left"
           >
-            <div className="h-7 w-7 rounded-full bg-blue-600 shrink-0 text-white flex items-center justify-center font-bold text-xs shadow-inner">
-              SA
-            </div>
+            {profile?.avatar_url ? (
+              <img
+                src={profile.avatar_url}
+                alt="User Avatar"
+                className="h-7 w-7 rounded-full object-cover shrink-0 shadow-inner"
+              />
+            ) : (
+              <div className="h-7 w-7 rounded-full bg-blue-600 shrink-0 text-white flex items-center justify-center font-bold text-xs shadow-inner uppercase">
+                {profile?.fullname ? profile.fullname.slice(0, 2) : "US"}
+              </div>
+            )}
             <div className="hidden xl:flex flex-col select-none">
               <span className="text-xs font-bold text-slate-800 dark:text-slate-200 leading-tight">
-                System Admin
+                {profile?.fullname || "Loading Profile..."}
               </span>
               <span className="text-[9px] text-slate-400 dark:text-slate-500 font-semibold leading-none">
-                Platform Administrator
+                {profile?.bio || "Platform Member"}
               </span>
             </div>
             <ChevronDown className="h-3 w-3 text-slate-400 hidden sm:block shrink-0" />
@@ -440,8 +450,12 @@ export default function HeaderConsole({
           {userOpen && (
             <div className="absolute top-[110%] right-0 w-52 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-100">
               <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-800 mb-1 xl:hidden">
-                <p className="text-xs font-bold text-slate-800 dark:text-slate-200">System Admin</p>
-                <p className="text-[10px] text-slate-400 dark:text-slate-500">Platform Administrator</p>
+                <p className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                  {profile?.fullname || "Loading Profile..."}
+                </p>
+                <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                  {profile?.bio || "Platform Member"}
+                </p>
               </div>
 
               <button

@@ -10,11 +10,11 @@ import (
 
 // [COMMENT]: RbacRepository định nghĩa interface tối giản (skeleton) cho các thao tác dữ liệu liên quan đến user_role và tenant_role
 type RbacRepository interface {
-	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions dạng binary (bytea) của user trong workspace
-	GetUserRolePermissions(ctx context.Context, userID uuid.UUID, workspaceID uuid.UUID) ([]byte, error)
+	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions dạng binary (bytea) của user trên toàn bộ workspaces theo user id
+	GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error)
 
-	// [COMMENT]: GetTenantRolePermissions lấy danh sách permissions dạng binary (bytea) của tenant trong workspace
-	GetTenantRolePermissions(ctx context.Context, tenantID uuid.UUID, workspaceID uuid.UUID, roleID uuid.UUID) ([]byte, error)
+	// [COMMENT]: GetTenantRolePermissions lấy danh sách permissions dạng binary (bytea) của tenant trên toàn bộ workspaces theo role
+	GetTenantRolePermissions(ctx context.Context, tenantID uuid.UUID, roleID uuid.UUID) ([]byte, error)
 
 	// [COMMENT]: AssignUserRole gán role và permissions tĩnh cho user trong một workspace
 	AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error
