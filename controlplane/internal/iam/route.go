@@ -90,7 +90,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	)
 
 	// [COMMENT]: 19) Lấy cấu hình render context cho console UI (chỉ yêu cầu auth session, bypass authz check)
-	router.GET("/api/v1/iam/context",
+	router.GET("/api/v1/me/context",
 		module.RbacHandler.GetRenderContext,
 	)
 }

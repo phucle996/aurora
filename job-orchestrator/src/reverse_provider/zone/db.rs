@@ -22,11 +22,19 @@ pub async fn update_zone_status(
         }
     });
 
-    // [COMMENT]: Thực thi lệnh UPDATE trên bảng hierarchy.zones, cast status sang text trước khi cast sang enum hierarchy.zone_status,
-    // và cast zone_id từ text sang uuid để tránh lỗi serialization ở client-side.
+    // [COMMENT]: Thực thi lệnh UPDATE trên bảng hierarchy.zones kèm ràng buộc kiểm tra State Machine nghiêm ngặt
+    // để tránh việc cache RAM bị stale của Job Orchestrator ghi đè lên cấu hình thủ công của SRE.
     let rows_affected = pg_client
         .execute(
-            "UPDATE hierarchy.zones SET status = $1::text::hierarchy.zone_status, updated_at = NOW() WHERE id = $2::text::uuid AND status != $1::text::hierarchy.zone_status",
+            "UPDATE hierarchy.zones \
+             SET status = $1::text::hierarchy.zone_status, updated_at = NOW() \
+             WHERE id = $2::text::uuid \
+               AND status != $1::text::hierarchy.zone_status \
+               AND ( \
+                   ($1::text IN ('active', 'congested', 'draining') AND status::text IN ('active', 'congested', 'draining')) \
+                   OR \
+                   ($1::text = 'disabled' AND status::text IN ('active', 'congested', 'draining', 'maintenance')) \
+               )",
             &[&status, &zone_id],
         )
         .await?;
@@ -125,7 +133,7 @@ pub async fn query_current_state(
     let zone_status = if let Some(row) = zone_rows.first() {
         row.get::<_, String>(0)
     } else {
-        "inactive".to_string()
+        "disabled".to_string()
     };
 
     // [COMMENT]: Truy vấn trạng thái Service từ bảng hierarchy.zone_services, cast zone_id và service_type
@@ -173,7 +181,7 @@ pub async fn query_zone_metadata(
     let zone_status = if let Some(row) = zone_rows.first() {
         row.get::<_, String>(0)
     } else {
-        "inactive".to_string()
+        "disabled".to_string()
     };
 
     // [COMMENT]: 2. Lấy trạng thái của toàn bộ Service từ bảng hierarchy.zone_services, cast zone_id

@@ -25,40 +25,43 @@ impl DecisionEngine {
         }
 
         // 2. Logic quyết định trạng thái tổng thể của Zone (State Machine Transition)
-        // Nếu hạ tầng Mail chết hoàn toàn -> Zone buộc phải chuyển sang 'draining' hoặc 'maintenance' để bảo vệ
-        if mail_status == "down" || mail_capacity < 10 {
-            target_zone_status = "draining".to_string();
-        } else {
-            // Ngưỡng quá tải (Congested Thresholds)
-            let is_overloaded =
-                queue_len > 5000 || pending_len > 500 || avg_cpu > 0.90 || avg_ram > 0.90;
+        // [COMMENT]: Chỉ tự động đánh giá và phục hồi đối với các trạng thái active, congested, draining.
+        // Các trạng thái cấu hình thủ công của SRE (planned, maintenance, disabled) được bảo toàn tuyệt đối.
+        match current_zone_status {
+            "active" | "congested" | "draining" => {
+                if mail_status == "down" || mail_capacity < 10 {
+                    target_zone_status = "draining".to_string();
+                } else {
+                    // Ngưỡng quá tải (Congested Thresholds)
+                    let is_overloaded =
+                        queue_len > 5000 || pending_len > 500 || avg_cpu > 0.90 || avg_ram > 0.90;
 
-            // Ngưỡng hồi phục (Recovery Thresholds - Hysteresis)
-            let is_recovered =
-                queue_len < 4000 && pending_len < 400 && avg_cpu < 0.85 && avg_ram < 0.85;
+                    // Ngưỡng hồi phục (Recovery Thresholds - Hysteresis)
+                    let is_recovered =
+                        queue_len < 4000 && pending_len < 400 && avg_cpu < 0.85 && avg_ram < 0.85;
 
-            match current_zone_status {
-                "active" => {
-                    if is_overloaded {
-                        target_zone_status = "congested".to_string();
+                    match current_zone_status {
+                        "active" => {
+                            if is_overloaded {
+                                target_zone_status = "congested".to_string();
+                            }
+                        }
+                        "congested" => {
+                            if is_recovered {
+                                target_zone_status = "active".to_string();
+                            }
+                        }
+                        "draining" => {
+                            // [COMMENT]: Chỉ tự động phục hồi từ draining lên active khi mail healthy và tải hệ thống giảm.
+                            if mail_status == "healthy" && mail_capacity >= 50 && is_recovered {
+                                target_zone_status = "active".to_string();
+                            }
+                        }
+                        _ => {}
                     }
-                }
-                "congested" => {
-                    if is_recovered {
-                        target_zone_status = "active".to_string();
-                    }
-                }
-                "draining" | "maintenance" | "inactive" => {
-                    // Nếu hạ tầng hồi phục -> Trở lại trạng thái active
-                    if mail_status == "healthy" && mail_capacity >= 50 && is_recovered {
-                        target_zone_status = "active".to_string();
-                    }
-                }
-                _ => {
-                    // Fallback mặc định
-                    target_zone_status = "active".to_string();
                 }
             }
+            _ => {}
         }
 
         (target_zone_status, target_mail_enabled)

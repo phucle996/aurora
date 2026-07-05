@@ -126,7 +126,7 @@ export default function ZoneForm({
             <thead>
               <tr className="border-b border-slate-200/80 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-950/20">
                 <th className="p-4 pl-6 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/4">Service</th>
-                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/4">Status</th>
+                <th className="p-4 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/4">Desired state</th>
                 <th className="p-4 pr-6 text-xs font-semibold text-slate-500 uppercase tracking-wider">Description</th>
               </tr>
             </thead>

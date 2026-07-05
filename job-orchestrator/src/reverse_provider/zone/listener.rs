@@ -201,20 +201,40 @@ pub async fn run_backpressure_listener(
 
                                 // 6. Thực hiện cập nhật trực tiếp Postgres DB (Bypass CP gRPC calls)
                                 if target_status != current_status {
-                                    if let Err(e) = super::db::update_zone_status(
+                                    // [COMMENT]: Thực hiện cập nhật trực tiếp DB và bắt kết quả để kiểm tra cache-stale.
+                                    // Chuyển đổi Error sang String để giải quyết lỗi biên dịch Send trait của Rust qua ranh giới await.
+                                    let update_result = super::db::update_zone_status(
                                         &config.database_url,
                                         &zone_id,
                                         &target_status,
                                     )
                                     .await
-                                    {
-                                        Logger::sys_error(
-                                            "backpressure_listener.db_error",
-                                            "Thất bại khi cập nhật trực tiếp status của Zone",
-                                            &e.to_string(),
-                                        );
-                                    } else {
-                                        current_status = target_status;
+                                    .map_err(|e| e.to_string());
+
+                                    match update_result {
+                                        Ok(true) => {
+                                            // [COMMENT]: Cập nhật DB thành công, đồng bộ trạng thái mới vào cache.
+                                            current_status = target_status;
+                                        }
+                                        Ok(false) => {
+                                            // [COMMENT]: DB Guard từ chối do vi phạm chuyển dịch trạng thái. Lập tức query lại DB để sửa sai cache RAM.
+                                            if let Ok((db_status, _)) = super::db::query_current_state(
+                                                &config.database_url,
+                                                &zone_id,
+                                                "mail",
+                                            )
+                                            .await
+                                            {
+                                                current_status = db_status;
+                                            }
+                                        }
+                                        Err(err_msg) => {
+                                            Logger::sys_error(
+                                                "backpressure_listener.db_error",
+                                                "Thất bại khi cập nhật trực tiếp status của Zone",
+                                                &err_msg,
+                                            );
+                                        }
                                     }
                                 }
 
@@ -365,22 +385,21 @@ pub async fn run_backpressure_listener(
 
         for (zone_id, (last_seen, current_status, _)) in zone_heartbeats.iter() {
             // Nếu quá 30 giây không nhận được report của zone active -> Đánh dấu sập (HA safety check)
-            if current_status != "inactive"
+            if current_status != "disabled"
                 && now_instant.duration_since(*last_seen) > Duration::from_secs(30)
             {
                 zones_to_deactivate.push(zone_id.clone());
             }
         }
-
         for zone_id in zones_to_deactivate {
             Logger::sys_warn(
                 "backpressure_listener.deadman",
-                &format!("Zone {} quá 30 giây không gửi metrics report. Tự động chuyển sang status: 'inactive'.", zone_id),
+                &format!("Zone {} quá 30 giây không gửi metrics report. Tự động chuyển sang status: 'disabled'.", zone_id),
                 "Heartbeat Timeout (Dead Man's Switch Triggered)",
             );
 
-            // Cập nhật DB chuyển zone sang inactive và disabled mail service (Bypass CP)
-            let _ = super::db::update_zone_status(&config.database_url, &zone_id, "inactive").await;
+            // Cập nhật DB chuyển zone sang disabled và disabled mail service (Bypass CP)
+            let _ = super::db::update_zone_status(&config.database_url, &zone_id, "disabled").await;
             let _ = super::db::update_zone_service_status(
                 &config.database_url,
                 &zone_id,
@@ -408,7 +427,7 @@ pub async fn run_backpressure_listener(
             // Đồng bộ cache RAM
             if let Some(val) = zone_heartbeats.get_mut(&zone_id) {
                 val.0 = Instant::now(); // Reset timer
-                val.1 = "inactive".to_string();
+                val.1 = "disabled".to_string();
                 val.2 = false;
             }
         }

@@ -113,8 +113,8 @@ pub async fn handle_user_session_check(
     method: &str,
     path: &str,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
-    // [COMMENT]: Chỉ intercept HTTP GET /api/v1/auth/session
-    if !(method == "GET" && path == "/api/v1/auth/session") {
+    // [COMMENT]: Chỉ intercept HTTP GET /api/v1/me/session
+    if !(method == "GET" && path == "/api/v1/me/session") {
         return None;
     }
 

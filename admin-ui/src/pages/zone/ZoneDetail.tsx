@@ -118,10 +118,10 @@ const statusLabels: Record<ZoneStatus, string> = {
 // Only transitions listed here are permitted; all others are rejected by the API.
 const ALLOWED_TRANSITIONS: Record<ZoneStatus, ZoneStatus[]> = {
   planned: ['active', 'disabled'],
-  active: ['draining', 'maintenance', 'disabled'],
+  active: ['planned', 'draining'],
   draining: ['active', 'maintenance', 'disabled'],
-  maintenance: ['active', 'disabled'],
-  disabled: ['active'],
+  maintenance: ['active'],
+  disabled: ['planned'],
 }
 
 // Static catalog of zone services shown in the Manage Services drawer

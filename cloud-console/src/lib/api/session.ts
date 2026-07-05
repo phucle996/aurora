@@ -24,7 +24,7 @@ export type UserProfile = {
 };
 
 export async function getRenderContext(signal?: AbortSignal): Promise<RenderContext> {
-  const res = await fetchJSON<{ data?: RenderContext }>("/api/v1/iam/context", {
+  const res = await fetchJSON<{ data?: RenderContext }>("/api/v1/me/context", {
     method: "GET",
     signal,
   });
@@ -54,7 +54,7 @@ export class UserUnauthorizedError extends Error {
 
 export async function getUserSession(signal?: AbortSignal): Promise<UserSession> {
   try {
-    const res = await fetchJSON<{ data?: { authenticated?: boolean } }>("/api/v1/auth/session", {
+    const res = await fetchJSON<{ data?: { authenticated?: boolean } }>("/api/v1/me/session", {
       method: "GET",
       signal,
     });

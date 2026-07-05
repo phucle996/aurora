@@ -143,16 +143,16 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 	// allowed quy định bản đồ chuyển đổi trạng thái hợp lệ (State Machine Transitions).
 	// Key: Trạng thái đích (toStatus) - Value: Danh sách các trạng thái cũ được phép chuyển đổi sang trạng thái đích.
 	allowed := map[coreEntity.ZoneStatus][]coreEntity.ZoneStatus{
-		// Có thể đưa zone quay lại trạng thái Planned từ Active hoặc Disabled.
+		// [COMMENT]: Quay lại trạng thái Planned từ Active (để cấu hình lại) hoặc Disabled (vùng đệm kiểm tra trước khi kích hoạt).
 		coreEntity.ZoneStatusPlanned: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
-		// [BUG FIX]: Bổ sung ZoneStatusPlanned vào danh sách trạng thái cũ hợp lệ để cho phép kích hoạt (Active) một zone mới được tạo.
-		coreEntity.ZoneStatusActive: {coreEntity.ZoneStatusPlanned, coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
-		// Trạng thái Draining (xả tải) có thể kích hoạt từ Active, Maintenance hoặc Disabled.
-		coreEntity.ZoneStatusDraining: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusMaintenance, coreEntity.ZoneStatusDisabled},
-		// Trạng thái Bảo trì (Maintenance) chỉ cho phép từ Active hoặc Disabled.
-		coreEntity.ZoneStatusMaintenance: {coreEntity.ZoneStatusActive, coreEntity.ZoneStatusDisabled},
-		// zone chỉ có thể disabled từ active
-		coreEntity.ZoneStatusDisabled: {coreEntity.ZoneStatusActive},
+		// [BUG FIX]: Kích hoạt (Active) từ Planned, Draining hoặc Maintenance.
+		coreEntity.ZoneStatusActive: {coreEntity.ZoneStatusPlanned, coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusMaintenance},
+		// [COMMENT]: Ép buộc xả tải (Draining) chỉ được phép bắt đầu từ trạng thái đang chạy Active.
+		coreEntity.ZoneStatusDraining: {coreEntity.ZoneStatusActive},
+		// [COMMENT]: Bảo trì (Maintenance) chỉ được kích hoạt sau khi đã xả sạch job (Draining) để tránh gián đoạn dịch vụ.
+		coreEntity.ZoneStatusMaintenance: {coreEntity.ZoneStatusDraining},
+		// [COMMENT]: Vô hiệu hóa (Disabled) chỉ cho phép từ Draining (đã xả sạch job) hoặc Planned (zone chưa từng chạy).
+		coreEntity.ZoneStatusDisabled: {coreEntity.ZoneStatusDraining, coreEntity.ZoneStatusPlanned},
 	}
 
 	allowedOld := append(allowed[toStatus], toStatus)
