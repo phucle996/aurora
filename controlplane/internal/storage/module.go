@@ -29,12 +29,17 @@ type StorageModule struct {
 	CredentialHandler *storageHandler.CredentialHandler
 
 	// Core Services
-	BucketService     storageSvcInterface.BucketService
-	CredentialService storageSvcInterface.CredentialService
+	TenantBucketService       storageSvcInterface.TenantBucketService
+	PersonalBucketService      storageSvcInterface.PersonalBucketService
+	TenantCredentialService   storageSvcInterface.TenantCredentialService
+	PersonalCredentialService storageSvcInterface.PersonalCredentialService
 
 	// Repositories
-	BucketRepo     storageRepoInterface.BucketRepo
-	CredentialRepo storageRepoInterface.CredentialRepo
+	TenantBucketRepo       storageRepoInterface.TenantBucketRepo
+	PersonalBucketRepo      storageRepoInterface.PersonalBucketRepo
+	TenantCredentialRepo   storageRepoInterface.TenantCredentialRepo
+	PersonalCredentialRepo  storageRepoInterface.PersonalCredentialRepo
+	OutboxRepo              storageRepoInterface.StorageOutboxRepository
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -83,32 +88,75 @@ func NewModule(
 	}
 
 	// ------------------------------------------------------------------------
-	// 🧱 GIAI ĐOẠN ĐẤU NỐI (WIRING GRAPH SETUP)
+	// 🧱 GIAI ĐOẠN ĐẤU NỐI (WIRING GRAPH SETUP WITH FAIL-FAST CHECKS)
 	// ------------------------------------------------------------------------
 
-	// 1. Khởi tạo repositories
-	bucketRepo := storageRepoImpl.NewBucketRepo(db)
-	credentialRepo := storageRepoImpl.NewCredentialRepo(db)
+	// 1. Khởi tạo repositories riêng biệt theo scope
+	tenantBucketRepo := storageRepoImpl.NewTenantBucketRepo(db, cfg.SchemaSQL.Storage)
+	if tenantBucketRepo == nil {
+		return nil, errors.New("storage module: failed to construct tenant bucket repository")
+	}
+	personalBucketRepo := storageRepoImpl.NewPersonalBucketRepo(db, cfg.SchemaSQL.Storage)
+	if personalBucketRepo == nil {
+		return nil, errors.New("storage module: failed to construct personal bucket repository")
+	}
+	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db)
+	if tenantCredentialRepo == nil {
+		return nil, errors.New("storage module: failed to construct tenant credential repository")
+	}
+	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db)
+	if personalCredentialRepo == nil {
+		return nil, errors.New("storage module: failed to construct personal credential repository")
+	}
+	outboxRepo := storageRepoImpl.NewStorageOutboxRepository(db, cfg.SchemaSQL.Storage)
+	if outboxRepo == nil {
+		return nil, errors.New("storage module: failed to construct storage outbox repository")
+	}
 
-	// 2. Khởi tạo services
-	bucketSvc := storageSvcImpl.NewBucketService(bucketRepo)
-	credentialSvc := storageSvcImpl.NewCredentialService(credentialRepo)
+	// 2. Khởi tạo services tách biệt theo scope
+	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo)
+	if tenantBucketSvc == nil {
+		return nil, errors.New("storage module: failed to construct tenant bucket service")
+	}
+	personalBucketSvc := storageSvcImpl.NewPersonalBucketService(personalBucketRepo)
+	if personalBucketSvc == nil {
+		return nil, errors.New("storage module: failed to construct personal bucket service")
+	}
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo)
+	if tenantCredentialSvc == nil {
+		return nil, errors.New("storage module: failed to construct tenant credential service")
+	}
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo)
+	if personalCredentialSvc == nil {
+		return nil, errors.New("storage module: failed to construct personal credential service")
+	}
 
 	// 3. Khởi tạo HTTP handlers
-	bucketHandler := storageHandler.NewBucketHandler(bucketSvc)
-	credentialHandler := storageHandler.NewCredentialHandler(credentialSvc)
+	bucketHandler := storageHandler.NewBucketHandler(tenantBucketSvc, personalBucketSvc)
+	if bucketHandler == nil {
+		return nil, errors.New("storage module: failed to construct bucket handler")
+	}
+	credentialHandler := storageHandler.NewCredentialHandler(tenantCredentialSvc, personalCredentialSvc)
+	if credentialHandler == nil {
+		return nil, errors.New("storage module: failed to construct credential handler")
+	}
 
 	return &StorageModule{
-		enabled:           true,
-		cfg:               cfg,
-		db:                db,
-		rds:               rds,
-		L1Registry:        cacheEngine,
-		BucketRepo:        bucketRepo,
-		CredentialRepo:    credentialRepo,
-		BucketService:     bucketSvc,
-		CredentialService: credentialSvc,
-		BucketHandler:     bucketHandler,
-		CredentialHandler: credentialHandler,
+		enabled:                   true,
+		cfg:                       cfg,
+		db:                        db,
+		rds:                       rds,
+		L1Registry:                cacheEngine,
+		TenantBucketRepo:          tenantBucketRepo,
+		PersonalBucketRepo:         personalBucketRepo,
+		TenantCredentialRepo:      tenantCredentialRepo,
+		PersonalCredentialRepo:     personalCredentialRepo,
+		OutboxRepo:                outboxRepo,
+		TenantBucketService:       tenantBucketSvc,
+		PersonalBucketService:     personalBucketSvc,
+		TenantCredentialService:   tenantCredentialSvc,
+		PersonalCredentialService: personalCredentialSvc,
+		BucketHandler:             bucketHandler,
+		CredentialHandler:         credentialHandler,
 	}, nil
 }

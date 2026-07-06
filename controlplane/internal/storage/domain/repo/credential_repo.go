@@ -1,4 +1,4 @@
-package storageRepo
+package storageRepoInterface
 
 import (
 	"context"
@@ -7,16 +7,31 @@ import (
 	storageEntity "controlplane/internal/storage/domain/entity"
 )
 
-// [COMMENT]: CredentialRepo định nghĩa các phương thức giao tiếp CSDL cho Access Keys của MinIO.
-type CredentialRepo interface {
-	// [COMMENT]: Lưu trữ Access Key mới liên kết với Bucket.
-	Create(ctx context.Context, cred *storageEntity.Credential) error
+// [COMMENT]: TenantCredentialRepo định nghĩa các phương thức giao tiếp CSDL cho Access Keys của Bucket doanh nghiệp.
+type TenantCredentialRepo interface {
+	// [COMMENT]: Lưu trữ Access Key mới liên kết với Bucket doanh nghiệp.
+	Create(ctx context.Context, cred *storageEntity.TenantCredential) error
 	
 	// [COMMENT]: Truy xuất thông tin Access Key theo ID.
-	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.Credential, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.TenantCredential, error)
 	
-	// [COMMENT]: Liệt kê toàn bộ Access Keys thuộc một Bucket.
-	ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.Credential, error)
+	// [COMMENT]: Liệt kê toàn bộ Access Keys thuộc một Bucket doanh nghiệp.
+	ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.TenantCredential, error)
+	
+	// [COMMENT]: Xóa thông tin Access Key khỏi Database.
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// [COMMENT]: PersonalCredentialRepo định nghĩa các phương thức giao tiếp CSDL cho Access Keys của Bucket cá nhân.
+type PersonalCredentialRepo interface {
+	// [COMMENT]: Lưu trữ Access Key mới liên kết với Bucket cá nhân.
+	Create(ctx context.Context, cred *storageEntity.PersonalCredential) error
+	
+	// [COMMENT]: Truy xuất thông tin Access Key theo ID.
+	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalCredential, error)
+	
+	// [COMMENT]: Liệt kê toàn bộ Access Keys thuộc một Bucket cá nhân.
+	ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.PersonalCredential, error)
 	
 	// [COMMENT]: Xóa thông tin Access Key khỏi Database.
 	Delete(ctx context.Context, id uuid.UUID) error

@@ -1,66 +1,3 @@
-// ============================================================================
-// IAM MODULE (CONTROL PLANE STATE ENGINE)
-// ============================================================================
-//
-// 📜 DESIGN CONTRACT (Hợp đồng Thiết kế):
-//   1. [Fail-Fast Bootstrapping Contract]: Bất kỳ dependency hệ thống nào bị 'nil' hoặc
-//      lỗi kết nối mạng trong pha khởi tạo NewModule() sẽ kích hoạt chặn đứng tiến trình
-//      và thoát lập tức (Exit Code > 0). Không bao giờ cho phép Pod chạy ở trạng thái "lỗi ngầm".
-//   2. [Interface Binding Contract]: Tất cả dịch vụ nội bộ kết nối thông qua ranh giới
-//      Interface được phân cấp tại `domain/repo` và `domain/service`. Tuyệt đối cấm liên kết
-//      trực tiếp các implementation cụ thể ở bên ngoài package `iam` để phục vụ Mocking dễ dàng.
-//
-// 🗄️ SOURCE OF TRUTH - SoT (Nguồn dữ liệu gốc):
-//   * [SOT for Dependency Injection & Wiring Graph (Tệp tin module.go)]:
-//     - File `module.go` đóng vai trò là SOURCE OF TRUTH duy nhất định nghĩa cách khởi tạo,
-//       quản lý vòng đời (Lifecycle), tiêm phụ thuộc (Dependency Injection - DI) thủ công,
-//       và thiết lập toàn bộ đồ thị liên kết (Wiring Graph) của tất cả thành phần thuộc phân hệ IAM.
-//     - Mọi sự phụ thuộc chéo (cross-dependency) giữa các repository, cache layers, services,
-//       và HTTP handlers của phân hệ IAM đều được phản ánh tường minh và chính xác tại đây.
-//     - SRE & Tech Lead Ghi chú: File này KHÔNG tự ý quyết định chính sách xử lý lỗi khẩn cấp
-//       (như tự gọi panic() hay os.Exit() khi phát hiện dependency bị nil hoặc lỗi khởi tạo).
-//       Nó thực hiện kiểm tra kiểm soát toàn vẹn đồ thị DI, phát hiện lỗi và trả lỗi (return error)
-//       ngược lên cho Callsite để Callsite chủ động quyết định chính sách Fail (Panic, Exit hay retry/restart pod).
-//     - Callsite gọi DI: Được triệu gọi tại `controlplane/internal/app/module.go` (dòng 103).
-//
-// 🛡️ ARCHITECTURAL BOUNDARY (Ranh giới Thiết kế):
-//   - Tầng Transport (HTTP Handlers) <--> Tầng Service (Domain Logic) <--> Tầng Repository (DB Driver).
-//   - Tách biệt mô hình dữ liệu: Tầng Service hoàn toàn thao tác trên Domain Entities độc lập.
-//     Repository chịu trách nhiệm ánh xạ (Mapper hai chiều) sang Database Models trước khi DB Write.
-//   - RAM Cache Invalidation Boundary: Quá trình xoay khóa khẩn cấp ở Pod bất kỳ sẽ phát
-//     sự kiện invalidation qua Redis Pub/Sub trên kênh `sre:admin:invalidation`. Ranh giới cache
-//     cục bộ trên RAM của tất cả các Node HA còn lại sẽ tự động hội tụ trạng thái mới trong <10ms.
-//
-// 👥 VAI TRÒ VÀ GHI CHÚ VẬN HÀNH (ROLE-SPECIFIC CHEATSHEET):
-//
-//   📌 ĐỐI VỚI SRE & DEVOPS PLATFORM ENGINEERS:
-//     * Cấu hình Hệ thống:
-//       - Yêu cầu kết nối PostgreSQL (`db`) và Redis (`rds`) phải luôn trực tuyến và có cơ chế Auto-Reconnect.
-//       - Alerting: Dịch vụ tích hợp Telegram Alerts qua `tgClient` để gửi cảnh báo tức thì
-//         khi xảy ra xoay khóa khẩn cấp hoặc brute-force tấn công. Cấu hình bot token tại ENV Config.
-//     * Vận hành dọn dẹp định kỳ (Garbage Collection):
-//       - Không chạy các Job xóa dữ liệu rác trực tiếp trong tiến trình API Service để tránh chiếm dụng CPU.
-//       - Luôn sử dụng CronJob Kubernetes (`k8s/admin-keys-gc-cronjob.yaml`) đã thiết lập sẵn.
-//         Lịch chạy mặc định: 00:00 Hàng ngày.
-//       - Để chạy GC bằng tay khẩn cấp khi đĩa DB đầy:
-//         `kubectl create job --from=cronjob/admin-keys-gc manual-cleanup-job -n controlplane`
-//
-//   📌 ĐỐI VỚI TECH LEADS:
-//     * Quản lý Tài nguyên & DI:
-//       - Module này hoạt động như một Container Dependency Injection (DI) thủ công duy nhất của phân hệ.
-//       - Nghiêm cấm khởi tạo ad-hoc hoặc import trực tiếp `pgxpool` hay `redis` client vào sâu
-//         bên trong các Service layer. Tất cả các tài nguyên bắt buộc phải khai báo qua NewModule.
-//       - Khi mở rộng tính năng mới, hãy khai báo Interface tương ứng trước và tích hợp vào DI tại đây.
-//
-//   📌 ĐỐI VỚI APPLICATION DEVELOPERS:
-//     * Quy tắc mở rộng & Sửa đổi mã nguồn:
-//       - Luôn đảm bảo không có logic rò rỉ (no leak) giữa Database Models và Domain Entities.
-//       - Mọi hàm Service mới phải tuân thủ việc bọc lỗi bằng cấu trúc `apperr.Wrap(...)` kèm theo
-//         Taxonomy Error tương ứng để đảm bảo thống nhất chuẩn hóa log định dạng JSON cho ELK/Grafana Loki.
-//       - Khi viết hàm Service có thao tác ghi dữ liệu, luôn mở Transaction tại Service Layer và truyền
-//         context qua các Repo methods.
-// ============================================================================
-
 package iam
 
 import (
@@ -88,16 +25,16 @@ import (
 )
 
 type IAMModule struct {
-	cfg         *config.Config
-	db          *pgxpool.Pool
-	rds         *goredis.Client
-	L1Registry  *cacheengine.CacheRegistry
+	cfg        *config.Config
+	db         *pgxpool.Pool
+	rds        *goredis.Client
+	L1Registry *cacheengine.CacheRegistry
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
-	AuthHandler         *iamHandler.AuthHandler
-	UserHandler         *iamHandler.UserHandler
-	DeviceHandler       *iamHandler.DeviceHandler
-	RbacHandler         *iamHandler.RbacHandler
+	AuthHandler   *iamHandler.AuthHandler
+	UserHandler   *iamHandler.UserHandler
+	DeviceHandler *iamHandler.DeviceHandler
+	RbacHandler   *iamHandler.RbacHandler
 
 	// Core Services & Sync Engines
 	RbacRepository        iamRepoInterface.RbacRepository

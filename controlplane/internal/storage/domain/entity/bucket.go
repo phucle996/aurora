@@ -20,12 +20,25 @@ const (
 	BucketStatusDeleted   BucketStatus = "deleted"
 )
 
-// [COMMENT]: Bucket đại diện cho thực thể nhóm lưu trữ dữ liệu (Object Storage Bucket).
-type Bucket struct {
+// [COMMENT]: PersonalBucket đại diện cho thực thể nhóm lưu trữ dữ liệu cá nhân.
+type PersonalBucket struct {
 	ID                 uuid.UUID    // ID định danh duy nhất của bucket
-	Name               string       // Tên bucket vật lý (phải unique trên zone)
+	Name               string       // Tên bucket vật lý (phải unique toàn hệ thống)
+	WorkspaceID        uuid.UUID    // ID của Workspace chứa bucket này
 	ZoneID             uuid.UUID    // ID của Infrastructure Zone chứa bucket này
-	TenantID           uuid.UUID    // ID của tổ chức sở hữu bucket
+	Status             BucketStatus // Trạng thái hoạt động hiện tại
+	CapacityQuotaBytes int64        // Hạn mức dung lượng lưu trữ tối đa (Bytes)
+	CreatedAt          time.Time    // Thời gian tạo bản ghi
+	UpdatedAt          time.Time    // Thời gian cập nhật bản ghi cuối
+}
+
+// [COMMENT]: TenantBucket đại diện cho thực thể nhóm lưu trữ dữ liệu doanh nghiệp.
+type TenantBucket struct {
+	ID                 uuid.UUID    // ID định danh duy nhất của bucket
+	Name               string       // Tên bucket vật lý (phải unique toàn hệ thống)
+	WorkspaceID        uuid.UUID    // ID của Workspace chứa bucket này
+	ZoneID             uuid.UUID    // ID của Infrastructure Zone chứa bucket này
+	TenantID           uuid.UUID    // ID của tổ chức doanh nghiệp sở hữu bucket (NOT NULL)
 	Status             BucketStatus // Trạng thái hoạt động hiện tại
 	CapacityQuotaBytes int64        // Hạn mức dung lượng lưu trữ tối đa (Bytes)
 	CreatedAt          time.Time    // Thời gian tạo bản ghi

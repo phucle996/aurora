@@ -1,0 +1,225 @@
+package storageRepoImpl
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	storageEntity "controlplane/internal/storage/domain/entity"
+	storageRepoInterface "controlplane/internal/storage/domain/repo"
+	storageModel "controlplane/internal/storage/model"
+	storageTaxonomy "controlplane/internal/storage/taxonomy"
+)
+
+// [COMMENT]: TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
+type TenantBucketRepoImpl struct {
+	db     *pgxpool.Pool
+	schema string
+}
+
+// [COMMENT]: NewTenantBucketRepo khởi tạo repository quản lý bucket doanh nghiệp.
+func NewTenantBucketRepo(db *pgxpool.Pool, schema string) storageRepoInterface.TenantBucketRepo {
+	return &TenantBucketRepoImpl{
+		db:     db,
+		schema: schema,
+	}
+}
+
+func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket) error {
+	// [COMMENT]: Convert Entity sang Model chứa các tag db
+	m := storageModel.TenantBucketEntityToModel(bucket)
+	query := fmt.Sprintf(`
+		INSERT INTO %s.tenant_buckets (
+			id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, r.schema)
+
+	now := time.Now()
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+	if m.UpdatedAt.IsZero() {
+		m.UpdatedAt = now
+	}
+
+	_, err := r.db.Exec(ctx, query,
+		m.ID,
+		m.Name,
+		m.WorkspaceID,
+		m.ZoneID,
+		m.TenantID,
+		m.Status,
+		m.CapacityQuotaBytes,
+		m.CreatedAt,
+		m.UpdatedAt,
+	)
+	if err != nil {
+		// [COMMENT]: Bắt lỗi trùng lặp mã Key (Unique Constraint 23505) và ánh xạ sang lỗi domain ErrAlreadyExists
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return storageTaxonomy.ErrAlreadyExists
+		}
+		return fmt.Errorf("storage repo: create tenant bucket failed: %w", err)
+	}
+	return nil
+}
+
+func (r *TenantBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.TenantBucket, error) {
+	query := fmt.Sprintf(`
+		SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
+		FROM %s.tenant_buckets
+		WHERE id = $1
+	`, r.schema)
+
+	var m storageModel.TenantBucket
+
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&m.ID,
+		&m.Name,
+		&m.WorkspaceID,
+		&m.ZoneID,
+		&m.TenantID,
+		&m.Status,
+		&m.CapacityQuotaBytes,
+		&m.CreatedAt,
+		&m.UpdatedAt,
+	)
+	if err != nil {
+		// [COMMENT]: Ánh xạ lỗi ErrNoRows thành domain error ErrNotFound
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, storageTaxonomy.ErrNotFound
+		}
+		return nil, fmt.Errorf("storage repo: get tenant bucket by id failed: %w", err)
+	}
+
+	// [COMMENT]: Trả về Domain Entity chuyển đổi từ DB Model
+	return storageModel.TenantBucketModelToEntity(&m), nil
+}
+
+func (r *TenantBucketRepoImpl) GetByName(ctx context.Context, name string) (*storageEntity.TenantBucket, error) {
+	query := fmt.Sprintf(`
+		SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
+		FROM %s.tenant_buckets
+		WHERE name = $1
+	`, r.schema)
+
+	var m storageModel.TenantBucket
+
+	err := r.db.QueryRow(ctx, query, name).Scan(
+		&m.ID,
+		&m.Name,
+		&m.WorkspaceID,
+		&m.ZoneID,
+		&m.TenantID,
+		&m.Status,
+		&m.CapacityQuotaBytes,
+		&m.CreatedAt,
+		&m.UpdatedAt,
+	)
+	if err != nil {
+		// [COMMENT]: Ánh xạ lỗi ErrNoRows thành domain error ErrNotFound
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, storageTaxonomy.ErrNotFound
+		}
+		return nil, fmt.Errorf("storage repo: get tenant bucket by name failed: %w", err)
+	}
+
+	// [COMMENT]: Trả về Domain Entity chuyển đổi từ DB Model
+	return storageModel.TenantBucketModelToEntity(&m), nil
+}
+
+func (r *TenantBucketRepoImpl) ListByTenantAndZone(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error) {
+	query := fmt.Sprintf(`
+		SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
+		FROM %s.tenant_buckets
+		WHERE tenant_id = $1 AND zone_id = $2
+		ORDER BY created_at DESC
+	`, r.schema)
+
+	rows, err := r.db.Query(ctx, query, tenantID, zoneID)
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: list tenant buckets failed: %w", err)
+	}
+	defer rows.Close()
+
+	var buckets []*storageEntity.TenantBucket
+	for rows.Next() {
+		var m storageModel.TenantBucket
+
+		err := rows.Scan(
+			&m.ID,
+			&m.Name,
+			&m.WorkspaceID,
+			&m.ZoneID,
+			&m.TenantID,
+			&m.Status,
+			&m.CapacityQuotaBytes,
+			&m.CreatedAt,
+			&m.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("storage repo: scan tenant bucket row failed: %w", err)
+		}
+		buckets = append(buckets, storageModel.TenantBucketModelToEntity(&m))
+	}
+
+	return buckets, nil
+}
+
+func (r *TenantBucketRepoImpl) UpdateStatus(ctx context.Context, id uuid.UUID, status storageEntity.BucketStatus) error {
+	query := fmt.Sprintf(`
+		UPDATE %s.tenant_buckets
+		SET status = $1, updated_at = $2
+		WHERE id = $3
+	`, r.schema)
+
+	res, err := r.db.Exec(ctx, query, string(status), time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("storage repo: update tenant bucket status failed: %w", err)
+	}
+	// [COMMENT]: Nếu không có bản ghi nào bị tác động thì trả về ErrNotFound
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
+	return nil
+}
+
+func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64) error {
+	query := fmt.Sprintf(`
+		UPDATE %s.tenant_buckets
+		SET capacity_quota_bytes = $1, updated_at = $2
+		WHERE id = $3
+	`, r.schema)
+
+	res, err := r.db.Exec(ctx, query, quotaBytes, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("storage repo: update tenant bucket quota failed: %w", err)
+	}
+	// [COMMENT]: Nếu không có bản ghi nào bị tác động thì trả về ErrNotFound
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
+	return nil
+}
+
+func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID) error {
+	query := fmt.Sprintf(`
+		DELETE FROM %s.tenant_buckets
+		WHERE id = $1
+	`, r.schema)
+
+	res, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("storage repo: delete tenant bucket failed: %w", err)
+	}
+	// [COMMENT]: Nếu không có bản ghi nào bị tác động thì trả về ErrNotFound
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
+	return nil
+}

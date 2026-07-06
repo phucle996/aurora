@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"controlplane/internal/http/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,36 +14,43 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 	
 	// [COMMENT]: Tạo mới storage bucket
 	router.POST("/api/v1/storage/buckets",
+		middleware.Authorize("storage:bucket:create", module.L1Registry, "*"),
 		module.BucketHandler.Create,
 	)
 
 	// [COMMENT]: Lấy chi tiết thông tin bucket
 	router.GET("/api/v1/storage/buckets/:id",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
 		module.BucketHandler.Get,
 	)
 
 	// [COMMENT]: Liệt kê danh sách các buckets
 	router.GET("/api/v1/storage/buckets",
+		middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
 		module.BucketHandler.List,
 	)
 
 	// [COMMENT]: Cập nhật hạn mức lưu trữ (Quota) của bucket
 	router.PATCH("/api/v1/storage/buckets/:id/quota",
+		middleware.Authorize("storage:bucket:update", module.L1Registry, "*"),
 		module.BucketHandler.UpdateQuota,
 	)
 
 	// [COMMENT]: Tạm ngưng hoạt động của bucket
 	router.POST("/api/v1/storage/buckets/:id/suspend",
+		middleware.Authorize("storage:bucket:update", module.L1Registry, "*"),
 		module.BucketHandler.Suspend,
 	)
 
 	// [COMMENT]: Kích hoạt lại bucket bị suspend
 	router.POST("/api/v1/storage/buckets/:id/resume",
+		middleware.Authorize("storage:bucket:update", module.L1Registry, "*"),
 		module.BucketHandler.Resume,
 	)
 
 	// [COMMENT]: Yêu cầu xóa bucket
 	router.DELETE("/api/v1/storage/buckets/:id",
+		middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
 		module.BucketHandler.Delete,
 	)
 
