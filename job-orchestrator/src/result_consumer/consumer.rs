@@ -40,9 +40,9 @@ impl ResultConsumer {
             }
         });
 
-        // Đảm bảo search path nằm ở mail schema
+        // Đảm bảo search path nằm ở các schema mail, iam và storage
         client
-            .execute("SET search_path TO mail, public", &[])
+            .execute("SET search_path TO mail, iam, storage, public", &[])
             .await?;
 
         Logger::sys_info(
@@ -237,41 +237,60 @@ impl ResultConsumer {
         // Lấy lại user_id, job_topic và trace_id bằng mệnh đề RETURNING để tạo sự kiện real-time.
         // Thêm kiểm tra topic khớp với database để tăng cường tính nhất quán bảo mật dữ liệu.
         // [COMMENT]: Loại bỏ ép kiểu ::uuid vì cột event_id trong DB là character varying(64).
+        let table_name = if result.job_topic.starts_with("mail.") {
+            "mail_outbox_records"
+        } else if result.job_topic.starts_with("iam.") {
+            "iam_outbox_records"
+        } else if result.job_topic.starts_with("storage.") {
+            "storage_outbox_records"
+        } else {
+            "mail_outbox_records"
+        };
+
+        let query_succeeded = format!(
+            "UPDATE {} 
+            SET status = $1, 
+                completed_at = CURRENT_TIMESTAMP, 
+                error_code = NULL, 
+                error_message = NULL
+            WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+            RETURNING user_id, job_topic, trace_id, resource_id",
+            table_name
+        );
+
+        let query_processing = format!(
+            "UPDATE {} 
+            SET status = $1,
+                error_code = NULL, 
+                error_message = NULL
+            WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+            RETURNING user_id, job_topic, trace_id, resource_id",
+            table_name
+        );
+
+        let query_failed = format!(
+            "UPDATE {} 
+            SET status = $1, 
+                completed_at = CURRENT_TIMESTAMP, 
+                error_code = $2, 
+                error_message = $3
+            WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
+            RETURNING user_id, job_topic, trace_id, resource_id",
+            table_name
+        );
+
         let row_opt = if status == "SUCCEEDED" {
             pg_client
-                .query_opt(
-                    "UPDATE mail_outbox_records 
-                  SET status = $1, 
-                      completed_at = CURRENT_TIMESTAMP, 
-                      error_code = NULL, 
-                      error_message = NULL
-                  WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
-                  RETURNING user_id, job_topic, trace_id, resource_id",
-                    &[&status, &job_id, &result.job_topic],
-                )
+                .query_opt(&query_succeeded, &[&status, &job_id, &result.job_topic])
                 .await?
         } else if status == "PROCESSING" {
             pg_client
-                .query_opt(
-                    "UPDATE mail_outbox_records 
-                  SET status = $1,
-                      error_code = NULL, 
-                      error_message = NULL
-                  WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
-                  RETURNING user_id, job_topic, trace_id, resource_id",
-                    &[&status, &job_id, &result.job_topic],
-                )
+                .query_opt(&query_processing, &[&status, &job_id, &result.job_topic])
                 .await?
         } else {
             pg_client
                 .query_opt(
-                    "UPDATE mail_outbox_records 
-                  SET status = $1, 
-                      completed_at = CURRENT_TIMESTAMP, 
-                      error_code = $2, 
-                      error_message = $3
-                  WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
-                  RETURNING user_id, job_topic, trace_id, resource_id",
+                    &query_failed,
                     &[&status, &error_code, &error_message, &job_id, &result.job_topic],
                 )
                 .await?

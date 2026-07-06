@@ -302,6 +302,7 @@ impl JobConsumer {
                 .await
             }
             "vps" => crate::executor::hypervisor::dispatch_vps_job(action, payload).await,
+            "storage" => crate::executor::storage::dispatch_storage_job(action, payload).await,
             _ => Err(crate::executor::ExecutorError::ExecutionFailed(format!(
                 "Unsupported workload type: {}",
                 workload

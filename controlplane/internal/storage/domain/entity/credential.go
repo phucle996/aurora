@@ -27,3 +27,17 @@ type TenantCredential struct {
 	CreatedAt time.Time // Thời gian khởi tạo bản ghi
 	UpdatedAt time.Time // Thời gian cập nhật bản ghi
 }
+
+// [COMMENT]: CreatePersonalCredential chứa các tham số dùng để khởi tạo Access Key cá nhân.
+type CreatePersonalCredential struct {
+	BucketID uuid.UUID
+	Policy   string
+	UserID   uuid.UUID
+}
+
+// [COMMENT]: CreateTenantCredential chứa các tham số dùng để khởi tạo Access Key doanh nghiệp.
+type CreateTenantCredential struct {
+	BucketID uuid.UUID
+	Policy   string
+	UserID   uuid.UUID
+}

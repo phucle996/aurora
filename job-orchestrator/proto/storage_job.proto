@@ -1,0 +1,27 @@
+syntax = "proto3";
+package storage;
+
+option go_package = "controlplane/internal/storage/transport/rpc/proto;storageproto";
+
+// Cấu hình đồng bộ hóa Bucket vật lý từ Controlplane sang Dataplane
+message BucketSync {
+  string id = 1;                  // ID bucket dạng UUID string
+  string name = 2;                // Tên vật lý của bucket
+  string zone_id = 3;             // ID zone sở hữu bucket
+  string workspace_id = 4;        // ID workspace sở hữu bucket
+  string tenant_id = 5;           // ID tenant sở hữu bucket (nếu là tenant bucket, để trống nếu personal)
+  string status = 6;              // Trạng thái (creating, active, suspended, deleted)
+  int64 capacity_quota_bytes = 7; // Hạn mức quota bytes
+  int64 updated_at = 8;           // Thời điểm cập nhật cuối (Epoch Milliseconds)
+}
+
+// Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane
+message CredentialSync {
+  string id = 1;                  // ID credential dạng UUID string
+  string bucket_id = 2;           // ID bucket liên kết
+  string access_key = 3;          // Access Key MinIO
+  string secret_key = 4;          // Secret Key MinIO
+  string policy = 5;              // JSON policy
+  string status = 6;              // Trạng thái hoạt động (active, revoked)
+  int64 updated_at = 7;           // Thời điểm cập nhật cuối (Epoch Milliseconds)
+}

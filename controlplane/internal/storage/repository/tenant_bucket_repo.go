@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // [COMMENT]: TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
@@ -23,29 +24,34 @@ type TenantBucketRepoImpl struct {
 }
 
 // [COMMENT]: NewTenantBucketRepo khởi tạo repository quản lý bucket doanh nghiệp.
-func NewTenantBucketRepo(db *pgxpool.Pool, schema string) storageRepoInterface.TenantBucketRepo {
+func NewTenantBucketRepo(
+	db *pgxpool.Pool,
+	schema string,
+) storageRepoInterface.TenantBucketRepo {
 	return &TenantBucketRepoImpl{
 		db:     db,
 		schema: schema,
 	}
 }
 
-func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket) error {
+func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket, outbox *storageEntity.StorageOutboxRecord) error {
 	// [COMMENT]: Convert Entity sang Model chứa các tag db
 	m := storageModel.TenantBucketEntityToModel(bucket)
-	query := fmt.Sprintf(`
-		INSERT INTO %s.tenant_buckets (
-			id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, r.schema)
+	mo := storageModel.OutboxEntityToModel(outbox)
 
-	now := time.Now()
-	if m.CreatedAt.IsZero() {
-		m.CreatedAt = now
-	}
-	if m.UpdatedAt.IsZero() {
-		m.UpdatedAt = now
-	}
+	// [COMMENT]: Chạy một CTE duy nhất để insert nguyên tử (atomic) cả bucket và outbox record vào CSDL
+	query := fmt.Sprintf(`
+		WITH ins_bucket AS (
+			INSERT INTO %s.tenant_buckets (
+				id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		)
+		INSERT INTO %s.storage_outbox_records (
+			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			job_version, resource_id, payload_schema_version, trace_id, idle,
+			error_code, error_message
+		) VALUES ($10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+	`, r.schema, r.schema)
 
 	_, err := r.db.Exec(ctx, query,
 		m.ID,
@@ -57,6 +63,20 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		m.CapacityQuotaBytes,
 		m.CreatedAt,
 		m.UpdatedAt,
+		mo.EventID,
+		mo.RoutingScope,
+		mo.JobTopic,
+		mo.Payload,
+		mo.UserID,
+		mo.Status,
+		mo.CompletedAt,
+		mo.JobVersion,
+		mo.ResourceID,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.ErrorCode,
+		mo.ErrorMessage,
 	)
 	if err != nil {
 		// [COMMENT]: Bắt lỗi trùng lặp mã Key (Unique Constraint 23505) và ánh xạ sang lỗi domain ErrAlreadyExists

@@ -44,3 +44,22 @@ type TenantBucket struct {
 	CreatedAt          time.Time    // Thời gian tạo bản ghi
 	UpdatedAt          time.Time    // Thời gian cập nhật bản ghi cuối
 }
+
+// [COMMENT]: CreatePersonalBucket chứa các tham số dùng để khởi tạo Bucket cá nhân.
+type CreatePersonalBucket struct {
+	Name               string
+	WorkspaceID        uuid.UUID
+	ZoneID             uuid.UUID
+	CapacityQuotaBytes int64
+	UserID             uuid.UUID
+}
+
+// [COMMENT]: CreateTenantBucket chứa các tham số dùng để khởi tạo Bucket doanh nghiệp.
+type CreateTenantBucket struct {
+	Name               string
+	WorkspaceID        uuid.UUID
+	ZoneID             uuid.UUID
+	TenantID           uuid.UUID
+	CapacityQuotaBytes int64
+	UserID             uuid.UUID
+}

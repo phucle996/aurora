@@ -5,7 +5,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/job_event.proto",
             "proto/mail_job.proto",
             "proto/job_result.proto",
-            "proto/zone_report.proto"
+            "proto/zone_report.proto",
+            "proto/storage_job.proto"
         ],
         &["proto/"],
     )?;

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	storageEntity "controlplane/internal/storage/domain/entity"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageDto "controlplane/internal/storage/transport/http/dto"
@@ -84,14 +85,29 @@ func (h *BucketHandler) Create(c *gin.Context) {
 	var createErr error
 
 	if tenantIDStr == "" {
-		createErr = h.personalSvc.CreateBucketForPersonal(ctx, userID, workspaceID, zoneID, bucketName, req.QuotaBytes)
+		param := &storageEntity.CreatePersonalBucket{
+			Name:               bucketName,
+			WorkspaceID:        workspaceID,
+			ZoneID:             zoneID,
+			CapacityQuotaBytes: req.QuotaBytes,
+			UserID:             userID,
+		}
+		createErr = h.personalSvc.CreateBucketForPersonal(ctx, param)
 	} else {
 		tenantID, err := uuid.Parse(tenantIDStr)
 		if err != nil {
 			apires.RespondBadRequest(c, "invalid tenant id format")
 			return
 		}
-		createErr = h.tenantSvc.CreateBucketForTenant(ctx, tenantID, workspaceID, zoneID, bucketName, req.QuotaBytes)
+		param := &storageEntity.CreateTenantBucket{
+			Name:               bucketName,
+			WorkspaceID:        workspaceID,
+			ZoneID:             zoneID,
+			TenantID:           tenantID,
+			CapacityQuotaBytes: req.QuotaBytes,
+			UserID:             userID,
+		}
+		createErr = h.tenantSvc.CreateBucketForTenant(ctx, param)
 	}
 
 	if createErr != nil {

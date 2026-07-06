@@ -36,7 +36,6 @@ pub enum ExecutorError {
     // IdempotencyViolation và DeadlineExceeded tạm thời được lược bỏ vì:
     // 1. Logic Idempotency được xử lý thông qua database filter và silent success (trả về Ok).
     // 2. Deadline được xử lý trực tiếp bởi lớp bảo vệ Watchdog (Timeout) ở tầng ngoài.
-    
     /// Các lỗi phát sinh trong quá trình tương tác API hoặc lỗi vật lý của máy chủ ảo hóa.
     ExecutionFailed(String),
 }
@@ -46,7 +45,6 @@ pub struct ExecutionResult {
     // Loại bỏ các trường 'success' và 'return_code' vì chúng không được sử dụng ở tầng truyền kết quả
     // qua Redis Stream lên Controlplane. Việc hardcode "SUCCEEDED" / "FAILED" trên tầng cao giúp
     // đơn giản hóa và tăng tính an toàn dữ liệu.
-
     /// Chuỗi thông báo kỹ thuật mô tả kết quả xử lý.
     pub message: String,
 }
@@ -60,9 +58,3 @@ pub trait Executor {
     ///   - Không được phép để xảy ra tình trạng crash thô (panic) làm sập hệ thống Dataplane.
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError>;
 }
-//
-// 💡 Ý TƯỞNG MỞ RỘNG (SCALABILITY PRO-TIP):
-//   Khi hệ thống có thêm các workload mới như Database, DNS, Storage,... bạn chỉ việc tạo thêm
-//   thư mục con tương tự như /hypervisor/ hoặc /mail/, định nghĩa struct nghiệp vụ và implement
-//   trait `Executor` này. Cực kỳ gọn gàng, an toàn và dễ bảo trì.
-//

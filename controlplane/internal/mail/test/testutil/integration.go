@@ -27,7 +27,6 @@ func NewMailTestConfig(schema string) *config.Config {
 	cfg.Psql.Password = envString("MAIL_TEST_PSQL_PASSWORD", "postgres")
 	cfg.Psql.DBName = envString("MAIL_TEST_PSQL_DBNAME", "controlplane")
 	cfg.Psql.SSLMode = envString("MAIL_TEST_PSQL_SSLMODE", "disable")
-	cfg.Security.RuntimeMasterKey = envString("MAIL_TEST_RUNTIME_MASTER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	return cfg
 }
 
@@ -65,7 +64,7 @@ func OpenPostgres(t testing.TB, cfg *config.Config) *pgxpool.Pool {
 func PrepareMailSchema(t testing.TB, cfg *config.Config, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	
+
 	conn, err := db.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire db connection for migration: %v", err)

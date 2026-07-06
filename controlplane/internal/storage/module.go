@@ -39,7 +39,6 @@ type StorageModule struct {
 	PersonalBucketRepo      storageRepoInterface.PersonalBucketRepo
 	TenantCredentialRepo   storageRepoInterface.TenantCredentialRepo
 	PersonalCredentialRepo  storageRepoInterface.PersonalCredentialRepo
-	OutboxRepo              storageRepoInterface.StorageOutboxRepository
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -100,17 +99,13 @@ func NewModule(
 	if personalBucketRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket repository")
 	}
-	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db)
+	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db, cfg.SchemaSQL.Storage)
 	if tenantCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential repository")
 	}
-	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db)
+	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db, cfg.SchemaSQL.Storage)
 	if personalCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal credential repository")
-	}
-	outboxRepo := storageRepoImpl.NewStorageOutboxRepository(db, cfg.SchemaSQL.Storage)
-	if outboxRepo == nil {
-		return nil, errors.New("storage module: failed to construct storage outbox repository")
 	}
 
 	// 2. Khởi tạo services tách biệt theo scope
@@ -122,11 +117,11 @@ func NewModule(
 	if personalBucketSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket service")
 	}
-	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo)
+	tenantCredentialSvc := storageSvcImpl.NewTenantCredentialService(tenantCredentialRepo, tenantBucketRepo, cfg.Security.RuntimeMasterKey)
 	if tenantCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential service")
 	}
-	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo)
+	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, cfg.Security.RuntimeMasterKey)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
 	}
@@ -151,7 +146,6 @@ func NewModule(
 		PersonalBucketRepo:         personalBucketRepo,
 		TenantCredentialRepo:      tenantCredentialRepo,
 		PersonalCredentialRepo:     personalCredentialRepo,
-		OutboxRepo:                outboxRepo,
 		TenantBucketService:       tenantBucketSvc,
 		PersonalBucketService:     personalBucketSvc,
 		TenantCredentialService:   tenantCredentialSvc,

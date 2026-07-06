@@ -60,21 +60,25 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 
 	// [COMMENT]: Tạo mới cặp Access Key truy cập bucket
 	router.POST("/api/v1/storage/buckets/:id/credentials",
+		middleware.Authorize("storage:credential:create", module.L1Registry, "*"),
 		module.CredentialHandler.Create,
 	)
 
 	// [COMMENT]: Liệt kê các Access Keys của bucket
 	router.GET("/api/v1/storage/buckets/:id/credentials",
+		middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
 		module.CredentialHandler.List,
 	)
 
 	// [COMMENT]: Chi tiết một Access Key cụ thể
 	router.GET("/api/v1/storage/credentials/:id",
+		middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
 		module.CredentialHandler.Get,
 	)
 
 	// [COMMENT]: Thu hồi / Xóa bỏ Access Key
 	router.DELETE("/api/v1/storage/credentials/:id",
+		middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
 		module.CredentialHandler.Revoke,
 	)
 }

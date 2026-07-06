@@ -169,6 +169,7 @@ func LoadConfig() *Config {
 		},
 
 		Security: SecurityCfg{
+			RuntimeMasterKey: getEnv("SECURITY_MASTER_KEY", "aurora-storage-master-secret-key-32bytes"),
 			OneTimeTokenTTL: 15 * time.Minute,
 			RefreshTokenTTL: 30 * 24 * time.Hour,
 		},

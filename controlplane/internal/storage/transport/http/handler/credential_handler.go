@@ -1,13 +1,21 @@
 package storageHandler
 
 import (
-	"net/http"
+	"context"
+	"errors"
 	"strings"
+	"time"
 
-	"github.com/gin-gonic/gin"
+	storageEntity "controlplane/internal/storage/domain/entity"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
+	storageTaxonomy "controlplane/internal/storage/taxonomy"
+	storageDto "controlplane/internal/storage/transport/http/dto"
 	apires "controlplane/pkg/apires"
 	"controlplane/pkg/constant"
+	"controlplane/pkg/logger"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: CredentialHandler quản lý các request HTTP tương tác với Access Keys của MinIO.
@@ -28,42 +36,280 @@ func NewCredentialHandler(
 }
 
 func (h *CredentialHandler) Create(c *gin.Context) {
+	const op = "storage.credential.create"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// 1. Trích xuất danh tính và path params
+	userIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
 	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	// [COMMENT]: SKELETON - Đã định tuyến rẽ nhánh theo X-Tenant-ID
-	if tenantIDStr == "" {
-		_ = h.personalSvc // call personalSvc
-	} else {
-		_ = h.tenantSvc   // call tenantSvc
+	bucketIDStr := strings.TrimSpace(c.Param("id"))
+
+	if userIDStr == "" || bucketIDStr == "" {
+		apires.RespondBadRequest(c, "missing mandatory identity or bucket id")
+		return
 	}
-	c.JSON(http.StatusNotImplemented, apires.APIResponse{Error: "not_implemented", Message: "API Create credential not implemented"})
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid user id format")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+
+	// 2. Bind Request Body
+	var req storageDto.CreateCredentialRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request payload")
+		return
+	}
+
+	// 3. Rẽ nhánh xử lý gọi Service
+	if tenantIDStr == "" {
+		param := &storageEntity.CreatePersonalCredential{
+			BucketID: bucketID,
+			Policy:   req.Policy,
+			UserID:   userID,
+		}
+		cred, err := h.personalSvc.CreateCredential(ctx, param)
+		if err != nil {
+			if errors.Is(err, storageTaxonomy.ErrNotFound) {
+				apires.RespondNotFound(c, "bucket not found")
+			} else {
+				logger.HandlerError(c, op, err)
+				apires.RespondInternalError(c, "internal_error")
+			}
+			return
+		}
+
+		res := &storageDto.CredentialResponse{
+			ID:        cred.ID.String(),
+			BucketID:  cred.BucketID.String(),
+			AccessKey: cred.AccessKey,
+			SecretKey: cred.SecretKey, // Chứa raw secret key
+			Policy:    cred.Policy,
+			CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		apires.RespondCreated(c, res, "credential created successfully")
+	} else {
+		param := &storageEntity.CreateTenantCredential{
+			BucketID: bucketID,
+			Policy:   req.Policy,
+			UserID:   userID,
+		}
+		cred, err := h.tenantSvc.CreateCredential(ctx, param)
+		if err != nil {
+			if errors.Is(err, storageTaxonomy.ErrNotFound) {
+				apires.RespondNotFound(c, "bucket not found")
+			} else {
+				logger.HandlerError(c, op, err)
+				apires.RespondInternalError(c, "internal_error")
+			}
+			return
+		}
+
+		res := &storageDto.CredentialResponse{
+			ID:        cred.ID.String(),
+			BucketID:  cred.BucketID.String(),
+			AccessKey: cred.AccessKey,
+			SecretKey: cred.SecretKey, // Chứa raw secret key
+			Policy:    cred.Policy,
+			CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		apires.RespondCreated(c, res, "credential created successfully")
+	}
 }
 
 func (h *CredentialHandler) Get(c *gin.Context) {
+	const op = "storage.credential.get"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
 	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	if tenantIDStr == "" {
-		_ = h.personalSvc
-	} else {
-		_ = h.tenantSvc
+	credIDStr := strings.TrimSpace(c.Param("id"))
+
+	if credIDStr == "" {
+		apires.RespondBadRequest(c, "missing credential id")
+		return
 	}
-	c.JSON(http.StatusNotImplemented, apires.APIResponse{Error: "not_implemented", Message: "API Get credential not implemented"})
+
+	credID, err := uuid.Parse(credIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid credential id format")
+		return
+	}
+
+	if tenantIDStr == "" {
+		cred, err := h.personalSvc.GetCredential(ctx, credID)
+		if err != nil {
+			if errors.Is(err, storageTaxonomy.ErrNotFound) {
+				apires.RespondNotFound(c, "credential not found")
+			} else {
+				logger.HandlerError(c, op, err)
+				apires.RespondInternalError(c, "internal_error")
+			}
+			return
+		}
+		if cred == nil {
+			apires.RespondNotFound(c, "credential not found")
+			return
+		}
+
+		res := &storageDto.CredentialResponse{
+			ID:        cred.ID.String(),
+			BucketID:  cred.BucketID.String(),
+			AccessKey: cred.AccessKey,
+			Policy:    cred.Policy,
+			CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		apires.RespondSuccess(c, res, "success")
+	} else {
+		cred, err := h.tenantSvc.GetCredential(ctx, credID)
+		if err != nil {
+			if errors.Is(err, storageTaxonomy.ErrNotFound) {
+				apires.RespondNotFound(c, "credential not found")
+			} else {
+				logger.HandlerError(c, op, err)
+				apires.RespondInternalError(c, "internal_error")
+			}
+			return
+		}
+		if cred == nil {
+			apires.RespondNotFound(c, "credential not found")
+			return
+		}
+
+		res := &storageDto.CredentialResponse{
+			ID:        cred.ID.String(),
+			BucketID:  cred.BucketID.String(),
+			AccessKey: cred.AccessKey,
+			Policy:    cred.Policy,
+			CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+		}
+		apires.RespondSuccess(c, res, "success")
+	}
 }
 
 func (h *CredentialHandler) List(c *gin.Context) {
+	const op = "storage.credential.list"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
 	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	if tenantIDStr == "" {
-		_ = h.personalSvc
-	} else {
-		_ = h.tenantSvc
+	bucketIDStr := strings.TrimSpace(c.Param("id"))
+
+	if bucketIDStr == "" {
+		apires.RespondBadRequest(c, "missing bucket id")
+		return
 	}
-	c.JSON(http.StatusNotImplemented, apires.APIResponse{Error: "not_implemented", Message: "API List credentials not implemented"})
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+
+	if tenantIDStr == "" {
+		creds, err := h.personalSvc.ListCredentials(ctx, bucketID)
+		if err != nil {
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "internal_error")
+			return
+		}
+
+		var res []*storageDto.CredentialResponse
+		for _, cred := range creds {
+			res = append(res, &storageDto.CredentialResponse{
+				ID:        cred.ID.String(),
+				BucketID:  cred.BucketID.String(),
+				AccessKey: cred.AccessKey,
+				Policy:    cred.Policy,
+				CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
+				UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		apires.RespondSuccess(c, res, "success")
+	} else {
+		creds, err := h.tenantSvc.ListCredentials(ctx, bucketID)
+		if err != nil {
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "internal_error")
+			return
+		}
+
+		var res []*storageDto.CredentialResponse
+		for _, cred := range creds {
+			res = append(res, &storageDto.CredentialResponse{
+				ID:        cred.ID.String(),
+				BucketID:  cred.BucketID.String(),
+				AccessKey: cred.AccessKey,
+				Policy:    cred.Policy,
+				CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
+				UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		apires.RespondSuccess(c, res, "success")
+	}
 }
 
 func (h *CredentialHandler) Revoke(c *gin.Context) {
+	const op = "storage.credential.revoke"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	userIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
 	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	if tenantIDStr == "" {
-		_ = h.personalSvc
-	} else {
-		_ = h.tenantSvc
+	credIDStr := strings.TrimSpace(c.Param("id"))
+
+	if userIDStr == "" || credIDStr == "" {
+		apires.RespondBadRequest(c, "missing identity or credential id")
+		return
 	}
-	c.JSON(http.StatusNotImplemented, apires.APIResponse{Error: "not_implemented", Message: "API Revoke credential not implemented"})
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid user id format")
+		return
+	}
+
+	credID, err := uuid.Parse(credIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid credential id format")
+		return
+	}
+
+	if tenantIDStr == "" {
+		err := h.personalSvc.RevokeCredential(ctx, credID, userID)
+		if err != nil {
+			if errors.Is(err, storageTaxonomy.ErrNotFound) {
+				apires.RespondNotFound(c, "credential not found")
+			} else {
+				logger.HandlerError(c, op, err)
+				apires.RespondInternalError(c, "internal_error")
+			}
+			return
+		}
+		apires.RespondSuccess(c, nil, "credential revoked successfully")
+	} else {
+		err := h.tenantSvc.RevokeCredential(ctx, credID, userID)
+		if err != nil {
+			if errors.Is(err, storageTaxonomy.ErrNotFound) {
+				apires.RespondNotFound(c, "credential not found")
+			} else {
+				logger.HandlerError(c, op, err)
+				apires.RespondInternalError(c, "internal_error")
+			}
+			return
+		}
+		apires.RespondSuccess(c, nil, "credential revoked successfully")
+	}
 }

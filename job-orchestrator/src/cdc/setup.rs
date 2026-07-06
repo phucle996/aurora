@@ -105,9 +105,9 @@ async fn try_setup(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Thiết lập search path mặc định bao gồm cả schema iam
+    // Thiết lập search path mặc định bao gồm cả schema iam và storage
     client
-        .execute("SET search_path TO mail, iam, public", &[])
+        .execute("SET search_path TO mail, iam, storage, public", &[])
         .await?;
 
     // 2. Pre-check và khởi tạo Publication cho tất cả các bảng trong danh sách cdc_sources
