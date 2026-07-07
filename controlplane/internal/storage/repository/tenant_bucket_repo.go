@@ -34,26 +34,37 @@ func NewTenantBucketRepo(
 	}
 }
 
-func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket, outbox *storageEntity.StorageOutboxRecord) error {
+func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.TenantBucket, credential *storageEntity.TenantCredential, outbox *storageEntity.StorageOutboxRecord) error {
 	// [COMMENT]: Convert Entity sang Model chứa các tag db
 	m := storageModel.TenantBucketEntityToModel(bucket)
+	mc := storageModel.TenantCredentialEntityToModel(credential)
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: Chạy một CTE duy nhất để insert nguyên tử (atomic) cả bucket và outbox record vào CSDL
+	// [COMMENT]: CTE 3-way: insert nguyên tử (atomic) bucket + credential + outbox record.
+	// Dùng RETURNING id để thread credential và outbox vào cùng bucket_id vừa insert.
 	query := fmt.Sprintf(`
 		WITH ins_bucket AS (
 			INSERT INTO %s.tenant_buckets (
 				id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, created_at, updated_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING id
+		),
+		ins_credential AS (
+			INSERT INTO %s.tenant_credentials (
+				id, bucket_id, access_key, secret_key, policy, created_at, updated_at
+			)
+			SELECT $10, id, $11, $12, $13, $14, $15
+			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-	`, r.schema, r.schema)
+		) VALUES ($16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+	`, r.schema, r.schema, r.schema)
 
 	_, err := r.db.Exec(ctx, query,
+		// [COMMENT]: $1-$9 — tenant_buckets fields
 		m.ID,
 		m.Name,
 		m.WorkspaceID,
@@ -63,6 +74,14 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		m.CapacityQuotaBytes,
 		m.CreatedAt,
 		m.UpdatedAt,
+		// [COMMENT]: $10-$15 — tenant_credentials fields
+		mc.ID,
+		mc.AccessKey,
+		mc.SecretKey,
+		mc.Policy,
+		mc.CreatedAt,
+		mc.UpdatedAt,
+		// [COMMENT]: $16-$29 — storage_outbox_records fields
 		mo.EventID,
 		mo.RoutingScope,
 		mo.JobTopic,

@@ -253,7 +253,7 @@ impl ResultConsumer {
                 completed_at = CURRENT_TIMESTAMP, 
                 error_code = NULL, 
                 error_message = NULL
-            WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+            WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
             RETURNING user_id, job_topic, trace_id, resource_id",
             table_name
         );
@@ -263,7 +263,7 @@ impl ResultConsumer {
             SET status = $1,
                 error_code = NULL, 
                 error_message = NULL
-            WHERE event_id = $2 AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
+            WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING')
             RETURNING user_id, job_topic, trace_id, resource_id",
             table_name
         );
@@ -274,24 +274,26 @@ impl ResultConsumer {
                 completed_at = CURRENT_TIMESTAMP, 
                 error_code = $2, 
                 error_message = $3
-            WHERE event_id = $4 AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
+            WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING')
             RETURNING user_id, job_topic, trace_id, resource_id",
             table_name
         );
 
+        let job_uuid = uuid::Uuid::from_slice(&result.job_id).unwrap_or_default();
+
         let row_opt = if status == "SUCCEEDED" {
             pg_client
-                .query_opt(&query_succeeded, &[&status, &job_id, &result.job_topic])
+                .query_opt(&query_succeeded, &[&status, &job_uuid, &result.job_topic])
                 .await?
         } else if status == "PROCESSING" {
             pg_client
-                .query_opt(&query_processing, &[&status, &job_id, &result.job_topic])
+                .query_opt(&query_processing, &[&status, &job_uuid, &result.job_topic])
                 .await?
         } else {
             pg_client
                 .query_opt(
                     &query_failed,
-                    &[&status, &error_code, &error_message, &job_id, &result.job_topic],
+                    &[&status, &error_code, &error_message, &job_uuid, &result.job_topic],
                 )
                 .await?
         };

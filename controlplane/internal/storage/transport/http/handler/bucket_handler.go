@@ -82,6 +82,7 @@ func (h *BucketHandler) Create(c *gin.Context) {
 	}
 
 	// 3. Rẽ nhánh xử lý gọi Service tương ứng tại Handler (Kiểm tra Personal trước để fast-path)
+	var createResult *storageEntity.CreatedBucketResult
 	var createErr error
 
 	if tenantIDStr == "" {
@@ -92,7 +93,7 @@ func (h *BucketHandler) Create(c *gin.Context) {
 			CapacityQuotaBytes: req.QuotaBytes,
 			UserID:             userID,
 		}
-		createErr = h.personalSvc.CreateBucketForPersonal(ctx, param)
+		createResult, createErr = h.personalSvc.CreateBucketForPersonal(ctx, param)
 	} else {
 		tenantID, err := uuid.Parse(tenantIDStr)
 		if err != nil {
@@ -107,7 +108,7 @@ func (h *BucketHandler) Create(c *gin.Context) {
 			CapacityQuotaBytes: req.QuotaBytes,
 			UserID:             userID,
 		}
-		createErr = h.tenantSvc.CreateBucketForTenant(ctx, param)
+		createResult, createErr = h.tenantSvc.CreateBucketForTenant(ctx, param)
 	}
 
 	if createErr != nil {
@@ -125,8 +126,16 @@ func (h *BucketHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Không trả lại payload bucket chi tiết, chỉ trả về thành công 201 Created như yêu cầu của thiết kế
-	apires.RespondCreated(c, nil, "bucket creation initiated")
+	// [COMMENT]: Trả về credentials kèm bucket info — secret_key chỉ xuất hiện duy nhất 1 lần này.
+	// Client phải lưu lại ngay, không có API nào trả lại secret_key sau đây.
+	apires.RespondCreated(c, storageDto.CreateBucketResponse{
+		BucketID:     createResult.BucketID.String(),
+		BucketName:   createResult.BucketName,
+		CredentialID: createResult.CredentialID.String(),
+		AccessKey:    createResult.AccessKey,
+		SecretKey:    createResult.SecretKey,
+		Policy:       createResult.Policy,
+	}, "bucket creation initiated — save your credentials, they will not be shown again")
 }
 
 func (h *BucketHandler) Get(c *gin.Context) {

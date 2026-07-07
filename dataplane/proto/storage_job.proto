@@ -13,6 +13,12 @@ message BucketSync {
   string status = 6;              // Trạng thái (creating, active, suspended, deleted)
   int64 capacity_quota_bytes = 7; // Hạn mức quota bytes
   int64 updated_at = 8;           // Thời điểm cập nhật cuối (Epoch Milliseconds)
+
+  // Thông tin Credential do CP tự sinh, dùng để DP provisioning MinIO Service Account
+  string credential_id = 9;       // ID credential trong DB
+  string access_key = 10;         // Access Key sẽ được tạo trên MinIO
+  string secret_key = 11;         // Secret Key (plaintext trong payload, transit qua internal infra)
+  string policy = 12;             // JSON policy giới hạn quyền truy cập chỉ vào bucket này
 }
 
 // Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane

@@ -4,7 +4,7 @@
 # Stage 1: Builder - biên dịch binary release của aurora-dataplane
 # ============================================================================
 FROM rust:bookworm AS builder
-RUN apt-get update && apt-get install -y protobuf-compiler
+RUN apt-get update && apt-get install -y protobuf-compiler curl
 WORKDIR /src
 
 # 1. Pre-warm dependency cache: chỉ copy manifest, build dummy để cache layer deps.
@@ -17,6 +17,10 @@ RUN mkdir -p src \
        target/release/aurora-dataplane.d \
        target/release/deps/aurora_dataplane* \
        target/release/.fingerprint/aurora-dataplane-*
+
+# 1b. Download mc binary (MinIO Client) để dùng trong runtime stage
+RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
+    && chmod +x /usr/local/bin/mc
 
 # 2. Copy toàn bộ source thật (target/ host đã bị .dockerignore loại trừ).
 COPY . .
@@ -43,6 +47,8 @@ RUN apt-get update \
     && chown -R ${LOCAL_USER}:${LOCAL_USER} /var/lib/dataplane /var/log/dataplane /etc/dataplane
 
 COPY --from=builder /src/target/release/aurora-dataplane /usr/local/bin/aurora-dataplane
+# [COMMENT]: Copy mc binary vào runtime image — dùng để thực hiện MinIO Admin operations
+COPY --from=builder /usr/local/bin/mc /usr/local/bin/mc
 
 WORKDIR /var/lib/dataplane
 USER ${LOCAL_USER}:${LOCAL_USER}

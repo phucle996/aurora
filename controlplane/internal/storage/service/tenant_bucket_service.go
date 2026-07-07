@@ -2,6 +2,7 @@ package storageSvcImpl
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +11,7 @@ import (
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/crypto"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -26,7 +28,20 @@ func NewTenantBucketService(repo storageRepoInterface.TenantBucketRepo) storageS
 	}
 }
 
-func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) error {
+// [COMMENT]: buildTenantBucketPolicy sinh chuỗi JSON policy giới hạn quyền truy cập MinIO
+// chỉ vào đúng bucket chỉ định. Dùng chuẩn AWS S3 Policy format tương thích với MinIO.
+func buildTenantBucketPolicy(bucketName string) string {
+	return fmt.Sprintf(`{
+		"Version":"2012-10-17",
+		"Statement":[{
+			"Effect":"Allow",
+			"Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],
+			"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*"]
+		}]
+	}`, bucketName, bucketName)
+}
+
+func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) (*storageEntity.CreatedBucketResult, error) {
 	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào
 	bucket := &storageEntity.TenantBucket{
 		ID:                 uuid.New(),
@@ -34,10 +49,34 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		WorkspaceID:        param.WorkspaceID,
 		ZoneID:             param.ZoneID,
 		TenantID:           param.TenantID,
-		Status:             storageEntity.BucketStatusActive,
+		Status:             storageEntity.BucketStatusCreating, // provisioning = creating
 		CapacityQuotaBytes: param.CapacityQuotaBytes,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
+	}
+
+	// [COMMENT]: CP tự sinh Access Key và Secret Key ngẫu nhiên (chuẩn MinIO Service Account)
+	accessKey, err := crypto.GenerateAccessKey()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "gen_access_key_failed")
+	}
+	secretKey, err := crypto.GenerateSecretKey()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "gen_secret_key_failed")
+	}
+
+	// [COMMENT]: Sinh bucket policy giới hạn quyền chỉ vào đúng bucket này
+	policy := buildTenantBucketPolicy(bucket.Name)
+
+	// [COMMENT]: Tạo credential entity — secret_key lưu DB dưới dạng plain text (cần thêm encryption sau)
+	credential := &storageEntity.TenantCredential{
+		ID:        uuid.New(),
+		BucketID:  bucket.ID,
+		AccessKey: accessKey,
+		SecretKey: secretKey, // TODO: AES-GCM encrypt trước khi lưu
+		Policy:    policy,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
@@ -47,7 +86,7 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Serialize thông điệp đồng bộ hóa Bucket bằng Protobuf (nhị phân)
+	// [COMMENT]: Serialize BucketSync payload kèm thông tin credential để DP provisioning MinIO Service Account
 	syncEvent := &storageproto.BucketSync{
 		Id:                 bucket.ID.String(),
 		Name:               bucket.Name,
@@ -57,10 +96,15 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		Status:             string(bucket.Status),
 		CapacityQuotaBytes: bucket.CapacityQuotaBytes,
 		UpdatedAt:          bucket.UpdatedAt.UnixMilli(),
+		// [COMMENT]: Thông tin credential để Dataplane tạo MinIO Service Account ngay trong 1 job
+		CredentialId: credential.ID.String(),
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		Policy:       policy,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
-		return apperr.Wrap(err, err, "marshal_payload_failed")
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
 	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction
@@ -78,12 +122,20 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) metadata bucket và outbox record
-	if err := s.repo.Create(ctx, bucket, outbox); err != nil {
-		return apperr.Wrap(err, err, "create_failed")
+	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) 3-way CTE: bucket + credential + outbox record
+	if err := s.repo.Create(ctx, bucket, credential, outbox); err != nil {
+		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
-	return nil
+	// [COMMENT]: Trả về credentials ngay để HTTP handler phản hồi user — secret_key chỉ hiển thị 1 lần này
+	return &storageEntity.CreatedBucketResult{
+		BucketID:     bucket.ID,
+		BucketName:   bucket.Name,
+		CredentialID: credential.ID,
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		Policy:       policy,
+	}, nil
 }
 
 func (s *TenantBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.TenantBucket, error) {

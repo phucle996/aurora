@@ -34,26 +34,37 @@ func NewPersonalBucketRepo(
 	}
 }
 
-func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.PersonalBucket, outbox *storageEntity.StorageOutboxRecord) error {
+func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.PersonalBucket, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
 	// [COMMENT]: Convert Entity sang Model chứa các tag db
 	m := storageModel.PersonalBucketEntityToModel(bucket)
+	mc := storageModel.PersonalCredentialEntityToModel(credential)
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: Chạy một CTE duy nhất để insert nguyên tử (atomic) cả bucket và outbox record vào CSDL
+	// [COMMENT]: CTE 3-way: insert nguyên tử (atomic) bucket + credential + outbox record.
+	// RETURNING id từ ins_bucket để gắn bucket_id vào credential đúng ngay trong CTE.
 	query := fmt.Sprintf(`
 		WITH ins_bucket AS (
 			INSERT INTO %s.personal_buckets (
 				id, name, workspace_id, zone_id, status, capacity_quota_bytes, created_at, updated_at
 			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			RETURNING id
+		),
+		ins_credential AS (
+			INSERT INTO %s.personal_credentials (
+				id, bucket_id, access_key, secret_key, policy, created_at, updated_at
+			)
+			SELECT $9, id, $10, $11, $12, $13, $14
+			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
-	`, r.schema, r.schema)
+		) VALUES ($15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+	`, r.schema, r.schema, r.schema)
 
 	_, err := r.db.Exec(ctx, query,
+		// [COMMENT]: $1-$8 — personal_buckets fields
 		m.ID,
 		m.Name,
 		m.WorkspaceID,
@@ -62,6 +73,14 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		m.CapacityQuotaBytes,
 		m.CreatedAt,
 		m.UpdatedAt,
+		// [COMMENT]: $9-$14 — personal_credentials fields
+		mc.ID,
+		mc.AccessKey,
+		mc.SecretKey,
+		mc.Policy,
+		mc.CreatedAt,
+		mc.UpdatedAt,
+		// [COMMENT]: $15-$28 — storage_outbox_records fields
 		mo.EventID,
 		mo.RoutingScope,
 		mo.JobTopic,

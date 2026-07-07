@@ -1,36 +1,70 @@
-use std::time::Duration;
-use reqwest::{Client, Response};
+use aws_config::BehaviorVersion;
+use aws_credential_types::Credentials;
+use aws_sdk_s3::config::{Builder, Region};
+use aws_sdk_s3::Client as S3Client;
 
-/// [COMMENT]: MinioClient quản lý các kết nối HTTP tới cụm MinIO Cluster nội vùng (Local Zone).
+/// [COMMENT]: MinioClient bọc AWS S3 SDK Client phục vụ tương tác an toàn với cụm MinIO L2.
+#[derive(Clone)]
 pub struct MinioClient {
-    client: Client,
-    host: String,
-    port: u16,
+    s3_client: S3Client,
 }
 
 impl MinioClient {
-    /// Khởi tạo MinIO Client từ Host và Port cụ thể
-    pub fn new(host: String, port: u16) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
-        Self { client, host, port }
-    }
-
-    /// Khởi tạo MinIO Client tự động đọc cấu hình từ biến môi trường
-    pub fn from_env() -> Self {
+    /// Khởi tạo MinIO Client bằng cách đọc cấu hình Root credentials từ môi trường
+    pub async fn from_env() -> Self {
         let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
         let port_str = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
-        let port = port_str.parse::<u16>().unwrap_or(9000);
+        
+        // Root credentials của cụm MinIO để thực hiện các thao tác quản trị (tạo bucket)
+        let access_key = std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+        let secret_key = std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
 
-        Self::new(host, port)
+        let endpoint_url = format!("http://{}:{}", host, port_str);
+
+        // Tạo AWS Credentials thủ công cho MinIO
+        let credentials = Credentials::new(access_key, secret_key, None, None, "minio-admin");
+
+        // Cấu hình AWS SDK trỏ tới MinIO endpoint local
+        let sdk_config = aws_config::defaults(BehaviorVersion::latest())
+            .credentials_provider(credentials)
+            .endpoint_url(endpoint_url)
+            .region(Region::new("us-east-1")) // MinIO mặc định hoạt động với region bất kỳ
+            .load()
+            .await;
+
+        // Ép cấu hình sử dụng path style access cho MinIO (bắt buộc đối với local IP/domain không có subdomain routing)
+        let s3_config = Builder::from(&sdk_config)
+            .force_path_style(true)
+            .build();
+
+        let s3_client = S3Client::from_conf(s3_config);
+
+        Self { s3_client }
     }
 
-    /// Gửi yêu cầu HTTP PUT khởi tạo bucket vật lý lên MinIO
-    pub async fn create_bucket(&self, bucket_name: &str) -> Result<Response, reqwest::Error> {
-        let url = format!("http://{}:{}/{}", self.host, self.port, bucket_name);
-        self.client.put(&url).send().await
+    /// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
+    pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+        self.s3_client
+            .create_bucket()
+            .bucket(bucket_name)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// [COMMENT]: Gán bucket policy (JSON) vào bucket vật lý trên MinIO.
+    /// Dùng sau khi tạo MinIO user để giới hạn quyền truy cập của user chỉ vào bucket đó.
+    pub async fn put_bucket_policy(
+        &self,
+        bucket_name: &str,
+        policy_json: &str,
+    ) -> Result<(), aws_sdk_s3::Error> {
+        self.s3_client
+            .put_bucket_policy()
+            .bucket(bucket_name)
+            .policy(policy_json)
+            .send()
+            .await?;
+        Ok(())
     }
 }

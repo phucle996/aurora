@@ -9,6 +9,7 @@ import (
 	"controlplane/internal/hypervisor" // [NEW COMMENT]: Import phân hệ Hypervisor để thực thi migrations
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -69,6 +70,11 @@ func RunMigrations(ctx context.Context, db *pgxpool.Pool, cfg *config.Config) er
 
 	// [NEW COMMENT]: hypervisor migrations thực thi độc lập bằng transactional lock
 	if err := hypervisor.ApplyMigrations(ctx, conn, cfg); err != nil {
+		return err
+	}
+
+	// [COMMENT]: storage migrations khởi tạo các bảng và triggers cho outbox
+	if err := storage.ApplyMigrations(ctx, conn, cfg); err != nil {
 		return err
 	}
 

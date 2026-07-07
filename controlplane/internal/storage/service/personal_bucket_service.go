@@ -2,6 +2,7 @@ package storageSvcImpl
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	storageEntity "controlplane/internal/storage/domain/entity"
@@ -9,6 +10,7 @@ import (
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/crypto"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
@@ -27,17 +29,53 @@ func NewPersonalBucketService(repo storageRepoInterface.PersonalBucketRepo) stor
 	}
 }
 
-func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, param *storageEntity.CreatePersonalBucket) error {
+// [COMMENT]: buildPersonalBucketPolicy sinh JSON policy S3 giới hạn quyền chỉ vào bucket chỉ định.
+func buildPersonalBucketPolicy(bucketName string) string {
+	return fmt.Sprintf(`{
+		"Version":"2012-10-17",
+		"Statement":[{
+			"Effect":"Allow",
+			"Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:ListBucket"],
+			"Resource":["arn:aws:s3:::%s","arn:aws:s3:::%s/*"]
+		}]
+	}`, bucketName, bucketName)
+}
+
+func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, param *storageEntity.CreatePersonalBucket) (*storageEntity.CreatedBucketResult, error) {
 	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào
 	bucket := &storageEntity.PersonalBucket{
 		ID:                 uuid.New(),
 		Name:               param.Name,
 		WorkspaceID:        param.WorkspaceID,
 		ZoneID:             param.ZoneID,
-		Status:             storageEntity.BucketStatusActive,
+		Status:             storageEntity.BucketStatusCreating,
 		CapacityQuotaBytes: param.CapacityQuotaBytes,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
+	}
+
+	// [COMMENT]: CP tự sinh Access Key và Secret Key ngẫu nhiên (chuẩn MinIO Service Account)
+	accessKey, err := crypto.GenerateAccessKey()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "gen_access_key_failed")
+	}
+	secretKey, err := crypto.GenerateSecretKey()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "gen_secret_key_failed")
+	}
+
+	// [COMMENT]: Sinh bucket policy giới hạn quyền chỉ vào đúng bucket này
+	policy := buildPersonalBucketPolicy(bucket.Name)
+
+	// [COMMENT]: Tạo credential entity — gắn kèm vào bucket cá nhân
+	credential := &storageEntity.PersonalCredential{
+		ID:        uuid.New(),
+		BucketID:  bucket.ID,
+		AccessKey: accessKey,
+		SecretKey: secretKey, // TODO: AES-GCM encrypt trước khi lưu
+		Policy:    policy,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
@@ -47,7 +85,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Serialize thông điệp đồng bộ hóa Bucket bằng Protobuf (nhị phân)
+	// [COMMENT]: Serialize BucketSync payload kèm credential để DP provisioning MinIO Service Account
 	syncEvent := &storageproto.BucketSync{
 		Id:                 bucket.ID.String(),
 		Name:               bucket.Name,
@@ -57,10 +95,15 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		Status:             string(bucket.Status),
 		CapacityQuotaBytes: bucket.CapacityQuotaBytes,
 		UpdatedAt:          bucket.UpdatedAt.UnixMilli(),
+		// [COMMENT]: Thông tin credential để Dataplane tạo MinIO Service Account trong 1 job
+		CredentialId: credential.ID.String(),
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		Policy:       policy,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
-		return apperr.Wrap(err, err, "marshal_payload_failed")
+		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
 	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction
@@ -78,12 +121,20 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) metadata bucket và outbox record
-	if err := s.repo.Create(ctx, bucket, outbox); err != nil {
-		return apperr.Wrap(err, err, "create_failed")
+	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) 3-way CTE: bucket + credential + outbox record
+	if err := s.repo.Create(ctx, bucket, credential, outbox); err != nil {
+		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
-	return nil
+	// [COMMENT]: Trả về credentials ngay để HTTP handler phản hồi user — secret_key chỉ hiển thị 1 lần này
+	return &storageEntity.CreatedBucketResult{
+		BucketID:     bucket.ID,
+		BucketName:   bucket.Name,
+		CredentialID: credential.ID,
+		AccessKey:    accessKey,
+		SecretKey:    secretKey,
+		Policy:       policy,
+	}, nil
 }
 
 func (s *PersonalBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.PersonalBucket, error) {

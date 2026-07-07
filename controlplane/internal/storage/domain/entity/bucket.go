@@ -63,3 +63,14 @@ type CreateTenantBucket struct {
 	CapacityQuotaBytes int64
 	UserID             uuid.UUID
 }
+
+// [COMMENT]: CreatedBucketResult mang thông tin bucket và credential vừa được tạo,
+// trả về cho HTTP handler để phản hồi cho user một lần duy nhất.
+type CreatedBucketResult struct {
+	BucketID     uuid.UUID // ID bucket vừa được tạo
+	BucketName   string    // Tên bucket
+	CredentialID uuid.UUID // ID của credential gắn kèm
+	AccessKey    string    // Access Key (plain) trả về user
+	SecretKey    string    // Secret Key (plain) trả về user — chỉ hiển thị 1 lần duy nhất
+	Policy       string    // JSON bucket policy được áp dụng
+}

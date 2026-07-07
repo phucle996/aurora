@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: controlplane/internal/storage/transport/rpc/proto/storage_job.proto
+// source: internal/storage/transport/rpc/proto/storage_job.proto
 
 package storageproto
 
@@ -32,13 +32,18 @@ type BucketSync struct {
 	Status             string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                                                      // Trạng thái (creating, active, suspended, deleted)
 	CapacityQuotaBytes int64                  `protobuf:"varint,7,opt,name=capacity_quota_bytes,json=capacityQuotaBytes,proto3" json:"capacity_quota_bytes,omitempty"` // Hạn mức quota bytes
 	UpdatedAt          int64                  `protobuf:"varint,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`                              // Thời điểm cập nhật cuối (Epoch Milliseconds)
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// [COMMENT]: Thông tin Credential do CP tự sinh, dùng để DP provisioning MinIO Service Account
+	CredentialId  string `protobuf:"bytes,9,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"` // ID credential trong DB
+	AccessKey     string `protobuf:"bytes,10,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`         // Access Key sẽ được tạo trên MinIO
+	SecretKey     string `protobuf:"bytes,11,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`         // Secret Key (plaintext trong payload, transit qua internal infra)
+	Policy        string `protobuf:"bytes,12,opt,name=policy,proto3" json:"policy,omitempty"`                                // JSON policy giới hạn quyền truy cập chỉ vào bucket này
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *BucketSync) Reset() {
 	*x = BucketSync{}
-	mi := &file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[0]
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -50,7 +55,7 @@ func (x *BucketSync) String() string {
 func (*BucketSync) ProtoMessage() {}
 
 func (x *BucketSync) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[0]
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -63,7 +68,7 @@ func (x *BucketSync) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BucketSync.ProtoReflect.Descriptor instead.
 func (*BucketSync) Descriptor() ([]byte, []int) {
-	return file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{0}
+	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *BucketSync) GetId() string {
@@ -122,6 +127,34 @@ func (x *BucketSync) GetUpdatedAt() int64 {
 	return 0
 }
 
+func (x *BucketSync) GetCredentialId() string {
+	if x != nil {
+		return x.CredentialId
+	}
+	return ""
+}
+
+func (x *BucketSync) GetAccessKey() string {
+	if x != nil {
+		return x.AccessKey
+	}
+	return ""
+}
+
+func (x *BucketSync) GetSecretKey() string {
+	if x != nil {
+		return x.SecretKey
+	}
+	return ""
+}
+
+func (x *BucketSync) GetPolicy() string {
+	if x != nil {
+		return x.Policy
+	}
+	return ""
+}
+
 // Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane
 type CredentialSync struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -138,7 +171,7 @@ type CredentialSync struct {
 
 func (x *CredentialSync) Reset() {
 	*x = CredentialSync{}
-	mi := &file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[1]
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -150,7 +183,7 @@ func (x *CredentialSync) String() string {
 func (*CredentialSync) ProtoMessage() {}
 
 func (x *CredentialSync) ProtoReflect() protoreflect.Message {
-	mi := &file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[1]
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -163,7 +196,7 @@ func (x *CredentialSync) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialSync.ProtoReflect.Descriptor instead.
 func (*CredentialSync) Descriptor() ([]byte, []int) {
-	return file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{1}
+	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *CredentialSync) GetId() string {
@@ -215,11 +248,11 @@ func (x *CredentialSync) GetUpdatedAt() int64 {
 	return 0
 }
 
-var File_controlplane_internal_storage_transport_rpc_proto_storage_job_proto protoreflect.FileDescriptor
+var File_internal_storage_transport_rpc_proto_storage_job_proto protoreflect.FileDescriptor
 
-const file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
+const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"\n" +
-	"Ccontrolplane/internal/storage/transport/rpc/proto/storage_job.proto\x12\astorage\"\xf2\x01\n" +
+	"6internal/storage/transport/rpc/proto/storage_job.proto\x12\astorage\"\xed\x02\n" +
 	"\n" +
 	"BucketSync\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -230,7 +263,14 @@ const file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_r
 	"\x06status\x18\x06 \x01(\tR\x06status\x120\n" +
 	"\x14capacity_quota_bytes\x18\a \x01(\x03R\x12capacityQuotaBytes\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\b \x01(\x03R\tupdatedAt\"\xca\x01\n" +
+	"updated_at\x18\b \x01(\x03R\tupdatedAt\x12#\n" +
+	"\rcredential_id\x18\t \x01(\tR\fcredentialId\x12\x1d\n" +
+	"\n" +
+	"access_key\x18\n" +
+	" \x01(\tR\taccessKey\x12\x1d\n" +
+	"\n" +
+	"secret_key\x18\v \x01(\tR\tsecretKey\x12\x16\n" +
+	"\x06policy\x18\f \x01(\tR\x06policy\"\xca\x01\n" +
 	"\x0eCredentialSync\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tbucket_id\x18\x02 \x01(\tR\bbucketId\x12\x1d\n" +
@@ -244,23 +284,23 @@ const file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_r
 	"updated_at\x18\a \x01(\x03R\tupdatedAtB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
 
 var (
-	file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce sync.Once
-	file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData []byte
+	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce sync.Once
+	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData []byte
 )
 
-func file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP() []byte {
-	file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce.Do(func() {
-		file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc), len(file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc)))
+func file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP() []byte {
+	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce.Do(func() {
+		file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc), len(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc)))
 	})
-	return file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData
+	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData
 }
 
-var file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = []any{
+var file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = []any{
 	(*BucketSync)(nil),     // 0: storage.BucketSync
 	(*CredentialSync)(nil), // 1: storage.CredentialSync
 }
-var file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs = []int32{
+var file_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
 	0, // [0:0] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
@@ -268,26 +308,26 @@ var file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_dep
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_init() }
-func file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_init() {
-	if File_controlplane_internal_storage_transport_rpc_proto_storage_job_proto != nil {
+func init() { file_internal_storage_transport_rpc_proto_storage_job_proto_init() }
+func file_internal_storage_transport_rpc_proto_storage_job_proto_init() {
+	if File_internal_storage_transport_rpc_proto_storage_job_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc), len(file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc), len(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_goTypes,
-		DependencyIndexes: file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs,
-		MessageInfos:      file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes,
+		GoTypes:           file_internal_storage_transport_rpc_proto_storage_job_proto_goTypes,
+		DependencyIndexes: file_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs,
+		MessageInfos:      file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes,
 	}.Build()
-	File_controlplane_internal_storage_transport_rpc_proto_storage_job_proto = out.File
-	file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = nil
-	file_controlplane_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs = nil
+	File_internal_storage_transport_rpc_proto_storage_job_proto = out.File
+	file_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = nil
+	file_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs = nil
 }

@@ -9,8 +9,8 @@ import (
 
 // [COMMENT]: TenantBucketRepo định nghĩa các phương thức giao tiếp CSDL cho Bucket Doanh nghiệp (Enterprise).
 type TenantBucketRepo interface {
-	// [COMMENT]: Tạo mới bản ghi Bucket trong Database.
-	Create(ctx context.Context, bucket *storageEntity.TenantBucket, outbox *storageEntity.StorageOutboxRecord) error
+	// [COMMENT]: Tạo mới Bucket + Credential + Outbox Record trong một atomic CTE duy nhất.
+	Create(ctx context.Context, bucket *storageEntity.TenantBucket, credential *storageEntity.TenantCredential, outbox *storageEntity.StorageOutboxRecord) error
 	
 	// [COMMENT]: Tìm kiếm thông tin chi tiết của một Bucket theo ID.
 	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.TenantBucket, error)
@@ -33,8 +33,8 @@ type TenantBucketRepo interface {
 
 // [COMMENT]: PersonalBucketRepo định nghĩa các phương thức giao tiếp CSDL cho Bucket Cá nhân (Individual).
 type PersonalBucketRepo interface {
-	// [COMMENT]: Tạo mới bản ghi Bucket trong Database.
-	Create(ctx context.Context, bucket *storageEntity.PersonalBucket, outbox *storageEntity.StorageOutboxRecord) error
+	// [COMMENT]: Tạo mới Bucket + Credential + Outbox Record trong một atomic CTE duy nhất.
+	Create(ctx context.Context, bucket *storageEntity.PersonalBucket, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error
 	
 	// [COMMENT]: Tìm kiếm thông tin chi tiết của một Bucket theo ID.
 	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalBucket, error)

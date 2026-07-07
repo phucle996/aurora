@@ -9,8 +9,8 @@ import (
 
 // [COMMENT]: TenantBucketService quản lý các nghiệp vụ Bucket dành riêng cho đối tượng Doanh nghiệp (Enterprise).
 type TenantBucketService interface {
-	// [COMMENT]: Khởi tạo Bucket mới cho Tenant (Thực thi DB transaction + trigger outbox tạo trên MinIO).
-	CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) error
+	// [COMMENT]: Khởi tạo Bucket mới cho Tenant, tự gen và trả về credential 1 lần duy nhất.
+	CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) (*storageEntity.CreatedBucketResult, error)
 	
 	// [COMMENT]: Xem chi tiết thông tin Bucket.
 	GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.TenantBucket, error)
@@ -33,8 +33,8 @@ type TenantBucketService interface {
 
 // [COMMENT]: PersonalBucketService quản lý các nghiệp vụ Bucket dành riêng cho cá nhân (Personal Owner).
 type PersonalBucketService interface {
-	// [COMMENT]: Khởi tạo Bucket mới cho tài khoản cá nhân.
-	CreateBucketForPersonal(ctx context.Context, param *storageEntity.CreatePersonalBucket) error
+	// [COMMENT]: Khởi tạo Bucket mới cho tài khoản cá nhân, tự gen và trả về credential 1 lần duy nhất.
+	CreateBucketForPersonal(ctx context.Context, param *storageEntity.CreatePersonalBucket) (*storageEntity.CreatedBucketResult, error)
 	
 	// [COMMENT]: Xem chi tiết thông tin Bucket cá nhân.
 	GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.PersonalBucket, error)
