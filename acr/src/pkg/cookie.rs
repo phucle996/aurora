@@ -9,5 +9,6 @@ pub const COOKIE_ACCESS_SECRET: &str = "access_secret";
 pub const COOKIE_REFRESH_TOKEN: &str = "refresh_token";
 pub const COOKIE_ZONE_CODE: &str = "zone_code";
 pub const COOKIE_TENANT_ID: &str = "tenant_id";
+pub const COOKIE_TENANT_DOMAIN: &str = "tenant_domain";
 pub const COOKIE_WORKSPACE_ID: &str = "workspace_id";
 pub const COOKIE_CLIENT_DEVICE_ID: &str = "client_device_id";

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"controlplane/internal/http/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,9 +33,24 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		module.ZoneHandler.UpdateZoneService,
 	)
 
-	// [COMMENT]: Route tạo workspace mới — cần x-zone-id header bắt buộc, x-tenant-id optional
+	// ========================================================================
+	// 🗂️ WORKSPACE — CUSTOMER WORKSPACE LIFECYCLE MANAGEMENT
+	// ========================================================================
+
+	// [COMMENT]: Tạo workspace mới — yêu cầu quyền hierarchy:workspace:create ở tầng *
 	router.POST("/api/v1/workspaces",
+		middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
 		module.WorkspaceHandler.CreateWorkspace,
+	)
+	// [COMMENT]: Lấy danh sách workspace mà user có quyền read (phân giải qua L1 cache của role)
+	router.GET("/api/v1/workspaces",
+		middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
+		module.WorkspaceHandler.ListWorkspaces,
+	)
+	// [COMMENT]: Hot path catalog — trả về id,code,name tối giản lọc theo zone + tenant/personal context
+	router.GET("/api/v1/workspaces/catalog",
+		middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
+		module.WorkspaceHandler.GetWorkspaceCatalog,
 	)
 
 	// [COMMENT]: Route tạo tenant mới — cần x-user-id header bắt buộc, x-tenant-id phải trống
@@ -41,3 +58,4 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		module.TenantHandler.CreateTenant,
 	)
 }
+

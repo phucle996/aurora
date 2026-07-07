@@ -754,6 +754,18 @@ impl Authorization for ExtAuthzService {
                             });
                         }
 
+                        // [COMMENT]: Forward workspace_id cookie thành x-workspace-id header cho upstream CP
+                        if let Some(ws_id) = extract_cookie_value(&cookie_header, COOKIE_WORKSPACE_ID) {
+                            ok.headers.push(HeaderValueOption {
+                                header: Some(HeaderValue {
+                                    key: HEADER_X_WORKSPACE_ID.to_string(),
+                                    value: ws_id,
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            });
+                        }
+
                         // [COMMENT]: Chỉ inject header x-zone-id cho microservices upstream, không trả x-zone-code
                         if let Some(ref z_id) = claims.zone_id {
                             ok.headers.push(HeaderValueOption {

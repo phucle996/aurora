@@ -53,13 +53,17 @@ import (
 )
 
 type Module struct {
-	cfg                 *config.Config
-	rds                 *goredis.Client
+	cfg                         *config.Config
+	rds                         *goredis.Client
 	ZoneRepository      coreRepoInterface.ZoneRepository
 	ZoneService         coreSvcInterface.ZoneService
 	ZoneHandler         *zoneHandler.ZoneHandler
-	WorkspaceRepository coreRepoInterface.WorkspaceRepository
-	WorkspaceService    coreSvcInterface.WorkspaceService
+	// [COMMENT]: Chia ranh giới DB access thành 2 repositories Tenant và Personal
+	TenantWorkspaceRepository   coreRepoInterface.TenantWorkspaceRepository
+	PersonalWorkspaceRepository coreRepoInterface.PersonalWorkspaceRepository
+	// [COMMENT]: Chia ranh giới Service Layer thành 2 services Tenant và Personal
+	TenantWorkspaceService      coreSvcInterface.TenantWorkspaceService
+	PersonalWorkspaceService    coreSvcInterface.PersonalWorkspaceService
 	WorkspaceHandler    *zoneHandler.WorkspaceHandler
 	TenantRepository    coreRepoInterface.TenantRepository
 	TenantService       coreSvcInterface.TenantService
@@ -100,16 +104,25 @@ func NewModule(
 		return nil, fmt.Errorf("zone module: zone handler is nil")
 	}
 
-	// 6) Workspace management — repo, service, handler
-	workspaceRepo := coreRepoImpl.NewWorkspaceRepoImpl(cfg, db)
-	if workspaceRepo == nil {
-		return nil, fmt.Errorf("hierarchy module: workspace repository is nil")
+	// 6) Workspace management — repo, service, handler (Chia 2 dòng chảy Tenant và Personal)
+	tenantWorkspaceRepo := coreRepoImpl.NewTenantWorkspaceRepoImpl(cfg, db)
+	if tenantWorkspaceRepo == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant workspace repository is nil")
 	}
-	workspaceService := coreSvcImpl.NewWorkspaceService(workspaceRepo)
-	if workspaceService == nil {
-		return nil, fmt.Errorf("hierarchy module: workspace service is nil")
+	personalWorkspaceRepo := coreRepoImpl.NewPersonalWorkspaceRepoImpl(cfg, db)
+	if personalWorkspaceRepo == nil {
+		return nil, fmt.Errorf("hierarchy module: personal workspace repository is nil")
 	}
-	wHandler := zoneHandler.NewWorkspaceHandler(workspaceService)
+
+	tenantWorkspaceService := coreSvcImpl.NewTenantWorkspaceService(tenantWorkspaceRepo, cacheEngine)
+	if tenantWorkspaceService == nil {
+		return nil, fmt.Errorf("hierarchy module: tenant workspace service is nil")
+	}
+	personalWorkspaceService := coreSvcImpl.NewPersonalWorkspaceService(personalWorkspaceRepo)
+	if personalWorkspaceService == nil {
+		return nil, fmt.Errorf("hierarchy module: personal workspace service is nil")
+	}
+	wHandler := zoneHandler.NewWorkspaceHandler(tenantWorkspaceService, personalWorkspaceService)
 	if wHandler == nil {
 		return nil, fmt.Errorf("hierarchy module: workspace handler is nil")
 	}
@@ -131,18 +144,20 @@ func NewModule(
 	// [COMMENT]: Lược bỏ việc khởi tạo BackpressureService do đã chuyển đổi hoàn toàn sang mô hình event-driven ở job-orchestrator.
 
 	return &Module{
-		cfg:                 cfg,
-		rds:                 rds,
-		ZoneRepository:      zoneRepo,
-		ZoneService:         zoneService,
-		ZoneHandler:         zHandler,
-		WorkspaceRepository: workspaceRepo,
-		WorkspaceService:    workspaceService,
-		WorkspaceHandler:    wHandler,
-		TenantRepository:    tenantRepo,
-		TenantService:       tenantService,
-		TenantHandler:       tHandler,
-		L1Registry:          cacheEngine,
+		cfg:                         cfg,
+		rds:                         rds,
+		ZoneRepository:              zoneRepo,
+		ZoneService:                 zoneService,
+		ZoneHandler:                 zHandler,
+		TenantWorkspaceRepository:   tenantWorkspaceRepo,
+		PersonalWorkspaceRepository: personalWorkspaceRepo,
+		TenantWorkspaceService:      tenantWorkspaceService,
+		PersonalWorkspaceService:    personalWorkspaceService,
+		WorkspaceHandler:            wHandler,
+		TenantRepository:            tenantRepo,
+		TenantService:               tenantService,
+		TenantHandler:               tHandler,
+		L1Registry:                  cacheEngine,
 	}, nil
 }
 

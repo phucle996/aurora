@@ -29,4 +29,9 @@ type Workspace struct {
 	UpdatedAt time.Time
 }
 
-
+// [COMMENT]: WorkspaceCatalog đại diện cho thông tin workspace tối giản trong hot path catalog
+type WorkspaceCatalog struct {
+	ID   uuid.UUID `json:"id"`
+	Code string    `json:"code"`
+	Name string    `json:"name"`
+}

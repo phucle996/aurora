@@ -21,8 +21,8 @@ use crate::config::Config;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
-use crate::service::ext_authz::extract_cookie_value;
 use crate::pkg::cookie::*;
+use crate::service::ext_authz::extract_cookie_value;
 
 // [COMMENT]: Response JSON trả về client khi switch tenant thành công
 #[derive(Serialize)]
