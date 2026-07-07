@@ -28,7 +28,6 @@ receivers:
                 - 'redis://controlplane-redis:6379'
                 - 'redis://controlplane-redis-job:6379'
                 - 'redis://controlplane-redis-dataplane-z1:6379'
-                - 'redis://controlplane-redis-dataplane-z2:6379'
           metrics_path: /scrape
           relabel_configs:
             # 1. Chuyển địa chỉ đích ban đầu thành tham số query "target" cho exporter

@@ -98,12 +98,3 @@ datasources:
     url: redis://controlplane-redis-dataplane-z1:6379
     editable: false
 
-  # Datasource Redis Dataplane Zone 2 phục vụ giám sát co giãn và tải của Zone 2
-  - name: Redis-Dataplane-Z2
-    uid: redis-dataplane-z2
-    type: redis-datasource
-    access: proxy
-    url: redis://controlplane-redis-dataplane-z2:6379
-    editable: false
-
-
