@@ -14,10 +14,12 @@ impl MinioClient {
     pub async fn from_env() -> Self {
         let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
         let port_str = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
-        
+
         // Root credentials của cụm MinIO để thực hiện các thao tác quản trị (tạo bucket)
-        let access_key = std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-        let secret_key = std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+        let access_key =
+            std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+        let secret_key =
+            std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
 
         let endpoint_url = format!("http://{}:{}", host, port_str);
 
@@ -33,9 +35,7 @@ impl MinioClient {
             .await;
 
         // Ép cấu hình sử dụng path style access cho MinIO (bắt buộc đối với local IP/domain không có subdomain routing)
-        let s3_config = Builder::from(&sdk_config)
-            .force_path_style(true)
-            .build();
+        let s3_config = Builder::from(&sdk_config).force_path_style(true).build();
 
         let s3_client = S3Client::from_conf(s3_config);
 
@@ -47,22 +47,6 @@ impl MinioClient {
         self.s3_client
             .create_bucket()
             .bucket(bucket_name)
-            .send()
-            .await?;
-        Ok(())
-    }
-
-    /// [COMMENT]: Gán bucket policy (JSON) vào bucket vật lý trên MinIO.
-    /// Dùng sau khi tạo MinIO user để giới hạn quyền truy cập của user chỉ vào bucket đó.
-    pub async fn put_bucket_policy(
-        &self,
-        bucket_name: &str,
-        policy_json: &str,
-    ) -> Result<(), aws_sdk_s3::Error> {
-        self.s3_client
-            .put_bucket_policy()
-            .bucket(bucket_name)
-            .policy(policy_json)
             .send()
             .await?;
         Ok(())

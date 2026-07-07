@@ -4,12 +4,10 @@ import {
   ChevronDown,
   ChevronLeft,
   RefreshCcw,
-  Settings2,
   Trash2,
   Server,
   Database,
   Layers3,
-  PackageCheck,
   Box,
   Clock,
   Cpu,
@@ -34,16 +32,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Fetch } from '@/lib/fetch'
 import { cn } from '@/lib/utils'
@@ -124,13 +112,7 @@ const ALLOWED_TRANSITIONS: Record<ZoneStatus, ZoneStatus[]> = {
   disabled: ['planned'],
 }
 
-// Static catalog of zone services shown in the Manage Services drawer
-const serviceCatalog = [
-  { key: 'hypervisor', label: 'Hypervisor', description: 'KVM hosts and compute placement.', icon: Server },
-  { key: 'storage', label: 'Storage', description: 'Storage pools and volume capacity.', icon: Database },
-  { key: 'kubernetes', label: 'Kubernetes', description: 'Managed clusters and container workloads.', icon: Layers3 },
-  { key: 'mail', label: 'Mail', description: 'Mail endpoints, gateways, and delivery workers.', icon: PackageCheck },
-]
+
 
 // ─── Utility Functions ───────────────────────────────────────────────────────
 
@@ -255,10 +237,6 @@ export default function ZoneDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // ── Manage Services drawer ────────────────────────────────────────────────
-  const [serviceDrawerOpen, setServiceDrawerOpen] = useState(false)
-  const [draftServices, setDraftServices] = useState<string[]>([]) // local draft, not yet saved
-
   // ── Inline edit (name / description) ─────────────────────────────────────
   const [editingField, setEditingField] = useState<'name' | 'description' | null>(null)
   const [draftName, setDraftName] = useState('')
@@ -295,7 +273,6 @@ export default function ZoneDetailPage() {
       // Seed draft state so inline-edit fields start with current values
       setDraftName(normalizedDetail.zone.name)
       setDraftDescription(normalizedDetail.zone.description)
-      setDraftServices(normalizedDetail.enabled_services.filter((service) => service.status === 'healthy').map((service) => service.key))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Cannot load zone detail')
       setDetail(null)
@@ -380,42 +357,7 @@ export default function ZoneDetailPage() {
       .catch((err) => setError(err instanceof Error ? err.message : 'Cannot update zone'))
   }
 
-  // ── Manage Services handlers ─────────────────────────────────────────────
 
-  // Toggle a service key in local draft (not yet persisted)
-  const toggleDraftService = (serviceKey: string) => {
-    setDraftServices((current) => (
-      current.includes(serviceKey)
-        ? current.filter((key) => key !== serviceKey)
-        : [...current, serviceKey]
-    ))
-  }
-
-  // Fire PUT for each service whose enabled state changed; reload on success
-  const applyServices = () => {
-    setServiceDrawerOpen(false)
-    const currentEnabled = detail.enabled_services.filter((s) => s.status === 'healthy').map((s) => s.key)
-
-    const promises = serviceCatalog.map((service) => {
-      const isCurrentlyEnabled = currentEnabled.includes(service.key)
-      const shouldBeEnabled = draftServices.includes(service.key)
-      if (isCurrentlyEnabled === shouldBeEnabled) return null // no change
-
-      return Fetch(`/admin/core/zones/services`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ zone_id: zoneID, service_type: service.key, enabled: shouldBeEnabled }),
-      }).then(async (response) => {
-        if (!response.ok) throw new Error(await readErrorMessage(response))
-      })
-    }).filter(Boolean) as Promise<void>[]
-
-    if (promises.length === 0) return
-
-    Promise.all(promises)
-      .then(async () => { await loadZoneDetail() })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Cannot update zone services'))
-  }
 
   // ── Status change flow ───────────────────────────────────────────────────
 
@@ -571,8 +513,10 @@ export default function ZoneDetailPage() {
 
               {/* Enabled Services Section Component */}
               <ZoneServicesSection
+                zoneID={zoneID}
                 enabledServices={detail.enabled_services}
                 zoneStatus={detail.zone.status}
+                onRefresh={loadZoneDetail}
               />
 
               {/* Workspaces Block */}
@@ -700,8 +644,9 @@ export default function ZoneDetailPage() {
 
               {/* Quick Links Section Component */}
               <ZoneQuickLinksSection
-                zoneStatus={detail.zone.status}
-                onManageServices={() => setServiceDrawerOpen(true)}
+                onManageServices={() => {
+                  document.getElementById('zone-services-section')?.scrollIntoView({ behavior: 'smooth' })
+                }}
               />
             </div>
           </div>
@@ -781,17 +726,6 @@ export default function ZoneDetailPage() {
               <Trash2 className="size-3.5" />
               <span>Delete zone</span>
             </button>
-
-            <button
-              type="button"
-              disabled={detail.zone.status !== 'maintenance'}
-              title={detail.zone.status !== 'maintenance' ? 'Zone must be in Maintenance status to manage services' : undefined}
-              onClick={() => setServiceDrawerOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-accent/40 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <Settings2 className="size-3.5" />
-              <span>Manage services</span>
-            </button>
           </div>
         </div>
 
@@ -824,42 +758,7 @@ export default function ZoneDetailPage() {
         {renderTabContent()}
       </PageContent>
 
-      <Sheet open={serviceDrawerOpen} onOpenChange={setServiceDrawerOpen}>
-        <SheetContent side="right" className="w-full sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle>Manage Zone Services</SheetTitle>
-            <SheetDescription>
-              Choose which services are enabled for this zone. Service health still comes from each service owner when available.
-            </SheetDescription>
-          </SheetHeader>
 
-          <div className="grid gap-3 px-4 py-2">
-            {serviceCatalog.map((service) => {
-              const Icon = service.icon
-              const checked = draftServices.includes(service.key)
-              return (
-                <div key={service.key} className="flex items-center justify-between gap-4 rounded-xl border border-border bg-background p-4">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <Icon className="size-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <Label className="text-sm font-semibold text-foreground">{service.label}</Label>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">{service.description}</p>
-                    </div>
-                  </div>
-                  <Switch checked={checked} onCheckedChange={() => toggleDraftService(service.key)} />
-                </div>
-              )
-            })}
-          </div>
-
-          <SheetFooter>
-            <Button type="button" variant="outline" onClick={() => setServiceDrawerOpen(false)}>Cancel</Button>
-            <Button type="button" onClick={applyServices}>Apply Services</Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
 
       <AlertDialog open={isStatusConfirmOpen} onOpenChange={setIsStatusConfirmOpen}>
         <AlertDialogContent>
@@ -894,7 +793,13 @@ export default function ZoneDetailPage() {
             setOtpAction(null)
           }
         }}
-        onConfirm={(code) => otpAction === 'delete' ? confirmDeleteZone(code) : confirmStatusChange(code)}
+        onConfirm={(code) => {
+          if (otpAction === 'delete') {
+            return confirmDeleteZone(code)
+          } else {
+            return confirmStatusChange(code)
+          }
+        }}
         title={otpAction === 'delete' ? "Verify Zone Deletion" : "Security Verification"}
         description={otpAction === 'delete' ? "Deleting this zone is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action." : `Changing zone status to ${pendingStatus ? statusLabels[pendingStatus] : ''} is a critical operation. Please enter the 6-digit verification code from your authenticator app to authorize this action.`}
         confirmText={otpAction === 'delete' ? "Verify & Delete" : "Verify & Update"}

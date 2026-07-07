@@ -109,11 +109,11 @@ pub async fn release_user_session(
         }
     };
 
-    // 5. Ghi session lên Redis L2 qua SessionManager (Stateful Verification)
     if let Err(e) = session_mgr
         .register_session(
             claims.zone_id.as_deref().unwrap_or("global"),
-            claims.tenant_id.as_deref().unwrap_or("global"),
+            // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
+            claims.tenant_id.as_deref().unwrap_or("platform"),
             user_id,
             &access_key,
             &ash,
@@ -142,7 +142,8 @@ pub async fn release_user_session(
     let tenant_id_val = claims
         .tenant_id
         .clone()
-        .unwrap_or_else(|| "global".to_string());
+        // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
+        .unwrap_or_else(|| "platform".to_string());
 
     Ok(ReleaseUserSessionResult {
         access_token,

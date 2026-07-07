@@ -212,7 +212,8 @@ impl AuthService for AuthServiceImpl {
             .session_mgr
             .get_session(
                 claims.zone_id.as_deref().unwrap_or("global"),
-                claims.tenant_id.as_deref().unwrap_or("global"),
+                // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
+                claims.tenant_id.as_deref().unwrap_or("platform"),
                 &claims.uid,
                 &req.access_key,
             )

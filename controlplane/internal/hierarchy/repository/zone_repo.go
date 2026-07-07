@@ -112,7 +112,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			)
 			SELECT 
 				(SELECT COUNT(*) FROM target) AS exists,
-				COALESCE((SELECT status FROM target), '') AS status,
+				COALESCE((SELECT status::text FROM target), '') AS status,
 				(SELECT val FROM svcs_exist) AS has_svcs,
 				COALESCE((SELECT code FROM deleted), '') AS deleted_code
 		`, schema, schema, schema, schema),
@@ -146,7 +146,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 			)
 			SELECT 
 				(SELECT COUNT(*) FROM target_zone) AS zone_exists,
-				COALESCE((SELECT status FROM target_zone), '') AS zone_status,
+				COALESCE((SELECT status::text FROM target_zone), '') AS zone_status,
 				COALESCE((SELECT code FROM target_zone), '') AS zone_code,
 				(SELECT COUNT(*) FROM upserted) AS upsert_success,
 				COALESCE((SELECT id FROM upserted), '00000000-0000-0000-0000-000000000000'::uuid) AS svc_id,

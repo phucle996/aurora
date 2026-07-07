@@ -1,12 +1,10 @@
 import { Server, Settings2, Box, ShieldCheck } from 'lucide-react'
 
 interface ZoneQuickLinksSectionProps {
-  zoneStatus: string
   onManageServices: () => void
 }
 
 export default function ZoneQuickLinksSection({
-  zoneStatus,
   onManageServices,
 }: ZoneQuickLinksSectionProps) {
   return (
@@ -19,9 +17,8 @@ export default function ZoneQuickLinksSection({
         </button>
         <button
           type="button"
-          disabled={zoneStatus !== 'maintenance'}
           onClick={onManageServices}
-          className="flex items-center gap-2 hover:underline text-left disabled:opacity-50 disabled:no-underline"
+          className="flex items-center gap-2 hover:underline text-left"
         >
           <Settings2 className="size-4 text-muted-foreground/80" />
           Manage services

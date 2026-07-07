@@ -28,8 +28,9 @@ pub async fn resolve_and_verify_tenant(
 
     // 2. Xác thực so khớp với JWT claims
     if let Some(ref c) = claims {
-        let claims_tenant_id = c.tenant_id.as_deref().unwrap_or("");
-        let req_tenant_id = cookie_tenant_id.as_deref().unwrap_or("");
+        // [COMMENT]: Sử dụng mặc định "platform" thay vì "global" để phân biệt rõ ràng với phạm vi "global" của Zone
+        let claims_tenant_id = c.tenant_id.as_deref().unwrap_or("platform");
+        let req_tenant_id = cookie_tenant_id.as_deref().unwrap_or("platform");
 
         if req_tenant_id != claims_tenant_id {
             Logger::authz_log(
@@ -48,7 +49,8 @@ pub async fn resolve_and_verify_tenant(
         }
 
         // 3. Nếu có giá trị tenant_id, xác thực định dạng UUID hợp lệ
-        if !req_tenant_id.is_empty() && req_tenant_id != "global" {
+        // [COMMENT]: Loại trừ "platform" thay vì "global" khỏi kiểm thử định dạng UUID
+        if !req_tenant_id.is_empty() && req_tenant_id != "platform" {
             if uuid::Uuid::parse_str(req_tenant_id).is_err() {
                 Logger::authz_log(
                     &c.sub,

@@ -382,7 +382,8 @@ impl Authorization for ExtAuthzService {
                     } else {
                         match self.session_mgr.get_session(
                             claims.zone_id.as_deref().unwrap_or("global"),
-                            claims.tenant_id.as_deref().unwrap_or("global"),
+                            // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
+                            claims.tenant_id.as_deref().unwrap_or("platform"),
                             &claims.uid,
                             &access_key,
                         ).await {
@@ -617,7 +618,8 @@ impl Authorization for ExtAuthzService {
                         .session_mgr
                         .update_last_seen(
                             claims.zone_id.as_deref().unwrap_or("global"),
-                            claims.tenant_id.as_deref().unwrap_or("global"),
+                            // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
+                            claims.tenant_id.as_deref().unwrap_or("platform"),
                             &claims.uid,
                             &access_key,
                             session.lsa,
