@@ -15,6 +15,7 @@ use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 // [COMMENT]: Cấu trúc JSON trả về cho Client, khớp với ZoneCatalog cũ của Go
 #[derive(Serialize)]
@@ -44,8 +45,8 @@ pub async fn handle_zone_catalog(
     // [COMMENT]: Đánh giá trạng thái đăng nhập và vai trò người dùng từ Cookies
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
     let is_logged_in_admin = async {
-        let jwt_token = extract_cookie_value(&cookie_header, "access_token")?;
-        let access_key = extract_cookie_value(&cookie_header, "access_key")?;
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)?;
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)?;
 
         // [COMMENT]: Giải mã token stateless
         let claims = token_mgr.verify_token(&jwt_token).await.ok()?;

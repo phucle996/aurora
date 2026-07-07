@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 use std::collections::HashMap;
 
 /// Kiểm tra xem HTTP Method hiện tại có phải là unsafe (POST, PUT, PATCH, DELETE) hay không.
@@ -18,10 +19,10 @@ pub fn is_unsafe_method(method: &str) -> bool {
 pub fn has_auth_cookie(cookie_header: &str) -> bool {
     // Các tên cookie quan trọng định danh session của người dùng hoặc admin
     let keys = [
-        "access_token",
-        "refresh_token",
-        "access_key",
-        "access_secret",
+        COOKIE_ACCESS_TOKEN,
+        COOKIE_REFRESH_TOKEN,
+        COOKIE_ACCESS_KEY,
+        COOKIE_ACCESS_SECRET,
     ];
     // Kiểm tra xem có ít nhất một cookie tồn tại và không trống
     keys.iter()

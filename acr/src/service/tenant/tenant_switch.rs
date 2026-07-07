@@ -22,6 +22,7 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 // [COMMENT]: Response JSON trả về client khi switch tenant thành công
 #[derive(Serialize)]
@@ -136,9 +137,9 @@ pub async fn handle_tenant_switch(
 
     // ─── Bước 1: Xác thực Trinity Credentials ───────────────────────────────
     let auth_result = async {
-        let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
             .ok_or("Missing access_token cookie")?;
-        let access_key = extract_cookie_value(&cookie_header, "access_key")
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
 
         let claims = token_mgr.verify_token(&jwt_token).await.map_err(|e| {
@@ -169,7 +170,7 @@ pub async fn handle_tenant_switch(
             }
         };
 
-        let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+        let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
             .ok_or("Missing access_secret cookie")?;
 
         let incoming_hash = sha256_hash(&access_secret);
@@ -228,22 +229,22 @@ pub async fn handle_tenant_switch(
 
     // [COMMENT]: Set access_token cookie với JWT mới (HttpOnly - JS không đọc được)
     let access_cookie = format!(
-        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        new_jwt, config.session_ttl_secs, domain_str
+        "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        COOKIE_ACCESS_TOKEN, new_jwt, config.session_ttl_secs, domain_str
     );
     builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Set tenant_domain cookie (không HttpOnly để JS đọc được cho UI)
     let tenant_cookie = format!(
-        "tenant_domain={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-        tenant_domain, domain_str
+        "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        COOKIE_TENANT_DOMAIN, tenant_domain, domain_str
     );
     builder.add_header("set-cookie", &tenant_cookie, None, false);
 
     // [COMMENT]: Set tenant_id cookie (không HttpOnly để JS đọc được cho UI)
     let tenant_id_cookie = format!(
-        "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-        tenant_id, domain_str
+        "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        COOKIE_TENANT_ID, tenant_id, domain_str
     );
     builder.add_header("set-cookie", &tenant_id_cookie, None, false);
 

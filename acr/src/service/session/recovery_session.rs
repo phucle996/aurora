@@ -14,6 +14,8 @@ use crate::observability::logger::Logger;
 // thay vì viết lại logic từ đầu
 use crate::service::session::release_session::release_user_session;
 use crate::service::ext_authz::{extract_cookie_value, sha256_hash};
+use crate::pkg::cookie::*;
+use crate::pkg::header::*;
 
 // [COMMENT]: Giải phóng lock recovery session trong Redis L2
 async fn release_recovery_lock(session_mgr: &SessionManager, token_hash: &str) {
@@ -43,12 +45,12 @@ fn build_success_response(
     ok_response.set_http_response(envoy_types::ext_authz::v3::pb::OkHttpResponse::default());
 
     // [COMMENT]: Lấy client_device_id từ cookie hoặc sinh ngẫu nhiên nếu thiếu để tracking thiết bị
-    let device_id = extract_cookie_value(cookie_header, "client_device_id")
+    let device_id = extract_cookie_value(cookie_header, COOKIE_CLIENT_DEVICE_ID)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // [COMMENT]: Lấy workspace_id từ cookie client gửi lên (user luôn có ít nhất 1 workspace)
     // ACR forward trực tiếp xuống CP qua header x-workspace-id mà không đưa vào JWT session
-    let workspace_id = extract_cookie_value(cookie_header, "workspace_id");
+    let workspace_id = extract_cookie_value(cookie_header, COOKIE_WORKSPACE_ID);
 
     if let Some(ref mut http_resp) = ok_response.http_response {
         use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
@@ -56,7 +58,7 @@ fn build_success_response(
             use envoy_types::pb::envoy::config::core::v3::{HeaderValue, HeaderValueOption};
             ok.headers.push(HeaderValueOption {
                 header: Some(HeaderValue {
-                    key: "x-user-id".to_string(),
+                    key: HEADER_X_USER_ID.to_string(),
                     value: user_id.to_string(),
                     ..Default::default()
                 }),
@@ -64,7 +66,7 @@ fn build_success_response(
             });
             ok.headers.push(HeaderValueOption {
                 header: Some(HeaderValue {
-                    key: "x-device-id".to_string(),
+                    key: HEADER_X_DEVICE_ID.to_string(),
                     value: device_id.clone(),
                     ..Default::default()
                 }),
@@ -73,7 +75,7 @@ fn build_success_response(
             // [COMMENT]: Inject x-user-role-id — UUID của role đang hoạt động, dùng cho L1 cache lookup
             ok.headers.push(HeaderValueOption {
                 header: Some(HeaderValue {
-                    key: "x-user-role-id".to_string(),
+                    key: HEADER_X_USER_ROLE_ID.to_string(),
                     value: role_id.to_string(),
                     ..Default::default()
                 }),
@@ -81,7 +83,7 @@ fn build_success_response(
             });
             ok.headers.push(HeaderValueOption {
                 header: Some(HeaderValue {
-                    key: "x-user-level".to_string(),
+                    key: HEADER_X_USER_LEVEL.to_string(),
                     value: level.to_string(),
                     ..Default::default()
                 }),
@@ -90,7 +92,7 @@ fn build_success_response(
             if !tenant_id.is_empty() {
                 ok.headers.push(HeaderValueOption {
                     header: Some(HeaderValue {
-                        key: "x-tenant-id".to_string(),
+                        key: HEADER_X_TENANT_ID.to_string(),
                         value: tenant_id.to_string(),
                         ..Default::default()
                     }),
@@ -103,7 +105,7 @@ fn build_success_response(
             if let Some(ws_id) = workspace_id {
                 ok.headers.push(HeaderValueOption {
                     header: Some(HeaderValue {
-                        key: "x-workspace-id".to_string(),
+                        key: HEADER_X_WORKSPACE_ID.to_string(),
                         value: ws_id,
                         ..Default::default()
                     }),
@@ -114,7 +116,7 @@ fn build_success_response(
             // [COMMENT]: Chỉ inject header x-zone-id sang microservices, không gửi x-zone-code
             ok.headers.push(HeaderValueOption {
                 header: Some(HeaderValue {
-                    key: "x-zone-id".to_string(),
+                    key: HEADER_X_ZONE_ID.to_string(),
                     value: zone_id.to_string(),
                     ..Default::default()
                 }),
@@ -124,20 +126,20 @@ fn build_success_response(
             // [COMMENT]: Bơm Set-Cookie headers chứa bộ ba Trinity và zone_code mới trả về cho client
             let cookies = vec![
                 format!(
-                    "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax",
-                    new_jwt
+                    "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                    COOKIE_ACCESS_TOKEN, new_jwt
                 ),
                 format!(
-                    "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax",
-                    new_access_key
+                    "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                    COOKIE_ACCESS_KEY, new_access_key
                 ),
                 format!(
-                    "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax",
-                    new_access_secret
+                    "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                    COOKIE_ACCESS_SECRET, new_access_secret
                 ),
                 format!(
-                    "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
-                    zone_code
+                    "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000",
+                    COOKIE_ZONE_CODE, zone_code
                 ),
             ];
             for cookie in cookies {
@@ -225,7 +227,7 @@ pub async fn handle_session_recovery(
     let mut final_err_msg = err_msg.to_string();
 
     // [COMMENT]: Kiểm tra xem client có mang theo refresh_token cookie không
-    if let Some(refresh_token) = extract_cookie_value(cookie_header, "refresh_token") {
+    if let Some(refresh_token) = extract_cookie_value(cookie_header, COOKIE_REFRESH_TOKEN) {
         Logger::sys_info(
             "ext_authz.recovery_session",
             &format!(
@@ -389,7 +391,7 @@ pub async fn handle_session_recovery(
                 // [COMMENT]: Gọi release_user_session để tái sử dụng logic gen Trinity:
                 // sinh access_key/secret, ký JWT qua Vault, ghi session vào Redis L2.
                 // Truyền resolved_zone_id trực tiếp (đã là UUID) để tránh gọi ZoneManager lần nữa.
-                let device_id = extract_cookie_value(cookie_header, "client_device_id")
+                let device_id = extract_cookie_value(cookie_header, COOKIE_CLIENT_DEVICE_ID)
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
                 match release_user_session(

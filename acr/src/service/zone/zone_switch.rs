@@ -16,6 +16,7 @@ use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 // [COMMENT]: Cấu trúc JSON trả về khi chuyển Active Zone thành công
 #[derive(Serialize)]
@@ -114,11 +115,11 @@ pub async fn handle_zone_switch(
 
     let auth_result = async {
         // [COMMENT]: 1. Lấy access_token JWT từ cookie
-        let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
             .ok_or("Missing access_token cookie")?;
 
         // [COMMENT]: 2. Lấy access_key dùng để truy vấn session
-        let access_key = extract_cookie_value(&cookie_header, "access_key")
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
 
         // [COMMENT]: 3. Giải mã và verify JWT Token qua Vault
@@ -155,7 +156,7 @@ pub async fn handle_zone_switch(
         };
 
         // [COMMENT]: 6. Trích xuất access_secret từ cookie HttpOnly
-        let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+        let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
             .ok_or("Missing access_secret cookie")?;
 
         // [COMMENT]: 7. Kiểm tra đối chiếu hash SHA-256 của access_secret với session.ash trong Redis L2
@@ -280,15 +281,15 @@ pub async fn handle_zone_switch(
 
     // [COMMENT]: Cập nhật cookie access_token (HttpOnly)
     let access_cookie = format!(
-        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        new_jwt, config.session_ttl_secs, domain_str
+        "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        COOKIE_ACCESS_TOKEN, new_jwt, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Cập nhật cookie zone_code (không HttpOnly để Client JS đọc trực tiếp)
     let zone_cookie = format!(
-        "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-        zone_code, domain_str
+        "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        COOKIE_ZONE_CODE, zone_code, domain_str
     );
     denied_builder.add_header("set-cookie", &zone_cookie, None, false);
 
@@ -352,11 +353,11 @@ pub async fn handle_admin_zone_switch(
 
     let auth_result = async {
         // [COMMENT]: 1. Lấy access_token JWT từ cookie
-        let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
             .ok_or("Missing access_token cookie")?;
 
         // [COMMENT]: 2. Lấy access_key dùng để truy vấn session
-        let access_key = extract_cookie_value(&cookie_header, "access_key")
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
 
         // [COMMENT]: 3. Giải mã và verify JWT Token qua Vault
@@ -393,7 +394,7 @@ pub async fn handle_admin_zone_switch(
         };
 
         // [COMMENT]: 7. Trích xuất access_secret từ cookie HttpOnly
-        let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+        let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
             .ok_or("Missing access_secret cookie")?;
 
         // [COMMENT]: 8. Kiểm tra đối chiếu hash SHA-256 của access_secret với session.ash trong Redis L2
@@ -489,15 +490,15 @@ pub async fn handle_admin_zone_switch(
 
     // [COMMENT]: Cập nhật cookie access_token (HttpOnly)
     let access_cookie = format!(
-        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
-        new_jwt, config.session_ttl_secs, domain_str
+        "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        COOKIE_ACCESS_TOKEN, new_jwt, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &access_cookie, None, false);
 
     // [COMMENT]: Cập nhật cookie zone_code (không HttpOnly để Client JS đọc trực tiếp)
     let zone_cookie = format!(
-        "zone_code={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-        zone_code, domain_str
+        "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        COOKIE_ZONE_CODE, zone_code, domain_str
     );
     denied_builder.add_header("set-cookie", &zone_cookie, None, false);
 

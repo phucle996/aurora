@@ -9,6 +9,7 @@ use crate::core::token::TokenManager;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 // [COMMENT]: Xử lý luồng logout độc lập để làm sạch mã nguồn của ext_authz.rs
 pub async fn handle_logout(
@@ -25,8 +26,8 @@ pub async fn handle_logout(
     }
 
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
-    let jwt_token = extract_cookie_value(&cookie_header, "access_token");
-    let access_key = extract_cookie_value(&cookie_header, "access_key");
+    let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN);
+    let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY);
 
     // [COMMENT]: Nếu không có thông tin cookie cần thiết, xem như đã logout thành công từ trước, trả về 204 ngay lập tức
     if jwt_token.is_none() || access_key.is_none() {
@@ -113,7 +114,7 @@ pub async fn handle_logout(
     );
 
     // [COMMENT]: Hủy refresh token lưu tại database Control Plane (Go) qua gRPC bất đồng bộ
-    let refresh_token_opt = extract_cookie_value(&cookie_header, "refresh_token");
+    let refresh_token_opt = extract_cookie_value(&cookie_header, COOKIE_REFRESH_TOKEN);
     if let Some(refresh_token) = refresh_token_opt {
         let cp_client = control_plane_client.clone();
         tokio::spawn(async move {
@@ -172,8 +173,8 @@ pub async fn handle_admin_logout(
     }
 
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
-    let jwt_token = extract_cookie_value(&cookie_header, "access_token");
-    let access_key = extract_cookie_value(&cookie_header, "access_key");
+    let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN);
+    let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY);
 
     // [COMMENT]: Nếu không có thông tin cookie cần thiết, xem như đã logout thành công từ trước, trả về 204 ngay lập tức
     if jwt_token.is_none() || access_key.is_none() {
@@ -283,14 +284,14 @@ pub(crate) fn add_clear_cookie_headers(
     builder: &mut envoy_types::ext_authz::v3::DeniedHttpResponseBuilder,
 ) {
     let cookies = vec![
-        "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "refresh_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "zone_code=; Path=/; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_TOKEN),
+        format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_KEY),
+        format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_SECRET),
+        format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_REFRESH_TOKEN),
+        format!("{}=; Path=/; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ZONE_CODE),
     ];
     for cookie in cookies {
-        builder.add_header("set-cookie", cookie, None, false);
+        builder.add_header("set-cookie", &cookie, None, false);
     }
 }
 
@@ -299,12 +300,12 @@ pub(crate) fn add_clear_admin_cookie_headers(
     builder: &mut envoy_types::ext_authz::v3::DeniedHttpResponseBuilder,
 ) {
     let cookies = vec![
-        "access_token=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "access_key=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "access_secret=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-        "zone_code=; Path=/admin; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        format!("{}=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_TOKEN),
+        format!("{}=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_KEY),
+        format!("{}=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_SECRET),
+        format!("{}=; Path=/admin; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ZONE_CODE),
     ];
     for cookie in cookies {
-        builder.add_header("set-cookie", cookie, None, false);
+        builder.add_header("set-cookie", &cookie, None, false);
     }
 }

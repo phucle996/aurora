@@ -13,6 +13,7 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::{extract_cookie_value, sha256_hash};
+use crate::pkg::cookie::*;
 
 // [COMMENT]: Xử lý chặn bắt endpoint GET /admin/auth/session tại biên để kiểm tra trạng thái đăng nhập SRE
 pub async fn handle_admin_session_check(
@@ -36,9 +37,9 @@ pub async fn handle_admin_session_check(
 
     // 1. Thực hiện các bước kiểm tra xác thực tuần tự
     let is_authenticated = async {
-        let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
             .ok_or("Missing access_token cookie")?;
-        let access_key = extract_cookie_value(&cookie_header, "access_key")
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
 
         let claims = token_mgr.verify_token(&jwt_token).await.map_err(|e| {
@@ -60,7 +61,7 @@ pub async fn handle_admin_session_check(
             .map_err(|_| "Redis query error")?
             .ok_or("Session Expired or Revoked")?;
 
-        let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+        let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
             .ok_or("Missing access_secret cookie")?;
 
         let incoming_hash = sha256_hash(&access_secret);
@@ -84,13 +85,13 @@ pub async fn handle_admin_session_check(
             denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
             // [COMMENT]: Xóa các cookie nếu xác thực session thất bại
             let cookies_to_clear = vec![
-                "access_token=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-                "access_key=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-                "access_secret=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-                "zone_code=; Path=/admin; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                format!("{}=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_TOKEN),
+                format!("{}=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_KEY),
+                format!("{}=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_SECRET),
+                format!("{}=; Path=/admin; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ZONE_CODE),
             ];
             for cookie in cookies_to_clear {
-                denied_builder.add_header("set-cookie", cookie, None, false);
+                denied_builder.add_header("set-cookie", &cookie, None, false);
             }
         }
     }
@@ -127,11 +128,11 @@ pub async fn handle_user_session_check(
 
     // 1. Thực hiện kiểm tra bộ ba Trinity Credentials của user
     let verify_trinity = async {
-        let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+        let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
             .ok_or("Missing access_token cookie")?;
-        let access_key = extract_cookie_value(&cookie_header, "access_key")
+        let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
             .ok_or("Missing access_key cookie")?;
-        let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+        let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
             .ok_or("Missing access_secret cookie")?;
 
         let claims = token_mgr.verify_token(&jwt_token).await.map_err(|e| {
@@ -205,7 +206,7 @@ pub async fn handle_user_session_check(
         }
         Err(err_msg) => {
             // [COMMENT]: Trinity Cookies không hợp lệ. Kiểm tra xem có refresh_token cookie không để tự động phục hồi (Recovery)
-            let refresh_token = extract_cookie_value(&cookie_header, "refresh_token");
+            let refresh_token = extract_cookie_value(&cookie_header, COOKIE_REFRESH_TOKEN);
 
             if refresh_token.is_some() {
                 Logger::sys_info(

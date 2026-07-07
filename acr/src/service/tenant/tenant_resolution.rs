@@ -12,6 +12,7 @@ use tonic::{Response, Status};
 use crate::core::token::Claims;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 /// [COMMENT]: Xác thực Tenant đối chiếu giữa cookie/header gửi lên và Claims trong JWT
 pub async fn resolve_and_verify_tenant(
@@ -22,7 +23,7 @@ pub async fn resolve_and_verify_tenant(
     path: &str,
 ) -> Result<(), Result<Response<CheckResponse>, Status>> {
     // 1. Lấy cookie/header tenant_id từ Client
-    let cookie_tenant_id = extract_cookie_value(cookie_header, "tenant_id")
+    let cookie_tenant_id = extract_cookie_value(cookie_header, COOKIE_TENANT_ID)
         .or_else(|| client_headers.get("x-tenant-id").cloned())
         .or_else(|| client_headers.get("X-Tenant-ID").cloned());
 

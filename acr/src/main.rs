@@ -13,6 +13,7 @@ mod infra;
 mod observability;
 mod rpc;
 mod service;
+pub mod pkg;
 
 use crate::authz::evaluator::PolicyEvaluator;
 use crate::config::Config;

@@ -1,65 +1,50 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { ShieldAlert, ArrowLeft, Loader2 } from "lucide-react";
 import { useUserSession } from "@/hooks/useUserSession";
-import { cn } from "@/lib/utils";
 
-// [COMMENT]: AdminRouteGuard bảo vệ các route nhạy cảm (/admin/*) trước các hành vi truy cập trái phép
-interface AdminRouteGuardProps {
+// [COMMENT]: RouteGuard kiểm tra quyền truy cập dựa trên key và action được cấu hình động cho mỗi route.
+// Thiết kế thuần Render Engine, không chứa bất kỳ logic nghiệp vụ hoặc cứng hóa URL/Quyền hạn nào.
+interface RouteGuardProps {
   children: React.ReactNode;
+  requiredKey: string;
+  requiredAction: string;
 }
 
-export default function AdminRouteGuard({ children }: AdminRouteGuardProps) {
+export default function RouteGuard({ children, requiredKey, requiredAction }: RouteGuardProps) {
   const router = useRouter();
-  const pathname = usePathname();
-  const { renderContext, loading, authenticated, checkPermission } = useUserSession();
+  const { loading, authenticated, checkPermission } = useUserSession();
   const [authorized, setAuthorized] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (loading) return;
 
-    // [COMMENT]: Chặn đứng nếu người dùng chưa thực hiện đăng nhập
+    // [COMMENT]: Chặn đứng nếu người dùng chưa đăng nhập
     if (!authenticated) {
       router.push("/signin");
       return;
     }
 
-    // [COMMENT]: Xác định requiredKey tương ứng với admin path hiện tại
-    let requiredKey = "";
-    if (pathname.startsWith("/admin/users")) {
-      requiredKey = "*:*:iam:users";
-    } else if (pathname.startsWith("/admin/rbac")) {
-      requiredKey = "*:*:iam:rbac";
-    }
-
-    let allowed = false;
-    if (requiredKey) {
-      // User cần có quyền đọc (read / list / *) đối với domain đó
-      allowed = checkPermission(requiredKey, "read") || 
-                checkPermission(requiredKey, "list") || 
-                checkPermission(requiredKey, "*");
-    } else {
-      allowed = true;
-    }
-
+    // [COMMENT]: So khớp quyền hạn động sử dụng triết lý pure render engine
+    const allowed = checkPermission(requiredKey, requiredAction);
     setAuthorized(allowed);
-  }, [loading, authenticated, renderContext, pathname, router]);
+  }, [loading, authenticated, requiredKey, requiredAction, checkPermission, router]);
 
-  // [COMMENT]: Render màn hình Loading chuyển tiếp cực kỳ mượt mà
+  // [COMMENT]: Giao diện chờ kiểm tra quyền hạn mượt mà
   if (loading || authorized === null) {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-slate-900 text-slate-100">
         <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
         <p className="mt-4 text-xs font-semibold text-slate-400 uppercase tracking-widest animate-pulse">
-          Verifying security clearance...
+          Verifying clearance...
         </p>
       </div>
     );
   }
 
-  // [COMMENT]: Render trang lỗi 403 Forbidden với thiết kế cao cấp, huyền bí khi bị chặn quyền truy cập
+  // [COMMENT]: Trang Access Denied 403 cao cấp khi không đủ quyền hạn
   if (!authorized) {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-[#0B0F19] px-6 text-center select-none text-slate-200">
@@ -74,7 +59,7 @@ export default function AdminRouteGuard({ children }: AdminRouteGuardProps) {
           Access Denied
         </h1>
         <p className="mt-3 max-w-sm text-sm text-slate-400 leading-relaxed">
-          Your account level does not hold sufficient cryptographic clearance (permissions) to access this administrative portal.
+          Your account does not possess the required clearance key or action context to view this page.
         </p>
 
         <button
@@ -88,6 +73,5 @@ export default function AdminRouteGuard({ children }: AdminRouteGuardProps) {
     );
   }
 
-  // [COMMENT]: User hợp lệ, trả về layout trang con
   return <>{children}</>;
 }

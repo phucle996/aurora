@@ -17,6 +17,8 @@ use crate::error::AcrError;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
+use crate::pkg::cookie::*;
+use crate::pkg::header::*;
 
 pub struct ExtAuthzService {
     session_mgr: Arc<SessionManager>,
@@ -304,7 +306,7 @@ impl Authorization for ExtAuthzService {
                 let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
 
                 // [COMMENT]: Chặn nhanh (Fast-Bypass) nếu token nằm trong L1 Block Cache của Rate Limiter
-                if let Some(jwt_token) = extract_cookie_value(&cookie_header, "access_token") {
+                if let Some(jwt_token) = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN) {
                     let cache_key = sha256_hash(&jwt_token);
                     if self.rate_limiter.is_blocked(&cache_key).await {
                         Logger::sys_warn(
@@ -334,11 +336,11 @@ impl Authorization for ExtAuthzService {
                 // 3. Thực hiện xác thực Trinity Credentials thô qua cookie và Redis L2
                 let auth_result = async {
                     // Lấy access_token JWT từ cookie
-                    let jwt_token = extract_cookie_value(&cookie_header, "access_token")
+                    let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
                         .ok_or("Missing access_token cookie")?;
 
                     // Lấy access_key từ cookie (Key dùng để lookup session trong Redis L2)
-                    let access_key = extract_cookie_value(&cookie_header, "access_key")
+                    let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
                         .ok_or("Missing access_key cookie")?;
 
                     // Giải mã và verify JWT Token (Stateless Verification)
@@ -401,7 +403,7 @@ impl Authorization for ExtAuthzService {
                     };
 
                     // Trích xuất access_secret từ cookie HttpOnly để làm mảnh thứ 3 bảo mật chống XSS
-                    let access_secret = extract_cookie_value(&cookie_header, "access_secret")
+                    let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
                         .ok_or("Missing access_secret cookie")?;
 
                     // Đối chiếu hash SHA-256 của access_secret nhận được với session.ash trong Redis L2
@@ -494,7 +496,7 @@ impl Authorization for ExtAuthzService {
 
                         // [COMMENT]: Nếu không mang theo Refresh Token -> Không thể phục hồi session, trả về 401 trực tiếp.
                         // Điều này cũng đúng với SRE Admin khi gọi các API thường (như /api/v1/auth/session) vì Admin không có Refresh Token.
-                        let refresh_token = extract_cookie_value(&cookie_header, "refresh_token");
+                        let refresh_token = extract_cookie_value(&cookie_header, COOKIE_REFRESH_TOKEN);
                         if refresh_token.is_none() {
                             Logger::authz_log(
                                 "unknown",
@@ -507,12 +509,12 @@ impl Authorization for ExtAuthzService {
                             denied_builder.set_http_status(envoy_types::ext_authz::v3::pb::HttpStatusCode::Unauthorized);
                             // Xóa bộ ba Trinity Access Cookies để đồng bộ trạng thái client
                             let cookies_to_clear = vec![
-                                "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-                                "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
-                                "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                                format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_TOKEN),
+                                format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_KEY),
+                                format!("{}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT", COOKIE_ACCESS_SECRET),
                             ];
                             for cookie in cookies_to_clear {
-                                denied_builder.add_header("set-cookie", cookie, None, false);
+                                denied_builder.add_header("set-cookie", &cookie, None, false);
                             }
                             let mut response = CheckResponse::new();
                             response.set_status(Status::unauthenticated(err_msg));
@@ -538,7 +540,7 @@ impl Authorization for ExtAuthzService {
                 };
 
                 // [COMMENT]: 4. Thực hiện Rate Limit (Post-Auth) tích hợp L1 Block Cache
-                if let Some(jwt_token) = extract_cookie_value(&cookie_header, "access_token") {
+                if let Some(jwt_token) = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN) {
                     let cache_key = sha256_hash(&jwt_token);
                     if let Err(status) = self
                         .rate_limiter
@@ -701,7 +703,7 @@ impl Authorization for ExtAuthzService {
                         // Inject identity headers
                         ok.headers.push(HeaderValueOption {
                             header: Some(HeaderValue {
-                                key: "x-user-id".to_string(),
+                                key: HEADER_X_USER_ID.to_string(),
                                 value: claims.uid.clone(),
                                 ..Default::default()
                             }),
@@ -709,7 +711,7 @@ impl Authorization for ExtAuthzService {
                         });
                         ok.headers.push(HeaderValueOption {
                             header: Some(HeaderValue {
-                                key: "x-user-name".to_string(),
+                                key: HEADER_X_USER_NAME.to_string(),
                                 value: claims.sub.clone(),
                                 ..Default::default()
                             }),
@@ -717,7 +719,7 @@ impl Authorization for ExtAuthzService {
                         });
                         ok.headers.push(HeaderValueOption {
                             header: Some(HeaderValue {
-                                key: "x-device-id".to_string(),
+                                key: HEADER_X_DEVICE_ID.to_string(),
                                 value: session.tdid,
                                 ..Default::default()
                             }),
@@ -726,7 +728,7 @@ impl Authorization for ExtAuthzService {
                         if !claims.role_id.is_empty() {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {
-                                    key: "x-user-role".to_string(),
+                                    key: HEADER_X_USER_ROLE_ID.to_string(),
                                     value: claims.role_id.clone(),
                                     ..Default::default()
                                 }),
@@ -735,7 +737,7 @@ impl Authorization for ExtAuthzService {
                         }
                         ok.headers.push(HeaderValueOption {
                             header: Some(HeaderValue {
-                                key: "x-user-level".to_string(),
+                                key: HEADER_X_USER_LEVEL.to_string(),
                                 value: claims.lvl.to_string(),
                                 ..Default::default()
                             }),
@@ -744,7 +746,7 @@ impl Authorization for ExtAuthzService {
                         if let Some(t_id) = claims.tenant_id {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {
-                                    key: "x-tenant-id".to_string(),
+                                    key: HEADER_X_TENANT_ID.to_string(),
                                     value: t_id,
                                     ..Default::default()
                                 }),
@@ -756,7 +758,7 @@ impl Authorization for ExtAuthzService {
                         if let Some(ref z_id) = claims.zone_id {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {
-                                    key: "x-zone-id".to_string(),
+                                    key: HEADER_X_ZONE_ID.to_string(),
                                     value: z_id.clone(),
                                     ..Default::default()
                                 }),

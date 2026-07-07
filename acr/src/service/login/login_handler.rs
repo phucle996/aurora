@@ -17,6 +17,7 @@ use crate::infra::controlplane::auth::VerifyUserCredentialsRequest;
 use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 // [COMMENT]: Cấu trúc JSON nhận từ client khi đăng nhập
 #[derive(Deserialize)]
@@ -128,7 +129,7 @@ pub async fn handle_login(
 	}
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
     let client_device_id =
-        extract_cookie_value(&cookie_header, "client_device_id").unwrap_or_default();
+        extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID).unwrap_or_default();
 
     // [COMMENT]: Lấy địa chỉ IP và User Agent phục vụ lưu vết phiên
     let client_ip = client_headers

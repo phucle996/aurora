@@ -5,9 +5,10 @@ import { Shield, RefreshCw, Key, ShieldAlert, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { listPlatformRoles, type PlatformRoleItem } from "@/lib/api/session";
 import { cn } from "@/lib/utils";
+import RouteGuard from "@/components/route-guard";
 
 // [COMMENT]: Trang AccessControlPage hiển thị danh sách vai trò (System Roles) phục vụ phân quyền RBAC
-export default function AccessControlPage() {
+function AccessControlContent() {
   const [roles, setRoles] = useState<PlatformRoleItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -135,5 +136,13 @@ export default function AccessControlPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function AccessControlPage() {
+  return (
+    <RouteGuard requiredKey="*:*:iam:rbac" requiredAction="list">
+      <AccessControlContent />
+    </RouteGuard>
   );
 }

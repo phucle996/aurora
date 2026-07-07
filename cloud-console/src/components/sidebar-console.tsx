@@ -1,32 +1,13 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
-  Compass,
-  Globe,
-  Cpu,
-  HardDrive,
-  Network,
-  GitMerge,
-  Layers,
-  FolderGit,
-  Copy,
-  Building2,
   LayoutGrid,
-  Server,
   Lock,
-  UserCheck,
-  History,
-  Activity,
-  AlertCircle,
-  Clock,
   Users,
-  Settings,
   ChevronLeft,
   ChevronRight,
-  ShieldAlert,
-  CircleDot
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -47,6 +28,13 @@ interface SidebarGroup {
   items: SidebarItem[];
 }
 
+// [COMMENT]: SidebarItemCandidate mở rộng SidebarItem với thông tin kiểm quyền
+// (được dùng nội bộ trong useMemo, không expose ra bên ngoài).
+interface SidebarItemCandidate extends SidebarItem {
+  matchKey: string;
+  requiredAction: string;
+}
+
 interface SidebarConsoleProps {
   isCollapsed: boolean;
   setIsCollapsed: (collapsed: boolean) => void;
@@ -64,12 +52,13 @@ export default function SidebarConsole({
   const router = useRouter();
   const pathname = usePathname();
 
-  const hasAccess = React.useCallback((matchKey: string): boolean => {
+  // [COMMENT]: hasAccess — console là render engine thuần túy.
+  // Backend quyết định navigation nào trả về, frontend chỉ kiểm tra xem
+  // key và action có tồn tại trong renderContext hay không.
+  // Không có logic đặc biệt phía client (superadmin, wildcard tự thêm, v.v.).
+  const hasAccess = React.useCallback((matchKey: string, action: string): boolean => {
     const navs = renderContext?.navigation;
     if (!navs) return false;
-
-    // Super admin match all
-    if (navs.some(n => n.key === "*")) return true;
 
     const matchParts = matchKey.split(":");
     if (matchParts.length !== 4) return false;
@@ -77,7 +66,11 @@ export default function SidebarConsole({
     return navs.some(nav => {
       const navParts = nav.key.split(":");
       if (navParts.length !== 4) return false;
-      return matchParts.every((part, i) => part === "*" || part === navParts[i]);
+      // So khớp từng phần: "*" trong matchKey chấp nhận bất kỳ giá trị nào từ nav key
+      const keyMatch = matchParts.every((part, i) => part === "*" || part === navParts[i]);
+      if (!keyMatch) return false;
+      // Kiểm tra action tồn tại trong danh sách actions backend cấp
+      return nav.actions.includes(action);
     });
   }, [renderContext]);
 
@@ -85,57 +78,53 @@ export default function SidebarConsole({
   const menuGroups = React.useMemo(() => {
     if (!renderContext?.navigation) return [];
 
-    const allItems = [
+    // [COMMENT]: allItems typed rõ ràng là SidebarItemCandidate[] để TypeScript
+    // kiểm tra đầy đủ các field matchKey và requiredAction.
+    const allItems: SidebarItemCandidate[] = [
       {
         id: "workspaces",
         name: "Workspaces",
         icon: LayoutGrid,
         path: "/workspaces",
-        matchKey: "*:*:tenant:workspaces"
+        matchKey: "*:*:tenant:workspaces",
+        // [COMMENT]: Cần action "list" để render mục Workspaces trong sidebar
+        requiredAction: "list"
       },
       {
-        id: "admin-users",
+        id: "users",
         name: "User Directory",
         icon: Users,
-        path: "/admin/users",
-        matchKey: "*:*:iam:users"
+        path: "/users",
+        matchKey: "*:*:iam:users",
+        // [COMMENT]: Chỉ render khi user có action "list" trên iam:users
+        requiredAction: "list"
       },
       {
-        id: "admin-rbac",
+        id: "rbac",
         name: "Access Control (RBAC)",
         icon: Lock,
-        path: "/admin/rbac",
-        matchKey: "*:*:iam:rbac"
+        path: "/rbac",
+        matchKey: "*:*:iam:rbac",
+        // [COMMENT]: Chỉ render khi user có action "list" trên iam:rbac
+        requiredAction: "list"
       }
     ];
 
-    const consoleItems: SidebarItem[] = [];
-    const adminItems: SidebarItem[] = [];
+    // [COMMENT]: Tất cả items trong cloud-console đều là console items —
+    // không có phân biệt "admin" vs "console". Lọc theo quyền rồi đưa vào
+    // một group duy nhất.
+    const visibleItems: SidebarItem[] = allItems.filter((item) =>
+      hasAccess(item.matchKey, item.requiredAction)
+    );
 
-    for (const item of allItems) {
-      if (hasAccess(item.matchKey)) {
-        if (item.id.startsWith("admin-")) {
-          adminItems.push(item);
-        } else {
-          consoleItems.push(item);
-        }
-      }
-    }
+    if (visibleItems.length === 0) return [];
 
-    const groups = [];
-    if (consoleItems.length > 0) {
-      groups.push({
+    return [
+      {
         title: "Console",
-        items: consoleItems,
-      });
-    }
-    if (adminItems.length > 0) {
-      groups.push({
-        title: "System Administration",
-        items: adminItems,
-      });
-    }
-    return groups;
+        items: visibleItems,
+      },
+    ];
   }, [renderContext, hasAccess]);
 
   return (
@@ -162,19 +151,6 @@ export default function SidebarConsole({
             </div>
           )}
         </div>
-
-        {/* [COMMENT]: Nút toggle collapse sidebar. Giữ dạng nút tròn hoặc đổi dạng dẹt */}
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="absolute -right-3 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full border border-sidebar-console-border bg-[#0F172A] hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
-          title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
-        >
-          {isCollapsed ? (
-            <ChevronRight className="h-3.5 w-3.5" />
-          ) : (
-            <ChevronLeft className="h-3.5 w-3.5" />
-          )}
-        </button>
       </div>
 
       {/* [COMMENT]: Vùng scroll chứa các menu items. Spacing được rút gọn (space-y-3) để tăng mật độ thông tin */}

@@ -1,16 +1,15 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
-import { Users, Trash2, RefreshCw, ShieldAlert, Loader2, ArrowLeft } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { Users, Trash2, RefreshCw, ShieldAlert, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { listAdminUsers, deleteAdminUser, type AdminUserItem } from "@/lib/api/session";
 import { useUserSession } from "@/hooks/useUserSession";
 import { cn } from "@/lib/utils";
+import RouteGuard from "@/components/route-guard";
 
 // [COMMENT]: Trang Admin User Directory hiển thị danh sách người dùng hệ thống và cho phép thao tác quản trị
-export default function UserDirectoryPage() {
-  const router = useRouter();
+function UserDirectoryContent() {
   const { checkPermission } = useUserSession();
   const [users, setUsers] = useState<AdminUserItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,5 +188,13 @@ export default function UserDirectoryPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function UserDirectoryPage() {
+  return (
+    <RouteGuard requiredKey="*:*:iam:users" requiredAction="list">
+      <UserDirectoryContent />
+    </RouteGuard>
   );
 }

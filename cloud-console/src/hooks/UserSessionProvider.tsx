@@ -324,16 +324,12 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // [COMMENT]: checkPermission kiểm tra xem user có quyền thực hiện hành động trên đối tượng hay không
+  // [COMMENT]: checkPermission — console là render engine thuần túy.
+  // Backend quyết định navigation nào user thấy, frontend chỉ match
+  // key và action từ renderContext, không tự thêm logic đặc biệt.
   const checkPermission = useCallback((matchKey: string, action: string): boolean => {
     const navs = state.renderContext?.navigation;
     if (!navs) return false;
-
-    // 1. Kiểm tra tài khoản Super Admin (wildcard Key "*")
-    const superAdmin = navs.find(n => n.key === "*");
-    if (superAdmin && superAdmin.actions.includes("*")) {
-      return true;
-    }
 
     const matchParts = matchKey.split(":");
     if (matchParts.length !== 4) return false;
@@ -343,11 +339,8 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
       if (navParts.length !== 4) continue;
 
       const isMatch = matchParts.every((part, i) => part === "*" || part === navParts[i]);
-      if (isMatch) {
-        // Kiểm tra action cụ thể hoặc wildcard action
-        if (nav.actions.includes(action) || nav.actions.includes("*")) {
-          return true;
-        }
+      if (isMatch && nav.actions.includes(action)) {
+        return true;
       }
     }
 

@@ -15,6 +15,7 @@ use crate::core::token::Claims;
 use crate::core::zone::ZoneManager;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
+use crate::pkg::cookie::*;
 
 #[derive(Debug)]
 pub enum ZoneResolutionError {
@@ -29,7 +30,7 @@ pub async fn resolve_zone_context(
     client_headers: &std::collections::HashMap<String, String>,
 ) -> Result<(String, String, String), ZoneResolutionError> {
     // [COMMENT]: Thử trích xuất từ cookie zone_code
-    let mut requested_zone_code = extract_cookie_value(cookie_header, "zone_code");
+    let mut requested_zone_code = extract_cookie_value(cookie_header, COOKIE_ZONE_CODE);
     if requested_zone_code.is_none() {
         // [COMMENT]: Nếu không có cookie, thử lấy từ header x-zone-code
         requested_zone_code = client_headers
@@ -125,7 +126,7 @@ pub async fn resolve_and_verify_zone_admin(
         if let (Some(zone_id), Some(zone_code)) = (resolved_zone_id, resolved_zone_code) {
             let claims_mismatch = c.zone_id.as_ref() != Some(&zone_id);
             let cookie_mismatch =
-                extract_cookie_value(cookie_header, "zone_code").as_ref() != Some(&zone_code);
+                extract_cookie_value(cookie_header, COOKIE_ZONE_CODE).as_ref() != Some(&zone_code);
 
             // [COMMENT]: Chặn đổi zone ngầm không thông qua API go-to-zone
             if claims_mismatch {
@@ -269,7 +270,7 @@ pub async fn resolve_and_verify_zone_user(
 
             let claims_mismatch = c.zone_id.as_ref() != Some(zone_id);
             let cookie_mismatch =
-                extract_cookie_value(cookie_header, "zone_code").as_ref() != Some(zone_code);
+                extract_cookie_value(cookie_header, COOKIE_ZONE_CODE).as_ref() != Some(zone_code);
 
             // [COMMENT]: Chặn đổi zone ngầm không thông qua API go-to-zone
             if claims_mismatch {
