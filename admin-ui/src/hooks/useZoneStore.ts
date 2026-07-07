@@ -1,6 +1,36 @@
 import { create } from 'zustand'
 import { Fetch } from '@/lib/fetch'
 
+/**
+ * Đọc giá trị cookie theo tên.
+ * Trả về null nếu cookie không tồn tại hoặc giá trị rỗng.
+ * Cookie zone_code được server set (HttpOnly=false) để client có thể đọc.
+ */
+function getCookieValue(name: string): string | null {
+  if (typeof document === 'undefined') return null
+  const match = document.cookie
+    .split('; ')
+    .find((row) => row.startsWith(`${name}=`))
+  const val = match?.split('=')[1]
+  return val ? decodeURIComponent(val) : null
+}
+
+/**
+ * Ghi cookie trên client-side (non-HttpOnly).
+ * SameSite=Lax đủ bảo mật cho luồng admin nội bộ.
+ * Path=/ để cookie hợp lệ trên toàn bộ app.
+ */
+function setCookieValue(name: string, value: string | null, days = 7): void {
+  if (typeof document === 'undefined') return
+  if (value === null || value === 'global') {
+    // Xóa cookie bằng cách set expires về quá khứ
+    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax`
+  } else {
+    const expires = new Date(Date.now() + days * 864e5).toUTCString()
+    document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`
+  }
+}
+
 export type Zone = {
   id: string
   code: string
@@ -21,9 +51,22 @@ type ZoneState = {
 // hoặc khi nhiều components cùng gọi fetchZones lúc mount.
 let activeFetchPromise: Promise<void> | null = null
 
+/**
+ * Hydrate activeZone từ cookie zone_code ngay khi module được load.
+ * Cookie là SOT (Source of Truth): nếu server đã set zone_code trong cookie
+ * (ví dụ: edge-viet-nam-1) thì store phải phản ánh đúng giá trị đó ngay sau reload.
+ * Giá trị 'global' trong cookie được map về null (= Global / All Zones).
+ */
+const initialZoneFromCookie = (() => {
+  const raw = getCookieValue('zone_code')
+  if (!raw || raw === 'global') return null
+  return raw
+})()
+
 export const useZoneStore = create<ZoneState>((set, get) => ({
   zones: [],
-  activeZone: null,
+  // Ưu tiên đọc cookie zone_code khi khởi tạo; fallback về null (Global)
+  activeZone: initialZoneFromCookie,
   loading: false,
   error: '',
   fetchZones: async () => {
@@ -69,6 +112,9 @@ export const useZoneStore = create<ZoneState>((set, get) => ({
   },
   // zoneCode: null = Global, string = e.g. "vn-hanoi-1"
   setActiveZone: (zoneCode: string | null) => {
+    // Ghi lại vào cookie để đảm bảo nhất quán sau khi reload trang.
+    // Cookie là SOT: in-memory store luôn đồng bộ theo cookie.
+    setCookieValue('zone_code', zoneCode)
     set({ activeZone: zoneCode })
   },
 }))

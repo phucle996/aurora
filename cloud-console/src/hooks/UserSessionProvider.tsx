@@ -104,9 +104,15 @@ function resolveUserSession(): Promise<UserSessionState> {
 
     while (true) {
       try {
-        // [COMMENT]: Gọi song song ba API để tăng tốc độ tải và giảm độ trễ (Tối ưu hoá Cloud Native/Edge)
-        const [session, renderCtx, profile] = await Promise.all([
-          getUserSession(),
+        // [COMMENT]: Bước 1 — Kiểm tra session TRƯỚC (sequential).
+        // Chỉ khi authenticated: true mới tiếp tục fetch context/profile.
+        // Gọi song song cả 3 là lãng phí khi user chưa đăng nhập vì
+        // context/profile sẽ trả 401 → log nhiễu + tốn tài nguyên Edge.
+        const session = await getUserSession();
+
+        // [COMMENT]: Bước 2 — Chỉ gọi context + profile SAU KHI xác nhận đã đăng nhập.
+        // Gọi song song nhau để tối ưu latency (không phụ thuộc lẫn nhau).
+        const [renderCtx, profile] = await Promise.all([
           getRenderContext().catch((err) => {
             console.error("Failed to load render context, degrading gracefully:", err);
             return null;

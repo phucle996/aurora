@@ -160,14 +160,14 @@ pub async fn handle_tenant_switch(
                 &access_key,
             )
             .await
-            {
-                Ok(Some(s)) => s,
-                Ok(None) => return Err("Session Expired or Revoked"),
-                Err(e) => {
-                    Logger::sys_error("tenant_switch", "Redis session error", &e.to_string());
-                    return Err("Authentication service unavailable");
-                }
-            };
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return Err("Session Expired or Revoked"),
+            Err(e) => {
+                Logger::sys_error("tenant_switch", "Redis session error", &e.to_string());
+                return Err("Authentication service unavailable");
+            }
+        };
 
         let access_secret = extract_cookie_value(&cookie_header, "access_secret")
             .ok_or("Missing access_secret cookie")?;
@@ -258,10 +258,7 @@ pub async fn handle_tenant_switch(
         method,
         path,
         "ALLOWED",
-        &format!(
-            "Tenant switch to '{}' (ID: {})",
-            tenant_domain, tenant_id
-        ),
+        &format!("Tenant switch to '{}' (ID: {})", tenant_domain, tenant_id),
     );
 
     Some(Ok(Response::new(response)))

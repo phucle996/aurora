@@ -246,8 +246,6 @@ services:
         condition: service_healthy
       redis-dataplane-z1:
         condition: service_healthy
-      redis-dataplane-z2:
-        condition: service_healthy
     restart: unless-stopped
 
   redis:
@@ -295,21 +293,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  redis-dataplane-z2:
-    image: redis:8.8.0
-    container_name: controlplane-redis-dataplane-z2
-    command: [ "redis-server", "--appendonly", "yes" ]
-    ports:
-      - "6382:6379"
-    volumes:
-      - controlplane_redis_dp_z2_data:/data
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
   dataplane-vn-n1:
     build:
       context: ../dataplane
@@ -321,7 +304,7 @@ services:
     container_name: dataplane-vn-n1
     init: true
     environment:
-      ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
+      ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
@@ -364,7 +347,7 @@ services:
     container_name: dataplane-vn-n2
     init: true
     environment:
-      ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
+      ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       APP_LOG_LEVEL: "info"
@@ -396,7 +379,7 @@ services:
     container_name: dataplane-vn-n3
     init: true
     environment:
-      ZONE_ID: "019f2338-d44c-748c-98dd-b684c474fd8f"
+      ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       APP_LOG_LEVEL: "info"
@@ -588,7 +571,7 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.jAmvyztDgi884i43lr9nw5gI"
+      VAULT_TOKEN: "hvs.l5XlBS600roMgUJLr0iZvG0e"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"

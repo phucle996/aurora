@@ -356,12 +356,13 @@ impl ZoneManager {
                     // [COMMENT]: Ghi L1 cache cho node này
                     self.l1_set_zone(&clean_code, &z.zone_id, &z.status).await;
 
-                    // [COMMENT]: Ghi tên vào L1 để resolve_id_to_code_and_status dùng
+                    // [COMMENT]: Ghi display name vào L1 (dùng z.name, KHÔNG phải clean_code).
+                    // Bug trước: ghi clean_code vào name_map → catalog trả name == code.
                     let expiry = Instant::now() + Duration::from_secs(600);
                     self.zone_id_to_name.write().await.insert(
                         z.zone_id.clone(),
                         CacheEntry {
-                            value: CacheValue::Found(clean_code.clone()),
+                            value: CacheValue::Found(z.name.clone()), // ✅ display name đúng
                             expiry,
                         },
                     );

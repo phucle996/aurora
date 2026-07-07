@@ -49,7 +49,6 @@ pub async fn resolve_and_verify_tenant(
         }
 
         // 3. Nếu có giá trị tenant_id, xác thực định dạng UUID hợp lệ
-        // [COMMENT]: Loại trừ "platform" thay vì "global" khỏi kiểm thử định dạng UUID
         if !req_tenant_id.is_empty() && req_tenant_id != "platform" {
             if uuid::Uuid::parse_str(req_tenant_id).is_err() {
                 Logger::authz_log(
@@ -57,7 +56,10 @@ pub async fn resolve_and_verify_tenant(
                     method,
                     path,
                     "DENIED",
-                    &format!("Invalid UUID format for requested tenant: {}", req_tenant_id),
+                    &format!(
+                        "Invalid UUID format for requested tenant: {}",
+                        req_tenant_id
+                    ),
                 );
                 return Err(Ok(Response::new(CheckResponse::with_status(
                     Status::permission_denied("Tenant unavailable"),
