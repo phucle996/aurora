@@ -66,8 +66,8 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Thực hiện bind JSON request body
-	var request requestdto.CreateWorkspaceRequest
+	// [COMMENT]: Thực hiện bind JSON request body — dùng DTO riêng cho tenant scope, không lẫn với personal
+	var request requestdto.CreateTenantWorkspaceRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		logger.HandlerWarn(c, op, err, "bind create workspace request failed")
 		apires.RespondBadRequest(c, "invalid request body")
@@ -75,11 +75,12 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 	}
 
 	workspaceEntity := coreEntity.Workspace{
-		Name:     strings.TrimSpace(request.Name),
-		Code:     strings.ToLower(strings.TrimSpace(request.Code)),
-		ZoneID:   zoneID,
-		TenantID: &tenantID,
-		OwnerID:  ownerID,
+		Name:        strings.TrimSpace(request.Name),
+		Code:        strings.ToLower(strings.TrimSpace(request.Code)),
+		Description: request.Description,
+		ZoneID:      zoneID,
+		TenantID:    &tenantID,
+		OwnerID:     ownerID,
 	}
 
 	// [COMMENT]: Gọi tầng service để xử lý nghiệp vụ tạo workspace thuộc tenant
@@ -107,14 +108,14 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 
 	// [COMMENT]: Trả về kết quả tạo mới thành công
 	apires.RespondCreated(c, gin.H{
-		"id":         workspace.ID,
-		"name":       workspace.Name,
-		"code":       workspace.Code,
-		"status":     workspace.Status,
-		"zone_id":    workspace.ZoneID,
-		"tenant_id":  workspace.TenantID,
-		"owner_id":   workspace.OwnerID,
-		"created_at": workspace.CreatedAt,
+		"id":          workspace.ID,
+		"name":        workspace.Name,
+		"code":        workspace.Code,
+		"description": workspace.Description,
+		"zone_id":     workspace.ZoneID,
+		"tenant_id":   workspace.TenantID,
+		"owner_id":    workspace.OwnerID,
+		"created_at":  workspace.CreatedAt,
 	}, "workspace created")
 }
 
@@ -164,14 +165,14 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 	var data []gin.H
 	for _, w := range workspaces {
 		data = append(data, gin.H{
-			"id":         w.ID,
-			"name":       w.Name,
-			"code":       w.Code,
-			"status":     w.Status,
-			"zone_id":    w.ZoneID,
-			"tenant_id":  w.TenantID,
-			"owner_id":   w.OwnerID,
-			"created_at": w.CreatedAt,
+			"id":          w.ID,
+			"name":        w.Name,
+			"code":        w.Code,
+			"description": w.Description,
+			"zone_id":     w.ZoneID,
+			"tenant_id":   w.TenantID,
+			"owner_id":    w.OwnerID,
+			"created_at":  w.CreatedAt,
 		})
 	}
 
@@ -227,6 +228,15 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Trả về kết quả danh mục workspace doanh nghiệp thành công
-	apires.RespondSuccess(c, catalog, "workspace catalog success")
+	// [COMMENT]: Format cấu trúc payload catalog tối giản tại layer handler
+	var data []gin.H
+	for _, ws := range catalog {
+		data = append(data, gin.H{
+			"id":   ws.ID,
+			"code": ws.Code,
+			"name": ws.Name,
+		})
+	}
+
+	apires.RespondSuccess(c, data, "workspace catalog success")
 }

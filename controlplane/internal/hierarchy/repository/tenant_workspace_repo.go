@@ -49,33 +49,33 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *TenantWor
 			), tenant_check AS (
 				SELECT EXISTS(SELECT 1 FROM %s.tenants WHERE id = $6 AND status = 'active') AS valid
 			), inserted AS (
-				INSERT INTO %s.workspaces (id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at)
+				INSERT INTO %s.workspaces (id, name, code, description, zone_id, tenant_id, owner_id, created_at, updated_at)
 				SELECT $1, $2, $3, $4, $5, $6, $7, now(), now()
 				WHERE EXISTS(SELECT 1 FROM zone_check) AND (SELECT valid FROM tenant_check)
-				RETURNING id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+				RETURNING id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
 			)
 			SELECT
 				(SELECT COUNT(*) FROM zone_check) AS zone_exists,
 				(SELECT valid FROM tenant_check) AS tenant_valid,
-				i.id, i.name, i.code, i.status, i.zone_id, i.tenant_id, i.owner_id, i.created_at, i.updated_at
+				i.id, i.name, i.code, i.description, i.zone_id, i.tenant_id, i.owner_id, i.created_at, i.updated_at
 			FROM (SELECT 1) AS dummy
 			LEFT JOIN inserted i ON true
 		`, schema, schema, schema),
 
 		getWorkspaceByIDQuery: fmt.Sprintf(`
-			SELECT id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at 
+			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at 
 			FROM %s.workspaces 
 			WHERE id = $1
 		`, schema),
 
 		listAllWorkspacesByTenantQuery: fmt.Sprintf(`
-			SELECT id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
 			FROM %s.workspaces
 			WHERE tenant_id = $1
 		`, schema),
 
 		listWorkspacesByTenantAndIDsQuery: fmt.Sprintf(`
-			SELECT id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
 			FROM %s.workspaces
 			WHERE tenant_id = $1 AND id = ANY($2)
 		`, schema),
@@ -95,9 +95,9 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *TenantWor
 
 		updateWorkspaceQuery: fmt.Sprintf(`
 			UPDATE %s.workspaces 
-			SET name = $2, status = $3, updated_at = now() 
+			SET name = $2, description = $3, updated_at = now() 
 			WHERE id = $1 
-			RETURNING id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+			RETURNING id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
 		`, schema),
 
 		deleteWorkspaceQuery: fmt.Sprintf(`
@@ -116,14 +116,14 @@ func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEnti
 		workspace.ID,
 		workspace.Name,
 		workspace.Code,
-		string(workspace.Status),
+		workspace.Description,
 		workspace.ZoneID,
 		workspace.TenantID,
 		workspace.OwnerID,
 	).Scan(
 		&zoneExists,
 		&tenantValid,
-		&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 
 	if err != nil {
@@ -153,7 +153,7 @@ func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEnti
 func (r *TenantWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.Workspace, error) {
 	var m coreModel.Workspace
 	err := r.db.QueryRow(ctx, r.getWorkspaceByIDQuery, id).Scan(
-		&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -176,7 +176,7 @@ func (r *TenantWorkspaceRepoImpl) ListAllByTenant(ctx context.Context, tenantID 
 	for rows.Next() {
 		var m coreModel.Workspace
 		err := rows.Scan(
-			&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+			&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -198,7 +198,7 @@ func (r *TenantWorkspaceRepoImpl) ListByTenantAndIDs(ctx context.Context, tenant
 	for rows.Next() {
 		var m coreModel.Workspace
 		err := rows.Scan(
-			&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+			&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -211,8 +211,8 @@ func (r *TenantWorkspaceRepoImpl) ListByTenantAndIDs(ctx context.Context, tenant
 
 func (r *TenantWorkspaceRepoImpl) Update(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
 	var m coreModel.Workspace
-	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, string(workspace.Status)).Scan(
-		&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, workspace.Description).Scan(
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err

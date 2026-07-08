@@ -48,3 +48,48 @@ export async function fetchWorkspaceCatalog(
 
   return res?.data ?? [];
 }
+
+export type WorkspaceItem = {
+  id: string;
+  name: string;
+  code: string;
+  description: string;
+  zone_id: string;
+  tenant_id: string | null;
+  owner_id: string;
+  created_at: string;
+};
+
+export type ListWorkspacesOptions = {
+  signal?: AbortSignal;
+};
+
+// [COMMENT]: listWorkspaces fetches detailed workspaces list from hierarchy api
+export async function listWorkspaces(opts?: ListWorkspacesOptions): Promise<WorkspaceItem[]> {
+  const res = await fetchJSON<{ data: WorkspaceItem[] }>("/api/v1/hierarchy/workspaces", {
+    method: "GET",
+    signal: opts?.signal,
+  });
+  return res?.data ?? [];
+}
+
+export type CreateWorkspaceInput = {
+  name: string;
+  code: string;
+  description?: string;
+};
+
+// [COMMENT]: createWorkspace posts to hierarchy api to create a new workspace
+export async function createWorkspace(input: CreateWorkspaceInput, signal?: AbortSignal): Promise<WorkspaceItem> {
+  const res = await fetchJSON<{ data: WorkspaceItem }>("/api/v1/hierarchy/workspaces", {
+    method: "POST",
+    body: {
+      name: input.name,
+      code: input.code,
+      description: input.description ?? "",
+    },
+    signal,
+  });
+  return res?.data;
+}
+

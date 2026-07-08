@@ -105,11 +105,22 @@ func (f *fakePersonalWorkspaceRepo) GetByID(ctx context.Context, id uuid.UUID) (
 	return f.workspace, nil
 }
 
-func (f *fakePersonalWorkspaceRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.Workspace, error) {
+func (f *fakePersonalWorkspaceRepo) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []*coreEntity.Workspace{f.workspace}, nil
+	if f.workspace == nil {
+		return []*coreEntity.WorkspacePersonalListItem{}, nil
+	}
+	return []*coreEntity.WorkspacePersonalListItem{
+		{
+			ID:          f.workspace.ID,
+			Name:        f.workspace.Name,
+			Code:        f.workspace.Code,
+			Description: f.workspace.Description,
+			CreatedAt:   f.workspace.CreatedAt,
+		},
+	}, nil
 }
 
 // [COMMENT]: ListCatalogByOwner stub — trả về catalog tối giản theo owner cho test

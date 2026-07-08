@@ -16,15 +16,48 @@ use utils::parse_pg_config;
 pub struct CdcStreamer {
     config: Config,
     redis_client: redis::Client,
+    /// [COMMENT]: Cache desired_state của từng (zone_id, service_type) — dùng để phát hiện thay đổi thực sự.
+    /// Persist qua các lần reconnect (không reset khi replication stream ngắt/reconnect).
+    /// Key: (zone_id, service_type), Value: desired_state hiện tại (true = enabled).
+    desired_state_cache: std::sync::Mutex<HashMap<(String, String), bool>>,
 }
 
 impl CdcStreamer {
-    /// Khởi tạo một CdcStreamer mới
-    pub fn new(config: Config, redis_client: redis::Client) -> Self {
-        Self {
+    /// Khởi tạo một CdcStreamer mới, bootstrap desired_state_cache từ DB.
+    /// Đảm bảo CDC không publish spurious events cho các service đã ở trạng thái đúng khi startup.
+    pub async fn new(
+        config: Config,
+        redis_client: redis::Client,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        // [COMMENT]: Bootstrap snapshot từ DB để khởi tạo cache trước khi nhận WAL events.
+        // Tránh publish false-positive khi JO restart và WAL replay các event cũ.
+        let snapshot = crate::reverse_provider::zone::db::query_all_zone_services_enabled(
+            &config.database_url,
+        )
+        .await?;
+
+        // [COMMENT]: Flatten từ HashMap<zone_id, HashMap<svc_type, bool>>
+        // sang HashMap<(zone_id, svc_type), bool> để lookup O(1).
+        let mut cache: HashMap<(String, String), bool> = HashMap::new();
+        for (zone_id, services) in snapshot {
+            for (svc_type, enabled) in services {
+                cache.insert((zone_id.clone(), svc_type), enabled);
+            }
+        }
+
+        Logger::sys_info(
+            "cdc.cache_bootstrap",
+            &format!(
+                "CdcStreamer: Bootstrap desired_state_cache thành công — {} entries.",
+                cache.len()
+            ),
+        );
+
+        Ok(Self {
             config,
             redis_client,
-        }
+            desired_state_cache: std::sync::Mutex::new(cache),
+        })
     }
 
     /// Khởi chạy luồng stream nhận và phân phối sự kiện từ WAL theo giao thức push-based.
@@ -143,6 +176,7 @@ impl CdcStreamer {
                                                 if rel.relation_name == "zones"
                                                     || rel.relation_name == "zone_services"
                                                 {
+                                                    // [COMMENT]: Bỏ tham số tag — so sánh bằng cache thay vì heuristic.
                                                     self.process_zone_config_change(
                                                         &fields,
                                                         &rel.relation_name,
@@ -349,7 +383,9 @@ impl CdcStreamer {
         Ok(())
     }
 
-    /// Xử lý CDC trực tiếp thay đổi cấu hình từ bảng zones và zone_services
+    /// Xử lý CDC thay đổi cấu hình từ bảng zones và zone_services.
+    /// Với zone_services: chỉ publish khi desired_state THỰC SỰ THAY ĐỔI so với cache.
+    /// Cache được bootstrap từ DB lúc startup và cập nhật sau mỗi publish — tránh spurious events.
     async fn process_zone_config_change(
         &self,
         fields: &HashMap<String, String>,
@@ -360,6 +396,8 @@ impl CdcStreamer {
         let mut event_payload = serde_json::Value::Null;
 
         if table_name == "zones" {
+            // [COMMENT]: zone_status thay đổi → luôn publish (không cần cache so sánh
+            // vì zone_status không bị ghi thường xuyên như actual_state của service).
             zone_id = fields.get("id").cloned().unwrap_or_default();
             let status = fields.get("status").cloned().unwrap_or_default();
             if !zone_id.is_empty() && !status.is_empty() {
@@ -372,15 +410,45 @@ impl CdcStreamer {
         } else if table_name == "zone_services" {
             zone_id = fields.get("zone_id").cloned().unwrap_or_default();
             let service_type = fields.get("service_type").cloned().unwrap_or_default();
-            let enabled_str = fields.get("desired_state").cloned().unwrap_or_default();
+            let desired_state_raw = fields.get("desired_state").cloned().unwrap_or_default();
+
             if !zone_id.is_empty() && !service_type.is_empty() {
-                let enabled = enabled_str == "t" || enabled_str == "true";
-                event_payload = serde_json::json!({
-                    "event_type": "service_status_changed",
-                    "zone_id": zone_id,
-                    "service": service_type,
-                    "enabled": enabled
-                });
+                let new_enabled = desired_state_raw == "t" || desired_state_raw == "true";
+                let cache_key = (zone_id.clone(), service_type.clone());
+
+                // [COMMENT]: So sánh desired_state mới với giá trị đang cache.
+                // Chỉ publish khi thực sự thay đổi — bất kể WAL event đến từ SRE hay JO.
+                // JO chỉ UPDATE actual_state (pure UPDATE) nhưng WAL vẫn chứa desired_state row hiện tại.
+                // Vì desired_state không đổi → so sánh == cached → bỏ qua → không spam.
+                let should_publish = {
+                    let cache = self.desired_state_cache.lock().unwrap();
+                    match cache.get(&cache_key) {
+                        // [COMMENT]: Nếu cache chưa có entry (zone mới tạo sau bootstrap) → publish lần đầu
+                        None => true,
+                        // [COMMENT]: Chỉ publish khi desired_state thực sự khác cached value
+                        Some(&cached_enabled) => cached_enabled != new_enabled,
+                    }
+                };
+
+                if should_publish {
+                    // [COMMENT]: Cập nhật cache TRƯỚC khi publish để tránh double-publish
+                    // nếu publish thất bại và được retry (idempotent cache update).
+                    {
+                        let mut cache = self.desired_state_cache.lock().unwrap();
+                        cache.insert(cache_key, new_enabled);
+                    }
+
+                    event_payload = serde_json::json!({
+                        "event_type": "service_status_changed",
+                        "zone_id": zone_id,
+                        "service": service_type,
+                        "enabled": new_enabled
+                    });
+                } else {
+                    // [COMMENT]: desired_state không đổi → bỏ qua silently.
+                    // Đây là trường hợp JO ghi actual_state → WAL chứa desired_state giống cache.
+                    return Ok(());
+                }
             }
         }
 
@@ -398,8 +466,8 @@ impl CdcStreamer {
                         Logger::sys_info(
                             "cdc.publish_zone_config",
                             &format!(
-                                "CdcStreamer: Đã phát tán trực tiếp CDC cấu hình bảng '{}' lên kênh PubSub {}",
-                                table_name, channel
+                                "CdcStreamer: Publish CDC zone_services thay đổi trên kênh {} — desired_state changed",
+                                channel
                             ),
                         );
                     }

@@ -42,7 +42,7 @@ type PersonalWorkspaceRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.Workspace, error)
 	
 	// ListByOwner lấy toàn bộ workspace cá nhân do user sở hữu (tránh orphan workspace)
-	ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.Workspace, error)
+	ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error)
 
 	// ListCatalogByOwner lấy catalog toàn bộ workspace cá nhân do user sở hữu trong Zone cụ thể
 	ListCatalogByOwner(ctx context.Context, ownerID uuid.UUID, zoneID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error)

@@ -37,7 +37,7 @@ type PersonalWorkspaceService interface {
 	GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.Workspace, error)
  
 	// ListWorkspacesForPersonal lấy danh sách các workspace cá nhân do user sở hữu hoặc được share quyền
-	ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*coreEntity.Workspace, error)
+	ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error)
  
 	// ListWorkspaceCatalogForPersonal lấy catalog workspace cá nhân do user sở hữu trong Zone cụ thể
 	ListWorkspaceCatalogForPersonal(ctx context.Context, userID uuid.UUID, zoneID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error)

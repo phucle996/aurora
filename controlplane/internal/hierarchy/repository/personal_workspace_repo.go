@@ -45,27 +45,27 @@ func NewPersonalWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *Persona
 			WITH zone_check AS (
 				SELECT id FROM %s.zones WHERE id = $5 AND status = 'active'
 			), inserted AS (
-				INSERT INTO %s.workspaces (id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at)
+				INSERT INTO %s.workspaces (id, name, code, description, zone_id, tenant_id, owner_id, created_at, updated_at)
 				SELECT $1, $2, $3, $4, $5, NULL, $7, now(), now()
 				WHERE EXISTS(SELECT 1 FROM zone_check)
-				RETURNING id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+				RETURNING id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
 			)
 			SELECT
 				(SELECT COUNT(*) FROM zone_check) AS zone_exists,
 				true AS tenant_valid,
-				i.id, i.name, i.code, i.status, i.zone_id, i.tenant_id, i.owner_id, i.created_at, i.updated_at
+				i.id, i.name, i.code, i.description, i.zone_id, i.tenant_id, i.owner_id, i.created_at, i.updated_at
 			FROM (SELECT 1) AS dummy
 			LEFT JOIN inserted i ON true
 		`, schema, schema),
 
 		getWorkspaceByIDQuery: fmt.Sprintf(`
-			SELECT id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at 
+			SELECT id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at 
 			FROM %s.workspaces 
 			WHERE id = $1
 		`, schema),
 
 		listWorkspacesByOwnerQuery: fmt.Sprintf(`
-			SELECT id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+			SELECT id, name, code, COALESCE(description, '') AS description, created_at
 			FROM %s.workspaces
 			WHERE tenant_id IS NULL AND owner_id = $1
 		`, schema),
@@ -79,9 +79,9 @@ func NewPersonalWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *Persona
 
 		updateWorkspaceQuery: fmt.Sprintf(`
 			UPDATE %s.workspaces 
-			SET name = $2, status = $3, updated_at = now() 
+			SET name = $2, description = $3, updated_at = now() 
 			WHERE id = $1 
-			RETURNING id, name, code, status, zone_id, tenant_id, owner_id, created_at, updated_at
+			RETURNING id, name, code, COALESCE(description, '') AS description, zone_id, tenant_id, owner_id, created_at, updated_at
 		`, schema),
 
 		deleteWorkspaceQuery: fmt.Sprintf(`
@@ -100,14 +100,14 @@ func (r *PersonalWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEn
 		workspace.ID,
 		workspace.Name,
 		workspace.Code,
-		string(workspace.Status),
+		workspace.Description,
 		workspace.ZoneID,
 		nil, // $6: tenant id (luôn NULL trong personal)
 		workspace.OwnerID,
 	).Scan(
 		&zoneExists,
 		&tenantValid,
-		&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 
 	if err != nil {
@@ -134,7 +134,7 @@ func (r *PersonalWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEn
 func (r *PersonalWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.Workspace, error) {
 	var m coreModel.Workspace
 	err := r.db.QueryRow(ctx, r.getWorkspaceByIDQuery, id).Scan(
-		&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,32 +146,31 @@ func (r *PersonalWorkspaceRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (
 	return &result, nil
 }
 
-func (r *PersonalWorkspaceRepoImpl) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.Workspace, error) {
+func (r *PersonalWorkspaceRepoImpl) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error) {
 	rows, err := r.db.Query(ctx, r.listWorkspacesByOwnerQuery, ownerID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var list []*coreEntity.Workspace
+	var list []*coreEntity.WorkspacePersonalListItem
 	for rows.Next() {
-		var m coreModel.Workspace
+		var item coreEntity.WorkspacePersonalListItem
 		err := rows.Scan(
-			&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+			&item.ID, &item.Name, &item.Code, &item.Description, &item.CreatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
-		result := coreModel.WorkspaceModelToEntity(m)
-		list = append(list, &result)
+		list = append(list, &item)
 	}
 	return list, nil
 }
 
 func (r *PersonalWorkspaceRepoImpl) Update(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
 	var m coreModel.Workspace
-	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, string(workspace.Status)).Scan(
-		&m.ID, &m.Name, &m.Code, &m.Status, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
+	err := r.db.QueryRow(ctx, r.updateWorkspaceQuery, workspace.ID, workspace.Name, workspace.Description).Scan(
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err

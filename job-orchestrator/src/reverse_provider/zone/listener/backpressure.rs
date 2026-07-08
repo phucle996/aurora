@@ -29,6 +29,7 @@ pub async fn run_backpressure_listener(
 
     // [COMMENT]: Cache RAM lưu giữ trạng thái cuối cùng nhận được và timestamp (Dead Man's Switch)
     // Key: zone_id, Value: (last_report_ts, zone_status, mail_enabled, storage_enabled)
+    // Đây cũng đóng vai trò EnabledServicesMap — SOT điều phối health check và Decision Engine.
     let mut zone_heartbeats: HashMap<String, (Instant, String, bool, bool)> = HashMap::new();
 
     // [COMMENT]: Throttle cache cho metrics update - tránh spam DB khi capacity dao động nhỏ
@@ -40,10 +41,56 @@ pub async fn run_backpressure_listener(
     // Key: (zone_id, node_code), Value: (last_seen_instant)
     let mut node_heartbeats: HashMap<(String, String), Instant> = HashMap::new();
 
+    // [COMMENT]: BOOTSTRAP SNAPSHOT — Load toàn bộ zone_services từ DB trước khi bắt đầu listen.
+    // Đảm bảo EnabledServicesMap (zone_heartbeats) không bị trống sau JO restart,
+    // tránh khoảng trống giữa restart và khi nhận được CDC event đầu tiên.
+    // HA Guard #16: Snapshot Pattern ngăn Bootstrap Gap race condition.
+    match super::super::db::query_all_zone_services_enabled(&config.database_url).await {
+        Ok(snapshot) => {
+            for (zone_id, services) in &snapshot {
+                let mail_en = services.get("mail").copied().unwrap_or(false);
+                let storage_en = services.get("storage").copied().unwrap_or(false);
+
+                // [COMMENT]: Lấy zone_status từ DB để khởi tạo đầy đủ heartbeat entry.
+                // Nếu lỗi → mặc định "active" để tránh Dead Man's Switch kích hoạt nhầm ngay lúc boot.
+                let (zone_status, _) = super::super::db::query_current_state(
+                    &config.database_url,
+                    zone_id,
+                    "mail",
+                )
+                .await
+                .unwrap_or_else(|_| ("active".to_string(), false));
+
+                zone_heartbeats.insert(
+                    zone_id.clone(),
+                    (Instant::now(), zone_status, mail_en, storage_en),
+                );
+            }
+
+            Logger::sys_info(
+                "backpressure_listener.bootstrap",
+                &format!(
+                    "Bootstrap hoàn tất: {} zones đã được pre-load vào EnabledServicesMap.",
+                    snapshot.len()
+                ),
+            );
+        }
+        Err(e) => {
+            // [COMMENT]: Bootstrap thất bại không critical — zone_heartbeats sẽ được populate
+            // dần qua fallback DB read trong processor.rs khi các zone gửi report đầu tiên.
+            Logger::sys_error(
+                "backpressure_listener.bootstrap_error",
+                "Bootstrap zone_services snapshot thất bại — sẽ fallback qua per-zone DB read",
+                &e.to_string(),
+            );
+        }
+    }
+
     Logger::sys_info(
         "backpressure_listener.run",
         "BackpressureListener: Đang lắng nghe stream 'zone:backpressure:reports'...",
     );
+
 
     loop {
         // [COMMENT]: Thực hiện XREADGROUP chặn 2s (Blocking read 2s to reduce CPU spin)

@@ -74,6 +74,19 @@ export default function SidebarConsole({
     });
   }, [renderContext]);
 
+  // [COMMENT]: Detect if current context is Personal (Bậc 1 is not a UUID)
+  const isPersonal = React.useMemo(() => {
+    const navs = renderContext?.navigation;
+    if (!navs || navs.length === 0) return true;
+    const firstKey = navs[0].key;
+    const parts = firstKey.split(":");
+    if (parts.length > 0) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parts[0]);
+      return !isUuid;
+    }
+    return true;
+  }, [renderContext]);
+
   // [COMMENT]: Map các menu động từ renderContext nhận từ API
   const menuGroups = React.useMemo(() => {
     if (!renderContext?.navigation) return [];
@@ -83,12 +96,11 @@ export default function SidebarConsole({
     const allItems: SidebarItemCandidate[] = [
       {
         id: "workspaces",
-        name: "Workspaces",
+        name: isPersonal ? "My Workspaces" : "Workspaces",
         icon: LayoutGrid,
         path: "/workspaces",
-        matchKey: "*:*:tenant:workspaces",
-        // [COMMENT]: Cần action "list" để render mục Workspaces trong sidebar
-        requiredAction: "list"
+        matchKey: isPersonal ? "*:*:hierarchy:workspace" : "*:*:tenant:workspaces",
+        requiredAction: isPersonal ? "read" : "list"
       },
       {
         id: "users",
@@ -109,6 +121,7 @@ export default function SidebarConsole({
         requiredAction: "read"
       }
     ];
+
 
     // [COMMENT]: Tất cả items trong cloud-console đều là console items —
     // không có phân biệt "admin" vs "console". Lọc theo quyền rồi đưa vào

@@ -42,7 +42,6 @@ func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Co
 
 	now := time.Now().UTC()
 	workspace.ID = workspaceID
-	workspace.Status = coreEntity.WorkspaceStatusActive
 	workspace.CreatedAt = now
 	workspace.UpdatedAt = now
 
@@ -75,7 +74,7 @@ func (s *PersonalWorkspaceServiceImpl) GetWorkspaceForPersonal(ctx context.Conte
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*coreEntity.Workspace, error) {
+func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Context, userID uuid.UUID) ([]*coreEntity.WorkspacePersonalListItem, error) {
 	start := time.Now()
 	result, err := s.repo.ListByOwner(ctx, userID)
 	duration := time.Since(start)

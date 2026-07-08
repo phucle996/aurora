@@ -14,8 +14,10 @@ use super::super::super::hypervisor::db as hypervisor_db;
 /// Bao gồm: decode Protobuf, đo queue, đồng bộ cache từ DB, chạy Decision Engine,
 /// ghi DB theo kết quả, cập nhật throttle metrics, upsert hypervisor nodes.
 ///
-/// Trả về: (zone_id, current_status, current_mail_enabled, current_storage_enabled) sau khi xử lý
-/// để backpressure.rs cập nhật zone_heartbeats cache.
+/// NGUYÊN TẮC ENABLED-ONLY: DecisionEngine chỉ nhận enabled_services từ zone_heartbeats cache.
+/// Service disabled không tham gia vào bất kỳ quyết định trạng thái nào.
+///
+/// Trả về void — toàn bộ side effects ghi vào zone_heartbeats và DB.
 pub async fn process_report(
     config: &Config,
     conn: &mut redis::aio::MultiplexedConnection,
@@ -81,13 +83,35 @@ pub async fn process_report(
         Err(_) => 0,
     };
 
-    // [COMMENT]: 3. Truy xuất trạng thái hiện tại từ cache hoặc query DB SoT (Cold Start sync)
+    // [COMMENT]: 3. Truy xuất trạng thái hiện tại từ cache hoặc query DB SoT (Cold Start / Fallback).
+    // zone_heartbeats cache đóng vai trò EnabledServicesMap in-memory — giữ cả mail_enabled lẫn storage_enabled.
+    // Nếu không có entry (zone mới xuất hiện sau JO boot) → fallback đọc DB, nạp vào cache.
     let (mut current_status, mut current_mail_enabled, mut current_storage_enabled) =
         match zone_heartbeats.get(&zone_id) {
             Some((_, status, mail_en, storage_en)) => (status.clone(), *mail_en, *storage_en),
             None => {
-                // [COMMENT]: Khởi động đồng bộ cache từ DB SoT khi Zone xuất hiện lần đầu
-                let (_, mail_en) = match super::super::db::query_current_state(
+                // [COMMENT]: Fallback: zone chưa có trong RAM cache (zone mới tạo sau bootstrap).
+                // Đọc trực tiếp từ DB để lấy zone_status và desired_state của tất cả service.
+                let fallback_services = match super::super::db::query_zone_services_enabled(
+                    &config.database_url,
+                    &zone_id,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        Logger::sys_error(
+                            "backpressure_listener.fallback_db_error",
+                            &format!("Không thể fallback đọc zone_services từ DB cho zone {}", zone_id),
+                            &e.to_string(),
+                        );
+                        // [COMMENT]: Nếu DB lỗi, mặc định coi tất cả disabled để tránh false draining trigger
+                        std::collections::HashMap::new()
+                    }
+                };
+
+                // [COMMENT]: Lấy zone status từ DB thông qua query_current_state (lấy mail làm anchor zone status)
+                let (status, _) = match super::super::db::query_current_state(
                     &config.database_url,
                     &zone_id,
                     "mail",
@@ -95,41 +119,42 @@ pub async fn process_report(
                 .await
                 {
                     Ok(v) => v,
-                    Err(_) => ("active".to_string(), true),
+                    Err(_) => ("active".to_string(), false),
                 };
 
-                let (status, storage_en) = match super::super::db::query_current_state(
-                    &config.database_url,
-                    &zone_id,
-                    "storage",
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(_) => ("active".to_string(), true),
-                };
+                let mail_en = fallback_services.get("mail").copied().unwrap_or(false);
+                let storage_en = fallback_services.get("storage").copied().unwrap_or(false);
+
+                Logger::sys_info(
+                    "backpressure_listener.fallback_load",
+                    &format!(
+                        "Fallback load zone {} từ DB: status={}, mail_enabled={}, storage_enabled={}",
+                        zone_id, status, mail_en, storage_en
+                    ),
+                );
 
                 (status, mail_en, storage_en)
             }
         };
 
-    // [COMMENT]: 4. Chạy Decision Engine ra quyết định trạng thái mới của Zone & Service
-    let (target_status, target_mail_enabled, target_storage_enabled) =
-        DecisionEngine::evaluate(
-            queue_len,
-            pending_len,
-            avg_cpu,
-            avg_ram,
-            &mail_status,
-            mail_capacity,
-            &storage_status,
-            storage_capacity,
-            &current_status,
-            current_mail_enabled,
-            current_storage_enabled,
-        );
+    // [COMMENT]: 4. Chạy Decision Engine — enabled-only evaluation.
+    // Chỉ pass vào enabled services. DecisionEngine chỉ trả về target_zone_status.
+    // Decision Engine KHÔNG tự toggle desired_state của service — đó là quyền của SRE.
+    let target_status = DecisionEngine::evaluate(
+        queue_len,
+        pending_len,
+        avg_cpu,
+        avg_ram,
+        &mail_status,
+        mail_capacity,
+        current_mail_enabled,
+        &storage_status,
+        storage_capacity,
+        current_storage_enabled,
+        &current_status,
+    );
 
-    // [COMMENT]: 5. Thực hiện cập nhật trực tiếp Postgres DB (Bypass CP gRPC calls)
+    // [COMMENT]: 5. Thực hiện cập nhật trực tiếp Postgres DB nếu zone_status thay đổi.
     // Chuyển Error sang String để vượt ranh giới async Send trait của Rust.
     if target_status != current_status {
         let update_result = super::super::db::update_zone_status(
@@ -148,7 +173,19 @@ pub async fn process_report(
             Ok(false) => {
                 // [COMMENT]: DB Guard từ chối do vi phạm chuyển dịch trạng thái.
                 // Lập tức query lại DB để sửa sai cache RAM (Self-Correcting Cache).
-                if let Ok((db_status, db_mail_enabled)) = super::super::db::query_current_state(
+                let corrected = super::super::db::query_zone_services_enabled(
+                    &config.database_url,
+                    &zone_id,
+                )
+                .await;
+
+                if let Ok(services) = corrected {
+                    current_mail_enabled = services.get("mail").copied().unwrap_or(current_mail_enabled);
+                    current_storage_enabled = services.get("storage").copied().unwrap_or(current_storage_enabled);
+                }
+
+                // [COMMENT]: Reload zone status từ DB
+                if let Ok((db_status, _)) = super::super::db::query_current_state(
                     &config.database_url,
                     &zone_id,
                     "mail",
@@ -156,16 +193,6 @@ pub async fn process_report(
                 .await
                 {
                     current_status = db_status;
-                    current_mail_enabled = db_mail_enabled;
-                }
-                if let Ok((_, db_storage_enabled)) = super::super::db::query_current_state(
-                    &config.database_url,
-                    &zone_id,
-                    "storage",
-                )
-                .await
-                {
-                    current_storage_enabled = db_storage_enabled;
                 }
             }
             Err(err_msg) => {
@@ -178,112 +205,79 @@ pub async fn process_report(
         }
     }
 
-    if target_mail_enabled != current_mail_enabled {
-        if let Err(e) = super::super::db::update_zone_service_status(
-            &config.database_url,
-            &zone_id,
-            "mail",
-            target_mail_enabled,
-        )
-        .await
-        {
-            Logger::sys_error(
-                "backpressure_listener.db_error",
-                "Thất bại khi cập nhật trực tiếp status của Service mail",
-                &e.to_string(),
-            );
-        } else {
-            current_mail_enabled = target_mail_enabled;
-        }
-    }
-
-    // [COMMENT]: Cập nhật trạng thái kích hoạt dịch vụ storage
-    if target_storage_enabled != current_storage_enabled {
-        if let Err(e) = super::super::db::update_zone_service_status(
-            &config.database_url,
-            &zone_id,
-            "storage",
-            target_storage_enabled,
-        )
-        .await
-        {
-            Logger::sys_error(
-                "backpressure_listener.db_error",
-                "Thất bại khi cập nhật trực tiếp status của Service storage",
-                &e.to_string(),
-            );
-        } else {
-            current_storage_enabled = target_storage_enabled;
-        }
-    }
-
-    // [COMMENT]: 6. Cập nhật động status và capacity của service vào Postgres DB (Có Throttling)
+    // [COMMENT]: 6. Cập nhật động status và capacity của service vào Postgres DB (Có Throttling).
     // Chỉ ghi khi: trạng thái đổi, capacity chênh >10%, hoặc quá 120 giây kể từ lần ghi cuối.
+    // Lưu ý: chỉ ghi metrics cho service đang ENABLED. Service disabled không có actual_state đáng tin cậy.
     let now_instant = Instant::now();
 
-    let should_update_mail = check_metrics_dirty(
-        service_metrics_cache,
-        &zone_id,
-        "mail",
-        &mail_status,
-        mail_capacity as i32,
-        now_instant,
-    );
-    if should_update_mail {
-        if let Err(e) = super::super::db::update_zone_service_metrics(
-            &config.database_url,
+    if current_mail_enabled {
+        let should_update_mail = check_metrics_dirty(
+            service_metrics_cache,
             &zone_id,
             "mail",
             &mail_status,
             mail_capacity as i32,
-        )
-        .await
-        {
-            Logger::sys_error(
-                "backpressure_listener.metrics_db_error",
-                "Thất bại khi cập nhật metrics Service mail vào DB",
-                &e.to_string(),
-            );
-        } else {
-            service_metrics_cache.insert(
-                (zone_id.clone(), "mail".to_string()),
-                (mail_status.clone(), mail_capacity as i32, now_instant),
-            );
+            now_instant,
+        );
+        if should_update_mail {
+            if let Err(e) = super::super::db::update_zone_service_metrics(
+                &config.database_url,
+                &zone_id,
+                "mail",
+                &mail_status,
+                mail_capacity as i32,
+            )
+            .await
+            {
+                Logger::sys_error(
+                    "backpressure_listener.metrics_db_error",
+                    "Thất bại khi cập nhật metrics Service mail vào DB",
+                    &e.to_string(),
+                );
+            } else {
+                service_metrics_cache.insert(
+                    (zone_id.clone(), "mail".to_string()),
+                    (mail_status.clone(), mail_capacity as i32, now_instant),
+                );
+            }
         }
     }
 
-    let should_update_storage = check_metrics_dirty(
-        service_metrics_cache,
-        &zone_id,
-        "storage",
-        &storage_status,
-        storage_capacity as i32,
-        now_instant,
-    );
-    if should_update_storage {
-        if let Err(e) = super::super::db::update_zone_service_metrics(
-            &config.database_url,
+    if current_storage_enabled {
+        let should_update_storage = check_metrics_dirty(
+            service_metrics_cache,
             &zone_id,
             "storage",
             &storage_status,
             storage_capacity as i32,
-        )
-        .await
-        {
-            Logger::sys_error(
-                "backpressure_listener.metrics_db_error",
-                "Thất bại khi cập nhật metrics Service storage vào DB",
-                &e.to_string(),
-            );
-        } else {
-            service_metrics_cache.insert(
-                (zone_id.clone(), "storage".to_string()),
-                (storage_status.clone(), storage_capacity as i32, now_instant),
-            );
+            now_instant,
+        );
+        if should_update_storage {
+            if let Err(e) = super::super::db::update_zone_service_metrics(
+                &config.database_url,
+                &zone_id,
+                "storage",
+                &storage_status,
+                storage_capacity as i32,
+            )
+            .await
+            {
+                Logger::sys_error(
+                    "backpressure_listener.metrics_db_error",
+                    "Thất bại khi cập nhật metrics Service storage vào DB",
+                    &e.to_string(),
+                );
+            } else {
+                service_metrics_cache.insert(
+                    (zone_id.clone(), "storage".to_string()),
+                    (storage_status.clone(), storage_capacity as i32, now_instant),
+                );
+            }
         }
     }
 
-    // [COMMENT]: 7. Ghi nhận heartbeat của zone vào cache RAM
+    // [COMMENT]: 7. Ghi nhận heartbeat của zone vào cache RAM (đóng vai trò EnabledServicesMap).
+    // current_mail_enabled và current_storage_enabled phản ánh desired_state thực tế từ DB.
     zone_heartbeats.insert(
         zone_id.clone(),
         (
@@ -294,7 +288,7 @@ pub async fn process_report(
         ),
     );
 
-    // [COMMENT]: 8. Luồng B: Xử lý workloads.hypervisors[] với race-condition guard
+    // [COMMENT]: 8. Luồng B: Xử lý workloads.hypervisors[] với race-condition guard.
     // Timestamp của bản tin stream được dùng làm sent_at để chống out-of-order heartbeats.
     let sent_at = payload.timestamp;
 

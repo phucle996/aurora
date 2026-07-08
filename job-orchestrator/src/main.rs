@@ -47,7 +47,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info("main.init", "Đã khởi tạo Redis Client thành công.");
 
     // 3. Khởi tạo các cấu phần proxy 2 chiều
-    let streamer = CdcStreamer::new(config.clone(), redis_client.clone());
+    // [COMMENT]: CdcStreamer::new là async — bootstrap desired_state_cache từ DB trước khi run.
+    // map_err để chuyển Box<dyn Error + Send + Sync> → Box<dyn Error> cho ? operator của main().
+    let streamer = CdcStreamer::new(config.clone(), redis_client.clone())
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { format!("CDC bootstrap thất bại: {}", e).into() })?;
     let consumer = ResultConsumer::new(config.clone(), redis_client.clone());
     let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone());
 

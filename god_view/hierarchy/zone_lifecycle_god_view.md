@@ -63,7 +63,7 @@ stateDiagram-v2
     planned --> active : SRE activate
     planned --> disabled : SRE disable
     
-    active --> draining : SRE drain OR Decision Engine (mail down)
+    active --> draining : SRE drain OR Decision Engine (enabled service down)
     active --> disabled : Dead Man's Switch (timeout 30s)
     
     draining --> active : SRE activate OR Recovery
@@ -592,35 +592,41 @@ sequenceDiagram
 
 ### Phase 3: CDC Sync & Dataplane Health Check Mode Transition
 
+> [!IMPORTANT]
+> **Nguyên tắc cốt lõi**: Health check chỉ chạy cho service đang **enabled**. Service bị tắt (`desired_state = false`) **không được** health check và **không được** đưa vào DecisionEngine. Đây là SOT cho toàn bộ luồng bật/tắt service.
+
 ```mermaid
 sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
     participant JO_CDC as ⚙️ JO (CdcStreamer)
+    participant JO_RAM as 🧠 JO (EnabledServicesMap — In-Memory)
     participant L1 as ⚡ Redis L1
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant L2 as ⚡ Redis L2
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
 
-    DB->>JO_CDC: WAL b'U' (zone_services config updated)
+    DB->>JO_CDC: WAL b'U' (zone_services desired_state updated)
+    JO_CDC->>JO_RAM: Cập nhật EnabledServicesMap[zone_id][service_type] = enabled/disabled
     JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (service_status_changed)
     L1->>DP_Gate: PubSub event received
     DP_Gate->>L2: HSET infra:zone:metadata service:{type} "enabled/disabled"
     
     loop Every monitor cycle
         Monitor->>L2: HGETALL infra:zone:metadata
-        L2-->>Monitor: service:mail configuration
-        alt Service is disabled
-            Monitor->>Monitor: Ngưng check, báo cáo status down & capacity 0
-        else Service is enabled
-            Monitor->>Monitor: Thực thi full health check đo metrics
+        L2-->>Monitor: service:{type} = "enabled" | "disabled"
+        alt service:{type} == "disabled"
+            Monitor->>Monitor: Skip health check hoàn toàn — không ghi metric
+        else service:{type} == "enabled"
+            Monitor->>Monitor: Thực thi full health check, ghi infra:{type} vào L2
         end
     end
 ```
 
-1. **CDC Event**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services` -> PUBLISH sự kiện cấu hình `service_status_changed` lên Redis L1.
-2. **DP Listener**: [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway.rs#L293) hứng và ghi đè cấu hình desired_state của service vào L2 `infra:zone:metadata`.
-3. **Monitor Reaction**: [`monitor.rs#start()`](../../dataplane/src/executor/mail/core/monitor.rs#L20) ở chu kỳ quét tiếp theo sẽ chuyển đổi chế độ đo đạc (nếu service bị disable -> dừng quét, trả về status `"down"`, capacity `0` để JO cập nhật actual_state).
+1. **CDC Event & RAM Update**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services` → cập nhật ngay **`EnabledServicesMap`** trong RAM của JO (SOT điều phối health check) → PUBLISH sự kiện `service_status_changed` lên Redis L1.
+2. **DP Listener**: [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway.rs#L293) hứng và ghi đè cấu hình `desired_state` của service vào L2 `infra:zone:metadata`.
+3. **Monitor Reaction**: [`monitor.rs#start()`](../../dataplane/src/executor/mail/core/monitor.rs#L20) ở chu kỳ quét tiếp theo đọc `service:{type}` từ L2. Nếu `"disabled"` → **bỏ qua hoàn toàn**, không ghi metric, không báo cáo `down`. Nếu `"enabled"` → thực thi full health check.
+4. **Fallback khi miss RAM**: Nếu `EnabledServicesMap` trong JO không có entry cho zone_id+service (ví dụ sau khi JO restart), JO **đọc trực tiếp từ PostgreSQL** (`zone_services` table) để lấy `desired_state` hiện tại và nạp lại vào RAM trước khi ra quyết định.
 
 ---
 
@@ -811,15 +817,20 @@ HGETALL infra:zone:metadata → {
 
 Đọc **mỗi chu kỳ** của từng daemon (5-15 giây).
 
-| Zone Status | Service | Job Consumer | Mail Monitor | Hypervisor Monitor |
-|:---|:---|:---|:---|:---|
-| **`active`** | `enabled` | ✅ Kéo job bình thường | ✅ TCP + HTTP metrics, capacity 0-100 | ✅ Poll Proxmox 15s |
-| **`active`** | `disabled` | ✅ Kéo job | ❌ status=down, capacity=0 | ✅ Poll Proxmox 15s |
-| **`planned`** | any | ⏸️ sleep 1s, loop | ⚡ TCP only (không scan SMTP queue) | ✅ Poll Proxmox 15s |
-| **`maintenance`** | any | ⏸️ Không kéo job mới | ✅ Full check + capacity | ✅ Poll Proxmox 15s |
-| **`draining`** | any | ⏸️ Không kéo job mới | ✅ Full check + capacity | ✅ Poll Proxmox 15s |
-| **`disabled`** | any | ⏸️ Dừng hoàn toàn | ❌ status=down, capacity=0 | ✅ Poll Proxmox 15s |
-| any | **`disabled`** | Không đổi | ❌ status=down, capacity=0 | Không đổi |
+> [!IMPORTANT]
+> **Nguyên tắc enabled-only**: Monitor chỉ health check service đang `enabled`. Service bị `disabled` → monitor bỏ qua hoàn toàn (không check, không ghi metric). DecisionEngine chỉ nhận đầu vào từ service đang `enabled`.
+
+| Zone Status | Service | Job Consumer | Mail Monitor | Storage Monitor | Hypervisor Monitor |
+|:---|:---|:---|:---|:---|:---|
+| **`active`** | `enabled` | ✅ Kéo job bình thường | ✅ TCP + HTTP metrics, capacity 0-100 | ✅ HTTP health check MinIO | ✅ Poll Proxmox 15s |
+| **`active`** | `disabled` | ✅ Kéo job | ⏭️ Skip hoàn toàn — không metric | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`planned`** | `enabled` | ⏸️ sleep 1s, loop | ⚡ TCP only (không scan SMTP queue) | ⚡ TCP only | ✅ Poll Proxmox 15s |
+| **`planned`** | `disabled` | ⏸️ sleep 1s, loop | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`maintenance`** | `enabled` | ⏸️ Không kéo job mới | ✅ Full check + capacity | ✅ Full check | ✅ Poll Proxmox 15s |
+| **`maintenance`** | `disabled` | ⏸️ Không kéo job mới | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`draining`** | `enabled` | ⏸️ Không kéo job mới | ✅ Full check + capacity | ✅ Full check | ✅ Poll Proxmox 15s |
+| **`draining`** | `disabled` | ⏸️ Không kéo job mới | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`disabled`** | any | ⏸️ Dừng hoàn toàn | ❌ status=down, capacity=0 | ❌ status=down | ❌ Dừng poll |
 
 ## 11. Dataplane Health Monitors
 
@@ -934,6 +945,43 @@ sequenceDiagram
 
 Hệ thống đưa ra quyết định chuyển đổi trạng thái vận hành của Zone dựa trên các chỉ số hiệu năng và sức khỏe đo được. Triển khai tại [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L7).
 
+> [!IMPORTANT]
+> **Nguyên tắc Enabled-Only Evaluation**: `DecisionEngine::evaluate()` chỉ nhận đầu vào từ các service đang **enabled** trên zone đó. Service bị tắt (`desired_state = false`) được coi là **không liên quan** — không được đưa vào điều kiện draining trigger cũng như recovery condition. Điều này ngăn zone bị kéo về `draining` chỉ vì một service không được cài đặt.
+
+---
+
+### 12.0 EnabledServicesMap — In-Memory SOT của JO
+
+Job Orchestrator duy trì một `EnabledServicesMap` trong RAM để điều phối:
+- **Luồng nào được health check** (dataplane monitor)
+- **Input nào được đưa vào DecisionEngine**
+
+```
+EnabledServicesMap[zone_id] = {
+    "mail":       true | false,
+    "storage":    true | false,
+    "hypervisor": true | false,
+    "kubernetes": true | false,
+    "ai":         true | false,
+    "database":   true | false,
+}
+```
+
+**Bootstrap khi JO khởi động (Snapshot Pattern)**:
+
+```
+1. JO startup → Query PostgreSQL: SELECT zone_id, service_type, desired_state FROM zone_services
+2. Load toàn bộ kết quả vào EnabledServicesMap
+3. Subscribe CDC channel zone_services
+4. Bắt đầu health check loop & decision loop
+```
+
+> [!WARNING]
+> Nếu JO restart trong khoảng thời gian có thay đổi `zone_services`, CDC event trong khoảng đó sẽ bị miss. Snapshot tại bước 1 đảm bảo trạng thái cuối cùng luôn được phục hồi chính xác. Xem thêm **HA Guard #16**.
+
+**Fallback khi miss RAM**:
+Nếu trong quá trình evaluate, `EnabledServicesMap[zone_id]` không có entry (ví dụ zone vừa được tạo mới sau bootstrap), JO **đọc trực tiếp từ PostgreSQL** để lấy `desired_state` và nạp lại vào RAM trước khi ra quyết định. Không được ra quyết định khi thiếu thông tin enabled/disabled.
+
 ---
 
 ### 12.1 Ngưỡng Đo Đạc & Phân Loại Tải
@@ -944,20 +992,26 @@ Hệ thống đưa ra quyết định chuyển đổi trạng thái vận hành 
 | `avg_cpu` | > 90% | < 85% |
 | `avg_ram` | > 90% | < 85% |
 
-#### B. Mail Workload
+#### B. Mail Workload *(chỉ áp dụng khi `mail_enabled = true`)*
 | Chỉ số | Quá tải (→ draining/disabled) | Phục hồi (→ active) |
 |:---|:---|:---|
 | `queue_len` (SMTP queue size) | > 5000 | < 4000 |
 | `pending_len` | > 500 | < 400 |
 | `mail_capacity` | < 10% (Force draining) | ≥ 50% |
-| `mail_status` | `"down"` (Force draining + disable mail) | `"healthy"` (Điều kiện kích hoạt lại) |
+| `mail_status` | `"down"` (Force draining) | `"healthy"` (Điều kiện kích hoạt lại) |
 
-#### C. Hypervisor Workload
+#### C. Storage Workload *(chỉ áp dụng khi `storage_enabled = true`)*
+| Chỉ số | Quá tải (→ draining) | Phục hồi (→ active) |
+|:---|:---|:---|
+| `storage_capacity` | < 10% (Force draining) | ≥ 50% |
+| `storage_status` | `"down"` (Force draining) | `"healthy"` |
+
+#### D. Hypervisor Workload *(chỉ áp dụng khi `hypervisor_enabled = true`)*
 | Chỉ số | Quá tải (→ degraded) | Phục hồi (→ connected) |
 |:---|:---|:---|
 | `node_cpu` | > 90% | < 90% |
 | `node_ram` | > 90% | < 90% |
-| `node_status` | `"disconnected"` (Mất kết nối hoàn toàn) | `"connected"` (Kết nối lại thành công) |
+| `node_status` | `"disconnected"` | `"connected"` |
 
 ---
 
@@ -967,26 +1021,31 @@ Hệ thống đưa ra quyết định chuyển đổi trạng thái vận hành 
 sequenceDiagram
     autonumber
     participant JO as ⚙️ JO (listener.rs loop)
+    participant RAM as 🧠 EnabledServicesMap (In-Memory)
     participant L1 as ⚡ Redis L1
     participant DE as 🧠 Decision Engine (decision.rs)
     participant DB as 💾 PostgreSQL (SoT)
 
     Note over JO: Giai đoạn XREADGROUP (chu kỳ 2s)
-    JO->>L1: Lấy thông tin ZoneReport & độ dài hàng đợi (Queue/Pending)
-    L1-->>JO: queue_len, pending_len, avg_cpu, avg_ram, mail_capacity, mail_status
-    JO->>DB: Query current_status & current_mail_enabled
-    DB-->>JO: current metadata state
-    
-    JO->>DE: evaluate(metrics, current_state)
-    Note over DE: Đánh giá luật chuyển dịch cấu hình
-    DE-->>JO: Trả về (target_zone_status, target_mail_enabled)
-    
+    JO->>L1: Lấy thông tin ZoneReport & độ dài hàng đợi
+    L1-->>JO: queue_len, pending_len, avg_cpu, avg_ram, mail_metrics, storage_metrics
+
+    JO->>RAM: Đọc EnabledServicesMap[zone_id]
+    alt Map entry tồn tại
+        RAM-->>JO: {mail: true/false, storage: true/false, ...}
+    else Map miss (zone mới hoặc JO restart)
+        JO->>DB: SELECT desired_state FROM zone_services WHERE zone_id = ?
+        DB-->>JO: desired_state per service
+        JO->>RAM: Nạp lại EnabledServicesMap[zone_id]
+    end
+
+    JO->>DE: evaluate(metrics, current_state, enabled_services)
+    Note over DE: Chỉ evaluate service có enabled = true
+    DE-->>JO: Trả về (target_zone_status, target_service_states)
+
     alt Có sự thay đổi cấu hình thực tế
         alt target_zone_status != current_status
             JO->>DB: update_zone_status(target_zone_status)
-        end
-        alt target_mail_enabled != current_mail_enabled
-            JO->>DB: update_zone_service_status('mail', target_mail_enabled)
         end
     end
 ```
@@ -995,21 +1054,41 @@ sequenceDiagram
 
 ### 12.3 Quy Tắc Đánh Giá Trạng Thái
 
-#### A. Bảng Quyết Định Mail desired_state
-| Sức khỏe Mail thực tế (`mail_status`) | Trạng thái mong muốn (`target_mail_enabled`) | Hành vi hệ thống |
-|:---|:---|:---|
-| `"down"` | `false` (Disabled) | Ngừng cấp job, tắt workload health check. |
-| `"healthy"` \| `"degraded"` | `true` (Enabled) | Cho phép gửi nhận mail, tiếp tục check. |
+> [!NOTE]
+> Các quy tắc dưới đây chỉ được áp dụng khi service tương ứng đang **enabled**. Service bị `disabled` không tham gia vào bất kỳ quy tắc nào — kể cả draining trigger lẫn recovery condition.
 
-#### B. Bảng Quyết Định Trạng Thái Zone (`target_zone_status`)
+#### A. Logic Draining Trigger (chỉ xét service enabled)
+
+```
+let mail_failing    = mail_enabled    && (mail_status == "down"    || mail_capacity < 10)
+let storage_failing = storage_enabled && (storage_status == "down" || storage_capacity < 10)
+
+if mail_failing || storage_failing {
+    → draining
+}
+```
+
+#### B. Logic Recovery từ Draining (chỉ xét service enabled)
+
+```
+let mail_ok    = !mail_enabled    || (mail_status == "healthy"    && mail_capacity >= 50)
+let storage_ok = !storage_enabled || (storage_status == "healthy" && storage_capacity >= 50)
+
+if mail_ok && storage_ok && is_recovered {
+    → active
+}
+```
+
+#### C. Bảng Quyết Định Trạng Thái Zone (`target_zone_status`)
 | Trạng thái hiện tại | Điều kiện chuyển dịch | Trạng thái tiếp theo | Ý nghĩa hành vi |
 |:---|:---|:---|:---|
-| `"active"` \| `"congested"` \| `"draining"` | `mail_status == "down"` OR `mail_capacity < 10` | `"draining"` | Tự động xả tải để dọn dẹp hàng đợi nghẽn hoặc cô lập Zone lỗi. |
-| `"active"` | Quá tải tại cụm DP Node (`avg_cpu/ram > 90%`) OR Queue (`queue_len > 5000`) | `"congested"` | Cảnh báo nghẽn, tạm hoãn nhận thêm job tải cao. |
-| `"congested"` | Phục hồi tại cụm DP Node (`avg_cpu/ram < 85%`) AND Queue (`queue_len < 4000`) | `"active"` | Khôi phục trạng thái hoạt động bình thường. |
-| `"draining"` | `mail_status == "healthy"` AND `mail_capacity >= 50` AND Phục hồi hệ thống | `"active"` | Tự động kích hoạt lại Zone về hoạt động bình thường sau khi xử lý xong sự cố hoặc hoàn tất xả tải. |
+| `"active"` \| `"congested"` \| `"draining"` | Bất kỳ **enabled** service nào `down` hoặc `capacity < 10` | `"draining"` | Tự động xả tải, cô lập zone lỗi. |
+| `"active"` | `avg_cpu/ram > 90%` OR `queue_len > 5000` | `"congested"` | Cảnh báo nghẽn, tạm hoãn job mới. |
+| `"congested"` | `avg_cpu/ram < 85%` AND `queue_len < 4000` | `"active"` | Khôi phục bình thường. |
+| `"draining"` | Tất cả **enabled** service `healthy + capacity ≥ 50` AND is_recovered | `"active"` | Tự động kích hoạt lại sau khi xử lý xong sự cố. |
 
-* **Cơ chế Hysteresis**: Thiết lập ngưỡng quá tải cao hơn ngưỡng phục hồi giúp hạn chế tối đa hiện tượng chao đảo trạng thái (Zone Flapping) khi chỉ số dao động quanh biên.
+* **Cơ chế Hysteresis**: Ngưỡng quá tải cao hơn ngưỡng phục hồi tránh Zone Flapping.
+* **Service disabled = transparent**: Không ảnh hưởng quyết định, zone có thể `active` với một subset service bất kỳ.
 
 ---
 
@@ -1090,6 +1169,9 @@ sequenceDiagram
 | 13 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
 | 14 | **Duplicate zone code** | `UNIQUE (code)` → `ErrCodeAlreadyExists` | `zone_repo.go#L239-L244` |
 | 15 | **UpdateService khi zone không maintenance** | SQL `WHERE status = 'maintenance'` trong upsert CTE | `zone_repo.go#L142` |
+| 16 | **EnabledServicesMap bootstrap gap** (JO restart, miss CDC event trong khoảng restart) | JO snapshot toàn bộ `zone_services` từ DB trước khi subscribe CDC | `decision.rs` — bootstrap loader |
+| 17 | **Decision với thiếu enabled info** (zone mới tạo sau JO boot, chưa có entry trong RAM) | Fallback: đọc DB trực tiếp khi miss RAM entry, nạp lại map trước khi evaluate | `decision.rs` — DB fallback |
+| 18 | **False draining** (service disabled bị tính là `down`) | Enabled-Only Evaluation: service disabled = transparent, không tham gia draining trigger | `decision.rs` — enabled_services filter |
 
 ---
 

@@ -49,7 +49,6 @@ func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Contex
 
 	now := time.Now().UTC()
 	workspace.ID = workspaceID
-	workspace.Status = coreEntity.WorkspaceStatusActive
 	workspace.CreatedAt = now
 	workspace.UpdatedAt = now
 

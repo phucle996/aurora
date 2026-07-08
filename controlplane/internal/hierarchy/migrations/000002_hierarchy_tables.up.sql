@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     code VARCHAR(100) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    description TEXT NULL,
     zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE RESTRICT,
     tenant_id UUID NULL REFERENCES tenants(id) ON DELETE CASCADE,
     owner_id UUID NOT NULL, -- references users(id) ở schema iam
@@ -115,7 +115,7 @@ COMMENT ON TABLE workspaces IS 'Bảng quản lý các không gian làm việc (
 COMMENT ON COLUMN workspaces.id IS 'ID định danh duy nhất của Workspace.';
 COMMENT ON COLUMN workspaces.name IS 'Tên hiển thị của Workspace.';
 COMMENT ON COLUMN workspaces.code IS 'Mã viết tắt định danh duy nhất của Workspace trong phạm vi Tenant/Owner.';
-COMMENT ON COLUMN workspaces.status IS 'Trạng thái hoạt động của Workspace (active, suspended, deleted).';
+COMMENT ON COLUMN workspaces.description IS 'Optional description of the workspace purpose and operational notes.';
 COMMENT ON COLUMN workspaces.zone_id IS 'ID của Zone mà Workspace này thuộc về (bắt buộc).';
 COMMENT ON COLUMN workspaces.tenant_id IS 'ID của Tenant sở hữu Workspace này (NULL nếu là Workspace cá nhân).';
 COMMENT ON COLUMN workspaces.owner_id IS 'ID của User sở hữu Workspace (đối với Workspace cá nhân hoặc người tạo).';

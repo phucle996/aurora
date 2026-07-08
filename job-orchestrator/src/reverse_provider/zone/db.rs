@@ -227,19 +227,20 @@ pub async fn update_zone_service_metrics(
         }
     });
 
-    let svc_id_str = uuid::Uuid::new_v4().to_string();
-
-    // [COMMENT]: Atomic UPSERT trên bảng hierarchy.zone_services - chỉ ghi actual_state.
-    // capacity không lưu DB (transient metric), chỉ dùng cho Decision Engine trong RAM.
+    // [COMMENT]: Pure UPDATE chỉ ghi actual_state — KHÔNG dùng UPSERT để tránh trigger WAL event.
+    // Lý do: UPSERT (INSERT ... ON CONFLICT DO UPDATE) gây ra WAL event chứa toàn bộ row bao gồm
+    // desired_state. CDC Streamer đọc desired_state từ WAL → publish service_status_changed lên Redis
+    // → Dataplane nhận và log spam mỗi 5 giây dù desired_state không thực sự thay đổi.
+    //
+    // Pure UPDATE chỉ ghi actual_state: nếu row không tồn tại (zone_services chưa được tạo) thì bỏ qua.
+    // zone_services luôn được tạo sẵn khi khởi tạo zone → safe để dùng UPDATE-only.
     let rows_affected = pg_client
         .execute(
-            "INSERT INTO hierarchy.zone_services \
-             (id, zone_id, service_type, desired_state, actual_state, created_at, updated_at) \
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::hierarchy.zone_service_type, \
-                     false, $4::text::hierarchy.zone_service_status, NOW(), NOW()) \
-             ON CONFLICT (zone_id, service_type) \
-             DO UPDATE SET actual_state = EXCLUDED.actual_state, updated_at = NOW()",
-            &[&svc_id_str, &zone_id, &service_type, &status],
+            "UPDATE hierarchy.zone_services \
+             SET actual_state = $1::text::hierarchy.zone_service_status, updated_at = NOW() \
+             WHERE zone_id = $2::text::uuid \
+               AND service_type = $3::text::hierarchy.zone_service_type",
+            &[&status, &zone_id, &service_type],
         )
         .await?;
 
@@ -256,3 +257,99 @@ pub async fn update_zone_service_metrics(
         Ok(false)
     }
 }
+
+/// [COMMENT]: Bootstrap Snapshot — Lấy toàn bộ desired_state của tất cả zone_services từ DB.
+/// Được gọi một lần khi JO khởi động để khởi tạo EnabledServicesMap in-memory trước khi
+/// subscribe CDC. Đảm bảo không có khoảng trống về trạng thái enabled/disabled sau JO restart.
+///
+/// Return: HashMap<zone_id, HashMap<service_type, desired_state>>
+pub async fn query_all_zone_services_enabled(
+    db_url: &str,
+) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, bool>>, Box<dyn std::error::Error + Send + Sync>>
+{
+    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            Logger::sys_error(
+                "zone_db.bootstrap_connection",
+                "Lỗi DB connection khi bootstrap zone_services snapshot",
+                &e.to_string(),
+            );
+        }
+    });
+
+    // [COMMENT]: Lấy toàn bộ zone_services — cast sang text để tránh enum mapping issue
+    let rows = pg_client
+        .query(
+            "SELECT zone_id::text, service_type::text, desired_state \
+             FROM hierarchy.zone_services",
+            &[],
+        )
+        .await?;
+
+    // [COMMENT]: Nhóm theo zone_id → {service_type: desired_state}
+    let mut snapshot: std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, bool>,
+    > = std::collections::HashMap::new();
+
+    for row in rows {
+        let zone_id: String = row.get(0);
+        let service_type: String = row.get(1);
+        let desired_state: bool = row.get(2);
+        snapshot
+            .entry(zone_id)
+            .or_default()
+            .insert(service_type, desired_state);
+    }
+
+    Logger::sys_info(
+        "zone_db.bootstrap_snapshot",
+        &format!(
+            "Bootstrap zone_services snapshot thành công: {} zones loaded.",
+            snapshot.len()
+        ),
+    );
+
+    Ok(snapshot)
+}
+
+/// [COMMENT]: Lấy desired_state của tất cả service thuộc một zone cụ thể từ DB.
+/// Được gọi làm fallback khi zone_heartbeats cache không có entry cho zone_id
+/// (ví dụ zone mới được tạo sau khi JO đã boot xong).
+pub async fn query_zone_services_enabled(
+    db_url: &str,
+    zone_id: &str,
+) -> Result<std::collections::HashMap<String, bool>, Box<dyn std::error::Error + Send + Sync>> {
+    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            Logger::sys_error(
+                "zone_db.fallback_connection",
+                "Lỗi DB connection khi fallback query zone_services",
+                &e.to_string(),
+            );
+        }
+    });
+
+    let rows = pg_client
+        .query(
+            "SELECT service_type::text, desired_state \
+             FROM hierarchy.zone_services \
+             WHERE zone_id = $1::text::uuid",
+            &[&zone_id],
+        )
+        .await?;
+
+    let mut services = std::collections::HashMap::new();
+    for row in rows {
+        let svc_type: String = row.get(0);
+        let enabled: bool = row.get(1);
+        services.insert(svc_type, enabled);
+    }
+
+    Ok(services)
+}
+
