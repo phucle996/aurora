@@ -34,23 +34,22 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	)
 
 	// ========================================================================
-	// 🗂️ WORKSPACE — PLATFORM/PERSONAL SCOPE
+	// 🗂️ WORKSPACE — PERSONAL SCOPE
 	// ========================================================================
-	platformGroup := router.Group("/api/v1/platform")
+	personalGroup := router.Group("/api/v1/personal")
 	{
-		// [COMMENT]: Tạo workspace cá nhân mới — yêu cầu quyền hierarchy:workspace:create ở tầng *
-		platformGroup.POST("/hierarchy/workspaces",
+		// [COMMENT]: Tạo workspace cá nhân mới dưới /personal — vẫn cần quyền hierarchy:workspace:create
+		personalGroup.POST("/hierarchy/workspaces",
 			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
-			module.WorkspacePlatformHandler.CreateWorkspacePlatform,
+			module.WorkspacePersonalHandler.CreateWorkspacePersonal,
 		)
 		// [COMMENT]: Lấy danh sách workspace cá nhân mà user có quyền read
-		platformGroup.GET("/hierarchy/workspaces",
-			middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
-			module.WorkspacePlatformHandler.ListWorkspacesPlatform,
+		personalGroup.GET("/hierarchy/workspaces",
+			module.WorkspacePersonalHandler.ListWorkspacesPersonal,
 		)
-		// [COMMENT]: Hot path catalog cá nhân — không dùng Authorize do tình huống chicken-and-egg
-		platformGroup.GET("/hierarchy/workspaces/catalog",
-			module.WorkspacePlatformHandler.GetWorkspaceCatalogPlatform,
+		// [COMMENT]: Hot path catalog cá nhân dưới /personal — không dùng Authorize do tình huống chicken-and-egg
+		personalGroup.GET("/hierarchy/workspaces/catalog",
+			module.WorkspacePersonalHandler.GetWorkspaceCatalogPersonal,
 		)
 	}
 

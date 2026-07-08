@@ -64,47 +64,47 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	// ========================================================================
 
 	// ------------------------------------------------------------------------
-	// 👑 PLATFORM API GROUP (Dành cho Quản trị viên hệ thống - Platform Admin)
+	// 👑 PERSONAL API GROUP (Dành cho Quản trị viên hệ thống & Người dùng cá nhân)
 	// ------------------------------------------------------------------------
-	platformGroup := router.Group("/api/v1/platform")
+	personalGroup := router.Group("/api/v1/personal")
 	{
 		// [COMMENT]: Lấy danh sách users hệ thống (yêu cầu quyền iam:users:read và level 2)
-		platformGroup.GET("/iam/users",
+		personalGroup.GET("/iam/users",
 			middleware.Authorize("iam:users:read", module.L1Registry, "2"),
 			module.UserHandler.ListUsersPlatform,
 		)
 
 		// [COMMENT]: Xóa/Cập nhật trạng thái user hệ thống (yêu cầu quyền iam:users:delete và level 2)
-		platformGroup.DELETE("/iam/users/:id",
+		personalGroup.DELETE("/iam/users/:id",
 			middleware.Authorize("iam:users:delete", module.L1Registry, "2"),
 			module.UserHandler.UpdateUserStatusPlatform,
 		)
 
 		// [COMMENT]: Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:read và level 2)
-		platformGroup.GET("/iam/rbac/role",
+		personalGroup.GET("/iam/rbac/role",
 			middleware.Authorize("iam:role:read", module.L1Registry, "2"),
 			module.RbacHandler.ListRolesPlatform,
 		)
 
 		// [COMMENT]: Tạo vai trò hệ thống mới (yêu cầu quyền iam:role:create và level 2)
-		platformGroup.POST("/iam/rbac/role",
+		personalGroup.POST("/iam/rbac/role",
 			middleware.Authorize("iam:role:create", module.L1Registry, "2"),
 			module.RbacHandler.CreateRole,
 		)
 
 		// [COMMENT]: Lấy danh sách toàn bộ các permissions hệ thống (yêu cầu quyền iam:permissions:read và level 2)
-		platformGroup.GET("/iam/rbac/permissions",
+		personalGroup.GET("/iam/rbac/permissions",
 			middleware.Authorize("iam:permissions:read", module.L1Registry, "2"),
 			module.RbacHandler.ListPermissions,
 		)
 
 		// [COMMENT]: Gán vai trò cho User hệ thống
-		platformGroup.POST("/rbac/user-role",
+		personalGroup.POST("/rbac/user-role",
 			module.RbacHandler.AssignUserRole,
 		)
 
 		// [COMMENT]: Gán vai trò cho Tenant hệ thống
-		platformGroup.POST("/rbac/tenant-role",
+		personalGroup.POST("/rbac/tenant-role",
 			module.RbacHandler.AssignTenantRole,
 		)
 	}

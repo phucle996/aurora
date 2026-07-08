@@ -64,7 +64,7 @@ type Module struct {
 	// [COMMENT]: Chia ranh giới Service Layer thành 2 services Tenant và Personal
 	TenantWorkspaceService      coreSvcInterface.TenantWorkspaceService
 	PersonalWorkspaceService    coreSvcInterface.PersonalWorkspaceService
-	WorkspacePlatformHandler    *zoneHandler.WorkspacePlatformHandler
+	WorkspacePersonalHandler    *zoneHandler.WorkspacePersonalHandler
 	WorkspaceTenantHandler      *zoneHandler.WorkspaceTenantHandler
 	TenantRepository    coreRepoInterface.TenantRepository
 	TenantService       coreSvcInterface.TenantService
@@ -123,9 +123,9 @@ func NewModule(
 	if personalWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace service is nil")
 	}
-	wPlatformHandler := zoneHandler.NewWorkspacePlatformHandler(personalWorkspaceService)
-	if wPlatformHandler == nil {
-		return nil, fmt.Errorf("hierarchy module: workspace platform handler is nil")
+	wPersonalHandler := zoneHandler.NewWorkspacePersonalHandler(personalWorkspaceService)
+	if wPersonalHandler == nil {
+		return nil, fmt.Errorf("hierarchy module: workspace personal handler is nil")
 	}
 	wTenantHandler := zoneHandler.NewWorkspaceTenantHandler(tenantWorkspaceService)
 	if wTenantHandler == nil {
@@ -158,7 +158,7 @@ func NewModule(
 		PersonalWorkspaceRepository: personalWorkspaceRepo,
 		TenantWorkspaceService:      tenantWorkspaceService,
 		PersonalWorkspaceService:    personalWorkspaceService,
-		WorkspacePlatformHandler:    wPlatformHandler,
+		WorkspacePersonalHandler:    wPersonalHandler,
 		WorkspaceTenantHandler:      wTenantHandler,
 		TenantRepository:            tenantRepo,
 		TenantService:               tenantService,

@@ -33,9 +33,12 @@ export async function fetchWorkspaceCatalog(
     }
   }
 
+  // [COMMENT]: Gọi hot path, ACR sẽ tự động rewrite URL dựa trên ngữ cảnh gửi kèm trong headers/cookies
+  const path = "/api/v1/hierarchy/workspaces/catalog";
+
   // [COMMENT]: Backend trả về { data: WorkspaceCatalogItem[], message: string, ... }
   const res = await fetchJSON<{ data: WorkspaceCatalogItem[] }>(
-    "/api/v1/workspaces/catalog",
+    path,
     {
       method: "GET",
       headers,

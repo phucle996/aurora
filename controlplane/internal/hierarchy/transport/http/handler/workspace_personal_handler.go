@@ -17,32 +17,32 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// [COMMENT]: WorkspacePlatformHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi cá nhân (Personal/Platform)
-type WorkspacePlatformHandler struct {
+// [COMMENT]: WorkspacePersonalHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi cá nhân (Personal/Me)
+type WorkspacePersonalHandler struct {
 	personalSvc coreSvcInterface.PersonalWorkspaceService
 }
 
-// [COMMENT]: NewWorkspacePlatformHandler tạo một thực thể WorkspacePlatformHandler mới
-func NewWorkspacePlatformHandler(
+// [COMMENT]: NewWorkspacePersonalHandler tạo một thực thể WorkspacePersonalHandler mới
+func NewWorkspacePersonalHandler(
 	personalSvc coreSvcInterface.PersonalWorkspaceService,
-) *WorkspacePlatformHandler {
-	return &WorkspacePlatformHandler{
+) *WorkspacePersonalHandler {
+	return &WorkspacePersonalHandler{
 		personalSvc: personalSvc,
 	}
 }
 
-// CreateWorkspacePlatform godoc
+// CreateWorkspacePersonal godoc
 // @Summary      Tạo workspace cá nhân
 // @Description  Tạo một workspace cá nhân mới cho người dùng trong một Zone xác định
-// @Tags         workspaces-platform
+// @Tags         workspaces-personal
 // @Accept       json
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) bắt buộc"
 // @Param        request     body   requestdto.CreateWorkspaceRequest true "Thông tin khởi tạo workspace"
 // @Success      201 {object} map[string]interface{} "Workspace created"
-// @Router       /api/v1/platform/hierarchy/workspaces [post]
-func (h *WorkspacePlatformHandler) CreateWorkspacePlatform(c *gin.Context) {
-	const op = "WorkspacePlatformHandler.CreateWorkspacePlatform"
+// @Router       /api/v1/me/hierarchy/workspaces [post]
+func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
+	const op = "WorkspacePersonalHandler.CreateWorkspacePersonal"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -71,7 +71,7 @@ func (h *WorkspacePlatformHandler) CreateWorkspacePlatform(c *gin.Context) {
 		Name:     strings.TrimSpace(request.Name),
 		Code:     strings.ToLower(strings.TrimSpace(request.Code)),
 		ZoneID:   zoneID,
-		TenantID: nil, // [COMMENT]: Luôn luôn nil đối với personal/platform scope
+		TenantID: nil, // [COMMENT]: Luôn luôn nil đối với personal/me scope
 		OwnerID:  ownerID,
 	}
 
@@ -108,16 +108,16 @@ func (h *WorkspacePlatformHandler) CreateWorkspacePlatform(c *gin.Context) {
 	}, "workspace created")
 }
 
-// ListWorkspacesPlatform godoc
+// ListWorkspacesPersonal godoc
 // @Summary      Lấy danh sách các workspace cá nhân
 // @Description  Trả về toàn bộ danh sách workspace cá nhân thuộc sở hữu của người dùng hiện tại
-// @Tags         workspaces-platform
+// @Tags         workspaces-personal
 // @Accept       json
 // @Produce      json
 // @Success      200 {object} map[string]interface{} "List workspaces success"
-// @Router       /api/v1/platform/hierarchy/workspaces [get]
-func (h *WorkspacePlatformHandler) ListWorkspacesPlatform(c *gin.Context) {
-	const op = "WorkspacePlatformHandler.ListWorkspacesPlatform"
+// @Router       /api/v1/me/hierarchy/workspaces [get]
+func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
+	const op = "WorkspacePersonalHandler.ListWorkspacesPersonal"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
@@ -154,17 +154,17 @@ func (h *WorkspacePlatformHandler) ListWorkspacesPlatform(c *gin.Context) {
 	apires.RespondSuccess(c, data, "list workspaces success")
 }
 
-// GetWorkspaceCatalogPlatform godoc
+// GetWorkspaceCatalogPersonal godoc
 // @Summary      Hot path lấy catalog workspace cá nhân
 // @Description  Trả về danh sách định danh tối giản (id, code, name) của các workspace cá nhân lọc theo zone
-// @Tags         workspaces-platform
+// @Tags         workspaces-personal
 // @Accept       json
 // @Produce      json
 // @Param        X-Zone-ID   header string true "Zone ID (UUID) để lọc catalog"
 // @Success      200 {array}  coreEntity.WorkspaceCatalog "Workspace catalog success"
-// @Router       /api/v1/platform/hierarchy/workspaces/catalog [get]
-func (h *WorkspacePlatformHandler) GetWorkspaceCatalogPlatform(c *gin.Context) {
-	const op = "WorkspacePlatformHandler.GetWorkspaceCatalogPlatform"
+// @Router       /api/v1/me/hierarchy/workspaces/catalog [get]
+func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
+	const op = "WorkspacePersonalHandler.GetWorkspaceCatalogPersonal"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()

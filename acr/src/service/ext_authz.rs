@@ -829,8 +829,8 @@ impl Authorization for ExtAuthzService {
                         if path.starts_with("/api/v1/")
                             && !path.starts_with("/api/v1/me/")
                             && !path.starts_with("/api/v1/auth/")
-                            && !path.starts_with("/api/v1/platform/")
                             && !path.starts_with("/api/v1/tenant/")
+                            && !path.starts_with("/api/v1/personal/")
                         {
                             // Trích xuất tenant_id yêu cầu từ Client (cookie hoặc header)
                             let client_tenant_id = trinity.tenant_id.map(|s| s.to_string())
@@ -880,7 +880,7 @@ impl Authorization for ExtAuthzService {
                             }
 
                             // Xác định tiền tố định tuyến chính xác
-                            let prefix = if client_has_tenant { "/api/v1/tenant" } else { "/api/v1/platform" };
+                            let prefix = if client_has_tenant { "/api/v1/tenant" } else { "/api/v1/personal" };
                             let rewritten_path = format!("{}{}", prefix, &path[7..]); // Bỏ "/api/v1" ở đầu và ghép phần còn lại
 
                             Logger::sys_debug(
