@@ -40,8 +40,8 @@ func (h *RbacHandler) AssignTenantRole(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"message": "skeleton"}, "success")
 }
 
-// [COMMENT]: ListPlatformRoles trả về toàn bộ danh sách platform-scoped roles bọc trong gin.H
-func (h *RbacHandler) ListPlatformRoles(c *gin.Context) {
+// [COMMENT]: ListRolesPlatform trả về toàn bộ danh sách platform-scoped roles bọc trong gin.H
+func (h *RbacHandler) ListRolesPlatform(c *gin.Context) {
 
 	const op = "iam.rbac.list_platform_roles"
 
@@ -69,24 +69,15 @@ func (h *RbacHandler) ListPlatformRoles(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"roles": resp}, "success")
 }
 
-// [COMMENT]: ListTenantRoles trả về danh sách roles được gán cho tenant cụ thể lấy từ header X-Tenant-ID
-func (h *RbacHandler) ListTenantRoles(c *gin.Context) {
+// [COMMENT]: ListRolesTenant trả về danh sách roles được gán cho tenant cụ thể lấy từ header X-Tenant-ID
+func (h *RbacHandler) ListRolesTenant(c *gin.Context) {
 
 	const op = "iam.rbac.list_tenant_roles"
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	if tenantIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "missing tenant context header X-Tenant-ID")
-		apires.RespondBadRequest(c, "missing tenant context")
-		return
-	}
-
-	tenantID, err := uuid.Parse(tenantIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid tenant id format")
-		apires.RespondBadRequest(c, "invalid tenant id format")
+	tenantID, ok := constant.GetTenantID(c, op)
+	if !ok {
 		return
 	}
 
@@ -117,18 +108,8 @@ func (h *RbacHandler) GetRenderContext(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy userID trực tiếp từ x-user-id header do Edge Gateway/acr chuyển tiếp xuống
-	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid user id format")
-		apires.RespondBadRequest(c, "invalid request")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
@@ -189,7 +170,7 @@ func (h *RbacHandler) CreateRole(c *gin.Context) {
 	}
 
 	// [COMMENT]: Kiểm tra phân cấp level (Hierarchy Level). Quyền to hơn = level số nhỏ hơn.
-	userLevelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
+	userLevelStr := strings.TrimSpace(c.GetHeader("X-User-Level"))
 	if userLevelStr != "" {
 		actorLevel, err := strconv.Atoi(userLevelStr)
 		if err == nil {

@@ -10,7 +10,6 @@ import (
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/http/middleware"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
-	"controlplane/pkg/constant"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -44,11 +43,11 @@ func TestAuthorize_TenantScope(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		c.Request.Header.Set(constant.HeaderXUserID, userID)
-		c.Request.Header.Set(constant.HeaderXUserRole, "tenant_admin")
-		c.Request.Header.Set(constant.HeaderXUserRoleID, roleID)
-		c.Request.Header.Set(constant.HeaderXTenantID, tenantID)
-		c.Request.Header.Set(constant.HeaderXWorkspaceID, workspaceID)
+		c.Request.Header.Set("X-User-ID", userID)
+		c.Request.Header.Set("X-User-Role", "tenant_admin")
+		c.Request.Header.Set("X-User-Role-ID", roleID)
+		c.Request.Header.Set("X-Tenant-ID", tenantID)
+		c.Request.Header.Set("X-Workspace-ID", workspaceID)
 		c.Next()
 	})
 
@@ -93,10 +92,10 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		c.Request.Header.Set(constant.HeaderXUserID, userID)
-		c.Request.Header.Set(constant.HeaderXUserName, username)
-		c.Request.Header.Set(constant.HeaderXUserRoleID, roleID)
-		c.Request.Header.Set(constant.HeaderXWorkspaceID, workspaceID)
+		c.Request.Header.Set("X-User-ID", userID)
+		c.Request.Header.Set("X-User-Name", username)
+		c.Request.Header.Set("X-User-Role-ID", roleID)
+		c.Request.Header.Set("X-Workspace-ID", workspaceID)
 		// [COMMENT]: Không set X-Tenant-ID → middleware đi nhánh personal
 		c.Next()
 	})
@@ -127,8 +126,6 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 	}
 }
 
-
-
 // TestAuthorize_MissingWorkspaceID kiểm tra thiếu workspace context → 403.
 func TestAuthorize_MissingWorkspaceID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -137,9 +134,9 @@ func TestAuthorize_MissingWorkspaceID(t *testing.T) {
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
-		c.Request.Header.Set(constant.HeaderXUserID, uuid.NewString())
-		c.Request.Header.Set(constant.HeaderXUserRoleID, uuid.NewString())
-		c.Request.Header.Set(constant.HeaderXTenantID, uuid.NewString())
+		c.Request.Header.Set("X-User-ID", uuid.NewString())
+		c.Request.Header.Set("X-User-Role-ID", uuid.NewString())
+		c.Request.Header.Set("X-Tenant-ID", uuid.NewString())
 		// [COMMENT]: Không set X-Workspace-ID → phải reject
 		c.Next()
 	})
@@ -173,13 +170,13 @@ func TestAuthorize_UserLevelChecking(t *testing.T) {
 	setupRouter := func(level string) *gin.Engine {
 		r := gin.New()
 		r.Use(func(c *gin.Context) {
-			c.Request.Header.Set(constant.HeaderXUserID, userID)
-			c.Request.Header.Set(constant.HeaderXUserRole, "tenant_admin")
-			c.Request.Header.Set(constant.HeaderXUserRoleID, roleID)
-			c.Request.Header.Set(constant.HeaderXTenantID, tenantID)
-			c.Request.Header.Set(constant.HeaderXWorkspaceID, workspaceID)
+			c.Request.Header.Set("X-User-ID", userID)
+			c.Request.Header.Set("X-User-Role", "tenant_admin")
+			c.Request.Header.Set("X-User-Role-ID", roleID)
+			c.Request.Header.Set("X-Tenant-ID", tenantID)
+			c.Request.Header.Set("X-Workspace-ID", workspaceID)
 			if level != "" {
-				c.Request.Header.Set(constant.HeaderXUserLevel, level)
+				c.Request.Header.Set("X-User-Level", level)
 			}
 			c.Next()
 		})

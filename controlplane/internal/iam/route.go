@@ -71,19 +71,19 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		// [COMMENT]: Lấy danh sách users hệ thống (yêu cầu quyền iam:users:read và level 2)
 		platformGroup.GET("/iam/users",
 			middleware.Authorize("iam:users:read", module.L1Registry, "2"),
-			module.UserHandler.ListUsers,
+			module.UserHandler.ListUsersPlatform,
 		)
 
 		// [COMMENT]: Xóa/Cập nhật trạng thái user hệ thống (yêu cầu quyền iam:users:delete và level 2)
 		platformGroup.DELETE("/iam/users/:id",
 			middleware.Authorize("iam:users:delete", module.L1Registry, "2"),
-			module.UserHandler.UpdateUserStatus,
+			module.UserHandler.UpdateUserStatusPlatform,
 		)
 
 		// [COMMENT]: Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:read và level 2)
 		platformGroup.GET("/iam/rbac/role",
 			middleware.Authorize("iam:role:read", module.L1Registry, "2"),
-			module.RbacHandler.ListPlatformRoles,
+			module.RbacHandler.ListRolesPlatform,
 		)
 
 		// [COMMENT]: Tạo vai trò hệ thống mới (yêu cầu quyền iam:role:create và level 2)
@@ -117,7 +117,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		// [COMMENT]: Lấy toàn bộ danh sách tenant-scoped roles (yêu cầu quyền iam:role:read và level *)
 		tenantGroup.GET("/iam/rbac/role",
 			middleware.Authorize("iam:role:read", module.L1Registry, "*"),
-			module.RbacHandler.ListTenantRoles,
+			module.RbacHandler.ListRolesTenant,
 		)
 
 		// [COMMENT]: Lấy danh sách permissions khả dụng cho Tenant (yêu cầu quyền iam:permissions:read và level *)

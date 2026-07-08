@@ -41,18 +41,16 @@ func (h *CredentialHandler) Create(c *gin.Context) {
 	defer cancel()
 
 	// 1. Trích xuất danh tính và path params
-	userIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	bucketIDStr := strings.TrimSpace(c.Param("id"))
-
-	if userIDStr == "" || bucketIDStr == "" {
-		apires.RespondBadRequest(c, "missing mandatory identity or bucket id")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid user id format")
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	bucketIDStr := strings.TrimSpace(c.Param("id"))
+
+	if bucketIDStr == "" {
+		apires.RespondBadRequest(c, "missing mandatory bucket id")
 		return
 	}
 
@@ -132,7 +130,7 @@ func (h *CredentialHandler) Get(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	credIDStr := strings.TrimSpace(c.Param("id"))
 
 	if credIDStr == "" {
@@ -204,7 +202,7 @@ func (h *CredentialHandler) List(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	bucketIDStr := strings.TrimSpace(c.Param("id"))
 
 	if bucketIDStr == "" {
@@ -266,18 +264,16 @@ func (h *CredentialHandler) Revoke(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	userIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	credIDStr := strings.TrimSpace(c.Param("id"))
-
-	if userIDStr == "" || credIDStr == "" {
-		apires.RespondBadRequest(c, "missing identity or credential id")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid user id format")
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	credIDStr := strings.TrimSpace(c.Param("id"))
+
+	if credIDStr == "" {
+		apires.RespondBadRequest(c, "missing credential id")
 		return
 	}
 

@@ -27,31 +27,21 @@ func NewUserHandler(userSvc domainservice.UserService) *UserHandler {
 	}
 }
 
-// [COMMENT]: ListUsers trả về danh sách users thô từ logic phân cấp bảo mật
-func (h *UserHandler) ListUsers(c *gin.Context) {
+// [COMMENT]: ListUsersPlatform trả về danh sách users thô từ logic phân cấp bảo mật
+func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 	const op = "iam.users.list"
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy level của caller trực tiếp từ x-user-level header do ACR/Gateway forward xuống
-	callerLevelStr := strings.TrimSpace(c.GetHeader("x-user-level"))
-	if callerLevelStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-level header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
-	callerLevel, err := strconv.ParseUint(callerLevelStr, 10, 8)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid caller level format")
-		apires.RespondBadRequest(c, "invalid request")
+	callerLevel, ok := constant.GetUserLevel(c, op)
+	if !ok {
 		return
 	}
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	users, err := h.userSvc.ListUsers(ctx, uint8(callerLevel), limit, offset)
+	users, err := h.userSvc.ListUsers(ctx, callerLevel, limit, offset)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "forbidden action for user")
@@ -78,24 +68,14 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"users": resp}, "success")
 }
 
-// [COMMENT]: UpdateUserStatus thực hiện cập nhật trạng thái hoạt động (vô hiệu hóa) của user
-func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
+// [COMMENT]: UpdateUserStatusPlatform thực hiện cập nhật trạng thái hoạt động (vô hiệu hóa) của user
+func (h *UserHandler) UpdateUserStatusPlatform(c *gin.Context) {
 	const op = "iam.users.update_status"
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy level của caller trực tiếp từ x-user-level header do ACR/Gateway forward xuống
-	callerLevelStr := strings.TrimSpace(c.GetHeader("x-user-level"))
-	if callerLevelStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-level header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
-	callerLevel, err := strconv.ParseUint(callerLevelStr, 10, 8)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid caller level format")
-		apires.RespondBadRequest(c, "invalid request")
+	callerLevel, ok := constant.GetUserLevel(c, op)
+	if !ok {
 		return
 	}
 
@@ -113,7 +93,7 @@ func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
 		return
 	}
 
-	if err := h.userSvc.UpdateUserStatus(ctx, uint8(callerLevel), targetUserID); err != nil {
+	if err := h.userSvc.UpdateUserStatus(ctx, callerLevel, targetUserID); err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "insufficient role hierarchy permissions")
 			apires.RespondForbidden(c, "forbidden")

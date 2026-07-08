@@ -71,8 +71,8 @@ func OTelTraceContext(obs *observability.OTel) gin.HandlerFunc {
 		//   để các thành phần microservices phía sau kế thừa.
 		// --------------------------------------------------------------------
 		obs.Inject(ctx, c.Request.Header)
-		if tp := strings.TrimSpace(c.Request.Header.Get(constant.HeaderTraceparent)); tp != "" {
-			c.Header(constant.HeaderTraceparent, tp)
+		if tp := constant.GetTraceparent(c); tp != "" {
+			c.Header("traceparent", tp)
 		}
 
 		// Ghi nhận context mới vào Request Context và chuyển tiếp xử lý:
@@ -153,13 +153,13 @@ func RequestID() gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		// 🔄 Ưu tiên hàng đầu: Đọc và kế thừa X-Request-ID được tạo bởi Envoy ở biên giới.
 		// --------------------------------------------------------------------
-		reqID := strings.TrimSpace(c.GetHeader(constant.HeaderXRequestID))
+		reqID := constant.GetRequestID(c)
 
 		// --------------------------------------------------------------------
 		// 🔄 Dự phòng cấp 1: Trích xuất trực tiếp Trace ID từ traceparent để đồng bộ hóa Log & Trace.
 		// --------------------------------------------------------------------
 		if reqID == "" {
-			if tp := strings.TrimSpace(c.GetHeader(constant.HeaderTraceparent)); tp != "" {
+			if tp := constant.GetTraceparent(c); tp != "" {
 				parts := strings.Split(tp, "-")
 				if len(parts) >= 2 && len(parts[1]) == 32 {
 					reqID = parts[1] // Lấy Trace ID từ định dạng W3C
@@ -183,7 +183,7 @@ func RequestID() gin.HandlerFunc {
 		// 🔄 Nhúng Request ID vào Gin Context và phản hồi về client thông qua headers.
 		// --------------------------------------------------------------------
 		c.Set(logger.KeyRequestID, reqID)
-		c.Header(constant.HeaderXRequestID, reqID)
+		c.Header("X-Request-ID", reqID)
 
 		// [COMMENT]: Trích xuất IP và UserAgent ở đầu luồng HTTP để tiêm vào Context, tách biệt hạ tầng mạng khỏi logic nghiệp vụ.
 		ip := strings.TrimSpace(c.ClientIP())

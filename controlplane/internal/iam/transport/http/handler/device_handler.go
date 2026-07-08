@@ -31,17 +31,8 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy userID trực tiếp từ x-user-id header do API Gateway chuyển tiếp xuống.
-	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid user id format")
-		apires.RespondBadRequest(c, "invalid request")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
@@ -84,17 +75,8 @@ func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy userID từ HTTP header được điền bởi biên bảo mật (Edge/Gateway).
-	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid user id format")
-		apires.RespondBadRequest(c, "invalid request")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
@@ -105,7 +87,7 @@ func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 	}
 
 	// [COMMENT]: Đọc header client device id (x-device-id) do Envoy forward xuống.
-	currentDeviceIDStr := strings.TrimSpace(c.GetHeader("x-device-id"))
+	currentDeviceIDStr := constant.GetOptionalDeviceIDStr(c)
 	var currentDeviceID uuid.UUID
 	if currentDeviceIDStr != "" {
 		if parsedID, err := uuid.Parse(currentDeviceIDStr); err == nil {
@@ -144,27 +126,13 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 	defer cancel()
 
 	// [COMMENT]: Lấy userID trực tiếp từ Gateway header.
-	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid user id format")
-		apires.RespondBadRequest(c, "invalid request")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
-	currentTrackedDeviceID := strings.TrimSpace(c.GetHeader(constant.HeaderXDeviceID))
-	if currentTrackedDeviceID == "" {
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	currID, err := uuid.Parse(currentTrackedDeviceID)
-	if err != nil {
-		apires.RespondUnauthorized(c, "unauthorized")
+	currID, ok := constant.GetDeviceID(c, op)
+	if !ok {
 		return
 	}
 	// [COMMENT]: Truyền userID nhận trực tiếp vào service.

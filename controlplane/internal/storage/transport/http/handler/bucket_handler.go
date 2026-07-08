@@ -40,33 +40,28 @@ func (h *BucketHandler) Create(c *gin.Context) {
 	defer cancel()
 
 	// 1. Trích xuất thông tin định danh từ HTTP Headers (đã được ACR & middleware validate)
-	userIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
-	workspaceIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXWorkspaceID))
-	zoneIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXZoneID))
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-
-	if userIDStr == "" || workspaceIDStr == "" || zoneIDStr == "" {
-		apires.RespondBadRequest(c, "missing mandatory identity or target workspace/zone headers")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid user id format")
+	workspaceID, ok := constant.GetWorkspaceID(c, op)
+	if !ok {
 		return
 	}
 
-	workspaceID, err := uuid.Parse(workspaceIDStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid workspace id format")
+	zoneIDStr := constant.GetOptionalZoneIDStr(c)
+	if zoneIDStr == "" {
+		apires.RespondBadRequest(c, "missing mandatory target zone header")
 		return
 	}
-
 	zoneID, err := uuid.Parse(zoneIDStr)
 	if err != nil {
 		apires.RespondBadRequest(c, "invalid zone id format")
 		return
 	}
+
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 
 	// 2. Bind JSON Request Body sử dụng cấu trúc DTO
 	var req storageDto.CreateBucketRequest
@@ -150,7 +145,7 @@ func (h *BucketHandler) Get(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	var bucket interface{}
 	var getErr error
 
@@ -178,21 +173,15 @@ func (h *BucketHandler) List(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
-	zoneIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXZoneID))
-	workspaceIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXWorkspaceID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	zoneIDStr := constant.GetOptionalZoneIDStr(c)
 
 	var list interface{}
 	var listErr error
 
 	if tenantIDStr == "" {
-		if workspaceIDStr == "" {
-			apires.RespondBadRequest(c, "missing workspace context in headers for listing personal buckets")
-			return
-		}
-		workspaceID, err := uuid.Parse(workspaceIDStr)
-		if err != nil {
-			apires.RespondBadRequest(c, "invalid workspace id format")
+		workspaceID, ok := constant.GetWorkspaceID(c, op)
+		if !ok {
 			return
 		}
 		list, listErr = h.personalSvc.ListBuckets(ctx, workspaceID)
@@ -242,7 +231,7 @@ func (h *BucketHandler) UpdateQuota(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	var updateErr error
 
 	if tenantIDStr == "" {
@@ -276,7 +265,7 @@ func (h *BucketHandler) Suspend(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	var actionErr error
 
 	if tenantIDStr == "" {
@@ -310,7 +299,7 @@ func (h *BucketHandler) Resume(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	var actionErr error
 
 	if tenantIDStr == "" {
@@ -344,7 +333,7 @@ func (h *BucketHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+	tenantIDStr := constant.GetOptionalTenantIDStr(c)
 	var deleteErr error
 
 	if tenantIDStr == "" {

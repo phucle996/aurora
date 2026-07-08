@@ -15,7 +15,6 @@ import (
 	coreMetrics "controlplane/internal/hierarchy/metrics"
 	iamMetrics "controlplane/internal/iam/metrics"
 	mailMetrics "controlplane/internal/mail/metrics"
-	"controlplane/pkg/constant"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -282,5 +281,5 @@ func ExtractTraceparent(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.Header.Get(constant.HeaderTraceparent))
+	return strings.TrimSpace(r.Header.Get("traceparent"))
 }

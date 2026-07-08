@@ -40,26 +40,19 @@ var ErrRoleNotFound = errors.New("role not found")
 func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry, requiredLevel string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
+		const op = "auth.authorize"
 
 		// 1. Trích xuất User ID từ Header (inject bởi ACR sau khi xác thực JWT)
-		userID := strings.TrimSpace(c.GetHeader(constant.HeaderXUserID))
-		if userID == "" {
-			apires.RespondUnauthorized(c, "unauthorized")
+		userID, ok := constant.GetUserID(c, op)
+		if !ok {
 			c.Abort()
 			return
 		}
 
 		// [COMMENT]: 2.1. Kiểm tra User Level nếu requiredLevel khác "*"
 		if requiredLevel != "*" {
-			userLevelStr := strings.TrimSpace(c.GetHeader(constant.HeaderXUserLevel))
-			if userLevelStr == "" {
-				apires.RespondForbidden(c, "missing user level context")
-				c.Abort()
-				return
-			}
-			actorLevel, err := strconv.Atoi(userLevelStr)
-			if err != nil {
-				apires.RespondInternalError(c, "invalid user level format")
+			actorLevel, ok := constant.GetUserLevel(c, op)
+			if !ok {
 				c.Abort()
 				return
 			}
@@ -70,7 +63,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 				return
 			}
 			// Càng nhỏ level càng cao: Root=0, Admin=1... User=8
-			if actorLevel > reqLevel {
+			if actorLevel > uint8(reqLevel) {
 				apires.RespondForbidden(c, "insufficient level hierarchy")
 				c.Abort()
 				return
@@ -78,9 +71,8 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		}
 
 		// 3. Trích xuất Role UUID từ Header X-User-Role-ID (inject bởi ACR từ JWT claims)
-		roleID := strings.TrimSpace(c.GetHeader(constant.HeaderXUserRoleID))
-		if roleID == "" {
-			apires.RespondUnauthorized(c, "missing role context")
+		roleID, ok := constant.GetUserRoleID(c, op)
+		if !ok {
 			c.Abort()
 			return
 		}
@@ -94,16 +86,15 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		}
 
 		// 5. Trích xuất Workspace UUID (luôn bắt buộc — user luôn có ít nhất 1 workspace)
-		workspaceID := strings.TrimSpace(c.GetHeader(constant.HeaderXWorkspaceID))
-		if workspaceID == "" {
-			apires.RespondForbidden(c, "missing workspace context")
+		workspaceID, ok := constant.GetWorkspaceID(c, op)
+		if !ok {
 			c.Abort()
 			return
 		}
 
 		// 6. Xác định cấp 1 theo nhánh và build expected key 5 cấp đầy đủ
 		// Format DB đã lưu sẵn: <cấp1>:<workspace_uuid>:<module>:<object>:<behavior>
-		tenantID := strings.TrimSpace(c.GetHeader(constant.HeaderXTenantID))
+		tenantID := constant.GetOptionalTenantIDStr(c)
 
 		var scopeCtx string
 		var cacheParam string
@@ -112,18 +103,17 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		if tenantID != "" {
 			// [COMMENT]: Nhánh Tenant — cache key bậc 1: tenant_role:<role_id>:<tenant_id>
 			scopeCtx = tenantID
-			cacheParam = roleID + ":" + tenantID
+			cacheParam = roleID.String() + ":" + tenantID
 			cacheNamespace = "tenant_role"
 		} else {
 			// [COMMENT]: Nhánh Personal — cache key bậc 1: user_role:<userID>
-			username := strings.TrimSpace(c.GetHeader(constant.HeaderXUserName))
-			if username == "" {
-				apires.RespondForbidden(c, "missing username context for personal scope")
+			username, ok := constant.GetUserName(c, op)
+			if !ok {
 				c.Abort()
 				return
 			}
 			scopeCtx = username
-			cacheParam = userID
+			cacheParam = userID.String()
 			cacheNamespace = "user_role"
 		}
 
@@ -143,7 +133,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		}
 
 		// 9. So khớp expected key hoặc wildcard platform key với danh sách quyền tĩnh đã gộp trong cache.
-		expectedKey := scopeCtx + ":" + workspaceID + ":" + requiredPermission
+		expectedKey := scopeCtx + ":" + workspaceID.String() + ":" + requiredPermission
 		wildcardExpectedKey := scopeCtx + ":*:" + requiredPermission
 
 		hasPermission := false
