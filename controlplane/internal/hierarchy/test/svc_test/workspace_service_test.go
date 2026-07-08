@@ -17,11 +17,11 @@ import (
 
 // [COMMENT]: fakeTenantWorkspaceRepo giả lập repository cho tenant workspace service tests
 type fakeTenantWorkspaceRepo struct {
-	workspace *coreEntity.Workspace
+	workspace *coreEntity.TenantWorkspace
 	err       error
 }
 
-func (f *fakeTenantWorkspaceRepo) Create(ctx context.Context, w coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (f *fakeTenantWorkspaceRepo) Create(ctx context.Context, w coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -29,14 +29,14 @@ func (f *fakeTenantWorkspaceRepo) Create(ctx context.Context, w coreEntity.Works
 	return f.workspace, nil
 }
 
-func (f *fakeTenantWorkspaceRepo) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.Workspace, error) {
+func (f *fakeTenantWorkspaceRepo) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.TenantWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.workspace, nil
 }
 
-func (f *fakeTenantWorkspaceRepo) Update(ctx context.Context, w coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (f *fakeTenantWorkspaceRepo) Update(ctx context.Context, w coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -48,18 +48,18 @@ func (f *fakeTenantWorkspaceRepo) Delete(ctx context.Context, id uuid.UUID) erro
 	return f.err
 }
 
-func (f *fakeTenantWorkspaceRepo) ListAllByTenant(ctx context.Context, tenantID uuid.UUID) ([]*coreEntity.Workspace, error) {
+func (f *fakeTenantWorkspaceRepo) ListAllByTenant(ctx context.Context, tenantID uuid.UUID) ([]*coreEntity.TenantWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []*coreEntity.Workspace{f.workspace}, nil
+	return []*coreEntity.TenantWorkspace{f.workspace}, nil
 }
 
-func (f *fakeTenantWorkspaceRepo) ListByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]*coreEntity.Workspace, error) {
+func (f *fakeTenantWorkspaceRepo) ListByTenantAndIDs(ctx context.Context, tenantID uuid.UUID, ids []uuid.UUID) ([]*coreEntity.TenantWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []*coreEntity.Workspace{f.workspace}, nil
+	return []*coreEntity.TenantWorkspace{f.workspace}, nil
 }
 
 // [COMMENT]: ListCatalogAllByTenant stub — trả về catalog tối giản cho test
@@ -86,11 +86,11 @@ func (f *fakeTenantWorkspaceRepo) ListCatalogByTenantAndIDs(ctx context.Context,
 
 // [COMMENT]: fakePersonalWorkspaceRepo giả lập repository cho personal workspace service tests
 type fakePersonalWorkspaceRepo struct {
-	workspace *coreEntity.Workspace
+	workspace *coreEntity.PersonalWorkspace
 	err       error
 }
 
-func (f *fakePersonalWorkspaceRepo) Create(ctx context.Context, w coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (f *fakePersonalWorkspaceRepo) Create(ctx context.Context, w coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -98,7 +98,7 @@ func (f *fakePersonalWorkspaceRepo) Create(ctx context.Context, w coreEntity.Wor
 	return f.workspace, nil
 }
 
-func (f *fakePersonalWorkspaceRepo) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.Workspace, error) {
+func (f *fakePersonalWorkspaceRepo) GetByID(ctx context.Context, id uuid.UUID) (*coreEntity.PersonalWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -134,7 +134,7 @@ func (f *fakePersonalWorkspaceRepo) ListCatalogByOwner(ctx context.Context, owne
 	return []coreEntity.WorkspaceCatalog{{ID: f.workspace.ID, Code: f.workspace.Code, Name: f.workspace.Name}}, nil
 }
 
-func (f *fakePersonalWorkspaceRepo) Update(ctx context.Context, w coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (f *fakePersonalWorkspaceRepo) Update(ctx context.Context, w coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -162,11 +162,11 @@ func TestWorkspaceService(t *testing.T) {
 		tenantID, _ := uuid.NewV7()
 		ownerID, _ := uuid.NewV7()
 
-		w, err := svc.CreateWorkspaceForTenant(ctx, coreEntity.Workspace{
+		w, err := svc.CreateWorkspaceForTenant(ctx, coreEntity.TenantWorkspace{
 			Name:     "Tenant Workspace",
 			Code:     "tenant-ws",
 			ZoneID:   zoneID,
-			TenantID: &tenantID,
+			TenantID: tenantID,
 			OwnerID:  ownerID,
 		})
 
@@ -197,9 +197,9 @@ func TestWorkspaceService(t *testing.T) {
 		})
 
 		repo := &fakeTenantWorkspaceRepo{
-			workspace: &coreEntity.Workspace{
+			workspace: &coreEntity.TenantWorkspace{
 				Name:     "Wildcard Workspace",
-				TenantID: &tenantID,
+				TenantID: tenantID,
 			},
 		}
 		svc := coreSvcImpl.NewTenantWorkspaceService(repo, registry)
@@ -220,7 +220,7 @@ func TestWorkspaceService(t *testing.T) {
 		zoneID, _ := uuid.NewV7()
 		ownerID, _ := uuid.NewV7()
 
-		w, err := svc.CreateWorkspaceForPersonal(ctx, coreEntity.Workspace{
+		w, err := svc.CreateWorkspaceForPersonal(ctx, coreEntity.PersonalWorkspace{
 			Name:    "Personal Workspace",
 			Code:    "personal-ws",
 			ZoneID:  zoneID,
@@ -240,7 +240,7 @@ func TestWorkspaceService(t *testing.T) {
 		repo := &fakePersonalWorkspaceRepo{err: coreErrorx.ErrZoneNotFound}
 		svc := coreSvcImpl.NewPersonalWorkspaceService(repo)
 
-		_, err := svc.CreateWorkspaceForPersonal(ctx, coreEntity.Workspace{
+		_, err := svc.CreateWorkspaceForPersonal(ctx, coreEntity.PersonalWorkspace{
 			Name:   "Fail WS",
 			Code:   "fail-ws",
 			ZoneID: uuid.New(),

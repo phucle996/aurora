@@ -3,7 +3,8 @@
 --            Hierarchy/Hierarchy Module — Drop Tables in reverse dependency order
 -- ======================================================================================================
 
-DROP TABLE IF EXISTS workspaces;
+DROP TABLE IF EXISTS personal_workspaces;
+DROP TABLE IF EXISTS tenant_workspaces;
 DROP TABLE IF EXISTS tenant_memberships;
 DROP TABLE IF EXISTS tenant_domains;
 DROP TABLE IF EXISTS tenants;

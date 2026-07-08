@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 
 export default function MyWorkspacesPage() {
   const { profile, checkPermission } = useUserSession();
-  const { activeWorkspaceID, selectWorkspace } = useWorkspace();
+  const { activeWorkspaceID, selectWorkspace, refreshCatalog } = useWorkspace();
 
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -88,7 +88,7 @@ export default function MyWorkspacesPage() {
 
     setCreateLoading(true);
     try {
-      await createWorkspace({
+      const newWs = await createWorkspace({
         name: wsName.trim(),
         code: wsCode.trim(),
         description: wsDescription.trim()
@@ -102,8 +102,12 @@ export default function MyWorkspacesPage() {
       setWsDescription("");
       setIsModalOpen(false);
 
-      // Force reload page to sync context catalog and active workspace cookie
-      window.location.reload();
+      // [COMMENT]: Đồng bộ dữ liệu bất đồng bộ mượt mà không cần F5 trang (Zero-Reload)
+      // Merge workspace mới trực tiếp vào local state để tối ưu hóa không cần gọi lại API GET loadWorkspaces
+      if (newWs) {
+        setWorkspaces((prev) => [...prev, newWs]);
+      }
+      await refreshCatalog();
     } catch (err) {
       console.error(err);
       toast.error(err instanceof Error ? err.message : "Failed to create workspace.");

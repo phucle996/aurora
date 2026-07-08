@@ -71,6 +71,8 @@ export type WorkspaceContextValue = {
   selectWorkspace: (id: string) => void;
   // [COMMENT]: Clear toàn bộ workspace state khi logout
   clearWorkspaceContext: () => void;
+  // [COMMENT]: Thêm trực tiếp workspace mới tạo vào catalog dropdown trên client mà không cần gọi API (0-Request)
+  addWorkspaceToCatalog: (item: WorkspaceCatalogItem) => void;
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -150,6 +152,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, []);
 
+  // [COMMENT]: addWorkspaceToCatalog — append trực tiếp workspace mới tạo vào catalog dropdown hiện tại trên client
+  const addWorkspaceToCatalog = useCallback((item: WorkspaceCatalogItem) => {
+    setCatalog((prev) => {
+      // Tránh append trùng lặp nếu đã tồn tại
+      if (prev.some((x) => x.id === item.id)) return prev;
+
+      const newCatalog = [...prev, item];
+
+      // Nếu hiện tại chưa chọn workspace nào trong context này, auto-select cái mới luôn
+      const currentCookie = getCookieWorkspaceID();
+      if (!currentCookie) {
+        setCookieWorkspaceID(item.id);
+        setActiveWorkspaceID(item.id);
+      }
+
+      return newCatalog;
+    });
+  }, []);
+
   // [COMMENT]: Cleanup khi unmount để cancel inflight request
   useEffect(() => {
     return () => {
@@ -165,7 +186,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     initWorkspaceContext,
     selectWorkspace,
     clearWorkspaceContext,
+    addWorkspaceToCatalog,
   };
+
+  return (
+    <WorkspaceContext.Provider value={value}>
+      {children}
+    </WorkspaceContext.Provider>
+  );
+}
 
   return (
     <WorkspaceContext.Provider value={value}>

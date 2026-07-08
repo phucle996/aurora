@@ -33,7 +33,7 @@ func NewPersonalWorkspaceService(
 	}
 }
 
-func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
@@ -59,7 +59,7 @@ func (s *PersonalWorkspaceServiceImpl) CreateWorkspaceForPersonal(ctx context.Co
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.Workspace, error) {
+func (s *PersonalWorkspaceServiceImpl) GetWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.PersonalWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.GetByID(ctx, workspaceID)
 	duration := time.Since(start)
@@ -89,7 +89,7 @@ func (s *PersonalWorkspaceServiceImpl) ListWorkspacesForPersonal(ctx context.Con
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) UpdateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (s *PersonalWorkspaceServiceImpl) UpdateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.Update(ctx, workspace)
 	duration := time.Since(start)

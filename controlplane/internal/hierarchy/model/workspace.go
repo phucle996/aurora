@@ -7,22 +7,62 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: Workspace đại diện cho cấu trúc database mapping của bảng workspaces
-type Workspace struct {
+// [COMMENT]: PersonalWorkspace đại diện cho cấu trúc database mapping của bảng personal_workspaces
+type PersonalWorkspace struct {
 	ID          uuid.UUID  `db:"id"`
 	Name        string     `db:"name"`
 	Code        string     `db:"code"`
 	Description string     `db:"description"`
 	ZoneID      uuid.UUID  `db:"zone_id"`
-	TenantID    *uuid.UUID `db:"tenant_id"` // NULL nếu là workspace cá nhân
 	OwnerID     uuid.UUID  `db:"owner_id"`
 	CreatedAt   time.Time  `db:"created_at"`
 	UpdatedAt   time.Time  `db:"updated_at"`
 }
 
-// [COMMENT]: WorkspaceEntityToModel chuyển đổi domain entity Workspace sang DB model tương ứng
-func WorkspaceEntityToModel(e coreEntity.Workspace) Workspace {
-	return Workspace{
+// [COMMENT]: PersonalWorkspaceEntityToModel chuyển đổi domain entity PersonalWorkspace sang DB model tương ứng
+func PersonalWorkspaceEntityToModel(e coreEntity.PersonalWorkspace) PersonalWorkspace {
+	return PersonalWorkspace{
+		ID:          e.ID,
+		Name:        e.Name,
+		Code:        e.Code,
+		Description: e.Description,
+		ZoneID:      e.ZoneID,
+		OwnerID:     e.OwnerID,
+		CreatedAt:   e.CreatedAt,
+		UpdatedAt:   e.UpdatedAt,
+	}
+}
+
+// [COMMENT]: PersonalWorkspaceModelToEntity chuyển đổi DB model PersonalWorkspace sang domain entity tương ứng
+func PersonalWorkspaceModelToEntity(m PersonalWorkspace) coreEntity.PersonalWorkspace {
+	return coreEntity.PersonalWorkspace{
+		ID:          m.ID,
+		Name:        m.Name,
+		Code:        m.Code,
+		Description: m.Description,
+		ZoneID:      m.ZoneID,
+		OwnerID:     m.OwnerID,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
+	}
+}
+
+// [COMMENT]: TenantWorkspace đại diện cho cấu trúc database mapping của bảng tenant_workspaces
+type TenantWorkspace struct {
+	ID          uuid.UUID  `db:"id"`
+	Name        string     `db:"name"`
+	Code        string     `db:"code"`
+	Description string     `db:"description"`
+	ZoneID      uuid.UUID  `db:"zone_id"`
+	TenantID    uuid.UUID  `db:"tenant_id"` // Bắt buộc NOT NULL
+	OwnerID     uuid.UUID  `db:"owner_id"`
+	CreatedAt   time.Time  `db:"created_at"`
+	UpdatedAt   time.Time  `db:"updated_at"`
+}
+
+// [COMMENT]: TenantWorkspaceEntityToModel chuyển đổi domain entity TenantWorkspace sang DB model tương ứng
+func TenantWorkspaceEntityToModel(e coreEntity.TenantWorkspace) TenantWorkspace {
+	return TenantWorkspace{
 		ID:          e.ID,
 		Name:        e.Name,
 		Code:        e.Code,
@@ -35,9 +75,9 @@ func WorkspaceEntityToModel(e coreEntity.Workspace) Workspace {
 	}
 }
 
-// [COMMENT]: WorkspaceModelToEntity chuyển đổi DB model Workspace sang domain entity tương ứng
-func WorkspaceModelToEntity(m Workspace) coreEntity.Workspace {
-	return coreEntity.Workspace{
+// [COMMENT]: TenantWorkspaceModelToEntity chuyển đổi DB model TenantWorkspace sang domain entity tương ứng
+func TenantWorkspaceModelToEntity(m TenantWorkspace) coreEntity.TenantWorkspace {
+	return coreEntity.TenantWorkspace{
 		ID:          m.ID,
 		Name:        m.Name,
 		Code:        m.Code,

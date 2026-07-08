@@ -67,12 +67,11 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 		return
 	}
 
-	workspaceEntity := coreEntity.Workspace{
+	workspaceEntity := coreEntity.PersonalWorkspace{
 		Name:        strings.TrimSpace(request.Name),
 		Code:        strings.ToLower(strings.TrimSpace(request.Code)),
 		Description: strings.TrimSpace(request.Description),
 		ZoneID:      zoneID,
-		TenantID:    nil, // [COMMENT]: Luôn luôn nil đối với personal/me scope
 		OwnerID:     ownerID,
 	}
 
@@ -86,9 +85,6 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 		case errors.Is(err, coreTaxonomy.ErrWorkspaceCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create workspace code conflict")
 			apires.RespondConflict(c, "workspace code already exists within this scope")
-		case errors.Is(err, coreTaxonomy.ErrNoRowAffected):
-			logger.HandlerWarn(c, op, err, "create workspace constraint violation")
-			apires.RespondBadRequest(c, "workspace creation failed")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -96,14 +92,11 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Trả về kết quả tạo mới thành công
 	apires.RespondCreated(c, gin.H{
 		"id":          workspace.ID,
 		"name":        workspace.Name,
 		"code":        workspace.Code,
 		"description": workspace.Description,
-		"zone_id":     workspace.ZoneID,
-		"tenant_id":   workspace.TenantID,
 		"owner_id":    workspace.OwnerID,
 		"created_at":  workspace.CreatedAt,
 	}, "workspace created")

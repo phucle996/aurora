@@ -6,16 +6,27 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: Workspace đại diện cho không gian làm việc (đơn vị chứa tài nguyên ảo hóa của khách hàng)
-// Bắt buộc phải liên kết với một Zone, có thể thuộc về 1 Tenant (doanh nghiệp) hoặc Null (cá nhân)
-type Workspace struct {
+// [COMMENT]: PersonalWorkspace đại diện cho không gian làm việc cá nhân (Personal/Me)
+type PersonalWorkspace struct {
 	ID          uuid.UUID
 	Name        string
 	Code        string
 	Description string
 	ZoneID      uuid.UUID
-	TenantID    *uuid.UUID // Con trỏ UUID cho phép giá trị NULL (workspace cá nhân)
 	OwnerID     uuid.UUID  // ID của người sở hữu / quản trị Workspace
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// [COMMENT]: TenantWorkspace đại diện cho không gian làm việc thuộc Doanh nghiệp (Tenant)
+type TenantWorkspace struct {
+	ID          uuid.UUID
+	Name        string
+	Code        string
+	Description string
+	ZoneID      uuid.UUID
+	TenantID    uuid.UUID  // ID của Tenant sở hữu Workspace (bắt buộc)
+	OwnerID     uuid.UUID  // ID của người tạo ra Workspace
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

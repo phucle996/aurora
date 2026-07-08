@@ -40,7 +40,7 @@ func NewTenantWorkspaceService(
 	}
 }
 
-func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
 	workspaceID, err := uuid.NewV7()
 	if err != nil {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
@@ -66,7 +66,7 @@ func (s *TenantWorkspaceServiceImpl) CreateWorkspaceForTenant(ctx context.Contex
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) GetWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.Workspace, error) {
+func (s *TenantWorkspaceServiceImpl) GetWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) (*coreEntity.TenantWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.GetByID(ctx, workspaceID)
 	duration := time.Since(start)
@@ -81,7 +81,7 @@ func (s *TenantWorkspaceServiceImpl) GetWorkspaceForTenant(ctx context.Context, 
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]*coreEntity.Workspace, error) {
+func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context, tenantID uuid.UUID, userID uuid.UUID, roleID uuid.UUID) ([]*coreEntity.TenantWorkspace, error) {
 	start := time.Now()
 
 	// [COMMENT]: Lấy dữ liệu permissions từ L1 Cache (tenant_role) theo key <role_id>:<tenant_id>
@@ -116,14 +116,14 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context
 	}
 
 	// [COMMENT]: Định tuyến Repo query dựa trên wildcard hoặc danh sách cụ thể
-	var result []*coreEntity.Workspace
+	var result []*coreEntity.TenantWorkspace
 	if hasWildcard {
 		result, err = s.repo.ListAllByTenant(ctx, tenantID)
 	} else {
 		// [COMMENT]: Nếu không có quyền nào hoặc list trống, trả về empty slice thay vì query lỗi
 		if len(wsIDs) == 0 {
 			coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
-			return []*coreEntity.Workspace{}, nil
+			return []*coreEntity.TenantWorkspace{}, nil
 		}
 		result, err = s.repo.ListByTenantAndIDs(ctx, tenantID, wsIDs)
 	}
@@ -140,7 +140,7 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspacesForTenant(ctx context.Context
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) UpdateWorkspaceForTenant(ctx context.Context, workspace coreEntity.Workspace) (*coreEntity.Workspace, error) {
+func (s *TenantWorkspaceServiceImpl) UpdateWorkspaceForTenant(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error) {
 	start := time.Now()
 	result, err := s.repo.Update(ctx, workspace)
 	duration := time.Since(start)
@@ -228,4 +228,3 @@ func (s *TenantWorkspaceServiceImpl) ListWorkspaceCatalogForTenant(ctx context.C
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return result, nil
 }
-

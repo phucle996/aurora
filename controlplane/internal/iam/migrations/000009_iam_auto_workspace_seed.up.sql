@@ -5,8 +5,11 @@
 ALTER TABLE hierarchy.tenants DROP CONSTRAINT IF EXISTS ck_tenants_code_format;
 ALTER TABLE hierarchy.tenants ADD CONSTRAINT ck_tenants_code_format CHECK (code ~ '^[a-z0-9_\-]+$');
 
-ALTER TABLE hierarchy.workspaces DROP CONSTRAINT IF EXISTS ck_workspaces_code_format;
-ALTER TABLE hierarchy.workspaces ADD CONSTRAINT ck_workspaces_code_format CHECK (code ~ '^[a-z0-9_\-]+$');
+ALTER TABLE hierarchy.personal_workspaces DROP CONSTRAINT IF EXISTS ck_personal_workspaces_code_format;
+ALTER TABLE hierarchy.personal_workspaces ADD CONSTRAINT ck_personal_workspaces_code_format CHECK (code ~ '^[a-z0-9_\-]+$');
+
+ALTER TABLE hierarchy.tenant_workspaces DROP CONSTRAINT IF EXISTS ck_tenant_workspaces_code_format;
+ALTER TABLE hierarchy.tenant_workspaces ADD CONSTRAINT ck_tenant_workspaces_code_format CHECK (code ~ '^[a-z0-9_\-]+$');
 
 CREATE OR REPLACE FUNCTION auto_seed_workspace_on_user_active()
 RETURNS TRIGGER AS $$
@@ -24,7 +27,7 @@ BEGIN
         IF v_zone_id IS NULL THEN
             SELECT id INTO v_zone_id FROM hierarchy.zones LIMIT 1;
         END IF;
-
+ 
         -- Nếu chưa có zone nào trong hệ thống, tự động seed 1 zone mặc định
         IF v_zone_id IS NULL THEN
             v_zone_id := '019f3d3e-997d-7894-9236-c5122634cb4f'::UUID;
@@ -32,29 +35,27 @@ BEGIN
             VALUES (v_zone_id, 'edge-viet-nam-1', 'Edge việt nam 1', 'Hà Nội, Vietnam', 'active')
             ON CONFLICT (id) DO NOTHING;
         END IF;
-
+ 
         -- 2. Kiểm tra xem user này đã có workspace nào do họ sở hữu chưa (tránh double seed)
-        IF NOT EXISTS (SELECT 1 FROM hierarchy.workspaces WHERE owner_id = NEW.id) THEN
+        IF NOT EXISTS (SELECT 1 FROM hierarchy.personal_workspaces WHERE owner_id = NEW.id) THEN
             v_workspace_id := gen_random_uuid();
-            INSERT INTO hierarchy.workspaces (id, name, code, status, zone_id, tenant_id, owner_id)
+            INSERT INTO hierarchy.personal_workspaces (id, name, code, zone_id, owner_id)
             VALUES (
                 v_workspace_id,
                 'Default Workspace',
                 'default-' || lower(NEW.username),
-                'active',
                 v_zone_id,
-                NULL,
                 NEW.id
             );
-
+ 
             -- 3. Gán vai trò mặc định 'platform_user' cho user đối với workspace mới tạo
             SELECT id, name, role_level INTO v_role_id, v_role_name, v_role_level 
             FROM roles 
             WHERE code = 'platform_user';
-
+ 
             IF v_role_id IS NOT NULL THEN
                 INSERT INTO user_role (
-                    id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
+                     id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
                 )
                 VALUES (
                     gen_random_uuid(),
@@ -95,32 +96,30 @@ BEGIN
     IF v_zone_id IS NULL THEN
         SELECT id INTO v_zone_id FROM hierarchy.zones LIMIT 1;
     END IF;
-
+ 
     IF v_zone_id IS NULL THEN
         v_zone_id := '019f3d3e-997d-7894-9236-c5122634cb4f'::UUID;
         INSERT INTO hierarchy.zones (id, code, name, location, status)
         VALUES (v_zone_id, 'edge-viet-nam-1', 'Edge việt nam 1', 'Hà Nội, Vietnam', 'active')
         ON CONFLICT (id) DO NOTHING;
     END IF;
-
+ 
     FOR u IN SELECT id, username FROM users WHERE status = 'active' LOOP
-        IF NOT EXISTS (SELECT 1 FROM hierarchy.workspaces WHERE owner_id = u.id) THEN
+        IF NOT EXISTS (SELECT 1 FROM hierarchy.personal_workspaces WHERE owner_id = u.id) THEN
             v_workspace_id := gen_random_uuid();
-            INSERT INTO hierarchy.workspaces (id, name, code, status, zone_id, tenant_id, owner_id)
+            INSERT INTO hierarchy.personal_workspaces (id, name, code, zone_id, owner_id)
             VALUES (
                 v_workspace_id,
                 'Default Workspace',
                 'default-' || lower(u.username),
-                'active',
                 v_zone_id,
-                NULL,
                 u.id
             );
-
+ 
             SELECT id, name, role_level INTO v_role_id, v_role_name, v_role_level 
             FROM roles 
             WHERE code = 'platform_user';
-
+ 
             IF v_role_id IS NOT NULL THEN
                 INSERT INTO user_role (
                     id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm

@@ -74,12 +74,12 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 		return
 	}
 
-	workspaceEntity := coreEntity.Workspace{
+	workspaceEntity := coreEntity.TenantWorkspace{
 		Name:        strings.TrimSpace(request.Name),
 		Code:        strings.ToLower(strings.TrimSpace(request.Code)),
 		Description: request.Description,
 		ZoneID:      zoneID,
-		TenantID:    &tenantID,
+		TenantID:    tenantID,
 		OwnerID:     ownerID,
 	}
 
@@ -96,7 +96,7 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 		case errors.Is(err, coreTaxonomy.ErrWorkspaceCodeAlreadyExists):
 			logger.HandlerWarn(c, op, err, "create workspace code conflict")
 			apires.RespondConflict(c, "workspace code already exists within this scope")
-		case errors.Is(err, coreTaxonomy.ErrNoRowAffected):
+		case errors.Is(err, coreTaxonomy.ErrNoRowAffected), errors.Is(err, coreTaxonomy.ErrWorkspaceInsertFailed):
 			logger.HandlerWarn(c, op, err, "create workspace constraint violation")
 			apires.RespondBadRequest(c, "workspace creation failed")
 		default:

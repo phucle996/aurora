@@ -96,26 +96,46 @@ COMMENT ON COLUMN tenant_memberships.tenant_id IS 'ID của Tenant sở hữu th
 COMMENT ON COLUMN tenant_memberships.user_id IS 'ID của User liên kết (từ schema iam).';
 COMMENT ON COLUMN tenant_memberships.status IS 'Trạng thái của thành viên (active, suspended, disabled).';
 
--- [COMMENT]: Bảng quản lý Không gian làm việc (Workspaces)
--- Một workspace bắt buộc phải thuộc về 1 Zone cụ thể và có thể liên kết với 1 Tenant (doanh nghiệp) hoặc độc lập (cá nhân).
-CREATE TABLE IF NOT EXISTS workspaces (
+-- [COMMENT]: Bảng quản lý Không gian làm việc cá nhân (Personal Workspaces)
+CREATE TABLE IF NOT EXISTS personal_workspaces (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     code VARCHAR(100) NOT NULL,
     description TEXT NULL,
     zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE RESTRICT,
-    tenant_id UUID NULL REFERENCES tenants(id) ON DELETE CASCADE,
     owner_id UUID NOT NULL, -- references users(id) ở schema iam
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_workspaces_code_format CHECK (code ~ '^[a-z0-9-_]+$')
+    CONSTRAINT ck_personal_workspaces_code_format CHECK (code ~ '^[a-z0-9-_]+$')
 );
 
-COMMENT ON TABLE workspaces IS 'Bảng quản lý các không gian làm việc (Workspaces), đơn vị chứa tài nguyên hạ tầng của khách hàng.';
-COMMENT ON COLUMN workspaces.id IS 'ID định danh duy nhất của Workspace.';
-COMMENT ON COLUMN workspaces.name IS 'Tên hiển thị của Workspace.';
-COMMENT ON COLUMN workspaces.code IS 'Mã viết tắt định danh duy nhất của Workspace trong phạm vi Tenant/Owner.';
-COMMENT ON COLUMN workspaces.description IS 'Optional description of the workspace purpose and operational notes.';
-COMMENT ON COLUMN workspaces.zone_id IS 'ID của Zone mà Workspace này thuộc về (bắt buộc).';
-COMMENT ON COLUMN workspaces.tenant_id IS 'ID của Tenant sở hữu Workspace này (NULL nếu là Workspace cá nhân).';
-COMMENT ON COLUMN workspaces.owner_id IS 'ID của User sở hữu Workspace (đối với Workspace cá nhân hoặc người tạo).';
+COMMENT ON TABLE personal_workspaces IS 'Bảng quản lý các không gian làm việc cá nhân, độc lập với doanh nghiệp.';
+COMMENT ON COLUMN personal_workspaces.id IS 'ID định danh duy nhất của Workspace.';
+COMMENT ON COLUMN personal_workspaces.name IS 'Tên hiển thị của Workspace.';
+COMMENT ON COLUMN personal_workspaces.code IS 'Mã viết tắt định danh duy nhất của Workspace.';
+COMMENT ON COLUMN personal_workspaces.description IS 'Optional description of the workspace.';
+COMMENT ON COLUMN personal_workspaces.zone_id IS 'ID của Zone mà Workspace này thuộc về (bắt buộc).';
+COMMENT ON COLUMN personal_workspaces.owner_id IS 'ID của User sở hữu Workspace cá nhân này.';
+
+-- [COMMENT]: Bảng quản lý Không gian làm việc doanh nghiệp (Tenant Workspaces)
+CREATE TABLE IF NOT EXISTS tenant_workspaces (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    code VARCHAR(100) NOT NULL,
+    description TEXT NULL,
+    zone_id UUID NOT NULL REFERENCES zones(id) ON DELETE RESTRICT,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    owner_id UUID NOT NULL, -- Người tạo workspace, references users(id) ở schema iam
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_tenant_workspaces_code_format CHECK (code ~ '^[a-z0-9-_]+$')
+);
+
+COMMENT ON TABLE tenant_workspaces IS 'Bảng quản lý các không gian làm việc thuộc sở hữu của doanh nghiệp (Tenant).';
+COMMENT ON COLUMN tenant_workspaces.id IS 'ID định danh duy nhất của Workspace.';
+COMMENT ON COLUMN tenant_workspaces.name IS 'Tên hiển thị của Workspace.';
+COMMENT ON COLUMN tenant_workspaces.code IS 'Mã viết tắt định danh duy nhất của Workspace trong phạm vi Tenant.';
+COMMENT ON COLUMN tenant_workspaces.description IS 'Optional description of the workspace.';
+COMMENT ON COLUMN tenant_workspaces.zone_id IS 'ID của Zone mà Workspace này thuộc về (bắt buộc).';
+COMMENT ON COLUMN tenant_workspaces.tenant_id IS 'ID của Tenant sở hữu Workspace này (NOT NULL).';
+COMMENT ON COLUMN tenant_workspaces.owner_id IS 'ID của User tạo ra Workspace trong Tenant.';
