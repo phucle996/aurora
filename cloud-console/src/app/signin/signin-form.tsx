@@ -80,7 +80,9 @@ export default function SignInForm({
   const rawUsername = atIndex > 0 ? username.slice(0, atIndex) : username;
   const tenantDomain = atIndex > 0 ? username.slice(atIndex + 1) : "";
 
-  const { setAuthenticatedSession } = useUserSession();
+  // [COMMENT]: Dùng refreshSession thay vì setAuthenticatedSession để trigger đầy đủ
+  // luồng resolve: session → context → profile ngay sau khi login thành công
+  const { refreshSession } = useUserSession();
 
   // [COMMENT]: Logic xử lý Đăng nhập — validate → generate device key → call API → redirect
   const handleSignIn = useCallback(async (e: React.FormEvent) => {
@@ -130,8 +132,10 @@ export default function SignInForm({
       };
 
       await authAPI.login(payload);
-      // [COMMENT]: Thiết lập trạng thái đăng nhập nhanh không cần gọi lại API check session
-      setAuthenticatedSession({ authenticated: true });
+      // [COMMENT]: Sau khi login thành công → gọi refreshSession để trigger đầy đủ luồng resolve:
+      // session → context → profile (song song). Không dùng setAuthenticatedSession vì nó
+      // chỉ set state local, không fetch context/profile → gây bug phải F5 lại mới load được.
+      await refreshSession();
       router.push("/");
     } catch (err: unknown) {
       const apiError = err as { status?: number; message?: string };
@@ -140,7 +144,7 @@ export default function SignInForm({
     } finally {
       setIsLoading(false);
     }
-  }, [username, password, trustDevice, selectedZoneCode, t, router, setAuthenticatedSession]);
+  }, [username, password, trustDevice, selectedZoneCode, t, router, refreshSession]);
 
   return (
     <div className="space-y-5">

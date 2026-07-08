@@ -244,7 +244,23 @@ func (h *WorkspaceHandler) ListWorkspaces(c *gin.Context) {
 	apires.RespondSuccess(c, data, "list workspaces success")
 }
 
-// [COMMENT]: GetWorkspaceCatalog xử lý hot path catalog — trả về danh sách tối giản (id, code, name) theo zone và tenant/personal context
+// GetWorkspaceCatalog godoc
+// @Summary      Hot path workspace catalog
+// @Description  Trả về danh sách tối giản (id, code, name) của các workspace mà user có quyền read trong một Zone cụ thể.
+// @Description  - Ngữ cảnh cá nhân (Personal): lấy toàn bộ workspace cá nhân của user trong Zone đó theo owner_id.
+// @Description  - Ngữ cảnh doanh nghiệp (Tenant): phân giải quyền qua L1 Cache tenant_role rồi lọc theo danh sách workspace IDs được phép.
+// @Tags         workspaces
+// @Accept       json
+// @Produce      json
+// @Param        X-User-ID     header string true  "User ID (UUID) của người dùng hiện tại"
+// @Param        X-Zone-ID     header string true  "Zone ID (UUID) để lọc workspace theo deployment zone hiện tại"
+// @Param        X-Tenant-ID   header string false "Tenant ID (UUID), empty nếu lấy workspace cá nhân"
+// @Param        X-User-Role-ID header string false "Role ID (UUID), bắt buộc khi X-Tenant-ID được cung cấp"
+// @Success      200 {array}  map[string]interface{} "Workspace catalog success"
+// @Failure      400 {object} map[string]interface{} "Invalid request — missing or malformed headers"
+// @Failure      401 {object} map[string]interface{} "Unauthorized"
+// @Failure      500 {object} map[string]interface{} "Internal server error"
+// @Router       /api/v1/workspaces/catalog [get]
 func (h *WorkspaceHandler) GetWorkspaceCatalog(c *gin.Context) {
 	const op = "WorkspaceHandler.GetWorkspaceCatalog"
 

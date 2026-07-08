@@ -54,7 +54,8 @@ message VerifyUserTrinityTokenResponse {
 // Request xác thực Opaque Refresh Token
 message VerifyOpaqueRefreshTokenRequest {
   string refresh_token = 1;
-  string scope = 2;
+  optional string tenant_id = 2;
+  string user_id = 3;
 }
 
 // Response trả về khi xác thực Opaque Refresh Token

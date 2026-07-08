@@ -4,6 +4,8 @@ import { I18nProvider } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/sonner";
 import { UserSessionProvider } from "@/hooks/UserSessionProvider";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { WorkspaceProvider } from "@/context/WorkspaceContext";
+import { WorkspaceInitializer } from "@/components/workspace-initializer";
 import "@fontsource-variable/inter";
 import "./globals.css";
 
@@ -23,15 +25,21 @@ export default function RootLayout({
       className="h-full antialiased"
     >
       <body className="min-h-full flex flex-col">
-        {/* [COMMENT]: Bọc ứng dụng trong I18nProvider & UserSessionProvider & ThemeProvider */}
+        {/* [COMMENT]: WorkspaceProvider nằm trong UserSessionProvider để downstream component
+            có thể đọc cả session và workspace context qua hook tương ứng */}
         <I18nProvider>
           <UserSessionProvider>
-            <ThemeProvider>
-              <TooltipProvider>
-                {children}
-                <Toaster />
-              </TooltipProvider>
-            </ThemeProvider>
+            <WorkspaceProvider>
+              {/* [COMMENT]: WorkspaceInitializer là side-effect bridge — không render UI,
+                  lắng nghe session change và tự động init/clear workspace catalog */}
+              <WorkspaceInitializer />
+              <ThemeProvider>
+                <TooltipProvider>
+                  {children}
+                  <Toaster />
+                </TooltipProvider>
+              </ThemeProvider>
+            </WorkspaceProvider>
           </UserSessionProvider>
         </I18nProvider>
       </body>

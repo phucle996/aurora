@@ -15,7 +15,9 @@ import {
   User,
   Key,
   Sliders,
-  Sparkles
+  Sparkles,
+  LayoutGrid,
+  Loader2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fetchZoneCatalog, switchZone, type ZoneCatalogItem } from "@/lib/api/zone";
@@ -23,6 +25,7 @@ import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { authAPI } from "@/lib/api/auth";
 import { useUserSession } from "@/hooks/useUserSession";
+import { useWorkspace } from "@/context/WorkspaceContext";
 import { type ThemeMode } from "@/context/ThemeContext";
 
 // [COMMENT]: Helper để đọc giá trị cookie từ document.cookie ở client-side
@@ -55,6 +58,11 @@ export default function HeaderConsole({
 
   const router = useRouter();
   const { clearSession, renderContext, profile } = useUserSession();
+  // [COMMENT]: Lấy catalog workspace và hàm selectWorkspace từ WorkspaceContext
+  const { catalog, activeWorkspaceID, selectWorkspace, loading: wsLoading } = useWorkspace();
+
+  // [COMMENT]: Tính tên workspace đang active để hiển thị trên header trigger
+  const activeWorkspace = catalog.find((w) => w.id === activeWorkspaceID);
 
   // [COMMENT]: Xử lý đăng xuất phiên làm việc của user
   const handleLogout = useCallback(async () => {
@@ -77,8 +85,7 @@ export default function HeaderConsole({
   const [helpOpen, setHelpOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
 
-  // [COMMENT]: State quản lý context làm việc được chọn hiện tại
-  const [activeWorkspace, setActiveWorkspace] = useState("Production");
+  // [COMMENT]: State quản lý context zone — workspace state đã chuyển sang WorkspaceContext
   const [activeZone, setActiveZone] = useState("");
   const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
 
@@ -225,34 +232,75 @@ export default function HeaderConsole({
       {/* 2. VÙNG GIỮA: Context Selectors (Workspace, Region) */}
       {/* ========================================== */}
       <div className="hidden md:flex items-center gap-3 shrink-0 px-4">
-        {/* [COMMENT]: Dropdown chọn Workspace context */}
+        {/* [COMMENT]: Dropdown chọn Workspace từ WorkspaceContext — dữ liệu thật từ catalog API */}
         <div ref={workspaceRef} className="relative">
           <button
             onClick={() => setWorkspaceOpen(!workspaceOpen)}
             className="flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-sidebar-console-hover text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
           >
+            <LayoutGrid className="h-3 w-3 text-slate-400 dark:text-slate-500 shrink-0" />
             <span className="text-slate-400 dark:text-slate-500 font-normal">Workspace:</span>
-            <span>{activeWorkspace}</span>
+            {wsLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin text-slate-400" />
+            ) : (
+              <span className="max-w-[120px] truncate">
+                {activeWorkspace?.name ?? "Select..."}
+              </span>
+            )}
             <ChevronDown className="h-3 w-3 text-slate-400" />
           </button>
 
           {workspaceOpen && (
-            <div className="absolute top-[110%] left-0 w-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 z-50 animate-in fade-in slide-in-from-top-1 duration-100">
-              {["Production", "Staging", "Development"].map((ws) => (
-                <button
-                  key={ws}
-                  onClick={() => {
-                    setActiveWorkspace(ws);
-                    setWorkspaceOpen(false);
-                  }}
-                  className={cn(
-                    "w-full text-left px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer text-slate-700 dark:text-slate-300",
-                    ws === activeWorkspace && "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40"
-                  )}
-                >
-                  {ws}
-                </button>
-              ))}
+            <div className="absolute top-[110%] left-0 min-w-[200px] w-max max-w-[280px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-xl py-1 z-50 animate-in fade-in slide-in-from-top-1 duration-100">
+              {/* Header dropdown */}
+              <div className="px-3 py-1.5 border-b border-slate-100 dark:border-slate-800 mb-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  Your Workspaces
+                </span>
+              </div>
+
+              {catalog.length === 0 && !wsLoading && (
+                <div className="px-3 py-3 text-xs text-slate-400 dark:text-slate-500 text-center">
+                  No workspaces available
+                </div>
+              )}
+
+              {wsLoading && (
+                <div className="flex items-center justify-center py-3 gap-2 text-xs text-slate-400">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading...
+                </div>
+              )}
+
+              {catalog.map((ws) => {
+                const isActive = ws.id === activeWorkspaceID;
+                return (
+                  <button
+                    key={ws.id}
+                    onClick={() => {
+                      // [COMMENT]: selectWorkspace ghi cookie workspace_id và update state
+                      selectWorkspace(ws.id);
+                      setWorkspaceOpen(false);
+                      toast.success(`Workspace: ${ws.name}`);
+                    }}
+                    className={cn(
+                      "w-full text-left px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition-colors",
+                      isActive && "bg-slate-50 dark:bg-slate-800/40"
+                    )}
+                  >
+                    <div className={cn(
+                      "text-xs font-semibold leading-tight",
+                      isActive ? "text-blue-500 dark:text-blue-400" : "text-slate-700 dark:text-slate-300"
+                    )}>
+                      {ws.name}
+                      {isActive && (
+                        <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-blue-500 align-middle" />
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-400 font-mono mt-0.5">{ws.code}</div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -276,6 +324,8 @@ export default function HeaderConsole({
                 <button
                   key={z.code}
                   onClick={async () => {
+                    // [COMMENT]: Không cho phép switch sang zone hiện tại đang active
+                    if (z.name === activeZone) return;
                     try {
                       await switchZone(z.code);
                       setActiveZone(z.name);
@@ -288,8 +338,10 @@ export default function HeaderConsole({
                     }
                   }}
                   className={cn(
-                    "w-full text-left px-3 py-2 text-xs font-semibold hover:bg-slate-55 dark:hover:bg-slate-800/50 cursor-pointer text-slate-700 dark:text-slate-300",
-                    z.name === activeZone && "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40"
+                    "w-full text-left px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300",
+                    z.name === activeZone
+                      ? "text-blue-500 dark:text-blue-400 bg-slate-50 dark:bg-slate-800/40 cursor-default"
+                      : "hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer"
                   )}
                 >
                   <div className="font-bold">{z.name}</div>

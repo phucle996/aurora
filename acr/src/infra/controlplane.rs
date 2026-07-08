@@ -116,12 +116,14 @@ impl ControlPlaneClient {
     pub async fn verify_opaque_refresh_token(
         &self,
         refresh_token: String,
-        scope: String,
+        tenant_id: Option<String>,
+        user_id: String,
     ) -> Result<auth::VerifyOpaqueRefreshTokenResponse, tonic::Status> {
         let mut client = self.client.clone();
         let mut request = tonic::Request::new(auth::VerifyOpaqueRefreshTokenRequest {
             refresh_token,
-            scope,
+            tenant_id,
+            user_id,
         });
 
         // [COMMENT]: Bơm traceparent W3C vào gRPC Metadata để tiếp tục distributed tracing ở Controlplane (Go)
@@ -176,7 +178,4 @@ impl ControlPlaneClient {
         let response = client.get_zone_list(request).await?;
         Ok(response.into_inner().zones)
     }
-
-
-
 }

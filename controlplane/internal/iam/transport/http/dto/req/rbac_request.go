@@ -1,9 +1,12 @@
 package iamReq
 
 type CreateRoleRequest struct {
-	Code          string  `json:"code" binding:"required"`
-	Name          string  `json:"name" binding:"required"`
-	OwnerTenantID *string `json:"owner_tenant_id,omitempty"`
+	Code          string   `json:"code" binding:"required"`
+	Name          string   `json:"name" binding:"required"`
+	Description   string   `json:"description"`
+	RoleLevel     int      `json:"role_level" binding:"min=0,max=99"`
+	Scope         string   `json:"scope" binding:"required,oneof=platform tenant"`
+	PermissionIDs []string `json:"permission_ids"`
 }
 
 type UpdateRoleRequest struct {

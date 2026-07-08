@@ -33,4 +33,10 @@ type RbacRepository interface {
 
 	// [COMMENT]: ListTenantRoles lấy danh sách roles gán cho tenant cụ thể
 	ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error)
+
+	// [COMMENT]: CreateRole tạo một vai trò mới và map danh sách permissions
+	CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error
+
+	// [COMMENT]: ListPermissions lấy toàn bộ danh sách permissions có trong hệ thống
+	ListPermissions(ctx context.Context) ([]iamEntity.Permission, error)
 }

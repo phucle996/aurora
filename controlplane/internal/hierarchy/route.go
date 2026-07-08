@@ -47,9 +47,11 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
 		module.WorkspaceHandler.ListWorkspaces,
 	)
-	// [COMMENT]: Hot path catalog — trả về id,code,name tối giản lọc theo zone + tenant/personal context
+	// [COMMENT]: Hot path catalog — trả về id,code,name tối giản lọc theo zone + tenant/personal context.
+	// KHÔNG dùng middleware.Authorize vì đây là chicken-and-egg: client cần catalog để lấy workspace_id,
+	// nhưng Authorize lại yêu cầu workspace_id trong header trước khi vào handler.
+	// Security đảm bảo bởi: ACR session (authn) + handler validate x-user-id/x-zone-id + service filter theo owner/permission.
 	router.GET("/api/v1/workspaces/catalog",
-		middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
 		module.WorkspaceHandler.GetWorkspaceCatalog,
 	)
 
@@ -58,4 +60,3 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		module.TenantHandler.CreateTenant,
 	)
 }
-

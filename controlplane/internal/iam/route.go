@@ -14,6 +14,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 
 	// ========================================================================
 	// 👥 PHÂN KHÚC USER: ĐĂNG KÝ, ĐĂNG NHẬP & PHIÊN LÀM VIỆC (USER AUTH & DEVICES)
+	// [COMMENT]: Các API cá nhân và Auth này bypass cơ chế path rewrite của Envoy/ACR
 	// ========================================================================
 
 	// 1) Đăng ký tài khoản mới
@@ -26,71 +27,113 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.AuthHandler.VerifyAccount,
 	)
 
-	// [COMMENT]: 1.2) Lấy danh sách users hệ thống (yêu cầu quyền iam:users:list)
-	router.GET("/api/v1/iam/users",
-		middleware.Authorize("iam:users:list", module.L1Registry, "2"),
-		module.UserHandler.ListUsers,
-	)
-
-	// [COMMENT]: 1.3) Xóa user hệ thống (yêu cầu quyền iam:users:delete)
-	router.DELETE("/api/v1/iam/users/:id",
-		middleware.Authorize("iam:users:delete", module.L1Registry, "2"),
-		module.UserHandler.UpdateUserStatus,
-	)
-
-	// 5.5) Lấy thông tin cá nhân (Profile) của user hiện tại
+	// [COMMENT]: 1.2) Lấy thông tin cá nhân (Profile) của user hiện tại
 	router.GET("/api/v1/me/profile",
 		module.UserHandler.GetMyProfile,
 	)
 
-	// 6) Quản lý thiết bị cá nhân
+	// [COMMENT]: 1.3) Quản lý thiết bị cá nhân
 	router.GET("/api/v1/me/devices",
 		module.DeviceHandler.ListMyDevices,
 	)
 
-	// 7) Thu hồi quyền truy cập của một thiết bị cụ thể
+	// [COMMENT]: 1.4) Thu hồi quyền truy cập của một thiết bị cụ thể
 	router.POST("/api/v1/me/devices/:device_id/revoke",
 		module.DeviceHandler.RevokeMyDevice,
 	)
 
-	// 8) Đăng xuất khỏi toàn bộ thiết bị khác ngoại trừ thiết bị hiện tại
+	// [COMMENT]: 1.5) Đăng xuất khỏi toàn bộ thiết bị khác ngoại trừ thiết bị hiện tại
 	router.POST("/api/v1/me/devices/logout-others",
 		module.DeviceHandler.LogoutOtherDevices,
 	)
 
-	// 9) Đăng xuất hoàn toàn trên toàn bộ thiết bị
+	// [COMMENT]: 1.6) Đăng xuất hoàn toàn trên toàn bộ thiết bị
 	router.POST("/api/v1/me/devices/logout-all",
 		module.DeviceHandler.LogoutAllDevices,
 	)
 
-	// ========================================================================
-	// 🔑 PHÂN KHÚC RBAC: QUẢN LÝ VAI TRÒ & PHÂN QUYỀN (ADMIN ROLE-BASED ACCESS CONTROL)
-	// ========================================================================
-
-	// [COMMENT]: 15) Gán vai trò cho User trong workspace
-	router.POST("/api/v1/rbac/user-role",
-		module.RbacHandler.AssignUserRole,
-	)
-
-	// [COMMENT]: 16) Gán vai trò cho Tenant trong workspace
-	router.POST("/api/v1/rbac/tenant-role",
-		module.RbacHandler.AssignTenantRole,
-	)
-
-	// [COMMENT]: 17) Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:list và level 2)
-	router.GET("/api/v1/iam/rbac/role",
-		middleware.Authorize("iam:role:list", module.L1Registry, "2"),
-		module.RbacHandler.ListPlatformRoles,
-	)
-
-	// [COMMENT]: 18) Lấy toàn bộ danh sách tenant-scoped roles của tenant cụ thể (yêu cầu quyền iam:role:list và level *)
-	router.GET("/api/v1/iam/rbac/role/tenant",
-		middleware.Authorize("iam:role:list", module.L1Registry, "*"),
-		module.RbacHandler.ListTenantRoles,
-	)
-
-	// [COMMENT]: 19) Lấy cấu hình render context cho console UI (chỉ yêu cầu auth session, bypass authz check)
+	// [COMMENT]: 1.7) Lấy cấu hình render context cho console UI
 	router.GET("/api/v1/me/context",
 		module.RbacHandler.GetRenderContext,
 	)
+
+	// ========================================================================
+	// 🏢 PHÂN HỆ PHÂN LẬP: PLATFORM API (Cho Admin) & TENANT API (Cho Tenant)
+	// [COMMENT]: Envoy và Rust ACR sẽ tự động rewrite path thành /platform/...
+	// hoặc /tenant/... tùy thuộc vào ngữ cảnh session và cookie hợp lệ.
+	// ========================================================================
+
+	// ------------------------------------------------------------------------
+	// 👑 PLATFORM API GROUP (Dành cho Quản trị viên hệ thống - Platform Admin)
+	// ------------------------------------------------------------------------
+	platformGroup := router.Group("/api/v1/platform")
+	{
+		// [COMMENT]: Lấy danh sách users hệ thống (yêu cầu quyền iam:users:read và level 2)
+		platformGroup.GET("/iam/users",
+			middleware.Authorize("iam:users:read", module.L1Registry, "2"),
+			module.UserHandler.ListUsers,
+		)
+
+		// [COMMENT]: Xóa/Cập nhật trạng thái user hệ thống (yêu cầu quyền iam:users:delete và level 2)
+		platformGroup.DELETE("/iam/users/:id",
+			middleware.Authorize("iam:users:delete", module.L1Registry, "2"),
+			module.UserHandler.UpdateUserStatus,
+		)
+
+		// [COMMENT]: Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:read và level 2)
+		platformGroup.GET("/iam/rbac/role",
+			middleware.Authorize("iam:role:read", module.L1Registry, "2"),
+			module.RbacHandler.ListPlatformRoles,
+		)
+
+		// [COMMENT]: Tạo vai trò hệ thống mới (yêu cầu quyền iam:role:create và level 2)
+		platformGroup.POST("/iam/rbac/role",
+			middleware.Authorize("iam:role:create", module.L1Registry, "2"),
+			module.RbacHandler.CreateRole,
+		)
+
+		// [COMMENT]: Lấy danh sách toàn bộ các permissions hệ thống (yêu cầu quyền iam:permissions:read và level 2)
+		platformGroup.GET("/iam/rbac/permissions",
+			middleware.Authorize("iam:permissions:read", module.L1Registry, "2"),
+			module.RbacHandler.ListPermissions,
+		)
+
+		// [COMMENT]: Gán vai trò cho User hệ thống
+		platformGroup.POST("/rbac/user-role",
+			module.RbacHandler.AssignUserRole,
+		)
+
+		// [COMMENT]: Gán vai trò cho Tenant hệ thống
+		platformGroup.POST("/rbac/tenant-role",
+			module.RbacHandler.AssignTenantRole,
+		)
+	}
+
+	// ------------------------------------------------------------------------
+	// 🏢 TENANT API GROUP (Dành cho ngữ cảnh Tenant, quản trị viên Tenant)
+	// ------------------------------------------------------------------------
+	tenantGroup := router.Group("/api/v1/tenant")
+	{
+		// [COMMENT]: Lấy toàn bộ danh sách tenant-scoped roles (yêu cầu quyền iam:role:read và level *)
+		tenantGroup.GET("/iam/rbac/role",
+			middleware.Authorize("iam:role:read", module.L1Registry, "*"),
+			module.RbacHandler.ListTenantRoles,
+		)
+
+		// [COMMENT]: Lấy danh sách permissions khả dụng cho Tenant (yêu cầu quyền iam:permissions:read và level *)
+		tenantGroup.GET("/iam/rbac/permissions",
+			middleware.Authorize("iam:permissions:read", module.L1Registry, "*"),
+			module.RbacHandler.ListPermissions,
+		)
+
+		// [COMMENT]: Gán vai trò cho User nội bộ Tenant
+		tenantGroup.POST("/rbac/user-role",
+			module.RbacHandler.AssignUserRole,
+		)
+
+		// [COMMENT]: Gán vai trò cho Tenant con
+		tenantGroup.POST("/rbac/tenant-role",
+			module.RbacHandler.AssignTenantRole,
+		)
+	}
 }

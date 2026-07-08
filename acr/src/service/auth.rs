@@ -261,7 +261,7 @@ impl AuthService for AuthServiceImpl {
         let req = request.into_inner();
         let res = self
             .control_plane_client
-            .verify_opaque_refresh_token(req.refresh_token, req.scope)
+            .verify_opaque_refresh_token(req.refresh_token, req.tenant_id, req.user_id)
             .await?;
 
         Ok(Response::new(VerifyOpaqueRefreshTokenResponse {

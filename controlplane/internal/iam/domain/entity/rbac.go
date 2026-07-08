@@ -35,13 +35,14 @@ type TenantRole struct {
 
 // [COMMENT]: Role đại diện cho định nghĩa vai trò hệ thống (Platform/Tenant scope)
 type Role struct {
-	ID        uuid.UUID
-	Code      string
-	Name      string
-	RoleLevel int
-	Scope     string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          uuid.UUID
+	Code        string
+	Name        string
+	Description string
+	RoleLevel   int
+	Scope       string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // [COMMENT]: NavigationItem định nghĩa cấu trúc menu gom nhóm 4 cấp kèm theo các hành động (behavior/action) được phép
@@ -54,5 +55,16 @@ type NavigationItem struct {
 type RenderContext struct {
 	Navigation   []NavigationItem
 	Capabilities map[string]bool
+}
+
+// [COMMENT]: Permission đại diện cho một quyền hạn hệ thống chi tiết
+type Permission struct {
+	ID          uuid.UUID
+	Module      string
+	Object      string
+	Behavior    string
+	Description string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 

@@ -2,11 +2,13 @@ package iamSvcImpl
 
 import (
 	"context"
+	"time"
 
 	"controlplane/internal/cacheengine"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
 )
@@ -30,12 +32,15 @@ func NewUserService(
 }
 
 // [COMMENT]: ListUsers lấy danh sách users thô từ repository có role_level lớn hơn caller level (quyền lực nhỏ hơn)
-func (s *UserService) ListUsers(ctx context.Context, callerLevel int32, limit int, offset int) ([]*iamEntity.User, error) {
-	return s.repo.ListUsers(ctx, callerLevel, limit, offset)
+func (s *UserService) ListUsers(ctx context.Context, callerLevel uint8, limit int, offset int) ([]*iamEntity.User, error) {
+	start := time.Now()
+	users, err := s.repo.ListUsers(ctx, callerLevel, limit, offset)
+	observability.CurrentMetrics().ObserveDependency("db", "iam.users.list", time.Since(start), err)
+	return users, err
 }
 
 // [COMMENT]: UpdateUserStatus thực hiện vô hiệu hóa (disable) trạng thái của user, dọn dẹp cache L1 cục bộ và truyền tin fanout invalidate cache
-func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel int32, targetUserID uuid.UUID) error {
+func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID) error {
 	// [COMMENT]: 1. Gọi Repository để cập nhật status user sang 'disabled' dưới DB
 	if err := s.repo.UpdateUserStatus(ctx, targetUserID, "disabled"); err != nil {
 		return err

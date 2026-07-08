@@ -193,7 +193,7 @@ function UserDirectoryContent() {
 
 export default function UserDirectoryPage() {
   return (
-    <RouteGuard requiredKey="*:*:iam:users" requiredAction="list">
+    <RouteGuard requiredKey="*:*:iam:users" requiredAction="read">
       <UserDirectoryContent />
     </RouteGuard>
   );

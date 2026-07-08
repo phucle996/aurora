@@ -31,9 +31,8 @@ func NewUserRepository(
 }
 
 // [COMMENT]: ListUsers lấy danh sách các user có level thấp hơn level hiện tại của caller (role_level số lớn hơn)
-func (r *UserRepository) ListUsers(ctx context.Context, callerLevel int32, limit int, offset int) ([]*iamEntity.User, error) {
-	// [COMMENT]: Sử dụng LEFT JOIN với user_role để xác định level của từng user ở platform scope (nil UUID).
-	// Nếu user không có platform role, mặc định coi họ có level là 100 (End User).
+func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit int, offset int) ([]*iamEntity.User, error) {
+	// [COMMENT]: Sử dụng JOIN với user_role để xác định level của từng user ở platform scope (nil UUID).
 	// Thực hiện gom nhóm GROUP BY u.id để tính MIN(ur.role_level) đại diện cho level cao nhất của user.
 	// Lọc HAVING level > callerLevel.
 	query := fmt.Sprintf(`
@@ -42,14 +41,14 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel int32, limit
 			u.username, 
 			u.email, 
 			u.status, 
-			COALESCE(MIN(ur.role_level), 100) AS role_level, 
+			MIN(ur.role_level) AS role_level, 
 			u.created_at, 
 			u.updated_at
 		FROM %s.users u
-		LEFT JOIN %s.user_role ur ON u.id = ur.user_id 
-		                         AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+		JOIN %s.user_role ur ON u.id = ur.user_id 
+		                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
 		GROUP BY u.id
-		HAVING COALESCE(MIN(ur.role_level), 100) > $1
+		HAVING MIN(ur.role_level) > $1
 		ORDER BY u.created_at DESC
 		LIMIT $2 OFFSET $3
 	`, r.schema, r.schema)

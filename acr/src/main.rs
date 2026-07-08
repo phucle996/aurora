@@ -11,9 +11,9 @@ mod core;
 mod error;
 mod infra;
 mod observability;
+pub mod pkg;
 mod rpc;
 mod service;
-pub mod pkg;
 
 use crate::authz::evaluator::PolicyEvaluator;
 use crate::config::Config;
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Logger::sys_info(
         "main.bootstrap",
-        "Bootstrapping Access Control Lifecycle (ACL) service...",
+        "Bootstrapping Access Context Resolution (ACR) service...",
     );
 
     // 2. Tải cấu hình từ Environment Variables

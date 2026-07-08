@@ -96,17 +96,17 @@ export default function SidebarConsole({
         icon: Users,
         path: "/users",
         matchKey: "*:*:iam:users",
-        // [COMMENT]: Chỉ render khi user có action "list" trên iam:users
-        requiredAction: "list"
+        // [COMMENT]: Chỉ render khi user có quyền read trên iam:users
+        requiredAction: "read"
       },
       {
-        id: "rbac",
+        id: "role",
         name: "Access Control (RBAC)",
         icon: Lock,
         path: "/rbac",
-        matchKey: "*:*:iam:rbac",
-        // [COMMENT]: Chỉ render khi user có action "list" trên iam:rbac
-        requiredAction: "list"
+        matchKey: "*:*:iam:role",
+        // [COMMENT]: Chỉ render khi user có quyền read trên iam:role
+        requiredAction: "read"
       }
     ];
 

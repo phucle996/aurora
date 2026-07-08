@@ -189,7 +189,7 @@ func (r *RbacRepository) GetRoleIDByTenantID(ctx context.Context, tenantID uuid.
 // [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
 func (r *RbacRepository) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
 	query := fmt.Sprintf(`
-		SELECT id, code, name, role_level, scope, created_at, updated_at
+		SELECT id, code, name, COALESCE(description, ''), role_level, scope, created_at, updated_at
 		FROM %s.roles
 		WHERE scope = 'platform'
 		ORDER BY role_level ASC
@@ -208,6 +208,7 @@ func (r *RbacRepository) ListPlatformRoles(ctx context.Context) ([]iamEntity.Rol
 			&role.ID,
 			&role.Code,
 			&role.Name,
+			&role.Description,
 			&role.RoleLevel,
 			&role.Scope,
 			&role.CreatedAt,
@@ -232,6 +233,7 @@ func (r *RbacRepository) ListTenantRoles(ctx context.Context, tenantID uuid.UUID
 			r.id,
 			r.code,
 			r.name,
+			COALESCE(r.description, ''),
 			r.role_level,
 			r.scope,
 			r.created_at,
@@ -255,6 +257,7 @@ func (r *RbacRepository) ListTenantRoles(ctx context.Context, tenantID uuid.UUID
 			&role.ID,
 			&role.Code,
 			&role.Name,
+			&role.Description,
 			&role.RoleLevel,
 			&role.Scope,
 			&role.CreatedAt,
@@ -266,9 +269,85 @@ func (r *RbacRepository) ListTenantRoles(ctx context.Context, tenantID uuid.UUID
 		roles = append(roles, iamModel.RoleModelToEntity(role))
 	}
 
+	return roles, nil
+}
+
+// [COMMENT]: CreateRole tạo một vai trò mới và gán các permissions tương ứng trong một transaction
+func (r *RbacRepository) CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("rbac repo: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Insert role
+	roleQuery := fmt.Sprintf(`
+		INSERT INTO %s.roles (id, code, name, description, role_level, scope, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+	`, r.schema)
+
+	_, err = tx.Exec(ctx, roleQuery, role.ID, role.Code, role.Name, role.Description, role.RoleLevel, role.Scope)
+	if err != nil {
+		return fmt.Errorf("rbac repo: insert role: %w", err)
+	}
+
+	// 2. Map permissions
+	if len(permissionIDs) > 0 {
+		permQuery := fmt.Sprintf(`
+			INSERT INTO %s.role_permissions (role_id, permission_id, created_at)
+			VALUES ($1, $2, now())
+		`, r.schema)
+
+		for _, permID := range permissionIDs {
+			_, err = tx.Exec(ctx, permQuery, role.ID, permID)
+			if err != nil {
+				return fmt.Errorf("rbac repo: insert role permission link for %s: %w", permID, err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("rbac repo: commit tx: %w", err)
+	}
+
+	return nil
+}
+
+// [COMMENT]: ListPermissions lấy danh sách toàn bộ các permissions catalog trong DB
+func (r *RbacRepository) ListPermissions(ctx context.Context) ([]iamEntity.Permission, error) {
+	query := fmt.Sprintf(`
+		SELECT id, module, object, behavior, COALESCE(description, ''), created_at, updated_at
+		FROM %s.permissions
+		ORDER BY module ASC, object ASC, behavior ASC
+	`, r.schema)
+
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("rbac repo: query permissions: %w", err)
+	}
+	defer rows.Close()
+
+	var perms []iamEntity.Permission
+	for rows.Next() {
+		var p iamModel.Permission
+		err := rows.Scan(
+			&p.ID,
+			&p.Module,
+			&p.Object,
+			&p.Behavior,
+			&p.Description,
+			&p.CreatedAt,
+			&p.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("rbac repo: scan permission row: %w", err)
+		}
+		perms = append(perms, iamModel.PermissionModelToEntity(p))
+	}
+
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	return roles, nil
+	return perms, nil
 }

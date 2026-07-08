@@ -113,3 +113,38 @@ export async function listPlatformRoles(signal?: AbortSignal): Promise<PlatformR
   });
   return res?.data?.roles || [];
 }
+
+export type PermissionItem = {
+  id: string;
+  module: string;
+  object: string;
+  behavior: string;
+  description: string;
+};
+
+export type CreateRoleInput = {
+  code: string;
+  name: string;
+  description: string;
+  role_level: number;
+  scope: string;
+  permission_ids: string[];
+};
+
+// [COMMENT]: listPermissions lấy toàn bộ danh sách permissions catalog từ backend
+export async function listPermissions(signal?: AbortSignal): Promise<PermissionItem[]> {
+  const res = await fetchJSON<{ data?: { permissions?: PermissionItem[] } }>("/api/v1/iam/rbac/permissions", {
+    method: "GET",
+    signal,
+  });
+  return res?.data?.permissions || [];
+}
+
+// [COMMENT]: createRole gửi request tạo mới một vai trò kèm gán permissions
+export async function createRole(input: CreateRoleInput, signal?: AbortSignal): Promise<void> {
+  await fetchJSON("/api/v1/iam/rbac/role", {
+    method: "POST",
+    body: JSON.stringify(input),
+    signal,
+  });
+}

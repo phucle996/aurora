@@ -56,6 +56,45 @@ impl ExtAuthzService {
     }
 }
 
+// [COMMENT]: Struct tối ưu hóa lưu cookie trên stack dạng tham chiếu để tránh heap allocations
+struct TrinityCookies<'a> {
+    access_token: Option<&'a str>,
+    access_key: Option<&'a str>,
+    access_secret: Option<&'a str>,
+    refresh_token: Option<&'a str>,
+    tenant_id: Option<&'a str>,
+    workspace_id: Option<&'a str>,
+}
+
+// [COMMENT]: Hàm phân tích chuỗi cookie một lượt (Single-pass Parser) đạt độ phức tạp O(N)
+fn parse_trinity_cookies(cookie_str: &str) -> TrinityCookies<'_> {
+    let mut cookies = TrinityCookies {
+        access_token: None,
+        access_key: None,
+        access_secret: None,
+        refresh_token: None,
+        tenant_id: None,
+        workspace_id: None,
+    };
+    for part in cookie_str.split(';') {
+        let part = part.trim();
+        if let Some(pos) = part.find('=') {
+            let key = &part[..pos];
+            let val = &part[pos + 1..];
+            match key {
+                COOKIE_ACCESS_TOKEN => cookies.access_token = Some(val),
+                COOKIE_ACCESS_KEY => cookies.access_key = Some(val),
+                COOKIE_ACCESS_SECRET => cookies.access_secret = Some(val),
+                COOKIE_REFRESH_TOKEN => cookies.refresh_token = Some(val),
+                COOKIE_TENANT_ID => cookies.tenant_id = Some(val),
+                COOKIE_WORKSPACE_ID => cookies.workspace_id = Some(val),
+                _ => {}
+            }
+        }
+    }
+    cookies
+}
+
 #[tonic::async_trait]
 impl Authorization for ExtAuthzService {
     // Hàm xử lý chính kiểm tra quyền của mỗi request từ Envoy
@@ -104,21 +143,21 @@ impl Authorization for ExtAuthzService {
                     }
                 };
 
-                // Lấy path và method từ pseudo-headers
-                let path = client_headers.get(":path").cloned().unwrap_or_default();
+                // Lấy path và method từ pseudo-headers dạng &str (không clone để tối ưu)
+                let path = client_headers.get(":path").map(|s| s.as_str()).unwrap_or("");
                 let method = client_headers
                     .get(":method")
-                    .cloned()
-                    .unwrap_or_else(|| "GET".to_string());
+                    .map(|s| s.as_str())
+                    .unwrap_or("GET");
                 let client_ip = client_headers
                     .get("x-forwarded-for")
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string());
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
 
                 let req_ctx = RequestContext {
-                    path: path.clone(),
-                    method: method.clone(),
-                    client_ip,
+                    path: path.to_string(),
+                    method: method.to_string(),
+                    client_ip: client_ip.to_string(),
                 };
 
                 Logger::sys_debug(
@@ -135,8 +174,8 @@ impl Authorization for ExtAuthzService {
                         &self.config,
                         client_headers,
                         &req,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
@@ -149,8 +188,8 @@ impl Authorization for ExtAuthzService {
                         &self.session_mgr,
                         &self.token_mgr,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
@@ -166,8 +205,8 @@ impl Authorization for ExtAuthzService {
                         &self.control_plane_client,
                         &self.config,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
@@ -183,8 +222,8 @@ impl Authorization for ExtAuthzService {
                     &self.config,
                     client_headers,
                     &req,
-                    &method,
-                    &path,
+                    method,
+                    path,
                 )
                 .await
                 {
@@ -197,8 +236,8 @@ impl Authorization for ExtAuthzService {
                     &self.token_mgr,
                     &self.zone_mgr,
                     client_headers,
-                    &method,
-                    &path,
+                    method,
+                    path,
                 )
                 .await
                 {
@@ -214,8 +253,8 @@ impl Authorization for ExtAuthzService {
                         &self.config,
                         client_headers,
                         &req,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
@@ -229,8 +268,8 @@ impl Authorization for ExtAuthzService {
                         &self.token_mgr,
                         &self.config,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
@@ -246,8 +285,8 @@ impl Authorization for ExtAuthzService {
                         &self.config,
                         client_headers,
                         &req,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
@@ -264,8 +303,8 @@ impl Authorization for ExtAuthzService {
                 {
                     Logger::authz_log(
                         "anonymous",
-                        &method,
-                        &path,
+                        method,
+                        path,
                         "ALLOWED",
                         "Public endpoint bypass",
                     );
@@ -280,8 +319,8 @@ impl Authorization for ExtAuthzService {
                     &self.token_mgr,
                     &self.control_plane_client,
                     client_headers,
-                    &method,
-                    &path,
+                    method,
+                    path,
                 )
                 .await
                 {
@@ -294,20 +333,25 @@ impl Authorization for ExtAuthzService {
                         &self.session_mgr,
                         &self.token_mgr,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                 {
                     return admin_revoke_res;
                 }
 
-                // Trích xuất cookie từ HTTP header để phục vụ cho xác thực và khôi phục
-                let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+                // Trích xuất cookie từ HTTP header dạng tham chiếu để tránh heap allocations
+                let cookie_header = client_headers.get("cookie").map(|s| s.as_str()).unwrap_or("");
+
+                // Parse tất cả cookies cần thiết một lượt duy nhất
+                let trinity = parse_trinity_cookies(cookie_header);
 
                 // [COMMENT]: Chặn nhanh (Fast-Bypass) nếu token nằm trong L1 Block Cache của Rate Limiter
-                if let Some(jwt_token) = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN) {
-                    let cache_key = sha256_hash(&jwt_token);
+                // Tối ưu: Lưu lại Hash SHA-256 đã tính toán để tái sử dụng ở bước Rate Limit Post-Auth bên dưới
+                let mut access_token_hash: Option<String> = None;
+                if let Some(jwt_token) = trinity.access_token {
+                    let cache_key = sha256_hash(jwt_token);
                     if self.rate_limiter.is_blocked(&cache_key).await {
                         Logger::sys_warn(
                             "ext_authz.check",
@@ -318,13 +362,14 @@ impl Authorization for ExtAuthzService {
                             Status::resource_exhausted("Rate limit exceeded"),
                         )));
                     }
+                    access_token_hash = Some(cache_key);
                 }
 
                 // [COMMENT]: Thực hiện xác thực an toàn CSRF chống tấn công cross-site forgery trên session dùng cookie
                 if let Err(err_msg) = crate::service::csrf::verify_csrf(
-                    &method,
-                    &path,
-                    &cookie_header,
+                    method,
+                    path,
+                    cookie_header,
                     client_headers,
                     &self.config,
                 ) {
@@ -335,16 +380,16 @@ impl Authorization for ExtAuthzService {
 
                 // 3. Thực hiện xác thực Trinity Credentials thô qua cookie và Redis L2
                 let auth_result = async {
-                    // Lấy access_token JWT từ cookie
-                    let jwt_token = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN)
+                    // Lấy access_token JWT từ cookies
+                    let jwt_token = trinity.access_token
                         .ok_or("Missing access_token cookie")?;
 
-                    // Lấy access_key từ cookie (Key dùng để lookup session trong Redis L2)
-                    let access_key = extract_cookie_value(&cookie_header, COOKIE_ACCESS_KEY)
+                    // Lấy access_key từ cookies
+                    let access_key = trinity.access_key
                         .ok_or("Missing access_key cookie")?;
 
                     // Giải mã và verify JWT Token (Stateless Verification)
-                    let claims = self.token_mgr.verify_token(&jwt_token).await.map_err(|e| {
+                    let claims = self.token_mgr.verify_token(jwt_token).await.map_err(|e| {
                         Logger::sys_debug(
                             "ext_authz.check",
                             &format!("JWT verification failed: {}", e),
@@ -361,7 +406,7 @@ impl Authorization for ExtAuthzService {
 
                     // [COMMENT]: Kiểm tra session trạng thái trong Redis L2 (Stateful Verification)
                     let session = if claims.is_admin() {
-                        let admin_sess = match self.session_mgr.get_admin_session(&access_key).await
+                        let admin_sess = match self.session_mgr.get_admin_session(access_key).await
                         {
                             Ok(Some(s)) => s,
                             Ok(None) => return Err("Session Expired or Revoked"),
@@ -387,7 +432,7 @@ impl Authorization for ExtAuthzService {
                             // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
                             claims.tenant_id.as_deref().unwrap_or("platform"),
                             &claims.uid,
-                            &access_key,
+                            access_key,
                         ).await {
                             Ok(Some(s)) => s,
                             Ok(None) => return Err("Session Expired or Revoked"),
@@ -403,16 +448,16 @@ impl Authorization for ExtAuthzService {
                     };
 
                     // Trích xuất access_secret từ cookie HttpOnly để làm mảnh thứ 3 bảo mật chống XSS
-                    let access_secret = extract_cookie_value(&cookie_header, COOKIE_ACCESS_SECRET)
+                    let access_secret = trinity.access_secret
                         .ok_or("Missing access_secret cookie")?;
 
                     // Đối chiếu hash SHA-256 của access_secret nhận được với session.ash trong Redis L2
-                    let incoming_hash = sha256_hash(&access_secret);
+                    let incoming_hash = sha256_hash(access_secret);
                     if session.ash != incoming_hash {
                         return Err("Access Secret Mismatch");
                     }
 
-                    Ok((claims, session, access_key, dev_pubkey))
+                    Ok((claims, session, access_key.to_string(), dev_pubkey))
                 };
 
                 let is_critical_admin = path.contains("/critical/");
@@ -431,7 +476,7 @@ impl Authorization for ExtAuthzService {
                         Logger::sys_warn(
                             "ext_authz.check",
                             "Missing or invalid SRE OTP code for critical endpoint",
-                            &path,
+                            path,
                         );
                         return Ok(Response::new(CheckResponse::with_status(
                             Status::unauthenticated("Missing or invalid SRE OTP code"),
@@ -481,8 +526,8 @@ impl Authorization for ExtAuthzService {
                         if is_critical_admin {
                             Logger::authz_log(
                                 "unknown",
-                                &method,
-                                &path,
+                                method,
+                                path,
                                 "DENIED",
                                 &format!("SRE Admin critical auth failed: {}. Session recovery bypassed.", err_msg),
                             );
@@ -496,12 +541,12 @@ impl Authorization for ExtAuthzService {
 
                         // [COMMENT]: Nếu không mang theo Refresh Token -> Không thể phục hồi session, trả về 401 trực tiếp.
                         // Điều này cũng đúng với SRE Admin khi gọi các API thường (như /api/v1/auth/session) vì Admin không có Refresh Token.
-                        let refresh_token = extract_cookie_value(&cookie_header, COOKIE_REFRESH_TOKEN);
+                        let refresh_token = trinity.refresh_token;
                         if refresh_token.is_none() {
                             Logger::authz_log(
                                 "unknown",
-                                &method,
-                                &path,
+                                method,
+                                path,
                                 "DENIED",
                                 &format!("Authentication failed: {}. No refresh token for recovery.", err_msg),
                             );
@@ -529,22 +574,23 @@ impl Authorization for ExtAuthzService {
                             &self.zone_mgr,
                             &self.control_plane_client,
                             &self.config,
-                            &cookie_header,
+                            cookie_header,
                             client_headers,
                             err_msg,
-                            &method,
-                            &path,
+                            method,
+                            path,
                         )
                         .await;
                     }
                 };
 
                 // [COMMENT]: 4. Thực hiện Rate Limit (Post-Auth) tích hợp L1 Block Cache
-                if let Some(jwt_token) = extract_cookie_value(&cookie_header, COOKIE_ACCESS_TOKEN) {
-                    let cache_key = sha256_hash(&jwt_token);
+                // Tối ưu: Sử dụng lại cache_key đã được tính toán ở bước Fast-Bypass thay vì tính toán lại SHA-256
+                if let Some(jwt_token) = trinity.access_token {
+                    let cache_key = access_token_hash.unwrap_or_else(|| sha256_hash(jwt_token));
                     if let Err(status) = self
                         .rate_limiter
-                        .check_rate_limit(&claims, &cache_key, is_critical_admin, &path)
+                        .check_rate_limit(&claims, &cache_key, is_critical_admin, path)
                         .await
                     {
                         return Ok(Response::new(CheckResponse::with_status(status)));
@@ -557,8 +603,8 @@ impl Authorization for ExtAuthzService {
                         &self.session_mgr,
                         client_headers,
                         &req,
-                        &method,
-                        &path,
+                        method,
+                        path,
                         &device_public_key,
                         &access_key,
                     )
@@ -573,10 +619,10 @@ impl Authorization for ExtAuthzService {
                     match crate::service::zone::zone_resolution::resolve_and_verify_zone_admin(
                         &self.zone_mgr,
                         Some(&mut claims),
-                        &cookie_header,
+                        cookie_header,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                     {
@@ -587,10 +633,10 @@ impl Authorization for ExtAuthzService {
                     match crate::service::zone::zone_resolution::resolve_and_verify_zone_user(
                         &self.zone_mgr,
                         Some(&mut claims),
-                        &cookie_header,
+                        cookie_header,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                     {
@@ -603,10 +649,10 @@ impl Authorization for ExtAuthzService {
                 if !claims.is_admin() {
                     if let Err(err_res) = crate::service::tenant::tenant_resolution::resolve_and_verify_tenant(
                         Some(&mut claims),
-                        &cookie_header,
+                        cookie_header,
                         client_headers,
-                        &method,
-                        &path,
+                        method,
+                        path,
                     )
                     .await
                     {
@@ -641,7 +687,7 @@ impl Authorization for ExtAuthzService {
                 if let Err(e) = self.evaluator.evaluate(&auth_ctx, &req_ctx).await {
                     return match e {
                         AcrError::Forbidden(msg) => {
-                            Logger::authz_log(&claims.sub, &method, &path, "FORBIDDEN", &msg);
+                            Logger::authz_log(&claims.sub, method, path, "FORBIDDEN", &msg);
                             Ok(Response::new(CheckResponse::with_status(
                                 Status::permission_denied(msg),
                             )))
@@ -685,7 +731,7 @@ impl Authorization for ExtAuthzService {
                 cookies_to_set.extend(cookies_to_set_zone);
 
                 // 10. Xây dựng response OK cho Envoy
-                Logger::authz_log(&claims.sub, &method, &path, "ALLOWED", "Passed all checks");
+                Logger::authz_log(&claims.sub, method, path, "ALLOWED", "Passed all checks");
 
                 // Dựng response OK với headers inject vào upstream
                 let mut ok_response = CheckResponse::with_status(Status::ok("authorized"));
@@ -743,11 +789,11 @@ impl Authorization for ExtAuthzService {
                             }),
                             ..Default::default()
                         });
-                        if let Some(t_id) = claims.tenant_id {
+                        if let Some(ref t_id) = claims.tenant_id {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {
                                     key: HEADER_X_TENANT_ID.to_string(),
-                                    value: t_id,
+                                    value: t_id.clone(),
                                     ..Default::default()
                                 }),
                                 ..Default::default()
@@ -755,11 +801,11 @@ impl Authorization for ExtAuthzService {
                         }
 
                         // [COMMENT]: Forward workspace_id cookie thành x-workspace-id header cho upstream CP
-                        if let Some(ws_id) = extract_cookie_value(&cookie_header, COOKIE_WORKSPACE_ID) {
+                        if let Some(ws_id) = trinity.workspace_id {
                             ok.headers.push(HeaderValueOption {
                                 header: Some(HeaderValue {
                                     key: HEADER_X_WORKSPACE_ID.to_string(),
-                                    value: ws_id,
+                                    value: ws_id.to_string(),
                                     ..Default::default()
                                 }),
                                 ..Default::default()
@@ -772,6 +818,91 @@ impl Authorization for ExtAuthzService {
                                 header: Some(HeaderValue {
                                     key: HEADER_X_ZONE_ID.to_string(),
                                     value: z_id.clone(),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            });
+                        }
+
+                        // [COMMENT]: Thực hiện động định tuyến (Path Rewriting) dựa trên ngữ cảnh Platform vs Tenant
+                        // Nếu đường dẫn bắt đầu bằng /api/v1/ và không nằm trong bypass list
+                        if path.starts_with("/api/v1/")
+                            && !path.starts_with("/api/v1/me/")
+                            && !path.starts_with("/api/v1/auth/")
+                            && !path.starts_with("/api/v1/platform/")
+                            && !path.starts_with("/api/v1/tenant/")
+                        {
+                            // Trích xuất tenant_id yêu cầu từ Client (cookie hoặc header)
+                            let client_tenant_id = trinity.tenant_id.map(|s| s.to_string())
+                                .or_else(|| client_headers.get("x-tenant-id").cloned())
+                                .or_else(|| client_headers.get("X-Tenant-ID").cloned());
+
+                            let client_has_tenant = client_tenant_id.as_ref().map_or(false, |t| !t.is_empty() && t != "platform");
+                            let session_has_tenant = claims.tenant_id.as_ref().map_or(false, |t| !t.is_empty() && t != "platform");
+
+                            // [COMMENT]: CHẶN CHÉO (Không Fallback) - Nếu Client có tenant nhưng Session là Platform Admin
+                            // hoặc Session thuộc Tenant nhưng Client không đính kèm context tenant, trả về lỗi ngay lập tức
+                            if client_has_tenant != session_has_tenant {
+                                Logger::authz_log(
+                                    &claims.sub,
+                                    method,
+                                    path,
+                                    "DENIED",
+                                    &format!(
+                                        "Routing context mismatch: client_has_tenant={}, session_has_tenant={}. Platform fallback blocked.",
+                                        client_has_tenant, session_has_tenant
+                                    ),
+                                );
+                                return Ok(Response::new(CheckResponse::with_status(
+                                    Status::permission_denied("Tenant context mismatch"),
+                                )));
+                            }
+
+                            // [COMMENT]: Nếu cả hai đều nằm trong ngữ cảnh Tenant, kiểm tra xem có trùng khớp ID hay không
+                            if client_has_tenant {
+                                let c_tenant = client_tenant_id.as_deref().unwrap();
+                                let s_tenant = claims.tenant_id.as_deref().unwrap();
+                                if c_tenant != s_tenant {
+                                    Logger::authz_log(
+                                        &claims.sub,
+                                        method,
+                                        path,
+                                        "DENIED",
+                                        &format!(
+                                            "Tenant ID mismatch for routing: client='{}', session='{}'",
+                                            c_tenant, s_tenant
+                                        ),
+                                    );
+                                    return Ok(Response::new(CheckResponse::with_status(
+                                        Status::permission_denied("Tenant mismatch"),
+                                    )));
+                                }
+                            }
+
+                            // Xác định tiền tố định tuyến chính xác
+                            let prefix = if client_has_tenant { "/api/v1/tenant" } else { "/api/v1/platform" };
+                            let rewritten_path = format!("{}{}", prefix, &path[7..]); // Bỏ "/api/v1" ở đầu và ghép phần còn lại
+
+                            Logger::sys_debug(
+                                "ext_authz.path_rewrite",
+                                &format!("Rewriting path: {} -> {}", path, rewritten_path),
+                            );
+
+                            // Inject x-original-path header để phục vụ cho tracing/logging ở backend Control Plane
+                            ok.headers.push(HeaderValueOption {
+                                header: Some(HeaderValue {
+                                    key: "x-original-path".to_string(),
+                                    value: path.to_string(),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            });
+
+                            // Inject :path header để Envoy thực hiện định tuyến lại request tới upstream
+                            ok.headers.push(HeaderValueOption {
+                                header: Some(HeaderValue {
+                                    key: ":path".to_string(),
+                                    value: rewritten_path,
                                     ..Default::default()
                                 }),
                                 ..Default::default()

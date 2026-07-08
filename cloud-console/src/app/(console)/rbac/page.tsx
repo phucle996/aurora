@@ -1,16 +1,21 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
-import { Shield, RefreshCw, Key, ShieldAlert, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Shield, RefreshCw, Key, ShieldAlert, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { listPlatformRoles, type PlatformRoleItem } from "@/lib/api/session";
 import { cn } from "@/lib/utils";
 import RouteGuard from "@/components/route-guard";
+import { useUserSession } from "@/hooks/useUserSession";
 
 // [COMMENT]: Trang AccessControlPage hiển thị danh sách vai trò (System Roles) phục vụ phân quyền RBAC
 function AccessControlContent() {
   const [roles, setRoles] = useState<PlatformRoleItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const { checkPermission } = useUserSession();
+
+  const canCreate = checkPermission("*:*:iam:role", "create");
 
   // [COMMENT]: Gọi API lấy danh sách Platform Roles
   const loadRoles = useCallback(async (showToast = false) => {
@@ -49,7 +54,7 @@ function AccessControlContent() {
           </p>
         </div>
 
-        <div>
+        <div className="flex items-center gap-2">
           <button
             onClick={() => void loadRoles(true)}
             disabled={loading}
@@ -58,6 +63,16 @@ function AccessControlContent() {
             <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", loading ? "animate-spin" : "")} />
             <span>Sync</span>
           </button>
+
+          {canCreate && (
+            <Link
+              href="/rbac/create"
+              className="flex items-center justify-center h-8 px-3.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-xs font-semibold text-white transition-colors cursor-pointer shadow-xs"
+            >
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              <span>New Role</span>
+            </Link>
+          )}
         </div>
       </div>
 
@@ -114,8 +129,8 @@ function AccessControlContent() {
                             r.role_level === 0
                               ? "bg-rose-500/10 text-rose-500 border border-rose-500/15"
                               : r.role_level <= 10
-                              ? "bg-amber-500/10 text-amber-500 border border-amber-500/15"
-                              : "bg-blue-500/10 text-blue-500 border border-blue-500/15"
+                                ? "bg-amber-500/10 text-amber-500 border border-amber-500/15"
+                                : "bg-blue-500/10 text-blue-500 border border-blue-500/15"
                           )}
                         >
                           <Key className="h-3 w-3 mr-0.5" />
@@ -141,7 +156,7 @@ function AccessControlContent() {
 
 export default function AccessControlPage() {
   return (
-    <RouteGuard requiredKey="*:*:iam:rbac" requiredAction="list">
+    <RouteGuard requiredKey="*:*:iam:role" requiredAction="read">
       <AccessControlContent />
     </RouteGuard>
   );

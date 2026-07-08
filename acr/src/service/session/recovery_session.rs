@@ -1,3 +1,4 @@
+use base64::Engine;
 use std::sync::Arc;
 use tonic::{Response, Status};
 
@@ -12,10 +13,10 @@ use crate::infra::controlplane::ControlPlaneClient;
 use crate::observability::logger::Logger;
 // [COMMENT]: Dùng release_user_session để gen Trinity (access_key, access_secret, JWT, Redis L2)
 // thay vì viết lại logic từ đầu
-use crate::service::session::release_session::release_user_session;
-use crate::service::ext_authz::{extract_cookie_value, sha256_hash};
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
+use crate::service::ext_authz::{extract_cookie_value, sha256_hash};
+use crate::service::session::release_session::release_user_session;
 
 // [COMMENT]: Giải phóng lock recovery session trong Redis L2
 async fn release_recovery_lock(session_mgr: &SessionManager, token_hash: &str) {
@@ -26,6 +27,28 @@ async fn release_recovery_lock(session_mgr: &SessionManager, token_hash: &str) {
             &e.to_string(),
         );
     }
+}
+
+// [COMMENT]: Giải mã không an toàn (unsafe decode) payload của JWT token cũ (bị hết hạn/lỗi chữ ký)
+// để trích xuất user_id (uid) và tenant_id (tnc / tenant_id) phục vụ việc gửi sang Controlplane để so khớp.
+// Sử dụng struct UnsafeClaims tối giản để tránh parse fail khi thiếu các system claims như exp/iat ở môi trường dev.
+fn decode_jwt_claims_unsafe(token: &str) -> Option<(String, Option<String>)> {
+    #[derive(serde::Deserialize)]
+    struct UnsafeClaims {
+        #[serde(rename = "uid")]
+        uid: String,
+        #[serde(rename = "tnc", alias = "tenant_id")]
+        tenant_id: Option<String>,
+    }
+
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let payload_bytes = url_engine.decode(parts[1]).ok()?;
+    let parsed: UnsafeClaims = serde_json::from_slice(&payload_bytes).ok()?;
+    Some((parsed.uid, parsed.tenant_id))
 }
 
 // [COMMENT]: Dựng response OK cho Envoy để tiếp tục chuyển tiếp request lên upstream
@@ -200,16 +223,16 @@ pub async fn handle_session_recovery(
         }
     };
 
-    // [COMMENT]: Chặn truy cập nếu zone đang không ở trạng thái hoạt động (active)
-    if resolved_zone_status != "active" {
+    // [COMMENT]: Chặn truy cập nếu zone đang không ở trạng thái hoạt động (active hoặc draining)
+    if resolved_zone_status != "active" && resolved_zone_status != "draining" {
         Logger::authz_log(
             "unknown",
             method,
             path,
             "DENIED",
             &format!(
-                "Forbidden access to inactive zone ({}): user_id=unknown",
-                resolved_zone_code
+                "Forbidden access to inactive zone ({} is {}): user_id=unknown",
+                resolved_zone_code, resolved_zone_status
             ),
         );
         let mut denied_builder = DeniedHttpResponseBuilder::new();
@@ -355,9 +378,35 @@ pub async fn handle_session_recovery(
             }
         }
 
-        // [COMMENT]: Gọi gRPC xác thực refresh token tới Controlplane
+        // [COMMENT]: Giải mã không an toàn access_token cũ để lấy uid và tenant_id
+        let jwt_token_opt = extract_cookie_value(cookie_header, COOKIE_ACCESS_TOKEN);
+        let claims_opt = jwt_token_opt
+            .as_ref()
+            .and_then(|t| decode_jwt_claims_unsafe(t));
+
+        let (user_id, tenant_id) = match claims_opt {
+            Some((uid, tid)) => (uid, tid),
+            None => {
+                Logger::sys_error(
+                    "ext_authz.recovery_session",
+                    "Unsafe JWT decode failed or access_token cookie missing. Cannot perform session recovery.",
+                    "missing_user_context",
+                );
+                if is_leader {
+                    release_recovery_lock(session_mgr, &token_hash).await;
+                }
+                let mut denied_builder = DeniedHttpResponseBuilder::new();
+                denied_builder.set_http_status(HttpStatusCode::Unauthorized);
+                let mut response = CheckResponse::new();
+                response.set_status(Status::unauthenticated("Missing user context for recovery"));
+                response.set_http_response(denied_builder);
+                return Ok(Response::new(response));
+            }
+        };
+
+        // [COMMENT]: Gọi gRPC xác thực refresh token tới Controlplane gửi kèm user_id và tenant_id
         match control_plane_client
-            .verify_opaque_refresh_token(refresh_token.clone(), "user".to_string())
+            .verify_opaque_refresh_token(refresh_token.clone(), tenant_id, user_id)
             .await
         {
             Ok(verify_res) if verify_res.valid => {
@@ -407,8 +456,8 @@ pub async fn handle_session_recovery(
                     &resolved_zone_id, // đã resolved sang UUID rồi, ZoneManager sẽ dùng trực tiếp
                     &device_id,
                     &device_id,
-                    false,             // trust_device không áp dụng cho recovery flow
-                    "",               // refresh_token raw không cần thiết ở đây
+                    false, // trust_device không áp dụng cho recovery flow
+                    "",    // refresh_token raw không cần thiết ở đây
                 )
                 .await
                 {
@@ -471,7 +520,8 @@ pub async fn handle_session_recovery(
                             release_recovery_lock(session_mgr, &token_hash).await;
                         }
                         clear_refresh_token = false;
-                        final_err_msg = format!("infra error: release_user_session failed ({})", e.message());
+                        final_err_msg =
+                            format!("infra error: release_user_session failed ({})", e.message());
                     }
                 }
             }

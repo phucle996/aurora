@@ -144,11 +144,13 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 
 		// 9. So khớp expected key hoặc wildcard platform key với danh sách quyền tĩnh đã gộp trong cache.
 		expectedKey := scopeCtx + ":" + workspaceID + ":" + requiredPermission
-		wildcardExpectedKey := scopeCtx + ":00000000-0000-0000-0000-000000000000:" + requiredPermission
+		wildcardExpectedKey := scopeCtx + ":*:" + requiredPermission
 
 		hasPermission := false
 		for _, p := range roleEntry.Permissions {
-			if strings.EqualFold(p, expectedKey) || strings.EqualFold(p, wildcardExpectedKey) {
+			// [COMMENT]: Chuẩn hóa platform-wide nil UUID về dạng '*' để đồng bộ so khớp wildcard với client
+			pClean := strings.ReplaceAll(p, "00000000-0000-0000-0000-000000000000", "*")
+			if strings.EqualFold(pClean, expectedKey) || strings.EqualFold(pClean, wildcardExpectedKey) {
 				hasPermission = true
 				break
 			}

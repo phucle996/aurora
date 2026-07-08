@@ -27,4 +27,10 @@ type RbacService interface {
 
 	// [COMMENT]: GetRenderContext sinh cấu hình Navigation và Capabilities từ bytes RBAC L1 cache theo user id
 	GetRenderContext(ctx context.Context, userID uuid.UUID) (*iamEntity.RenderContext, error)
+
+	// [COMMENT]: CreateRole tạo một vai trò mới kèm theo gán permissions
+	CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error
+
+	// [COMMENT]: ListPermissions lấy toàn bộ danh sách permissions có trong hệ thống
+	ListPermissions(ctx context.Context) ([]iamEntity.Permission, error)
 }

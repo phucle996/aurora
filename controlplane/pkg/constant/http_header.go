@@ -19,7 +19,6 @@ const (
 	HeaderXRequestID   = "X-Request-ID"
 )
 
-
 // Context Keys dùng để truyền danh tính trong Go Context giữa tầng HTTP Handler và Service/Repo
 type ContextKeyUserRoleType struct{}
 type ContextKeyUserLevelType struct{}

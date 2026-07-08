@@ -69,18 +69,19 @@ func (s *RbacService) GetRenderContext(ctx context.Context, userID uuid.UUID) (*
 
 	// [COMMENT]: Map gom nhóm permissions theo 4 phần đầu tiên
 	groupMap := make(map[string][]string)
-	hasWildcard := false
 	capabilities := make(map[string]bool)
 
 	for _, p := range roleEntry.Permissions {
-		capabilities[p] = true
+		// [COMMENT]: Thay thế platform-wide nil UUID ("00000000-0000-0000-0000-000000000000")
+		// thành ký tự wildcard "*" giúp payload trả về Client (Navigation & Capabilities) sạch sẽ và thân thiện hơn.
+		pClean := strings.ReplaceAll(p, "00000000-0000-0000-0000-000000000000", "*")
+		capabilities[pClean] = true
 
-		if p == "*" || p == "*:*:*" || p == "*:*" {
-			hasWildcard = true
+		if pClean == "*" || pClean == "*:*:*" || pClean == "*:*" {
 			continue
 		}
 
-		parts := strings.Split(p, ":")
+		parts := strings.Split(pClean, ":")
 		if len(parts) < 5 {
 			continue
 		}
@@ -102,14 +103,6 @@ func (s *RbacService) GetRenderContext(ctx context.Context, userID uuid.UUID) (*
 	}
 
 	var navigation []iamEntity.NavigationItem
-	if hasWildcard {
-		// [COMMENT]: Tài khoản Super Admin sẽ nhận wildcard Key * để được match đầy đủ menu
-		navigation = append(navigation, iamEntity.NavigationItem{
-			Key:     "*",
-			Actions: []string{"*"},
-		})
-	}
-
 	for k, actions := range groupMap {
 		navigation = append(navigation, iamEntity.NavigationItem{
 			Key:     k,
@@ -143,4 +136,15 @@ func (s *RbacService) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, 
 // [COMMENT]: ListTenantRoles lấy danh sách roles gán cho tenant cụ thể
 func (s *RbacService) ListTenantRoles(ctx context.Context, tenantID uuid.UUID) ([]iamEntity.Role, error) {
 	return s.repo.ListTenantRoles(ctx, tenantID)
+}
+
+// [COMMENT]: CreateRole tạo một vai trò mới kèm theo gán permissions
+func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error {
+	role.ID = uuid.New()
+	return s.repo.CreateRole(ctx, role, permissionIDs)
+}
+
+// [COMMENT]: ListPermissions lấy toàn bộ danh sách permissions có trong hệ thống
+func (s *RbacService) ListPermissions(ctx context.Context) ([]iamEntity.Permission, error) {
+	return s.repo.ListPermissions(ctx)
 }

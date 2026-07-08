@@ -8,11 +8,28 @@ export type ZoneCatalogItem = {
   status: string;
 };
 
+// [COMMENT]: Cache zone catalog trong RAM & cache promise request đang chạy
+// để tránh duplicate parallel HTTP requests khi nhiều component mount cùng lúc.
+let cachedZones: ZoneCatalogItem[] | null = null;
+let activeZoneCatalogPromise: Promise<ZoneCatalogItem[]> | null = null;
+
 export async function fetchZoneCatalog(options: { signal?: AbortSignal } = {}): Promise<ZoneCatalogItem[]> {
-  return fetchJSON<ZoneCatalogItem[]>("/api/v1/zones/catalog", {
+  if (cachedZones) return cachedZones;
+  if (activeZoneCatalogPromise) return activeZoneCatalogPromise;
+
+  activeZoneCatalogPromise = fetchJSON<ZoneCatalogItem[]>("/api/v1/zones/catalog", {
     method: "GET",
     signal: options.signal,
+  }).then((data) => {
+    cachedZones = data;
+    return data;
   });
+
+  activeZoneCatalogPromise.finally(() => {
+    activeZoneCatalogPromise = null;
+  });
+
+  return activeZoneCatalogPromise;
 }
 
 // [COMMENT]: Hàm gọi API chuyển đổi Active Zone tường minh qua Edge Ingress/ACL.

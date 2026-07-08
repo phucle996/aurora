@@ -41,7 +41,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 		return
 	}
 
-	callerLevel, err := strconv.ParseInt(callerLevelStr, 10, 32)
+	callerLevel, err := strconv.ParseUint(callerLevelStr, 10, 8)
 	if err != nil {
 		logger.HandlerWarn(c, op, err, "invalid caller level format")
 		apires.RespondBadRequest(c, "invalid request")
@@ -51,7 +51,7 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	users, err := h.userSvc.ListUsers(ctx, int32(callerLevel), limit, offset)
+	users, err := h.userSvc.ListUsers(ctx, uint8(callerLevel), limit, offset)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "forbidden action for user")
@@ -92,7 +92,7 @@ func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
 		return
 	}
 
-	callerLevel, err := strconv.ParseInt(callerLevelStr, 10, 32)
+	callerLevel, err := strconv.ParseUint(callerLevelStr, 10, 8)
 	if err != nil {
 		logger.HandlerWarn(c, op, err, "invalid caller level format")
 		apires.RespondBadRequest(c, "invalid request")
@@ -113,7 +113,7 @@ func (h *UserHandler) UpdateUserStatus(c *gin.Context) {
 		return
 	}
 
-	if err := h.userSvc.UpdateUserStatus(ctx, int32(callerLevel), targetUserID); err != nil {
+	if err := h.userSvc.UpdateUserStatus(ctx, uint8(callerLevel), targetUserID); err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "insufficient role hierarchy permissions")
 			apires.RespondForbidden(c, "forbidden")

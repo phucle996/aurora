@@ -99,24 +99,50 @@ func TenantRoleModelToEntity(input TenantRole) iamEntity.TenantRole {
 
 // [COMMENT]: Role đại diện cho bảng roles trong PostgreSQL
 type Role struct {
-	ID        uuid.UUID `db:"id"`
-	Code      string    `db:"code"`
-	Name      string    `db:"name"`
-	RoleLevel int       `db:"role_level"`
-	Scope     string    `db:"scope"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	ID          uuid.UUID `db:"id"`
+	Code        string    `db:"code"`
+	Name        string    `db:"name"`
+	Description string    `db:"description"`
+	RoleLevel   int       `db:"role_level"`
+	Scope       string    `db:"scope"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // [COMMENT]: RoleModelToEntity chuyển đổi DB model sang thực thể domain
 func RoleModelToEntity(input Role) iamEntity.Role {
 	return iamEntity.Role{
-		ID:        input.ID,
-		Code:      input.Code,
-		Name:      input.Name,
-		RoleLevel: input.RoleLevel,
-		Scope:     input.Scope,
-		CreatedAt: input.CreatedAt,
-		UpdatedAt: input.UpdatedAt,
+		ID:          input.ID,
+		Code:        input.Code,
+		Name:        input.Name,
+		Description: input.Description,
+		RoleLevel:   input.RoleLevel,
+		Scope:       input.Scope,
+		CreatedAt:   input.CreatedAt,
+		UpdatedAt:   input.UpdatedAt,
+	}
+}
+
+// [COMMENT]: Permission đại diện cho cấu trúc bảng permissions trong PostgreSQL
+type Permission struct {
+	ID          uuid.UUID `db:"id"`
+	Module      string    `db:"module"`
+	Object      string    `db:"object"`
+	Behavior    string    `db:"behavior"`
+	Description string    `db:"description"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
+}
+
+// [COMMENT]: PermissionModelToEntity chuyển đổi DB model sang thực thể domain
+func PermissionModelToEntity(input Permission) iamEntity.Permission {
+	return iamEntity.Permission{
+		ID:          input.ID,
+		Module:      input.Module,
+		Object:      input.Object,
+		Behavior:    input.Behavior,
+		Description: input.Description,
+		CreatedAt:   input.CreatedAt,
+		UpdatedAt:   input.UpdatedAt,
 	}
 }
