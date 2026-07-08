@@ -1,30 +1,3 @@
-// ============================================================================
-// 🛡️ ARCHITECTURAL & SYSTEM CONTRACTS
-// ============================================================================
-//
-// 🤝 1. SYSTEM CONTRACT
-//   - Tracing Integration: Kế thừa và phân phối định danh giao dịch (traceparent và X-Request-ID)
-//     từ Envoy Edge Proxy xuyên suốt qua Controlplane và Dataplane.
-//   - Visibility Rules: traceparent là tài sản nội bộ không trả về Client để tránh rò rỉ thông tin hạ tầng.
-//     X-Request-ID được phản hồi về Client để hỗ trợ đối chiếu log khi xảy ra lỗi.
-//   - Fail-Open: Telemetry là phụ trợ, Business Logic là chính. Nếu các công cụ giám sát (Tempo, Prometheus)
-//     gặp sự cố, middleware cam kết chạy Fail-Open (không chặn hay báo lỗi 500), tự sinh ID dự phòng để
-//     bảo vệ luồng nghiệp vụ chính.
-//
-// 📖 2. SOURCE OF TRUTH
-//   - Envoy Proxy đóng vai trò là điểm tối cao sinh và cấu hình cả hai header traceparent và X-Request-ID.
-//   - Header name constants được khai báo và quản lý tập trung tại pkg/constant/http_header.go.
-//
-// 🚧 3. SYSTEM BOUNDARY
-//   - Đóng vai trò là cổng giám sát chất lượng (Observability Gateway) tích hợp sâu với OpenTelemetry
-//     và Prometheus, làm việc trực tiếp trên luồng HTTP trước khi phân phối request vào các module xử lý nghiệp vụ.
-//
-// 💡 4. OPERATIONAL NOTES
-//   - Thứ tự thực thi: RequestID chạy trước để chuẩn bị ID định danh đưa vào logger context, sau đó
-//     OTelTraceContext chạy tiếp theo để trích xuất hoặc tạo Span tracing mới.
-//   - Cardinality Control: Sử dụng khuôn mẫu route từ c.FullPath() thay vì URL động chứa ID cụ thể
-//     nhằm tránh phình to dữ liệu nhãn (Metric Cardinality Explosion) gây tràn RAM hệ thống Prometheus.
-
 package middleware
 
 import (

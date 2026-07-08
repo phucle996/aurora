@@ -43,11 +43,6 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 
 	users, err := h.userSvc.ListUsers(ctx, callerLevel, limit, offset)
 	if err != nil {
-		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-			logger.HandlerWarn(c, op, err, "forbidden action for user")
-			apires.RespondForbidden(c, "forbidden")
-			return
-		}
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal error occurred")
 		return
@@ -118,18 +113,8 @@ func (h *UserHandler) GetMyProfile(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy userID trực tiếp từ x-user-id header do gateway forward xuống sau JWT validation
-	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid user id format")
-		apires.RespondBadRequest(c, "invalid request")
+	userID, ok := constant.GetUserID(c, op)
+	if !ok {
 		return
 	}
 

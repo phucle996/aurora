@@ -21,7 +21,6 @@ const (
 	KindCacheEngineL2     = "cache-engine-l2"
 	KindCacheEngineFanout = "cache-engine-fanout"
 	KindCacheEngineExcute = "cache-engine-execute"
-	KindTelegram          = "telegram"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -36,7 +35,6 @@ const (
 	OutcomeInvalidCredential  = "invalid_credential"
 	OutcomeLockBusy           = "lock_busy"
 )
-
 
 // ──────────────────────────────────────────────────────────────────────────────
 // OTel INSTRUMENT VARIABLES (lazy init qua sync.Once)

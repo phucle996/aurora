@@ -55,6 +55,24 @@ func GetUserID(c *gin.Context, op string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// [COMMENT]: GetZoneID trích xuất và parse UUID của zone từ header X-Zone-ID.
+// Tự động ghi log warning và trả lỗi HTTP nếu thiếu hoặc sai định dạng.
+func GetZoneID(c *gin.Context, op string) (uuid.UUID, bool) {
+	idStr := strings.TrimSpace(c.GetHeader("X-Zone-ID"))
+	if idStr == "" {
+		logger.HandlerWarn(c, op, nil, "missing zone context header X-Zone-ID")
+		apires.RespondBadRequest(c, "missing zone context")
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "invalid zone id format")
+		apires.RespondBadRequest(c, "invalid zone id format")
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
 // [COMMENT]: GetTenantID trích xuất và parse UUID của tenant từ header X-Tenant-ID.
 // Tự động ghi log warning và trả lỗi HTTP nếu thiếu hoặc sai định dạng.
 func GetTenantID(c *gin.Context, op string) (uuid.UUID, bool) {

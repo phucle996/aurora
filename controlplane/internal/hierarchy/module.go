@@ -64,7 +64,8 @@ type Module struct {
 	// [COMMENT]: Chia ranh giới Service Layer thành 2 services Tenant và Personal
 	TenantWorkspaceService      coreSvcInterface.TenantWorkspaceService
 	PersonalWorkspaceService    coreSvcInterface.PersonalWorkspaceService
-	WorkspaceHandler    *zoneHandler.WorkspaceHandler
+	WorkspacePlatformHandler    *zoneHandler.WorkspacePlatformHandler
+	WorkspaceTenantHandler      *zoneHandler.WorkspaceTenantHandler
 	TenantRepository    coreRepoInterface.TenantRepository
 	TenantService       coreSvcInterface.TenantService
 	TenantHandler       *zoneHandler.TenantHandler
@@ -122,9 +123,13 @@ func NewModule(
 	if personalWorkspaceService == nil {
 		return nil, fmt.Errorf("hierarchy module: personal workspace service is nil")
 	}
-	wHandler := zoneHandler.NewWorkspaceHandler(tenantWorkspaceService, personalWorkspaceService)
-	if wHandler == nil {
-		return nil, fmt.Errorf("hierarchy module: workspace handler is nil")
+	wPlatformHandler := zoneHandler.NewWorkspacePlatformHandler(personalWorkspaceService)
+	if wPlatformHandler == nil {
+		return nil, fmt.Errorf("hierarchy module: workspace platform handler is nil")
+	}
+	wTenantHandler := zoneHandler.NewWorkspaceTenantHandler(tenantWorkspaceService)
+	if wTenantHandler == nil {
+		return nil, fmt.Errorf("hierarchy module: workspace tenant handler is nil")
 	}
 
 	// 7) Tenant management — repo, service, handler
@@ -153,7 +158,8 @@ func NewModule(
 		PersonalWorkspaceRepository: personalWorkspaceRepo,
 		TenantWorkspaceService:      tenantWorkspaceService,
 		PersonalWorkspaceService:    personalWorkspaceService,
-		WorkspaceHandler:            wHandler,
+		WorkspacePlatformHandler:    wPlatformHandler,
+		WorkspaceTenantHandler:      wTenantHandler,
 		TenantRepository:            tenantRepo,
 		TenantService:               tenantService,
 		TenantHandler:               tHandler,

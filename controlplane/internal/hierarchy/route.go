@@ -34,26 +34,46 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	)
 
 	// ========================================================================
-	// 🗂️ WORKSPACE — CUSTOMER WORKSPACE LIFECYCLE MANAGEMENT
+	// 🗂️ WORKSPACE — PLATFORM/PERSONAL SCOPE
 	// ========================================================================
+	platformGroup := router.Group("/api/v1/platform")
+	{
+		// [COMMENT]: Tạo workspace cá nhân mới — yêu cầu quyền hierarchy:workspace:create ở tầng *
+		platformGroup.POST("/hierarchy/workspaces",
+			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
+			module.WorkspacePlatformHandler.CreateWorkspacePlatform,
+		)
+		// [COMMENT]: Lấy danh sách workspace cá nhân mà user có quyền read
+		platformGroup.GET("/hierarchy/workspaces",
+			middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
+			module.WorkspacePlatformHandler.ListWorkspacesPlatform,
+		)
+		// [COMMENT]: Hot path catalog cá nhân — không dùng Authorize do tình huống chicken-and-egg
+		platformGroup.GET("/hierarchy/workspaces/catalog",
+			module.WorkspacePlatformHandler.GetWorkspaceCatalogPlatform,
+		)
+	}
 
-	// [COMMENT]: Tạo workspace mới — yêu cầu quyền hierarchy:workspace:create ở tầng *
-	router.POST("/api/v1/workspaces",
-		middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
-		module.WorkspaceHandler.CreateWorkspace,
-	)
-	// [COMMENT]: Lấy danh sách workspace mà user có quyền read (phân giải qua L1 cache của role)
-	router.GET("/api/v1/workspaces",
-		middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
-		module.WorkspaceHandler.ListWorkspaces,
-	)
-	// [COMMENT]: Hot path catalog — trả về id,code,name tối giản lọc theo zone + tenant/personal context.
-	// KHÔNG dùng middleware.Authorize vì đây là chicken-and-egg: client cần catalog để lấy workspace_id,
-	// nhưng Authorize lại yêu cầu workspace_id trong header trước khi vào handler.
-	// Security đảm bảo bởi: ACR session (authn) + handler validate x-user-id/x-zone-id + service filter theo owner/permission.
-	router.GET("/api/v1/workspaces/catalog",
-		module.WorkspaceHandler.GetWorkspaceCatalog,
-	)
+	// ========================================================================
+	// 🗂️ WORKSPACE — TENANT SCOPE
+	// ========================================================================
+	tenantGroup := router.Group("/api/v1/tenant")
+	{
+		// [COMMENT]: Tạo workspace thuộc tenant — yêu cầu quyền hierarchy:workspace:create ở tầng *
+		tenantGroup.POST("/hierarchy/workspaces",
+			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
+			module.WorkspaceTenantHandler.CreateWorkspaceTenant,
+		)
+		// [COMMENT]: Lấy danh sách workspace thuộc tenant mà user có quyền read
+		tenantGroup.GET("/hierarchy/workspaces",
+			middleware.Authorize("hierarchy:workspace:read", module.L1Registry, "*"),
+			module.WorkspaceTenantHandler.ListWorkspacesTenant,
+		)
+		// [COMMENT]: Hot path catalog của tenant — không dùng Authorize do tình huống chicken-and-egg
+		tenantGroup.GET("/hierarchy/workspaces/catalog",
+			module.WorkspaceTenantHandler.GetWorkspaceCatalogTenant,
+		)
+	}
 
 	// [COMMENT]: Route tạo tenant mới — cần x-user-id header bắt buộc, x-tenant-id phải trống
 	router.POST("/api/v1/tenants",

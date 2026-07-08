@@ -55,7 +55,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 
 	rows, err := r.db.Query(ctx, query, callerLevel, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("iam repo: query list users: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -64,7 +64,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 		var u iamEntity.User
 		var level int32
 		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("iam repo: scan user row: %w", err)
+			return nil, err
 		}
 		u.Level = level
 		users = append(users, &u)
