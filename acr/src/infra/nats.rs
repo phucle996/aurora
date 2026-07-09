@@ -26,9 +26,28 @@ pub struct Nats {
 impl Nats {
     pub async fn new(
         nats_url: String,
+        ca_cert: Option<String>,
+        client_cert: Option<String>,
+        client_key: Option<String>,
     ) -> Self {
+        let mut options = async_nats::ConnectOptions::new();
+
+        // [COMMENT]: Cấu hình TLS CA Certificate
+        if let Some(ref ca_path) = ca_cert {
+            options = options.add_root_certificates(ca_path.clone().into());
+            options = options.require_tls(true);
+        }
+
+        // [COMMENT]: Cấu hình mTLS Client Certificate & Private Key
+        if let (Some(ref cert_path), Some(ref key_path)) = (client_cert, client_key) {
+            options =
+                options.add_client_certificate(cert_path.clone().into(), key_path.clone().into());
+            options = options.require_tls(true);
+        }
+
         // [COMMENT]: Khởi tạo kết nối đến NATS Core
-        let nats_client = async_nats::connect(&nats_url)
+        let nats_client = options
+            .connect(&nats_url)
             .await
             .unwrap_or_else(|e| panic!("Failed to connect to NATS at {}: {}", nats_url, e));
 

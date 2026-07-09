@@ -98,7 +98,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let evaluator = Arc::new(PolicyEvaluator::new());
 
     // [COMMENT]: Khởi tạo NATS client để kết nối đến Control Plane qua NATS Core
-    let nats = Arc::new(crate::infra::nats::Nats::new(config.nats_url.clone()).await);
+    let nats = Arc::new(
+        crate::infra::nats::Nats::new(
+            config.nats_url.clone(),
+            config.nats_ca_cert.clone(),
+            config.nats_client_cert.clone(),
+            config.nats_client_key.clone(),
+        )
+        .await,
+    );
 
     // [COMMENT]: Khởi tạo ZoneManager - L1 in-process + Redis L2 shared + gRPC fallback
     // Sau khi 1 node gọi gRPC và ghi Redis L2, các node khác tự đọc L2 mà không cần gRPC lại

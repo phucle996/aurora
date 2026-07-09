@@ -1,4 +1,4 @@
-use crate::infra::grpc::GrpcAuthClient;
+use crate::infra::nats::NatsAuthClient;
 use crate::observability::logger::Logger;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
@@ -8,8 +8,8 @@ use std::sync::Arc;
 // Trạng thái chia sẻ cho Route Handler
 #[derive(Clone)]
 pub struct AppState {
-    // [COMMENT]: gRPC client trỏ đến ACR service (Rust) — xác thực cả User và Admin Trinity Token
-    pub auth_client: GrpcAuthClient,
+    // [COMMENT]: NATS client trỏ đến ACR service (Rust) — xác thực cả User và Admin Trinity Token
+    pub auth_client: NatsAuthClient,
 }
 
 // Request gửi từ Centrifugo Connect Proxy chứa định danh client và request payload
@@ -184,7 +184,7 @@ pub async fn handle_connect(
                         let latency = start_time.elapsed().as_secs_f64() * 1000.0;
                         Logger::sys_error(
                             "http.auth_error",
-                            "gRPC admin authentication call failed",
+                            "NATS admin authentication call failed",
                             &format!("{:?}", status),
                         );
                         Logger::access_log(
@@ -282,7 +282,7 @@ pub async fn handle_connect(
                         let latency = start_time.elapsed().as_secs_f64() * 1000.0;
                         Logger::sys_error(
                             "http.auth_error",
-                            "gRPC user authentication call failed",
+                            "NATS user authentication call failed",
                             &format!("{:?}", status),
                         );
                         Logger::access_log(

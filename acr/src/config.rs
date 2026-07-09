@@ -45,6 +45,12 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     // [COMMENT]: Địa chỉ kết nối NATS Core Client
     pub nats_url: String,
+    // [COMMENT]: Đường dẫn CA cert phục vụ kết nối TLS/mTLS cho NATS
+    pub nats_ca_cert: Option<String>,
+    // [COMMENT]: Đường dẫn Client cert phục vụ kết nối TLS/mTLS cho NATS
+    pub nats_client_cert: Option<String>,
+    // [COMMENT]: Đường dẫn Client private key phục vụ kết nối TLS/mTLS cho NATS
+    pub nats_client_key: Option<String>,
 }
 
 impl Config {
@@ -122,6 +128,9 @@ impl Config {
             .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
 
         let nats_url = env::var("NATS_ADDR").unwrap_or_else(|_| "nats://nats:4222".to_string());
+        let nats_ca_cert = env::var("NATS_CA_CERT").ok();
+        let nats_client_cert = env::var("NATS_CLIENT_CERT").ok();
+        let nats_client_key = env::var("NATS_CLIENT_KEY").ok();
 
         // [COMMENT]: Nạp danh sách bypass endpoints từ biến môi trường BYPASS_ENDPOINTS (phân tách bởi dấu phẩy)
         let bypass_endpoints = env::var("BYPASS_ENDPOINTS")
@@ -163,6 +172,9 @@ impl Config {
             app_public_domain,
             allowed_origins,
             nats_url,
+            nats_ca_cert,
+            nats_client_cert,
+            nats_client_key,
         })
     }
 }

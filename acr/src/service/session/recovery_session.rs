@@ -435,11 +435,10 @@ pub async fn handle_session_recovery(
                 .await
                 .map_err(|e| Status::unavailable(format!("NATS request failed: {}", e)))?;
 
-            let decoded =
-                crate::infra::nats::auth::VerifyOpaqueRefreshTokenResponse::decode(
-                    response_msg.payload.as_ref(),
-                )
-                .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
+            let decoded = crate::infra::nats::auth::VerifyOpaqueRefreshTokenResponse::decode(
+                response_msg.payload.as_ref(),
+            )
+            .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
 
             Ok(decoded)
         })()

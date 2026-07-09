@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::handler::connect::AppState;
 use crate::infra::centrifugo::CentrifugoClient;
-use crate::infra::grpc::GrpcAuthClient;
+use crate::infra::nats::NatsAuthClient;
 use crate::infra::redis::RedisSubscriber;
 use crate::observability::logger::Logger;
 use std::sync::Arc;
@@ -11,20 +11,19 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
     // [ignoring loop detection]
     Logger::sys_info("infra.init", "Initializing infrastructure services...");
 
-    // 1. Khởi tạo gRPC client kết nối đến ACR service (Rust) — xác thực Trinity Token
-    let auth_client = GrpcAuthClient::new(
-        cfg.acr_grpc_endpoint.clone(),
-        cfg.acr_grpc_ca_cert.clone(),
-        cfg.acr_grpc_client_cert.clone(),
-        cfg.acr_grpc_client_key.clone(),
-        cfg.acr_grpc_domain.clone(),
-    );
+    // 1. Khởi tạo NATS client kết nối đến ACR service — xác thực Trinity Token qua NATS
+    let auth_client = NatsAuthClient::new(
+        cfg.nats_url.clone(),
+        cfg.nats_ca_cert.clone(),
+        cfg.nats_client_cert.clone(),
+        cfg.nats_client_key.clone(),
+    ).await;
 
     Logger::sys_info(
-        "infra.grpc",
+        "infra.nats",
         &format!(
-            "ACR gRPC auth client initialized → {}",
-            cfg.acr_grpc_endpoint
+            "ACR NATS auth client initialized → {}",
+            cfg.nats_url
         ),
     );
 
