@@ -168,7 +168,7 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning")
 	return nil
 }
-func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
+func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentClientDeviceID *string) (int64, error) {
 	devices, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
 	if listErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
@@ -178,18 +178,15 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 	for _, dev := range devices {
 		// [COMMENT]: Chỉ thu hồi các thiết bị đang hoạt động (chưa bị revoke)
 		if dev.RevokedAt == nil {
-			if currentTrackedDeviceID == nil || dev.ID != currentTrackedDeviceID.String() {
+			if currentClientDeviceID == nil || dev.ID != *currentClientDeviceID {
 				otherDeviceIDs = append(otherDeviceIDs, dev.ID)
 			}
 		}
 	}
 
-	if _, revokeErr := s.deviceRepo.RevokeOtherDevicesByUserID(ctx, userID, currentTrackedDeviceID); revokeErr != nil {
+	affected, revokeErr := s.deviceRepo.RevokeOtherDevicesByClientDeviceIDAndUserID(ctx, userID, currentClientDeviceID)
+	if revokeErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
-	}
-	affected, revokeTokenErr := s.refreshTokenRepo.RevokeRefreshTokensByUserID(ctx, userID, currentTrackedDeviceID)
-	if revokeTokenErr != nil {
-		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 
 	if len(otherDeviceIDs) > 0 {

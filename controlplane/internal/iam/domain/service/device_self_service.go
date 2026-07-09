@@ -16,8 +16,8 @@ type DeviceSelfService interface {
 	// [COMMENT]: RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể thuộc sở hữu user cá nhân theo client_device_id
 	RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID string, currentClientDeviceID string) error
 
-	// [COMMENT]: LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác
-	LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error)
+	// [COMMENT]: LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác theo client_device_id
+	LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentClientDeviceID *string) (int64, error)
 
 	// [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
 	LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error)

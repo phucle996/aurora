@@ -143,11 +143,14 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	currID, ok := constant.GetClientDeviceID(c, op)
-	if !ok {
+	currentClientDeviceID := constant.GetOptionalClientDeviceIDStr(c)
+	if currentClientDeviceID == "" {
+		logger.HandlerWarn(c, op, nil, "missing device context header X-Client-Device-ID")
+		apires.RespondUnauthorized(c, "unauthorized")
 		return
 	}
-	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, &currID)
+
+	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, &currentClientDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")

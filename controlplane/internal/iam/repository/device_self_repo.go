@@ -87,7 +87,7 @@ func (r *DeviceSelfRepository) UpsertLoginDevice(ctx context.Context, device iam
 // [COMMENT]: ListDevicesByUserID lấy danh sách thiết bị của một user cá nhân dưới dạng DevicePresence gọn nhẹ
 func (r *DeviceSelfRepository) ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.DevicePresence, error) {
 	query := fmt.Sprintf(`
-		SELECT id, device_name, last_seen_ip::text, last_seen_user_agent, last_seen_at, revoked_at
+		SELECT COALESCE(client_device_id, id::text), device_name, last_seen_ip::text, last_seen_user_agent, last_seen_at, revoked_at
 		FROM %s.devices
 		WHERE user_id = $1
 		ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
@@ -159,18 +159,27 @@ func (r *DeviceSelfRepository) RevokeDeviceByClientDeviceIDAndUserID(ctx context
 	return nil
 }
 
-// [COMMENT]: RevokeOtherDevicesByUserID thu hồi các thiết bị khác
-func (r *DeviceSelfRepository) RevokeOtherDevicesByUserID(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) {
+// [COMMENT]: RevokeOtherDevicesByClientDeviceIDAndUserID thu hồi các thiết bị khác ngoại trừ thiết bị chỉ định theo client_device_id
+func (r *DeviceSelfRepository) RevokeOtherDevicesByClientDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, keepClientDeviceID *string) (int64, error) {
 	query := fmt.Sprintf(`
-		UPDATE %s.devices
-		SET status='revoked', revoked_at=now(), updated_at=now()
-		WHERE user_id = $1 AND ($2::uuid IS NULL OR id <> $2)
-	`, r.schema)
-	res, err := r.db.Exec(ctx, query, userID, keepDeviceID)
-	if err != nil {
-		return 0, fmt.Errorf("iam repo: revoke other devices by user id: %w", err)
+		WITH revoked_devices AS (
+			UPDATE %s.devices
+			SET revoked_at=now(), updated_at=now()
+			WHERE user_id = $1 AND ($2::text IS NULL OR client_device_id != $2) AND revoked_at IS NULL
+			RETURNING id
+		),
+		deleted_tokens AS (
+			DELETE FROM %s.refresh_tokens
+			WHERE user_id = $1 AND device_id IN (SELECT id FROM revoked_devices)
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM revoked_devices
+	`, r.schema, r.schema)
+	var count int64
+	if err := r.db.QueryRow(ctx, query, userID, keepClientDeviceID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("iam repo: revoke other devices by client device id CTE: %w", err)
 	}
-	return res.RowsAffected(), nil
+	return count, nil
 }
 
 // [COMMENT]: TouchDeviceLastSeen cập nhật thời gian hoạt động cuối cùng
