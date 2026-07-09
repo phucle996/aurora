@@ -12,7 +12,7 @@ service SessionService {
 // [NEW] Request payload for device-specific session revocation
 message RevokeUserSessionsByDevicesRequest {
   string user_id = 1;              // The UUID of the user
-  repeated string device_ids = 2;  // The list of device UUIDs to revoke sessions for
+  repeated string client_device_ids = 2;  // The list of client device IDs to revoke sessions for
 }
 
 // [NEW] Response payload returning status

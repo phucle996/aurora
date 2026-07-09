@@ -24,8 +24,8 @@ pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &
     Logger::sys_info(
         "device.revoke",
         &format!(
-            "Revoking sessions for user_id={} and device_ids={:?}",
-            req.user_id, req.device_ids
+            "Revoking sessions for user_id={} and client_device_ids={:?}",
+            req.user_id, req.client_device_ids
         ),
     );
 
@@ -44,7 +44,7 @@ pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &
 
     let mut revoked_count = 0;
 
-    for device_id in &req.device_ids {
+    for device_id in &req.client_device_ids {
         let dev_index_key = format!("iam:device_access_index:{}", device_id);
 
         // 1. Lấy tất cả access_key của thiết bị này

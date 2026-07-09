@@ -153,8 +153,8 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 		defer cancel()
 
 		req := &iamproto.RevokeUserSessionsByDevicesRequest{
-			UserId:    userID.String(),
-			DeviceIds: []string{clientDeviceID},
+			UserId:          userID.String(),
+			ClientDeviceIds: []string{clientDeviceID},
 		}
 		reqBytes, err := proto.Marshal(req)
 		if err != nil {
@@ -199,8 +199,8 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 			defer cancel()
 
 			req := &iamproto.RevokeUserSessionsByDevicesRequest{
-				UserId:    userID.String(),
-				DeviceIds: otherDeviceIDs,
+				UserId:          userID.String(),
+				ClientDeviceIds: otherDeviceIDs,
 			}
 			reqBytes, err := proto.Marshal(req)
 			if err != nil {
@@ -286,8 +286,8 @@ func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, user
 			deviceIDS = append(deviceIDS, dID.String())
 		}
 		req := &iamproto.RevokeUserSessionsByDevicesRequest{
-			UserId:    userID.String(),
-			DeviceIds: deviceIDS,
+			UserId:          userID.String(),
+			ClientDeviceIds: deviceIDS,
 		}
 		if reqBytes, err := proto.Marshal(req); err == nil {
 			// [COMMENT]: Gửi yêu cầu thu hồi session qua NATS đến ACR với context nền để tránh bị cancel giữa chừng

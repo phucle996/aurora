@@ -16,7 +16,7 @@ service DeviceService {
 // [COMMENT]: Request payload cho việc thu hồi session theo thiết bị
 message RevokeUserSessionsByDevicesRequest {
   string user_id = 1;              // UUID của user
-  repeated string device_ids = 2;  // Danh sách device UUID cần thu hồi session
+  repeated string client_device_ids = 2;  // Danh sách client_device_id cần thu hồi session
 }
 
 // [COMMENT]: Response trả về số lượng session đã được thu hồi thành công

@@ -23,11 +23,11 @@ const (
 
 // [NEW] Request payload for device-specific session revocation
 type RevokeUserSessionsByDevicesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`          // The UUID of the user
-	DeviceIds     []string               `protobuf:"bytes,2,rep,name=device_ids,json=deviceIds,proto3" json:"device_ids,omitempty"` // The list of device UUIDs to revoke sessions for
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	UserId          string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                              // The UUID of the user
+	ClientDeviceIds []string               `protobuf:"bytes,2,rep,name=client_device_ids,json=clientDeviceIds,proto3" json:"client_device_ids,omitempty"` // The list of client device IDs to revoke sessions for
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RevokeUserSessionsByDevicesRequest) Reset() {
@@ -67,9 +67,9 @@ func (x *RevokeUserSessionsByDevicesRequest) GetUserId() string {
 	return ""
 }
 
-func (x *RevokeUserSessionsByDevicesRequest) GetDeviceIds() []string {
+func (x *RevokeUserSessionsByDevicesRequest) GetClientDeviceIds() []string {
 	if x != nil {
-		return x.DeviceIds
+		return x.ClientDeviceIds
 	}
 	return nil
 }
@@ -123,11 +123,10 @@ var File_session_proto protoreflect.FileDescriptor
 
 const file_session_proto_rawDesc = "" +
 	"\n" +
-	"\rsession.proto\x12\aiam.rpc\"\\\n" +
+	"\rsession.proto\x12\aiam.rpc\"i\n" +
 	"\"RevokeUserSessionsByDevicesRequest\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1d\n" +
-	"\n" +
-	"device_ids\x18\x02 \x03(\tR\tdeviceIds\"J\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12*\n" +
+	"\x11client_device_ids\x18\x02 \x03(\tR\x0fclientDeviceIds\"J\n" +
 	"#RevokeUserSessionsByDevicesResponse\x12#\n" +
 	"\rrevoked_count\x18\x01 \x01(\x03R\frevokedCount2\x8a\x01\n" +
 	"\x0eSessionService\x12x\n" +
