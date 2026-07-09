@@ -13,10 +13,12 @@ import (
 	"controlplane/internal/hypervisor"
 	"controlplane/internal/iam"
 	"controlplane/internal/mail"
+	"controlplane/internal/observability"
 	"controlplane/internal/storage"
 	"controlplane/pkg/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -45,6 +47,8 @@ func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
+	natsConn *nats.Conn,
+	otel *observability.OTel,
 ) (*Modules, error) {
 	// ------------------------------------------------------------------------
 	// GIAI ĐOẠN 1: KHỞI TẠO HỆ THỐNG GIÁM SÁT & OBSERVABILITY
@@ -92,7 +96,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, cacheEngine)
+	iamModule, err := iam.NewModule(cfg, db, rds, cacheEngine, natsConn, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}

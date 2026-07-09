@@ -11,16 +11,14 @@ import (
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
-	iamRpcHandler "controlplane/internal/iam/transport/rpc/handler"
-	iamproto "controlplane/internal/iam/transport/rpc/proto"
+	"controlplane/internal/observability"
 	"controlplane/pkg/constant"
-	"controlplane/pkg/logger"
 	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
-	"google.golang.org/grpc"
 )
 
 type IAMModule struct {
@@ -28,6 +26,9 @@ type IAMModule struct {
 	db         *pgxpool.Pool
 	rds        *goredis.Client
 	L1Registry *cacheengine.CacheRegistry
+	natsConn   *nats.Conn
+	otel       *observability.OTel
+	natsSubs   []*nats.Subscription
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
 	AuthHandler           *iamHandler.AuthHandler
@@ -56,6 +57,8 @@ func NewModule(
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
+	natsConn *nats.Conn,
+	otel *observability.OTel,
 ) (*IAMModule, error) {
 
 	// ------------------------------------------------------------------------
@@ -228,6 +231,8 @@ func NewModule(
 		db:                       db,
 		rds:                      rds,
 		L1Registry:               cacheEngine,
+		natsConn:                 natsConn,
+		otel:                     otel,
 		AuthService:              authSvc,
 		AuthHandler:              authHandler,
 		UserService:              userService,
@@ -268,14 +273,4 @@ func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID str
 	}
 	// Best-effort: lỗi flush không ảnh hưởng flow xác thực.
 	_ = m.deviceSelfSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID)
-}
-
-// RegisterGRPCServices đăng ký các dịch vụ gRPC của phân hệ IAM phục vụ xác thực Trinity
-func (m *IAMModule) RegisterGRPCServices(server *grpc.Server) {
-	if m == nil || m.AuthService == nil || m.SessionRefreshService == nil {
-		return
-	}
-	handler := iamRpcHandler.NewAuthGRPCHandler(m.AuthService, m.SessionRefreshService)
-	iamproto.RegisterAuthServiceServer(server, handler)
-	logger.SysInfo("grpc", "registered IAM AuthService onto gRPC server")
 }

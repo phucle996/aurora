@@ -6,6 +6,7 @@ import (
 	"time"
 
 	iamMetrics "controlplane/internal/iam/metrics"
+	pubsubHandler "controlplane/internal/iam/transport/pubsub/handler"
 	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 )
@@ -26,6 +27,17 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 		m.deviceCapCancel = cancel
 		go m.runDeviceCapReconciler(workerCtx)
 	}
+
+	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply)
+	if m.natsConn != nil {
+		authNatsHandler := pubsubHandler.NewAuthNatsHandler(m.cfg, m.AuthService, m.otel)
+		sub, err := authNatsHandler.Subscribe(m.natsConn)
+		if err != nil {
+			return err
+		}
+		m.natsSubs = append(m.natsSubs, sub)
+	}
+
 	return nil
 }
 
@@ -34,6 +46,15 @@ func (m *IAMModule) Stop() {
 	if m == nil {
 		return
 	}
+
+	// [COMMENT]: Hủy đăng ký NATS subscriptions trước khi tắt ứng dụng
+	for _, sub := range m.natsSubs {
+		if sub != nil {
+			_ = sub.Unsubscribe()
+		}
+	}
+	m.natsSubs = nil
+
 	if m.deviceCapCancel != nil {
 		m.deviceCapCancel()
 		m.deviceCapCancel = nil

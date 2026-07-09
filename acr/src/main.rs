@@ -97,13 +97,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let evaluator = Arc::new(PolicyEvaluator::new());
 
-    // [COMMENT]: Khởi tạo gRPC client để kết nối đến Control Plane
+    // [COMMENT]: Khởi tạo NATS client để kết nối đến Control Plane qua NATS Core
     let control_plane_client = Arc::new(crate::infra::controlplane::ControlPlaneClient::new(
-        config.controlplane_grpc_endpoint.clone(),
+        config.nats_url.clone(),
         config.controlplane_grpc_ca_cert.clone(),
         config.controlplane_grpc_client_cert.clone(),
         config.controlplane_grpc_client_key.clone(),
-    ));
+    ).await);
 
     // [COMMENT]: Khởi tạo ZoneManager - L1 in-process + Redis L2 shared + gRPC fallback
     // Sau khi 1 node gọi gRPC và ghi Redis L2, các node khác tự đọc L2 mà không cần gRPC lại

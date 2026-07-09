@@ -619,6 +619,7 @@ services:
       CONTROLPLANE_GRPC_CLIENT_KEY: "/etc/acr/tls/grpc-server.key"
       CONTROLPLANE_GRPC_DOMAIN: "localhost"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
+      NATS_ADDR: "nats://nats:4222"
     depends_on:
       acr-redis:
         condition: service_healthy

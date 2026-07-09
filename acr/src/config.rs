@@ -51,6 +51,8 @@ pub struct Config {
     pub app_public_domain: String,
     // [COMMENT]: Danh sách các origin được phép gọi API (đọc từ APP_ALLOWED_ORIGINS)
     pub allowed_origins: Vec<String>,
+    // [COMMENT]: Địa chỉ kết nối NATS Core Client
+    pub nats_url: String,
 }
 
 impl Config {
@@ -127,6 +129,9 @@ impl Config {
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
 
+        let nats_url = env::var("NATS_ADDR")
+            .unwrap_or_else(|_| "nats://nats:4222".to_string());
+
         // [COMMENT]: Khai báo nạp biến môi trường cho gRPC client đi đến Controlplane
         let controlplane_grpc_endpoint =
             env::var("CONTROLPLANE_GRPC_ENDPOINT").unwrap_or_else(|_| "localhost:9443".to_string());
@@ -177,6 +182,7 @@ impl Config {
             bypass_endpoints,
             app_public_domain,
             allowed_origins,
+            nats_url,
         })
     }
 }
