@@ -151,18 +151,18 @@ func GetUserRoleID(c *gin.Context, op string) (uuid.UUID, bool) {
 	return id, true
 }
 
-// [COMMENT]: GetDeviceID trích xuất và parse UUID của device đang kết nối từ header X-Device-ID do ACR inject.
+// [COMMENT]: GetClientDeviceID trích xuất và parse UUID của device đang kết nối từ header X-Client-Device-ID do ACR inject.
 // Tự động ghi log warning và trả lỗi HTTP nếu thiếu hoặc sai định dạng.
-func GetDeviceID(c *gin.Context, op string) (uuid.UUID, bool) {
-	idStr := strings.TrimSpace(c.GetHeader("X-Device-ID"))
+func GetClientDeviceID(c *gin.Context, op string) (uuid.UUID, bool) {
+	idStr := strings.TrimSpace(c.GetHeader("X-Client-Device-ID"))
 	if idStr == "" {
-		logger.HandlerWarn(c, op, nil, "missing device context header X-Device-ID")
+		logger.HandlerWarn(c, op, nil, "missing device context header X-Client-Device-ID")
 		apires.RespondUnauthorized(c, "unauthorized")
 		return uuid.Nil, false
 	}
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid device id format")
+		logger.HandlerWarn(c, op, err, "invalid client device id format")
 		apires.RespondUnauthorized(c, "unauthorized")
 		return uuid.Nil, false
 	}
@@ -189,7 +189,7 @@ func GetRequestID(c *gin.Context) string {
 	return strings.TrimSpace(c.GetHeader("X-Request-ID"))
 }
 
-// [COMMENT]: GetOptionalDeviceIDStr trích xuất Device ID dưới dạng chuỗi (nếu có, không bắt buộc).
-func GetOptionalDeviceIDStr(c *gin.Context) string {
-	return strings.TrimSpace(c.GetHeader("X-Device-ID"))
+// [COMMENT]: GetOptionalClientDeviceIDStr trích xuất Device ID dưới dạng chuỗi (nếu có, không bắt buộc).
+func GetOptionalClientDeviceIDStr(c *gin.Context) string {
+	return strings.TrimSpace(c.GetHeader("X-Client-Device-ID"))
 }

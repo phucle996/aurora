@@ -101,7 +101,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	currentDeviceID, ok := constant.GetDeviceID(c, op)
+	currentDeviceID, ok := constant.GetClientDeviceID(c, op)
 	if !ok {
 		return
 	}
@@ -141,7 +141,7 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	currID, ok := constant.GetDeviceID(c, op)
+	currID, ok := constant.GetClientDeviceID(c, op)
 	if !ok {
 		return
 	}

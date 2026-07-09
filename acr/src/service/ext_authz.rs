@@ -765,7 +765,7 @@ impl Authorization for ExtAuthzService {
                         });
                         ok.headers.push(HeaderValueOption {
                             header: Some(HeaderValue {
-                                key: HEADER_X_DEVICE_ID.to_string(),
+                                key: HEADER_X_CLIENT_DEVICE_ID.to_string(),
                                 value: session.tdid,
                                 ..Default::default()
                             }),
