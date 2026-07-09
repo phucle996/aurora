@@ -59,7 +59,9 @@ impl NatsEventRouter {
                 let nc_clone = nc.clone();
                 let svc_clone = svc.clone();
                 tokio::spawn(async move {
-                    let reply_payload = svc_clone.verify_user_trinity_token_bytes(&msg.payload).await;
+                    let reply_payload = svc_clone
+                        .verify_user_trinity_token_bytes(&msg.payload)
+                        .await;
                     if let Some(reply_subject) = msg.reply {
                         let _ = nc_clone.publish(reply_subject, reply_payload.into()).await;
                     }
@@ -93,7 +95,9 @@ impl NatsEventRouter {
                 let nc_clone = nc.clone();
                 let svc_clone = svc.clone();
                 tokio::spawn(async move {
-                    let reply_payload = svc_clone.verify_admin_trinity_token_bytes(&msg.payload).await;
+                    let reply_payload = svc_clone
+                        .verify_admin_trinity_token_bytes(&msg.payload)
+                        .await;
                     if let Some(reply_subject) = msg.reply {
                         let _ = nc_clone.publish(reply_subject, reply_payload.into()).await;
                     }
@@ -166,7 +170,7 @@ impl NatsEventRouter {
                 let mgr_clone = mgr.clone();
                 tokio::spawn(async move {
                     let reply_payload =
-                        crate::service::device::revoke::revoke_user_sessions_by_devices_bytes(
+                        crate::service::device::revoke::revoke_sessions_bytes(
                             &mgr_clone,
                             &msg.payload,
                         )
