@@ -48,7 +48,119 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 	const queueGroup = "iam_auth_service" // Đảm bảo HA bằng cách chia tải qua Queue Group
 
 	sub, err := nc.QueueSubscribe(subject, queueGroup, func(msg *nats.Msg) {
-		h.handleVerifyUserCredentials(msg)
+		ctx := context.Background()
+
+		// [COMMENT]: 1. Trích xuất distributed trace context (traceparent) từ NATS headers
+		if msg.Header != nil {
+			traceparent := msg.Header.Get("traceparent")
+			if traceparent != "" {
+				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
+			}
+		}
+
+		// [COMMENT]: 2. Khởi tạo server span để giám sát hiệu năng bằng OTel
+		var span trace.Span
+		if h.otel != nil {
+			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.verify_credentials")
+			defer span.End()
+			span.SetAttributes(
+				attribute.String("messaging.system", "nats"),
+				attribute.String("messaging.destination", "iam.auth.verify_credentials"),
+			)
+		}
+
+		// [COMMENT]: Định nghĩa hàm inline để respond error nhanh
+		respondError := func(errMsg string) {
+			resp := &iamproto.VerifyUserCredentialsResponse{
+				Valid:        false,
+				ErrorMessage: errMsg,
+			}
+			respData, err := proto.Marshal(resp)
+			if err != nil {
+				logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to marshal error response", err, nil)
+				return
+			}
+			_ = msg.Respond(respData)
+		}
+
+		// [COMMENT]: 3. Giải mã nhị phân request payload (Protobuf)
+		var req iamproto.VerifyUserCredentialsRequest
+		if err := proto.Unmarshal(msg.Data, &req); err != nil {
+			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to unmarshal request data", err, nil)
+			respondError("invalid request payload")
+			return
+		}
+
+		// [COMMENT]: 4. Kiểm tra tham số cơ bản
+		if req.Username == "" || req.Password == "" {
+			logger.SysWarn("NATS.VerifyUserCredentials", "Username and password are required")
+			respondError("Username and password are required")
+			return
+		}
+
+		var clientDeviceID uuid.UUID
+		if req.ClientDeviceId != "" {
+			parsed, err := uuid.Parse(req.ClientDeviceId)
+			if err == nil {
+				clientDeviceID = parsed
+			}
+		}
+
+		// [COMMENT]: 5. Map dữ liệu sang LoginRequest của Domain Entity
+		loginReq := iamEntity.LoginRequest{
+			Username:        req.Username,
+			Password:        req.Password,
+			DevicePublicKey: req.PublicKey,
+			TrustDevice:     req.TrustDevice,
+			DeviceName:      req.DeviceName,
+			ClientDeviceID:  clientDeviceID,
+			TenantDomain:    req.TenantDomain,
+			RemoteIP:        req.ClientIp,
+			UserAgent:       req.UserAgent,
+		}
+
+		// [COMMENT]: 6. Gọi AuthService xử lý kiểm tra credentials & đăng ký thiết bị dưới DB
+		res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
+		if err != nil {
+			if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
+				logger.SysWarn("NATS.VerifyUserCredentials", fmt.Sprintf("Login attempt blocked: user '%s' has no active role assigned in target scope", req.Username))
+				respondError(iamTaxonomy.ErrInvalidCredentials.Error())
+				return
+			}
+
+			if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
+				logger.SysWarn("NATS.VerifyUserCredentials", fmt.Sprintf("Login attempt failed: invalid credentials for user '%s'", req.Username))
+				respondError(iamTaxonomy.ErrInvalidCredentials.Error())
+				return
+			}
+
+			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to verify credentials due to system error", err, nil)
+			respondError("authentication service temporarily unavailable")
+			return
+		}
+
+		// [COMMENT]: 7. Chuẩn bị response: chỉ trả tenant_id, không trả tenant_code để bảo vệ an toàn định danh
+		resp := &iamproto.VerifyUserCredentialsResponse{
+			Valid:          res.Valid,
+			UserId:         res.UserID,
+			RoleId:         res.RoleID,
+			Level:          res.Level,
+			TenantId:       res.TenantID, // Trả tenant_id như yêu cầu
+			ClientDeviceId: res.ClientDeviceID,
+			RefreshToken:   res.RefreshToken,
+			Username:       res.Username,
+			TenantCode:     "", // Bỏ trống tenant_code theo yêu cầu
+		}
+
+		respData, err := proto.Marshal(resp)
+		if err != nil {
+			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to marshal response payload", err, nil)
+			return
+		}
+
+		if err := msg.Respond(respData); err != nil {
+			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to send NATS response", err, nil)
+		}
 	})
 	if err != nil {
 		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to %s: %w", subject, err)
@@ -56,119 +168,4 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 
 	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to %s on queue group %s", subject, queueGroup))
 	return sub, nil
-}
-
-func (h *AuthNatsHandler) handleVerifyUserCredentials(msg *nats.Msg) {
-	ctx := context.Background()
-
-	// [COMMENT]: 1. Trích xuất distributed trace context (traceparent) từ NATS headers
-	if msg.Header != nil {
-		traceparent := msg.Header.Get("traceparent")
-		if traceparent != "" {
-			ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
-		}
-	}
-
-	// [COMMENT]: 2. Khởi tạo server span để giám sát hiệu năng bằng OTel
-	var span trace.Span
-	if h.otel != nil {
-		ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.verify_credentials")
-		defer span.End()
-		span.SetAttributes(
-			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination", "iam.auth.verify_credentials"),
-		)
-	}
-
-	// [COMMENT]: 3. Giải mã nhị phân request payload (Protobuf)
-	var req iamproto.VerifyUserCredentialsRequest
-	if err := proto.Unmarshal(msg.Data, &req); err != nil {
-		logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to unmarshal request data", err, nil)
-		h.respondError(msg, "invalid request payload")
-		return
-	}
-
-	// [COMMENT]: 4. Kiểm tra tham số cơ bản
-	if req.Username == "" || req.Password == "" {
-		logger.SysWarn("NATS.VerifyUserCredentials", "Username and password are required")
-		h.respondError(msg, "Username and password are required")
-		return
-	}
-
-	var clientDeviceID uuid.UUID
-	if req.ClientDeviceId != "" {
-		parsed, err := uuid.Parse(req.ClientDeviceId)
-		if err == nil {
-			clientDeviceID = parsed
-		}
-	}
-
-	// [COMMENT]: 5. Map dữ liệu sang LoginRequest của Domain Entity
-	loginReq := iamEntity.LoginRequest{
-		Username:        req.Username,
-		Password:        req.Password,
-		DevicePublicKey: req.PublicKey,
-		TrustDevice:     req.TrustDevice,
-		DeviceName:      req.DeviceName,
-		ClientDeviceID:  clientDeviceID,
-		TenantDomain:    req.TenantDomain,
-		RemoteIP:        req.ClientIp,
-		UserAgent:       req.UserAgent,
-	}
-
-	// [COMMENT]: 6. Gọi AuthService xử lý kiểm tra credentials & đăng ký thiết bị dưới DB
-	res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
-	if err != nil {
-		if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
-			logger.SysWarn("NATS.VerifyUserCredentials", fmt.Sprintf("Login attempt blocked: user '%s' has no active role assigned in target scope", req.Username))
-			h.respondError(msg, iamTaxonomy.ErrInvalidCredentials.Error())
-			return
-		}
-
-		if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
-			logger.SysWarn("NATS.VerifyUserCredentials", fmt.Sprintf("Login attempt failed: invalid credentials for user '%s'", req.Username))
-			h.respondError(msg, iamTaxonomy.ErrInvalidCredentials.Error())
-			return
-		}
-
-		logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to verify credentials due to system error", err, nil)
-		h.respondError(msg, "authentication service temporarily unavailable")
-		return
-	}
-
-	// [COMMENT]: 7. Chuẩn bị response: chỉ trả tenant_id, không trả tenant_code để bảo vệ an toàn định danh
-	resp := &iamproto.VerifyUserCredentialsResponse{
-		Valid:          res.Valid,
-		UserId:         res.UserID,
-		RoleId:         res.RoleID,
-		Level:          res.Level,
-		TenantId:       res.TenantID, // Trả tenant_id như yêu cầu
-		ClientDeviceId: res.ClientDeviceID,
-		RefreshToken:   res.RefreshToken,
-		Username:       res.Username,
-		TenantCode:     "", // Bỏ trống tenant_code theo yêu cầu
-	}
-
-	respData, err := proto.Marshal(resp)
-	if err != nil {
-		logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to marshal response payload", err, nil)
-		return
-	}
-
-	if err := msg.Respond(respData); err != nil {
-		logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to send NATS response", err, nil)
-	}
-}
-
-func (h *AuthNatsHandler) respondError(msg *nats.Msg, errMsg string) {
-	resp := &iamproto.VerifyUserCredentialsResponse{
-		Valid:        false,
-		ErrorMessage: errMsg,
-	}
-	respData, err := proto.Marshal(resp)
-	if err != nil {
-		logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to marshal error response", err, nil)
-		return
-	}
-	_ = msg.Respond(respData)
 }
