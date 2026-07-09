@@ -1,12 +1,9 @@
-// ======================================================================================================
-// 📂 MODULE: acl/src/service/device/revoke_device.rs
-//            Triển khai nghiệp vụ chi tiết thu hồi phiên thiết bị (Device Session Revocation) từ A - Z
-// ======================================================================================================
-
 use crate::core::session::SessionManager;
 use crate::observability::logger::Logger;
-// [COMMENT]: Import device_proto (đổi tên từ session_proto) để lấy message types của DeviceService
-use crate::service::session::release_session::device_proto;
+use crate::service::session::release_session::device_proto::{
+    RevokeUserSessionsByDevicesRequest, RevokeUserSessionsByDevicesResponse,
+};
+use prost::Message;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -14,8 +11,8 @@ use tonic::{Request, Response, Status};
 /// Nhận diện yêu cầu, thực thi truy vấn Redis L2 (SMEMBERS & pipeline EXPIRE/SREM) và trả kết quả/lỗi gRPC Status.
 pub async fn revoke_user_sessions_by_devices(
     session_mgr: &Arc<SessionManager>,
-    request: Request<device_proto::RevokeUserSessionsByDevicesRequest>,
-) -> Result<Response<device_proto::RevokeUserSessionsByDevicesResponse>, Status> {
+    request: Request<RevokeUserSessionsByDevicesRequest>,
+) -> Result<Response<RevokeUserSessionsByDevicesResponse>, Status> {
     let req = request.into_inner();
     Logger::sys_info(
         "session.revoke_by_devices",
@@ -25,7 +22,7 @@ pub async fn revoke_user_sessions_by_devices(
         ),
     );
 
-    // [COMMENT]: Lấy kết nối Redis L2 trực tiếp từ session_mgr
+    // Lấy kết nối Redis L2 trực tiếp từ session_mgr
     let mut conn = match session_mgr.get_connection().await {
         Ok(c) => c,
         Err(e) => {
@@ -76,8 +73,10 @@ pub async fn revoke_user_sessions_by_devices(
         pipe.atomic();
 
         for access_key in &access_keys {
-            let session_key = format!("iam:user_access_session:{}:{}", req.user_id, access_key);
-            pipe.cmd("EXPIRE").arg(&session_key).arg(5);
+            // [COMMENT]: Khôi phục lại định dạng key phân cấp để xóa chính xác
+            // iam:user_session:{zone_id}:{tenant_id}:{user_id}:{access_key}
+            // Vì access_key chứa full key (theo thiết kế register_session), ta expire trực tiếp key đó.
+            pipe.cmd("EXPIRE").arg(access_key).arg(5);
             pipe.cmd("SREM").arg(&user_index_key).arg(access_key);
             revoked_count += 1;
         }
@@ -110,6 +109,42 @@ pub async fn revoke_user_sessions_by_devices(
     );
 
     Ok(Response::new(
-        device_proto::RevokeUserSessionsByDevicesResponse { revoked_count },
+        RevokeUserSessionsByDevicesResponse { revoked_count },
     ))
+}
+
+/// [COMMENT]: Xử lý yêu cầu thu hồi session thiết bị truyền vào dưới dạng bytes từ NATS,
+/// thực thi nghiệp vụ và trả về kết quả mã hóa nhị phân.
+pub async fn revoke_user_sessions_by_devices_bytes(
+    session_mgr: &Arc<SessionManager>,
+    payload: &[u8],
+) -> Vec<u8> {
+    let req = match RevokeUserSessionsByDevicesRequest::decode(payload) {
+        Ok(r) => r,
+        Err(e) => {
+            Logger::sys_error(
+                "device.revoke",
+                "Failed to decode RevokeUserSessionsByDevicesRequest",
+                &e.to_string(),
+            );
+            return vec![];
+        }
+    };
+
+    let res = match revoke_user_sessions_by_devices(session_mgr, Request::new(req)).await {
+        Ok(resp) => resp.into_inner(),
+        Err(_) => RevokeUserSessionsByDevicesResponse { revoked_count: 0 },
+    };
+
+    let mut reply_payload = Vec::new();
+    if res.encode(&mut reply_payload).is_ok() {
+        reply_payload
+    } else {
+        Logger::sys_error(
+            "device.revoke",
+            "Failed to encode RevokeUserSessionsByDevicesResponse",
+            "",
+        );
+        vec![]
+    }
 }

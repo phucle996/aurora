@@ -23,6 +23,6 @@ impl DeviceService for DeviceRpcHandler {
         &self,
         request: Request<RevokeUserSessionsByDevicesRequest>,
     ) -> Result<Response<RevokeUserSessionsByDevicesResponse>, Status> {
-        crate::service::device::revoke_user_sessions_by_devices(&self.session_mgr, request).await
+        crate::service::device::revoke::revoke_user_sessions_by_devices(&self.session_mgr, request).await
     }
 }
