@@ -188,9 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(r) => r,
                     Err(_) => crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                         valid: false,
-                        role_id: String::new(),
                         user_id: String::new(),
-                        zone_id: String::new(),
                     },
                 };
 
@@ -254,14 +252,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let res = match auth_svc.verify_admin_trinity_token(req).await {
                     Ok(r) => r,
-                    Err(_) => crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
-                        valid: false,
-                        role_id: String::new(),
-                        user_id: String::new(),
-                    },
-                };
-
-                let mut reply_payload = Vec::new();
+                    Err(_) => {
+                        crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
+                            valid: false,
+                            admin_id: String::new(),
+                        }
+                    }
+                };let mut reply_payload = Vec::new();
                 if let Ok(_) = res.encode(&mut reply_payload) {
                     if let Some(reply_subject) = msg.reply {
                         let _ = nats_client

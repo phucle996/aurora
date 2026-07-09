@@ -10,8 +10,7 @@ message VerifyAdminTrinityTokenRequest {
 
 message VerifyAdminTrinityTokenResponse {
   bool valid = 1;
-  string user_id = 2;
-  string role_id = 3;
+  string admin_id = 2;
 }
 
 // Request/Response xác thực cho End-User thông thường qua NATS
@@ -24,6 +23,4 @@ message VerifyUserTrinityTokenRequest {
 message VerifyUserTrinityTokenResponse {
   bool valid = 1;
   string user_id = 2;
-  string role_id = 3;
-  string zone_id = 4;
 }

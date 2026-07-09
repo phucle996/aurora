@@ -147,7 +147,7 @@ pub async fn handle_connect(
                         if res.valid {
                             Logger::sys_info(
                                 "http.auth_success",
-                                &format!("Admin authentication successful: {}", res.user_id),
+                                &format!("Admin authentication successful: {}", res.admin_id),
                             );
                             Logger::access_log(
                                 "connect_proxy",
@@ -159,8 +159,8 @@ pub async fn handle_connect(
 
                             let response = ConnectResponse {
                                 result: ConnectResult {
-                                    user: res.user_id.clone(),
-                                    channels: vec![format!("personal:{}", res.user_id)],
+                                    user: res.admin_id.clone(),
+                                    channels: vec![format!("personal:{}", res.admin_id)],
                                 },
                             };
                             (StatusCode::OK, Json(response)).into_response()

@@ -75,8 +75,7 @@ impl AuthServiceImpl {
             return Ok(
                 crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                     valid: false,
-                    user_id: String::new(),
-                    role_id: String::new(),
+                    admin_id: String::new(),
                 },
             );
         }
@@ -164,8 +163,7 @@ impl AuthServiceImpl {
         Ok(
             crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                 valid: true,
-                user_id: claims.sub.clone(),
-                role_id: "SRE".to_string(),
+                admin_id: claims.sub.clone(),
             },
         )
     }
@@ -182,8 +180,6 @@ impl AuthServiceImpl {
                 crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                     valid: false,
                     user_id: String::new(),
-                    role_id: String::new(),
-                    zone_id: String::new(),
                 },
             );
         }
@@ -261,8 +257,6 @@ impl AuthServiceImpl {
             crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                 valid: true,
                 user_id: claims.uid.clone(),
-                role_id: claims.role_id.clone(),
-                zone_id: claims.zone_id.clone().unwrap_or_default(),
             },
         )
     }
