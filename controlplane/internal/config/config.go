@@ -36,7 +36,6 @@ type Config struct {
 	SchemaSQL SchemaSQLCfg
 	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
 	Vault         VaultCfg
-	ACRGRPCTarget string
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -288,8 +287,5 @@ func LoadConfig() *Config {
 			MaxRetries:    getEnvAsInt("NATS_MAX_RETRIES", 5),
 			RetryInterval: getEnvAsDuration("NATS_RETRY_INTERVAL", 2*time.Second),
 		},
-		ACRGRPCTarget: func() string {
-			return getEnv("ACR_GRPC_TARGET", "acr:50051")
-		}(),
 	}
 }

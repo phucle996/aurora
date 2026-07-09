@@ -21,7 +21,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type IAMModule struct {
@@ -137,15 +136,8 @@ func NewModule(
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
 
-	// [COMMENT]: Khởi tạo gRPC connection đến ACR Service phục vụ phân rã & offload Trinity Session
-	acrConn, err := grpc.Dial(cfg.ACRGRPCTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, errors.New("iam module: failed to dial ACR gRPC target: " + err.Error())
-	}
-	acrClient := iamproto.NewSessionServiceClient(acrConn)
-
-	// [COMMENT]: Khởi tạo các Device Service riêng biệt cho Self và Platform
-	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, acrClient)
+	// [COMMENT]: Khởi tạo các Device Service riêng biệt cho Self và Platform (truyền nil acrClient vì chuyển sang Pub/Sub)
+	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, nil)
 	if deviceSelfSvc == nil {
 		return nil, errors.New("iam module: failed to construct device self service")
 	}
@@ -183,7 +175,7 @@ func NewModule(
 	authSvc := iamSvcImpl.NewAuthService(
 		cfg, authRepo, refreshSvc, deviceSelfSvc,
 		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
-		acrClient,
+		nil,
 	)
 	if authSvc == nil {
 		return nil, errors.New("iam module: failed to construct core auth service implementation")
