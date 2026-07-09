@@ -186,7 +186,7 @@ pub async fn handle_session_recovery(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
     zone_mgr: &Arc<crate::core::zone::ZoneManager>,
-    control_plane_client: &Arc<Nats>,
+    nats: &Arc<Nats>,
     config: &Config,
     cookie_header: &str,
     client_headers: &std::collections::HashMap<String, String>,
@@ -414,7 +414,8 @@ pub async fn handle_session_recovery(
         let mut payload_bytes = Vec::new();
         let verify_res = match (|| async {
             use prost::Message;
-            req_payload.encode(&mut payload_bytes)
+            req_payload
+                .encode(&mut payload_bytes)
                 .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
 
             let mut headers = async_nats::HeaderMap::new();
@@ -424,17 +425,26 @@ pub async fn handle_session_recovery(
                 headers.insert("traceparent", traceparent.as_str());
             }
 
-            let response_msg = control_plane_client
+            let response_msg = nats
                 .client()
-                .request_with_headers("iam.auth.verify_opaque_token".to_string(), headers, payload_bytes.into())
+                .request_with_headers(
+                    "iam.auth.verify_opaque_token".to_string(),
+                    headers,
+                    payload_bytes.into(),
+                )
                 .await
                 .map_err(|e| Status::unavailable(format!("NATS request failed: {}", e)))?;
 
-            let decoded = crate::infra::controlplane::auth::VerifyOpaqueRefreshTokenResponse::decode(response_msg.payload.as_ref())
+            let decoded =
+                crate::infra::controlplane::auth::VerifyOpaqueRefreshTokenResponse::decode(
+                    response_msg.payload.as_ref(),
+                )
                 .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
 
             Ok(decoded)
-        })().await {
+        })()
+        .await
+        {
             Ok(res) => res,
             Err(e) => {
                 if is_leader {

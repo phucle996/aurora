@@ -26,7 +26,7 @@ pub struct ExtAuthzService {
     evaluator: Arc<PolicyEvaluator>,
     config: Config,
     // [COMMENT]: Client NATS để gọi không đồng bộ sang Control Plane
-    control_plane_client: Arc<Nats>,
+    nats: Arc<Nats>,
     zone_mgr: Arc<ZoneManager>,
     // [COMMENT]: Bộ giới hạn tần suất tích hợp tại biên
     rate_limiter: Arc<crate::service::ratelimit::RateLimiter>,
@@ -38,7 +38,7 @@ impl ExtAuthzService {
         token_mgr: Arc<TokenManager>,
         evaluator: Arc<PolicyEvaluator>,
         config: Config,
-        control_plane_client: Arc<Nats>,
+        nats: Arc<Nats>,
         zone_mgr: Arc<ZoneManager>,
     ) -> Self {
         let rate_limiter = Arc::new(crate::service::ratelimit::RateLimiter::new(
@@ -49,7 +49,7 @@ impl ExtAuthzService {
             token_mgr,
             evaluator,
             config,
-            control_plane_client,
+            nats,
             zone_mgr,
             rate_limiter,
         }
@@ -202,7 +202,7 @@ impl Authorization for ExtAuthzService {
                         &self.session_mgr,
                         &self.token_mgr,
                         &self.zone_mgr,
-                        &self.control_plane_client,
+                        &self.nats,
                         &self.config,
                         client_headers,
                         method,
@@ -217,7 +217,7 @@ impl Authorization for ExtAuthzService {
                 if let Some(login_res) = crate::service::login::login_handler::handle_login(
                     &self.session_mgr,
                     &self.token_mgr,
-                    &self.control_plane_client,
+                    &self.nats,
                     &self.zone_mgr,
                     &self.config,
                     client_headers,
@@ -317,7 +317,7 @@ impl Authorization for ExtAuthzService {
                 if let Some(revoke_res) = crate::service::session::revoke_session::handle_logout(
                     &self.session_mgr,
                     &self.token_mgr,
-                    &self.control_plane_client,
+                    &self.nats,
                     client_headers,
                     method,
                     path,
@@ -572,7 +572,7 @@ impl Authorization for ExtAuthzService {
                             &self.session_mgr,
                             &self.token_mgr,
                             &self.zone_mgr,
-                            &self.control_plane_client,
+                            &self.nats,
                             &self.config,
                             cookie_header,
                             client_headers,

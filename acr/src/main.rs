@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let evaluator = Arc::new(PolicyEvaluator::new());
 
     // [COMMENT]: Khởi tạo NATS client để kết nối đến Control Plane qua NATS Core
-    let control_plane_client = Arc::new(crate::infra::controlplane::Nats::new(
+    let nats = Arc::new(crate::infra::controlplane::Nats::new(
         config.nats_url.clone(),
         config.controlplane_grpc_ca_cert.clone(),
         config.controlplane_grpc_client_cert.clone(),
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [COMMENT]: Khởi tạo ZoneManager - L1 in-process + Redis L2 shared + gRPC fallback
     // Sau khi 1 node gọi gRPC và ghi Redis L2, các node khác tự đọc L2 mà không cần gRPC lại
     let zone_mgr = Arc::new(crate::core::zone::ZoneManager::new(
-        control_plane_client.clone(),
+        nats.clone(),
         redis_client.clone(),
     ));
 
@@ -117,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         token_mgr.clone(),
         evaluator.clone(),
         config.clone(),
-        control_plane_client.clone(),
+        nats.clone(),
         zone_mgr.clone(),
     );
 
@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_mgr.clone(),
         token_mgr.clone(),
         redis_client.clone(),
-        control_plane_client.clone(),
+        nats.clone(),
     );
 
     // 7. Cấu hình địa chỉ mạng và khởi chạy gRPC Server

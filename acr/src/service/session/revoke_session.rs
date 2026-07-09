@@ -15,7 +15,7 @@ use crate::pkg::cookie::*;
 pub async fn handle_logout(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    control_plane_client: &Arc<Nats>,
+    nats: &Arc<Nats>,
     client_headers: &std::collections::HashMap<String, String>,
     method: &str,
     path: &str,
@@ -116,7 +116,7 @@ pub async fn handle_logout(
     // [COMMENT]: Hủy refresh token lưu tại database Control Plane (Go) qua gRPC bất đồng bộ
     let refresh_token_opt = extract_cookie_value(&cookie_header, COOKIE_REFRESH_TOKEN);
     if let Some(refresh_token) = refresh_token_opt {
-        let cp_client = control_plane_client.clone();
+        let nats_clone = nats.clone();
         tokio::spawn(async move {
             Logger::sys_info(
                 "ext_authz.logout",
@@ -138,7 +138,7 @@ pub async fn handle_logout(
                     headers.insert("traceparent", traceparent.as_str());
                 }
 
-                cp_client
+                nats_clone
                     .client()
                     .request_with_headers("iam.auth.revoke_opaque_token".to_string(), headers, payload_bytes.into())
                     .await

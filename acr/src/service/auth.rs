@@ -39,7 +39,7 @@ pub struct AuthServiceImpl {
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
     redis_client: Arc<redis::Client>,
-    control_plane_client: Arc<Nats>,
+    nats: Arc<Nats>,
 }
 
 impl AuthServiceImpl {
@@ -47,13 +47,13 @@ impl AuthServiceImpl {
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
         redis_client: Arc<redis::Client>,
-        control_plane_client: Arc<Nats>,
+        nats: Arc<Nats>,
     ) -> Self {
         Self {
             session_mgr,
             token_mgr,
             redis_client,
-            control_plane_client,
+            nats,
         }
     }
 
@@ -272,7 +272,7 @@ impl AuthService for AuthServiceImpl {
         }
 
         let response_msg = match self
-            .control_plane_client
+            .nats
             .client()
             .request_with_headers("iam.auth.verify_opaque_token".to_string(), headers, payload.into())
             .await
@@ -306,7 +306,7 @@ impl AuthService for AuthServiceImpl {
         }
 
         match self
-            .control_plane_client
+            .nats
             .client()
             .request_with_headers("iam.auth.revoke_opaque_token".to_string(), headers, payload.into())
             .await

@@ -51,7 +51,7 @@ pub struct ZoneItem {
 // ─── ZoneManager ────────────────────────────────────────────────────────────
 
 pub struct ZoneManager {
-    control_plane_client: Arc<Nats>,
+    nats: Arc<Nats>,
     redis_client: Arc<redis::Client>,
 
     // [COMMENT]: L1 in-memory cache riêng từng node - tách biệt theo chiều lookup
@@ -65,11 +65,11 @@ pub struct ZoneManager {
 
 impl ZoneManager {
     pub fn new(
-        control_plane_client: Arc<Nats>,
+        nats: Arc<Nats>,
         redis_client: Arc<redis::Client>,
     ) -> Self {
         Self {
-            control_plane_client,
+            nats,
             redis_client,
             zone_code_to_id: RwLock::new(HashMap::new()),
             zone_id_to_status: RwLock::new(HashMap::new()),
@@ -348,7 +348,7 @@ impl ZoneManager {
             "Syncing zones from Controlplane via gRPC...",
         );
 
-        match self.control_plane_client.get_zone_list().await {
+        match self.nats.get_zone_list().await {
             Ok(zones) => {
                 for z in &zones {
                     let clean_code = z.zone_code.trim().to_lowercase();

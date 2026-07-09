@@ -44,7 +44,7 @@ pub struct ErrorResponse {
 pub async fn handle_login(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    control_plane_client: &Arc<Nats>,
+    nats: &Arc<Nats>,
     zone_mgr: &Arc<ZoneManager>,
     config: &Config,
     client_headers: &std::collections::HashMap<String, String>,
@@ -187,7 +187,7 @@ pub async fn handle_login(
         headers.insert("traceparent", traceparent.as_str());
     }
 
-    let response_msg = match control_plane_client
+    let response_msg = match nats
         .client()
         .request_with_headers("iam.auth.verify_credentials".to_string(), headers, payload_bytes.into())
         .await
