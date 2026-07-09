@@ -139,8 +139,8 @@ func NewModule(
 	// ------------------------------------------------------------------------
 	// Khởi tạo các Engine xử lý Business Logic chính.
 
-	// [COMMENT]: Khởi tạo các Device Service riêng biệt cho Self và Platform (truyền nil acrClient vì chuyển sang Pub/Sub)
-	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, nil)
+	// [COMMENT]: Khởi tạo các Device Service riêng biệt cho Self và Platform (truyền natsConn vì chuyển sang Pub/Sub)
+	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, natsConn)
 	if deviceSelfSvc == nil {
 		return nil, errors.New("iam module: failed to construct device self service")
 	}

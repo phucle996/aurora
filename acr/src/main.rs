@@ -270,6 +270,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // [COMMENT]: Khởi chạy NATS subscriber để lắng nghe các yêu cầu truy vấn active sessions của user
+    let nats_client_clone3 = nats.client().clone();
+    let session_mgr_clone = session_mgr.clone();
+    tokio::spawn(async move {
+        let mut subscriber = match nats_client_clone3
+            .queue_subscribe(
+                "iam.device.get_active_sessions".to_string(),
+                "acr_device_service".to_string(),
+            )
+            .await
+        {
+            Ok(sub) => sub,
+            Err(e) => {
+                Logger::sys_error(
+                    "nats.subscriber",
+                    "Failed to subscribe to iam.device.get_active_sessions",
+                    &e.to_string(),
+                );
+                return;
+            }
+        };
+
+        Logger::sys_info(
+            "nats.subscriber",
+            "Successfully subscribed to iam.device.get_active_sessions",
+        );
+
+        use futures_util::StreamExt;
+        use prost::Message;
+        while let Some(msg) = subscriber.next().await {
+            let session_mgr = session_mgr_clone.clone();
+            let nats_client = nats_client_clone3.clone();
+            tokio::spawn(async move {
+                let req = match crate::infra::nats::auth::GetActiveDevicesRequest::decode(
+                    msg.payload.as_ref(),
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        Logger::sys_error(
+                            "nats.subscriber",
+                            "Failed to decode GetActiveDevicesRequest",
+                            &e.to_string(),
+                        );
+                        return;
+                    }
+                };
+
+                let mut active_devices = Vec::new();
+                if let Ok(sessions) = session_mgr.get_active_sessions(&req.user_id).await {
+                    for (tdid, lsa) in sessions {
+                        active_devices.push(crate::infra::nats::auth::ActiveDeviceEntry {
+                            client_device_id: tdid,
+                            last_seen_at: lsa,
+                        });
+                    }
+                }
+
+                let res = crate::infra::nats::auth::GetActiveDevicesResponse { active_devices };
+
+                let mut reply_payload = Vec::new();
+                if let Ok(_) = res.encode(&mut reply_payload) {
+                    if let Some(reply_subject) = msg.reply {
+                        let _ = nats_client
+                            .publish(reply_subject, reply_payload.into())
+                            .await;
+                    }
+                }
+            });
+        }
+    });
+
     // 7. Cấu hình địa chỉ mạng và khởi chạy gRPC Server
     let addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
         .parse()

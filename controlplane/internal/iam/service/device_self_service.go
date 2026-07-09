@@ -21,14 +21,16 @@ import (
 	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+	"google.golang.org/protobuf/proto"
 )
 
 // [COMMENT]: DeviceSelfService quản lý thiết bị cho chính user cá nhân
 type DeviceSelfService struct {
-	deviceRepo           iamRepoInterface.DeviceSelfRepository
-	refreshTokenRepo     iamRepoInterface.RefreshTokenRepository
-	registry             *cacheengine.CacheRegistry
-	sessionServiceClient iamproto.SessionServiceClient
+	deviceRepo       iamRepoInterface.DeviceSelfRepository
+	refreshTokenRepo iamRepoInterface.RefreshTokenRepository
+	registry         *cacheengine.CacheRegistry
+	natsConn         *nats.Conn
 }
 
 // [COMMENT]: NewDeviceSelfService khởi tạo thể hiện DeviceSelfService
@@ -36,29 +38,65 @@ func NewDeviceSelfService(
 	deviceRepo iamRepoInterface.DeviceSelfRepository,
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
-	sessionServiceClient iamproto.SessionServiceClient,
+	natsConn *nats.Conn,
 ) iamSvcInterface.DeviceSelfService {
 	return &DeviceSelfService{
-		deviceRepo:           deviceRepo,
-		refreshTokenRepo:     refreshTokenRepo,
-		registry:             registry,
-		sessionServiceClient: sessionServiceClient,
+		deviceRepo:       deviceRepo,
+		refreshTokenRepo: refreshTokenRepo,
+		registry:         registry,
+		natsConn:         natsConn,
 	}
+}
+
+// [COMMENT]: requestActiveDevicesFromAcr gửi yêu cầu qua NATS lấy danh sách session hoạt động
+func (s *DeviceSelfService) requestActiveDevicesFromAcr(ctx context.Context, userID uuid.UUID) (*iamproto.GetActiveDevicesResponse, error) {
+	if s.natsConn == nil {
+		return nil, errors.New("nats connection not initialized")
+	}
+
+	req := &iamproto.GetActiveDevicesRequest{
+		UserId: userID.String(),
+	}
+
+	reqBytes, err := proto.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Thực hiện Request-Reply qua NATS (timeout 2s)
+	msg, err := s.natsConn.RequestWithContext(ctx, "iam.device.get_active_sessions", reqBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &iamproto.GetActiveDevicesResponse{}
+	if err := proto.Unmarshal(msg.Data, res); err != nil {
+		return nil, err
+	}
+
+	return res, nil
 }
 
 // [COMMENT]: ListMyDevices lấy danh sách thiết bị của user
 func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
 	var items []iamEntity.DevicePresence
 	var listErr error
-	presenceByTracked := make(map[string]iamEntity.UserAccessSession, 10)
+	var activeDevicesRes *iamproto.GetActiveDevicesResponse
+	var natsErr error
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 
 	// [COMMENT]: Nhánh 1: Truy vấn PostgreSQL (I/O Bound) lấy DevicePresence thô
 	go func() {
 		defer wg.Done()
 		items, listErr = s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
+	}()
+
+	// [COMMENT]: Nhánh 2: Truy vấn danh sách session hoạt động từ ACR qua NATS Core (I/O Bound)
+	go func() {
+		defer wg.Done()
+		activeDevicesRes, natsErr = s.requestActiveDevicesFromAcr(ctx, userID)
 	}()
 
 	wg.Wait()
@@ -67,12 +105,25 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
 
+	if natsErr != nil {
+		// [COMMENT]: Nếu lỗi kết nối NATS, ghi nhận lỗi và tiếp tục xử lý (IsOnline mặc định false)
+		iamMetrics.Downstream(ctx, "broker", "requestActiveDevicesFromAcr", iamMetrics.OutcomeFailureUnknown, 0, natsErr)
+	}
+
+	// Map active devices to O(1) map
+	activeMap := make(map[string]int64)
+	if activeDevicesRes != nil {
+		for _, dev := range activeDevicesRes.ActiveDevices {
+			activeMap[strings.TrimSpace(dev.ClientDeviceId)] = dev.LastSeenAt
+		}
+	}
+
 	// [COMMENT]: Cập nhật trạng thái online và thời gian hoạt động cuối cùng của từng thiết bị trong mảng items
 	for i := range items {
-		if rt, ok := presenceByTracked[strings.TrimSpace(items[i].ID)]; ok {
+		if lastSeen, ok := activeMap[strings.TrimSpace(items[i].ID)]; ok {
 			items[i].IsOnline = true
-			if rt.LastSeenAt > 0 {
-				ts := time.Unix(rt.LastSeenAt, 0).UTC()
+			if lastSeen > 0 {
+				ts := time.Unix(lastSeen, 0).UTC()
 				items[i].LastSeenAt = &ts
 			}
 		}
@@ -105,14 +156,21 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 
-	if s.sessionServiceClient != nil {
-		_, grpcErr := s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
+	if s.natsConn != nil {
+		req := &iamproto.RevokeUserSessionsByDevicesRequest{
 			UserId:    userID.String(),
 			DeviceIds: []string{deviceID.String()},
-		})
-		if grpcErr != nil {
+		}
+		reqBytes, err := proto.Marshal(req)
+		if err != nil {
 			serviceOutcome = iamMetrics.OutcomeFailureUnknown
-			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, grpcErr, "session_revocation_rpc_failed")
+			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_marshal_failed")
+		}
+		// Gửi yêu cầu thu hồi session qua NATS đến ACR (timeout 2s)
+		_, err = s.natsConn.RequestWithContext(ctx, "iam.device.revoke_sessions", reqBytes)
+		if err != nil {
+			serviceOutcome = iamMetrics.OutcomeFailureUnknown
+			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_rpc_failed")
 		}
 	}
 
@@ -146,13 +204,19 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 
-	if len(otherDeviceIDs) > 0 && s.sessionServiceClient != nil {
-		_, grpcErr := s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
+	if len(otherDeviceIDs) > 0 && s.natsConn != nil {
+		req := &iamproto.RevokeUserSessionsByDevicesRequest{
 			UserId:    userID.String(),
 			DeviceIds: otherDeviceIDs,
-		})
-		if grpcErr != nil {
-			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, grpcErr, "session_revocation_rpc_failed")
+		}
+		reqBytes, err := proto.Marshal(req)
+		if err != nil {
+			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_marshal_failed")
+		}
+		// Gửi yêu cầu thu hồi session qua NATS đến ACR
+		_, err = s.natsConn.RequestWithContext(ctx, "iam.device.revoke_sessions", reqBytes)
+		if err != nil {
+			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_rpc_failed")
 		}
 	}
 
@@ -225,15 +289,19 @@ func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, user
 		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
 	}
 
-	if len(deviceIDs) > 0 && s.sessionServiceClient != nil {
+	if len(deviceIDs) > 0 && s.natsConn != nil {
 		deviceIDS := make([]string, 0, len(deviceIDs))
 		for _, dID := range deviceIDs {
 			deviceIDS = append(deviceIDS, dID.String())
 		}
-		_, _ = s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
+		req := &iamproto.RevokeUserSessionsByDevicesRequest{
 			UserId:    userID.String(),
 			DeviceIds: deviceIDS,
-		})
+		}
+		if reqBytes, err := proto.Marshal(req); err == nil {
+			// Gửi yêu cầu thu hồi session qua NATS đến ACR (bất đồng bộ / không block)
+			_, _ = s.natsConn.RequestWithContext(ctx, "iam.device.revoke_sessions", reqBytes)
+		}
 	}
 
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
