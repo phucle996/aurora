@@ -30,6 +30,6 @@ type DeviceSelfService interface {
 
 	// [COMMENT]: GetActiveDeviceID trả về client_device_id của thiết bị đang hoạt động khớp với user và khóa công khai
 	GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
-	// [COMMENT]: RevokeDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id
-	RevokeDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error
+	// [COMMENT]: EvictDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id và xóa token
+	EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error
 }

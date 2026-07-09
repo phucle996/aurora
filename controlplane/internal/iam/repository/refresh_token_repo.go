@@ -32,7 +32,7 @@ func NewRefreshTokenRepository(
 }
 
 // [COMMENT]: Xóa bỏ Refresh Token session dựa trên hash để thực hiện thu hồi/logout khi nhận tín hiệu từ ACR
-func (r *RefreshTokenRepository) DeleteRefreshTokenSessionByHash(ctx context.Context, tokenHash string) (int64, error) {
+func (r *RefreshTokenRepository) DeleteByHash(ctx context.Context, tokenHash string) (int64, error) {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.refresh_tokens
 		WHERE token_hash = $1
@@ -50,31 +50,31 @@ func (r *RefreshTokenRepository) DeleteRefreshTokenSessionByHash(ctx context.Con
 	return rowsAffected, nil
 }
 
-func (r *RefreshTokenRepository) RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
+func (r *RefreshTokenRepository) DeleteByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error) {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.refresh_tokens
 		WHERE user_id = $1 AND ($2::uuid IS NULL OR device_id <> $2)
 	`, r.schema)
 	res, err := r.db.Exec(ctx, query, userID, exceptDeviceID)
 	if err != nil {
-		return 0, fmt.Errorf("iam repo: revoke refresh tokens by user id: %w", err)
+		return 0, fmt.Errorf("iam repo: delete refresh tokens by user id: %w", err)
 	}
 	return res.RowsAffected(), nil
 }
 
-func (r *RefreshTokenRepository) RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error) {
+func (r *RefreshTokenRepository) DeleteByDeviceID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error) {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.refresh_tokens
 		WHERE user_id = $1 AND device_id = $2
 	`, r.schema)
 	res, err := r.db.Exec(ctx, query, userID, deviceID)
 	if err != nil {
-		return 0, fmt.Errorf("iam repo: revoke refresh tokens by device and user: %w", err)
+		return 0, fmt.Errorf("iam repo: delete refresh tokens by device and user: %w", err)
 	}
 	return res.RowsAffected(), nil
 }
 
-func (r *RefreshTokenRepository) RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) {
+func (r *RefreshTokenRepository) DeleteByDeviceIDs(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error) {
 	if len(deviceIDs) == 0 {
 		return 0, nil
 	}
@@ -84,30 +84,14 @@ func (r *RefreshTokenRepository) RevokeRefreshTokensByDeviceIDsAndUserID(ctx con
 	`, r.schema)
 	res, err := r.db.Exec(ctx, query, userID, deviceIDs)
 	if err != nil {
-		return 0, fmt.Errorf("iam repo: revoke refresh tokens by device ids: %w", err)
-	}
-	return res.RowsAffected(), nil
-}
-
-func (r *RefreshTokenRepository) DeleteTokensByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) (int64, error) {
-	if len(clientDeviceIDs) == 0 {
-		return 0, nil
-	}
-	query := fmt.Sprintf(`
-		DELETE FROM %s.refresh_tokens
-		WHERE user_id = $1 AND device_id IN (
-			SELECT id FROM %s.devices WHERE user_id = $1 AND client_device_id = ANY($2)
-		)
-	`, r.schema, r.schema)
-	res, err := r.db.Exec(ctx, query, userID, clientDeviceIDs)
-	if err != nil {
-		return 0, fmt.Errorf("iam repo: delete refresh tokens by client device ids: %w", err)
+		return 0, fmt.Errorf("iam repo: delete refresh tokens by device ids: %w", err)
 	}
 	return res.RowsAffected(), nil
 }
 
 
-func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) {
+
+func (r *RefreshTokenRepository) LoadContextByHash(ctx context.Context, tokenHash string) (*iamEntity.RefreshContext, error) {
 	query := fmt.Sprintf(`
 		SELECT
 			r.id, r.user_id, r.device_id, r.token_hash, r.tenant_id, r.expires_at,
@@ -151,9 +135,9 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 	return &ctxOut, nil
 }
 
-// CreateRefreshTokenSession lưu trực tiếp một thực thể RefreshToken mới vào bảng database refresh_tokens.
+// CreateSession lưu trực tiếp một thực thể RefreshToken mới vào bảng database refresh_tokens.
 // Đây là hàm hỗ trợ cho flow Login ban đầu khi chọn trust_device, giảm thiểu logic trung gian.
-func (r *RefreshTokenRepository) CreateRefreshTokenSession(ctx context.Context, token iamEntity.RefreshToken) error {
+func (r *RefreshTokenRepository) CreateToken(ctx context.Context, token iamEntity.RefreshToken) error {
 	// Khởi tạo câu lệnh INSERT chèn trực tiếp dòng dữ liệu phiên làm việc
 	query := fmt.Sprintf(`
 		INSERT INTO %s.refresh_tokens (

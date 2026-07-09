@@ -137,12 +137,12 @@ func (h *DeviceNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, erro
 		}
 
 		// Thực thi thu hồi thiết bị và session tương ứng trong database
-		if err := h.deviceSvc.RevokeDevicesByClientDeviceIDs(ctx, userUUID, req.ClientDeviceIds); err != nil {
-			logger.SysError("NATS.EvictedDevices", fmt.Sprintf("Failed to revoke evicted devices: %v", err))
+		if err := h.deviceSvc.EvictDevices(ctx, userUUID, req.ClientDeviceIds); err != nil {
+			logger.SysError("NATS.EvictDevices", fmt.Sprintf("Failed to evict devices: %v", err))
 			return
 		}
 
-		logger.SysInfo("NATS.EvictedDevices", fmt.Sprintf("Successfully revoked %d evicted devices for user_id=%s", len(req.ClientDeviceIds), req.UserId))
+		logger.SysInfo("NATS.EvictDevices", fmt.Sprintf("Successfully evicted %d evicted devices for user_id=%s", len(req.ClientDeviceIds), req.UserId))
 	})
 
 	if err != nil {

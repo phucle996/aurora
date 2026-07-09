@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -216,29 +215,14 @@ func (s *DeviceSelfService) BulkTouchDevices(ctx context.Context, updates []iamE
 	return s.deviceRepo.BulkTouchDevices(ctx, updates)
 }
 
-// [COMMENT]: RevokeDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
+// [COMMENT]: EvictDevices thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
 // đồng thời xóa bỏ Refresh Token tương ứng trong database. Được gọi khi nhận sự kiện Evicted từ ACR qua NATS.
-func (s *DeviceSelfService) RevokeDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
-	if s == nil || s.deviceRepo == nil {
-		return nil
-	}
+func (s *DeviceSelfService) EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
+
 	if len(clientDeviceIDs) == 0 {
 		return nil
 	}
-
-	// 1. Cập nhật trạng thái 'revoked' cho các thiết bị trong DB
-	if err := s.deviceRepo.RevokeDevicesByClientDeviceIDs(ctx, userID, clientDeviceIDs); err != nil {
-		return fmt.Errorf("iam service: revoke devices by client device ids: %w", err)
-	}
-
-	// 2. Thu hồi các refresh token tương ứng
-	if s.refreshTokenRepo != nil {
-		if _, err := s.refreshTokenRepo.DeleteTokensByClientDeviceIDs(ctx, userID, clientDeviceIDs); err != nil {
-			return fmt.Errorf("iam service: delete tokens by client device ids: %w", err)
-		}
-	}
-
-	return nil
+	return s.deviceRepo.EvictDevicesByClientDeviceIDs(ctx, userID, clientDeviceIDs)
 }
 
 // [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ

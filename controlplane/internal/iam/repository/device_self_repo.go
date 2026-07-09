@@ -358,18 +358,24 @@ func (r *DeviceSelfRepository) ListUsersExceedingDeviceCap(ctx context.Context, 
 	return out, rows.Err()
 }
 
-// [COMMENT]: RevokeDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id
-func (r *DeviceSelfRepository) RevokeDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
+// [COMMENT]: EvictDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
+// đồng thời xóa bỏ Refresh Token tương ứng trong database bằng 1 câu lệnh CTE duy nhất để tối ưu hiệu năng.
+func (r *DeviceSelfRepository) EvictDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
 	if len(clientDeviceIDs) == 0 {
 		return nil
 	}
 	query := fmt.Sprintf(`
-		UPDATE %s.devices
-		SET status = 'revoked', revoked_at = now(), updated_at = now()
-		WHERE user_id = $1 AND client_device_id = ANY($2)
-	`, r.schema)
+		WITH updated_devices AS (
+			UPDATE %s.devices
+			SET status = 'revoked', revoked_at = now(), updated_at = now()
+			WHERE user_id = $1 AND client_device_id = ANY($2)
+			RETURNING id
+		)
+		DELETE FROM %s.refresh_tokens
+		WHERE user_id = $1 AND device_id IN (SELECT id FROM updated_devices)
+	`, r.schema, r.schema)
 	if _, err := r.db.Exec(ctx, query, userID, clientDeviceIDs); err != nil {
-		return fmt.Errorf("iam repo: revoke devices by client device ids: %w", err)
+		return fmt.Errorf("iam repo: evict devices and tokens by client device ids: %w", err)
 	}
 	return nil
 }

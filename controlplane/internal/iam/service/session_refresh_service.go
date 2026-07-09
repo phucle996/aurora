@@ -78,7 +78,7 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 	}
 
 	// [COMMENT]: 5. Ghi trực tiếp xuống DB PostgreSQL
-	if err := s.repo.CreateRefreshTokenSession(ctx, rt); err != nil {
+	if err := s.repo.CreateToken(ctx, rt); err != nil {
 		return "", time.Time{}, fmt.Errorf("session refresh: failed to persist refresh session: %w", err)
 	}
 
@@ -89,7 +89,7 @@ func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID u
 func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, rawRefreshToken string, tenantID *uuid.UUID, userID uuid.UUID) (*iamEntity.VerifyOpaqueRefreshTokenResult, error) {
 	// [COMMENT]: 1. Thực hiện băm SHA-256 token thô từ client để so khớp
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
-	refreshContext, err := s.repo.LoadRefreshContextByHash(ctx, tokenHash)
+	refreshContext, err := s.repo.LoadContextByHash(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrNotFound) {
 			return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
@@ -165,16 +165,16 @@ func (s *SessionRefreshService) RevokeOpaqueRefreshToken(ctx context.Context, ra
 	tokenHash := security.HashTokenSHA256(rawRefreshToken)
 
 	startLoad := time.Now()
-	_, err := s.repo.DeleteRefreshTokenSessionByHash(ctx, tokenHash)
+	_, err := s.repo.DeleteByHash(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrZeroRowsAffected) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
 			return err
 		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeFailureUnknown, time.Since(startLoad), err)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteByHash", iamMetrics.OutcomeFailureUnknown, time.Since(startLoad), err)
 		return fmt.Errorf("session refresh: failed to delete refresh token: %w", err)
 	}
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteRefreshTokenSessionByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "DeleteByHash", iamMetrics.OutcomeSuccess, time.Since(startLoad), nil)
 
 	return nil
 }
