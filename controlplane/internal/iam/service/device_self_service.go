@@ -67,10 +67,6 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 	// [COMMENT]: Nhánh 2: Truy vấn danh sách session hoạt động từ ACR qua NATS Core (I/O Bound)
 	go func() {
 		defer wg.Done()
-		if s.natsConn == nil {
-			natsErr = errors.New("nats connection not initialized")
-			return
-		}
 		req := &iamproto.GetActiveDevicesRequest{
 			UserId: userID.String(),
 		}
@@ -149,23 +145,22 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 
-	if s.natsConn != nil {
+	// [COMMENT]: Nhánh gởi tín hiệu xóa session sang ACR chạy bất đồng bộ bằng Goroutine nền
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		req := &iamproto.RevokeUserSessionsByDevicesRequest{
 			UserId:    userID.String(),
 			DeviceIds: []string{deviceID.String()},
 		}
 		reqBytes, err := proto.Marshal(req)
 		if err != nil {
-			serviceOutcome = iamMetrics.OutcomeFailureUnknown
-			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_marshal_failed")
+			return
 		}
-		// Gửi yêu cầu thu hồi session qua NATS đến ACR (timeout 2s)
-		_, err = s.natsConn.RequestWithContext(ctx, "iam.device.revoke_sessions", reqBytes)
-		if err != nil {
-			serviceOutcome = iamMetrics.OutcomeFailureUnknown
-			return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_rpc_failed")
-		}
-	}
+		// Gửi yêu cầu qua NATS Request-Reply đến ACR trong background thread
+		_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
+	}()
 
 	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByIDAndUserID", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning")
@@ -197,20 +192,23 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 
-	if len(otherDeviceIDs) > 0 && s.natsConn != nil {
-		req := &iamproto.RevokeUserSessionsByDevicesRequest{
-			UserId:    userID.String(),
-			DeviceIds: otherDeviceIDs,
-		}
-		reqBytes, err := proto.Marshal(req)
-		if err != nil {
-			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_marshal_failed")
-		}
-		// Gửi yêu cầu thu hồi session qua NATS đến ACR
-		_, err = s.natsConn.RequestWithContext(ctx, "iam.device.revoke_sessions", reqBytes)
-		if err != nil {
-			return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, "session_revocation_rpc_failed")
-		}
+	if len(otherDeviceIDs) > 0 {
+		// [COMMENT]: Nhánh gởi tín hiệu xóa session sang ACR chạy bất đồng bộ bằng Goroutine nền
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			req := &iamproto.RevokeUserSessionsByDevicesRequest{
+				UserId:    userID.String(),
+				DeviceIds: otherDeviceIDs,
+			}
+			reqBytes, err := proto.Marshal(req)
+			if err != nil {
+				return
+			}
+			// Gửi yêu cầu qua NATS Request-Reply đến ACR trong background thread
+			_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
+		}()
 	}
 
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning")
@@ -282,7 +280,7 @@ func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, user
 		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
 	}
 
-	if len(deviceIDs) > 0 && s.natsConn != nil {
+	if len(deviceIDs) > 0 {
 		deviceIDS := make([]string, 0, len(deviceIDs))
 		for _, dID := range deviceIDs {
 			deviceIDS = append(deviceIDS, dID.String())
@@ -292,8 +290,10 @@ func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, user
 			DeviceIds: deviceIDS,
 		}
 		if reqBytes, err := proto.Marshal(req); err == nil {
-			// Gửi yêu cầu thu hồi session qua NATS đến ACR (bất đồng bộ / không block)
-			_, _ = s.natsConn.RequestWithContext(ctx, "iam.device.revoke_sessions", reqBytes)
+			// [COMMENT]: Gửi yêu cầu thu hồi session qua NATS đến ACR với context nền để tránh bị cancel giữa chừng
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
 		}
 	}
 
