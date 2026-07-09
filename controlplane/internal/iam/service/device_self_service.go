@@ -48,35 +48,6 @@ func NewDeviceSelfService(
 	}
 }
 
-// [COMMENT]: requestActiveDevicesFromAcr gửi yêu cầu qua NATS lấy danh sách session hoạt động
-func (s *DeviceSelfService) requestActiveDevicesFromAcr(ctx context.Context, userID uuid.UUID) (*iamproto.GetActiveDevicesResponse, error) {
-	if s.natsConn == nil {
-		return nil, errors.New("nats connection not initialized")
-	}
-
-	req := &iamproto.GetActiveDevicesRequest{
-		UserId: userID.String(),
-	}
-
-	reqBytes, err := proto.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Thực hiện Request-Reply qua NATS (timeout 2s)
-	msg, err := s.natsConn.RequestWithContext(ctx, "iam.device.get_active_sessions", reqBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	res := &iamproto.GetActiveDevicesResponse{}
-	if err := proto.Unmarshal(msg.Data, res); err != nil {
-		return nil, err
-	}
-
-	return res, nil
-}
-
 // [COMMENT]: ListMyDevices lấy danh sách thiết bị của user
 func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
 	var items []iamEntity.DevicePresence
@@ -96,7 +67,29 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 	// [COMMENT]: Nhánh 2: Truy vấn danh sách session hoạt động từ ACR qua NATS Core (I/O Bound)
 	go func() {
 		defer wg.Done()
-		activeDevicesRes, natsErr = s.requestActiveDevicesFromAcr(ctx, userID)
+		if s.natsConn == nil {
+			natsErr = errors.New("nats connection not initialized")
+			return
+		}
+		req := &iamproto.GetActiveDevicesRequest{
+			UserId: userID.String(),
+		}
+		reqBytes, err := proto.Marshal(req)
+		if err != nil {
+			natsErr = err
+			return
+		}
+		msg, err := s.natsConn.RequestWithContext(ctx, "iam.device.get_active_sessions", reqBytes)
+		if err != nil {
+			natsErr = err
+			return
+		}
+		activeDevicesRes = &iamproto.GetActiveDevicesResponse{}
+		if err = proto.Unmarshal(msg.Data, activeDevicesRes); err != nil {
+			natsErr = err
+			activeDevicesRes = nil
+			return
+		}
 	}()
 
 	wg.Wait()
@@ -107,7 +100,7 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 
 	if natsErr != nil {
 		// [COMMENT]: Nếu lỗi kết nối NATS, ghi nhận lỗi và tiếp tục xử lý (IsOnline mặc định false)
-		iamMetrics.Downstream(ctx, "broker", "requestActiveDevicesFromAcr", iamMetrics.OutcomeFailureUnknown, 0, natsErr)
+		iamMetrics.Downstream(ctx, "broker", "ListMyDevicesActiveQuery", iamMetrics.OutcomeFailureUnknown, 0, natsErr)
 	}
 
 	// Map active devices to O(1) map

@@ -8,10 +8,7 @@ use std::sync::Arc;
 
 /// [COMMENT]: Giải mã yêu cầu từ bytes, thực thi quét Redis L2 để chuyển đổi TTL
 /// của toàn bộ session thuộc thiết bị được yêu cầu về 5s, và trả về phản hồi dạng bytes.
-pub async fn revoke_sessions_bytes(
-    session_mgr: &Arc<SessionManager>,
-    payload: &[u8],
-) -> Vec<u8> {
+pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &[u8]) -> Vec<u8> {
     let req = match RevokeUserSessionsByDevicesRequest::decode(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -36,7 +33,11 @@ pub async fn revoke_sessions_bytes(
     let mut conn = match session_mgr.get_connection().await {
         Ok(c) => c,
         Err(e) => {
-            Logger::sys_error("device.revoke", "Failed to get Redis connection", &e.to_string());
+            Logger::sys_error(
+                "device.revoke",
+                "Failed to get Redis connection",
+                &e.to_string(),
+            );
             return vec![];
         }
     };
@@ -84,7 +85,10 @@ pub async fn revoke_sessions_bytes(
         if let Err(e) = pipe.query_async::<_, ()>(&mut conn).await {
             Logger::sys_error(
                 "device.revoke",
-                &format!("Revoke device session pipeline failed for device {}", device_id),
+                &format!(
+                    "Revoke device session pipeline failed for device {}",
+                    device_id
+                ),
                 &e.to_string(),
             );
         }
@@ -92,7 +96,10 @@ pub async fn revoke_sessions_bytes(
 
     Logger::sys_info(
         "device.revoke",
-        &format!("Successfully revoked {} sessions for user_id={}", revoked_count, req.user_id),
+        &format!(
+            "Successfully revoked {} sessions for user_id={}",
+            revoked_count, req.user_id
+        ),
     );
 
     let res = RevokeUserSessionsByDevicesResponse { revoked_count };

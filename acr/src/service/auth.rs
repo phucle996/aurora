@@ -264,7 +264,8 @@ impl AuthServiceImpl {
     // [COMMENT]: Giải mã VerifyUserTrinityTokenRequest từ bytes, xử lý xác thực, và trả về bytes
     pub async fn verify_user_trinity_token_bytes(&self, payload: &[u8]) -> Vec<u8> {
         use prost::Message;
-        let req = match crate::infra::nats::trinity::VerifyUserTrinityTokenRequest::decode(payload) {
+        let req = match crate::infra::nats::trinity::VerifyUserTrinityTokenRequest::decode(payload)
+        {
             Ok(r) => r,
             Err(e) => {
                 Logger::sys_error(
@@ -295,7 +296,8 @@ impl AuthServiceImpl {
     // [COMMENT]: Giải mã VerifyAdminTrinityTokenRequest từ bytes, xử lý xác thực, và trả về bytes
     pub async fn verify_admin_trinity_token_bytes(&self, payload: &[u8]) -> Vec<u8> {
         use prost::Message;
-        let req = match crate::infra::nats::trinity::VerifyAdminTrinityTokenRequest::decode(payload) {
+        let req = match crate::infra::nats::trinity::VerifyAdminTrinityTokenRequest::decode(payload)
+        {
             Ok(r) => r,
             Err(e) => {
                 Logger::sys_error(

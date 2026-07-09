@@ -172,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 9. Graceful Shutdown: Flush hết OTel data trước khi exit
     OtelTracer::stop();
-    Logger::sys_info("main.shutdown", "ACL Service stopped gracefully.");
+    Logger::sys_info("main.shutdown", "ACR Service stopped gracefully.");
 
     Ok(())
 }

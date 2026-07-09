@@ -169,12 +169,11 @@ impl NatsEventRouter {
                 let nc_clone = nc.clone();
                 let mgr_clone = mgr.clone();
                 tokio::spawn(async move {
-                    let reply_payload =
-                        crate::service::device::revoke::revoke_sessions_bytes(
-                            &mgr_clone,
-                            &msg.payload,
-                        )
-                        .await;
+                    let reply_payload = crate::service::device::revoke::revoke_sessions_bytes(
+                        &mgr_clone,
+                        &msg.payload,
+                    )
+                    .await;
                     if let Some(reply_subject) = msg.reply {
                         let _ = nc_clone.publish(reply_subject, reply_payload.into()).await;
                     }

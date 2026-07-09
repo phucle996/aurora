@@ -1,6 +1,8 @@
 use crate::core::session::SessionManager;
+use crate::infra::nats::auth::{
+    ActiveDeviceEntry, GetActiveDevicesRequest, GetActiveDevicesResponse,
+};
 use crate::observability::logger::Logger;
-use crate::infra::nats::auth::{GetActiveDevicesRequest, GetActiveDevicesResponse, ActiveDeviceEntry};
 use prost::Message;
 use std::sync::Arc;
 
@@ -35,7 +37,10 @@ pub async fn get_active_devices_bytes(
         Err(e) => {
             Logger::sys_error(
                 "device.active",
-                &format!("Failed to retrieve active sessions from Redis for user_id={}", req.user_id),
+                &format!(
+                    "Failed to retrieve active sessions from Redis for user_id={}",
+                    req.user_id
+                ),
                 &e.to_string(),
             );
         }

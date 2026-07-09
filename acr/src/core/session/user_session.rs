@@ -418,10 +418,7 @@ impl SessionManager {
     }
 
     // [COMMENT]: Lấy tất cả các session đang hoạt động của user từ index
-    pub async fn get_active_sessions(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<(String, i64)>, AcrError> {
+    pub async fn get_active_sessions(&self, user_id: &str) -> Result<Vec<(String, i64)>, AcrError> {
         let mut conn = self.get_connection().await?;
         let index_key = format!("iam:user_access_index:{}", user_id);
 
@@ -430,7 +427,9 @@ impl SessionManager {
             .arg(&index_key)
             .query_async(&mut conn)
             .await
-            .map_err(|e| AcrError::RedisError(format!("SMEMBERS failed for index {}: {}", index_key, e)))?;
+            .map_err(|e| {
+                AcrError::RedisError(format!("SMEMBERS failed for index {}: {}", index_key, e))
+            })?;
 
         if session_keys.is_empty() {
             return Ok(vec![]);
@@ -441,7 +440,7 @@ impl SessionManager {
         for key in &session_keys {
             pipe.cmd("GET").arg(key);
         }
-        
+
         let datas: Vec<Option<Vec<u8>>> = pipe
             .query_async(&mut conn)
             .await
