@@ -47,10 +47,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 		module.DeviceSelfHandler.LogoutOtherDevices,
 	)
 
-	// [COMMENT]: 1.6) Đăng xuất hoàn toàn trên toàn bộ thiết bị
-	router.POST("/api/v1/me/devices/logout-all",
-		module.DeviceSelfHandler.LogoutAllDevices,
-	)
+
 
 	// [COMMENT]: 1.7) Lấy cấu hình render context cho console UI thông qua platform handler
 	router.GET("/api/v1/me/context",

@@ -206,45 +206,7 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 	return int64(len(otherDeviceIDs)), nil
 }
 
-// [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
-func (s *DeviceSelfService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error) {
-	repoStart := time.Now()
-	otherDeviceIDs, revokeErr := s.deviceRepo.RevokeMyOtherDevices(ctx, userID, nil)
-	if revokeErr != nil {
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
-		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
-	}
 
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
-
-	if len(otherDeviceIDs) > 0 {
-		// [COMMENT]: Nhánh gởi tín hiệu xóa session sang ACR chạy bất đồng bộ bằng Goroutine nền
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			clientDeviceIDs := make([]string, len(otherDeviceIDs))
-			for i, id := range otherDeviceIDs {
-				clientDeviceIDs[i] = id.String()
-			}
-
-			req := &iamproto.RevokeUserSessionsByDevicesRequest{
-				UserId:          userID.String(),
-				ClientDeviceIds: clientDeviceIDs,
-			}
-			reqBytes, err := proto.Marshal(req)
-			if err != nil {
-				return
-			}
-			// Gửi yêu cầu qua NATS Request-Reply đến ACR trong background thread
-			_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
-		}()
-	}
-
-	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_all", "warning")
-	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
-	return int64(len(otherDeviceIDs)), nil
-}
 
 // [COMMENT]: RegisterLoginDevice đăng ký thiết bị mới đăng nhập
 func (s *DeviceSelfService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {

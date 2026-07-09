@@ -19,8 +19,7 @@ type DeviceSelfService interface {
 	// [COMMENT]: LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác
 	LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentDeviceID uuid.UUID) (int64, error)
 
-	// [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
-	LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error)
+
 
 	// [COMMENT]: RegisterLoginDevice đăng ký thiết bị đăng nhập
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)

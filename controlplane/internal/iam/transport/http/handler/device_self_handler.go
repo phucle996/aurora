@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	domainservice "controlplane/internal/iam/domain/service"
@@ -165,40 +164,4 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"revoked_sessions": affected}, "ok")
 }
 
-// [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
-func (h *DeviceSelfHandler) LogoutAllDevices(c *gin.Context) {
-	const op = "iam.device.logout_all_devices"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
-	defer cancel()
 
-	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
-	if userIDStr == "" {
-		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
-		apires.RespondUnauthorized(c, "unauthorized")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.HandlerWarn(c, op, err, "invalid user id format")
-		apires.RespondBadRequest(c, "invalid request")
-		return
-	}
-
-	affected, err := h.deviceSvc.LogoutAllDevices(ctx, userID)
-	if err != nil {
-		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
-			logger.HandlerWarn(c, op, err, "invalid argument")
-			apires.RespondBadRequest(c, "invalid request")
-			return
-		}
-		if errors.Is(err, iamTaxonomy.ErrInvalidSession) {
-			logger.HandlerWarn(c, op, err, "unauthorized")
-			apires.RespondUnauthorized(c, "unauthorized")
-			return
-		}
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-	apires.RespondSuccess(c, gin.H{"revoked_sessions": affected}, "ok")
-}
