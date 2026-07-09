@@ -188,8 +188,3 @@ func GetTraceparent(c *gin.Context) string {
 func GetRequestID(c *gin.Context) string {
 	return strings.TrimSpace(c.GetHeader("X-Request-ID"))
 }
-
-// [COMMENT]: GetOptionalClientDeviceIDStr trích xuất Device ID dưới dạng chuỗi (nếu có, không bắt buộc).
-func GetOptionalClientDeviceIDStr(c *gin.Context) string {
-	return strings.TrimSpace(c.GetHeader("X-Client-Device-ID"))
-}

@@ -132,13 +132,34 @@ func (r *DeviceSelfRepository) GetActiveDeviceID(ctx context.Context, userID uui
 	return *clientDeviceID, nil
 }
 
-// [COMMENT]: RevokeDeviceByClientDeviceIDAndUserID thu hồi thiết bị chỉ định bằng CTE theo client_device_id
-func (r *DeviceSelfRepository) RevokeDeviceByClientDeviceIDAndUserID(ctx context.Context, clientDeviceID string, userID uuid.UUID, currentClientDeviceID string) error {
+// [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định bằng CTE theo client_device_id, ngăn chặn tự hu hồi thiết bị hiện tại
+func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceID string, userID uuid.UUID, currentDeviceID uuid.UUID) error {
+	// 1. Kiểm tra xem thiết bị cần thu hồi có phải là thiết bị hiện tại không
+	var targetID uuid.UUID
+	var isRevoked bool
+	queryCheck := fmt.Sprintf("SELECT id, revoked_at IS NOT NULL FROM %s.devices WHERE client_device_id = $1 AND user_id = $2", r.schema)
+	err := r.db.QueryRow(ctx, queryCheck, clientDeviceID, userID).Scan(&targetID, &isRevoked)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return iamTaxonomy.ErrZeroRowsAffected
+		}
+		return err
+	}
+
+	if targetID == currentDeviceID {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+
+	if isRevoked {
+		return nil // Đã bị thu hồi rồi, trả về success (idempotent)
+	}
+
+	// 2. Thực hiện thu hồi qua CTE
 	query := fmt.Sprintf(`
 		WITH revoked_device AS (
 			UPDATE %s.devices
 			SET revoked_at=now(), updated_at=now()
-			WHERE client_device_id = $1 AND user_id = $2 AND client_device_id != $3
+			WHERE client_device_id = $1 AND user_id = $2
 			RETURNING id
 		),
 		deleted_tokens AS (
@@ -150,7 +171,7 @@ func (r *DeviceSelfRepository) RevokeDeviceByClientDeviceIDAndUserID(ctx context
 			(SELECT COUNT(*) FROM revoked_device) AS updated_count
 	`, r.schema, r.schema)
 	var updatedCount int64
-	if err := r.db.QueryRow(ctx, query, clientDeviceID, userID, currentClientDeviceID).Scan(&updatedCount); err != nil {
+	if err := r.db.QueryRow(ctx, query, clientDeviceID, userID).Scan(&updatedCount); err != nil {
 		return err
 	}
 	if updatedCount == 0 {
@@ -159,13 +180,13 @@ func (r *DeviceSelfRepository) RevokeDeviceByClientDeviceIDAndUserID(ctx context
 	return nil
 }
 
-// [COMMENT]: RevokeOtherDevicesByClientDeviceIDAndUserID thu hồi các thiết bị khác ngoại trừ thiết bị chỉ định theo client_device_id
-func (r *DeviceSelfRepository) RevokeOtherDevicesByClientDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, keepClientDeviceID *string) (int64, error) {
+// [COMMENT]: RevokeMyOtherDevices thu hồi các thiết bị khác ngoại trừ thiết bị chỉ định theo client_device_id
+func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) {
 	query := fmt.Sprintf(`
 		WITH revoked_devices AS (
 			UPDATE %s.devices
 			SET revoked_at=now(), updated_at=now()
-			WHERE user_id = $1 AND ($2::text IS NULL OR client_device_id != $2) AND revoked_at IS NULL
+			WHERE user_id = $1 AND ($2::uuid IS NULL OR id != $2) AND revoked_at IS NULL
 			RETURNING id
 		),
 		deleted_tokens AS (
@@ -176,8 +197,8 @@ func (r *DeviceSelfRepository) RevokeOtherDevicesByClientDeviceIDAndUserID(ctx c
 		SELECT COUNT(*) FROM revoked_devices
 	`, r.schema, r.schema)
 	var count int64
-	if err := r.db.QueryRow(ctx, query, userID, keepClientDeviceID).Scan(&count); err != nil {
-		return 0, fmt.Errorf("iam repo: revoke other devices by client device id CTE: %w", err)
+	if err := r.db.QueryRow(ctx, query, userID, keepDeviceID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("iam repo: revoke other devices CTE: %w", err)
 	}
 	return count, nil
 }

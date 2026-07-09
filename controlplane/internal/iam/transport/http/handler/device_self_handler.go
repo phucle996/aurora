@@ -101,14 +101,12 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	currentClientDeviceID := constant.GetOptionalClientDeviceIDStr(c)
-	if currentClientDeviceID == "" {
-		logger.HandlerWarn(c, op, nil, "missing device context header X-Client-Device-ID")
-		apires.RespondUnauthorized(c, "unauthorized")
+	currentDeviceID, ok := constant.GetClientDeviceID(c, op)
+	if !ok {
 		return
 	}
 
-	err := h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentClientDeviceID)
+	err := h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "action not allowed - cannot revoke current device")
@@ -143,14 +141,12 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	currentClientDeviceID := constant.GetOptionalClientDeviceIDStr(c)
-	if currentClientDeviceID == "" {
-		logger.HandlerWarn(c, op, nil, "missing device context header X-Client-Device-ID")
-		apires.RespondUnauthorized(c, "unauthorized")
+	currentDeviceID, ok := constant.GetClientDeviceID(c, op)
+	if !ok {
 		return
 	}
 
-	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, &currentClientDeviceID)
+	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, &currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")

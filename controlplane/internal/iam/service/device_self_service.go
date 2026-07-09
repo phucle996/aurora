@@ -120,29 +120,26 @@ func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID,
 	return &iamEntity.DeviceListResult{Devices: items, Total: int64(len(items))}, nil
 }
 
-
-
 // [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định theo client_device_id
-func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID string, currentClientDeviceID string) error {
+func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID string, currentDeviceID uuid.UUID) error {
 	serviceOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
 		iamMetrics.ServiceCall(ctx, serviceOutcome)
 	}()
 
-	if clientDeviceID == currentClientDeviceID {
-		serviceOutcome = iamMetrics.OutcomePreConditionFailed
-		return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
-	}
-
 	repoStart := time.Now()
-	revokeErr := s.deviceRepo.RevokeDeviceByClientDeviceIDAndUserID(ctx, clientDeviceID, userID, currentClientDeviceID)
+	revokeErr := s.deviceRepo.RevokeMyDevice(ctx, clientDeviceID, userID, currentDeviceID)
 	if revokeErr != nil {
+		if errors.Is(revokeErr, iamTaxonomy.ErrActionNotAllowed) {
+			serviceOutcome = iamMetrics.OutcomePreConditionFailed
+			return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
+		}
 		if errors.Is(revokeErr, iamTaxonomy.ErrZeroRowsAffected) {
-			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByClientDeviceIDAndUserID", iamMetrics.OutcomePreConditionFailed, time.Since(repoStart), revokeErr)
+			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomePreConditionFailed, time.Since(repoStart), revokeErr)
 			serviceOutcome = iamMetrics.OutcomePreConditionFailed
 			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, revokeErr, "invalid_session")
 		}
-		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByClientDeviceIDAndUserID", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
 		serviceOutcome = iamMetrics.OutcomeFailureUnknown
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
@@ -164,11 +161,13 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 		_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
 	}()
 
-	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByClientDeviceIDAndUserID", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning")
 	return nil
 }
-func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentClientDeviceID *string) (int64, error) {
+
+// [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
+func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentDeviceID *uuid.UUID) (int64, error) {
 	devices, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
 	if listErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
@@ -178,13 +177,13 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 	for _, dev := range devices {
 		// [COMMENT]: Chỉ thu hồi các thiết bị đang hoạt động (chưa bị revoke)
 		if dev.RevokedAt == nil {
-			if currentClientDeviceID == nil || dev.ID != *currentClientDeviceID {
+			if currentDeviceID == nil || dev.ID != currentDeviceID.String() {
 				otherDeviceIDs = append(otherDeviceIDs, dev.ID)
 			}
 		}
 	}
 
-	affected, revokeErr := s.deviceRepo.RevokeOtherDevicesByClientDeviceIDAndUserID(ctx, userID, currentClientDeviceID)
+	affected, revokeErr := s.deviceRepo.RevokeMyOtherDevices(ctx, userID, currentDeviceID)
 	if revokeErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}

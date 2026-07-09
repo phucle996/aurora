@@ -19,11 +19,11 @@ type DeviceSelfRepository interface {
 	// [COMMENT]: GetActiveDeviceID lấy client_device_id của thiết bị đang hoạt động dựa trên fingerprint của public key
 	GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error)
 
-	// [COMMENT]: RevokeDeviceByClientDeviceIDAndUserID thu hồi một thiết bị cụ thể của user theo client_device_id
-	RevokeDeviceByClientDeviceIDAndUserID(ctx context.Context, clientDeviceID string, userID uuid.UUID, currentClientDeviceID string) error
+	// [COMMENT]: RevokeMyDevice thu hồi một thiết bị cụ thể của user theo client_device_id
+	RevokeMyDevice(ctx context.Context, clientDeviceID string, userID uuid.UUID, currentDeviceID uuid.UUID) error
 
-	// [COMMENT]: RevokeOtherDevicesByClientDeviceIDAndUserID thu hồi tất cả các thiết bị khác ngoại trừ thiết bị đang chỉ định theo client_device_id
-	RevokeOtherDevicesByClientDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, keepClientDeviceID *string) (int64, error)
+	// [COMMENT]: RevokeMyOtherDevices thu hồi tất cả các thiết bị khác ngoại trừ thiết bị đang chỉ định theo client_device_id
+	RevokeMyOtherDevices(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error)
 
 	// [COMMENT]: TouchDeviceLastSeen cập nhật mốc thời gian hoạt động cuối cùng của thiết bị
 	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
