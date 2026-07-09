@@ -14,7 +14,7 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::error::AcrError;
-use crate::infra::controlplane::Nats;
+use crate::infra::nats::Nats;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
 use crate::pkg::cookie::*;

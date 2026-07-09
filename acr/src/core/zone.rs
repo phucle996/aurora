@@ -11,7 +11,7 @@
 // 🔒 NEGATIVE CACHE: key không tồn tại được ghi tombstone 3 phút để tránh stampede DB
 // ======================================================================================================
 
-use crate::infra::controlplane::Nats;
+use crate::infra::nats::Nats;
 use crate::observability::logger::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -98,15 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let evaluator = Arc::new(PolicyEvaluator::new());
 
     // [COMMENT]: Khởi tạo NATS client để kết nối đến Control Plane qua NATS Core
-    let nats = Arc::new(
-        crate::infra::controlplane::Nats::new(
-            config.nats_url.clone(),
-            config.controlplane_grpc_ca_cert.clone(),
-            config.controlplane_grpc_client_cert.clone(),
-            config.controlplane_grpc_client_key.clone(),
-        )
-        .await,
-    );
+    let nats = Arc::new(crate::infra::nats::Nats::new(config.nats_url.clone()).await);
 
     // [COMMENT]: Khởi tạo ZoneManager - L1 in-process + Redis L2 shared + gRPC fallback
     // Sau khi 1 node gọi gRPC và ghi Redis L2, các node khác tự đọc L2 mà không cần gRPC lại
@@ -170,24 +162,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let auth_svc = auth_svc_ptr1.clone();
             let nats_client = nats_client_clone1.clone();
             tokio::spawn(async move {
-                let req =
-                    match crate::infra::controlplane::trinity::VerifyUserTrinityTokenRequest::decode(
-                        msg.payload.as_ref(),
-                    ) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            Logger::sys_error(
-                                "nats.subscriber",
-                                "Failed to decode VerifyUserTrinityTokenRequest",
-                                &e.to_string(),
-                            );
-                            return;
-                        }
-                    };
+                let req = match crate::infra::nats::trinity::VerifyUserTrinityTokenRequest::decode(
+                    msg.payload.as_ref(),
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        Logger::sys_error(
+                            "nats.subscriber",
+                            "Failed to decode VerifyUserTrinityTokenRequest",
+                            &e.to_string(),
+                        );
+                        return;
+                    }
+                };
 
                 let res = match auth_svc.verify_user_trinity_token(req).await {
                     Ok(r) => r,
-                    Err(_) => crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                    Err(_) => crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                         valid: false,
                         role_id: String::new(),
                         user_id: String::new(),
@@ -239,7 +230,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let auth_svc = auth_svc_ptr2.clone();
             let nats_client = nats_client_clone2.clone();
             tokio::spawn(async move {
-                let req = match crate::infra::controlplane::trinity::VerifyAdminTrinityTokenRequest::decode(msg.payload.as_ref()) {
+                let req = match crate::infra::nats::trinity::VerifyAdminTrinityTokenRequest::decode(
+                    msg.payload.as_ref(),
+                ) {
                     Ok(r) => r,
                     Err(e) => {
                         Logger::sys_error(
@@ -253,13 +246,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let res = match auth_svc.verify_admin_trinity_token(req).await {
                     Ok(r) => r,
-                    Err(_) => {
-                        crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
-                            valid: false,
-                            role_id: String::new(),
-                            user_id: String::new(),
-                        }
-                    }
+                    Err(_) => crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
+                        valid: false,
+                        role_id: String::new(),
+                        user_id: String::new(),
+                    },
                 };
 
                 let mut reply_payload = Vec::new();

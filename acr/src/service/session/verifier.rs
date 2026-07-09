@@ -108,7 +108,7 @@ pub async fn handle_user_session_check(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
     zone_mgr: &Arc<crate::core::zone::ZoneManager>,
-    nats: &Arc<crate::infra::controlplane::Nats>,
+    nats: &Arc<crate::infra::nats::Nats>,
     config: &crate::config::Config,
     client_headers: &std::collections::HashMap<String, String>,
     method: &str,

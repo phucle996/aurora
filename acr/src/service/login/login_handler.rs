@@ -13,8 +13,8 @@ use crate::config::Config;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
-use crate::infra::controlplane::auth::VerifyUserCredentialsRequest;
-use crate::infra::controlplane::Nats;
+use crate::infra::nats::auth::VerifyUserCredentialsRequest;
+use crate::infra::nats::Nats;
 use prost::Message;
 use async_nats::HeaderMap;
 use crate::observability::logger::Logger;
@@ -206,7 +206,7 @@ pub async fn handle_login(
         }
     };
 
-    let cp_res = match crate::infra::controlplane::auth::VerifyUserCredentialsResponse::decode(
+    let cp_res = match crate::infra::nats::auth::VerifyUserCredentialsResponse::decode(
         response_msg.payload.as_ref(),
     ) {
         Ok(res) => res,

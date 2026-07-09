@@ -1,4 +1,3 @@
 pub mod vault;
-// [COMMENT]: Module client kết nối Pub/Sub sang Control Plane
+// [COMMENT]: Module client kết nối qua NATS Core
 pub mod nats;
-pub use nats as controlplane;

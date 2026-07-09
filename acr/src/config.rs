@@ -37,14 +37,6 @@ pub struct Config {
     pub refresh_threshold_secs: u64,
     // Địa chỉ kết nối OTLP Collector (gRPC endpoint cho Tracing + Metrics)
     pub otel_exporter_otlp_endpoint: String,
-    // [COMMENT]: Địa chỉ kết nối gRPC đến Control Plane (mặc định localhost:9443)
-    pub controlplane_grpc_endpoint: String,
-    // [COMMENT]: Đường dẫn chứng chỉ CA tự ký phục vụ xác thực HTTPS/gRPC
-    pub controlplane_grpc_ca_cert: Option<String>,
-    // [COMMENT]: Đường dẫn chứng chỉ Client phục vụ xác thực mTLS hai chiều
-    pub controlplane_grpc_client_cert: Option<String>,
-    // [COMMENT]: Đường dẫn khóa riêng tư của Client phục vụ mTLS
-    pub controlplane_grpc_client_key: Option<String>,
     // [COMMENT]: Danh sách các endpoint được phép bypass không cần kiểm tra token
     pub bypass_endpoints: Vec<String>,
     // [COMMENT]: Domain công khai của hệ thống để gắn kết session cookie (đọc từ APP_PUBLIC_DOMAIN)
@@ -82,14 +74,14 @@ impl Config {
 
         let vault_secret_id = env::var("VAULT_SECRET_ID").unwrap_or_else(|_| "".to_string());
 
-        let vault_transit_key_path =
-            env::var("VAULT_TRANSIT_KEY_PATH").unwrap_or_else(|_| "transit/keys/jwt-signer".to_string());
+        let vault_transit_key_path = env::var("VAULT_TRANSIT_KEY_PATH")
+            .unwrap_or_else(|_| "transit/keys/jwt-signer".to_string());
 
         let vault_totp_key_path =
             env::var("VAULT_TOTP_KEY_PATH").unwrap_or_else(|_| "totp/keys/admin".to_string());
 
-        let vault_admin_api_key_path =
-            env::var("VAULT_ADMIN_API_KEY_PATH").unwrap_or_else(|_| "secret/data/admin/api-key".to_string());
+        let vault_admin_api_key_path = env::var("VAULT_ADMIN_API_KEY_PATH")
+            .unwrap_or_else(|_| "secret/data/admin/api-key".to_string());
 
         let vault_timeout_secs = env::var("VAULT_TIMEOUT_SECS")
             .unwrap_or_else(|_| "5".to_string())
@@ -129,15 +121,7 @@ impl Config {
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|_| "http://otel-collector:4317".to_string());
 
-        let nats_url = env::var("NATS_ADDR")
-            .unwrap_or_else(|_| "nats://nats:4222".to_string());
-
-        // [COMMENT]: Khai báo nạp biến môi trường cho gRPC client đi đến Controlplane
-        let controlplane_grpc_endpoint =
-            env::var("CONTROLPLANE_GRPC_ENDPOINT").unwrap_or_else(|_| "localhost:9443".to_string());
-        let controlplane_grpc_ca_cert = env::var("CONTROLPLANE_GRPC_CA_CERT").ok();
-        let controlplane_grpc_client_cert = env::var("CONTROLPLANE_GRPC_CLIENT_CERT").ok();
-        let controlplane_grpc_client_key = env::var("CONTROLPLANE_GRPC_CLIENT_KEY").ok();
+        let nats_url = env::var("NATS_ADDR").unwrap_or_else(|_| "nats://nats:4222".to_string());
 
         // [COMMENT]: Nạp danh sách bypass endpoints từ biến môi trường BYPASS_ENDPOINTS (phân tách bởi dấu phẩy)
         let bypass_endpoints = env::var("BYPASS_ENDPOINTS")
@@ -175,10 +159,6 @@ impl Config {
             session_ttl_secs,
             refresh_threshold_secs,
             otel_exporter_otlp_endpoint,
-            controlplane_grpc_endpoint,
-            controlplane_grpc_ca_cert,
-            controlplane_grpc_client_cert,
-            controlplane_grpc_client_key,
             bypass_endpoints,
             app_public_domain,
             allowed_origins,

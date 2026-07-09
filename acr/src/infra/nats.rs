@@ -26,9 +26,6 @@ pub struct Nats {
 impl Nats {
     pub async fn new(
         nats_url: String,
-        _ca_cert: Option<String>,
-        _client_cert: Option<String>,
-        _client_key: Option<String>,
     ) -> Self {
         // [COMMENT]: Khởi tạo kết nối đến NATS Core
         let nats_client = async_nats::connect(&nats_url)

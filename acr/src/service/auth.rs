@@ -17,7 +17,7 @@ use tonic::{Request, Response, Status};
 
 use crate::core::session::{AdminAccessSession, SessionManager};
 use crate::core::token::TokenManager;
-use crate::infra::controlplane::Nats;
+use crate::infra::nats::Nats;
 use crate::observability::logger::Logger;
 
 // [COMMENT]: Nạp các cấu trúc tự động sinh từ proto/auth.proto & proto/session.proto
@@ -67,13 +67,13 @@ impl AuthServiceImpl {
     // [COMMENT]: Xác thực Trinity credentials cho Admin/SRE quản trị hệ thống (gọi qua NATS)
     pub async fn verify_admin_trinity_token(
         &self,
-        req: crate::infra::controlplane::trinity::VerifyAdminTrinityTokenRequest,
-    ) -> Result<crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse, Status> {
+        req: crate::infra::nats::trinity::VerifyAdminTrinityTokenRequest,
+    ) -> Result<crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse, Status> {
         // 1. Kiểm tra nhanh các trường rỗng đầu vào
         if req.access_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty()
         {
             return Ok(
-                crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                     valid: false,
                     user_id: String::new(),
                     role_id: String::new(),
@@ -91,7 +91,7 @@ impl AuthServiceImpl {
                     "invalid_token",
                 );
                 return Ok(
-                    crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                    crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                         valid: false,
                         ..Default::default()
                     },
@@ -102,7 +102,7 @@ impl AuthServiceImpl {
         // 3. Đối chiếu access_key trong token với access_key client cung cấp
         if claims.access_key.is_empty() || claims.access_key != req.access_key {
             return Ok(
-                crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                     valid: false,
                     ..Default::default()
                 },
@@ -130,7 +130,7 @@ impl AuthServiceImpl {
             Some(bytes) => bytes,
             None => {
                 return Ok(
-                    crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                    crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                         valid: false,
                         ..Default::default()
                     },
@@ -154,7 +154,7 @@ impl AuthServiceImpl {
         let incoming_hash = sha256_hash(&req.access_secret);
         if session.access_secret_hash != incoming_hash {
             return Ok(
-                crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                     valid: false,
                     ..Default::default()
                 },
@@ -162,7 +162,7 @@ impl AuthServiceImpl {
         }
 
         Ok(
-            crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+            crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
                 valid: true,
                 user_id: claims.sub.clone(),
                 role_id: "SRE".to_string(),
@@ -173,13 +173,13 @@ impl AuthServiceImpl {
     // [COMMENT]: Xác thực Trinity credentials cho người dùng (End-User) thông thường (gọi qua NATS)
     pub async fn verify_user_trinity_token(
         &self,
-        req: crate::infra::controlplane::trinity::VerifyUserTrinityTokenRequest,
-    ) -> Result<crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse, Status> {
+        req: crate::infra::nats::trinity::VerifyUserTrinityTokenRequest,
+    ) -> Result<crate::infra::nats::trinity::VerifyUserTrinityTokenResponse, Status> {
         // 1. Kiểm tra nhanh các trường rỗng đầu vào
         if req.access_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty()
         {
             return Ok(
-                crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                     valid: false,
                     user_id: String::new(),
                     role_id: String::new(),
@@ -198,7 +198,7 @@ impl AuthServiceImpl {
                     "invalid_token",
                 );
                 return Ok(
-                    crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                    crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                         valid: false,
                         ..Default::default()
                     },
@@ -209,7 +209,7 @@ impl AuthServiceImpl {
         // 3. Đối chiếu access_key trong token với access_key client cung cấp
         if claims.access_key.is_empty() || claims.access_key != req.access_key {
             return Ok(
-                crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                     valid: false,
                     ..Default::default()
                 },
@@ -230,7 +230,7 @@ impl AuthServiceImpl {
             Ok(Some(s)) => s,
             Ok(None) => {
                 return Ok(
-                    crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                    crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                         valid: false,
                         ..Default::default()
                     },
@@ -250,7 +250,7 @@ impl AuthServiceImpl {
         let incoming_hash = sha256_hash(&req.access_secret);
         if session.ash != incoming_hash {
             return Ok(
-                crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                     valid: false,
                     ..Default::default()
                 },
@@ -258,7 +258,7 @@ impl AuthServiceImpl {
         }
 
         Ok(
-            crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+            crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
                 valid: true,
                 user_id: claims.uid.clone(),
                 role_id: claims.role_id.clone(),
@@ -343,7 +343,6 @@ impl AuthService for AuthServiceImpl {
         Ok(Response::new(RevokeOpaqueRefreshTokenResponse {}))
     }
 
-    // [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng (Không áp dụng ở phía ACL Server)
     async fn verify_user_credentials(
         &self,
         _request: Request<VerifyUserCredentialsRequest>,

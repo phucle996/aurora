@@ -6,7 +6,7 @@ use tonic::{Response, Status};
 
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
-use crate::infra::controlplane::Nats;
+use crate::infra::nats::Nats;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
 use crate::pkg::cookie::*;
@@ -122,7 +122,7 @@ pub async fn handle_logout(
                 "ext_authz.logout",
                 "Asynchronously revoking refresh token on Control Plane...",
             );
-            let req_payload = crate::infra::controlplane::auth::RevokeOpaqueRefreshTokenRequest {
+            let req_payload = crate::infra::nats::auth::RevokeOpaqueRefreshTokenRequest {
                 refresh_token,
             };
             let mut payload_bytes = Vec::new();

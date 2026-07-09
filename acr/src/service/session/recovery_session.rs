@@ -9,7 +9,7 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use crate::config::Config;
 use crate::core::session::{RecoverySessionCache, SessionManager};
 use crate::core::token::TokenManager;
-use crate::infra::controlplane::Nats;
+use crate::infra::nats::Nats;
 use crate::observability::logger::Logger;
 // [COMMENT]: Dùng release_user_session để gen Trinity (access_key, access_secret, JWT, Redis L2)
 // thay vì viết lại logic từ đầu
@@ -405,7 +405,7 @@ pub async fn handle_session_recovery(
         };
 
         // [COMMENT]: Gọi NATS xác thực refresh token tới Controlplane gửi kèm user_id và tenant_id
-        let req_payload = crate::infra::controlplane::auth::VerifyOpaqueRefreshTokenRequest {
+        let req_payload = crate::infra::nats::auth::VerifyOpaqueRefreshTokenRequest {
             refresh_token: refresh_token.clone(),
             tenant_id,
             user_id,
@@ -436,7 +436,7 @@ pub async fn handle_session_recovery(
                 .map_err(|e| Status::unavailable(format!("NATS request failed: {}", e)))?;
 
             let decoded =
-                crate::infra::controlplane::auth::VerifyOpaqueRefreshTokenResponse::decode(
+                crate::infra::nats::auth::VerifyOpaqueRefreshTokenResponse::decode(
                     response_msg.payload.as_ref(),
                 )
                 .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
