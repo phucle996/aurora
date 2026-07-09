@@ -51,6 +51,11 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		personalGroup.GET("/hierarchy/workspaces/catalog",
 			module.WorkspacePersonalHandler.GetWorkspaceCatalogPersonal,
 		)
+		// [COMMENT]: Xóa workspace cá nhân dưới /personal — yêu cầu quyền hierarchy:workspace:delete
+		personalGroup.DELETE("/hierarchy/workspaces/:workspace_id",
+			middleware.Authorize("hierarchy:workspace:delete", module.L1Registry, "*"),
+			module.WorkspacePersonalHandler.DeleteWorkspacePersonal,
+		)
 	}
 
 	// ========================================================================
@@ -71,6 +76,11 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		// [COMMENT]: Hot path catalog của tenant — không dùng Authorize do tình huống chicken-and-egg
 		tenantGroup.GET("/hierarchy/workspaces/catalog",
 			module.WorkspaceTenantHandler.GetWorkspaceCatalogTenant,
+		)
+		// [COMMENT]: Xóa workspace thuộc tenant — yêu cầu quyền hierarchy:workspace:delete
+		tenantGroup.DELETE("/hierarchy/workspaces/:workspace_id",
+			middleware.Authorize("hierarchy:workspace:delete", module.L1Registry, "*"),
+			module.WorkspaceTenantHandler.DeleteWorkspaceTenant,
 		)
 	}
 

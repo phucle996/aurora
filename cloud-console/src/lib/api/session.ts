@@ -76,6 +76,9 @@ export type AdminUserItem = {
   username: string;
   email: string;
   status: string;
+  role?: string;
+  mfa_enabled?: boolean;
+  devices_count?: number;
   created_at: string;
   updated_at: string;
 };
@@ -102,6 +105,7 @@ export type PlatformRoleItem = {
   code: string;
   name: string;
   role_level: number;
+  description?: string; // [COMMENT]: Mô tả chi tiết vai trò thực tế từ backend
   scope: string;
 };
 
@@ -147,4 +151,18 @@ export async function createRole(input: CreateRoleInput, signal?: AbortSignal): 
     body: JSON.stringify(input),
     signal,
   });
+}
+
+// [COMMENT]: getUserRolePlatform lấy chi tiết vai trò của user mục tiêu kèm kiểm tra cấp bậc
+export async function getUserRolePlatform(id: string, signal?: AbortSignal): Promise<PlatformRoleItem | null> {
+  try {
+    const res = await fetchJSON<{ data?: { role?: PlatformRoleItem } }>(`/api/v1/iam/users/${id}/roles`, {
+      method: "GET",
+      signal,
+    });
+    return res?.data?.role || null;
+  } catch (err) {
+    console.error("Failed to fetch user roles", err);
+    return null;
+  }
 }

@@ -29,8 +29,8 @@ type TenantWorkspaceRepository interface {
 	// Update cập nhật thông tin của workspace
 	Update(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error)
 	
-	// Delete xóa workspace ra khỏi database
-	Delete(ctx context.Context, id uuid.UUID) error
+	// Delete xóa workspace thuộc Tenant ra khỏi database
+	Delete(ctx context.Context, id uuid.UUID, tenantID uuid.UUID) error
 }
  
 // [COMMENT]: PersonalWorkspaceRepository định nghĩa các phương thức giao tiếp CSDL cho Workspace Cá nhân (Individual).
@@ -51,5 +51,5 @@ type PersonalWorkspaceRepository interface {
 	Update(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error)
 	
 	// Delete xóa workspace cá nhân ra khỏi database
-	Delete(ctx context.Context, id uuid.UUID) error
+	Delete(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) error
 }

@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"controlplane/internal/config"
 	coreEntity "controlplane/internal/hierarchy/domain/entity"
@@ -58,7 +57,15 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *TenantWor
 			SELECT
 				(SELECT COUNT(*) FROM zone_check) AS zone_exists,
 				(SELECT valid FROM tenant_check) AS tenant_valid,
-				i.id, i.name, i.code, i.description, i.zone_id, i.tenant_id, i.owner_id, i.created_at, i.updated_at
+				COALESCE(i.id, '00000000-0000-0000-0000-000000000000'::uuid) AS id,
+				COALESCE(i.name, '') AS name,
+				COALESCE(i.code, '') AS code,
+				COALESCE(i.description, '') AS description,
+				COALESCE(i.zone_id, '00000000-0000-0000-0000-000000000000'::uuid) AS zone_id,
+				COALESCE(i.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid) AS tenant_id,
+				COALESCE(i.owner_id, '00000000-0000-0000-0000-000000000000'::uuid) AS owner_id,
+				COALESCE(i.created_at, now()) AS created_at,
+				COALESCE(i.updated_at, now()) AS updated_at
 			FROM (SELECT 1) AS dummy
 			LEFT JOIN inserted i ON true
 		`, schema, schema, schema),
@@ -102,9 +109,20 @@ func NewTenantWorkspaceRepoImpl(cfg *config.Config, db *pgxpool.Pool) *TenantWor
 		`, schema),
 
 		deleteWorkspaceQuery: fmt.Sprintf(`
-			DELETE FROM %s.tenant_workspaces 
-			WHERE id = $1
-		`, schema),
+			WITH workspace_check AS (
+				SELECT id, tenant_id FROM %s.tenant_workspaces WHERE id = $1 AND tenant_id = $2
+			), total_count AS (
+				SELECT COUNT(*) AS total FROM %s.tenant_workspaces WHERE tenant_id = $2
+			), deleted AS (
+				DELETE FROM %s.tenant_workspaces
+				WHERE id = $1 AND tenant_id = $2 AND (SELECT total FROM total_count) > 1
+				RETURNING id
+			)
+			SELECT 
+				EXISTS(SELECT 1 FROM workspace_check) AS exists,
+				(SELECT total FROM total_count) AS total_count,
+				EXISTS(SELECT 1 FROM deleted) AS deleted
+		`, schema, schema, schema),
 	}
 }
 
@@ -112,18 +130,6 @@ func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEnti
 	var zoneExists int
 	var tenantValid bool
 	var m coreModel.TenantWorkspace
-
-	var (
-		sID        *uuid.UUID
-		sName      *string
-		sCode      *string
-		sDesc      *string
-		sZoneID    *uuid.UUID
-		sTenantID  *uuid.UUID
-		sOwnerID   *uuid.UUID
-		sCreatedAt *time.Time
-		sUpdatedAt *time.Time
-	)
 
 	err := r.db.QueryRow(ctx, r.createWorkspaceQuery,
 		workspace.ID,
@@ -136,7 +142,7 @@ func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEnti
 	).Scan(
 		&zoneExists,
 		&tenantValid,
-		&sID, &sName, &sCode, &sDesc, &sZoneID, &sTenantID, &sOwnerID, &sCreatedAt, &sUpdatedAt,
+		&m.ID, &m.Name, &m.Code, &m.Description, &m.ZoneID, &m.TenantID, &m.OwnerID, &m.CreatedAt, &m.UpdatedAt,
 	)
 
 	if err != nil {
@@ -153,19 +159,9 @@ func (r *TenantWorkspaceRepoImpl) Create(ctx context.Context, workspace coreEnti
 	if !tenantValid {
 		return nil, coreTaxonomy.ErrTenantNotFound
 	}
-	if sID == nil {
+	if m.ID == uuid.Nil {
 		return nil, coreTaxonomy.ErrWorkspaceInsertFailed
 	}
-
-	m.ID = *sID
-	m.Name = *sName
-	m.Code = *sCode
-	m.Description = *sDesc
-	m.ZoneID = *sZoneID
-	m.TenantID = *sTenantID
-	m.OwnerID = *sOwnerID
-	m.CreatedAt = *sCreatedAt
-	m.UpdatedAt = *sUpdatedAt
 
 	result := coreModel.TenantWorkspaceModelToEntity(m)
 	return &result, nil
@@ -242,13 +238,25 @@ func (r *TenantWorkspaceRepoImpl) Update(ctx context.Context, workspace coreEnti
 	return &result, nil
 }
 
-func (r *TenantWorkspaceRepoImpl) Delete(ctx context.Context, id uuid.UUID) error {
-	cmd, err := r.db.Exec(ctx, r.deleteWorkspaceQuery, id)
+func (r *TenantWorkspaceRepoImpl) Delete(ctx context.Context, id uuid.UUID, tenantID uuid.UUID) error {
+	var exists bool
+	var totalCount int
+	var deleted bool
+
+	err := r.db.QueryRow(ctx, r.deleteWorkspaceQuery, id, tenantID).Scan(&exists, &totalCount, &deleted)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return coreTaxonomy.ErrWorkspaceNotEmpty
+		}
 		return err
 	}
-	if cmd.RowsAffected() == 0 {
+
+	if !exists {
 		return coreTaxonomy.ErrWorkspaceNotFound
+	}
+	if !deleted {
+		return coreTaxonomy.ErrLastWorkspaceDeletionBlocked
 	}
 	return nil
 }

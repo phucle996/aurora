@@ -32,26 +32,33 @@ func NewUserRepository(
 
 // [COMMENT]: ListUsers lấy danh sách các user có level thấp hơn level hiện tại của caller (role_level số lớn hơn)
 func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit int, offset int) ([]*iamEntity.User, error) {
-	// [COMMENT]: Sử dụng JOIN với user_role để xác định level của từng user ở platform scope (nil UUID).
-	// Thực hiện gom nhóm GROUP BY u.id để tính MIN(ur.role_level) đại diện cho level cao nhất của user.
-	// Lọc HAVING level > callerLevel.
+	// [COMMENT]: Thực hiện JOIN 1-1 trực tiếp với bảng user_role tại platform scope (nil UUID)
+	// để lấy thông tin role_name và role_level của từng user. Lọc theo phân cấp callerLevel.
 	query := fmt.Sprintf(`
 		SELECT 
 			u.id, 
 			u.username, 
 			u.email, 
 			u.status, 
-			MIN(ur.role_level) AS role_level, 
+			ur.role_level, 
+			ur.role_name, 
+			EXISTS (
+				SELECT 1 FROM %s.mfa_settings ms 
+				WHERE ms.user_id = u.id AND ms.type = 'totp' AND ms.status = 'enabled'
+			) AS mfa_enabled,
+			(
+				SELECT COUNT(*) FROM %s.devices d 
+				WHERE d.user_id = u.id
+			) AS devices_count,
 			u.created_at, 
 			u.updated_at
 		FROM %s.users u
 		JOIN %s.user_role ur ON u.id = ur.user_id 
 		                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
-		GROUP BY u.id
-		HAVING MIN(ur.role_level) > $1
+		WHERE ur.role_level > $1
 		ORDER BY u.created_at DESC
 		LIMIT $2 OFFSET $3
-	`, r.schema, r.schema)
+	`, r.schema, r.schema, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, callerLevel, limit, offset)
 	if err != nil {
@@ -63,7 +70,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 	for rows.Next() {
 		var u iamEntity.User
 		var level int32
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.RoleName, &u.MfaEnabled, &u.DevicesCount, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		u.Level = level

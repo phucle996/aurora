@@ -155,9 +155,9 @@ func (s *TenantWorkspaceServiceImpl) UpdateWorkspaceForTenant(ctx context.Contex
 	return result, nil
 }
 
-func (s *TenantWorkspaceServiceImpl) DeleteWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) error {
+func (s *TenantWorkspaceServiceImpl) DeleteWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID, tenantID uuid.UUID) error {
 	start := time.Now()
-	err := s.repo.Delete(ctx, workspaceID)
+	err := s.repo.Delete(ctx, workspaceID, tenantID)
 	duration := time.Since(start)
 	if err != nil {
 		coreMetric.Downstream(ctx, coreMetric.KindRepo, "DeleteWorkspaceForTenant", coreMetric.OutcomeFailure, duration, err)

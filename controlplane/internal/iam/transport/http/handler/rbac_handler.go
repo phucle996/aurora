@@ -227,3 +227,45 @@ func (h *RbacHandler) ListPermissions(c *gin.Context) {
 
 	apires.RespondSuccess(c, gin.H{"permissions": resp}, "permissions fetched successfully")
 }
+
+// [COMMENT]: GetUserRolesPlatform trả về thông tin vai trò (Role) của user mục tiêu kèm kiểm tra cấp bậc
+func (h *RbacHandler) GetUserRolesPlatform(c *gin.Context) {
+	const op = "iam.rbac.get_user_roles_platform"
+
+	// 1. Trích xuất ID của user mục tiêu
+	targetUserIDStr := c.Param("id")
+	targetUserID, err := uuid.Parse(targetUserIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid user id format")
+		return
+	}
+
+	// 2. Trích xuất caller level từ header
+	callerLevel, ok := constant.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// 3. Truy vấn chi tiết vai trò kèm lọc theo level
+	role, err := h.rbacSvc.GetUserRoleDetails(ctx, targetUserID, int32(callerLevel))
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "failed to load role details for target user")
+		apires.RespondForbidden(c, "insufficient level hierarchy or role not found")
+		return
+	}
+
+	// [COMMENT]: Trả về kết quả thành công với key 'role_level' đồng bộ toàn hệ thống
+	apires.RespondSuccess(c, gin.H{
+		"role": gin.H{
+			"id":          role.ID.String(),
+			"code":        role.Code,
+			"name":        role.Name,
+			"description": role.Description,
+			"role_level":  role.RoleLevel,
+			"scope":       role.Scope,
+		},
+	}, "user role fetched successfully")
+}

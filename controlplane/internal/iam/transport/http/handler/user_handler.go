@@ -51,12 +51,15 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 	resp := make([]gin.H, 0, len(users))
 	for _, u := range users {
 		resp = append(resp, gin.H{
-			"id":         u.ID.String(),
-			"username":   u.Username,
-			"email":      u.Email,
-			"status":     string(u.Status),
-			"created_at": u.CreatedAt,
-			"updated_at": u.UpdatedAt,
+			"id":            u.ID.String(),
+			"username":      u.Username,
+			"email":         u.Email,
+			"status":        string(u.Status),
+			"role":          u.RoleName,
+			"mfa_enabled":   u.MfaEnabled,
+			"devices_count": u.DevicesCount,
+			"created_at":    u.CreatedAt,
+			"updated_at":    u.UpdatedAt,
 		})
 	}
 

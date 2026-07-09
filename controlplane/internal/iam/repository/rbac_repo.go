@@ -351,3 +351,38 @@ func (r *RbacRepository) ListPermissions(ctx context.Context) ([]iamEntity.Permi
 
 	return perms, nil
 }
+
+// [COMMENT]: GetUserRoleDetails lấy thông tin chi tiết vai trò của user kèm kiểm tra cấp bậc
+func (r *RbacRepository) GetUserRoleDetails(ctx context.Context, userID uuid.UUID, callerLevel int32) (*iamEntity.Role, error) {
+	var role iamModel.Role
+
+	query := fmt.Sprintf(`
+		SELECT rl.id, rl.code, rl.name, COALESCE(rl.description, ''), rl.role_level, rl.scope, rl.created_at, rl.updated_at
+		FROM %s.user_role ur
+		JOIN %s.roles rl ON ur.role_id = rl.id
+		WHERE ur.user_id = $1 
+		  AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+		  AND rl.role_level > $2
+		LIMIT 1
+	`, r.schema, r.schema)
+
+	err := r.db.QueryRow(ctx, query, userID, callerLevel).Scan(
+		&role.ID,
+		&role.Code,
+		&role.Name,
+		&role.Description,
+		&role.RoleLevel,
+		&role.Scope,
+		&role.CreatedAt,
+		&role.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, iamTaxonomy.ErrRoleNotFound
+		}
+		return nil, fmt.Errorf("rbac repo: query user role details: %w", err)
+	}
+
+	entityRole := iamModel.RoleModelToEntity(role)
+	return &entityRole, nil
+}

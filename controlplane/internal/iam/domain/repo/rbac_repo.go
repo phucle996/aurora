@@ -25,6 +25,9 @@ type RbacRepository interface {
 	// [COMMENT]: GetRoleIDByUserID lấy role_id và level của user tại platform scope (nil UUID)
 	GetRoleIDByUserID(ctx context.Context, userID uuid.UUID) (string, int32, error)
 
+	// [COMMENT]: GetUserRoleDetails lấy thông tin chi tiết vai trò của user kèm kiểm tra cấp bậc
+	GetUserRoleDetails(ctx context.Context, userID uuid.UUID, callerLevel int32) (*iamEntity.Role, error)
+
 	// [COMMENT]: GetRoleIDByTenantID lấy role_id và level của tenant tại platform scope (nil UUID)
 	GetRoleIDByTenantID(ctx context.Context, tenantID uuid.UUID) (string, int32, error)
 

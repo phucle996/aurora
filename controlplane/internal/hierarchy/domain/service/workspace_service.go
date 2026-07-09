@@ -25,7 +25,7 @@ type TenantWorkspaceService interface {
 	UpdateWorkspaceForTenant(ctx context.Context, workspace coreEntity.TenantWorkspace) (*coreEntity.TenantWorkspace, error)
  
 	// DeleteWorkspaceForTenant xóa workspace thuộc Tenant
-	DeleteWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID) error
+	DeleteWorkspaceForTenant(ctx context.Context, workspaceID uuid.UUID, tenantID uuid.UUID) error
 }
  
 // [COMMENT]: PersonalWorkspaceService quản lý các nghiệp vụ Workspace dành riêng cho cá nhân (Personal Owner).
@@ -41,10 +41,10 @@ type PersonalWorkspaceService interface {
  
 	// ListWorkspaceCatalogForPersonal lấy catalog workspace cá nhân do user sở hữu trong Zone cụ thể
 	ListWorkspaceCatalogForPersonal(ctx context.Context, userID uuid.UUID, zoneID uuid.UUID) ([]coreEntity.WorkspaceCatalog, error)
-
+ 
 	// UpdateWorkspaceForPersonal cập nhật cấu hình/thông tin workspace cá nhân
 	UpdateWorkspaceForPersonal(ctx context.Context, workspace coreEntity.PersonalWorkspace) (*coreEntity.PersonalWorkspace, error)
  
 	// DeleteWorkspaceForPersonal xóa workspace cá nhân
-	DeleteWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) error
+	DeleteWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID, ownerID uuid.UUID) error
 }

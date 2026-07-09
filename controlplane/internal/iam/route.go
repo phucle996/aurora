@@ -80,6 +80,12 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.UserHandler.UpdateUserStatusPlatform,
 		)
 
+		// [COMMENT]: Lấy thông tin vai trò của một user cụ thể (yêu cầu quyền iam:users:read và level 2)
+		personalGroup.GET("/iam/users/:id/roles",
+			middleware.Authorize("iam:users:read", module.L1Registry, "2"),
+			module.RbacHandler.GetUserRolesPlatform,
+		)
+
 		// [COMMENT]: Lấy toàn bộ danh sách platform-scoped roles (yêu cầu quyền iam:role:read và level 2)
 		personalGroup.GET("/iam/rbac/role",
 			middleware.Authorize("iam:role:read", module.L1Registry, "2"),

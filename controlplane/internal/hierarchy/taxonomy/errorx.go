@@ -31,7 +31,9 @@ var (
 	ErrWorkspaceCodeAlreadyExists = errors.New("workspace: code already exists within this scope")
 	ErrWorkspaceInsertFailed      = errors.New("workspace: insert failed due to constraint violation")
 	// [COMMENT]: Thêm lỗi sentinel khi không tìm thấy Workspace để xử lý Get/Delete logic
-	ErrWorkspaceNotFound          = errors.New("workspace: workspace not found")
+	ErrWorkspaceNotFound            = errors.New("workspace: workspace not found")
+	ErrWorkspaceNotEmpty            = errors.New("workspace: workspace is not empty, active resources exist")
+	ErrLastWorkspaceDeletionBlocked = errors.New("workspace: cannot delete the last remaining workspace")
 
 	// Tenant REST API errors.
 

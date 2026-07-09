@@ -73,6 +73,8 @@ export type WorkspaceContextValue = {
   clearWorkspaceContext: () => void;
   // [COMMENT]: Thêm trực tiếp workspace mới tạo vào catalog dropdown trên client mà không cần gọi API (0-Request)
   addWorkspaceToCatalog: (item: WorkspaceCatalogItem) => void;
+  // [COMMENT]: Xoá trực tiếp workspace khỏi catalog dropdown trên client (0-Request)
+  removeWorkspaceFromCatalog: (id: string) => void;
 };
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -171,6 +173,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // [COMMENT]: removeWorkspaceFromCatalog — xoá trực tiếp workspace đã xoá khỏi catalog dropdown trên client (0-Request)
+  const removeWorkspaceFromCatalog = useCallback((id: string) => {
+    setCatalog((prev) => {
+      const newCatalog = prev.filter((x) => x.id !== id);
+
+      // Nếu workspace bị xoá đang là active workspace, ta cần xoá active state và cookie
+      const currentCookie = getCookieWorkspaceID();
+      if (currentCookie === id) {
+        clearCookieWorkspaceID();
+        if (newCatalog.length > 0) {
+          // Auto-select workspace tiếp theo còn lại
+          const firstID = newCatalog[0].id;
+          setCookieWorkspaceID(firstID);
+          setActiveWorkspaceID(firstID);
+        } else {
+          setActiveWorkspaceID(null);
+        }
+      }
+
+      return newCatalog;
+    });
+  }, []);
+
   // [COMMENT]: Cleanup khi unmount để cancel inflight request
   useEffect(() => {
     return () => {
@@ -187,14 +212,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     selectWorkspace,
     clearWorkspaceContext,
     addWorkspaceToCatalog,
+    removeWorkspaceFromCatalog,
   };
-
-  return (
-    <WorkspaceContext.Provider value={value}>
-      {children}
-    </WorkspaceContext.Provider>
-  );
-}
 
   return (
     <WorkspaceContext.Provider value={value}>

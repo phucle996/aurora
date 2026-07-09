@@ -5,23 +5,22 @@ import {
   LayoutGrid,
   Plus,
   Loader2,
-  AlertTriangle,
   FolderOpen,
   Activity,
   Calendar,
   X,
   CheckCircle2,
-  UserCheck
+  Trash2
 } from "lucide-react";
 import { toast } from "sonner";
-import { listWorkspaces, createWorkspace, type WorkspaceItem } from "@/lib/api/workspace";
+import { listWorkspaces, createWorkspace, deleteWorkspace, type WorkspaceItem } from "@/lib/api/workspace";
 import { useUserSession } from "@/hooks/useUserSession";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { cn } from "@/lib/utils";
 
 export default function MyWorkspacesPage() {
   const { profile, checkPermission } = useUserSession();
-  const { activeWorkspaceID, selectWorkspace, refreshCatalog } = useWorkspace();
+  const { activeWorkspaceID, selectWorkspace, addWorkspaceToCatalog, removeWorkspaceFromCatalog } = useWorkspace();
 
   const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +28,11 @@ export default function MyWorkspacesPage() {
   // [COMMENT]: Kiểm quyền tạo Workspace
   const canCreate = useMemo(() => {
     return checkPermission("*:*:hierarchy:workspace", "create");
+  }, [checkPermission]);
+
+  // [COMMENT]: Kiểm quyền xóa Workspace
+  const canDelete = useMemo(() => {
+    return checkPermission("*:*:hierarchy:workspace", "delete");
   }, [checkPermission]);
 
   // Modal State
@@ -102,17 +106,47 @@ export default function MyWorkspacesPage() {
       setWsDescription("");
       setIsModalOpen(false);
 
-      // [COMMENT]: Đồng bộ dữ liệu bất đồng bộ mượt mà không cần F5 trang (Zero-Reload)
-      // Merge workspace mới trực tiếp vào local state để tối ưu hóa không cần gọi lại API GET loadWorkspaces
+      // [COMMENT]: Đồng bộ dữ liệu Zero-Request & Zero-Reload
+      // Merge workspace mới trực tiếp vào local state và global catalog dropdown mà không gọi lại bất kỳ API GET nào
       if (newWs) {
         setWorkspaces((prev) => [...prev, newWs]);
+        addWorkspaceToCatalog({
+          id: newWs.id,
+          code: newWs.code,
+          name: newWs.name,
+        });
       }
-      await refreshCatalog();
     } catch (err) {
       console.error(err);
       toast.error(err instanceof Error ? err.message : "Failed to create workspace.");
     } finally {
       setCreateLoading(false);
+    }
+  };
+
+  // [COMMENT]: Xử lý xóa Workspace
+  const handleDeleteWorkspace = async (ws: WorkspaceItem) => {
+    if (!window.confirm(`Are you sure you want to delete workspace "${ws.name}"?`)) {
+      return;
+    }
+
+    try {
+      await deleteWorkspace(ws.id);
+      toast.success("Workspace deleted successfully.");
+
+      // Dọn dẹp cục bộ trên client
+      setWorkspaces((prev) => prev.filter((item) => item.id !== ws.id));
+      removeWorkspaceFromCatalog(ws.id);
+    } catch (err) {
+      console.error(err);
+      const errMsg = err instanceof Error ? err.message : "Failed to delete workspace.";
+      if (errMsg.includes("cannot delete the last remaining workspace")) {
+        toast.error("Deletion rejected: You must maintain at least one workspace.");
+      } else if (errMsg.includes("active resources exist")) {
+        toast.error("Deletion rejected: Please delete all resources in this workspace first.");
+      } else {
+        toast.error(errMsg);
+      }
     }
   };
 
@@ -195,6 +229,19 @@ export default function MyWorkspacesPage() {
                     <Activity className="h-3.5 w-3.5 text-slate-400 shrink-0" />
                     <span>Personal</span>
                   </span>
+
+                  {canDelete && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleDeleteWorkspace(ws);
+                      }}
+                      className="p-1.5 rounded-lg text-slate-450 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer"
+                      title="Delete Workspace"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Workspace Name & Slug */}

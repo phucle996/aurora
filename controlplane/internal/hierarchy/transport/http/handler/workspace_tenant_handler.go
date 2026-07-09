@@ -15,6 +15,7 @@ import (
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: WorkspaceTenantHandler chịu trách nhiệm xử lý các luồng HTTP của workspace ở phạm vi doanh nghiệp (Tenant)
@@ -239,4 +240,54 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 	}
 
 	apires.RespondSuccess(c, data, "workspace catalog success")
+}
+
+// DeleteWorkspaceTenant godoc
+// @Summary      Xóa workspace doanh nghiệp
+// @Description  Thực hiện xóa workspace doanh nghiệp nếu không còn bất kỳ tài nguyên nào bên trong
+// @Tags         workspaces-tenant
+// @Accept       json
+// @Produce      json
+// @Param        workspace_id   path   string true "Workspace ID (UUID) cần xóa"
+// @Success      200 {object} map[string]interface{} "Workspace deleted successfully"
+// @Router       /api/v1/tenant/hierarchy/workspaces/{workspace_id} [delete]
+func (h *WorkspaceTenantHandler) DeleteWorkspaceTenant(c *gin.Context) {
+	const op = "WorkspaceTenantHandler.DeleteWorkspaceTenant"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	workspaceIDStr := c.Param("workspace_id")
+	workspaceID, err := uuid.Parse(workspaceIDStr)
+	if err != nil {
+		logger.HandlerWarn(c, op, err, "invalid workspace_id param format")
+		apires.RespondBadRequest(c, "invalid workspace_id format")
+		return
+	}
+
+	// [COMMENT]: Trích xuất và kiểm tra định danh Tenant ID từ header thông qua helper
+	tenantID, ok := constant.GetTenantID(c, op)
+	if !ok {
+		return
+	}
+
+	err = h.tenantSvc.DeleteWorkspaceForTenant(ctx, workspaceID, tenantID)
+	if err != nil {
+		switch {
+		case errors.Is(err, coreTaxonomy.ErrWorkspaceNotFound):
+			logger.HandlerWarn(c, op, err, "workspace not found to delete")
+			apires.RespondNotFound(c, "workspace not found")
+		case errors.Is(err, coreTaxonomy.ErrWorkspaceNotEmpty):
+			logger.HandlerWarn(c, op, err, "delete workspace rejected: active resources exist")
+			apires.RespondConflict(c, "workspace is not empty, active resources exist")
+		case errors.Is(err, coreTaxonomy.ErrLastWorkspaceDeletionBlocked):
+			logger.HandlerWarn(c, op, err, "delete workspace rejected: last remaining workspace")
+			apires.RespondConflict(c, "cannot delete the last remaining workspace")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "internal_error")
+		}
+		return
+	}
+
+	apires.RespondSuccess(c, nil, "workspace deleted successfully")
 }

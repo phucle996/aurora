@@ -104,9 +104,9 @@ func (s *PersonalWorkspaceServiceImpl) UpdateWorkspaceForPersonal(ctx context.Co
 	return result, nil
 }
 
-func (s *PersonalWorkspaceServiceImpl) DeleteWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID) error {
+func (s *PersonalWorkspaceServiceImpl) DeleteWorkspaceForPersonal(ctx context.Context, workspaceID uuid.UUID, ownerID uuid.UUID) error {
 	start := time.Now()
-	err := s.repo.Delete(ctx, workspaceID)
+	err := s.repo.Delete(ctx, workspaceID, ownerID)
 	duration := time.Since(start)
 	if err != nil {
 		coreMetric.Downstream(ctx, coreMetric.KindRepo, "DeleteWorkspaceForPersonal", coreMetric.OutcomeFailure, duration, err)

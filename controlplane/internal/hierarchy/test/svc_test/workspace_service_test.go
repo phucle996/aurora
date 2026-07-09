@@ -44,7 +44,7 @@ func (f *fakeTenantWorkspaceRepo) Update(ctx context.Context, w coreEntity.Tenan
 	return f.workspace, nil
 }
 
-func (f *fakeTenantWorkspaceRepo) Delete(ctx context.Context, id uuid.UUID) error {
+func (f *fakeTenantWorkspaceRepo) Delete(ctx context.Context, id uuid.UUID, tenantID uuid.UUID) error {
 	return f.err
 }
 
@@ -142,7 +142,7 @@ func (f *fakePersonalWorkspaceRepo) Update(ctx context.Context, w coreEntity.Per
 	return f.workspace, nil
 }
 
-func (f *fakePersonalWorkspaceRepo) Delete(ctx context.Context, id uuid.UUID) error {
+func (f *fakePersonalWorkspaceRepo) Delete(ctx context.Context, id uuid.UUID, ownerID uuid.UUID) error {
 	return f.err
 }
 

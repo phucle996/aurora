@@ -23,6 +23,9 @@ type User struct {
 	PasswordHash string
 	Status       UserStatus
 	Level        int32 // [COMMENT]: Level thô (chỉ dùng nội bộ ở Service/Repo, ẩn khi trả về Client)
+	RoleName     string // [COMMENT]: Tên hiển thị platform role được gán của user
+	MfaEnabled   bool   // [COMMENT]: Cờ cho biết user đã kích hoạt xác thực hai lớp (MFA) hay chưa
+	DevicesCount int32  // [COMMENT]: Số lượng thiết bị đã đăng ký của user
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

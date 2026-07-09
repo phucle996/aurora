@@ -7,14 +7,15 @@
 CREATE TABLE IF NOT EXISTS personal_buckets (
     id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL, -- Tên bucket vật lý (Unique toàn cục trên cluster MinIO/S3)
-    workspace_id UUID NOT NULL, -- Tham chiếu logic tới hierarchy.workspaces(id)
+    workspace_id UUID NOT NULL, -- Tham chiếu vật lý tới hierarchy.personal_workspaces(id)
     zone_id UUID NOT NULL,      -- Tham chiếu logic tới hierarchy.zones(id)
     status VARCHAR(50) NOT NULL DEFAULT 'creating', -- Trạng thái vòng đời (creating, active, suspended, deleted)
     capacity_quota_bytes BIGINT NOT NULL DEFAULT 0, -- Hạn mức dung lượng tối đa (Bytes)
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    CONSTRAINT ux_personal_buckets_name UNIQUE (name)
+    CONSTRAINT ux_personal_buckets_name UNIQUE (name),
+    CONSTRAINT fk_personal_buckets_workspace FOREIGN KEY (workspace_id) REFERENCES hierarchy.personal_workspaces(id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_personal_buckets_workspace ON personal_buckets(workspace_id);
@@ -23,7 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_personal_buckets_workspace ON personal_buckets(wo
 CREATE TABLE IF NOT EXISTS tenant_buckets (
     id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL, -- Tên bucket vật lý (Unique toàn cục trên cluster MinIO/S3)
-    workspace_id UUID NOT NULL, -- Tham chiếu logic tới hierarchy.workspaces(id)
+    workspace_id UUID NOT NULL, -- Tham chiếu vật lý tới hierarchy.tenant_workspaces(id)
     zone_id UUID NOT NULL,      -- Tham chiếu logic tới hierarchy.zones(id)
     tenant_id UUID NOT NULL,    -- Tham chiếu logic tới hierarchy.tenants(id)
     status VARCHAR(50) NOT NULL DEFAULT 'creating', -- Trạng thái vòng đời (creating, active, suspended, deleted)
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS tenant_buckets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    CONSTRAINT ux_tenant_buckets_name UNIQUE (name)
+    CONSTRAINT ux_tenant_buckets_name UNIQUE (name),
+    CONSTRAINT fk_tenant_buckets_workspace FOREIGN KEY (workspace_id) REFERENCES hierarchy.tenant_workspaces(id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tenant_buckets_tenant_zone ON tenant_buckets(tenant_id, zone_id);

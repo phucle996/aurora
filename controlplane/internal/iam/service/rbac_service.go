@@ -148,3 +148,8 @@ func (s *RbacService) CreateRole(ctx context.Context, role *iamEntity.Role, perm
 func (s *RbacService) ListPermissions(ctx context.Context) ([]iamEntity.Permission, error) {
 	return s.repo.ListPermissions(ctx)
 }
+
+// [COMMENT]: GetUserRoleDetails lấy thông tin chi tiết vai trò của user kèm kiểm tra cấp bậc
+func (s *RbacService) GetUserRoleDetails(ctx context.Context, userID uuid.UUID, callerLevel int32) (*iamEntity.Role, error) {
+	return s.repo.GetUserRoleDetails(ctx, userID, callerLevel)
+}
