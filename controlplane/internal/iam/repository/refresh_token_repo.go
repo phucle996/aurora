@@ -89,7 +89,7 @@ func (r *RefreshTokenRepository) RevokeRefreshTokensByDeviceIDsAndUserID(ctx con
 	return res.RowsAffected(), nil
 }
 
-func (r *RefreshTokenRepository) RevokeRefreshTokensByClientDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) (int64, error) {
+func (r *RefreshTokenRepository) DeleteTokensByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) (int64, error) {
 	if len(clientDeviceIDs) == 0 {
 		return 0, nil
 	}
@@ -101,7 +101,7 @@ func (r *RefreshTokenRepository) RevokeRefreshTokensByClientDeviceIDsAndUserID(c
 	`, r.schema, r.schema)
 	res, err := r.db.Exec(ctx, query, userID, clientDeviceIDs)
 	if err != nil {
-		return 0, fmt.Errorf("iam repo: revoke refresh tokens by client device ids: %w", err)
+		return 0, fmt.Errorf("iam repo: delete refresh tokens by client device ids: %w", err)
 	}
 	return res.RowsAffected(), nil
 }

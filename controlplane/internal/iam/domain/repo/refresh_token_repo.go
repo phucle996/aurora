@@ -17,5 +17,5 @@ type RefreshTokenRepository interface {
 	RevokeRefreshTokensByUserID(ctx context.Context, userID uuid.UUID, exceptDeviceID *uuid.UUID) (int64, error)
 	RevokeRefreshTokensByDeviceIDAndUserID(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID) (int64, error)
 	RevokeRefreshTokensByDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, deviceIDs []uuid.UUID) (int64, error)
-	RevokeRefreshTokensByClientDeviceIDsAndUserID(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) (int64, error)
+	DeleteTokensByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) (int64, error)
 }

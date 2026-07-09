@@ -412,9 +412,6 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		}
 	}
 
-	// [COMMENT]: 7. Thu hồi bớt thiết bị vượt quá số lượng cho phép (Best effort)
-	s.deviceSvc.EvictExcessDevicesIfNeeded(ctx, user.ID)
-
 	return &iamEntity.VerifyUserCredentialsResult{
 		Valid:  true,
 		UserID: user.ID.String(),
@@ -474,5 +471,3 @@ func computeBitmapIndex(value string) int64 {
 	val := strings.ToLower(strings.TrimSpace(value))
 	return int64(crc32.ChecksumIEEE([]byte(val)) % registerBitmapSize)
 }
-
-

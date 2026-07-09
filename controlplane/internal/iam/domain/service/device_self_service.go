@@ -19,19 +19,11 @@ type DeviceSelfService interface {
 	// [COMMENT]: LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác
 	LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentDeviceID uuid.UUID) (int64, error)
 
-
-
 	// [COMMENT]: RegisterLoginDevice đăng ký thiết bị đăng nhập
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 
 	// [COMMENT]: BulkTouchDevices cập nhật hàng loạt trạng thái hoạt động cho nhiều thiết bị — được gọi từ NATS Consumer
 	BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error
-
-	// [COMMENT]: EvictExcessDevicesIfNeeded thu hồi bớt các thiết bị cũ nếu vượt ngưỡng giới hạn tối đa
-	EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID)
-
-	// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp các thiết bị vượt ngưỡng
-	ReconcileDeviceCap(ctx context.Context, batch int) (int, error)
 
 	// [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ
 	PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string)

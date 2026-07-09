@@ -216,16 +216,6 @@ func (s *DeviceSelfService) BulkTouchDevices(ctx context.Context, updates []iamE
 	return s.deviceRepo.BulkTouchDevices(ctx, updates)
 }
 
-// [COMMENT]: EvictExcessDevicesIfNeeded đã được vô hiệu hóa vì logic kiểm soát thiết bị vượt ngưỡng
-// đã được chuyển giao sang ACR Edge xử lý trực tiếp trên Redis L2 và đồng bộ bất đồng bộ qua NATS.
-func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {
-}
-
-// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp đã được chuyển giao cho ACR Edge xử lý nên không cần chạy nữa.
-func (s *DeviceSelfService) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
-	return 0, nil
-}
-
 // [COMMENT]: RevokeDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
 // đồng thời xóa bỏ Refresh Token tương ứng trong database. Được gọi khi nhận sự kiện Evicted từ ACR qua NATS.
 func (s *DeviceSelfService) RevokeDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
@@ -243,8 +233,8 @@ func (s *DeviceSelfService) RevokeDevicesByClientDeviceIDs(ctx context.Context, 
 
 	// 2. Thu hồi các refresh token tương ứng
 	if s.refreshTokenRepo != nil {
-		if _, err := s.refreshTokenRepo.RevokeRefreshTokensByClientDeviceIDsAndUserID(ctx, userID, clientDeviceIDs); err != nil {
-			return fmt.Errorf("iam service: revoke tokens by client device ids: %w", err)
+		if _, err := s.refreshTokenRepo.DeleteTokensByClientDeviceIDs(ctx, userID, clientDeviceIDs); err != nil {
+			return fmt.Errorf("iam service: delete tokens by client device ids: %w", err)
 		}
 	}
 
