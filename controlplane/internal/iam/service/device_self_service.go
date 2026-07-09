@@ -168,25 +168,14 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 
 // [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
 func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentDeviceID *uuid.UUID) (int64, error) {
-	devices, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
-	if listErr != nil {
-		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
-	}
-
-	var otherDeviceIDs []string
-	for _, dev := range devices {
-		// [COMMENT]: Chỉ thu hồi các thiết bị đang hoạt động (chưa bị revoke)
-		if dev.RevokedAt == nil {
-			if currentDeviceID == nil || dev.ID != currentDeviceID.String() {
-				otherDeviceIDs = append(otherDeviceIDs, dev.ID)
-			}
-		}
-	}
-
-	affected, revokeErr := s.deviceRepo.RevokeMyOtherDevices(ctx, userID, currentDeviceID)
+	repoStart := time.Now()
+	otherDeviceIDs, revokeErr := s.deviceRepo.RevokeMyOtherDevices(ctx, userID, currentDeviceID)
 	if revokeErr != nil {
+		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeFailureUnknown, time.Since(repoStart), revokeErr)
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
+
+	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyOtherDevices", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
 
 	if len(otherDeviceIDs) > 0 {
 		// [COMMENT]: Nhánh gởi tín hiệu xóa session sang ACR chạy bất đồng bộ bằng Goroutine nền
@@ -209,7 +198,7 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 
 	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning")
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
-	return affected, nil
+	return int64(len(otherDeviceIDs)), nil
 }
 
 // [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
