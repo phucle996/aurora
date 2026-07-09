@@ -260,6 +260,68 @@ impl AuthServiceImpl {
             },
         )
     }
+
+    // [COMMENT]: Giải mã VerifyUserTrinityTokenRequest từ bytes, xử lý xác thực, và trả về bytes
+    pub async fn verify_user_trinity_token_bytes(&self, payload: &[u8]) -> Vec<u8> {
+        use prost::Message;
+        let req = match crate::infra::nats::trinity::VerifyUserTrinityTokenRequest::decode(payload) {
+            Ok(r) => r,
+            Err(e) => {
+                Logger::sys_error(
+                    "auth.verify_user",
+                    "Failed to decode VerifyUserTrinityTokenRequest",
+                    &e.to_string(),
+                );
+                return vec![];
+            }
+        };
+
+        let res = match self.verify_user_trinity_token(req).await {
+            Ok(r) => r,
+            Err(_) => crate::infra::nats::trinity::VerifyUserTrinityTokenResponse {
+                valid: false,
+                user_id: String::new(),
+            },
+        };
+
+        let mut reply_payload = Vec::new();
+        if res.encode(&mut reply_payload).is_ok() {
+            reply_payload
+        } else {
+            vec![]
+        }
+    }
+
+    // [COMMENT]: Giải mã VerifyAdminTrinityTokenRequest từ bytes, xử lý xác thực, và trả về bytes
+    pub async fn verify_admin_trinity_token_bytes(&self, payload: &[u8]) -> Vec<u8> {
+        use prost::Message;
+        let req = match crate::infra::nats::trinity::VerifyAdminTrinityTokenRequest::decode(payload) {
+            Ok(r) => r,
+            Err(e) => {
+                Logger::sys_error(
+                    "auth.verify_admin",
+                    "Failed to decode VerifyAdminTrinityTokenRequest",
+                    &e.to_string(),
+                );
+                return vec![];
+            }
+        };
+
+        let res = match self.verify_admin_trinity_token(req).await {
+            Ok(r) => r,
+            Err(_) => crate::infra::nats::trinity::VerifyAdminTrinityTokenResponse {
+                valid: false,
+                admin_id: String::new(),
+            },
+        };
+
+        let mut reply_payload = Vec::new();
+        if res.encode(&mut reply_payload).is_ok() {
+            reply_payload
+        } else {
+            vec![]
+        }
+    }
 }
 
 #[tonic::async_trait]
