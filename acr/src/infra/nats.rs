@@ -1,6 +1,3 @@
-use async_nats::HeaderMap;
-use prost::Message;
-
 // [COMMENT]: Sinh mã Rust từ gRPC protobuf definitions dựa trên package name 'iam.rpc' tương thích Go
 #[allow(dead_code)]
 #[allow(unused_imports)]
@@ -13,15 +10,13 @@ pub mod zone_proto {
     tonic::include_proto!("core.rpc");
 }
 
-use auth::{VerifyUserCredentialsRequest, VerifyUserCredentialsResponse};
-
-// [COMMENT]: Client tương tác với Control Plane qua NATS Core Pub/Sub (Request-Reply)
+// [COMMENT]: Quản lý kết nối đến NATS Core
 #[derive(Clone)]
-pub struct ControlPlaneClient {
+pub struct Nats {
     nats_client: async_nats::Client,
 }
 
-impl ControlPlaneClient {
+impl Nats {
     pub async fn new(
         nats_url: String,
         _ca_cert: Option<String>,
@@ -36,135 +31,9 @@ impl ControlPlaneClient {
         Self { nats_client }
     }
 
-    // [COMMENT]: Gọi VerifyUserCredentials sang Control Plane qua NATS Core Request-Reply
-    pub async fn verify_user_credentials(
-        &self,
-        request: VerifyUserCredentialsRequest,
-    ) -> Result<VerifyUserCredentialsResponse, tonic::Status> {
-        let mut payload = Vec::new();
-        request
-            .encode(&mut payload)
-            .map_err(|e| tonic::Status::internal(format!("Failed to encode request: {}", e)))?;
-
-        // [COMMENT]: Bơm traceparent W3C vào NATS Headers để phân tích vết phân tán
-        let mut headers = HeaderMap::new();
-        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
-            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
-            headers.insert("traceparent", traceparent.as_str());
-        }
-
-        let reply_subject = "iam.auth.verify_credentials";
-
-        let response_msg = match self
-            .nats_client
-            .request_with_headers(reply_subject.to_string(), headers, payload.into())
-            .await
-        {
-            Ok(msg) => msg,
-            Err(e) => {
-                return Err(tonic::Status::unavailable(format!(
-                    "NATS request failed: {}",
-                    e
-                )));
-            }
-        };
-
-        // [COMMENT]: Giải mã protobuf response
-        let response = VerifyUserCredentialsResponse::decode(response_msg.payload.as_ref())
-            .map_err(|e| tonic::Status::internal(format!("Failed to decode response: {}", e)))?;
-
-        Ok(response)
-    }
-
-    // [COMMENT]: Gọi VerifyOpaqueRefreshToken sang Control Plane qua NATS Core Request-Reply
-    pub async fn verify_opaque_refresh_token(
-        &self,
-        refresh_token: String,
-        tenant_id: Option<String>,
-        user_id: String,
-    ) -> Result<auth::VerifyOpaqueRefreshTokenResponse, tonic::Status> {
-        let request = auth::VerifyOpaqueRefreshTokenRequest {
-            refresh_token,
-            tenant_id,
-            user_id,
-        };
-
-        let mut payload = Vec::new();
-        request
-            .encode(&mut payload)
-            .map_err(|e| tonic::Status::internal(format!("Failed to encode request: {}", e)))?;
-
-        let mut headers = HeaderMap::new();
-        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
-            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
-            headers.insert("traceparent", traceparent.as_str());
-        }
-
-        let reply_subject = "iam.auth.verify_opaque_token";
-
-        let response_msg = match self
-            .nats_client
-            .request_with_headers(reply_subject.to_string(), headers, payload.into())
-            .await
-        {
-            Ok(msg) => msg,
-            Err(e) => {
-                return Err(tonic::Status::unavailable(format!(
-                    "NATS request failed: {}",
-                    e
-                )));
-            }
-        };
-
-        let response = auth::VerifyOpaqueRefreshTokenResponse::decode(response_msg.payload.as_ref())
-            .map_err(|e| tonic::Status::internal(format!("Failed to decode response: {}", e)))?;
-
-        Ok(response)
-    }
-
-    // [COMMENT]: Gọi RevokeOpaqueRefreshToken sang Control Plane qua NATS Core Request-Reply
-    pub async fn revoke_opaque_refresh_token(
-        &self,
-        refresh_token: String,
-    ) -> Result<(), tonic::Status> {
-        let request = auth::RevokeOpaqueRefreshTokenRequest {
-            refresh_token,
-        };
-
-        let mut payload = Vec::new();
-        request
-            .encode(&mut payload)
-            .map_err(|e| tonic::Status::internal(format!("Failed to encode request: {}", e)))?;
-
-        let mut headers = HeaderMap::new();
-        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
-            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
-            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
-            headers.insert("traceparent", traceparent.as_str());
-        }
-
-        let reply_subject = "iam.auth.revoke_opaque_token";
-
-        let response_msg = match self
-            .nats_client
-            .request_with_headers(reply_subject.to_string(), headers, payload.into())
-            .await
-        {
-            Ok(msg) => msg,
-            Err(e) => {
-                return Err(tonic::Status::unavailable(format!(
-                    "NATS request failed: {}",
-                    e
-                )));
-            }
-        };
-
-        let _response = auth::RevokeOpaqueRefreshTokenResponse::decode(response_msg.payload.as_ref())
-            .map_err(|e| tonic::Status::internal(format!("Failed to decode response: {}", e)))?;
-
-        Ok(())
+    // [COMMENT]: Expose NATS Client để các call site trực tiếp gọi
+    pub fn client(&self) -> &async_nats::Client {
+        &self.nats_client
     }
 
     pub async fn get_zone_list(&self) -> Result<Vec<zone_proto::ZoneEntry>, tonic::Status> {

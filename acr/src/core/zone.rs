@@ -11,7 +11,7 @@
 // 🔒 NEGATIVE CACHE: key không tồn tại được ghi tombstone 3 phút để tránh stampede DB
 // ======================================================================================================
 
-use crate::infra::controlplane::ControlPlaneClient;
+use crate::infra::controlplane::Nats;
 use crate::observability::logger::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,7 +51,7 @@ pub struct ZoneItem {
 // ─── ZoneManager ────────────────────────────────────────────────────────────
 
 pub struct ZoneManager {
-    control_plane_client: Arc<ControlPlaneClient>,
+    control_plane_client: Arc<Nats>,
     redis_client: Arc<redis::Client>,
 
     // [COMMENT]: L1 in-memory cache riêng từng node - tách biệt theo chiều lookup
@@ -65,7 +65,7 @@ pub struct ZoneManager {
 
 impl ZoneManager {
     pub fn new(
-        control_plane_client: Arc<ControlPlaneClient>,
+        control_plane_client: Arc<Nats>,
         redis_client: Arc<redis::Client>,
     ) -> Self {
         Self {

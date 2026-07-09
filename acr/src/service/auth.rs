@@ -17,7 +17,7 @@ use tonic::{Request, Response, Status};
 
 use crate::core::session::{AdminAccessSession, SessionManager};
 use crate::core::token::TokenManager;
-use crate::infra::controlplane::ControlPlaneClient;
+use crate::infra::controlplane::Nats;
 use crate::observability::logger::Logger;
 
 // [COMMENT]: Nạp các cấu trúc tự động sinh từ proto/auth.proto & proto/session.proto
@@ -39,7 +39,7 @@ pub struct AuthServiceImpl {
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
     redis_client: Arc<redis::Client>,
-    control_plane_client: Arc<ControlPlaneClient>,
+    control_plane_client: Arc<Nats>,
 }
 
 impl AuthServiceImpl {
@@ -47,7 +47,7 @@ impl AuthServiceImpl {
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
         redis_client: Arc<redis::Client>,
-        control_plane_client: Arc<ControlPlaneClient>,
+        control_plane_client: Arc<Nats>,
     ) -> Self {
         Self {
             session_mgr,
@@ -253,37 +253,67 @@ impl AuthService for AuthServiceImpl {
         }))
     }
 
-    // [COMMENT]: Xác thực Opaque Refresh Token (Ủy thác qua gRPC sang Go Controlplane)
+    // [COMMENT]: Xác thực Opaque Refresh Token (Ủy thác sang Go Controlplane qua NATS)
     async fn verify_opaque_refresh_token(
         &self,
         request: Request<VerifyOpaqueRefreshTokenRequest>,
     ) -> Result<Response<VerifyOpaqueRefreshTokenResponse>, Status> {
         let req = request.into_inner();
-        let res = self
-            .control_plane_client
-            .verify_opaque_refresh_token(req.refresh_token, req.tenant_id, req.user_id)
-            .await?;
+        
+        let mut payload = Vec::new();
+        req.encode(&mut payload)
+            .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
 
-        Ok(Response::new(VerifyOpaqueRefreshTokenResponse {
-            valid: res.valid,
-            user_id: res.user_id,
-            tenant_id: res.tenant_id,
-            role: res.role,
-            level: res.level,
-            error_message: res.error_message,
-            username: res.username,
-        }))
+        let mut headers = async_nats::HeaderMap::new();
+        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+            headers.insert("traceparent", traceparent.as_str());
+        }
+
+        let response_msg = match self
+            .control_plane_client
+            .client()
+            .request_with_headers("iam.auth.verify_opaque_token".to_string(), headers, payload.into())
+            .await
+        {
+            Ok(msg) => msg,
+            Err(e) => return Err(Status::unavailable(format!("NATS request failed: {}", e))),
+        };
+
+        let res = VerifyOpaqueRefreshTokenResponse::decode(response_msg.payload.as_ref())
+            .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
+
+        Ok(Response::new(res))
     }
 
-    // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ (Ủy thác qua gRPC sang Go Controlplane)
+    // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ (Ủy thác sang Go Controlplane qua NATS)
     async fn revoke_opaque_refresh_token(
         &self,
         request: Request<RevokeOpaqueRefreshTokenRequest>,
     ) -> Result<Response<RevokeOpaqueRefreshTokenResponse>, Status> {
         let req = request.into_inner();
-        self.control_plane_client
-            .revoke_opaque_refresh_token(req.refresh_token)
-            .await?;
+
+        let mut payload = Vec::new();
+        req.encode(&mut payload)
+            .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
+
+        let mut headers = async_nats::HeaderMap::new();
+        if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+            let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+            let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+            headers.insert("traceparent", traceparent.as_str());
+        }
+
+        match self
+            .control_plane_client
+            .client()
+            .request_with_headers("iam.auth.revoke_opaque_token".to_string(), headers, payload.into())
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => return Err(Status::unavailable(format!("NATS request failed: {}", e))),
+        };
 
         Ok(Response::new(RevokeOpaqueRefreshTokenResponse {}))
     }

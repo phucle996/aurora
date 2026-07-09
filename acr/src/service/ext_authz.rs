@@ -14,7 +14,7 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::error::AcrError;
-use crate::infra::controlplane::ControlPlaneClient;
+use crate::infra::controlplane::Nats;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
 use crate::pkg::cookie::*;
@@ -25,8 +25,8 @@ pub struct ExtAuthzService {
     token_mgr: Arc<TokenManager>,
     evaluator: Arc<PolicyEvaluator>,
     config: Config,
-    // [COMMENT]: Client gRPC để gọi không đồng bộ sang Control Plane
-    control_plane_client: Arc<ControlPlaneClient>,
+    // [COMMENT]: Client NATS để gọi không đồng bộ sang Control Plane
+    control_plane_client: Arc<Nats>,
     zone_mgr: Arc<ZoneManager>,
     // [COMMENT]: Bộ giới hạn tần suất tích hợp tại biên
     rate_limiter: Arc<crate::service::ratelimit::RateLimiter>,
@@ -38,7 +38,7 @@ impl ExtAuthzService {
         token_mgr: Arc<TokenManager>,
         evaluator: Arc<PolicyEvaluator>,
         config: Config,
-        control_plane_client: Arc<ControlPlaneClient>,
+        control_plane_client: Arc<Nats>,
         zone_mgr: Arc<ZoneManager>,
     ) -> Self {
         let rate_limiter = Arc::new(crate::service::ratelimit::RateLimiter::new(

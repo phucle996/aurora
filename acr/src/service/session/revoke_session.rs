@@ -6,7 +6,7 @@ use tonic::{Response, Status};
 
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
-use crate::infra::controlplane::ControlPlaneClient;
+use crate::infra::controlplane::Nats;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
 use crate::pkg::cookie::*;
@@ -15,7 +15,7 @@ use crate::pkg::cookie::*;
 pub async fn handle_logout(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    control_plane_client: &Arc<ControlPlaneClient>,
+    control_plane_client: &Arc<Nats>,
     client_headers: &std::collections::HashMap<String, String>,
     method: &str,
     path: &str,
@@ -122,17 +122,42 @@ pub async fn handle_logout(
                 "ext_authz.logout",
                 "Asynchronously revoking refresh token on Control Plane...",
             );
-            match cp_client.revoke_opaque_refresh_token(refresh_token).await {
+            let req_payload = crate::infra::controlplane::auth::RevokeOpaqueRefreshTokenRequest {
+                refresh_token,
+            };
+            let mut payload_bytes = Vec::new();
+            let nats_res = (|| async {
+                use prost::Message;
+                req_payload.encode(&mut payload_bytes)
+                    .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
+
+                let mut headers = async_nats::HeaderMap::new();
+                if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+                    let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+                    let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+                    headers.insert("traceparent", traceparent.as_str());
+                }
+
+                cp_client
+                    .client()
+                    .request_with_headers("iam.auth.revoke_opaque_token".to_string(), headers, payload_bytes.into())
+                    .await
+                    .map_err(|e| Status::unavailable(format!("NATS request failed: {}", e)))?;
+
+                Ok::<(), Status>(())
+            })().await;
+
+            match nats_res {
                 Ok(_) => {
                     Logger::sys_info(
                         "ext_authz.logout",
-                        "Successfully revoked refresh token on Control Plane via async gRPC.",
+                        "Successfully revoked refresh token on Control Plane via NATS Request-Reply.",
                     );
                 }
                 Err(e) => {
                     Logger::sys_error(
                         "ext_authz.logout",
-                        "Failed to revoke refresh token on Control Plane via async gRPC (ignoring)",
+                        "Failed to revoke refresh token on Control Plane via NATS (ignoring)",
                         &e.to_string(),
                     );
                 }

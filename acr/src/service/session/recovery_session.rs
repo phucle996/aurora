@@ -9,7 +9,7 @@ use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 use crate::config::Config;
 use crate::core::session::{RecoverySessionCache, SessionManager};
 use crate::core::token::TokenManager;
-use crate::infra::controlplane::ControlPlaneClient;
+use crate::infra::controlplane::Nats;
 use crate::observability::logger::Logger;
 // [COMMENT]: Dùng release_user_session để gen Trinity (access_key, access_secret, JWT, Redis L2)
 // thay vì viết lại logic từ đầu
@@ -186,7 +186,7 @@ pub async fn handle_session_recovery(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
     zone_mgr: &Arc<crate::core::zone::ZoneManager>,
-    control_plane_client: &Arc<ControlPlaneClient>,
+    control_plane_client: &Arc<Nats>,
     config: &Config,
     cookie_header: &str,
     client_headers: &std::collections::HashMap<String, String>,
@@ -404,11 +404,47 @@ pub async fn handle_session_recovery(
             }
         };
 
-        // [COMMENT]: Gọi gRPC xác thực refresh token tới Controlplane gửi kèm user_id và tenant_id
-        match control_plane_client
-            .verify_opaque_refresh_token(refresh_token.clone(), tenant_id, user_id)
-            .await
-        {
+        // [COMMENT]: Gọi NATS xác thực refresh token tới Controlplane gửi kèm user_id và tenant_id
+        let req_payload = crate::infra::controlplane::auth::VerifyOpaqueRefreshTokenRequest {
+            refresh_token: refresh_token.clone(),
+            tenant_id,
+            user_id,
+        };
+
+        let mut payload_bytes = Vec::new();
+        let verify_res = match (|| async {
+            use prost::Message;
+            req_payload.encode(&mut payload_bytes)
+                .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
+
+            let mut headers = async_nats::HeaderMap::new();
+            if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+                let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+                let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+                headers.insert("traceparent", traceparent.as_str());
+            }
+
+            let response_msg = control_plane_client
+                .client()
+                .request_with_headers("iam.auth.verify_opaque_token".to_string(), headers, payload_bytes.into())
+                .await
+                .map_err(|e| Status::unavailable(format!("NATS request failed: {}", e)))?;
+
+            let decoded = crate::infra::controlplane::auth::VerifyOpaqueRefreshTokenResponse::decode(response_msg.payload.as_ref())
+                .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
+
+            Ok(decoded)
+        })().await {
+            Ok(res) => res,
+            Err(e) => {
+                if is_leader {
+                    release_recovery_lock(session_mgr, &token_hash).await;
+                }
+                return Err(e);
+            }
+        };
+
+        match Ok::<_, Status>(verify_res) {
             Ok(verify_res) if verify_res.valid => {
                 // [COMMENT]: Kiểm tra ràng buộc admin với zone global
                 if !verify_res.role.eq_ignore_ascii_case("admin")

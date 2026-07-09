@@ -14,7 +14,9 @@ use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::infra::controlplane::auth::VerifyUserCredentialsRequest;
-use crate::infra::controlplane::ControlPlaneClient;
+use crate::infra::controlplane::Nats;
+use prost::Message;
+use async_nats::HeaderMap;
 use crate::observability::logger::Logger;
 use crate::service::ext_authz::extract_cookie_value;
 use crate::pkg::cookie::*;
@@ -42,7 +44,7 @@ pub struct ErrorResponse {
 pub async fn handle_login(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
-    control_plane_client: &Arc<ControlPlaneClient>,
+    control_plane_client: &Arc<Nats>,
     zone_mgr: &Arc<ZoneManager>,
     config: &Config,
     client_headers: &std::collections::HashMap<String, String>,
@@ -165,17 +167,58 @@ pub async fn handle_login(
         ),
     );
 
-    let cp_res = match control_plane_client.verify_user_credentials(cp_req).await {
-        Ok(res) => res,
+    let mut payload_bytes = Vec::new();
+    if let Err(e) = cp_req.encode(&mut payload_bytes) {
+        Logger::sys_error(
+            "login_handler",
+            "Failed to encode request payload",
+            &e.to_string(),
+        );
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::InternalServerError,
+            "Internal server error",
+        ))));
+    }
+
+    let mut headers = HeaderMap::new();
+    if let Some(trace_id) = crate::observability::otel::OtelTracer::get_current_trace_id() {
+        let span_id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+        let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+        headers.insert("traceparent", traceparent.as_str());
+    }
+
+    let response_msg = match control_plane_client
+        .client()
+        .request_with_headers("iam.auth.verify_credentials".to_string(), headers, payload_bytes.into())
+        .await
+    {
+        Ok(msg) => msg,
         Err(e) => {
             Logger::sys_error(
                 "login_handler",
-                "gRPC VerifyUserCredentials to CP failed",
+                "NATS VerifyUserCredentials request to CP failed",
                 &e.to_string(),
             );
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::InternalServerError,
                 "Authentication service is temporarily unavailable",
+            ))));
+        }
+    };
+
+    let cp_res = match crate::infra::controlplane::auth::VerifyUserCredentialsResponse::decode(
+        response_msg.payload.as_ref(),
+    ) {
+        Ok(res) => res,
+        Err(e) => {
+            Logger::sys_error(
+                "login_handler",
+                "NATS VerifyUserCredentials response decode failed",
+                &e.to_string(),
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service response was invalid",
             ))));
         }
     };
