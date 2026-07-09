@@ -19,8 +19,6 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AuthService_VerifyAdminTrinityToken_FullMethodName  = "/iam.rpc.AuthService/VerifyAdminTrinityToken"
-	AuthService_VerifyUserTrinityToken_FullMethodName   = "/iam.rpc.AuthService/VerifyUserTrinityToken"
 	AuthService_VerifyOpaqueRefreshToken_FullMethodName = "/iam.rpc.AuthService/VerifyOpaqueRefreshToken"
 	AuthService_RevokeOpaqueRefreshToken_FullMethodName = "/iam.rpc.AuthService/RevokeOpaqueRefreshToken"
 	AuthService_VerifyUserCredentials_FullMethodName    = "/iam.rpc.AuthService/VerifyUserCredentials"
@@ -30,12 +28,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Dịch vụ xác thực Trinity Token gRPC kết nối giữa Notification Service (Rust) và Controlplane (Go)
+// Dịch vụ xác thực các luồng qua gRPC (gọi nội bộ từ acr Service)
 type AuthServiceClient interface {
-	// Xác thực Trinity credentials cho Admin/SRE quản trị hệ thống
-	VerifyAdminTrinityToken(ctx context.Context, in *VerifyAdminTrinityTokenRequest, opts ...grpc.CallOption) (*VerifyAdminTrinityTokenResponse, error)
-	// Xác thực Trinity credentials cho người dùng (End-User) thông thường
-	VerifyUserTrinityToken(ctx context.Context, in *VerifyUserTrinityTokenRequest, opts ...grpc.CallOption) (*VerifyUserTrinityTokenResponse, error)
 	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
 	VerifyOpaqueRefreshToken(ctx context.Context, in *VerifyOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*VerifyOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
@@ -50,26 +44,6 @@ type authServiceClient struct {
 
 func NewAuthServiceClient(cc grpc.ClientConnInterface) AuthServiceClient {
 	return &authServiceClient{cc}
-}
-
-func (c *authServiceClient) VerifyAdminTrinityToken(ctx context.Context, in *VerifyAdminTrinityTokenRequest, opts ...grpc.CallOption) (*VerifyAdminTrinityTokenResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(VerifyAdminTrinityTokenResponse)
-	err := c.cc.Invoke(ctx, AuthService_VerifyAdminTrinityToken_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *authServiceClient) VerifyUserTrinityToken(ctx context.Context, in *VerifyUserTrinityTokenRequest, opts ...grpc.CallOption) (*VerifyUserTrinityTokenResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(VerifyUserTrinityTokenResponse)
-	err := c.cc.Invoke(ctx, AuthService_VerifyUserTrinityToken_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *authServiceClient) VerifyOpaqueRefreshToken(ctx context.Context, in *VerifyOpaqueRefreshTokenRequest, opts ...grpc.CallOption) (*VerifyOpaqueRefreshTokenResponse, error) {
@@ -106,12 +80,8 @@ func (c *authServiceClient) VerifyUserCredentials(ctx context.Context, in *Verif
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
 //
-// Dịch vụ xác thực Trinity Token gRPC kết nối giữa Notification Service (Rust) và Controlplane (Go)
+// Dịch vụ xác thực các luồng qua gRPC (gọi nội bộ từ acr Service)
 type AuthServiceServer interface {
-	// Xác thực Trinity credentials cho Admin/SRE quản trị hệ thống
-	VerifyAdminTrinityToken(context.Context, *VerifyAdminTrinityTokenRequest) (*VerifyAdminTrinityTokenResponse, error)
-	// Xác thực Trinity credentials cho người dùng (End-User) thông thường
-	VerifyUserTrinityToken(context.Context, *VerifyUserTrinityTokenRequest) (*VerifyUserTrinityTokenResponse, error)
 	// Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
 	VerifyOpaqueRefreshToken(context.Context, *VerifyOpaqueRefreshTokenRequest) (*VerifyOpaqueRefreshTokenResponse, error)
 	// [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
@@ -128,12 +98,6 @@ type AuthServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedAuthServiceServer struct{}
 
-func (UnimplementedAuthServiceServer) VerifyAdminTrinityToken(context.Context, *VerifyAdminTrinityTokenRequest) (*VerifyAdminTrinityTokenResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method VerifyAdminTrinityToken not implemented")
-}
-func (UnimplementedAuthServiceServer) VerifyUserTrinityToken(context.Context, *VerifyUserTrinityTokenRequest) (*VerifyUserTrinityTokenResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method VerifyUserTrinityToken not implemented")
-}
 func (UnimplementedAuthServiceServer) VerifyOpaqueRefreshToken(context.Context, *VerifyOpaqueRefreshTokenRequest) (*VerifyOpaqueRefreshTokenResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VerifyOpaqueRefreshToken not implemented")
 }
@@ -162,42 +126,6 @@ func RegisterAuthServiceServer(s grpc.ServiceRegistrar, srv AuthServiceServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&AuthService_ServiceDesc, srv)
-}
-
-func _AuthService_VerifyAdminTrinityToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(VerifyAdminTrinityTokenRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AuthServiceServer).VerifyAdminTrinityToken(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AuthService_VerifyAdminTrinityToken_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AuthServiceServer).VerifyAdminTrinityToken(ctx, req.(*VerifyAdminTrinityTokenRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _AuthService_VerifyUserTrinityToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(VerifyUserTrinityTokenRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(AuthServiceServer).VerifyUserTrinityToken(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AuthService_VerifyUserTrinityToken_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AuthServiceServer).VerifyUserTrinityToken(ctx, req.(*VerifyUserTrinityTokenRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _AuthService_VerifyOpaqueRefreshToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -261,14 +189,6 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "iam.rpc.AuthService",
 	HandlerType: (*AuthServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "VerifyAdminTrinityToken",
-			Handler:    _AuthService_VerifyAdminTrinityToken_Handler,
-		},
-		{
-			MethodName: "VerifyUserTrinityToken",
-			Handler:    _AuthService_VerifyUserTrinityToken_Handler,
-		},
 		{
 			MethodName: "VerifyOpaqueRefreshToken",
 			Handler:    _AuthService_VerifyOpaqueRefreshToken_Handler,

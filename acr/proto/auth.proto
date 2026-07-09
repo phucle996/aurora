@@ -4,14 +4,8 @@ package iam.rpc;
 // Đường dẫn package Go khi sinh code
 option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
 
-// Dịch vụ xác thực Trinity Token gRPC kết nối giữa Notification Service (Rust) và Controlplane (Go)
+// Dịch vụ xác thực các luồng qua gRPC (gọi nội bộ từ acr Service)
 service AuthService {
-  // Xác thực Trinity credentials cho Admin/SRE quản trị hệ thống
-  rpc VerifyAdminTrinityToken (VerifyAdminTrinityTokenRequest) returns (VerifyAdminTrinityTokenResponse);
-
-  // Xác thực Trinity credentials cho người dùng (End-User) thông thường
-  rpc VerifyUserTrinityToken (VerifyUserTrinityTokenRequest) returns (VerifyUserTrinityTokenResponse);
-
   // Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
   rpc VerifyOpaqueRefreshToken (VerifyOpaqueRefreshTokenRequest) returns (VerifyOpaqueRefreshTokenResponse);
 
@@ -20,35 +14,6 @@ service AuthService {
 
   // [COMMENT]: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng
   rpc VerifyUserCredentials (VerifyUserCredentialsRequest) returns (VerifyUserCredentialsResponse);
-}
-
-// Request xác thực cho Admin/SRE
-message VerifyAdminTrinityTokenRequest {
-  string admin_api_token = 1;
-  string access_key = 2;
-  string access_secret = 3;
-}
-
-// Response trả về cho Admin/SRE
-message VerifyAdminTrinityTokenResponse {
-  bool valid = 1;
-  string user_id = 2;
-  string role = 3;
-}
-
-// Request xác thực cho End-User
-message VerifyUserTrinityTokenRequest {
-  string access_token = 1;
-  string access_key = 2;
-  string access_secret = 3;
-}
-
-// Response trả về cho End-User
-message VerifyUserTrinityTokenResponse {
-  bool valid = 1;
-  string user_id = 2;
-  string role = 3;
-  string zone_id = 4;
 }
 
 // Request xác thực Opaque Refresh Token

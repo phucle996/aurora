@@ -10,6 +10,13 @@ pub mod zone_proto {
     tonic::include_proto!("core.rpc");
 }
 
+// [COMMENT]: Sinh mã Rust từ protobuf definitions của trinity.proto
+#[allow(dead_code)]
+#[allow(unused_imports)]
+pub mod trinity {
+    tonic::include_proto!("trinity.rpc");
+}
+
 // [COMMENT]: Quản lý kết nối đến NATS Core
 #[derive(Clone)]
 pub struct Nats {

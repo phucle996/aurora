@@ -29,12 +29,11 @@ pub mod auth_proto {
 
 use auth_proto::{
     auth_service_server::AuthService, RevokeOpaqueRefreshTokenRequest,
-    RevokeOpaqueRefreshTokenResponse, VerifyAdminTrinityTokenRequest,
-    VerifyAdminTrinityTokenResponse, VerifyOpaqueRefreshTokenRequest,
+    RevokeOpaqueRefreshTokenResponse, VerifyOpaqueRefreshTokenRequest,
     VerifyOpaqueRefreshTokenResponse, VerifyUserCredentialsRequest, VerifyUserCredentialsResponse,
-    VerifyUserTrinityTokenRequest, VerifyUserTrinityTokenResponse,
 };
 
+#[derive(Clone)]
 pub struct AuthServiceImpl {
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
@@ -64,31 +63,26 @@ impl AuthServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to get Redis connection: {}", e)))
     }
-}
 
-#[tonic::async_trait]
-impl AuthService for AuthServiceImpl {
-    // [COMMENT]: Xác thực Trinity credentials cho Admin/SRE quản trị hệ thống
-    async fn verify_admin_trinity_token(
+    // [COMMENT]: Xác thực Trinity credentials cho Admin/SRE quản trị hệ thống (gọi qua NATS)
+    pub async fn verify_admin_trinity_token(
         &self,
-        request: Request<VerifyAdminTrinityTokenRequest>,
-    ) -> Result<Response<VerifyAdminTrinityTokenResponse>, Status> {
-        let req = request.into_inner();
-
+        req: crate::infra::controlplane::trinity::VerifyAdminTrinityTokenRequest,
+    ) -> Result<crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse, Status> {
         // 1. Kiểm tra nhanh các trường rỗng đầu vào
-        if req.admin_api_token.is_empty()
-            || req.access_key.is_empty()
-            || req.access_secret.is_empty()
+        if req.access_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty()
         {
-            return Ok(Response::new(VerifyAdminTrinityTokenResponse {
-                valid: false,
-                user_id: String::new(),
-                role: String::new(),
-            }));
+            return Ok(
+                crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                    valid: false,
+                    user_id: String::new(),
+                    role_id: String::new(),
+                },
+            );
         }
 
         // 2. Giải mã và xác thực token JWT stateless qua TokenManager (Vault)
-        let claims = match self.token_mgr.verify_token(&req.admin_api_token).await {
+        let claims = match self.token_mgr.verify_token(&req.access_token).await {
             Ok(c) => c,
             Err(e) => {
                 Logger::sys_warn(
@@ -96,19 +90,23 @@ impl AuthService for AuthServiceImpl {
                     &format!("Admin token verification failed: {}", e),
                     "invalid_token",
                 );
-                return Ok(Response::new(VerifyAdminTrinityTokenResponse {
-                    valid: false,
-                    ..Default::default()
-                }));
+                return Ok(
+                    crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                        valid: false,
+                        ..Default::default()
+                    },
+                );
             }
         };
 
         // 3. Đối chiếu access_key trong token với access_key client cung cấp
         if claims.access_key.is_empty() || claims.access_key != req.access_key {
-            return Ok(Response::new(VerifyAdminTrinityTokenResponse {
-                valid: false,
-                ..Default::default()
-            }));
+            return Ok(
+                crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                    valid: false,
+                    ..Default::default()
+                },
+            );
         }
 
         // 4. Kiểm tra tính hoạt động của session từ Redis L2 cache (Bỏ zone_id khỏi key theo kiến trúc tĩnh HA)
@@ -125,16 +123,18 @@ impl AuthService for AuthServiceImpl {
                     "GET admin session failed",
                     &e.to_string(),
                 );
-                Status::internal("Failed to retrieve admin session")
+                Status::internal("GET admin session failed")
             })?;
 
         let session_data = match data {
             Some(bytes) => bytes,
             None => {
-                return Ok(Response::new(VerifyAdminTrinityTokenResponse {
-                    valid: false,
-                    ..Default::default()
-                }));
+                return Ok(
+                    crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                        valid: false,
+                        ..Default::default()
+                    },
+                );
             }
         };
 
@@ -153,35 +153,39 @@ impl AuthService for AuthServiceImpl {
         // 5. So sánh SHA256 hash của access_secret nhận được
         let incoming_hash = sha256_hash(&req.access_secret);
         if session.access_secret_hash != incoming_hash {
-            return Ok(Response::new(VerifyAdminTrinityTokenResponse {
-                valid: false,
-                ..Default::default()
-            }));
+            return Ok(
+                crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                    valid: false,
+                    ..Default::default()
+                },
+            );
         }
 
-        Ok(Response::new(VerifyAdminTrinityTokenResponse {
-            valid: true,
-            user_id: claims.sub.clone(),
-            role: "SRE".to_string(),
-        }))
+        Ok(
+            crate::infra::controlplane::trinity::VerifyAdminTrinityTokenResponse {
+                valid: true,
+                user_id: claims.sub.clone(),
+                role_id: "SRE".to_string(),
+            },
+        )
     }
 
-    // [COMMENT]: Xác thực Trinity credentials cho người dùng (End-User) thông thường
-    async fn verify_user_trinity_token(
+    // [COMMENT]: Xác thực Trinity credentials cho người dùng (End-User) thông thường (gọi qua NATS)
+    pub async fn verify_user_trinity_token(
         &self,
-        request: Request<VerifyUserTrinityTokenRequest>,
-    ) -> Result<Response<VerifyUserTrinityTokenResponse>, Status> {
-        let req = request.into_inner();
-
+        req: crate::infra::controlplane::trinity::VerifyUserTrinityTokenRequest,
+    ) -> Result<crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse, Status> {
         // 1. Kiểm tra nhanh các trường rỗng đầu vào
         if req.access_token.is_empty() || req.access_key.is_empty() || req.access_secret.is_empty()
         {
-            return Ok(Response::new(VerifyUserTrinityTokenResponse {
-                valid: false,
-                user_id: String::new(),
-                role: String::new(),
-                zone_id: String::new(),
-            }));
+            return Ok(
+                crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                    valid: false,
+                    user_id: String::new(),
+                    role_id: String::new(),
+                    zone_id: String::new(),
+                },
+            );
         }
 
         // 2. Giải mã và xác thực token JWT stateless qua TokenManager (Vault)
@@ -193,19 +197,23 @@ impl AuthService for AuthServiceImpl {
                     &format!("User token verification failed: {}", e),
                     "invalid_token",
                 );
-                return Ok(Response::new(VerifyUserTrinityTokenResponse {
-                    valid: false,
-                    ..Default::default()
-                }));
+                return Ok(
+                    crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                        valid: false,
+                        ..Default::default()
+                    },
+                );
             }
         };
 
         // 3. Đối chiếu access_key trong token với access_key client cung cấp
         if claims.access_key.is_empty() || claims.access_key != req.access_key {
-            return Ok(Response::new(VerifyUserTrinityTokenResponse {
-                valid: false,
-                ..Default::default()
-            }));
+            return Ok(
+                crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                    valid: false,
+                    ..Default::default()
+                },
+            );
         }
 
         let session = match self
@@ -221,10 +229,12 @@ impl AuthService for AuthServiceImpl {
         {
             Ok(Some(s)) => s,
             Ok(None) => {
-                return Ok(Response::new(VerifyUserTrinityTokenResponse {
-                    valid: false,
-                    ..Default::default()
-                }));
+                return Ok(
+                    crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                        valid: false,
+                        ..Default::default()
+                    },
+                );
             }
             Err(e) => {
                 Logger::sys_error(
@@ -239,27 +249,34 @@ impl AuthService for AuthServiceImpl {
         // 5. So sánh SHA256 hash của access_secret nhận được
         let incoming_hash = sha256_hash(&req.access_secret);
         if session.ash != incoming_hash {
-            return Ok(Response::new(VerifyUserTrinityTokenResponse {
-                valid: false,
-                ..Default::default()
-            }));
+            return Ok(
+                crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                    valid: false,
+                    ..Default::default()
+                },
+            );
         }
 
-        Ok(Response::new(VerifyUserTrinityTokenResponse {
-            valid: true,
-            user_id: claims.uid.clone(),
-            role: claims.role_id.clone(),
-            zone_id: claims.zone_id.clone().unwrap_or_default(),
-        }))
+        Ok(
+            crate::infra::controlplane::trinity::VerifyUserTrinityTokenResponse {
+                valid: true,
+                user_id: claims.uid.clone(),
+                role_id: claims.role_id.clone(),
+                zone_id: claims.zone_id.clone().unwrap_or_default(),
+            },
+        )
     }
+}
 
+#[tonic::async_trait]
+impl AuthService for AuthServiceImpl {
     // [COMMENT]: Xác thực Opaque Refresh Token (Ủy thác sang Go Controlplane qua NATS)
     async fn verify_opaque_refresh_token(
         &self,
         request: Request<VerifyOpaqueRefreshTokenRequest>,
     ) -> Result<Response<VerifyOpaqueRefreshTokenResponse>, Status> {
         let req = request.into_inner();
-        
+
         let mut payload = Vec::new();
         req.encode(&mut payload)
             .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
@@ -274,7 +291,11 @@ impl AuthService for AuthServiceImpl {
         let response_msg = match self
             .nats
             .client()
-            .request_with_headers("iam.auth.verify_opaque_token".to_string(), headers, payload.into())
+            .request_with_headers(
+                "iam.auth.verify_opaque_token".to_string(),
+                headers,
+                payload.into(),
+            )
             .await
         {
             Ok(msg) => msg,
@@ -308,7 +329,11 @@ impl AuthService for AuthServiceImpl {
         match self
             .nats
             .client()
-            .request_with_headers("iam.auth.revoke_opaque_token".to_string(), headers, payload.into())
+            .request_with_headers(
+                "iam.auth.revoke_opaque_token".to_string(),
+                headers,
+                payload.into(),
+            )
             .await
         {
             Ok(_) => {}
