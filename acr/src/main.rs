@@ -143,6 +143,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     nats_router.start().await;
 
+    // [COMMENT]: Khởi chạy Background Worker định kỳ gom heartbeat thiết bị từ Redis và gửi bulk sang CP qua NATS
+    crate::service::device::presence::start_presence_flush_worker(
+        redis_client.clone(),
+        nats.client().clone(),
+    )
+    .await;
+
     // 7. Cấu hình địa chỉ mạng và khởi chạy gRPC Server
     let addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
         .parse()

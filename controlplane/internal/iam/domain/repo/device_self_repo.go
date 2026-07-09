@@ -25,8 +25,8 @@ type DeviceSelfRepository interface {
 	// [COMMENT]: RevokeMyOtherDevices thu hồi tất cả các thiết bị khác ngoại trừ thiết bị đang chỉ định theo client_device_id, trả về danh sách client_device_id đã thu hồi
 	RevokeMyOtherDevices(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) ([]uuid.UUID, error)
 
-	// [COMMENT]: TouchDeviceLastSeen cập nhật mốc thời gian hoạt động cuối cùng của thiết bị
-	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
+	// [COMMENT]: BulkTouchDevices cập nhật hàng loạt trạng thái hoạt động (last_seen_at/ip/ua) cho nhiều thiết bị cùng lúc
+	BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error
 
 	// [COMMENT]: InsertAuditEvent ghi nhận sự kiện nhật ký bảo mật của user
 	InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error

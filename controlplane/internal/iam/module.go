@@ -2,7 +2,6 @@ package iam
 
 import (
 	"context"
-	"strings"
 
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
@@ -12,10 +11,8 @@ import (
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
 	"controlplane/internal/observability"
-	"controlplane/pkg/constant"
 	"errors"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
@@ -249,28 +246,4 @@ func NewModule(
 		devicePlatformSvcImpl:    devicePlatformSvc,
 		SessionRefreshService:    refreshSvc,
 	}, nil
-}
-
-// TouchDeviceLastSeen triển khai đúng signature của middleware.TouchDeviceLastSeenFn.
-// Caller (app layer) truyền trực tiếp iamModule.TouchDeviceLastSeen làm method value — không cần closure.
-func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID string, ip *string, userAgent *string) {
-
-	deviceUUID, err := uuid.Parse(strings.TrimSpace(trackedDeviceID))
-	if err != nil {
-		return
-	}
-	// [COMMENT]: Đảm bảo tương thích ngược, nếu truyền ip/ua trực tiếp, ta sẽ tiêm chúng vào Context trước khi gọi Service.
-	if ip != nil || userAgent != nil {
-		var ipStr, uaStr string
-		if ip != nil {
-			ipStr = *ip
-		}
-		if userAgent != nil {
-			uaStr = *userAgent
-		}
-		ctx = context.WithValue(ctx, constant.RemoteIPKey, ipStr)
-		ctx = context.WithValue(ctx, constant.UserAgentKey, uaStr)
-	}
-	// Best-effort: lỗi flush không ảnh hưởng flow xác thực.
-	_ = m.deviceSelfSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID)
 }

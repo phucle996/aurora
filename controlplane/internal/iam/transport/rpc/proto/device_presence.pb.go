@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: internal/iam/transport/rpc/proto/device_presence.proto
+// source: device_presence.proto
 
 package iamproto
 
@@ -31,7 +31,7 @@ type GetActiveDevicesRequest struct {
 
 func (x *GetActiveDevicesRequest) Reset() {
 	*x = GetActiveDevicesRequest{}
-	mi := &file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes[0]
+	mi := &file_device_presence_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +43,7 @@ func (x *GetActiveDevicesRequest) String() string {
 func (*GetActiveDevicesRequest) ProtoMessage() {}
 
 func (x *GetActiveDevicesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes[0]
+	mi := &file_device_presence_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +56,7 @@ func (x *GetActiveDevicesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetActiveDevicesRequest.ProtoReflect.Descriptor instead.
 func (*GetActiveDevicesRequest) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescGZIP(), []int{0}
+	return file_device_presence_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *GetActiveDevicesRequest) GetUserId() string {
@@ -76,7 +76,7 @@ type ActiveDeviceEntry struct {
 
 func (x *ActiveDeviceEntry) Reset() {
 	*x = ActiveDeviceEntry{}
-	mi := &file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes[1]
+	mi := &file_device_presence_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -88,7 +88,7 @@ func (x *ActiveDeviceEntry) String() string {
 func (*ActiveDeviceEntry) ProtoMessage() {}
 
 func (x *ActiveDeviceEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes[1]
+	mi := &file_device_presence_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -101,7 +101,7 @@ func (x *ActiveDeviceEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActiveDeviceEntry.ProtoReflect.Descriptor instead.
 func (*ActiveDeviceEntry) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescGZIP(), []int{1}
+	return file_device_presence_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ActiveDeviceEntry) GetClientDeviceId() string {
@@ -128,7 +128,7 @@ type GetActiveDevicesResponse struct {
 
 func (x *GetActiveDevicesResponse) Reset() {
 	*x = GetActiveDevicesResponse{}
-	mi := &file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes[2]
+	mi := &file_device_presence_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +140,7 @@ func (x *GetActiveDevicesResponse) String() string {
 func (*GetActiveDevicesResponse) ProtoMessage() {}
 
 func (x *GetActiveDevicesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes[2]
+	mi := &file_device_presence_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +153,7 @@ func (x *GetActiveDevicesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetActiveDevicesResponse.ProtoReflect.Descriptor instead.
 func (*GetActiveDevicesResponse) Descriptor() ([]byte, []int) {
-	return file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescGZIP(), []int{2}
+	return file_device_presence_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetActiveDevicesResponse) GetActiveDevices() []*ActiveDeviceEntry {
@@ -163,11 +163,168 @@ func (x *GetActiveDevicesResponse) GetActiveDevices() []*ActiveDeviceEntry {
 	return nil
 }
 
-var File_internal_iam_transport_rpc_proto_device_presence_proto protoreflect.FileDescriptor
+// [COMMENT]: Message gộp nhiều thiết bị gửi qua NATS để cập nhật trạng thái hoạt động cùng lúc
+type BulkTouchDevicesRequest struct {
+	state         protoimpl.MessageState                  `protogen:"open.v1"`
+	Updates       []*BulkTouchDevicesRequest_DeviceUpdate `protobuf:"bytes,1,rep,name=updates,proto3" json:"updates,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
 
-const file_internal_iam_transport_rpc_proto_device_presence_proto_rawDesc = "" +
+func (x *BulkTouchDevicesRequest) Reset() {
+	*x = BulkTouchDevicesRequest{}
+	mi := &file_device_presence_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BulkTouchDevicesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BulkTouchDevicesRequest) ProtoMessage() {}
+
+func (x *BulkTouchDevicesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_device_presence_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BulkTouchDevicesRequest.ProtoReflect.Descriptor instead.
+func (*BulkTouchDevicesRequest) Descriptor() ([]byte, []int) {
+	return file_device_presence_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *BulkTouchDevicesRequest) GetUpdates() []*BulkTouchDevicesRequest_DeviceUpdate {
+	if x != nil {
+		return x.Updates
+	}
+	return nil
+}
+
+type BulkTouchDevicesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BulkTouchDevicesResponse) Reset() {
+	*x = BulkTouchDevicesResponse{}
+	mi := &file_device_presence_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BulkTouchDevicesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BulkTouchDevicesResponse) ProtoMessage() {}
+
+func (x *BulkTouchDevicesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_device_presence_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BulkTouchDevicesResponse.ProtoReflect.Descriptor instead.
+func (*BulkTouchDevicesResponse) Descriptor() ([]byte, []int) {
+	return file_device_presence_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BulkTouchDevicesResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+type BulkTouchDevicesRequest_DeviceUpdate struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId          string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	LastSeenAt        int64                  `protobuf:"varint,2,opt,name=last_seen_at,json=lastSeenAt,proto3" json:"last_seen_at,omitempty"`
+	LastSeenIp        string                 `protobuf:"bytes,3,opt,name=last_seen_ip,json=lastSeenIp,proto3" json:"last_seen_ip,omitempty"`
+	LastSeenUserAgent string                 `protobuf:"bytes,4,opt,name=last_seen_user_agent,json=lastSeenUserAgent,proto3" json:"last_seen_user_agent,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) Reset() {
+	*x = BulkTouchDevicesRequest_DeviceUpdate{}
+	mi := &file_device_presence_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BulkTouchDevicesRequest_DeviceUpdate) ProtoMessage() {}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_device_presence_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BulkTouchDevicesRequest_DeviceUpdate.ProtoReflect.Descriptor instead.
+func (*BulkTouchDevicesRequest_DeviceUpdate) Descriptor() ([]byte, []int) {
+	return file_device_presence_proto_rawDescGZIP(), []int{3, 0}
+}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) GetLastSeenAt() int64 {
+	if x != nil {
+		return x.LastSeenAt
+	}
+	return 0
+}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) GetLastSeenIp() string {
+	if x != nil {
+		return x.LastSeenIp
+	}
+	return ""
+}
+
+func (x *BulkTouchDevicesRequest_DeviceUpdate) GetLastSeenUserAgent() string {
+	if x != nil {
+		return x.LastSeenUserAgent
+	}
+	return ""
+}
+
+var File_device_presence_proto protoreflect.FileDescriptor
+
+const file_device_presence_proto_rawDesc = "" +
 	"\n" +
-	"6internal/iam/transport/rpc/proto/device_presence.proto\x12\aiam.rpc\"2\n" +
+	"\x15device_presence.proto\x12\aiam.rpc\"2\n" +
 	"\x17GetActiveDevicesRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"_\n" +
 	"\x11ActiveDeviceEntry\x12(\n" +
@@ -175,55 +332,70 @@ const file_internal_iam_transport_rpc_proto_device_presence_proto_rawDesc = "" +
 	"\flast_seen_at\x18\x02 \x01(\x03R\n" +
 	"lastSeenAt\"]\n" +
 	"\x18GetActiveDevicesResponse\x12A\n" +
-	"\x0eactive_devices\x18\x01 \x03(\v2\x1a.iam.rpc.ActiveDeviceEntryR\ractiveDevicesB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
+	"\x0eactive_devices\x18\x01 \x03(\v2\x1a.iam.rpc.ActiveDeviceEntryR\ractiveDevices\"\x85\x02\n" +
+	"\x17BulkTouchDevicesRequest\x12G\n" +
+	"\aupdates\x18\x01 \x03(\v2-.iam.rpc.BulkTouchDevicesRequest.DeviceUpdateR\aupdates\x1a\xa0\x01\n" +
+	"\fDeviceUpdate\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12 \n" +
+	"\flast_seen_at\x18\x02 \x01(\x03R\n" +
+	"lastSeenAt\x12 \n" +
+	"\flast_seen_ip\x18\x03 \x01(\tR\n" +
+	"lastSeenIp\x12/\n" +
+	"\x14last_seen_user_agent\x18\x04 \x01(\tR\x11lastSeenUserAgent\"4\n" +
+	"\x18BulkTouchDevicesResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccessB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
-	file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescOnce sync.Once
-	file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescData []byte
+	file_device_presence_proto_rawDescOnce sync.Once
+	file_device_presence_proto_rawDescData []byte
 )
 
-func file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescGZIP() []byte {
-	file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescOnce.Do(func() {
-		file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_device_presence_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_device_presence_proto_rawDesc)))
+func file_device_presence_proto_rawDescGZIP() []byte {
+	file_device_presence_proto_rawDescOnce.Do(func() {
+		file_device_presence_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_device_presence_proto_rawDesc), len(file_device_presence_proto_rawDesc)))
 	})
-	return file_internal_iam_transport_rpc_proto_device_presence_proto_rawDescData
+	return file_device_presence_proto_rawDescData
 }
 
-var file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_internal_iam_transport_rpc_proto_device_presence_proto_goTypes = []any{
-	(*GetActiveDevicesRequest)(nil),  // 0: iam.rpc.GetActiveDevicesRequest
-	(*ActiveDeviceEntry)(nil),        // 1: iam.rpc.ActiveDeviceEntry
-	(*GetActiveDevicesResponse)(nil), // 2: iam.rpc.GetActiveDevicesResponse
+var file_device_presence_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_device_presence_proto_goTypes = []any{
+	(*GetActiveDevicesRequest)(nil),              // 0: iam.rpc.GetActiveDevicesRequest
+	(*ActiveDeviceEntry)(nil),                    // 1: iam.rpc.ActiveDeviceEntry
+	(*GetActiveDevicesResponse)(nil),             // 2: iam.rpc.GetActiveDevicesResponse
+	(*BulkTouchDevicesRequest)(nil),              // 3: iam.rpc.BulkTouchDevicesRequest
+	(*BulkTouchDevicesResponse)(nil),             // 4: iam.rpc.BulkTouchDevicesResponse
+	(*BulkTouchDevicesRequest_DeviceUpdate)(nil), // 5: iam.rpc.BulkTouchDevicesRequest.DeviceUpdate
 }
-var file_internal_iam_transport_rpc_proto_device_presence_proto_depIdxs = []int32{
+var file_device_presence_proto_depIdxs = []int32{
 	1, // 0: iam.rpc.GetActiveDevicesResponse.active_devices:type_name -> iam.rpc.ActiveDeviceEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	5, // 1: iam.rpc.BulkTouchDevicesRequest.updates:type_name -> iam.rpc.BulkTouchDevicesRequest.DeviceUpdate
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_internal_iam_transport_rpc_proto_device_presence_proto_init() }
-func file_internal_iam_transport_rpc_proto_device_presence_proto_init() {
-	if File_internal_iam_transport_rpc_proto_device_presence_proto != nil {
+func init() { file_device_presence_proto_init() }
+func file_device_presence_proto_init() {
+	if File_device_presence_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_iam_transport_rpc_proto_device_presence_proto_rawDesc), len(file_internal_iam_transport_rpc_proto_device_presence_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_device_presence_proto_rawDesc), len(file_device_presence_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_internal_iam_transport_rpc_proto_device_presence_proto_goTypes,
-		DependencyIndexes: file_internal_iam_transport_rpc_proto_device_presence_proto_depIdxs,
-		MessageInfos:      file_internal_iam_transport_rpc_proto_device_presence_proto_msgTypes,
+		GoTypes:           file_device_presence_proto_goTypes,
+		DependencyIndexes: file_device_presence_proto_depIdxs,
+		MessageInfos:      file_device_presence_proto_msgTypes,
 	}.Build()
-	File_internal_iam_transport_rpc_proto_device_presence_proto = out.File
-	file_internal_iam_transport_rpc_proto_device_presence_proto_goTypes = nil
-	file_internal_iam_transport_rpc_proto_device_presence_proto_depIdxs = nil
+	File_device_presence_proto = out.File
+	file_device_presence_proto_goTypes = nil
+	file_device_presence_proto_depIdxs = nil
 }

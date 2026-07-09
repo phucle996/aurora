@@ -206,16 +206,14 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 	return int64(len(otherDeviceIDs)), nil
 }
 
-
-
 // [COMMENT]: RegisterLoginDevice đăng ký thiết bị mới đăng nhập
 func (s *DeviceSelfService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
 	return s.deviceRepo.UpsertLoginDevice(ctx, device)
 }
 
-// [COMMENT]: TouchDeviceLastSeen cập nhật mốc thời gian truy cập
-func (s *DeviceSelfService) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
-	return s.deviceRepo.TouchDeviceLastSeen(ctx, deviceID)
+// [COMMENT]: BulkTouchDevices cập nhật trạng thái hoạt động hàng loạt
+func (s *DeviceSelfService) BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error {
+	return s.deviceRepo.BulkTouchDevices(ctx, updates)
 }
 
 // [COMMENT]: EvictExcessDevicesIfNeeded dọn dẹp thiết bị vượt ngưỡng

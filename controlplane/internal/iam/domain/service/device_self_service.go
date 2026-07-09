@@ -24,8 +24,8 @@ type DeviceSelfService interface {
 	// [COMMENT]: RegisterLoginDevice đăng ký thiết bị đăng nhập
 	RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error)
 
-	// [COMMENT]: TouchDeviceLastSeen cập nhật mốc thời gian hoạt động cuối cùng của thiết bị
-	TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error
+	// [COMMENT]: BulkTouchDevices cập nhật hàng loạt trạng thái hoạt động cho nhiều thiết bị — được gọi từ NATS Consumer
+	BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error
 
 	// [COMMENT]: EvictExcessDevicesIfNeeded thu hồi bớt các thiết bị cũ nếu vượt ngưỡng giới hạn tối đa
 	EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID)

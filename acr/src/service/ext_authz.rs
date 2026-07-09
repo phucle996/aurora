@@ -675,6 +675,38 @@ impl Authorization for ExtAuthzService {
                         .await;
                 }
 
+                // [COMMENT]: 6.1. Ghi heartbeat thiết bị vào Redis Hash để background worker gom batch gửi sang CP
+                // Sử dụng tokio::spawn để không chặn luồng xử lý request.
+                // Hash field = client_device_id (UUID), value = "unix_ts|client_ip|user_agent"
+                if !session.tdid.is_empty() {
+                    let redis_client_clone = self.session_mgr.redis_client_arc();
+                    let device_id = session.tdid.clone();
+                    let ip = client_ip.to_string();
+                    let ua = client_headers
+                        .get("user-agent")
+                        .map(|s| s.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    tokio::spawn(async move {
+                        let now_ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        let value = format!("{}|{}|{}", now_ts, ip, ua);
+                        if let Ok(mut conn) = redis_client_clone
+                            .get_multiplexed_tokio_connection()
+                            .await
+                        {
+                            let _: Result<(), _> = redis::cmd("HSET")
+                                .arg("iam:device_heartbeats")
+                                .arg(&device_id)
+                                .arg(&value)
+                                .query_async(&mut conn)
+                                .await;
+                        }
+                    });
+                }
+
                 // 7. Tạo ngữ cảnh danh tính AuthContext phục vụ đánh giá quyền hạn
                 let auth_ctx = AuthContext {
                     user_id: claims.uid.clone(),

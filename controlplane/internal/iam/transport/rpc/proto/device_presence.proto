@@ -18,3 +18,18 @@ message ActiveDeviceEntry {
 message GetActiveDevicesResponse {
   repeated ActiveDeviceEntry active_devices = 1;
 }
+
+// [COMMENT]: Message gộp nhiều thiết bị gửi qua NATS để cập nhật trạng thái hoạt động cùng lúc
+message BulkTouchDevicesRequest {
+  message DeviceUpdate {
+    string device_id = 1;
+    int64 last_seen_at = 2;
+    string last_seen_ip = 3;
+    string last_seen_user_agent = 4;
+  }
+  repeated DeviceUpdate updates = 1;
+}
+
+message BulkTouchDevicesResponse {
+  bool success = 1;
+}

@@ -29,7 +29,7 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 		go m.runDeviceCapReconciler(workerCtx)
 	}
 
-	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply)
+	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply) và bulk presence updates
 	if m.natsConn != nil {
 		authNatsHandler := pubsubHandler.NewAuthNatsHandler(m.cfg, m.AuthService, m.SessionRefreshService, m.otel)
 		subs, err := authNatsHandler.Subscribe(m.natsConn)
@@ -37,6 +37,13 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 			return err
 		}
 		m.natsSubs = append(m.natsSubs, subs...)
+
+		deviceNatsHandler := pubsubHandler.NewDeviceNatsHandler(m.cfg, m.deviceSelfSvcImpl, m.otel)
+		deviceSubs, err := deviceNatsHandler.Subscribe(m.natsConn)
+		if err != nil {
+			return err
+		}
+		m.natsSubs = append(m.natsSubs, deviceSubs...)
 	}
 
 	return nil

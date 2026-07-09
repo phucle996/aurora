@@ -49,6 +49,11 @@ impl SessionManager {
             .await
             .map_err(|e| AcrError::RedisError(format!("Failed to get Redis connection: {}", e)))
     }
+
+    // [COMMENT]: Expose Arc<redis::Client> để các goroutine ngoài (heartbeat spawn) có thể lấy kết nối
+    pub fn redis_client_arc(&self) -> Arc<redis::Client> {
+        self.redis_client.clone()
+    }
 }
 
 // [COMMENT]: Struct chứa thông tin session phục hồi thành công để chia sẻ giữa các luồng song song

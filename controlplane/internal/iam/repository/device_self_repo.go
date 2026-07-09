@@ -216,31 +216,47 @@ func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID 
 	return clientDeviceIDs, nil
 }
 
-// [COMMENT]: TouchDeviceLastSeen cập nhật thời gian hoạt động cuối cùng
-func (r *DeviceSelfRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
-	var ipStr, uaStr string
-	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
-		ipStr = v
-	}
-	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
-		uaStr = v
-	}
-	var ip *string
-	if ipStr != "" {
-		ip = &ipStr
-	}
-	var userAgent *string
-	if uaStr != "" {
-		userAgent = &uaStr
+// [COMMENT]: BulkTouchDevices cập nhật hàng loạt last_seen_at/ip/ua cho danh sách thiết bị bằng unnest Bulk Upsert —
+// thay thế cơ chế ghi đơn lẻ per-request trước đây; được gọi từ NATS Consumer sau mỗi chu kỳ 30s.
+func (r *DeviceSelfRepository) BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error {
+	if len(updates) == 0 {
+		return nil
 	}
 
+	// [COMMENT]: Tách danh sách updates thành các mảng riêng cho unnest
+	ids := make([]string, len(updates))
+	timestamps := make([]int64, len(updates))
+	ips := make([]string, len(updates))
+	uas := make([]string, len(updates))
+	for i, u := range updates {
+		ids[i] = u.DeviceID
+		timestamps[i] = u.LastSeenAt
+		ips[i] = u.LastSeenIP
+		uas[i] = u.LastSeenUserAgent
+	}
+
+	// [COMMENT]: Bulk Upsert dùng unnest để tối thiểu số round-trip — N devices = 1 query duy nhất
 	query := fmt.Sprintf(`
-		UPDATE %s.devices
-		SET last_seen_ip = $2, last_seen_user_agent = $3, last_seen_at = now(), updated_at = now()
-		WHERE id = $1
-	`, r.schema)
-	if _, err := r.db.Exec(ctx, query, deviceID, ip, userAgent); err != nil {
-		return fmt.Errorf("iam repo: touch device last seen: %w", err)
+		UPDATE %s.devices AS d
+		SET
+			last_seen_at = to_timestamp(v.ts),
+			last_seen_ip = NULLIF(v.ip, ''),
+			last_seen_user_agent = NULLIF(v.ua, ''),
+			updated_at = now()
+		FROM (
+			SELECT
+				unnest($1::text[]) AS device_id,
+				unnest($2::bigint[]) AS ts,
+				unnest($3::text[]) AS ip,
+				unnest($4::text[]) AS ua
+		) AS v
+		WHERE d.id::text IN (
+			SELECT id::text FROM %s.devices WHERE client_device_id = v.device_id
+		) OR d.client_device_id = v.device_id
+	`, r.schema, r.schema)
+
+	if _, err := r.db.Exec(ctx, query, ids, timestamps, ips, uas); err != nil {
+		return fmt.Errorf("iam repo: bulk touch devices: %w", err)
 	}
 	return nil
 }
