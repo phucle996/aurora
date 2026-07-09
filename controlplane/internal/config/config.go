@@ -30,6 +30,7 @@ type Config struct {
 	Psql      PsqlCfg
 	Redis     RedisCfg
 	RedisJob  RedisCfg
+	NATS      NATSCfg
 	GRPC      GRPCCfg
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
@@ -112,6 +113,17 @@ type RedisCfg struct {
 	PoolSize      int
 	MinIdleConns  int
 	PingTimeout   time.Duration
+	MaxRetries    int
+	RetryInterval time.Duration
+}
+
+// NATSCfg chứa thông số kết nối NATS Core hỗ trợ TLS/mTLS.
+type NATSCfg struct {
+	Addr          string
+	TLSEnabled    bool
+	CACertPath    string
+	CertPath      string
+	KeyPath       string
 	MaxRetries    int
 	RetryInterval time.Duration
 }
@@ -258,7 +270,6 @@ func LoadConfig() *Config {
 			Hypervisor: "hypervisor", // [NEW COMMENT]: Khởi tạo giá trị mặc định là schema 'hypervisor'
 			Storage:    "storage",    // [COMMENT]: Khởi tạo tên schema mặc định cho Object Storage là 'storage'
 		},
-		// [COMMENT]: Nạp cấu hình Vault từ môi trường (env) để khởi tạo client
 		Vault: VaultCfg{
 			Addr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
 			Token:          getEnv("VAULT_TOKEN", ""),
@@ -267,6 +278,15 @@ func LoadConfig() *Config {
 			TransitKeyName: getEnv("VAULT_TRANSIT_KEY_NAME", "jwt-signer"),
 			Timeout:        getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
 			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),
+		},
+		NATS: NATSCfg{
+			Addr:          getEnv("NATS_ADDR", "nats://localhost:4222"),
+			TLSEnabled:    getEnvAsBool("NATS_TLS_ENABLED", false),
+			CACertPath:    getEnv("NATS_TLS_CA", ""),
+			CertPath:      getEnv("NATS_TLS_CERT", ""),
+			KeyPath:       getEnv("NATS_TLS_KEY", ""),
+			MaxRetries:    getEnvAsInt("NATS_MAX_RETRIES", 5),
+			RetryInterval: getEnvAsDuration("NATS_RETRY_INTERVAL", 2*time.Second),
 		},
 		ACRGRPCTarget: func() string {
 			return getEnv("ACR_GRPC_TARGET", "acr:50051")

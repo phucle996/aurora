@@ -15,18 +15,15 @@ import (
 
 type UserService struct {
 	repo     iamRepoInterface.UserRepository
-	rbacRepo iamRepoInterface.RbacRepository
 	registry *cacheengine.CacheRegistry
 }
 
 func NewUserService(
 	repo iamRepoInterface.UserRepository,
-	rbacRepo iamRepoInterface.RbacRepository,
 	registry *cacheengine.CacheRegistry,
 ) iamSvcInterface.UserService {
 	return &UserService{
 		repo:     repo,
-		rbacRepo: rbacRepo,
 		registry: registry,
 	}
 }

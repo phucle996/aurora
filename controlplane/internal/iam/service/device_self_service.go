@@ -23,19 +23,22 @@ import (
 	"github.com/google/uuid"
 )
 
-type DeviceService struct {
-	deviceRepo           iamRepoInterface.DeviceRepository
+// [COMMENT]: DeviceSelfService quản lý thiết bị cho chính user cá nhân
+type DeviceSelfService struct {
+	deviceRepo           iamRepoInterface.DeviceSelfRepository
 	refreshTokenRepo     iamRepoInterface.RefreshTokenRepository
 	registry             *cacheengine.CacheRegistry
 	sessionServiceClient iamproto.SessionServiceClient
 }
 
-func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
+// [COMMENT]: NewDeviceSelfService khởi tạo thể hiện DeviceSelfService
+func NewDeviceSelfService(
+	deviceRepo iamRepoInterface.DeviceSelfRepository,
 	refreshTokenRepo iamRepoInterface.RefreshTokenRepository,
 	registry *cacheengine.CacheRegistry,
 	sessionServiceClient iamproto.SessionServiceClient,
-) iamSvcInterface.DeviceService {
-	return &DeviceService{
+) iamSvcInterface.DeviceSelfService {
+	return &DeviceSelfService{
 		deviceRepo:           deviceRepo,
 		refreshTokenRepo:     refreshTokenRepo,
 		registry:             registry,
@@ -43,67 +46,56 @@ func NewDeviceService(deviceRepo iamRepoInterface.DeviceRepository,
 	}
 }
 
-// [COMMENT]: Đã xóa bỏ getUserIDFromContext vì userID hiện tại được truyền trực tiếp từ handler/transport layer qua HTTP header.
-
-// ListMyDevices lấy danh sách các thiết bị của user.
-// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
-func (s *DeviceService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
-
-	var items []iamEntity.Device
+// [COMMENT]: ListMyDevices lấy danh sách thiết bị của user
+func (s *DeviceSelfService) ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error) {
+	var items []iamEntity.DevicePresence
 	var listErr error
-	presenceByTracked := make(map[string]iamEntity.UserAccessSession, 10) // Mặc định 10 để tối ưu RAM
+	presenceByTracked := make(map[string]iamEntity.UserAccessSession, 10)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// [COMMENT]: Nhánh 1: Truy vấn PostgreSQL (I/O Bound) chạy trong goroutine riêng biệt.
+	// [COMMENT]: Nhánh 1: Truy vấn PostgreSQL (I/O Bound) lấy DevicePresence thô
 	go func() {
 		defer wg.Done()
 		items, listErr = s.deviceRepo.ListDevicesByUserID(ctx, userID, limit, offset)
 	}()
 
-	// [COMMENT]: Chờ tác vụ I/O hoàn thành.
 	wg.Wait()
 
 	if listErr != nil {
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
 	}
 
-	out := make([]iamEntity.DevicePresence, 0, len(items))
-	for _, device := range items {
-		p := iamEntity.DevicePresence{Device: device, IsOnline: false}
-		if rt, ok := presenceByTracked[strings.TrimSpace(device.ID)]; ok {
-			p.IsOnline = true
+	// [COMMENT]: Cập nhật trạng thái online và thời gian hoạt động cuối cùng của từng thiết bị trong mảng items
+	for i := range items {
+		if rt, ok := presenceByTracked[strings.TrimSpace(items[i].ID)]; ok {
+			items[i].IsOnline = true
 			if rt.LastSeenAt > 0 {
 				ts := time.Unix(rt.LastSeenAt, 0).UTC()
-				p.LastSeenAt = &ts
+				items[i].LastSeenAt = &ts
 			}
 		}
-		out = append(out, p)
 	}
-	return &iamEntity.DeviceListResult{Devices: out, Total: int64(len(out))}, nil
+	return &iamEntity.DeviceListResult{Devices: items, Total: int64(len(items))}, nil
 }
 
-// RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể.
-// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
-func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
+// [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định
+func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error {
 	serviceOutcome := iamMetrics.OutcomeSuccess
 	defer func() {
 		iamMetrics.ServiceCall(ctx, serviceOutcome)
 	}()
 
-	// [COMMENT]: Chặn nhanh nếu client cố tình gửi yêu cầu tự thu hồi thiết bị hiện tại của mình.
 	if deviceID == currentDeviceID {
 		serviceOutcome = iamMetrics.OutcomePreConditionFailed
 		return apperr.Wrap(iamTaxonomy.ErrActionNotAllowed, nil, "action_not_allowed")
 	}
 
-	// [COMMENT]: Đo lường thời gian thực thi câu lệnh SQL CTE (downstream).
 	repoStart := time.Now()
 	revokeErr := s.deviceRepo.RevokeDeviceByIDAndUserID(ctx, deviceID, userID, currentDeviceID)
 	if revokeErr != nil {
 		if errors.Is(revokeErr, iamTaxonomy.ErrZeroRowsAffected) {
-			// [COMMENT]: Coi là lỗi nghiệp vụ (không hợp lệ) nhưng không phải lỗi hệ thống/downstream fail hoàn toàn.
 			iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeDeviceByIDAndUserID", iamMetrics.OutcomePreConditionFailed, time.Since(repoStart), revokeErr)
 			serviceOutcome = iamMetrics.OutcomePreConditionFailed
 			return apperr.Wrap(iamTaxonomy.ErrInvalidSession, revokeErr, "invalid_session")
@@ -113,7 +105,6 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, de
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeErr, "dependency_error")
 	}
 
-	// [COMMENT]: Gọi gRPC sang ACR Service để thu hồi phiên của thiết bị này trên Redis L2 (Grace Period 5s)
 	if s.sessionServiceClient != nil {
 		_, grpcErr := s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
 			UserId:    userID.String(),
@@ -130,10 +121,8 @@ func (s *DeviceService) RevokeMyDevice(ctx context.Context, userID uuid.UUID, de
 	return nil
 }
 
-// LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác.
-// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
-func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
-	// [COMMENT]: Lấy danh sách thiết bị trước khi thu hồi để thu thập các device ID cần gửi qua gRPC
+// [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
+func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error) {
 	devices, listErr := s.deviceRepo.ListDevicesByUserID(ctx, userID, 100, 0)
 	if listErr != nil {
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, listErr, "dependency_error")
@@ -141,7 +130,8 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID
 
 	var otherDeviceIDs []string
 	for _, dev := range devices {
-		if dev.Status != iamEntity.DeviceStatusRevoked {
+		// [COMMENT]: Chỉ thu hồi các thiết bị đang hoạt động (chưa bị revoke)
+		if dev.RevokedAt == nil {
 			if currentTrackedDeviceID == nil || dev.ID != currentTrackedDeviceID.String() {
 				otherDeviceIDs = append(otherDeviceIDs, dev.ID)
 			}
@@ -156,7 +146,6 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID
 		return 0, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, revokeTokenErr, "dependency_error")
 	}
 
-	// [COMMENT]: Gọi gRPC sang ACR Service để thu hồi các session của các thiết bị khác trên Redis L2
 	if len(otherDeviceIDs) > 0 && s.sessionServiceClient != nil {
 		_, grpcErr := s.sessionServiceClient.RevokeUserSessionsByDevices(ctx, &iamproto.RevokeUserSessionsByDevicesRequest{
 			UserId:    userID.String(),
@@ -172,22 +161,23 @@ func (s *DeviceService) LogoutOtherDevices(ctx context.Context, userID uuid.UUID
 	return affected, nil
 }
 
-// LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị.
-// [COMMENT]: Nhận userID trực tiếp từ handler thay vì trích xuất từ context.
-func (s *DeviceService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error) {
+// [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
+func (s *DeviceSelfService) LogoutAllDevices(ctx context.Context, userID uuid.UUID) (int64, error) {
 	return s.LogoutOtherDevices(ctx, userID, nil)
 }
 
-func (s *DeviceService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
+// [COMMENT]: RegisterLoginDevice đăng ký thiết bị mới đăng nhập
+func (s *DeviceSelfService) RegisterLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
 	return s.deviceRepo.UpsertLoginDevice(ctx, device)
 }
 
-func (s *DeviceService) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
+// [COMMENT]: TouchDeviceLastSeen cập nhật mốc thời gian truy cập
+func (s *DeviceSelfService) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
 	return s.deviceRepo.TouchDeviceLastSeen(ctx, deviceID)
 }
 
-func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {
-	// Best-effort maintenance path: mọi lỗi ở đây không được làm fail login.
+// [COMMENT]: EvictExcessDevicesIfNeeded dọn dẹp thiết bị vượt ngưỡng
+func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {
 	if s == nil || s.deviceRepo == nil {
 		return
 	}
@@ -235,7 +225,6 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
 	}
 
-	// [COMMENT]: Gọi gRPC sang ACR Service để thu hồi phiên của các thiết bị vượt quá dung lượng trên Redis L2 (best-effort)
 	if len(deviceIDs) > 0 && s.sessionServiceClient != nil {
 		deviceIDS := make([]string, 0, len(deviceIDs))
 		for _, dID := range deviceIDs {
@@ -255,7 +244,8 @@ func (s *DeviceService) EvictExcessDevicesIfNeeded(ctx context.Context, userID u
 	s.PublishDeviceAuditAsync(ctx, userID, "device.evicted_capacity", "warning", extras)
 }
 
-func (s *DeviceService) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
+// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp các thiết bị vượt ngưỡng
+func (s *DeviceSelfService) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
 	if s == nil || s.deviceRepo == nil {
 		return 0, nil
 	}
@@ -270,7 +260,8 @@ func (s *DeviceService) ReconcileDeviceCap(ctx context.Context, batch int) (int,
 	return len(users), nil
 }
 
-func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {
+// [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ
+func (s *DeviceSelfService) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {
 	var ip, ua string
 	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
 		ip = v
@@ -290,12 +281,9 @@ func (s *DeviceService) PublishDeviceAuditAsync(ctx context.Context, userID uuid
 	}()
 }
 
-func (s *DeviceService) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
-	// [COMMENT]: Tính toán vân tay (fingerprint) của khóa công khai thiết bị để truy vấn nhanh.
+// [COMMENT]: GetActiveDeviceID trả về ID thiết bị đang hoạt động khớp với fingerprint
+func (s *DeviceSelfService) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
 	fp := sha256.Sum256([]byte(devicePublicKey))
 	fingerprint := hex.EncodeToString(fp[:])
-
-	// [COMMENT]: Gọi trực tiếp xuống repository để kiểm tra xem có thiết bị đang hoạt động nào khớp với fingerprint này không.
-	// Cách này tối ưu hóa I/O vì repo chỉ trả về client_device_id dạng string chứ không quét nguyên cả struct Device cồng kềnh.
 	return s.deviceRepo.GetActiveDeviceID(ctx, userID, fingerprint)
 }

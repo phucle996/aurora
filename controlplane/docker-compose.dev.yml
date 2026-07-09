@@ -29,7 +29,9 @@ services:
         condition: service_healthy
       psql:
         condition: service_healthy
-      redis:
+      cp-redis:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       redis-job:
         condition: service_healthy
@@ -69,7 +71,9 @@ services:
         condition: service_healthy
       psql:
         condition: service_healthy
-      redis:
+      cp-redis:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       redis-job:
         condition: service_healthy
@@ -109,7 +113,9 @@ services:
         condition: service_healthy
       psql:
         condition: service_healthy
-      redis:
+      cp-redis:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       redis-job:
         condition: service_healthy
@@ -238,9 +244,9 @@ services:
     image: oliver006/redis_exporter:v1.85.0
     container_name: controlplane-redis-exporter
     environment:
-      - REDIS_ADDR=redis://controlplane-redis:6379
+      - REDIS_ADDR=redis://controlplane-acr-redis:6379
     depends_on:
-      redis:
+      acr-redis:
         condition: service_healthy
       redis-job:
         condition: service_healthy
@@ -248,19 +254,47 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  redis:
+  acr-redis:
     image: redis:8.8.0
-    container_name: controlplane-redis
-    command: [ "redis-server", "--appendonly", "yes" ] # Bật AOF (Append Only File) để tối đa hóa tính bền vững dữ liệu
+    container_name: controlplane-acr-redis
+    command: [ "redis-server", "--appendonly", "yes" ] # Bật AOF (Append Only File) để tối đa hóa tính bền vững dữ liệu session
     ports:
-      - "16380:6379" # Port core Redis dùng cho Identity Sessions và Rate Limiting
+      - "16380:6379" # Port core Redis dùng cho Identity Sessions và Rate Limiting của ACR
     volumes:
-      - controlplane_redis_data:/data
+      - controlplane_acr_redis_data:/data
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  cp-redis:
+    image: redis:8.8.0
+    container_name: controlplane-cp-redis
+    command: [ "redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru" ] # L2 Cache của Controlplane dùng eviction
+    ports:
+      - "16381:6379" # Port dùng cho L2 Cache của Controlplane
+    volumes:
+      - controlplane_cp_redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: controlplane-nats
+    ports:
+      - "4222:4222" # Port client kết nối NATS
+      - "8222:8222" # Port monitor NATS HTTP
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   redis-job:
@@ -283,7 +317,7 @@ services:
     container_name: controlplane-redis-dataplane-z1
     command: [ "redis-server", "--appendonly", "yes" ]
     ports:
-      - "6381:6379"
+      - "6382:6379" # Đổi sang port 6382 để tránh tranh chấp port 6381 với cp-redis
     volumes:
       - controlplane_redis_dp_z1_data:/data
     healthcheck:
@@ -569,7 +603,7 @@ services:
       - ./dev/tls:/etc/acr/tls:ro
     environment:
       ACR_GRPC_PORT: "50051"
-      REDIS_URL: "redis://controlplane-redis:6379/0"
+      REDIS_URL: "redis://controlplane-acr-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
       VAULT_TOKEN: "hvs.l5XlBS600roMgUJLr0iZvG0e"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
@@ -586,7 +620,7 @@ services:
       CONTROLPLANE_GRPC_DOMAIN: "localhost"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
-      redis:
+      acr-redis:
         condition: service_healthy
       vault:
         condition: service_started
@@ -682,7 +716,8 @@ volumes:
 
   controlplane_psql_data: # Thư mục lưu snapshot dữ liệu của Redis Core
 
-  controlplane_redis_data: # Cơ sở dữ liệu chuỗi thời gian của Prometheus
+  controlplane_acr_redis_data:
+  controlplane_cp_redis_data:
 
   controlplane_vmetrics_data: # Cơ sở dữ liệu chuỗi thời gian của VictoriaMetrics
 

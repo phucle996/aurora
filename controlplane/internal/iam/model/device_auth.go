@@ -18,9 +18,6 @@ type Device struct {
 	PublicKey            string     `db:"public_key"`
 	PublicKeyFingerprint string     `db:"public_key_fingerprint"`
 	ClientDeviceID       *string    `db:"client_device_id"`
-	Status               string     `db:"status"`
-	TrustedAt            *time.Time `db:"trusted_at"`
-	QuarantinedAt        *time.Time `db:"quarantined_at"`
 	RiskFlags            []byte     `db:"risk_flags"`
 	RevokedAt            *time.Time `db:"revoked_at"`
 	LastSeenIP           *string    `db:"last_seen_ip"`
@@ -30,8 +27,10 @@ type Device struct {
 	UpdatedAt            time.Time  `db:"updated_at"`
 }
 
+// [COMMENT]: DeviceEntityToModel chuyển đổi domain entity sang db model
 func DeviceEntityToModel(input iamEntity.Device) Device {
-	return Device{ID: input.ID,
+	return Device{
+		ID:                   input.ID,
 		UserID:               input.UserID,
 		DeviceName:           input.DeviceName,
 		DeviceType:           input.DeviceType,
@@ -40,19 +39,20 @@ func DeviceEntityToModel(input iamEntity.Device) Device {
 		PublicKey:            input.PublicKey,
 		PublicKeyFingerprint: input.PublicKeyFingerprint,
 		ClientDeviceID:       input.ClientDeviceID,
-		Status:               string(input.Status),
-		TrustedAt:            input.TrustedAt,
-		QuarantinedAt:        input.QuarantinedAt,
 		RiskFlags:            nil,
 		RevokedAt:            input.RevokedAt,
 		LastSeenIP:           input.LastSeenIP,
 		LastSeenUserAgent:    input.LastSeenUserAgent,
 		LastSeenAt:           input.LastSeenAt,
 		CreatedAt:            input.CreatedAt,
-		UpdatedAt:            input.UpdatedAt}
+		UpdatedAt:            input.UpdatedAt,
+	}
 }
+
+// [COMMENT]: DeviceModelToEntity chuyển đổi db model sang domain entity
 func DeviceModelToEntity(input Device) iamEntity.Device {
-	return iamEntity.Device{ID: input.ID,
+	return iamEntity.Device{
+		ID:                   input.ID,
 		UserID:               input.UserID,
 		DeviceName:           input.DeviceName,
 		DeviceType:           input.DeviceType,
@@ -61,14 +61,12 @@ func DeviceModelToEntity(input Device) iamEntity.Device {
 		PublicKey:            input.PublicKey,
 		PublicKeyFingerprint: input.PublicKeyFingerprint,
 		ClientDeviceID:       input.ClientDeviceID,
-		Status:               iamEntity.DeviceStatus(input.Status),
-		TrustedAt:            input.TrustedAt,
-		QuarantinedAt:        input.QuarantinedAt,
 		RiskFlags:            nil,
 		RevokedAt:            input.RevokedAt,
 		LastSeenIP:           input.LastSeenIP,
 		LastSeenUserAgent:    input.LastSeenUserAgent,
 		LastSeenAt:           input.LastSeenAt,
 		CreatedAt:            input.CreatedAt,
-		UpdatedAt:            input.UpdatedAt}
+		UpdatedAt:            input.UpdatedAt,
+	}
 }

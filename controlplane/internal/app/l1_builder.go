@@ -63,8 +63,8 @@ func RegisterL1Loaders(
 			return nil, fmt.Errorf("user_role loader: invalid userID %q: %w", userIDStr, parseErr)
 		}
 
-		// [COMMENT]: Lấy raw binary permissions từ DB thông qua repository theo userID
-		binaryData, err := modules.IAM.RbacRepository.GetUserRolePermissions(ctx, userID)
+		// [COMMENT]: Lấy raw binary permissions từ DB thông qua platform repository theo userID
+		binaryData, err := modules.IAM.RbacPlatformRepository.GetUserRolePermissions(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("user_role loader: load user role permissions by userID: %w", err)
 		}
@@ -97,8 +97,8 @@ func RegisterL1Loaders(
 			return nil, fmt.Errorf("tenant_role loader: invalid tenant_id %q: %w", parts[1], parseErr)
 		}
 
-		// [COMMENT]: Lấy raw binary permissions của tenant từ DB theo tenantID và roleID
-		binaryData, err := modules.IAM.RbacRepository.GetTenantRolePermissions(ctx, tenantID, roleID)
+		// [COMMENT]: Lấy raw binary permissions của tenant từ DB thông qua tenant repository theo tenantID và roleID
+		binaryData, err := modules.IAM.RbacTenantRepository.GetTenantRolePermissions(ctx, tenantID, roleID)
 		if err != nil {
 			return nil, fmt.Errorf("tenant_role loader: load tenant role permissions: %w", err)
 		}

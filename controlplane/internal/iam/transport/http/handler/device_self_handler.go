@@ -18,15 +18,18 @@ import (
 	"github.com/google/uuid"
 )
 
-type DeviceHandler struct {
-	deviceSvc domainservice.DeviceService
+// [COMMENT]: DeviceSelfHandler quản lý thiết bị cá nhân của chính user đang hoạt động
+type DeviceSelfHandler struct {
+	deviceSvc domainservice.DeviceSelfService
 }
 
-func NewDeviceHandler(deviceSvc domainservice.DeviceService) *DeviceHandler {
-	return &DeviceHandler{deviceSvc: deviceSvc}
+// [COMMENT]: NewDeviceSelfHandler khởi tạo một thể hiện mới của DeviceSelfHandler
+func NewDeviceSelfHandler(deviceSvc domainservice.DeviceSelfService) *DeviceSelfHandler {
+	return &DeviceSelfHandler{deviceSvc: deviceSvc}
 }
 
-func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
+// [COMMENT]: ListMyDevices trả về danh sách thiết bị của chính user
+func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 	const op = "iam.device.list_my_devices"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
@@ -38,7 +41,6 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	// [COMMENT]: Truyền userID trực tiếp vào service method.
 	result, err := h.deviceSvc.ListMyDevices(ctx, userID, limit, offset)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -57,8 +59,21 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 	}
 	presentationItems := make([]gin.H, 0, len(result.Devices))
 	for _, item := range result.Devices {
+		// [COMMENT]: Phái sinh trạng thái động từ cột mốc revoked_at và runtime IsOnline
+		status := "active"
+		if item.RevokedAt != nil {
+			status = "revoked"
+		} else if item.IsOnline {
+			status = "online"
+		}
+
+		// [COMMENT]: Đóng gói thông tin thiết bị dưới dạng flat + nested object tương thích ngược với Cloud Console
 		presentationItems = append(presentationItems, gin.H{
-			"device":               item.Device,
+			"device": gin.H{
+				"id":          item.ID,
+				"device_name": item.DeviceName,
+				"status":      status,
+			},
 			"is_online":            item.IsOnline,
 			"last_seen_at":         item.LastSeenAt,
 			"last_seen_ip":         item.LastIP,
@@ -68,9 +83,9 @@ func (h *DeviceHandler) ListMyDevices(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"items": presentationItems, "total": result.Total}, "ok")
 }
 
-func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
+// [COMMENT]: RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể thuộc sở hữu chính user
+func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 	const op = "iam.device.revoke_my_device"
-	// Khởi tạo context với timeout và tiêm tên operation vào context
 	ctx := constant.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -86,7 +101,6 @@ func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Đọc header client device id (x-device-id) do Envoy forward xuống.
 	currentDeviceIDStr := constant.GetOptionalDeviceIDStr(c)
 	var currentDeviceID uuid.UUID
 	if currentDeviceIDStr != "" {
@@ -95,7 +109,6 @@ func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 		}
 	}
 
-	// [COMMENT]: Truyền userID và currentDeviceID trực tiếp vào service method.
 	err = h.deviceSvc.RevokeMyDevice(ctx, userID, did, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
@@ -120,12 +133,12 @@ func (h *DeviceHandler) RevokeMyDevice(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
+// [COMMENT]: LogoutOtherDevices đăng xuất khỏi tất cả các thiết bị khác
+func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 	const op = "iam.device.logout_other_devices"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy userID trực tiếp từ Gateway header.
 	userID, ok := constant.GetUserID(c, op)
 	if !ok {
 		return
@@ -135,7 +148,6 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// [COMMENT]: Truyền userID nhận trực tiếp vào service.
 	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, &currID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
@@ -155,12 +167,12 @@ func (h *DeviceHandler) LogoutOtherDevices(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"revoked_sessions": affected}, "ok")
 }
 
-func (h *DeviceHandler) LogoutAllDevices(c *gin.Context) {
+// [COMMENT]: LogoutAllDevices đăng xuất hoàn toàn trên toàn bộ thiết bị
+func (h *DeviceSelfHandler) LogoutAllDevices(c *gin.Context) {
 	const op = "iam.device.logout_all_devices"
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	// [COMMENT]: Lấy userID từ Gateway header.
 	userIDStr := strings.TrimSpace(c.GetHeader("x-user-id"))
 	if userIDStr == "" {
 		logger.HandlerWarn(c, op, nil, "unauthorized - missing x-user-id header")
@@ -174,7 +186,6 @@ func (h *DeviceHandler) LogoutAllDevices(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: Truyền userID trực tiếp vào service.
 	affected, err := h.deviceSvc.LogoutAllDevices(ctx, userID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {

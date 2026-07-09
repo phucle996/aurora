@@ -45,6 +45,7 @@ import (
 	"context"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
+	natsinfra "controlplane/infra/nats"
 	"controlplane/infra/vault"
 	"controlplane/internal/app/bootstrap"
 	"controlplane/internal/config"
@@ -58,6 +59,7 @@ import (
 	"github.com/gin-gonic/gin"
 	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -76,6 +78,7 @@ type App struct {
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
 	rdsJob     *goredis.Client
+	natsConn   *nats.Conn
 	// [COMMENT]: Vault client phục vụ kết nối quản lý khóa an toàn
 	vault *vaultapi.Client
 	ready bool
@@ -115,6 +118,14 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: redis client is required")
 	}
+
+	// [COMMENT]: Khởi tạo NATS Core Client từ infra connector hỗ trợ TLS/mTLS và retry
+	nc, err := natsinfra.NewNATS(ctx, &cfg.NATS, cfg.App.AppName)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: nats init failed: %w", err)
+	}
+	app.natsConn = nc
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Infrastructure bootstrap: HashiCorp Vault.
@@ -349,5 +360,8 @@ func (a *App) Stop() {
 	}
 	if a.rdsJob != nil {
 		_ = a.rdsJob.Close()
+	}
+	if a.natsConn != nil {
+		a.natsConn.Close()
 	}
 }

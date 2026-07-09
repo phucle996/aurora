@@ -36,8 +36,8 @@ type RefreshTokenUser struct {
 }
 
 type RefreshTokenDevice struct {
-	ID     uuid.UUID
-	Status DeviceStatus
+	ID        uuid.UUID
+	RevokedAt *time.Time
 }
 
 type RefreshTokenResult struct {

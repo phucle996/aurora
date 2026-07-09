@@ -31,18 +31,24 @@ type IAMModule struct {
 	L1Registry *cacheengine.CacheRegistry
 
 	// HTTP Transport Handlers (Exposed to the router in API gateway layer)
-	AuthHandler   *iamHandler.AuthHandler
-	UserHandler   *iamHandler.UserHandler
-	DeviceHandler *iamHandler.DeviceHandler
-	RbacHandler   *iamHandler.RbacHandler
+	AuthHandler           *iamHandler.AuthHandler
+	UserHandler           *iamHandler.UserHandler
+	DeviceSelfHandler     *iamHandler.DeviceSelfHandler     // [COMMENT]: Handler quản lý thiết bị cá nhân
+	DevicePlatformHandler *iamHandler.DevicePlatformHandler // [COMMENT]: Handler giám sát thiết bị platform
+	RbacPlatformHandler   *iamHandler.RbacPlatformHandler   // [COMMENT]: Handler cho các tác vụ platform-scoped RBAC
+	RbacTenantHandler     *iamHandler.RbacTenantHandler     // [COMMENT]: Handler cho các tác vụ tenant-scoped RBAC
 
 	// Core Services & Sync Engines
-	RbacRepository        iamRepoInterface.RbacRepository
-	AuthService           iamSvcInterface.AuthService
-	UserService           iamSvcInterface.UserService
-	SessionRefreshService iamSvcInterface.SessionRefreshService
-	deviceCapCancel       context.CancelFunc
-	deviceSvcImpl         iamSvcInterface.DeviceService // giữ interface type để tránh type assertion
+	RbacPlatformRepository   iamRepoInterface.RbacPlatformRepository   // [COMMENT]: Repo quản lý platform role
+	RbacTenantRepository     iamRepoInterface.RbacTenantRepository     // [COMMENT]: Repo quản lý tenant role
+	DeviceSelfRepository     iamRepoInterface.DeviceSelfRepository     // [COMMENT]: Repo quản lý thiết bị cá nhân
+	DevicePlatformRepository iamRepoInterface.DevicePlatformRepository // [COMMENT]: Repo quản lý thiết bị platform
+	AuthService              iamSvcInterface.AuthService
+	UserService              iamSvcInterface.UserService
+	SessionRefreshService    iamSvcInterface.SessionRefreshService
+	deviceCapCancel          context.CancelFunc
+	deviceSelfSvcImpl        iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
+	devicePlatformSvcImpl    iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
 }
 
 // NewModule khởi tạo phân hệ IAM. Thiết lập cơ chế Fail-Fast chặt chẽ ở cấp độ biên khởi chạy.
@@ -91,16 +97,33 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct user repository")
 	}
 
-	// Device Repository (PostgreSQL)
-	deviceRepo := iamRepoImpl.NewDeviceRepository(cfg, db)
-	if deviceRepo == nil {
-		return nil, errors.New("iam module: failed to construct device repository")
+	// Device Self Repository (PostgreSQL)
+	deviceSelfRepo := iamRepoImpl.NewDeviceSelfRepository(cfg, db)
+	if deviceSelfRepo == nil {
+		return nil, errors.New("iam module: failed to construct device self repository")
+	}
+
+	// Device Platform Repository (PostgreSQL)
+	devicePlatformRepo := iamRepoImpl.NewDevicePlatformRepository(cfg, db)
+	if devicePlatformRepo == nil {
+		return nil, errors.New("iam module: failed to construct device platform repository")
 	}
 
 	// Refresh Token Storage (PostgreSQL)
 	refreshTokenRepo := iamRepoImpl.NewRefreshTokenRepository(cfg, db)
 	if refreshTokenRepo == nil {
 		return nil, errors.New("iam module: failed to construct refresh token repository")
+	}
+
+	// [COMMENT]: Khởi tạo các repository platform/tenant RBAC sớm phục vụ DI
+	rbacPlatformRepo := iamRepoImpl.NewRbacPlatformRepository(cfg, db)
+	if rbacPlatformRepo == nil {
+		return nil, errors.New("iam module: failed to construct RBAC platform repository")
+	}
+
+	rbacTenantRepo := iamRepoImpl.NewRbacTenantRepository(cfg, db)
+	if rbacTenantRepo == nil {
+		return nil, errors.New("iam module: failed to construct RBAC tenant repository")
 	}
 
 	// One Time Token Service
@@ -121,26 +144,32 @@ func NewModule(
 	}
 	acrClient := iamproto.NewSessionServiceClient(acrConn)
 
-	// Device Management Service
-	deviceSvc := iamSvcImpl.NewDeviceService(deviceRepo, refreshTokenRepo, cacheEngine, acrClient)
-	if deviceSvc == nil {
-		return nil, errors.New("iam module: failed to construct user device management service")
+	// [COMMENT]: Khởi tạo các Device Service riêng biệt cho Self và Platform
+	deviceSelfSvc := iamSvcImpl.NewDeviceSelfService(deviceSelfRepo, refreshTokenRepo, cacheEngine, acrClient)
+	if deviceSelfSvc == nil {
+		return nil, errors.New("iam module: failed to construct device self service")
 	}
-	deviceHandler := iamHandler.NewDeviceHandler(deviceSvc)
-	if deviceHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP device handler")
+
+	devicePlatformSvc := iamSvcImpl.NewDevicePlatformService(devicePlatformRepo)
+	if devicePlatformSvc == nil {
+		return nil, errors.New("iam module: failed to construct device platform service")
+	}
+
+	deviceSelfHandler := iamHandler.NewDeviceSelfHandler(deviceSelfSvc)
+	if deviceSelfHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP device self handler")
+	}
+	devicePlatformHandler := iamHandler.NewDevicePlatformHandler(devicePlatformSvc)
+	if devicePlatformHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP device platform handler")
 	}
 
 	// ------------------------------------------------------------------------
-	// 🛡️ GIAI ĐOẠN 5: RBAC SYSTEM BOOTSTRAPPING (Di chuyển lên đầu để giải quyết DI)
+	// 🛡️ GIAI ĐOẠN 5: Platform & Tenant RBAC Repos Bootstrapping (giải quyết DI)
 	// ------------------------------------------------------------------------
-	rbacRepo := iamRepoImpl.NewRbacRepository(cfg, db)
-	if rbacRepo == nil {
-		return nil, errors.New("iam module: failed to construct RBAC repository")
-	}
 
-	// Session Refresh Service
-	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, rbacRepo, cacheEngine)
+	// [COMMENT]: Khởi tạo Session Refresh Service sử dụng platform và tenant RBAC repos
+	refreshSvc := iamSvcImpl.NewSessionRefreshService(cfg, refreshTokenRepo, rbacPlatformRepo, rbacTenantRepo, cacheEngine)
 	if refreshSvc == nil {
 		return nil, errors.New("iam module: failed to construct session refresh service")
 	}
@@ -152,7 +181,7 @@ func NewModule(
 	}
 
 	authSvc := iamSvcImpl.NewAuthService(
-		cfg, authRepo, rbacRepo, refreshSvc, deviceSvc,
+		cfg, authRepo, refreshSvc, deviceSelfSvc,
 		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
 		acrClient,
 	)
@@ -165,7 +194,7 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
 	}
 
-	userService := iamSvcImpl.NewUserService(userRepo, rbacRepo, cacheEngine)
+	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine)
 	if userService == nil {
 		return nil, errors.New("iam module: failed to construct core user service implementation")
 	}
@@ -175,21 +204,26 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP user handler")
 	}
 
-	// ------------------------------------------------------------------------
-	// 🛡️ GIAI ĐOẠN 5: RBAC SYSTEM BOOTSTRAPPING & SYNC
-	// ------------------------------------------------------------------------
-	// Phân hệ phân quyền truy cập người dùng và đồng bộ hóa cache trên toàn cụm.
-
-	// rbacRepo đã được khởi tạo phía trên phục vụ DI cho refreshSvc
-
-	rbacSvc := iamSvcImpl.NewRbacService(rbacRepo, cacheEngine)
-	if rbacSvc == nil {
-		return nil, errors.New("iam module: failed to construct RBAC engine service")
+	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ platform/tenant RBAC
+	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine)
+	if rbacPlatformSvc == nil {
+		return nil, errors.New("iam module: failed to construct RBAC platform service")
 	}
 
-	rbacHandler := iamHandler.NewRbacHandler(rbacSvc)
-	if rbacHandler == nil {
-		return nil, errors.New("iam module: failed to initialize HTTP RBAC handler")
+	rbacTenantSvc := iamSvcImpl.NewRbacTenantService(rbacTenantRepo)
+	if rbacTenantSvc == nil {
+		return nil, errors.New("iam module: failed to construct RBAC tenant service")
+	}
+
+	// [COMMENT]: Khởi tạo các HTTP handlers phục vụ định tuyến API platform/tenant RBAC
+	rbacPlatformHandler := iamHandler.NewRbacPlatformHandler(rbacPlatformSvc)
+	if rbacPlatformHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP RBAC platform handler")
+	}
+
+	rbacTenantHandler := iamHandler.NewRbacTenantHandler(rbacTenantSvc)
+	if rbacTenantHandler == nil {
+		return nil, errors.New("iam module: failed to initialize HTTP RBAC tenant handler")
 	}
 
 	// ------------------------------------------------------------------------
@@ -198,19 +232,25 @@ func NewModule(
 	// Trả về container chứa toàn bộ các dependency hoàn toàn hợp lệ, an toàn và sẵn sàng hoạt động.
 
 	return &IAMModule{
-		cfg:                   cfg,
-		db:                    db,
-		rds:                   rds,
-		L1Registry:            cacheEngine,
-		AuthService:           authSvc,
-		AuthHandler:           authHandler,
-		UserService:           userService,
-		UserHandler:           userHandler,
-		DeviceHandler:         deviceHandler,
-		RbacHandler:           rbacHandler,
-		RbacRepository:        rbacRepo,
-		deviceSvcImpl:         deviceSvc,
-		SessionRefreshService: refreshSvc,
+		cfg:                      cfg,
+		db:                       db,
+		rds:                      rds,
+		L1Registry:               cacheEngine,
+		AuthService:              authSvc,
+		AuthHandler:              authHandler,
+		UserService:              userService,
+		UserHandler:              userHandler,
+		DeviceSelfHandler:        deviceSelfHandler,
+		DevicePlatformHandler:    devicePlatformHandler,
+		RbacPlatformHandler:      rbacPlatformHandler,
+		RbacTenantHandler:        rbacTenantHandler,
+		RbacPlatformRepository:   rbacPlatformRepo,
+		RbacTenantRepository:     rbacTenantRepo,
+		DeviceSelfRepository:     deviceSelfRepo,
+		DevicePlatformRepository: devicePlatformRepo,
+		deviceSelfSvcImpl:        deviceSelfSvc,
+		devicePlatformSvcImpl:    devicePlatformSvc,
+		SessionRefreshService:    refreshSvc,
 	}, nil
 }
 
@@ -235,7 +275,7 @@ func (m *IAMModule) TouchDeviceLastSeen(ctx context.Context, trackedDeviceID str
 		ctx = context.WithValue(ctx, constant.UserAgentKey, uaStr)
 	}
 	// Best-effort: lỗi flush không ảnh hưởng flow xác thực.
-	_ = m.deviceSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID)
+	_ = m.deviceSelfSvcImpl.TouchDeviceLastSeen(ctx, deviceUUID)
 }
 
 // RegisterGRPCServices đăng ký các dịch vụ gRPC của phân hệ IAM phục vụ xác thực Trinity

@@ -67,7 +67,8 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 			return
 		case <-ticker.C:
 
-			processed, err := m.deviceSvcImpl.ReconcileDeviceCap(ctx, 100)
+			// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp các thiết bị vượt ngưỡng thông qua DeviceSelfService
+			processed, err := m.deviceSelfSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
 				iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeFailureUnknown)
 				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})

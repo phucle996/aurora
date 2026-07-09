@@ -18,16 +18,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type DeviceRepository struct {
+// [COMMENT]: DeviceSelfRepository thực thi việc thao tác thiết bị cho chính người dùng cá nhân
+type DeviceSelfRepository struct {
 	db     *pgxpool.Pool
 	schema string
 }
 
-func NewDeviceRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.DeviceRepository {
-	return &DeviceRepository{db: db, schema: cfg.SchemaSQL.IAM}
+// [COMMENT]: NewDeviceSelfRepository khởi tạo DeviceSelfRepository
+func NewDeviceSelfRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInterface.DeviceSelfRepository {
+	return &DeviceSelfRepository{db: db, schema: cfg.SchemaSQL.IAM}
 }
 
-func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
+// [COMMENT]: UpsertLoginDevice lưu hoặc cập nhật thông tin thiết bị khi user đăng nhập thành công
+func (r *DeviceSelfRepository) UpsertLoginDevice(ctx context.Context, device iamEntity.Device) (*iamEntity.Device, error) {
 	deviceID := uuid.New()
 	now := device.UpdatedAt
 	if now.IsZero() {
@@ -51,10 +54,8 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 			last_seen_user_agent = EXCLUDED.last_seen_user_agent,
 			last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = EXCLUDED.updated_at
-		-- [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để tránh lỗi thư viện pgx
-		-- không thể giải mã (scan) định dạng nhị phân của kiểu dữ liệu inet vào biến con trỏ chuỗi (*string) của Go.
 		RETURNING id, user_id, device_name, device_type, os_name, browser_name, public_key,
-		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
+		       public_key_fingerprint, client_device_id, risk_flags, revoked_at,
 		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
 	`, r.schema)
 
@@ -74,7 +75,7 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 		now,
 	).Scan(
 		&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey,
-		&item.PublicKeyFingerprint, &item.ClientDeviceID, &item.Status, &item.TrustedAt, &item.QuarantinedAt, &item.RiskFlags, &item.RevokedAt,
+		&item.PublicKeyFingerprint, &item.ClientDeviceID, &item.RiskFlags, &item.RevokedAt,
 		&item.LastSeenIP, &item.LastSeenUserAgent, &item.LastSeenAt, &item.CreatedAt, &item.UpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("iam repo: upsert login device: %w", err)
@@ -83,12 +84,10 @@ func (r *DeviceRepository) UpsertLoginDevice(ctx context.Context, device iamEnti
 	return &entity, nil
 }
 
-func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.Device, error) {
-	// [COMMENT]: Ép kiểu last_seen_ip từ inet thành text (last_seen_ip::text) để pgx scan được vào Go *string.
+// [COMMENT]: ListDevicesByUserID lấy danh sách thiết bị của một user cá nhân dưới dạng DevicePresence gọn nhẹ
+func (r *DeviceSelfRepository) ListDevicesByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]iamEntity.DevicePresence, error) {
 	query := fmt.Sprintf(`
-		SELECT id, user_id, device_name, device_type, os_name, browser_name, public_key,
-		       public_key_fingerprint, client_device_id, status, trusted_at, quarantined_at, risk_flags, revoked_at,
-		       last_seen_ip::text, last_seen_user_agent, last_seen_at, created_at, updated_at
+		SELECT id, device_name, last_seen_ip::text, last_seen_user_agent, last_seen_at, revoked_at
 		FROM %s.devices
 		WHERE user_id = $1
 		ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
@@ -99,24 +98,21 @@ func (r *DeviceRepository) ListDevicesByUserID(ctx context.Context, userID uuid.
 		return nil, fmt.Errorf("iam repo: list devices by user id: %w", err)
 	}
 	defer rows.Close()
-	items := make([]iamEntity.Device, 0, limit)
+	items := make([]iamEntity.DevicePresence, 0, limit)
 	for rows.Next() {
-		var item iamModel.Device
+		var item iamEntity.DevicePresence
 		if scanErr := rows.Scan(
-			&item.ID, &item.UserID, &item.DeviceName, &item.DeviceType, &item.OSName, &item.BrowserName, &item.PublicKey,
-			&item.PublicKeyFingerprint, &item.ClientDeviceID, &item.Status, &item.TrustedAt, &item.QuarantinedAt, &item.RiskFlags, &item.RevokedAt,
-			&item.LastSeenIP, &item.LastSeenUserAgent, &item.LastSeenAt, &item.CreatedAt, &item.UpdatedAt,
+			&item.ID, &item.DeviceName, &item.LastIP, &item.LastUA, &item.LastSeenAt, &item.RevokedAt,
 		); scanErr != nil {
 			return nil, fmt.Errorf("iam repo: scan list device: %w", scanErr)
 		}
-		items = append(items, iamModel.DeviceModelToEntity(item))
+		items = append(items, item)
 	}
 	return items, nil
 }
 
-func (r *DeviceRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error) {
-	// [COMMENT]: Thực hiện query gọn nhẹ (SELECT client_device_id) chỉ lấy thông tin cần thiết.
-	// Tránh SELECT * cồng kềnh, tối ưu hóa I/O bằng cách lọc theo status != 'revoked' (đảm bảo thiết bị active).
+// [COMMENT]: GetActiveDeviceID trả về client_device_id của thiết bị đang hoạt động khớp với user và fingerprint
+func (r *DeviceSelfRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error) {
 	query := fmt.Sprintf(`
 		SELECT client_device_id
 		FROM %s.devices
@@ -126,7 +122,6 @@ func (r *DeviceRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UU
 	var clientDeviceID *string
 	if err := r.db.QueryRow(ctx, query, userID, fingerprint).Scan(&clientDeviceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// [COMMENT]: Không tìm thấy thiết bị active -> Trả về chuỗi rỗng để luồng ngoài tự tạo mới
 			return "", nil
 		}
 		return "", fmt.Errorf("iam repo: get active device ID: %w", err)
@@ -137,9 +132,8 @@ func (r *DeviceRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UU
 	return *clientDeviceID, nil
 }
 
-func (r *DeviceRepository) RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID, currentDeviceID uuid.UUID) error {
-	// [COMMENT]: Gộp UPDATE devices và DELETE refresh_tokens thành 1 câu SQL dùng CTE để tối ưu số lần round-trip DB.
-	// Bổ sung lọc loại trừ thiết bị hiện tại (currentDeviceID) để tránh tự thu hồi chính mình.
+// [COMMENT]: RevokeDeviceByIDAndUserID thu hồi thiết bị chỉ định bằng CTE
+func (r *DeviceSelfRepository) RevokeDeviceByIDAndUserID(ctx context.Context, deviceID uuid.UUID, userID uuid.UUID, currentDeviceID uuid.UUID) error {
 	query := fmt.Sprintf(`
 		WITH revoked_device AS (
 			UPDATE %s.devices
@@ -165,7 +159,8 @@ func (r *DeviceRepository) RevokeDeviceByIDAndUserID(ctx context.Context, device
 	return nil
 }
 
-func (r *DeviceRepository) RevokeOtherDevicesByUserID(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) {
+// [COMMENT]: RevokeOtherDevicesByUserID thu hồi các thiết bị khác
+func (r *DeviceSelfRepository) RevokeOtherDevicesByUserID(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) (int64, error) {
 	query := fmt.Sprintf(`
 		UPDATE %s.devices
 		SET status='revoked', revoked_at=now(), updated_at=now()
@@ -178,7 +173,8 @@ func (r *DeviceRepository) RevokeOtherDevicesByUserID(ctx context.Context, userI
 	return res.RowsAffected(), nil
 }
 
-func (r *DeviceRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
+// [COMMENT]: TouchDeviceLastSeen cập nhật thời gian hoạt động cuối cùng
+func (r *DeviceSelfRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uuid.UUID) error {
 	var ipStr, uaStr string
 	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
 		ipStr = v
@@ -206,7 +202,8 @@ func (r *DeviceRepository) TouchDeviceLastSeen(ctx context.Context, deviceID uui
 	return nil
 }
 
-func (r *DeviceRepository) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error {
+// [COMMENT]: InsertAuditEvent ghi nhận sự kiện nhật ký
+func (r *DeviceSelfRepository) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error {
 	var ipStr, uaStr string
 	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
 		ipStr = v
@@ -233,7 +230,8 @@ func (r *DeviceRepository) InsertAuditEvent(ctx context.Context, actorUserID *uu
 	return nil
 }
 
-func (r *DeviceRepository) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamRepoInterface.EvictedDevice, error) {
+// [COMMENT]: EvictExcessDevices loại bỏ các thiết bị vượt quá số lượng tối đa
+func (r *DeviceSelfRepository) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamRepoInterface.EvictedDevice, error) {
 	if cap <= 0 {
 		return nil, fmt.Errorf("iam repo: cap must be positive")
 	}
@@ -269,7 +267,8 @@ func (r *DeviceRepository) EvictExcessDevices(ctx context.Context, userID uuid.U
 	return out, rows.Err()
 }
 
-func (r *DeviceRepository) ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error) {
+// [COMMENT]: ListUsersExceedingDeviceCap lấy danh sách ID người dùng có số lượng thiết bị vượt giới hạn
+func (r *DeviceSelfRepository) ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error) {
 	if cap <= 0 {
 		return nil, fmt.Errorf("iam repo: cap must be positive")
 	}

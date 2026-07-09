@@ -22,24 +22,27 @@ import (
 // SessionRefreshService chịu trách nhiệm thực thi toàn bộ logic làm mới/gia hạn phiên
 // của cả End-User (Opaque Refresh & Trinity Sliding) và Admin (Sliding qua CAS).
 type SessionRefreshService struct {
-	repo        iamRepoInterface.RefreshTokenRepository
-	rbacRepo    iamRepoInterface.RbacRepository
-	cacheEngine *cacheengine.CacheRegistry
-	cfg         *config.Config
+	repo             iamRepoInterface.RefreshTokenRepository
+	rbacPlatformRepo iamRepoInterface.RbacPlatformRepository // [COMMENT]: Repo platform RBAC để check user role
+	rbacTenantRepo   iamRepoInterface.RbacTenantRepository   // [COMMENT]: Repo tenant RBAC để check tenant role
+	cacheEngine      *cacheengine.CacheRegistry
+	cfg              *config.Config
 }
 
 // NewSessionRefreshService khởi tạo một instance mới của SessionRefreshService.
 func NewSessionRefreshService(
 	cfg *config.Config,
 	repo iamRepoInterface.RefreshTokenRepository,
-	rbacRepo iamRepoInterface.RbacRepository,
+	rbacPlatformRepo iamRepoInterface.RbacPlatformRepository,
+	rbacTenantRepo iamRepoInterface.RbacTenantRepository,
 	cacheEngine *cacheengine.CacheRegistry,
 ) iamSvcInterface.SessionRefreshService {
 	return &SessionRefreshService{
-		repo:        repo,
-		rbacRepo:    rbacRepo,
-		cacheEngine: cacheEngine,
-		cfg:         cfg,
+		repo:             repo,
+		rbacPlatformRepo: rbacPlatformRepo,
+		rbacTenantRepo:   rbacTenantRepo,
+		cacheEngine:      cacheEngine,
+		cfg:              cfg,
 	}
 }
 
@@ -122,18 +125,18 @@ func (s *SessionRefreshService) VerifyOpaqueRefreshToken(ctx context.Context, ra
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
-	// [COMMENT]: 5. Đảm bảo thiết bị của user không bị thu hồi quyền truy cập (revoked)
-	if refreshContext.Device == nil || refreshContext.Device.Status == iamEntity.DeviceStatusRevoked {
+	// [COMMENT]: 5. Đảm bảo thiết bị của user không bị thu hồi quyền truy cập (revoked_at IS NULL)
+	if refreshContext.Device == nil || refreshContext.Device.RevokedAt != nil {
 		return &iamEntity.VerifyOpaqueRefreshTokenResult{Valid: false}, nil
 	}
 
-	// [COMMENT]: 6. Xác định role và level của user/tenant trực tiếp từ database rbac tables
+	// [COMMENT]: 6. Xác định role và level của user/tenant trực tiếp từ database rbac tables thông qua repository riêng biệt
 	var roleIDStr string
 	var roleLevel int32
 	if tenantID == nil {
-		roleIDStr, roleLevel, err = s.rbacRepo.GetRoleIDByUserID(ctx, userID)
+		roleIDStr, roleLevel, err = s.rbacPlatformRepo.GetRoleIDByUserID(ctx, userID)
 	} else {
-		roleIDStr, roleLevel, err = s.rbacRepo.GetRoleIDByTenantID(ctx, *tenantID)
+		roleIDStr, roleLevel, err = s.rbacTenantRepo.GetRoleIDByTenantID(ctx, *tenantID)
 	}
 	if err != nil {
 		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, err, iamMetrics.OutcomeFailureUnknown)

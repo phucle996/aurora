@@ -35,9 +35,8 @@ import (
 
 type AuthService struct {
 	repo       iamRepoInterface.AuthRepository
-	rbacRepo   iamRepoInterface.RbacRepository
 	refreshSvc iamSvcInterface.SessionRefreshService
-	deviceSvc  iamSvcInterface.DeviceService
+	deviceSvc  iamSvcInterface.DeviceSelfService // [COMMENT]: Sử dụng DeviceSelfService phục vụ quản trị thiết bị cá nhân
 	registry   *cacheengine.CacheRegistry
 	ott        iamSvcInterface.OneTimeTokenService
 	outboxRepo iamRepoInterface.IamOutboxRepository
@@ -48,9 +47,8 @@ type AuthService struct {
 
 func NewAuthService(cfg *config.Config,
 	repo iamRepoInterface.AuthRepository,
-	rbacRepo iamRepoInterface.RbacRepository,
 	refreshSvc iamSvcInterface.SessionRefreshService,
-	deviceSvc iamSvcInterface.DeviceService,
+	deviceSvc iamSvcInterface.DeviceSelfService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
 	outboxRepo iamRepoInterface.IamOutboxRepository,
@@ -58,7 +56,6 @@ func NewAuthService(cfg *config.Config,
 ) iamSvcInterface.AuthService {
 	return &AuthService{
 		repo:       repo,
-		rbacRepo:   rbacRepo,
 		refreshSvc: refreshSvc,
 		deviceSvc:  deviceSvc,
 		registry:   registry,
@@ -384,7 +381,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		loginOutcome = iamMetrics.OutcomeFailureUnknown
 		return nil, fmt.Errorf("%w: failed to upsert login device: %v", iamTaxonomy.ErrAuthenticationUnavailable, deviceErr)
 	}
-	if trackedDevice == nil || strings.TrimSpace(trackedDevice.ID) == "" || trackedDevice.Status == iamEntity.DeviceStatusRevoked {
+	if trackedDevice == nil || strings.TrimSpace(trackedDevice.ID) == "" || trackedDevice.RevokedAt != nil {
 		loginOutcome = iamMetrics.OutcomeInvalidCredential
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 	}

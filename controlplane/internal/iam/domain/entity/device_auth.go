@@ -6,17 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-type DeviceStatus string
-
 type ChallengeStatus string
-
-const (
-	DeviceStatusNew        DeviceStatus = "new"
-	DeviceStatusRecognized DeviceStatus = "recognized"
-	DeviceStatusTrusted    DeviceStatus = "trusted"
-	DeviceStatusSuspicious DeviceStatus = "suspicious"
-	DeviceStatusRevoked    DeviceStatus = "revoked"
-)
 
 const (
 	ChallengeStatusPending  ChallengeStatus = "pending"
@@ -26,6 +16,7 @@ const (
 	ChallengeStatusConsumed ChallengeStatus = "consumed"
 )
 
+// [COMMENT]: Device đại diện cho thông tin thiết bị đã đăng ký của user
 type Device struct {
 	ID                   string
 	UserID               uuid.UUID
@@ -36,9 +27,6 @@ type Device struct {
 	PublicKey            string
 	PublicKeyFingerprint string
 	ClientDeviceID       *string
-	Status               DeviceStatus
-	TrustedAt            *time.Time
-	QuarantinedAt        *time.Time
 	RiskFlags            map[string]any
 	RevokedAt            *time.Time
 	LastSeenIP           *string
@@ -48,12 +36,15 @@ type Device struct {
 	UpdatedAt            time.Time
 }
 
+// [COMMENT]: DevicePresence đại diện cho một thiết bị thực tế đang hoạt động kèm mốc thời gian/trạng thái cuối
 type DevicePresence struct {
-	Device     Device
+	ID         string
+	DeviceName string
 	IsOnline   bool
 	LastSeenAt *time.Time
 	LastIP     *string
 	LastUA     *string
+	RevokedAt  *time.Time
 }
 
 type DeviceListResult struct {

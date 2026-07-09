@@ -20,7 +20,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getUserRolePlatform, type PlatformRoleItem } from "@/lib/api/session";
+import { getUserRolePlatform, getUserDevicesPlatform, type PlatformRoleItem } from "@/lib/api/session";
 
 // [COMMENT]: Sinh màu sắc avatar ngẫu nhiên đẹp mắt (nhất quán với page.tsx)
 const getAvatarColors = (name: string) => {
@@ -55,11 +55,14 @@ export function UserDetailPanel({
   const [activeDetailTab, setActiveDetailTab] = useState("Overview");
   const [roleData, setRoleData] = useState<PlatformRoleItem | null>(null);
   const [loadingRole, setLoadingRole] = useState(false);
+  const [devicesData, setDevicesData] = useState<any[]>([]); // [COMMENT]: State lưu trữ danh sách thiết bị thực tế của user
+  const [loadingDevices, setLoadingDevices] = useState(false); // [COMMENT]: Trạng thái loading khi fetch thiết bị
 
-  // [COMMENT]: Reset tab và dữ liệu role khi người dùng chọn user khác
+  // [COMMENT]: Reset tab và dữ liệu role/devices khi người dùng chọn user khác
   useEffect(() => {
     setActiveDetailTab("Overview");
     setRoleData(null);
+    setDevicesData([]);
   }, [selectedUser?.id]);
 
   // [COMMENT]: Thực hiện lazy load dữ liệu vai trò từ backend khi chuyển sang tab Roles
@@ -89,6 +92,39 @@ export function UserDetailPanel({
     };
 
     fetchRole();
+
+    return () => {
+      active = false;
+    };
+  }, [activeDetailTab, selectedUser?.id]);
+
+  // [COMMENT]: Thực hiện lazy load danh sách thiết bị thực tế khi chuyển sang tab Devices
+  useEffect(() => {
+    if (activeDetailTab !== "Devices" || !selectedUser?.id) {
+      return;
+    }
+
+    let active = true;
+    const fetchDevices = async () => {
+      setLoadingDevices(true);
+      try {
+        const res = await getUserDevicesPlatform(selectedUser.id);
+        if (active && res) {
+          setDevicesData(res.items);
+        }
+      } catch (err) {
+        console.error("Failed to fetch devices", err);
+        if (active) {
+          setDevicesData([]);
+        }
+      } finally {
+        if (active) {
+          setLoadingDevices(false);
+        }
+      }
+    };
+
+    fetchDevices();
 
     return () => {
       active = false;
@@ -233,23 +269,16 @@ export function UserDetailPanel({
           );
         }
 
-        // [COMMENT]: Xác định nhóm vai trò quản trị hoặc vận hành hệ thống dựa trên code/name thực tế
-        const isSysAdmin = roleData.code === "system-admin" || roleData.code === "platform_admin" || roleData.name.includes("Admin");
-        const isOperator = roleData.code === "support-operator" || roleData.name.includes("Operator") || roleData.name.includes("Engineer");
-
         return (
           <div className="flex flex-col gap-3 text-xs select-none animate-in fade-in duration-200">
             <div>
               <span className="font-bold text-foreground block mb-2 text-xs uppercase tracking-wider">Platform Role</span>
+              {/* [COMMENT]: Sử dụng helper getAvatarColors sinh màu tự động, đảm bảo công bằng cho mọi Role */}
               <Badge variant="outline" className={cn(
                 "inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold tracking-wider mb-4 border h-5",
-                isSysAdmin
-                  ? "bg-indigo-500/10 text-indigo-655 border-indigo-500/20 dark:text-indigo-400 dark:border-indigo-500/30"
-                  : isOperator
-                    ? "bg-sky-500/10 text-sky-655 border-sky-500/20 dark:text-sky-400 dark:border-sky-500/30"
-                    : "bg-slate-500/10 text-slate-600 border-slate-500/20 dark:text-slate-400 dark:border-slate-500/30"
+                getAvatarColors(roleData.name)
               )}>
-                {roleData.name} (Level {roleData.role_level})
+                {roleData.name}
               </Badge>
 
               {/* [COMMENT]: Hiển thị mô tả vai trò thực tế trả về từ backend API */}
@@ -262,60 +291,87 @@ export function UserDetailPanel({
                 </div>
               )}
 
+              {/* [COMMENT]: Render động cấu hình vai trò không dùng hardcode điều kiện */}
               <div className="flex flex-col gap-2.5 border-t border-border/40 pt-3">
-                <span className="font-bold text-foreground text-[11px] uppercase">Effective Permissions</span>
-                <ul className="list-disc list-inside space-y-1.5 text-foreground/80 text-[11px] font-semibold leading-normal">
-                  {isSysAdmin ? (
-                    <>
-                      <li>Full read/write authority across the entire platform schema</li>
-                      <li>Can assign roles to platform members</li>
-                      <li>Manage organizational security policy settings</li>
-                    </>
-                  ) : isOperator ? (
-                    <>
-                      <li>Read dashboard metrics and system topologies</li>
-                      <li>Perform basic maintenance operations</li>
-                      <li>Inspect and download platform logs</li>
-                    </>
-                  ) : (
-                    <>
-                      <li>View personal profile configurations</li>
-                      <li>Inspect access logs and security audits</li>
-                      <li>Submit infrastructure service requests</li>
-                    </>
-                  )}
-                </ul>
+                <span className="font-bold text-foreground text-[11px] uppercase">Role Specifications</span>
+                <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold text-foreground/80">
+                  <div className="bg-muted/10 border border-border/40 p-2 rounded-md">
+                    <span className="text-[9px] text-muted-foreground uppercase block mb-0.5">Role Level</span>
+                    <span>Level {roleData.role_level}</span>
+                  </div>
+                  <div className="bg-muted/10 border border-border/40 p-2 rounded-md">
+                    <span className="text-[9px] text-muted-foreground uppercase block mb-0.5">Scope</span>
+                    <span className="capitalize">{roleData.scope}</span>
+                  </div>
+                  <div className="bg-muted/10 border border-border/40 p-2 rounded-md col-span-2">
+                    <span className="text-[9px] text-muted-foreground uppercase block mb-0.5">System Code</span>
+                    <code className="font-mono text-[10px] bg-muted/40 px-1 py-0.5 rounded">{roleData.code}</code>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         );
       case "Devices":
+        if (loadingDevices) {
+          return (
+            <div className="flex items-center justify-center py-10 select-none">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/60" />
+            </div>
+          );
+        }
+
         return (
-          <div className="flex flex-col gap-3 text-xs select-none">
+          <div className="flex flex-col gap-3 text-xs select-none animate-in fade-in duration-200">
             <div>
-              <span className="font-bold text-foreground block mb-3 text-xs uppercase tracking-wider">Registered Devices ({selectedUser.ext.devicesCount})</span>
-              {selectedUser.ext.devicesCount === 0 ? (
+              <span className="font-bold text-foreground block mb-3 text-xs uppercase tracking-wider">Registered Devices ({devicesData.length})</span>
+              {devicesData.length === 0 ? (
                 <div className="py-6 text-center text-muted-foreground font-bold">No devices registered.</div>
               ) : (
                 <div className="space-y-3">
-                  {Array.from({ length: selectedUser.ext.devicesCount }).map((_, idx) => {
-                    const isMac = idx % 2 === 0;
+                  {devicesData.map((item, idx) => {
+                    const dev = item.device || {};
+                    const isOnline = item.is_online || false;
+                    const lastSeen = item.last_seen_at || null;
+                    const ip = item.last_seen_ip || dev.LastSeenIP || "Unknown IP";
+                    const ua = item.last_seen_user_agent || dev.LastSeenUserAgent || "Unknown UA";
+                    const deviceName = dev.DeviceName || dev.device_name || "Unknown Device";
+                    const status = dev.Status || dev.status || "Unknown";
+
                     return (
                       <div key={idx} className="flex items-center justify-between border-b border-border/30 pb-2.5 last:border-0 last:pb-0">
                         <div className="flex items-center gap-2">
                           <Laptop className="h-4.5 w-4.5 text-muted-foreground" />
                           <div className="flex flex-col">
                             <span className="font-bold text-foreground">
-                              {isMac ? "MacBook Pro (Chrome)" : "ThinkPad X1 (Firefox)"}
+                              {deviceName}
                             </span>
-                            <span className="text-[10px] text-muted-foreground font-medium">
-                              IP: {selectedUser.ext.ip} • Verified Device
+                            <span className="text-[10px] text-muted-foreground font-medium max-w-[200px] truncate block" title={ua}>
+                              IP: {ip} • {ua}
                             </span>
+                            {lastSeen && (
+                              <span className="text-[9px] text-muted-foreground/60 font-semibold mt-0.5">
+                                Last Active: {new Date(lastSeen).toLocaleString()}
+                              </span>
+                            )}
                           </div>
                         </div>
-                        <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-405 dark:border-emerald-500/30 font-extrabold uppercase tracking-wider text-[9px] h-4">
-                          Trusted
-                        </Badge>
+                        <div className="flex items-center gap-1.5">
+                          {status === "revoked" ? (
+                            <Badge variant="outline" className="bg-red-500/10 text-red-600 border-red-500/20 dark:text-red-400 dark:border-red-500/30 font-extrabold uppercase tracking-wider text-[8px] h-4">
+                              Revoked
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className={cn(
+                              "font-extrabold uppercase tracking-wider text-[8px] h-4 border",
+                              isOnline
+                                ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/30"
+                                : "bg-slate-500/10 text-slate-500 border-slate-500/20 dark:text-slate-400 dark:border-slate-500/30"
+                            )}>
+                              {isOnline ? "Online" : "Offline"}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     );
                   })}

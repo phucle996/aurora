@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
@@ -94,7 +95,7 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 			r.id, r.user_id, r.device_id, r.token_hash, r.tenant_id, r.expires_at,
 			r.used_at, r.revoked_at,
 			u.id, u.status, u.username,
-			d.id, d.status
+			d.id, d.revoked_at
 		FROM %s.refresh_tokens r
 		LEFT JOIN %s.users u ON u.id = r.user_id
 		LEFT JOIN %s.devices d ON d.id = r.device_id
@@ -102,9 +103,9 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		LIMIT 1
 	`, r.schema, r.schema, r.schema)
 	var (
-		ctxOut    iamEntity.RefreshContext
-		deviceID  *uuid.UUID
-		deviceSts *string
+		ctxOut        iamEntity.RefreshContext
+		deviceID      *uuid.UUID
+		deviceRevoked *time.Time
 	)
 	if err := r.db.QueryRow(ctx, query, tokenHash).Scan(
 		&ctxOut.Session.ID,
@@ -119,15 +120,15 @@ func (r *RefreshTokenRepository) LoadRefreshContextByHash(ctx context.Context, t
 		&ctxOut.User.Status,
 		&ctxOut.User.Username,
 		&deviceID,
-		&deviceSts,
+		&deviceRevoked,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, iamTaxonomy.ErrNotFound
 		}
 		return nil, fmt.Errorf("iam repo: load refresh context: %w", err)
 	}
-	if deviceID != nil && deviceSts != nil {
-		ctxOut.Device = &iamEntity.RefreshTokenDevice{ID: *deviceID, Status: iamEntity.DeviceStatus(*deviceSts)}
+	if deviceID != nil {
+		ctxOut.Device = &iamEntity.RefreshTokenDevice{ID: *deviceID, RevokedAt: deviceRevoked}
 	}
 	return &ctxOut, nil
 }
