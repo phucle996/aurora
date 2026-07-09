@@ -101,12 +101,9 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	currentDeviceIDStr := constant.GetOptionalDeviceIDStr(c)
-	var currentDeviceID uuid.UUID
-	if currentDeviceIDStr != "" {
-		if parsedID, err := uuid.Parse(currentDeviceIDStr); err == nil {
-			currentDeviceID = parsedID
-		}
+	currentDeviceID, ok := constant.GetDeviceID(c, op)
+	if !ok {
+		return
 	}
 
 	err = h.deviceSvc.RevokeMyDevice(ctx, userID, did, currentDeviceID)

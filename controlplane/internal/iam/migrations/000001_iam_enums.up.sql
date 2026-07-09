@@ -24,27 +24,6 @@ BEGIN
 END
 $$;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'device_status' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE device_status AS ENUM ('new', 'recognized', 'trusted', 'suspicious', 'revoked');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.device_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'new');
-    EXECUTE format('ALTER TYPE %I.device_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'recognized');
-    EXECUTE format('ALTER TYPE %I.device_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'trusted');
-    EXECUTE format('ALTER TYPE %I.device_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'suspicious');
-    EXECUTE format('ALTER TYPE %I.device_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'revoked');
-END
-$$;
 
 DO $$
 BEGIN

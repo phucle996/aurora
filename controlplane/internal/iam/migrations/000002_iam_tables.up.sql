@@ -88,9 +88,6 @@ CREATE TABLE IF NOT EXISTS devices (
     browser_name varchar(128) NULL, -- Tên browser nếu là web login
     public_key text NOT NULL, -- Public key của device
     public_key_fingerprint varchar(255) NOT NULL, -- Fingerprint public key, unique theo user
-    status device_status NOT NULL DEFAULT 'new', -- Trạng thái device
-    trusted_at timestamptz NULL, -- Thời điểm trust device
-    quarantined_at timestamptz NULL, -- Thời điểm quarantine device
     risk_flags jsonb NOT NULL DEFAULT '{}'::jsonb, -- Cờ rủi ro dạng key-value, không chứa secret
     revoked_at timestamptz NULL, -- Thời điểm revoke device
     client_device_id varchar(128) NULL, -- Persistent client device ID
