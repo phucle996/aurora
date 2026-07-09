@@ -95,8 +95,8 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	clientDeviceID := strings.TrimSpace(c.Param("device_id"))
-	if clientDeviceID == "" {
+	clientDeviceID, err := uuid.Parse(c.Param("device_id"))
+	if err != nil {
 		apires.RespondBadRequest(c, "invalid device id")
 		return
 	}
@@ -106,7 +106,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	err := h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentDeviceID)
+	err = h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "action not allowed - cannot revoke current device")
@@ -146,7 +146,7 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 		return
 	}
 
-	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, &currentDeviceID)
+	affected, err := h.deviceSvc.LogoutOtherDevices(ctx, userID, currentDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrInvalidArgument) {
 			logger.HandlerWarn(c, op, err, "invalid argument")

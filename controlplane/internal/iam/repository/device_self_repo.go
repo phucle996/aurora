@@ -133,12 +133,12 @@ func (r *DeviceSelfRepository) GetActiveDeviceID(ctx context.Context, userID uui
 }
 
 // [COMMENT]: RevokeMyDevice thu hồi thiết bị chỉ định bằng CTE theo client_device_id, ngăn chặn tự hu hồi thiết bị hiện tại
-func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceID string, userID uuid.UUID, currentDeviceID uuid.UUID) error {
+func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceID uuid.UUID, userID uuid.UUID, currentDeviceID uuid.UUID) error {
 	// 1. Kiểm tra xem thiết bị cần thu hồi có phải là thiết bị hiện tại không
 	var targetID uuid.UUID
 	var isRevoked bool
 	queryCheck := fmt.Sprintf("SELECT id, revoked_at IS NOT NULL FROM %s.devices WHERE client_device_id = $1 AND user_id = $2", r.schema)
-	err := r.db.QueryRow(ctx, queryCheck, clientDeviceID, userID).Scan(&targetID, &isRevoked)
+	err := r.db.QueryRow(ctx, queryCheck, clientDeviceID.String(), userID).Scan(&targetID, &isRevoked)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return iamTaxonomy.ErrZeroRowsAffected
@@ -171,7 +171,7 @@ func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceI
 			(SELECT COUNT(*) FROM revoked_device) AS updated_count
 	`, r.schema, r.schema)
 	var updatedCount int64
-	if err := r.db.QueryRow(ctx, query, clientDeviceID, userID).Scan(&updatedCount); err != nil {
+	if err := r.db.QueryRow(ctx, query, clientDeviceID.String(), userID).Scan(&updatedCount); err != nil {
 		return err
 	}
 	if updatedCount == 0 {
@@ -181,7 +181,7 @@ func (r *DeviceSelfRepository) RevokeMyDevice(ctx context.Context, clientDeviceI
 }
 
 // [COMMENT]: RevokeMyOtherDevices thu hồi các thiết bị khác ngoại trừ thiết bị chỉ định theo client_device_id, trả về danh sách client_device_id đã thu hồi
-func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) ([]string, error) {
+func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID uuid.UUID, keepDeviceID *uuid.UUID) ([]uuid.UUID, error) {
 	query := fmt.Sprintf(`
 		WITH revoked_devices AS (
 			UPDATE %s.devices
@@ -202,13 +202,16 @@ func (r *DeviceSelfRepository) RevokeMyOtherDevices(ctx context.Context, userID 
 	}
 	defer rows.Close()
 
-	var clientDeviceIDs []string
+	var clientDeviceIDs []uuid.UUID
 	for rows.Next() {
-		var clientDeviceID string
-		if err := rows.Scan(&clientDeviceID); err != nil {
+		var idStr string
+		if err := rows.Scan(&idStr); err != nil {
 			return nil, fmt.Errorf("iam repo: scan revoked client device id: %w", err)
 		}
-		clientDeviceIDs = append(clientDeviceIDs, clientDeviceID)
+		id, err := uuid.Parse(idStr)
+		if err == nil {
+			clientDeviceIDs = append(clientDeviceIDs, id)
+		}
 	}
 	return clientDeviceIDs, nil
 }
