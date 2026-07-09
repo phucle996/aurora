@@ -252,6 +252,59 @@ func (x *BulkTouchDevicesResponse) GetSuccess() bool {
 	return false
 }
 
+// [COMMENT]: Notification sent from ACR to CP when active sessions are evicted due to device capacity limit (max 50)
+type EvictedDevicesNotification struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	UserId          string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ClientDeviceIds []string               `protobuf:"bytes,2,rep,name=client_device_ids,json=clientDeviceIds,proto3" json:"client_device_ids,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *EvictedDevicesNotification) Reset() {
+	*x = EvictedDevicesNotification{}
+	mi := &file_device_presence_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EvictedDevicesNotification) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EvictedDevicesNotification) ProtoMessage() {}
+
+func (x *EvictedDevicesNotification) ProtoReflect() protoreflect.Message {
+	mi := &file_device_presence_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EvictedDevicesNotification.ProtoReflect.Descriptor instead.
+func (*EvictedDevicesNotification) Descriptor() ([]byte, []int) {
+	return file_device_presence_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *EvictedDevicesNotification) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *EvictedDevicesNotification) GetClientDeviceIds() []string {
+	if x != nil {
+		return x.ClientDeviceIds
+	}
+	return nil
+}
+
 type BulkTouchDevicesRequest_DeviceUpdate struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId          string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
@@ -264,7 +317,7 @@ type BulkTouchDevicesRequest_DeviceUpdate struct {
 
 func (x *BulkTouchDevicesRequest_DeviceUpdate) Reset() {
 	*x = BulkTouchDevicesRequest_DeviceUpdate{}
-	mi := &file_device_presence_proto_msgTypes[5]
+	mi := &file_device_presence_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -276,7 +329,7 @@ func (x *BulkTouchDevicesRequest_DeviceUpdate) String() string {
 func (*BulkTouchDevicesRequest_DeviceUpdate) ProtoMessage() {}
 
 func (x *BulkTouchDevicesRequest_DeviceUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_device_presence_proto_msgTypes[5]
+	mi := &file_device_presence_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -343,7 +396,10 @@ const file_device_presence_proto_rawDesc = "" +
 	"lastSeenIp\x12/\n" +
 	"\x14last_seen_user_agent\x18\x04 \x01(\tR\x11lastSeenUserAgent\"4\n" +
 	"\x18BulkTouchDevicesResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccessB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"a\n" +
+	"\x1aEvictedDevicesNotification\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12*\n" +
+	"\x11client_device_ids\x18\x02 \x03(\tR\x0fclientDeviceIdsB8Z6controlplane/internal/iam/transport/rpc/proto;iamprotob\x06proto3"
 
 var (
 	file_device_presence_proto_rawDescOnce sync.Once
@@ -357,18 +413,19 @@ func file_device_presence_proto_rawDescGZIP() []byte {
 	return file_device_presence_proto_rawDescData
 }
 
-var file_device_presence_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_device_presence_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_device_presence_proto_goTypes = []any{
 	(*GetActiveDevicesRequest)(nil),              // 0: iam.rpc.GetActiveDevicesRequest
 	(*ActiveDeviceEntry)(nil),                    // 1: iam.rpc.ActiveDeviceEntry
 	(*GetActiveDevicesResponse)(nil),             // 2: iam.rpc.GetActiveDevicesResponse
 	(*BulkTouchDevicesRequest)(nil),              // 3: iam.rpc.BulkTouchDevicesRequest
 	(*BulkTouchDevicesResponse)(nil),             // 4: iam.rpc.BulkTouchDevicesResponse
-	(*BulkTouchDevicesRequest_DeviceUpdate)(nil), // 5: iam.rpc.BulkTouchDevicesRequest.DeviceUpdate
+	(*EvictedDevicesNotification)(nil),           // 5: iam.rpc.EvictedDevicesNotification
+	(*BulkTouchDevicesRequest_DeviceUpdate)(nil), // 6: iam.rpc.BulkTouchDevicesRequest.DeviceUpdate
 }
 var file_device_presence_proto_depIdxs = []int32{
 	1, // 0: iam.rpc.GetActiveDevicesResponse.active_devices:type_name -> iam.rpc.ActiveDeviceEntry
-	5, // 1: iam.rpc.BulkTouchDevicesRequest.updates:type_name -> iam.rpc.BulkTouchDevicesRequest.DeviceUpdate
+	6, // 1: iam.rpc.BulkTouchDevicesRequest.updates:type_name -> iam.rpc.BulkTouchDevicesRequest.DeviceUpdate
 	2, // [2:2] is the sub-list for method output_type
 	2, // [2:2] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
@@ -387,7 +444,7 @@ func file_device_presence_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_device_presence_proto_rawDesc), len(file_device_presence_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

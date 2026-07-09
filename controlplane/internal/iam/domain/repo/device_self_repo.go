@@ -36,6 +36,8 @@ type DeviceSelfRepository interface {
 
 	// [COMMENT]: ListUsersExceedingDeviceCap lấy danh sách ID người dùng có số lượng thiết bị vượt giới hạn
 	ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error)
+	// [COMMENT]: RevokeDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user theo danh sách client_device_id
+	RevokeDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error
 }
 
 // [COMMENT]: EvictedDevice là output của EvictExcessDevices

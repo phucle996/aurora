@@ -5,7 +5,9 @@
 
 use crate::core::session::SessionManager;
 use crate::core::token::{Claims, TokenManager};
+use crate::infra::nats::auth::EvictedDevicesNotification;
 use crate::observability::logger::Logger;
+use prost::Message;
 use std::sync::Arc;
 use tonic::Status;
 use uuid::Uuid;
@@ -39,6 +41,7 @@ pub async fn release_user_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
     zone_mgr: &Arc<crate::core::zone::ZoneManager>,
+    nats_client: &async_nats::Client,
     config: &crate::config::Config,
     user_id: &str,
     username: &str,
@@ -109,7 +112,7 @@ pub async fn release_user_session(
         }
     };
 
-    if let Err(e) = session_mgr
+    let evicted_tdids = match session_mgr
         .register_session(
             claims.zone_id.as_deref().unwrap_or("global"),
             // [COMMENT]: Sử dụng "platform" thay vì "global" làm fallback cho tenant_id
@@ -121,15 +124,37 @@ pub async fn release_user_session(
         )
         .await
     {
-        Logger::sys_error(
-            "session.release_user",
-            "Failed to register session in Redis L2",
-            &e.to_string(),
-        );
-        return Err(Status::internal(format!(
-            "Failed to write session state: {}",
-            e
-        )));
+        Ok(evicted) => evicted,
+        Err(e) => {
+            Logger::sys_error(
+                "session.release_user",
+                "Failed to register session in Redis L2",
+                &e.to_string(),
+            );
+            return Err(Status::internal(format!(
+                "Failed to write session state: {}",
+                e
+            )));
+        }
+    };
+
+    // [COMMENT]: Nếu có session bị evict do vượt quá giới hạn thiết bị, publish sự kiện sang CP để cập nhật DB
+    if !evicted_tdids.is_empty() {
+        let nats_client_clone = nats_client.clone();
+        let user_id_owned = user_id.to_string();
+        let evicted_clone = evicted_tdids.clone();
+        tokio::spawn(async move {
+            let notification = EvictedDevicesNotification {
+                user_id: user_id_owned,
+                client_device_ids: evicted_clone,
+            };
+            let mut buf = Vec::with_capacity(notification.encoded_len());
+            if notification.encode(&mut buf).is_ok() {
+                let _ = nats_client_clone
+                    .publish("iam.device.evicted".to_string(), buf.into())
+                    .await;
+            }
+        });
     }
 
     // 6. Giải quyết client_device_id

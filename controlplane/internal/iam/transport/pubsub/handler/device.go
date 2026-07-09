@@ -11,6 +11,7 @@ import (
 	"controlplane/internal/observability"
 	"controlplane/pkg/logger"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -96,7 +97,58 @@ func (h *DeviceNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to subscribe to iam.device.bulk_touch_presence: %w", err)
 	}
-
 	subs = append(subs, subBulkPresence)
+
+	// [COMMENT]: Đăng ký lắng nghe sự kiện thu hồi thiết bị do vượt quá dung lượng (evicted) từ ACR
+	subEvicted, err := nc.QueueSubscribe("iam.device.evicted", queueGroup, func(msg *nats.Msg) {
+		ctx := context.Background()
+
+		if msg.Header != nil {
+			traceparent := msg.Header.Get("traceparent")
+			if traceparent != "" {
+				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
+			}
+		}
+
+		var span trace.Span
+		if h.otel != nil {
+			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.device.evicted")
+			defer span.End()
+			span.SetAttributes(
+				attribute.String("messaging.system", "nats"),
+				attribute.String("messaging.destination", "iam.device.evicted"),
+			)
+		}
+
+		var req iamproto.EvictedDevicesNotification
+		if err := proto.Unmarshal(msg.Data, &req); err != nil {
+			logger.SysError("NATS.EvictedDevices", fmt.Sprintf("Failed to unmarshal request: %v", err))
+			return
+		}
+
+		if len(req.ClientDeviceIds) == 0 {
+			return
+		}
+
+		userUUID, err := uuid.Parse(req.UserId)
+		if err != nil {
+			logger.SysError("NATS.EvictedDevices", fmt.Sprintf("Invalid user UUID: %s", req.UserId))
+			return
+		}
+
+		// Thực thi thu hồi thiết bị và session tương ứng trong database
+		if err := h.deviceSvc.RevokeDevicesByClientDeviceIDs(ctx, userUUID, req.ClientDeviceIds); err != nil {
+			logger.SysError("NATS.EvictedDevices", fmt.Sprintf("Failed to revoke evicted devices: %v", err))
+			return
+		}
+
+		logger.SysInfo("NATS.EvictedDevices", fmt.Sprintf("Successfully revoked %d evicted devices for user_id=%s", len(req.ClientDeviceIds), req.UserId))
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to subscribe to iam.device.evicted: %w", err)
+	}
+	subs = append(subs, subEvicted)
+
 	return subs, nil
 }

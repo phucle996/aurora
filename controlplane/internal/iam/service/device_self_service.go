@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"strconv"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -216,94 +216,39 @@ func (s *DeviceSelfService) BulkTouchDevices(ctx context.Context, updates []iamE
 	return s.deviceRepo.BulkTouchDevices(ctx, updates)
 }
 
-// [COMMENT]: EvictExcessDevicesIfNeeded dọn dẹp thiết bị vượt ngưỡng
+// [COMMENT]: EvictExcessDevicesIfNeeded đã được vô hiệu hóa vì logic kiểm soát thiết bị vượt ngưỡng
+// đã được chuyển giao sang ACR Edge xử lý trực tiếp trên Redis L2 và đồng bộ bất đồng bộ qua NATS.
 func (s *DeviceSelfService) EvictExcessDevicesIfNeeded(ctx context.Context, userID uuid.UUID) {
-	if s == nil || s.deviceRepo == nil {
-		return
-	}
-
-	rdb := s.registry.L2.Client()
-	userIDStr := userID.String()
-	lockKey := "iam:user:device:cap_lock:" + userIDStr
-	ownerToken := uuid.NewString()
-
-	lockToken := ""
-	ok, lockErr := rdb.SetNX(ctx, lockKey, ownerToken, 2*time.Second).Result()
-	if lockErr != nil {
-		iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeLockBusy)
-	} else if !ok {
-		iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeLockBusy)
-		return
-	} else {
-		lockToken = ownerToken
-		defer func() {
-			lua := `
-			local v = redis.call("get", KEYS[1])
-			if not v then
-				return 0
-			end
-			if v ~= ARGV[1] then
-				return 0
-			end
-			redis.call("del", KEYS[1])
-			return 1
-			`
-			_, _ = s.registry.Exec.Execute(context.Background(), lua, []string{lockKey}, lockToken)
-		}()
-	}
-
-	const userDeviceCap = 50
-	evicted, err := s.deviceRepo.EvictExcessDevices(ctx, userID, userDeviceCap)
-	if err != nil || len(evicted) == 0 {
-		return
-	}
-	deviceIDs := make([]uuid.UUID, 0, len(evicted))
-	for _, item := range evicted {
-		deviceIDs = append(deviceIDs, item.DeviceID)
-	}
-	if s.refreshTokenRepo != nil {
-		_, _ = s.refreshTokenRepo.RevokeRefreshTokensByDeviceIDsAndUserID(ctx, userID, deviceIDs)
-	}
-
-	if len(deviceIDs) > 0 {
-		deviceIDS := make([]string, 0, len(deviceIDs))
-		for _, dID := range deviceIDs {
-			deviceIDS = append(deviceIDS, dID.String())
-		}
-		req := &iamproto.RevokeUserSessionsByDevicesRequest{
-			UserId:          userID.String(),
-			ClientDeviceIds: deviceIDS,
-		}
-		if reqBytes, err := proto.Marshal(req); err == nil {
-			// [COMMENT]: Gửi yêu cầu thu hồi session qua NATS đến ACR với context nền để tránh bị cancel giữa chừng
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, _ = s.natsConn.RequestWithContext(bgCtx, "iam.device.revoke_sessions", reqBytes)
-		}
-	}
-
-	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
-	extras := map[string]string{
-		"reason":        "cap_exceeded",
-		"evicted_count": strconv.Itoa(len(evicted)),
-	}
-	s.PublishDeviceAuditAsync(ctx, userID, "device.evicted_capacity", "warning", extras)
 }
 
-// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp các thiết bị vượt ngưỡng
+// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp đã được chuyển giao cho ACR Edge xử lý nên không cần chạy nữa.
 func (s *DeviceSelfService) ReconcileDeviceCap(ctx context.Context, batch int) (int, error) {
+	return 0, nil
+}
+
+// [COMMENT]: RevokeDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
+// đồng thời xóa bỏ Refresh Token tương ứng trong database. Được gọi khi nhận sự kiện Evicted từ ACR qua NATS.
+func (s *DeviceSelfService) RevokeDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
 	if s == nil || s.deviceRepo == nil {
-		return 0, nil
+		return nil
 	}
-	const userDeviceCap = 50
-	users, err := s.deviceRepo.ListUsersExceedingDeviceCap(ctx, userDeviceCap, batch)
-	if err != nil {
-		return 0, err
+	if len(clientDeviceIDs) == 0 {
+		return nil
 	}
-	for _, userID := range users {
-		s.EvictExcessDevicesIfNeeded(ctx, userID)
+
+	// 1. Cập nhật trạng thái 'revoked' cho các thiết bị trong DB
+	if err := s.deviceRepo.RevokeDevicesByClientDeviceIDs(ctx, userID, clientDeviceIDs); err != nil {
+		return fmt.Errorf("iam service: revoke devices by client device ids: %w", err)
 	}
-	return len(users), nil
+
+	// 2. Thu hồi các refresh token tương ứng
+	if s.refreshTokenRepo != nil {
+		if _, err := s.refreshTokenRepo.RevokeRefreshTokensByClientDeviceIDsAndUserID(ctx, userID, clientDeviceIDs); err != nil {
+			return fmt.Errorf("iam service: revoke tokens by client device ids: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ

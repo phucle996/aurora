@@ -492,6 +492,7 @@ pub async fn handle_session_recovery(
                     session_mgr,
                     token_mgr,
                     zone_mgr,
+                    nats.client(),
                     config,
                     &verify_res.user_id,
                     &verify_res.username,

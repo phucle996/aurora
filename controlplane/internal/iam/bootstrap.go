@@ -2,14 +2,8 @@ package iam
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
-	"time"
 
-	iamMetrics "controlplane/internal/iam/metrics"
 	pubsubHandler "controlplane/internal/iam/transport/pubsub/handler"
-	"controlplane/pkg/constant"
-	"controlplane/pkg/logger"
 )
 
 // Bootstrap khởi tạo runtime side-effects của IAM module.
@@ -22,13 +16,6 @@ import (
 // - Business logic rotate nằm ở service/repo.
 // - Bootstrap chỉ orchestration, không chứa persistence logic.
 func (m *IAMModule) Bootstrap(ctx context.Context) error {
-	// [COMMENT]: System roles warm up is deprecated since permissions are computed statically and loaded lazily from binary bytea mapping tables.
-	if m.deviceCapCancel == nil {
-		workerCtx, cancel := context.WithCancel(context.Background())
-		m.deviceCapCancel = cancel
-		go m.runDeviceCapReconciler(workerCtx)
-	}
-
 	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply) và bulk presence updates
 	if m.natsConn != nil {
 		authNatsHandler := pubsubHandler.NewAuthNatsHandler(m.cfg, m.AuthService, m.SessionRefreshService, m.otel)
@@ -63,50 +50,8 @@ func (m *IAMModule) Stop() {
 	}
 	m.natsSubs = nil
 
-	if m.deviceCapCancel != nil {
-		m.deviceCapCancel()
-		m.deviceCapCancel = nil
-	}
 	// [COMMENT]: Dừng các tác vụ nền bất đồng bộ của Auth Service và đợi hoàn thành (Graceful Shutdown)
 	if m.AuthService != nil {
 		m.AuthService.Stop()
-	}
-}
-
-// runDeviceCapReconciler vá drift do lock skip ở login flow (BR-009).
-// Tick mỗi 60s, tối đa 100 user/batch.
-func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
-	const op = "iam.device_cap.reconciler"
-	ctx = constant.WithOperation(ctx, "device_cap_reconcile")
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	// initial jitter 0-30s để các replica không cùng tick ngay sau restart
-	initialDelay := time.Duration(rng.Intn(30000)) * time.Millisecond
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(initialDelay):
-	}
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-	logger.SysInfo(op, fmt.Sprintf("device cap reconciler started (tick=60s, batch=100, initial_delay=%s)", initialDelay.String()))
-	defer logger.SysInfo(op, "device cap reconciler stopped")
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-
-			// [COMMENT]: ReconcileDeviceCap định kỳ dọn dẹp các thiết bị vượt ngưỡng thông qua DeviceSelfService
-			processed, err := m.deviceSelfSvcImpl.ReconcileDeviceCap(ctx, 100)
-			if err != nil {
-				iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeFailureUnknown)
-				logger.SysWarn(op, fmt.Sprintf("reconcile failed: %s", err.Error()))
-				continue
-			}
-			if processed > 0 {
-				logger.SysInfo(op, fmt.Sprintf("reconcile fixed drift (processed_users=%d)", processed))
-			}
-			iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
-		}
 	}
 }

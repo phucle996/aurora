@@ -3,23 +3,23 @@
 //            Bộ Điều Hướng Đăng Nhập (Login Controller) Tại Biên (Edge) Theo Option 2: Ext-Authz as Controller
 // ======================================================================================================
 
-use envoy_types::ext_authz::v3::pb::HttpStatusCode;
-use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
-use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tonic::{Response, Status};
 use crate::config::Config;
 use crate::core::session::SessionManager;
 use crate::core::token::TokenManager;
 use crate::core::zone::ZoneManager;
 use crate::infra::nats::auth::VerifyUserCredentialsRequest;
 use crate::infra::nats::Nats;
-use prost::Message;
-use async_nats::HeaderMap;
 use crate::observability::logger::Logger;
-use crate::service::ext_authz::extract_cookie_value;
 use crate::pkg::cookie::*;
+use crate::service::ext_authz::extract_cookie_value;
+use async_nats::HeaderMap;
+use envoy_types::ext_authz::v3::pb::HttpStatusCode;
+use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
+use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
+use prost::Message;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tonic::{Response, Status};
 
 // [COMMENT]: Cấu trúc JSON nhận từ client khi đăng nhập
 #[derive(Deserialize)]
@@ -117,18 +117,18 @@ pub async fn handle_login(
         }
     };
 
-    	// [COMMENT]: Parse username@tenant_domain pattern.
-	// Nếu username chứa '@', tách thành raw_username và tenant_domain để gửi sang CP.
-	// Ví dụ: "alice@acme.io" → username="alice", tenant_domain="acme.io"
-	let raw_username: String;
-	let tenant_domain: String;
-	if let Some(at_pos) = username.rfind('@') {
-		raw_username = username[..at_pos].to_string();
-		tenant_domain = username[at_pos + 1..].to_string();
-	} else {
-		raw_username = username.clone();
-		tenant_domain = String::new();
-	}
+    // [COMMENT]: Parse username@tenant_domain pattern.
+    // Nếu username chứa '@', tách thành raw_username và tenant_domain để gửi sang CP.
+    // Ví dụ: "alice@acme.io" → username="alice", tenant_domain="acme.io"
+    let raw_username: String;
+    let tenant_domain: String;
+    if let Some(at_pos) = username.rfind('@') {
+        raw_username = username[..at_pos].to_string();
+        tenant_domain = username[at_pos + 1..].to_string();
+    } else {
+        raw_username = username.clone();
+        tenant_domain = String::new();
+    }
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
     let client_device_id =
         extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID).unwrap_or_default();
@@ -143,21 +143,21 @@ pub async fn handle_login(
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
 
-    	// [COMMENT]: Gọi gRPC VerifyUserCredentials sang Control Plane (Go) để kiểm chứng mật khẩu & trạng thái
-	let cp_req = VerifyUserCredentialsRequest {
-		username: raw_username,
-		password,
-		client_device_id,
-		device_name: payload.device_name.unwrap_or_default(),
-		device_type: payload.device_type.unwrap_or_default(),
-		public_key: payload.public_key.unwrap_or_default(),
-		signature: payload.signature.unwrap_or_default(),
-		trust_device: payload.trust_device.unwrap_or(false),
-		client_ip,
-		user_agent,
-		// [COMMENT]: tenant_domain rỗng nếu login global, có giá trị nếu login qua @tenant_domain
-		tenant_domain,
-	};
+    // [COMMENT]: Gọi gRPC VerifyUserCredentials sang Control Plane (Go) để kiểm chứng mật khẩu & trạng thái
+    let cp_req = VerifyUserCredentialsRequest {
+        username: raw_username,
+        password,
+        client_device_id,
+        device_name: payload.device_name.unwrap_or_default(),
+        device_type: payload.device_type.unwrap_or_default(),
+        public_key: payload.public_key.unwrap_or_default(),
+        signature: payload.signature.unwrap_or_default(),
+        trust_device: payload.trust_device.unwrap_or(false),
+        client_ip,
+        user_agent,
+        // [COMMENT]: tenant_domain rỗng nếu login global, có giá trị nếu login qua @tenant_domain
+        tenant_domain,
+    };
 
     Logger::sys_info(
         "login_handler",
@@ -189,7 +189,11 @@ pub async fn handle_login(
 
     let response_msg = match nats
         .client()
-        .request_with_headers("iam.auth.verify_credentials".to_string(), headers, payload_bytes.into())
+        .request_with_headers(
+            "iam.auth.verify_credentials".to_string(),
+            headers,
+            payload_bytes.into(),
+        )
         .await
     {
         Ok(msg) => msg,
@@ -247,6 +251,7 @@ pub async fn handle_login(
         session_mgr,
         token_mgr,
         zone_mgr,
+        nats.client(),
         config,
         &cp_res.user_id,
         &cp_res.username,
@@ -322,18 +327,18 @@ pub async fn handle_login(
         denied_builder.add_header("set-cookie", &zone_cookie, None, false);
     }
 
-    	// [COMMENT]: Set-Cookie tenant_id: dùng tenant_code từ CP nếu login qua @tenant_domain,
-	// fallback sang tenant_id_val (UUID) nếu login global.
-	let tenant_cookie_val = if !cp_res.tenant_id.is_empty() {
-		cp_res.tenant_id.clone()
-	} else {
-		res_val.tenant_id_val.clone()
-	};
-	let tenant_cookie = format!(
-		"tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
-		tenant_cookie_val, domain_str
-	);
-	denied_builder.add_header("set-cookie", &tenant_cookie, None, false);
+    // [COMMENT]: Set-Cookie tenant_id: dùng tenant_code từ CP nếu login qua @tenant_domain,
+    // fallback sang tenant_id_val (UUID) nếu login global.
+    let tenant_cookie_val = if !cp_res.tenant_id.is_empty() {
+        cp_res.tenant_id.clone()
+    } else {
+        res_val.tenant_id_val.clone()
+    };
+    let tenant_cookie = format!(
+        "tenant_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        tenant_cookie_val, domain_str
+    );
+    denied_builder.add_header("set-cookie", &tenant_cookie, None, false);
 
     // [COMMENT]: Set-Cookie refresh_token (nếu CP cấp mới)
     if !cp_res.refresh_token.is_empty() {

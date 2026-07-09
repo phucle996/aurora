@@ -1,8 +1,6 @@
 package iam
 
 import (
-	"context"
-
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -43,7 +41,6 @@ type IAMModule struct {
 	AuthService              iamSvcInterface.AuthService
 	UserService              iamSvcInterface.UserService
 	SessionRefreshService    iamSvcInterface.SessionRefreshService
-	deviceCapCancel          context.CancelFunc
 	deviceSelfSvcImpl        iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
 	devicePlatformSvcImpl    iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
 }

@@ -30,3 +30,9 @@ message BulkTouchDevicesRequest {
 message BulkTouchDevicesResponse {
   bool success = 1;
 }
+
+// [COMMENT]: Notification sent from ACR to CP when active sessions are evicted due to device capacity limit (max 50)
+message EvictedDevicesNotification {
+  string user_id = 1;
+  repeated string client_device_ids = 2;
+}
