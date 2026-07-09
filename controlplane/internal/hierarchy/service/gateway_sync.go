@@ -2,8 +2,9 @@ package zoneSvcImpl
 
 import (
 	"context"
-	"fmt"
 	"controlplane/pkg/logger"
+	"fmt"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -27,14 +28,8 @@ func (p *GatewaySyncPublisher) PublishGatewaySync(ctx context.Context, actionTyp
 	payload := fmt.Sprintf(`{"type": "%s", "code": "%s"}`, actionType, code)
 	err := p.rdb.Publish(ctx, "gateway:sync", payload).Err()
 	if err != nil {
-		logger.SysErrorFields("hierarchy.sync.publish", "Failed to publish invalidation event to gateway:sync", err, logger.Fields{
-			"type": actionType,
-			"code": code,
-		})
+		logger.SysError("hierarchy.sync.publish", "Failed to publish invalidation event to gateway:sync")
 	} else {
-		logger.SysInfoFields("hierarchy.sync.publish", "Successfully published invalidation event to gateway:sync", logger.Fields{
-			"type": actionType,
-			"code": code,
-		})
+		logger.SysInfo("hierarchy.sync.publish", "Successfully published invalidation event to gateway:sync")
 	}
 }

@@ -183,17 +183,13 @@ func (r *CacheRegistry) GetOrLoad(ctx context.Context, namespace string, param s
 
 	envelopeVal, err := r.L1.GetOrLoad(cacheKey, loader.TTL, func() (interface{}, error) {
 		// Log thông tin khi gặp Cache Miss trong RAM L1 để tiện theo dõi và debug luồng dữ liệu
-		logger.SysInfoFields("cache.get_or_load", "L1 cache miss, triggering loader callback", logger.Fields{
-			"key": cacheKey,
-		})
+		logger.SysInfo("cache.get_or_load", fmt.Sprintf("L1 cache miss, triggering loader callback: %s", cacheKey))
 
 		// Gọi loader của caller để nạp dữ liệu gốc từ DB/Service
 		raw, err := loader.Load(ctx, param)
 		if err != nil {
 			// Log lỗi khi hàm loader bị lỗi (ví dụ lỗi kết nối DB, DB query error) và trả lỗi gốc về
-			logger.SysErrorFields("cache.get_or_load", "L1 loader execution failed, returning database/service error", err, logger.Fields{
-				"key": cacheKey,
-			})
+			logger.SysError("cache.get_or_load", fmt.Sprintf("L1 loader execution failed, returning database/service error: %s", err.Error()))
 			return nil, err
 		}
 

@@ -207,7 +207,7 @@ pub async fn handle_login(
         config,
         &cp_res.user_id,
         &cp_res.username,
-        &cp_res.role,
+        &cp_res.role_id,
         cp_res.level,
         &cp_res.tenant_id,
         zone_code,
@@ -281,8 +281,8 @@ pub async fn handle_login(
 
     	// [COMMENT]: Set-Cookie tenant_id: dùng tenant_code từ CP nếu login qua @tenant_domain,
 	// fallback sang tenant_id_val (UUID) nếu login global.
-	let tenant_cookie_val = if !cp_res.tenant_code.is_empty() {
-		cp_res.tenant_code.clone()
+	let tenant_cookie_val = if !cp_res.tenant_id.is_empty() {
+		cp_res.tenant_id.clone()
 	} else {
 		res_val.tenant_id_val.clone()
 	};

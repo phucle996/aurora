@@ -53,24 +53,24 @@ import (
 )
 
 type Module struct {
-	cfg                         *config.Config
-	rds                         *goredis.Client
-	ZoneRepository      coreRepoInterface.ZoneRepository
-	ZoneService         coreSvcInterface.ZoneService
-	ZoneHandler         *zoneHandler.ZoneHandler
+	cfg            *config.Config
+	rds            *goredis.Client
+	ZoneRepository coreRepoInterface.ZoneRepository
+	ZoneService    coreSvcInterface.ZoneService
+	ZoneHandler    *zoneHandler.ZoneHandler
 	// [COMMENT]: Chia ranh giới DB access thành 2 repositories Tenant và Personal
 	TenantWorkspaceRepository   coreRepoInterface.TenantWorkspaceRepository
 	PersonalWorkspaceRepository coreRepoInterface.PersonalWorkspaceRepository
 	// [COMMENT]: Chia ranh giới Service Layer thành 2 services Tenant và Personal
-	TenantWorkspaceService      coreSvcInterface.TenantWorkspaceService
-	PersonalWorkspaceService    coreSvcInterface.PersonalWorkspaceService
-	WorkspacePersonalHandler    *zoneHandler.WorkspacePersonalHandler
-	WorkspaceTenantHandler      *zoneHandler.WorkspaceTenantHandler
-	TenantRepository    coreRepoInterface.TenantRepository
-	TenantService       coreSvcInterface.TenantService
-	TenantHandler       *zoneHandler.TenantHandler
-	listenCancel        context.CancelFunc
-	L1Registry          *cacheengine.CacheRegistry
+	TenantWorkspaceService   coreSvcInterface.TenantWorkspaceService
+	PersonalWorkspaceService coreSvcInterface.PersonalWorkspaceService
+	WorkspacePersonalHandler *zoneHandler.WorkspacePersonalHandler
+	WorkspaceTenantHandler   *zoneHandler.WorkspaceTenantHandler
+	TenantRepository         coreRepoInterface.TenantRepository
+	TenantService            coreSvcInterface.TenantService
+	TenantHandler            *zoneHandler.TenantHandler
+	listenCancel             context.CancelFunc
+	L1Registry               *cacheengine.CacheRegistry
 }
 
 // NewModule dựng dependency graph của Core và trả về Module hoàn chỉnh.
@@ -206,9 +206,7 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				logger.SysInfoFields("hierarchy.pubsub", "Received sync request from edge", logger.Fields{
-					"payload": msg.Payload,
-				})
+				logger.SysInfo("hierarchy.pubsub", fmt.Sprintf("Received sync request from edge: %s", msg.Payload))
 				m.handleSyncRequest(subCtx, msg.Payload)
 			}
 		}
@@ -248,9 +246,7 @@ func (m *Module) handleSyncRequest(ctx context.Context, payload string) {
 
 					// Broadcast invalidation qua gateway:sync để Gateway reload
 					_ = m.rds.Publish(ctx, "gateway:sync", fmt.Sprintf(`{"type": "zone", "code": "%s"}`, z.Code)).Err()
-					logger.SysInfoFields("hierarchy.pubsub", "Successfully responded and warmed up cache for zone", logger.Fields{
-						"code": code,
-					})
+					logger.SysInfo("hierarchy.pubsub", fmt.Sprintf("Successfully responded and warmed up cache for zone: %s", code))
 					return
 				}
 			}

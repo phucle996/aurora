@@ -648,7 +648,6 @@ type VerifyUserCredentialsResponse struct {
 	RefreshToken   string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`         // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
 	ErrorMessage   string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`         // Mô tả lỗi chi tiết nếu valid = false
 	Username       string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`                                     // Tên đăng nhập của người dùng
-	TenantCode     string                 `protobuf:"bytes,10,opt,name=tenant_code,json=tenantCode,proto3" json:"tenant_code,omitempty"`              // Code nhận dạng ngắn của Tenant (ví dụ: acme) — dùng cho cookie và JWT claim
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -742,13 +741,6 @@ func (x *VerifyUserCredentialsResponse) GetErrorMessage() string {
 func (x *VerifyUserCredentialsResponse) GetUsername() string {
 	if x != nil {
 		return x.Username
-	}
-	return ""
-}
-
-func (x *VerifyUserCredentialsResponse) GetTenantCode() string {
-	if x != nil {
-		return x.TenantCode
 	}
 	return ""
 }
@@ -855,7 +847,7 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\n" +
 	"user_agent\x18\n" +
 	" \x01(\tR\tuserAgent\x12#\n" +
-	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xcb\x02\n" +
+	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xaa\x02\n" +
 	"\x1dVerifyUserCredentialsResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
@@ -865,10 +857,7 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
 	"\rrefresh_token\x18\a \x01(\tR\frefreshToken\x12#\n" +
 	"\rerror_message\x18\b \x01(\tR\ferrorMessage\x12\x1a\n" +
-	"\busername\x18\t \x01(\tR\busername\x12\x1f\n" +
-	"\vtenant_code\x18\n" +
-	" \x01(\tR\n" +
-	"tenantCode\"-\n" +
+	"\busername\x18\t \x01(\tR\busername\"-\n" +
 	"\tRoleEntry\x12 \n" +
 	"\vpermissions\x18\x01 \x03(\tR\vpermissions2\xb0\x04\n" +
 	"\vAuthService\x12l\n" +

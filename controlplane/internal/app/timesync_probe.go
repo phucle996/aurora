@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -100,7 +101,7 @@ func (p *TimeSyncProbe) tick() {
 		prom.ObserveTimeDrift(snap.Seconds, string(snap.State))
 	}
 	if prev != snap.State {
-		logger.SysInfoFields("app.timesync.probe", "time drift state changed", logger.Fields{"state": snap.State, "drift_seconds": snap.Seconds})
+		logger.SysInfo("app.timesync.probe", fmt.Sprintf("time drift state changed: %s -> %s", prev, snap.State))
 	}
 }
 

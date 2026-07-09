@@ -77,7 +77,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			}
 			respData, err := proto.Marshal(resp)
 			if err != nil {
-				logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to marshal error response", err, nil)
+				logger.SysError("NATS.VerifyUserCredentials", "Failed to marshal error response")
 				return
 			}
 			_ = msg.Respond(respData)
@@ -86,7 +86,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 		// [COMMENT]: 3. Giải mã nhị phân request payload (Protobuf)
 		var req iamproto.VerifyUserCredentialsRequest
 		if err := proto.Unmarshal(msg.Data, &req); err != nil {
-			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to unmarshal request data", err, nil)
+			logger.SysError("NATS.VerifyUserCredentials", "Failed to unmarshal request data")
 			respondError("invalid request payload")
 			return
 		}
@@ -134,7 +134,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 				return
 			}
 
-			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to verify credentials due to system error", err, nil)
+			logger.SysError("NATS.VerifyUserCredentials", "Failed to verify credentials due to system error")
 			respondError("authentication service temporarily unavailable")
 			return
 		}
@@ -149,17 +149,16 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			ClientDeviceId: res.ClientDeviceID,
 			RefreshToken:   res.RefreshToken,
 			Username:       res.Username,
-			TenantCode:     "", // Bỏ trống tenant_code theo yêu cầu
 		}
 
 		respData, err := proto.Marshal(resp)
 		if err != nil {
-			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to marshal response payload", err, nil)
+			logger.SysError("NATS.VerifyUserCredentials", "Failed to marshal response payload")
 			return
 		}
 
 		if err := msg.Respond(respData); err != nil {
-			logger.SysErrorFields("NATS.VerifyUserCredentials", "Failed to send NATS response", err, nil)
+			logger.SysError("NATS.VerifyUserCredentials", "Failed to send NATS response")
 		}
 	})
 	if err != nil {

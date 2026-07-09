@@ -1,12 +1,9 @@
 package logger
 
 import (
-	"context"
 	"os"
 	"strings"
 	"time"
-
-	"controlplane/pkg/apperr"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -116,47 +113,7 @@ func HandlerWarn(c *gin.Context, op string, err error, message string) {
 	if tID := traceID(c); tID != "" {
 		fields["trace_id"] = tID
 	}
-	appendAppErrorFields(fields, err)
-	if err != nil {
-		fields["error"] = err.Error()
-	}
-	L().WithFields(fields).Warn(message)
-}
 
-// [COMMENT]: Ghi log cảnh báo của RPC Handler (không dùng Gin Context) kèm trace_id từ context
-func RPCHandlerWarn(ctx context.Context, op string, err error, message string) {
-	fields := logrus.Fields{
-		"log_type": LogTypeHandler,
-		"op":       op,
-	}
-	if ctx != nil {
-		spanCtx := trace.SpanContextFromContext(ctx)
-		if spanCtx.IsValid() {
-			// [COMMENT]: Lấy trace_id từ gRPC context
-			fields["trace_id"] = spanCtx.TraceID().String()
-		}
-	}
-	appendAppErrorFields(fields, err)
-	if err != nil {
-		fields["error"] = err.Error()
-	}
-	L().WithFields(fields).Warn(message)
-}
-
-func HandlerWarnWithFields(c *gin.Context, op string, err error, message string, extra Fields) {
-	fields := logrus.Fields{
-		"log_type":   LogTypeHandler,
-		"request_id": requestID(c),
-		"user_id":    userID(c),
-		"op":         op,
-	}
-	if tID := traceID(c); tID != "" {
-		fields["trace_id"] = tID
-	}
-	appendAppErrorFields(fields, err)
-	for key, value := range extra {
-		fields[key] = value
-	}
 	if err != nil {
 		fields["error"] = err.Error()
 	}
@@ -173,104 +130,7 @@ func HandlerError(c *gin.Context, op string, err error) {
 	if tID := traceID(c); tID != "" {
 		fields["trace_id"] = tID
 	}
-	appendAppErrorFields(fields, err)
-	if err != nil {
-		fields["error"] = err.Error()
-	}
-	L().WithFields(fields).Error("handler error")
-}
-
-func appendAppErrorFields(fields logrus.Fields, err error) {
-	appErrFields := apperr.LogFields(err)
-	for key, value := range appErrFields {
-		fields[key] = value
-	}
-}
-
-func HandlerErrorWithFields(c *gin.Context, op string, err error, extra Fields) {
-	fields := logrus.Fields{
-		"log_type":   LogTypeHandler,
-		"request_id": requestID(c),
-		"user_id":    userID(c),
-		"op":         op,
-	}
-	if tID := traceID(c); tID != "" {
-		fields["trace_id"] = tID
-	}
-	appendAppErrorFields(fields, err)
-	for key, value := range extra {
-		fields[key] = value
-	}
-	if err != nil {
-		fields["error"] = err.Error()
-	}
-	L().WithFields(fields).Error("handler error")
-}
-
-func mergeSystemFields(op string, fields Fields, err error) logrus.Fields {
-	merged := logrus.Fields{"log_type": LogTypeSystem, "op": op}
-	for k, v := range fields {
-		merged[k] = v
-	}
-	if err != nil {
-		merged["error"] = err.Error()
-	}
-	return merged
-}
-
-func SysInfoFields(op, message string, fields Fields) {
-	L().WithFields(mergeSystemFields(op, fields, nil)).Info(message)
-}
-
-func SysDebugFields(op, message string, fields Fields) {
-	L().WithFields(mergeSystemFields(op, fields, nil)).Debug(message)
-}
-
-func SysWarnFields(op, message string, err error, fields Fields) {
-	L().WithFields(mergeSystemFields(op, fields, err)).Warn(message)
-}
-
-func SysErrorFields(op, message string, err error, fields Fields) {
-	L().WithFields(mergeSystemFields(op, fields, err)).Error(message)
-}
-
-// [COMMENT]: Ghi log Warn kèm theo context để trích xuất trace_id của gRPC/System operations
-func SysWarnFieldsContext(ctx context.Context, op, message string, err error, fields Fields) {
-	merged := mergeSystemFields(op, fields, err)
-	if ctx != nil {
-		spanCtx := trace.SpanContextFromContext(ctx)
-		if spanCtx.IsValid() {
-			// [COMMENT]: Tự động chèn trace_id từ context vào log fields
-			merged["trace_id"] = spanCtx.TraceID().String()
-		}
-	}
-	L().WithFields(merged).Warn(message)
-}
-
-// [COMMENT]: Ghi log Error kèm theo context để trích xuất trace_id của gRPC/System operations
-func SysErrorFieldsContext(ctx context.Context, op, message string, err error, fields Fields) {
-	merged := mergeSystemFields(op, fields, err)
-	if ctx != nil {
-		spanCtx := trace.SpanContextFromContext(ctx)
-		if spanCtx.IsValid() {
-			// [COMMENT]: Tự động chèn trace_id từ context vào log fields
-			merged["trace_id"] = spanCtx.TraceID().String()
-		}
-	}
-	L().WithFields(merged).Error(message)
-}
-
-// [COMMENT]: Ghi log Info kèm theo context để trích xuất trace_id của gRPC/System operations
-func SysInfoFieldsContext(ctx context.Context, op, message string, fields Fields) {
-	merged := mergeSystemFields(op, fields, nil)
-	if ctx != nil {
-		spanCtx := trace.SpanContextFromContext(ctx)
-		if spanCtx.IsValid() {
-			// [COMMENT]: Tự động chèn trace_id từ context vào log fields
-			merged["trace_id"] = spanCtx.TraceID().String()
-		}
-	}
-	L().WithFields(merged).Info(message)
+	L().WithFields(fields).Error(err.Error())
 }
 
 func SysInfo(op, message string) {

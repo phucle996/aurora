@@ -12,7 +12,7 @@ service AuthService {
   // Xác thực Trinity credentials cho người dùng (End-User) thông thường
   rpc VerifyUserTrinityToken (VerifyUserTrinityTokenRequest) returns (VerifyUserTrinityTokenResponse);
 
-  // Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ ACR Service)
+  // Xác thực Opaque Refresh Token lưu trong database (gọi nội bộ từ acr Service)
   rpc VerifyOpaqueRefreshToken (VerifyOpaqueRefreshTokenRequest) returns (VerifyOpaqueRefreshTokenResponse);
 
   // [COMMENT]: Thu hồi Opaque Refresh Token bất đồng bộ khi user thực hiện logout qua Gateway
@@ -99,20 +99,16 @@ message VerifyUserCredentialsRequest {
 message VerifyUserCredentialsResponse {
   bool valid = 1;              // Cờ báo hiệu xác thực thông tin thành công hay thất bại
   string user_id = 2;          // UUID của người dùng dưới dạng chuỗi
-  string role = 3;             // Quyền của người dùng (RBAC role - ví dụ: user, admin)
+  string role_id = 3;          // UUID của Role đang hoạt động của người dùng (dưới dạng chuỗi)
   int32 level = 4;             // Cấp độ quyền (level)
   string tenant_id = 5;              // ID/Context của Tenant liên đới (nếu có)
   string client_device_id = 6;  // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
   string refresh_token = 7;    // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
   string error_message = 8;    // Mô tả lỗi chi tiết nếu valid = false
   string username = 9;         // Tên đăng nhập của người dùng
-  // [COMMENT]: tenant_code được CP điền khi login qua tenant_domain. ACR dùng để set cookie tenant_id.
-  // Khi đăng nhập global (không có @domain), field này rỗng.
-  string tenant_code = 10;     // Code nhận dạng ngắn của Tenant (ví dụ: acme) — dùng cho cookie và JWT claim
 }
 
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2
 message RoleEntry {
   repeated string permissions = 1;
 }
-
