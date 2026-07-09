@@ -13,8 +13,8 @@ type DeviceSelfService interface {
 	// [COMMENT]: ListMyDevices lấy danh sách thiết bị của user cá nhân
 	ListMyDevices(ctx context.Context, userID uuid.UUID, limit int, offset int) (*iamEntity.DeviceListResult, error)
 
-	// [COMMENT]: RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể thuộc sở hữu user cá nhân
-	RevokeMyDevice(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, currentDeviceID uuid.UUID) error
+	// [COMMENT]: RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể thuộc sở hữu user cá nhân theo client_device_id
+	RevokeMyDevice(ctx context.Context, userID uuid.UUID, clientDeviceID string, currentClientDeviceID string) error
 
 	// [COMMENT]: LogoutOtherDevices đăng xuất khỏi toàn bộ thiết bị khác
 	LogoutOtherDevices(ctx context.Context, userID uuid.UUID, currentTrackedDeviceID *uuid.UUID) (int64, error)

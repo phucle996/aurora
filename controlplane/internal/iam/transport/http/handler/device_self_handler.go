@@ -95,18 +95,20 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	did, err := uuid.Parse(c.Param("device_id"))
-	if err != nil {
+	clientDeviceID := strings.TrimSpace(c.Param("device_id"))
+	if clientDeviceID == "" {
 		apires.RespondBadRequest(c, "invalid device id")
 		return
 	}
 
-	currentDeviceID, ok := constant.GetClientDeviceID(c, op)
-	if !ok {
+	currentClientDeviceID := constant.GetOptionalClientDeviceIDStr(c)
+	if currentClientDeviceID == "" {
+		logger.HandlerWarn(c, op, nil, "missing device context header X-Client-Device-ID")
+		apires.RespondUnauthorized(c, "unauthorized")
 		return
 	}
 
-	err = h.deviceSvc.RevokeMyDevice(ctx, userID, did, currentDeviceID)
+	err := h.deviceSvc.RevokeMyDevice(ctx, userID, clientDeviceID, currentClientDeviceID)
 	if err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "action not allowed - cannot revoke current device")
