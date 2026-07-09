@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -30,12 +31,12 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 
 	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply)
 	if m.natsConn != nil {
-		authNatsHandler := pubsubHandler.NewAuthNatsHandler(m.cfg, m.AuthService, m.otel)
-		sub, err := authNatsHandler.Subscribe(m.natsConn)
+		authNatsHandler := pubsubHandler.NewAuthNatsHandler(m.cfg, m.AuthService, m.SessionRefreshService, m.otel)
+		subs, err := authNatsHandler.Subscribe(m.natsConn)
 		if err != nil {
 			return err
 		}
-		m.natsSubs = append(m.natsSubs, sub)
+		m.natsSubs = append(m.natsSubs, subs...)
 	}
 
 	return nil
@@ -80,8 +81,8 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 	}
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
-	logger.SysInfoFields(op, "device cap reconciler started", logger.Fields{"tick": "60s", "batch": 100, "initial_delay": initialDelay.String()})
-	defer logger.SysInfoFields(op, "device cap reconciler stopped", logger.Fields{})
+	logger.SysInfo(op, fmt.Sprintf("device cap reconciler started (tick=60s, batch=100, initial_delay=%s)", initialDelay.String()))
+	defer logger.SysInfo(op, "device cap reconciler stopped")
 	for {
 		select {
 		case <-ctx.Done():
@@ -92,11 +93,11 @@ func (m *IAMModule) runDeviceCapReconciler(ctx context.Context) {
 			processed, err := m.deviceSelfSvcImpl.ReconcileDeviceCap(ctx, 100)
 			if err != nil {
 				iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeFailureUnknown)
-				logger.SysWarnFields(op, "reconcile failed", err, logger.Fields{})
+				logger.SysWarn(op, fmt.Sprintf("reconcile failed: %s", err.Error()))
 				continue
 			}
 			if processed > 0 {
-				logger.SysInfoFields(op, "reconcile fixed drift", logger.Fields{"processed_users": processed})
+				logger.SysInfo(op, fmt.Sprintf("reconcile fixed drift (processed_users=%d)", processed))
 			}
 			iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 		}

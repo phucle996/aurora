@@ -24,33 +24,39 @@ import (
 
 // [COMMENT]: AuthNatsHandler quản lý các NATS subscription liên quan đến nghiệp vụ Auth
 type AuthNatsHandler struct {
-	cfg         *config.Config
-	authService iamSvcInterface.AuthService
-	otel        *observability.OTel
+	cfg                   *config.Config
+	authService           iamSvcInterface.AuthService
+	sessionRefreshService iamSvcInterface.SessionRefreshService
+	otel                  *observability.OTel
 }
 
 // [COMMENT]: NewAuthNatsHandler khởi tạo handler lắng nghe các sự kiện qua NATS Core cho Auth domain
 func NewAuthNatsHandler(
 	cfg *config.Config,
 	authService iamSvcInterface.AuthService,
+	sessionRefreshService iamSvcInterface.SessionRefreshService,
 	otel *observability.OTel,
 ) *AuthNatsHandler {
 	return &AuthNatsHandler{
-		cfg:         cfg,
-		authService: authService,
-		otel:        otel,
+		cfg:                   cfg,
+		authService:           authService,
+		sessionRefreshService: sessionRefreshService,
+		otel:                  otel,
 	}
 }
 
-// [COMMENT]: Subscribe đăng ký luồng xác thực VerifyUserCredentials qua NATS Core.
-func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
-	const subject = "iam.auth.verify_credentials"
+// [COMMENT]: Subscribe đăng ký các luồng xác thực qua NATS Core.
+func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error) {
 	const queueGroup = "iam_auth_service" // Đảm bảo HA bằng cách chia tải qua Queue Group
+	var subs []*nats.Subscription
 
-	sub, err := nc.QueueSubscribe(subject, queueGroup, func(msg *nats.Msg) {
+	// =========================================================================
+	// 1. LUỒNG XÁC THỰC CREDENTIALS (VerifyUserCredentials)
+	// =========================================================================
+	subCredentials, err := nc.QueueSubscribe("iam.auth.verify_credentials", queueGroup, func(msg *nats.Msg) {
 		ctx := context.Background()
 
-		// [COMMENT]: 1. Trích xuất distributed trace context (traceparent) từ NATS headers
+		// [COMMENT]: Trích xuất distributed trace context (traceparent) từ NATS headers
 		if msg.Header != nil {
 			traceparent := msg.Header.Get("traceparent")
 			if traceparent != "" {
@@ -58,7 +64,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			}
 		}
 
-		// [COMMENT]: 2. Khởi tạo server span để giám sát hiệu năng bằng OTel
+		// [COMMENT]: Khởi tạo server span để giám sát hiệu năng bằng OTel
 		var span trace.Span
 		if h.otel != nil {
 			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.verify_credentials")
@@ -83,7 +89,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			_ = msg.Respond(respData)
 		}
 
-		// [COMMENT]: 3. Giải mã nhị phân request payload (Protobuf)
+		// [COMMENT]: Giải mã nhị phân request payload (Protobuf)
 		var req iamproto.VerifyUserCredentialsRequest
 		if err := proto.Unmarshal(msg.Data, &req); err != nil {
 			logger.SysError("NATS.VerifyUserCredentials", "Failed to unmarshal request data")
@@ -91,7 +97,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			return
 		}
 
-		// [COMMENT]: 4. Kiểm tra tham số cơ bản
+		// [COMMENT]: Kiểm tra tham số cơ bản
 		if req.Username == "" || req.Password == "" {
 			logger.SysWarn("NATS.VerifyUserCredentials", "Username and password are required")
 			respondError("Username and password are required")
@@ -106,7 +112,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			}
 		}
 
-		// [COMMENT]: 5. Map dữ liệu sang LoginRequest của Domain Entity
+		// [COMMENT]: Map dữ liệu sang LoginRequest của Domain Entity
 		loginReq := iamEntity.LoginRequest{
 			Username:        req.Username,
 			Password:        req.Password,
@@ -119,7 +125,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			UserAgent:       req.UserAgent,
 		}
 
-		// [COMMENT]: 6. Gọi AuthService xử lý kiểm tra credentials & đăng ký thiết bị dưới DB
+		// [COMMENT]: Gọi AuthService xử lý kiểm tra credentials & đăng ký thiết bị dưới DB
 		res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
 		if err != nil {
 			if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
@@ -139,7 +145,7 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 			return
 		}
 
-		// [COMMENT]: 7. Chuẩn bị response: chỉ trả tenant_id, không trả tenant_code để bảo vệ an toàn định danh
+		// [COMMENT]: Chuẩn bị response: chỉ trả tenant_id, không trả tenant_code để bảo vệ an toàn định danh
 		resp := &iamproto.VerifyUserCredentialsResponse{
 			Valid:          res.Valid,
 			UserId:         res.UserID,
@@ -162,9 +168,144 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) (*nats.Subscription, error) {
 		}
 	})
 	if err != nil {
-		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to %s: %w", subject, err)
+		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.auth.verify_credentials: %w", err)
 	}
+	subs = append(subs, subCredentials)
+	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.verify_credentials on queue group %s", queueGroup))
 
-	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to %s on queue group %s", subject, queueGroup))
-	return sub, nil
+	// =========================================================================
+	// 2. LUỒNG XÁC THỰC OPAQUE REFRESH TOKEN (VerifyOpaqueRefreshToken)
+	// =========================================================================
+	subVerifyToken, err := nc.QueueSubscribe("iam.auth.verify_opaque_token", queueGroup, func(msg *nats.Msg) {
+		ctx := context.Background()
+
+		if msg.Header != nil {
+			traceparent := msg.Header.Get("traceparent")
+			if traceparent != "" {
+				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
+			}
+		}
+
+		var span trace.Span
+		if h.otel != nil {
+			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.verify_opaque_token")
+			defer span.End()
+			span.SetAttributes(
+				attribute.String("messaging.system", "nats"),
+				attribute.String("messaging.destination", "iam.auth.verify_opaque_token"),
+			)
+		}
+
+		respondError := func(errMsg string) {
+			resp := &iamproto.VerifyOpaqueRefreshTokenResponse{
+				Valid:        false,
+				ErrorMessage: errMsg,
+			}
+			respData, err := proto.Marshal(resp)
+			if err != nil {
+				logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to marshal error response")
+				return
+			}
+			_ = msg.Respond(respData)
+		}
+
+		var req iamproto.VerifyOpaqueRefreshTokenRequest
+		if err := proto.Unmarshal(msg.Data, &req); err != nil {
+			logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to unmarshal request data")
+			respondError("invalid request payload")
+			return
+		}
+
+		userUUID, err := uuid.Parse(req.UserId)
+		if err != nil {
+			respondError(fmt.Sprintf("invalid user id format: %v", err))
+			return
+		}
+
+		var tenantUUIDPtr *uuid.UUID
+		if req.TenantId != nil && *req.TenantId != "" {
+			parsed, err := uuid.Parse(*req.TenantId)
+			if err != nil {
+				respondError(fmt.Sprintf("invalid tenant id format: %v", err))
+				return
+			}
+			tenantUUIDPtr = &parsed
+		}
+
+		res, err := h.sessionRefreshService.VerifyOpaqueRefreshToken(ctx, req.RefreshToken, tenantUUIDPtr, userUUID)
+		if err != nil {
+			respondError(err.Error())
+			return
+		}
+
+		resp := &iamproto.VerifyOpaqueRefreshTokenResponse{
+			Valid:    res.Valid,
+			UserId:   res.UserID,
+			TenantId: res.TenantID,
+			Role:     res.RoleID,
+			Level:    res.Level,
+			Username: res.Username,
+		}
+
+		respData, err := proto.Marshal(resp)
+		if err != nil {
+			logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to marshal response payload")
+			return
+		}
+
+		if err := msg.Respond(respData); err != nil {
+			logger.SysError("NATS.VerifyOpaqueRefreshToken", "Failed to send NATS response")
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.auth.verify_opaque_token: %w", err)
+	}
+	subs = append(subs, subVerifyToken)
+	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.verify_opaque_token on queue group %s", queueGroup))
+
+	// =========================================================================
+	// 3. LUỒNG THU HỒI REFRESH TOKEN (RevokeOpaqueRefreshToken)
+	// =========================================================================
+	subRevokeToken, err := nc.QueueSubscribe("iam.auth.revoke_opaque_token", queueGroup, func(msg *nats.Msg) {
+		ctx := context.Background()
+
+		if msg.Header != nil {
+			traceparent := msg.Header.Get("traceparent")
+			if traceparent != "" {
+				ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(msg.Header))
+			}
+		}
+
+		var span trace.Span
+		if h.otel != nil {
+			ctx, span = h.otel.StartServerSpan(ctx, "NATS iam.auth.revoke_opaque_token")
+			defer span.End()
+			span.SetAttributes(
+				attribute.String("messaging.system", "nats"),
+				attribute.String("messaging.destination", "iam.auth.revoke_opaque_token"),
+			)
+		}
+
+		var req iamproto.RevokeOpaqueRefreshTokenRequest
+		if err := proto.Unmarshal(msg.Data, &req); err != nil {
+			logger.SysError("NATS.RevokeOpaqueRefreshToken", "Failed to unmarshal request data")
+			return
+		}
+
+		err := h.sessionRefreshService.RevokeOpaqueRefreshToken(ctx, req.RefreshToken)
+		if err != nil {
+			logger.SysError("NATS.RevokeOpaqueRefreshToken", fmt.Sprintf("Failed to revoke refresh token: %s", err.Error()))
+		}
+
+		resp := &iamproto.RevokeOpaqueRefreshTokenResponse{}
+		respData, _ := proto.Marshal(resp)
+		_ = msg.Respond(respData)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.auth.revoke_opaque_token: %w", err)
+	}
+	subs = append(subs, subRevokeToken)
+	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.revoke_opaque_token on queue group %s", queueGroup))
+
+	return subs, nil
 }

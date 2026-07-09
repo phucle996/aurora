@@ -84,7 +84,7 @@ func (h *AuthGRPCHandler) RevokeOpaqueRefreshToken(ctx context.Context, req *iam
 			logger.SysWarn("RevokeOpaqueRefreshToken", "Refresh token record not found for hash")
 		} else {
 			// [COMMENT]: Ghi log lỗi hệ thống chi tiết nếu gặp lỗi cơ sở dữ liệu thực sự
-			logger.SysErrorFields("RevokeOpaqueRefreshToken", "Failed to revoke refresh token from database", err, nil)
+			logger.SysError("RevokeOpaqueRefreshToken", "Failed to revoke refresh token from database")
 		}
 		// [COMMENT]: Luôn trả về thành công (nil error) cho client vì việc logout thực tế của user đã hoàn tất tại Gateway
 		return &iamproto.RevokeOpaqueRefreshTokenResponse{}, nil
@@ -147,7 +147,7 @@ func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iampro
 			}, nil
 		}
 
-		logger.SysErrorFields("VerifyUserCredentials", "Failed to verify credentials due to system error", err, nil)
+		logger.SysError("VerifyUserCredentials", "Failed to verify credentials due to system error")
 		return &iamproto.VerifyUserCredentialsResponse{
 			Valid:        false,
 			ErrorMessage: "authentication service temporarily unavailable",
@@ -163,7 +163,5 @@ func (h *AuthGRPCHandler) VerifyUserCredentials(ctx context.Context, req *iampro
 		ClientDeviceId: res.ClientDeviceID,
 		RefreshToken:   res.RefreshToken,
 		Username:       res.Username,
-		// [COMMENT]: TenantCode được điền khi login qua tenant_domain, rỗng nếu login global.
-		TenantCode: res.TenantCode,
 	}, nil
 }
