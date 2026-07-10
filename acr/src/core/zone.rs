@@ -12,6 +12,7 @@
 // ======================================================================================================
 
 use crate::infra::nats::Nats;
+use crate::service::zone::client::get_zone_list;
 use crate::observability::logger::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -348,7 +349,7 @@ impl ZoneManager {
             "Syncing zones from Controlplane via gRPC...",
         );
 
-        match self.nats.get_zone_list().await {
+        match get_zone_list(self.nats.client()).await {
             Ok(zones) => {
                 for z in &zones {
                     let clean_code = z.zone_code.trim().to_lowercase();

@@ -6,3 +6,4 @@
 pub mod zone_catalog;
 pub mod zone_resolution;
 pub mod zone_switch;
+pub mod client;
