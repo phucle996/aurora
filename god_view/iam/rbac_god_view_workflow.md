@@ -231,7 +231,7 @@ sequenceDiagram
     ACR-->>Envoy: gRPC CheckResponse OK (Rewrite /api/v1/personal/iam/rbac/role)
     Envoy->>Router: Forward Request (HTTP headers)
     Router->>Midd: Chạy qua chuỗi HTTP Middlewares
-    Note over Midd: Authorize("iam:role:create", level 2)
+    Note over Midd: Authorize("iam:role:write", level 2)
     Midd->>Handler: CreateRole(c *gin.Context)
     Handler->>Handler: Trích xuất actorLevel từ header X-User-Level
     alt Case A: Phân cấp không hợp lệ (req.RoleLevel < actorLevel)
@@ -283,7 +283,7 @@ sequenceDiagram
    * Envoy gửi gRPC yêu cầu kiểm tra đến ACR. ACR xác thực JWT token của admin thành công và thực hiện ghi các headers context mới: `X-User-ID`, `X-User-Name`, `X-User-Role-ID`, và đặc biệt là **`X-User-Level`** (chứa mức phân cấp số nguyên của admin).
    * Request được rewrite đường dẫn về `/api/v1/personal/iam/rbac/role` của Control Plane.
 2. **Kiểm tra quyền hạn thực thi (Go Middlewares)**:
-   * Đi qua middleware `Authorize("iam:role:create", module.L1Registry, "2")` tại [`route.go`](../../controlplane/internal/iam/route.go#L90). Chỉ những user có quyền tạo role và có level rank tối thiểu là `2` mới được đi tiếp.
+    * Đi qua middleware `Authorize("iam:role:write", module.L1Registry, "2")` tại [`route.go`](../../controlplane/internal/iam/route.go#L90). Chỉ những user có quyền ghi/tạo role và có level rank tối thiểu là `2` mới được đi tiếp.
 3. **Phòng ngự phân cấp (Hierarchy Level Validation)**:
    * Tại [`rbac_handler.go#CreateRole()`](../../controlplane/internal/iam/transport/http/handler/rbac_handler.go#L173), Handler trích xuất level của người gọi từ header `X-User-Level` (`actorLevel`) và so sánh với level của vai trò định tạo (`req.RoleLevel`).
    * **Quy tắc phân cấp**: Số càng nhỏ quyền càng lớn (ví dụ: Root=0, SystemAdmin=1, TenantOwner=3).
@@ -368,7 +368,7 @@ Hệ thống đi kèm bộ khung vai trò và quyền hạn được cài đặt
 * **Tệp SQL seed mặc định:** [`000006_iam_seeds.up.sql`](../../controlplane/internal/iam/migrations/000006_iam_seeds.up.sql)
 
 ### 8.1 Hệ thống Permissions Catalog (3 cấp mặc định)
-* Phân hệ quản lý IAM: `iam:users:read`, `iam:users:manage`, `iam:users:delete`, `iam:roles:read`, `iam:roles:manage`, `iam:permissions:read`, `iam:assignments:manage`, `iam:role:read`, `iam:role:create`.
+* Phân hệ quản lý IAM: `iam:users:read`, `iam:users:manage`, `iam:role:read`, `iam:role:write`, `iam:role:assign`, `iam:role:delete`, `iam:permission:read`.
 * Phân hệ lưu trữ Storage: `storage:bucket:create`, `storage:bucket:read`, `storage:bucket:update`, `storage:bucket:delete`, `storage:credential:create`, `storage:credential:read`, `storage:credential:delete`.
 * Phân hệ quản trị phân cấp Hierarchy: `hierarchy:workspace:create`, `hierarchy:workspace:read`, `hierarchy:workspace:update`, `hierarchy:workspace:delete`.
 

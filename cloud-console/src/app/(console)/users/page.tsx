@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { Users, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { listAdminUsers, updateUserStatusAdmin, type AdminUserItem } from "@/lib/api/session";
+import { listUsers, updateUserStatus, type PlatformUserItem } from "@/lib/api/user";
 import { useUserSession } from "@/hooks/useUserSession";
 import { cn } from "@/lib/utils";
 import RouteGuard from "@/components/route-guard";
@@ -12,17 +12,7 @@ import { Button } from "@/components/ui/button";
 import { UserFilters } from "./UserFilters";
 import { UserTable } from "./UserTable";
 
-// [COMMENT]: Sinh dữ liệu mở rộng nhất quán cho từng user dựa trên id/username để hiển thị visual premium
-const getExtendedUserData = (u: AdminUserItem, currentUserId?: string) => {
-  let fullname = u.username
-    .split(/[._-]/)
-    .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-    .join(" ");
-
-  if (u.username === "sys_admin") fullname = "System Admin";
-  if (u.username === "support_operator") fullname = "Support Operator";
-  if (u.username === "audit_viewer") fullname = "Audit Viewer";
-
+const getExtendedUserData = (u: PlatformUserItem) => {
   const hash = u.id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
 
   const mfaEnabled = u.mfa_enabled ?? false;
@@ -37,21 +27,14 @@ const getExtendedUserData = (u: AdminUserItem, currentUserId?: string) => {
   if (u.username === "sys_admin") lastActiveStr = "5 minutes ago";
 
   const ip = `192.168.1.${(hash % 254) + 1}`;
-
-  let risk: "Low" | "Medium" | "High" = "Low";
-  if (hash % 7 === 0) risk = "Medium";
-  if (hash % 13 === 0) risk = "High";
-
   const displayRole = u.role || "Platform Member";
 
   return {
-    fullname,
-    isMe: u.id === currentUserId || u.username === "sys_admin",
+    fullname: u.fullname || u.username,
     mfaEnabled,
     devicesCount,
     lastActiveStr,
     ip,
-    risk,
     displayRole,
   };
 };
@@ -75,13 +58,12 @@ function UserDirectoryContent() {
   const { checkPermission, profile } = useUserSession();
   const currentUserId = profile?.user_id;
 
-  const [users, setUsers] = useState<AdminUserItem[]>([]);
+  const [users, setUsers] = useState<PlatformUserItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [roleFilter, setRoleFilter] = useState("All");
   const [mfaFilter, setMfaFilter] = useState("All");
-  const [riskFilter, setRiskFilter] = useState("All");
 
   const [currentPage, setCurrentPage] = useState(1);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -95,7 +77,7 @@ function UserDirectoryContent() {
       if (isRefresh) {
         setLoading(true);
       }
-      const data = await listAdminUsers();
+      const data = await listUsers();
       setUsers(data || []);
     } catch (e: any) {
       toast.error(e.message || "Failed to load platform directory");
@@ -111,7 +93,7 @@ function UserDirectoryContent() {
   const handleUpdateStatus = async (id: string, status: string, username: string) => {
     setUpdatingId(id);
     try {
-      await updateUserStatusAdmin(id, status);
+      await updateUserStatus(id, status);
       toast.success(`User @${username} status has been updated to ${status}`);
       await loadUsers(false);
     } catch (e: any) {
@@ -124,9 +106,9 @@ function UserDirectoryContent() {
   const extendedUsers = useMemo(() => {
     return users.map((u) => ({
       ...u,
-      ext: getExtendedUserData(u, currentUserId),
+      ext: getExtendedUserData(u),
     }));
-  }, [users, currentUserId]);
+  }, [users]);
 
   const filteredUsers = useMemo(() => {
     return extendedUsers.filter((u) => {
@@ -142,20 +124,14 @@ function UserDirectoryContent() {
         (mfaFilter === "Enabled" && u.ext.mfaEnabled) ||
         (mfaFilter === "Disabled" && !u.ext.mfaEnabled);
 
-      const matchRisk = riskFilter === "All" || u.ext.risk === riskFilter;
-
-      return matchSearch && matchStatus && matchRole && matchMfa && matchRisk;
+      return matchSearch && matchStatus && matchRole && matchMfa;
     });
-  }, [extendedUsers, searchTerm, statusFilter, roleFilter, mfaFilter, riskFilter]);
+  }, [extendedUsers, searchTerm, statusFilter, roleFilter, mfaFilter]);
 
   const selectedUser = useMemo(() => {
     if (!selectedUserId) return null;
     return extendedUsers.find((u) => u.id === selectedUserId) || null;
   }, [extendedUsers, selectedUserId]);
-
-  const canDeleteUser = useMemo(() => {
-    return checkPermission("iam:users", "delete");
-  }, [checkPermission]);
 
   const totalUsers = filteredUsers.length;
   const totalPages = Math.ceil(totalUsers / usersPerPage);
@@ -169,7 +145,6 @@ function UserDirectoryContent() {
     setStatusFilter("All");
     setRoleFilter("All");
     setMfaFilter("All");
-    setRiskFilter("All");
     setCurrentPage(1);
     toast.success("Active directory filter terms cleared");
   };
@@ -184,7 +159,7 @@ function UserDirectoryContent() {
 
   // Auto close dropdown action menu when clicking outside
   useEffect(() => {
-    const handleOutsideClick = () => {};
+    const handleOutsideClick = () => { };
     window.addEventListener("click", handleOutsideClick);
     return () => window.removeEventListener("click", handleOutsideClick);
   }, []);
@@ -235,8 +210,6 @@ function UserDirectoryContent() {
             setRoleFilter={setRoleFilter}
             mfaFilter={mfaFilter}
             setMfaFilter={setMfaFilter}
-            riskFilter={riskFilter}
-            setRiskFilter={setRiskFilter}
             uniqueRoles={uniqueRoles}
             handleClearFilters={handleClearFilters}
             setCurrentPage={setCurrentPage}

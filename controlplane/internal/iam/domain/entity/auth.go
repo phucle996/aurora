@@ -26,6 +26,8 @@ type User struct {
 	RoleName     string // [COMMENT]: Tên hiển thị platform role được gán của user
 	MfaEnabled   bool   // [COMMENT]: Cờ cho biết user đã kích hoạt xác thực hai lớp (MFA) hay chưa
 	DevicesCount int32  // [COMMENT]: Số lượng thiết bị đã đăng ký của user
+	Bio          string // [COMMENT]: Mô tả ngắn về user lấy từ user_profiles
+	Fullname     string // [COMMENT]: Tên hiển thị đầy đủ lấy từ user_profiles
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

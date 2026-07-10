@@ -12,8 +12,6 @@ interface UserFiltersProps {
   setRoleFilter: (val: string) => void;
   mfaFilter: string;
   setMfaFilter: (val: string) => void;
-  riskFilter: string;
-  setRiskFilter: (val: string) => void;
   uniqueRoles: string[];
   handleClearFilters: () => void;
   setCurrentPage: (page: number) => void;
@@ -28,8 +26,6 @@ export function UserFilters({
   setRoleFilter,
   mfaFilter,
   setMfaFilter,
-  riskFilter,
-  setRiskFilter,
   uniqueRoles,
   handleClearFilters,
   setCurrentPage,
@@ -97,20 +93,6 @@ export function UserFilters({
           <option value="Disabled">MFA: Disabled</option>
         </select>
 
-        {/* Risk Dropdown */}
-        <select
-          value={riskFilter}
-          onChange={(e) => {
-            setRiskFilter(e.target.value);
-            setCurrentPage(1);
-          }}
-          className="h-9 px-2.5 rounded-lg bg-card border border-border text-xs text-foreground font-medium focus:outline-hidden cursor-pointer hover:bg-muted/40 transition-colors"
-        >
-          <option value="All">Risk: All</option>
-          <option value="Low">Risk: Low</option>
-          <option value="Medium">Risk: Medium</option>
-          <option value="High">Risk: High</option>
-        </select>
       </div>
 
       {/* Clear and filter icons */}

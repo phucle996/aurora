@@ -1,5 +1,5 @@
 import React from "react";
-import { Loader2, ShieldAlert, CheckCircle2, XCircle, Shield, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Loader2, ShieldAlert, CheckCircle2, XCircle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -61,7 +61,6 @@ export function UserTable({
                 <th className="px-6 py-4">MFA</th>
                 <th className="px-6 py-4">Devices</th>
                 <th className="px-6 py-4">Last Active</th>
-                <th className="px-6 py-4">Risk</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border text-[13px]">
@@ -154,15 +153,15 @@ export function UserTable({
                     {/* MFA status indicator */}
                     <td className="px-6 py-3.5">
                       {u.ext.mfaEnabled ? (
-                        <Badge variant="outline" className="inline-flex items-center gap-1 text-[10px] font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/20 dark:border-emerald-500/30 h-5">
-                          <CheckCircle2 className="h-3 w-3" />
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-450 select-none">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
                           <span>Enabled</span>
-                        </Badge>
+                        </span>
                       ) : (
-                        <Badge variant="outline" className="inline-flex items-center gap-1 text-[10px] font-extrabold text-muted-foreground bg-muted border-border h-5">
-                          <XCircle className="h-3 w-3" />
+                        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground select-none">
+                          <XCircle className="h-3.5 w-3.5" />
                           <span>Disabled</span>
-                        </Badge>
+                        </span>
                       )}
                     </td>
 
@@ -181,21 +180,6 @@ export function UserTable({
                           {u.ext.ip}
                         </span>
                       </div>
-                    </td>
-
-                    {/* RISK level */}
-                    <td className="px-6 py-3.5">
-                      <span className={cn(
-                        "inline-flex items-center gap-1 text-[11px] font-bold capitalize",
-                        u.ext.risk === "High"
-                          ? "text-red-655 dark:text-red-450"
-                          : u.ext.risk === "Medium"
-                            ? "text-amber-600 dark:text-amber-450"
-                            : "text-emerald-600 dark:text-emerald-450"
-                      )}>
-                        <Shield className="h-3 w-3 fill-current opacity-20" />
-                        <span>{u.ext.risk}</span>
-                      </span>
                     </td>
                   </tr>
                 );

@@ -18,7 +18,7 @@ import {
   Info
 } from "lucide-react";
 import { toast } from "sonner";
-import { listPermissions, createRole, type PermissionItem } from "@/lib/api/session";
+import { listPermissions, createRole, type PermissionItem } from "@/lib/api/rbac";
 import RouteGuard from "@/components/route-guard";
 
 function CreateRoleContent() {

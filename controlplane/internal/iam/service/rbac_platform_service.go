@@ -13,28 +13,44 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 )
 
 // [COMMENT]: RbacPlatformService thực thi interface quản lý vai trò và phân quyền cấp hệ thống (platform)
 type RbacPlatformService struct {
 	repo        iamRepoInterface.RbacPlatformRepository
 	cacheEngine *cacheengine.CacheRegistry
+	nc          *nats.Conn
 }
 
 // [COMMENT]: NewRbacPlatformService khởi tạo một thể hiện mới của RbacPlatformService
 func NewRbacPlatformService(
 	repo iamRepoInterface.RbacPlatformRepository,
 	cacheEngine *cacheengine.CacheRegistry,
+	nc *nats.Conn,
 ) iamSvcInterface.RbacPlatformService {
 	return &RbacPlatformService{
 		repo:        repo,
 		cacheEngine: cacheEngine,
+		nc:          nc,
 	}
 }
 
-// [COMMENT]: AssignUserRole gán vai trò platform cho user (skeleton)
-func (s *RbacPlatformService) AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
+// [COMMENT]: AssignUserRole thực hiện gán vai trò platform cho user, thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core
+func (s *RbacPlatformService) AssignUserRole(ctx context.Context, callerLevel uint8, userID uuid.UUID, roleID uuid.UUID) error {
+	// [COMMENT]: 1. Gọi Repo để thực hiện gán và cập nhật DB (với check phân cấp CTE)
+	if err := s.repo.AssignUserRole(ctx, callerLevel, userID, roleID); err != nil {
+		return err
+	}
+
+	// [COMMENT]: 2. Thu hồi cache user_role của target user trên L1 cục bộ
+	s.cacheEngine.L1.Delete("user_role:" + userID.String())
+
+	// [COMMENT]: 3. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
+	if s.nc != nil {
+		_ = s.nc.Publish("iam.user_role.invalidated", []byte(userID.String()))
+	}
+
 	return nil
 }
 
@@ -44,9 +60,9 @@ func (s *RbacPlatformService) AssignTenantRole(ctx context.Context, tenantRole *
 	return nil
 }
 
-// [COMMENT]: ListPlatformRoles trả về danh sách vai trò hệ thống
-func (s *RbacPlatformService) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
-	return s.repo.ListPlatformRoles(ctx)
+// [COMMENT]: ListPlatformRoles trả về danh sách vai trò hệ thống có level thấp hơn caller
+func (s *RbacPlatformService) ListPlatformRoles(ctx context.Context, callerLevel uint8) ([]iamEntity.Role, error) {
+	return s.repo.ListPlatformRoles(ctx, callerLevel)
 }
 
 // [COMMENT]: CreateRole tạo vai trò hệ thống mới và map permissions

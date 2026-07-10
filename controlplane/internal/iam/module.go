@@ -195,7 +195,7 @@ func NewModule(
 	}
 
 	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ platform/tenant RBAC
-	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine)
+	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine, natsConn)
 	if rbacPlatformSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC platform service")
 	}

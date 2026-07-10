@@ -121,18 +121,6 @@ func GetUserName(c *gin.Context, op string) (string, bool) {
 	return username, true
 }
 
-// [COMMENT]: GetUserRole trích xuất role code của user từ header X-User-Role do ACR inject.
-// Tự động ghi log warning và trả lỗi HTTP nếu thiếu.
-func GetUserRole(c *gin.Context, op string) (string, bool) {
-	role := strings.TrimSpace(c.GetHeader("X-User-Role"))
-	if role == "" {
-		logger.HandlerWarn(c, op, nil, "missing user role context")
-		apires.RespondForbidden(c, "missing user role context")
-		return "", false
-	}
-	return role, true
-}
-
 // [COMMENT]: GetUserRoleID trích xuất và parse UUID của role đang hoạt động từ header X-User-Role-ID do ACR inject.
 // Tự động ghi log warning và trả lỗi HTTP nếu thiếu hoặc sai định dạng.
 func GetUserRoleID(c *gin.Context, op string) (uuid.UUID, bool) {
@@ -169,11 +157,13 @@ func GetClientDeviceID(c *gin.Context, op string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// outdate : để yên không dùng
 // [COMMENT]: GetOptionalTenantIDStr trích xuất Tenant ID dưới dạng chuỗi (nếu có, không bắt buộc).
 func GetOptionalTenantIDStr(c *gin.Context) string {
 	return strings.TrimSpace(c.GetHeader("X-Tenant-ID"))
 }
 
+// outdate : để yên không dùng
 // [COMMENT]: GetOptionalZoneIDStr trích xuất Zone ID dưới dạng chuỗi (nếu có, không bắt buộc).
 func GetOptionalZoneIDStr(c *gin.Context) string {
 	return strings.TrimSpace(c.GetHeader("X-Zone-ID"))

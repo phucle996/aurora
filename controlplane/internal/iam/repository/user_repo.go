@@ -50,15 +50,18 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 				SELECT COUNT(*) FROM %s.devices d 
 				WHERE d.user_id = u.id
 			) AS devices_count,
+			COALESCE(up.bio, '') AS bio,
+			COALESCE(up.fullname, '') AS fullname,
 			u.created_at, 
 			u.updated_at
 		FROM %s.users u
 		JOIN %s.user_role ur ON u.id = ur.user_id 
 		                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+		LEFT JOIN %s.user_profiles up ON u.id = up.user_id
 		WHERE ur.role_level > $1
 		ORDER BY u.created_at DESC
 		LIMIT $2 OFFSET $3
-	`, r.schema, r.schema, r.schema, r.schema)
+	`, r.schema, r.schema, r.schema, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, callerLevel, limit, offset)
 	if err != nil {
@@ -70,7 +73,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 	for rows.Next() {
 		var u iamEntity.User
 		var level int32
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.RoleName, &u.MfaEnabled, &u.DevicesCount, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.RoleName, &u.MfaEnabled, &u.DevicesCount, &u.Bio, &u.Fullname, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		u.Level = level
@@ -150,4 +153,48 @@ func (r *UserRepository) GetUserProfile(ctx context.Context, userID uuid.UUID) (
 	}
 
 	return &p, nil
+}
+
+// [COMMENT]: ResetUserPassword cập nhật mật khẩu mới của user dưới DB và ghi nhận mật khẩu cũ vào password_history qua CTE duy nhất bảo vệ phân cấp quyền lực
+func (r *UserRepository) ResetUserPassword(ctx context.Context, callerLevel uint8, userID uuid.UUID, passwordHash string) error {
+	query := fmt.Sprintf(`
+		WITH target_user AS (
+			SELECT u.id, u.password_hash, ur.role_level
+			FROM %s.users u
+			JOIN %s.user_role ur ON u.id = ur.user_id AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+			WHERE u.id = $2
+		),
+		updater AS (
+			UPDATE %s.users u
+			SET password_hash = $1, updated_at = NOW()
+			FROM target_user tu
+			WHERE u.id = $2 AND tu.role_level > $3
+			RETURNING u.id, tu.password_hash AS old_password_hash
+		),
+		history_ins AS (
+			INSERT INTO %s.password_history (id, user_id, password_hash, created_at)
+			SELECT gen_random_uuid(), id, old_password_hash, NOW()
+			FROM updater
+			RETURNING id
+		)
+		SELECT 
+			(SELECT COUNT(*) FROM target_user) AS user_exists,
+			(SELECT COUNT(*) FROM updater) AS update_success
+	`, r.schema, r.schema, r.schema, r.schema)
+
+	var userExists, updateSuccess int
+	err := r.db.QueryRow(ctx, query, passwordHash, userID, callerLevel).Scan(&userExists, &updateSuccess)
+	if err != nil {
+		return err
+	}
+
+	// [COMMENT]: Xử lý kết quả trả về tương tự logic cập nhật status để đảm bảo tính phân cấp
+	if userExists == 0 {
+		return iamTaxonomy.ErrUserNotFound
+	}
+	if updateSuccess == 0 {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+
+	return nil
 }

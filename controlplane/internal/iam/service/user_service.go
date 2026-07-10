@@ -2,6 +2,7 @@ package iamSvcImpl
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"controlplane/internal/cacheengine"
@@ -9,6 +10,7 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	"controlplane/internal/observability"
+	"controlplane/internal/security"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
@@ -52,7 +54,7 @@ func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, t
 
 	// [COMMENT]: 3. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
 	if s.nc != nil {
-		err := s.nc.Publish("core.user_role.invalidated", []byte(targetUserID.String()))
+		err := s.nc.Publish("iam.user_role.invalidated", []byte(targetUserID.String()))
 		if err != nil {
 			return err
 		}
@@ -64,4 +66,23 @@ func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, t
 // [COMMENT]: GetUserProfile trả về thông tin profile hiển thị của user (fullname, avatar, v.v.)
 func (s *UserService) GetUserProfile(ctx context.Context, userID uuid.UUID) (*iamEntity.UserProfile, error) {
 	return s.repo.GetUserProfile(ctx, userID)
+}
+
+// [COMMENT]: ResetUserPassword thực hiện thay đổi mật khẩu của user bởi Admin, hash mật khẩu bằng Argon2id và lưu trữ vào database
+func (s *UserService) ResetUserPassword(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, newPassword string) error {
+	// [COMMENT]: 1. Hash password mới bằng Argon2id sử dụng module security nội bộ
+	passwordHash, err := security.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("user service: failed to hash new password: %w", err)
+	}
+
+	// [COMMENT]: 2. Gọi repository để cập nhật mật khẩu dưới DB bằng 1 CTE an toàn
+	start := time.Now()
+	err = s.repo.ResetUserPassword(ctx, callerLevel, targetUserID, passwordHash)
+	observability.CurrentMetrics().ObserveDependency("db", "iam.users.reset_password", time.Since(start), err)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

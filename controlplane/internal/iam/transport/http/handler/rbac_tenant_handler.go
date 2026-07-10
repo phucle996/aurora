@@ -54,12 +54,6 @@ func (h *RbacTenantHandler) ListRolesTenant(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"roles": resp}, "success")
 }
 
-// [COMMENT]: AssignUserRole gán role trong phạm vi tenant cho user (skeleton)
-func (h *RbacTenantHandler) AssignUserRole(c *gin.Context) {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
-	apires.RespondSuccess(c, gin.H{"message": "skeleton tenant user role assign"}, "success")
-}
-
 // [COMMENT]: AssignTenantRole gán role trong phạm vi tenant cho tenant con (skeleton)
 func (h *RbacTenantHandler) AssignTenantRole(c *gin.Context) {
 	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo

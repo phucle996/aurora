@@ -22,3 +22,8 @@ type AssignUserRoleRequest struct {
 	UserID    string  `json:"user_id"`
 	ExpiresAt *string `json:"expires_at,omitempty"` // RFC3339 string format
 }
+
+type AssignUserRolePlatformRequest struct {
+	UserID string `json:"user_id" binding:"required"`
+	RoleID string `json:"role_id" binding:"required"`
+}

@@ -2,6 +2,7 @@ package iamHandler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
+	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	"controlplane/pkg/apires"
 	"controlplane/pkg/constant"
@@ -28,25 +30,78 @@ func NewRbacPlatformHandler(rbacPlatformSvc iamSvcInterface.RbacPlatformService)
 	return &RbacPlatformHandler{rbacPlatformSvc: rbacPlatformSvc}
 }
 
-// [COMMENT]: AssignUserRole gán role hệ thống cho user (skeleton)
+// [COMMENT]: AssignUserRole gán role hệ thống cho user
 func (h *RbacPlatformHandler) AssignUserRole(c *gin.Context) {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
-	apires.RespondSuccess(c, gin.H{"message": "skeleton platform user role assign"}, "success")
+	const op = "iam.rbac.assign_user_role"
+
+	// 1. Trích xuất level của caller từ context headers (X-User-Level)
+	callerLevel, ok := constant.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	// 2. Bind payload request chứa target user_id và role_id gán từ DTO
+	var req iamReq.AssignUserRolePlatformRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.HandlerWarn(c, op, err, "invalid assign user role request payload")
+		apires.RespondBadRequest(c, "invalid_request_schema")
+		return
+	}
+
+	// 3. Phân tích định dạng UUID từ request
+	userUUID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid user id format")
+		return
+	}
+	roleUUID, err := uuid.Parse(req.RoleID)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid role id format")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// 4. Gọi Service thực thi phân quyền và kiểm tra phân cấp
+	err = h.rbacPlatformSvc.AssignUserRole(ctx, callerLevel, userUUID, roleUUID)
+	if err != nil {
+		if errors.Is(err, iamTaxonomy.ErrUserNotFound) {
+			apires.RespondNotFound(c, "user not found")
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			apires.RespondNotFound(c, "role not found")
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			apires.RespondForbidden(c, "insufficient level hierarchy or role assign not allowed")
+			return
+		}
+
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "failed to assign user role")
+		return
+	}
+
+	// 5. Phản hồi thành công gán vai trò platform cho user kèm log nghiệp vụ thành công
+	logger.HandlerInfo(c, op, fmt.Sprintf("user role assigned successfully: userID=%s, roleID=%s", req.UserID, req.RoleID))
+	apires.RespondSuccess(c, nil, "user role assigned successfully")
 }
 
-// [COMMENT]: AssignTenantRole gán role hệ thống cho tenant (skeleton)
-func (h *RbacPlatformHandler) AssignTenantRole(c *gin.Context) {
-	// [COMMENT]: Sẽ hiện thực hóa ở phase tiếp theo
-	apires.RespondSuccess(c, gin.H{"message": "skeleton platform tenant role assign"}, "success")
-}
-
-// [COMMENT]: ListRolesPlatform trả về danh sách platform-scoped roles
+// [COMMENT]: ListRolesPlatform trả về danh sách platform-scoped roles có level thấp hơn caller
 func (h *RbacPlatformHandler) ListRolesPlatform(c *gin.Context) {
 	const op = "iam.rbac.list_platform_roles"
 	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	roles, err := h.rbacPlatformSvc.ListPlatformRoles(ctx)
+	// [COMMENT]: Lấy callerLevel từ header X-User-Level do ACR inject để lọc roles có level thấp hơn
+	callerLevel, ok := constant.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	roles, err := h.rbacPlatformSvc.ListPlatformRoles(ctx, callerLevel)
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "internal error occurred")

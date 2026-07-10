@@ -16,4 +16,6 @@ type UserService interface {
 	UpdateUserStatus(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, status string) error
 	// [COMMENT]: GetUserProfile trả về thông tin profile hiển thị của user (fullname, avatar, v.v.)
 	GetUserProfile(ctx context.Context, userID uuid.UUID) (*iamEntity.UserProfile, error)
+	// [COMMENT]: ResetUserPassword thực hiện thay đổi mật khẩu của user bởi Admin phân cấp
+	ResetUserPassword(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, newPassword string) error
 }

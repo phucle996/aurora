@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { Shield, RefreshCw, Key, ShieldAlert, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
-import { listPlatformRoles, type PlatformRoleItem } from "@/lib/api/session";
+import { listRoles, type PlatformRoleItem } from "@/lib/api/rbac";
 import { cn } from "@/lib/utils";
 import RouteGuard from "@/components/route-guard";
 import { useUserSession } from "@/hooks/useUserSession";
@@ -21,7 +21,7 @@ function AccessControlContent() {
   const loadRoles = useCallback(async (showToast = false) => {
     setLoading(true);
     try {
-      const data = await listPlatformRoles();
+      const data = await listRoles();
       setRoles(data);
       if (showToast) {
         toast.success("Platform roles synchronized.");

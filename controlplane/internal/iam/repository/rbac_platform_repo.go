@@ -34,28 +34,132 @@ func NewRbacPlatformRepository(cfg *config.Config, db *pgxpool.Pool) iamRepoInte
 	}
 }
 
-// [COMMENT]: AssignUserRole gán role cho user cấp platform (skeleton)
-func (r *RbacPlatformRepository) AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error {
-	// [COMMENT]: Logic insert/update database sẽ được viết ở phase tiếp theo
+// [COMMENT]: AssignUserRole thực hiện gán vai trò platform cho người dùng, biên dịch danh sách quyền của role sang nhị phân Protobuf bytea và lưu trữ sử dụng CTE nguyên tử trong một Transaction để đảm bảo tính cô lập và bền vững
+func (r *RbacPlatformRepository) AssignUserRole(ctx context.Context, callerLevel uint8, userID uuid.UUID, roleID uuid.UUID) error {
+	// [COMMENT]: 1. Khởi tạo một Transaction để đảm bảo tính cô lập (Read Committed) và ngăn chặn race conditions
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("platform rbac repo: begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	// [COMMENT]: A. Lấy danh sách string permissions thuộc về roleID từ bảng role_permissions và permissions trong phạm vi transaction
+	queryPerms := fmt.Sprintf(`
+		SELECT p.module || ':' || p.object || ':' || p.behavior AS perm
+		FROM %s.role_permissions rp
+		JOIN %s.permissions p ON rp.permission_id = p.id
+		WHERE rp.role_id = $1
+	`, r.schema, r.schema)
+
+	rows, err := tx.Query(ctx, queryPerms, roleID)
+	if err != nil {
+		return fmt.Errorf("platform rbac repo: query permissions: %w", err)
+	}
+	defer rows.Close()
+
+	var perms []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return fmt.Errorf("platform rbac repo: scan permission: %w", err)
+		}
+		perms = append(perms, p)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close() // đóng sớm để tránh lock connection
+
+	// [COMMENT]: B. Serialize danh sách permissions thành Protobuf binary byte array (để repository thuần chất cơ sở dữ liệu)
+	roleEntry := &iamproto.RoleEntry{
+		Permissions: perms,
+	}
+	binaryBytes, err := proto.Marshal(roleEntry)
+	if err != nil {
+		return fmt.Errorf("platform rbac repo: marshal role entry: %w", err)
+	}
+
+	// [COMMENT]: C. Thực hiện CTE nguyên tử để:
+	// 1. Kiểm tra target user tồn tại và lấy level hiện tại của target user.
+	// 2. Kiểm tra role gán tồn tại và lấy level của role gán.
+	// 3. So sánh caller level với level của target user & role gán.
+	// 4. Nếu hợp lệ, xóa vai trò cũ tại platform scope (nil UUID) và chèn vai trò mới.
+	queryAssign := fmt.Sprintf(`
+		WITH target_info AS (
+			SELECT u.id, u.username, ur.role_level AS target_user_level
+			FROM %s.users u
+			LEFT JOIN %s.user_role ur ON u.id = ur.user_id AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+			WHERE u.id = $2
+		),
+		to_assign_role_info AS (
+			SELECT id, name, role_level
+			FROM %s.roles
+			WHERE id = $3 AND scope = 'platform'
+		),
+		assigner_check AS (
+			SELECT ti.id, ti.username, ri.id AS role_id, ri.name AS role_name, ri.role_level
+			FROM target_info ti
+			CROSS JOIN to_assign_role_info ri
+			WHERE $4 < COALESCE(ti.target_user_level, 999) AND $4 < ri.role_level
+		),
+		deleter AS (
+			DELETE FROM %s.user_role
+			WHERE user_id = $2 AND workspace_id = '00000000-0000-0000-0000-000000000000'
+			  AND EXISTS (SELECT 1 FROM assigner_check)
+		),
+		inserter AS (
+			INSERT INTO %s.user_role (
+				id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm, created_at, updated_at
+			)
+			SELECT 
+				gen_random_uuid(), id, username, '00000000-0000-0000-0000-000000000000', role_id, role_name, role_level, $1, NOW(), NOW()
+			FROM assigner_check
+			RETURNING id
+		)
+		SELECT
+			(SELECT COUNT(*) FROM target_info) AS user_exists,
+			(SELECT COUNT(*) FROM to_assign_role_info) AS role_exists,
+			(SELECT COUNT(*) FROM assigner_check) AS check_success,
+			(SELECT COUNT(*) FROM inserter) AS insert_success
+	`, r.schema, r.schema, r.schema, r.schema, r.schema)
+
+	var userExists, roleExists, checkSuccess, insertSuccess int
+	err = tx.QueryRow(ctx, queryAssign, binaryBytes, userID, roleID, callerLevel).Scan(&userExists, &roleExists, &checkSuccess, &insertSuccess)
+	if err != nil {
+		return fmt.Errorf("platform rbac repo: assign user role query: %w", err)
+	}
+
+	// [COMMENT]: D. Xử lý kết quả trả về phân cấp lỗi
+	if userExists == 0 {
+		return iamTaxonomy.ErrUserNotFound
+	}
+	if roleExists == 0 {
+		return iamTaxonomy.ErrRoleNotFound
+	}
+	if checkSuccess == 0 || insertSuccess == 0 {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+
+	// [COMMENT]: E. Commit transaction sau khi mọi kiểm tra và chèn bản ghi thành công
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("platform rbac repo: commit transaction: %w", err)
+	}
+
 	return nil
 }
 
-// [COMMENT]: AssignTenantRole gán role cho tenant cấp platform (skeleton)
-func (r *RbacPlatformRepository) AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error {
-	// [COMMENT]: Logic insert/update database sẽ được viết ở phase tiếp theo
-	return nil
-}
-
-// [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
-func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error) {
+// [COMMENT]: ListPlatformRoles lấy danh sách roles có scope là platform có level thấp hơn (role_level > callerLevel)
+func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLevel uint8) ([]iamEntity.Role, error) {
 	query := fmt.Sprintf(`
 		SELECT id, code, name, COALESCE(description, ''), role_level, scope, created_at, updated_at
 		FROM %s.roles
-		WHERE scope = 'platform'
+		WHERE scope = 'platform' AND role_level > $1
 		ORDER BY role_level ASC
 	`, r.schema)
 
-	rows, err := r.db.Query(ctx, query)
+	rows, err := r.db.Query(ctx, query, callerLevel)
 	if err != nil {
 		return nil, fmt.Errorf("rbac platform repo: query platform roles: %w", err)
 	}

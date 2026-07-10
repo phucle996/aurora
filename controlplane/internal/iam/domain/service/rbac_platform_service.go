@@ -10,17 +10,14 @@ import (
 
 // [COMMENT]: RbacPlatformService định nghĩa interface cho business logic RBAC cấp độ platform (toàn cục)
 type RbacPlatformService interface {
-	// [COMMENT]: AssignUserRole gán vai trò hệ thống cho user
-	AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error
-
-	// [COMMENT]: AssignTenantRole gán vai trò hệ thống cho tenant
-	AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error
+	// [COMMENT]: AssignUserRole gán vai trò hệ thống cho user có kiểm tra phân cấp
+	AssignUserRole(ctx context.Context, callerLevel uint8, userID uuid.UUID, roleID uuid.UUID) error
 
 	// [COMMENT]: GetUserRoleDetails lấy thông tin chi tiết vai trò của user kèm kiểm tra cấp bậc
 	GetUserRoleDetails(ctx context.Context, userID uuid.UUID, callerLevel int32) (*iamEntity.Role, error)
 
-	// [COMMENT]: ListPlatformRoles lấy toàn bộ danh sách roles có scope là platform
-	ListPlatformRoles(ctx context.Context) ([]iamEntity.Role, error)
+	// [COMMENT]: ListPlatformRoles lấy danh sách roles có scope là platform có level thấp hơn (role_level > callerLevel)
+	ListPlatformRoles(ctx context.Context, callerLevel uint8) ([]iamEntity.Role, error)
 
 	// [COMMENT]: CreateRole tạo vai trò hệ thống mới kèm liên kết permissions
 	CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error

@@ -80,12 +80,6 @@ func (r *RbacTenantRepository) ListTenantRoles(ctx context.Context, tenantID uui
 	return roles, nil
 }
 
-// [COMMENT]: AssignUserRole gán role cho user thuộc tenant workspace (skeleton)
-func (r *RbacTenantRepository) AssignUserRole(ctx context.Context, userRole *iamEntity.UserRole) error {
-	// [COMMENT]: Logic insert/update database sẽ được viết ở phase tiếp theo
-	return nil
-}
-
 // [COMMENT]: AssignTenantRole gán role cho tenant thuộc tenant workspace (skeleton)
 func (r *RbacTenantRepository) AssignTenantRole(ctx context.Context, tenantRole *iamEntity.TenantRole) error {
 	// [COMMENT]: Logic insert/update database sẽ được viết ở phase tiếp theo

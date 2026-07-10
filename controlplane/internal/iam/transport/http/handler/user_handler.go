@@ -59,6 +59,8 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 			"role":          u.RoleName,
 			"mfa_enabled":   u.MfaEnabled,
 			"devices_count": u.DevicesCount,
+			"bio":           u.Bio,
+			"fullname":      u.Fullname,
 			"created_at":    u.CreatedAt,
 			"updated_at":    u.UpdatedAt,
 		})
@@ -127,6 +129,55 @@ func (h *UserHandler) UpdateUserStatusPlatform(c *gin.Context) {
 	}
 
 	apires.RespondSuccess(c, nil, "user status updated successfully")
+}
+
+// [COMMENT]: ResetUserPasswordPlatform thực hiện reset mật khẩu của user bởi Admin
+func (h *UserHandler) ResetUserPasswordPlatform(c *gin.Context) {
+	const op = "iam.users.reset_password"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	callerLevel, ok := constant.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	targetUserIDStr := strings.TrimSpace(c.Param("id"))
+	if targetUserIDStr == "" {
+		apires.RespondBadRequest(c, "missing user id parameter")
+		return
+	}
+	targetUserID, err := uuid.Parse(targetUserIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid user id format")
+		return
+	}
+
+	var req struct {
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid request body")
+		return
+	}
+
+	if err := h.userSvc.ResetUserPassword(ctx, callerLevel, targetUserID, req.Password); err != nil {
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			logger.HandlerWarn(c, op, err, "insufficient role hierarchy permissions")
+			apires.RespondForbidden(c, "forbidden")
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrUserNotFound) {
+			logger.HandlerWarn(c, op, err, "user not found")
+			apires.RespondNotFound(c, "user not found")
+			return
+		}
+		logger.HandlerError(c, op, err)
+		apires.RespondInternalError(c, "internal error occurred")
+		return
+	}
+
+	apires.RespondSuccess(c, nil, "user password reset successfully")
 }
 
 // [COMMENT]: GetMyProfile trả về thông tin profile hiển thị của chính user đó (self-service, bypass permissions check)
