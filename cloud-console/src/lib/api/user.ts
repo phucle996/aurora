@@ -10,6 +10,8 @@ export type PlatformUserItem = {
   devices_count?: number;
   bio?: string | null;
   fullname?: string | null;
+  last_seen_ip?: string | null;   // [COMMENT]: IP gần nhất từ device thực tế
+  last_seen_at?: string | null;   // [COMMENT]: Thời điểm hoạt động gần nhất
   created_at: string;
   updated_at: string;
 };

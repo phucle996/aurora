@@ -28,6 +28,8 @@ type User struct {
 	DevicesCount int32  // [COMMENT]: Số lượng thiết bị đã đăng ký của user
 	Bio          string // [COMMENT]: Mô tả ngắn về user lấy từ user_profiles
 	Fullname     string // [COMMENT]: Tên hiển thị đầy đủ lấy từ user_profiles
+	LastSeenIP   string     // [COMMENT]: IP gần nhất được ghi nhận từ device hoạt động cuối cùng
+	LastSeenAt   *time.Time // [COMMENT]: Thời điểm hoạt động gần nhất qua thiết bị
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }

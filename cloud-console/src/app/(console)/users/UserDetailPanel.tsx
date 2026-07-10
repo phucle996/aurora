@@ -101,7 +101,7 @@ export function UserDetailPanel({
       <div className="flex items-center gap-3 pr-8 select-none">
         <div className={cn(
           "h-10 w-10 flex items-center justify-center rounded-full text-sm font-bold border",
-          getAvatarColors(selectedUser.ext.fullname)
+          getAvatarColors(selectedUser.id)
         )}>
           {selectedUser.ext.fullname
             .split(" ")

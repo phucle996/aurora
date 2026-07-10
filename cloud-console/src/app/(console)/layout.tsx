@@ -118,7 +118,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         />
 
         <div
-          className="flex-1 min-w-0 transition-all duration-300 ease-in-out flex flex-col min-h-screen"
+          className="flex-1 min-w-0 transition-all duration-300 ease-in-out flex flex-col h-screen overflow-y-auto"
           style={{ marginLeft: isCollapsed ? "60px" : "272px" }}
         >
           <HeaderConsole
@@ -131,7 +131,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
           />
 
           {/* [COMMENT]: Thống nhất dùng padding-inline: 24px (px-6) và co giãn chiếm 100% không gian trống còn lại */}
-          <main className="flex-1 px-6 py-5 md:py-6 w-full animate-in fade-in duration-200">
+          <main className="flex-1 px-6 py-5 md:py-6 w-full">
             {children}
           </main>
         </div>

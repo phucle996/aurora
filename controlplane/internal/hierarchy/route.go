@@ -34,26 +34,28 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 	)
 
 	// ========================================================================
-	// 🗂️ WORKSPACE — PERSONAL SCOPE
+	// 🗂️ WORKSPACE — PERSONAL SCOPE (/api/v1/me)
+	// [COMMENT]: Nhóm /me phục vụ các hành động tự-phục-vụ của người dùng hiện tại
+	// tương tự pattern /api/v1/me trong IAM route
 	// ========================================================================
-	personalGroup := router.Group("/api/v1/personal")
+	meGroup := router.Group("/api/v1/me")
 	{
-		// [COMMENT]: Tạo workspace cá nhân mới dưới /personal — vẫn cần quyền hierarchy:workspace:create
-		personalGroup.POST("/hierarchy/workspaces",
+		// [COMMENT]: Tạo workspace cá nhân mới — vẫn cần quyền hierarchy:workspace:create
+		meGroup.POST("/hierarchy/workspace/create",
 			middleware.Authorize("hierarchy:workspace:create", module.L1Registry, "*"),
 			module.WorkspacePersonalHandler.CreateWorkspacePersonal,
 		)
 		// [COMMENT]: Lấy danh sách workspace cá nhân mà user có quyền read
-		personalGroup.GET("/hierarchy/workspaces",
+		meGroup.GET("/hierarchy/workspace/read",
 			module.WorkspacePersonalHandler.ListWorkspacesPersonal,
 		)
-		// [COMMENT]: Hot path catalog cá nhân dưới /personal — không dùng Authorize do tình huống chicken-and-egg
-		personalGroup.GET("/hierarchy/workspaces/catalog",
+		// [COMMENT]: Hot path catalog cá nhân — không dùng Authorize do tình huống chicken-and-egg
+		meGroup.GET("/hierarchy/workspace/catalog",
 			module.WorkspacePersonalHandler.GetWorkspaceCatalogPersonal,
 		)
-		// [COMMENT]: Xóa workspace cá nhân dưới /personal — yêu cầu quyền hierarchy:workspace:delete
-		personalGroup.DELETE("/hierarchy/workspaces/:workspace_id",
-			middleware.Authorize("hierarchy:workspace:delete", module.L1Registry, "*"),
+		// [COMMENT]: Xóa workspace cá nhân — không áp Authorize middleware,
+		// ownership được kiểm tra trong handler qua X-User-ID header
+		meGroup.DELETE("/hierarchy/workspace/delete/:workspace_id",
 			module.WorkspacePersonalHandler.DeleteWorkspacePersonal,
 		)
 	}

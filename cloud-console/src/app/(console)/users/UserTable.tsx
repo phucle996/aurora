@@ -90,7 +90,7 @@ export function UserTable({
                         {/* Avatar */}
                         <div className={cn(
                           "h-9 w-9 flex items-center justify-center rounded-full text-xs font-bold border",
-                          getAvatarColors(u.ext.fullname)
+                          getAvatarColors(u.id)
                         )}>
                           {initials}
                         </div>
@@ -134,17 +134,7 @@ export function UserTable({
                     <td className="px-6 py-3.5">
                       <Badge variant="outline" className={cn(
                         "inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold tracking-wider h-5 border",
-                        u.ext.displayRole === "System Admin" || u.ext.displayRole === "Platform Admin"
-                          ? "bg-indigo-500/10 text-indigo-655 border-indigo-500/20 dark:text-indigo-400 dark:border-indigo-500/30"
-                          : u.ext.displayRole === "Workspace Owner"
-                            ? "bg-teal-500/10 text-teal-655 border-teal-500/20 dark:text-teal-400 dark:border-teal-500/30"
-                            : u.ext.displayRole === "DevOps Engineer"
-                              ? "bg-sky-500/10 text-sky-655 border-sky-500/20 dark:text-sky-400 dark:border-sky-500/30"
-                              : u.ext.displayRole === "Billing Admin"
-                                ? "bg-amber-500/10 text-amber-655 border-amber-500/20 dark:text-amber-400 dark:border-amber-500/30"
-                                : u.ext.displayRole === "Support Operator"
-                                  ? "bg-blue-500/10 text-blue-600 border-blue-500/20 dark:text-blue-400 dark:border-blue-500/30"
-                                  : "bg-slate-500/10 text-slate-600 border-slate-500/20 dark:text-slate-400 dark:border-slate-500/30"
+                        getAvatarColors(u.id)
                       )}>
                         {u.ext.displayRole}
                       </Badge>

@@ -32,8 +32,8 @@ func NewUserRepository(
 
 // [COMMENT]: ListUsers lấy danh sách các user có level thấp hơn level hiện tại của caller (role_level số lớn hơn)
 func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit int, offset int) ([]*iamEntity.User, error) {
-	// [COMMENT]: Thực hiện JOIN 1-1 trực tiếp với bảng user_role tại platform scope (nil UUID)
-	// để lấy thông tin role_name và role_level của từng user. Lọc theo phân cấp callerLevel.
+	// [COMMENT]: JOIN user_role để lấy phân cấp, LEFT JOIN device hoạt động gần nhất theo last_seen_at
+	// để hiển thị IP thực tế và thời điểm hoạt động cuối cùng của user
 	query := fmt.Sprintf(`
 		SELECT 
 			u.id, 
@@ -52,16 +52,25 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 			) AS devices_count,
 			COALESCE(up.bio, '') AS bio,
 			COALESCE(up.fullname, '') AS fullname,
+			COALESCE(ld.last_seen_ip::text, '') AS last_seen_ip,
+			ld.last_seen_at,
 			u.created_at, 
 			u.updated_at
 		FROM %s.users u
 		JOIN %s.user_role ur ON u.id = ur.user_id 
 		                    AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
 		LEFT JOIN %s.user_profiles up ON u.id = up.user_id
+		LEFT JOIN LATERAL (
+			SELECT last_seen_ip, last_seen_at
+			FROM %s.devices
+			WHERE user_id = u.id AND revoked_at IS NULL
+			ORDER BY last_seen_at DESC NULLS LAST
+			LIMIT 1
+		) ld ON true
 		WHERE ur.role_level > $1
 		ORDER BY u.created_at DESC
 		LIMIT $2 OFFSET $3
-	`, r.schema, r.schema, r.schema, r.schema, r.schema)
+	`, r.schema, r.schema, r.schema, r.schema, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, callerLevel, limit, offset)
 	if err != nil {
@@ -73,7 +82,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 	for rows.Next() {
 		var u iamEntity.User
 		var level int32
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.RoleName, &u.MfaEnabled, &u.DevicesCount, &u.Bio, &u.Fullname, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Status, &level, &u.RoleName, &u.MfaEnabled, &u.DevicesCount, &u.Bio, &u.Fullname, &u.LastSeenIP, &u.LastSeenAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		u.Level = level

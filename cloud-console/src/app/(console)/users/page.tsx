@@ -13,20 +13,21 @@ import { UserFilters } from "./UserFilters";
 import { UserTable } from "./UserTable";
 
 const getExtendedUserData = (u: PlatformUserItem) => {
-  const hash = u.id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-
   const mfaEnabled = u.mfa_enabled ?? false;
   const devicesCount = u.devices_count ?? 0;
 
-  const minutesAgo = (hash % 120) + 2;
-  let lastActiveStr = `${minutesAgo} minutes ago`;
-  if (minutesAgo > 60) {
-    lastActiveStr = `${Math.floor(minutesAgo / 60)} hours ago`;
+  // [COMMENT]: Hiển thị thời điểm hoạt động gần nhất từ device thực tế
+  const lastSeenAt = u.last_seen_at ? new Date(u.last_seen_at) : null;
+  let lastActiveStr = "Never";
+  if (lastSeenAt) {
+    const diffMs = Date.now() - lastSeenAt.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 60) lastActiveStr = `${diffMins}m ago`;
+    else if (diffMins < 1440) lastActiveStr = `${Math.floor(diffMins / 60)}h ago`;
+    else lastActiveStr = `${Math.floor(diffMins / 1440)}d ago`;
   }
-  if (hash % 10 === 0) lastActiveStr = "1 day ago";
-  if (u.username === "sys_admin") lastActiveStr = "5 minutes ago";
 
-  const ip = `192.168.1.${(hash % 254) + 1}`;
+  const ip = u.last_seen_ip || "—";
   const displayRole = u.role || "Platform Member";
 
   return {

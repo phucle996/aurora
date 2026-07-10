@@ -61,6 +61,8 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 			"devices_count": u.DevicesCount,
 			"bio":           u.Bio,
 			"fullname":      u.Fullname,
+			"last_seen_ip":  u.LastSeenIP,  // [COMMENT]: IP thực tế từ device hoạt động gần nhất
+			"last_seen_at":  u.LastSeenAt,  // [COMMENT]: Thời điểm hoạt động gần nhất từ device
 			"created_at":    u.CreatedAt,
 			"updated_at":    u.UpdatedAt,
 		})
