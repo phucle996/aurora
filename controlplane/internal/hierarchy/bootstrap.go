@@ -13,14 +13,7 @@ import (
 
 	pubsubHandler "controlplane/internal/hierarchy/transport/pubsub/handler"
 	"controlplane/pkg/logger"
-
-	"google.golang.org/grpc"
 )
-
-// RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
-// Do đã chuyển đổi hoàn toàn sang NATS Core, hàm này được giữ lại dưới dạng stub để tương thích.
-func (m *Module) RegisterGRPCServices(server *grpc.Server) {
-}
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
