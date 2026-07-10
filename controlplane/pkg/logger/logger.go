@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"os"
 	"strings"
 	"time"
@@ -131,6 +132,57 @@ func HandlerError(c *gin.Context, op string, err error) {
 		fields["trace_id"] = tID
 	}
 	L().WithFields(fields).Error(err.Error())
+}
+
+// HandlerInfoCtx ghi log mức Info cho các handler không có gin.Context (ví dụ NATS/gRPC)
+func HandlerInfoCtx(ctx context.Context, op, message string) {
+	fields := logrus.Fields{
+		"log_type": LogTypeHandler,
+		"op":       op,
+	}
+	if ctx != nil {
+		spanCtx := trace.SpanContextFromContext(ctx)
+		if spanCtx.IsValid() {
+			fields["trace_id"] = spanCtx.TraceID().String()
+		}
+	}
+	L().WithFields(fields).Info(message)
+}
+
+// HandlerWarnCtx ghi log mức Warn cho các handler không có gin.Context (ví dụ NATS/gRPC)
+func HandlerWarnCtx(ctx context.Context, op string, err error, message string) {
+	fields := logrus.Fields{
+		"log_type": LogTypeHandler,
+		"op":       op,
+	}
+	if ctx != nil {
+		spanCtx := trace.SpanContextFromContext(ctx)
+		if spanCtx.IsValid() {
+			fields["trace_id"] = spanCtx.TraceID().String()
+		}
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	L().WithFields(fields).Warn(message)
+}
+
+// HandlerErrorCtx ghi log mức Error cho các handler không có gin.Context (ví dụ NATS/gRPC)
+func HandlerErrorCtx(ctx context.Context, op string, err error) {
+	fields := logrus.Fields{
+		"log_type": LogTypeHandler,
+		"op":       op,
+	}
+	if ctx != nil {
+		spanCtx := trace.SpanContextFromContext(ctx)
+		if spanCtx.IsValid() {
+			fields["trace_id"] = spanCtx.TraceID().String()
+		}
+	}
+	if err != nil {
+		fields["error"] = err.Error()
+		L().WithFields(fields).Error(err.Error())
+	}
 }
 
 func SysInfo(op, message string) {

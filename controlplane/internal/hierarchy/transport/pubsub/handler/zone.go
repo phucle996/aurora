@@ -8,11 +8,13 @@ package pubsubHandler
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
 	coreProto "controlplane/internal/hierarchy/transport/proto"
 	"controlplane/internal/observability"
+	"controlplane/pkg/constant"
 	"controlplane/pkg/logger"
 
 	"github.com/nats-io/nats.go"
@@ -45,7 +47,10 @@ func NewZoneNatsHandler(
 
 // HandleGetZoneList xử lý yêu cầu lấy danh sách Zone, unmarshal payload thô và chuyển giao xuống service layer.
 func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
-	ctx := context.Background()
+	const op = "core.zone.rpc.get_zone_list"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(context.Background(), op), 5*time.Second)
+	defer cancel()
+
 	if msg.Header != nil && h.otel != nil {
 		traceparent := msg.Header.Get("traceparent")
 		if traceparent != "" {
@@ -55,16 +60,16 @@ func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
 
 	var span trace.Span
 	if h.otel != nil {
-		ctx, span = h.otel.StartServerSpan(ctx, "NATS core.zone.get_zone_list")
+		ctx, span = h.otel.StartServerSpan(ctx, "NATS " + op)
 		defer span.End()
 		span.SetAttributes(
 			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination", "core.zone.get_zone_list"),
+			attribute.String("messaging.destination", op),
 		)
 	}
 
 	respondError := func(errMsg string) {
-		logger.SysError("NATS.GetZoneList", errMsg)
+		logger.HandlerErrorCtx(ctx, op, fmt.Errorf("%s", errMsg))
 		_ = msg.Respond([]byte{})
 	}
 
@@ -103,7 +108,10 @@ func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
 
 // HandleResolveZone xử lý yêu cầu phân giải một Zone cụ thể, unmarshal payload thô và chuyển giao xuống service layer.
 func (h *ZoneNatsHandler) HandleResolveZone(msg *nats.Msg) {
-	ctx := context.Background()
+	const op = "core.zone.rpc.resolve_zone"
+	ctx, cancel := context.WithTimeout(constant.WithOperation(context.Background(), op), 5*time.Second)
+	defer cancel()
+
 	if msg.Header != nil && h.otel != nil {
 		traceparent := msg.Header.Get("traceparent")
 		if traceparent != "" {
@@ -113,16 +121,16 @@ func (h *ZoneNatsHandler) HandleResolveZone(msg *nats.Msg) {
 
 	var span trace.Span
 	if h.otel != nil {
-		ctx, span = h.otel.StartServerSpan(ctx, "NATS core.zone.resolve_zone")
+		ctx, span = h.otel.StartServerSpan(ctx, "NATS " + op)
 		defer span.End()
 		span.SetAttributes(
 			attribute.String("messaging.system", "nats"),
-			attribute.String("messaging.destination", "core.zone.resolve_zone"),
+			attribute.String("messaging.destination", op),
 		)
 	}
 
 	respondError := func(errMsg string) {
-		logger.SysError("NATS.ResolveZone", errMsg)
+		logger.HandlerErrorCtx(ctx, op, fmt.Errorf("%s", errMsg))
 		resp := &coreProto.ResolveZoneResponse{Found: false}
 		if respData, err := proto.Marshal(resp); err == nil {
 			_ = msg.Respond(respData)
