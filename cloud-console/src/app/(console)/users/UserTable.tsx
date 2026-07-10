@@ -1,5 +1,5 @@
 import React from "react";
-import { Loader2, ShieldAlert, CheckCircle2, XCircle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Loader2, ShieldAlert, CheckCircle2, XCircle, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -18,6 +18,9 @@ interface UserTableProps {
   totalUsers: number;
   totalPages: number;
   getAvatarColors: (name: string) => string;
+  sortKey: string;
+  sortDir: "asc" | "desc";
+  onSort: (key: string) => void;
 }
 
 export function UserTable({
@@ -34,7 +37,19 @@ export function UserTable({
   totalUsers,
   totalPages,
   getAvatarColors,
+  sortKey,
+  sortDir,
+  onSort,
 }: UserTableProps) {
+  const SortIcon = ({ col }: { col: string }) => (
+    <ArrowUpDown
+      className={cn(
+        "h-3 w-3 ml-1 shrink-0 transition-colors",
+        sortKey === col ? "text-foreground" : "text-muted-foreground/45"
+      )}
+    />
+  );
+
   return (
     <>
       {loading && users.length === 0 ? (
@@ -51,16 +66,28 @@ export function UserTable({
           </p>
         </div>
       ) : (
-        <div className="overflow-x-auto select-none">
+        <div className="overflow-x-auto select-none rounded-xl border border-border">
           <table className="w-full text-left border-collapse table-auto">
             <thead>
               <tr className="border-b border-border bg-muted/20 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground select-none">
-                <th className="px-6 py-4">User</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Roles</th>
-                <th className="px-6 py-4">MFA</th>
-                <th className="px-6 py-4">Devices</th>
-                <th className="px-6 py-4">Last Active</th>
+                <th className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors" onClick={() => onSort("username")}>
+                  <span className="inline-flex items-center">User <SortIcon col="username" /></span>
+                </th>
+                <th className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors" onClick={() => onSort("status")}>
+                  <span className="inline-flex items-center">Status <SortIcon col="status" /></span>
+                </th>
+                <th className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors" onClick={() => onSort("role")}>
+                  <span className="inline-flex items-center">Roles <SortIcon col="role" /></span>
+                </th>
+                <th className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors" onClick={() => onSort("mfa")}>
+                  <span className="inline-flex items-center">MFA <SortIcon col="mfa" /></span>
+                </th>
+                <th className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors" onClick={() => onSort("devices")}>
+                  <span className="inline-flex items-center">Devices <SortIcon col="devices" /></span>
+                </th>
+                <th className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors" onClick={() => onSort("last_active")}>
+                  <span className="inline-flex items-center">Last Active <SortIcon col="last_active" /></span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border text-[13px]">

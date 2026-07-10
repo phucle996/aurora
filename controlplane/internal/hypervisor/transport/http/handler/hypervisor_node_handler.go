@@ -7,7 +7,7 @@ import (
 
 	hypervisorSvcInterface "controlplane/internal/hypervisor/domain/service"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -30,7 +30,7 @@ func (h *NodeHandler) ListNodes(c *gin.Context) {
 	const op = "hypervisor.node.list"
 
 	// [COMMENT]: 1. Định nghĩa Context có timeout cụ thể là 5 giây theo chuẩn thiết kế HA
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: 2. Đọc ngữ cảnh zone_id (UUID) từ header HTTP X-Zone-Context do Gateway/Proxy (ACR) phân giải và tiêm vào

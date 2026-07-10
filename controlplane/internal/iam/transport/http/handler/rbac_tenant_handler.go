@@ -6,7 +6,7 @@ import (
 
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -25,10 +25,10 @@ func NewRbacTenantHandler(rbacTenantSvc iamSvcInterface.RbacTenantService) *Rbac
 // [COMMENT]: ListRolesTenant trả về danh sách roles của một tenant cụ thể (dựa vào header X-Tenant-ID)
 func (h *RbacTenantHandler) ListRolesTenant(c *gin.Context) {
 	const op = "iam.rbac.list_tenant_roles"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantID, ok := constant.GetTenantID(c, op)
+	tenantID, ok := pkgcontext.GetTenantID(c, op)
 	if !ok {
 		return
 	}

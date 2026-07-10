@@ -4,7 +4,7 @@ import (
 	"context"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 	"time"
 
@@ -26,7 +26,7 @@ func NewMfaHandler(mfaSvc iamSvcInterface.MfaService) *MfaHandler {
 // GetUserMfaPlatform xử lý API lấy thông tin cấu hình MFA của một user bất kỳ dành cho platform admin/auditor
 func (h *MfaHandler) GetUserMfaPlatform(c *gin.Context) {
 	const op = "iam.mfa.get_user_mfa_platform"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất user ID từ tham số path URL

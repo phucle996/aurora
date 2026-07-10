@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"controlplane/internal/observability"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -44,7 +44,7 @@ func OTelTraceContext(obs *observability.OTel) gin.HandlerFunc {
 		//   để các thành phần microservices phía sau kế thừa.
 		// --------------------------------------------------------------------
 		obs.Inject(ctx, c.Request.Header)
-		if tp := constant.GetTraceparent(c); tp != "" {
+		if tp := pkgcontext.GetTraceparent(c); tp != "" {
 			c.Header("traceparent", tp)
 		}
 
@@ -126,13 +126,13 @@ func RequestID() gin.HandlerFunc {
 		// --------------------------------------------------------------------
 		// 🔄 Ưu tiên hàng đầu: Đọc và kế thừa X-Request-ID được tạo bởi Envoy ở biên giới.
 		// --------------------------------------------------------------------
-		reqID := constant.GetRequestID(c)
+		reqID := pkgcontext.GetRequestID(c)
 
 		// --------------------------------------------------------------------
 		// 🔄 Dự phòng cấp 1: Trích xuất trực tiếp Trace ID từ traceparent để đồng bộ hóa Log & Trace.
 		// --------------------------------------------------------------------
 		if reqID == "" {
-			if tp := constant.GetTraceparent(c); tp != "" {
+			if tp := pkgcontext.GetTraceparent(c); tp != "" {
 				parts := strings.Split(tp, "-")
 				if len(parts) >= 2 && len(parts[1]) == 32 {
 					reqID = parts[1] // Lấy Trace ID từ định dạng W3C
@@ -161,8 +161,8 @@ func RequestID() gin.HandlerFunc {
 		// [COMMENT]: Trích xuất IP và UserAgent ở đầu luồng HTTP để tiêm vào Context, tách biệt hạ tầng mạng khỏi logic nghiệp vụ.
 		ip := strings.TrimSpace(c.ClientIP())
 		ua := strings.TrimSpace(c.Request.UserAgent())
-		ctx := context.WithValue(c.Request.Context(), constant.RemoteIPKey, ip)
-		ctx = context.WithValue(ctx, constant.UserAgentKey, ua)
+		ctx := context.WithValue(c.Request.Context(), RemoteIPKey, ip)
+		ctx = context.WithValue(ctx, UserAgentKey, ua)
 		c.Request = c.Request.WithContext(ctx)
 
 		c.Next()

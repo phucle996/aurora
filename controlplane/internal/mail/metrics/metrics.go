@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -82,7 +82,7 @@ func Init(meterProvider metric.MeterProvider) {
 func ServiceCall(ctx context.Context, outcome string) {
 	// Kiểm tra con trỏ khác nil thay vì gọi sync/lock trên hot path
 	if serviceCallsCounter != nil {
-		op := constant.GetOperation(ctx)
+		op := pkgcontext.GetOperation(ctx)
 		serviceCallsCounter.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("op", op),
 			attribute.String("outcome", outcome),
@@ -100,7 +100,7 @@ func Downstream(ctx context.Context, kind, destination, outcome string, duration
 		if err != nil {
 			status = "error"
 		}
-		op := constant.GetOperation(ctx)
+		op := pkgcontext.GetOperation(ctx)
 		downstreamDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(
 			attribute.String("kind", kind),
 			attribute.String("op", op),

@@ -14,7 +14,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	requestdto "controlplane/internal/iam/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/geoip"
 	"controlplane/pkg/logger"
 
@@ -79,7 +79,7 @@ func NewAuthHandler(cfg *config.Config, authSvc domainservice.AuthService) *Auth
 func (h *AuthHandler) RegisterAccount(c *gin.Context) {
 	const op = "iam.auth.register"
 
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	var request requestdto.RegisterRequest
@@ -175,7 +175,7 @@ func (h *AuthHandler) VerifyAccount(c *gin.Context) {
 	const op = "iam.auth.verify"
 
 	// [COMMENT]: Khởi tạo context với timeout 5 giây để tránh treo request lâu trong môi trường HA/Cloud Native
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	token := strings.TrimSpace(c.Query("token"))

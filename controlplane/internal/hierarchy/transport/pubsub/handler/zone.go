@@ -14,7 +14,7 @@ import (
 	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
 	coreProto "controlplane/internal/hierarchy/transport/proto"
 	"controlplane/internal/observability"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/nats-io/nats.go"
@@ -48,7 +48,7 @@ func NewZoneNatsHandler(
 // HandleGetZoneList xử lý yêu cầu lấy danh sách Zone, unmarshal payload thô và chuyển giao xuống service layer.
 func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
 	const op = "core.zone.rpc.get_zone_list"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(context.Background(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), op), 5*time.Second)
 	defer cancel()
 
 	if msg.Header != nil && h.otel != nil {
@@ -109,7 +109,7 @@ func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
 // HandleResolveZone xử lý yêu cầu phân giải một Zone cụ thể, unmarshal payload thô và chuyển giao xuống service layer.
 func (h *ZoneNatsHandler) HandleResolveZone(msg *nats.Msg) {
 	const op = "core.zone.rpc.resolve_zone"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(context.Background(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), op), 5*time.Second)
 	defer cancel()
 
 	if msg.Header != nil && h.otel != nil {

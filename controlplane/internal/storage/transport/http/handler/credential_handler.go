@@ -11,7 +11,7 @@ import (
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageDto "controlplane/internal/storage/transport/http/dto"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -37,16 +37,16 @@ func NewCredentialHandler(
 
 func (h *CredentialHandler) Create(c *gin.Context) {
 	const op = "storage.credential.create"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// 1. Trích xuất danh tính và path params
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	bucketIDStr := strings.TrimSpace(c.Param("id"))
 
 	if bucketIDStr == "" {
@@ -127,10 +127,10 @@ func (h *CredentialHandler) Create(c *gin.Context) {
 
 func (h *CredentialHandler) Get(c *gin.Context) {
 	const op = "storage.credential.get"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	credIDStr := strings.TrimSpace(c.Param("id"))
 
 	if credIDStr == "" {
@@ -199,10 +199,10 @@ func (h *CredentialHandler) Get(c *gin.Context) {
 
 func (h *CredentialHandler) List(c *gin.Context) {
 	const op = "storage.credential.list"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	bucketIDStr := strings.TrimSpace(c.Param("id"))
 
 	if bucketIDStr == "" {
@@ -261,15 +261,15 @@ func (h *CredentialHandler) List(c *gin.Context) {
 
 func (h *CredentialHandler) Revoke(c *gin.Context) {
 	const op = "storage.credential.revoke"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	credIDStr := strings.TrimSpace(c.Param("id"))
 
 	if credIDStr == "" {

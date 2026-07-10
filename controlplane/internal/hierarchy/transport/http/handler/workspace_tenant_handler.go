@@ -11,7 +11,7 @@ import (
 	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -46,23 +46,23 @@ func NewWorkspaceTenantHandler(
 func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 	const op = "WorkspaceTenantHandler.CreateWorkspaceTenant"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Zone ID từ header thông qua helper
-	zoneID, ok := constant.GetZoneID(c, op)
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Tenant ID từ header thông qua helper
-	tenantID, ok := constant.GetTenantID(c, op)
+	tenantID, ok := pkgcontext.GetTenantID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	ownerID, ok := constant.GetUserID(c, op)
+	ownerID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -133,23 +133,23 @@ func (h *WorkspaceTenantHandler) CreateWorkspaceTenant(c *gin.Context) {
 func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 	const op = "WorkspaceTenantHandler.ListWorkspacesTenant"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Tenant ID từ header thông qua helper
-	tenantID, ok := constant.GetTenantID(c, op)
+	tenantID, ok := pkgcontext.GetTenantID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Active Role ID từ header thông qua helper
-	roleID, ok := constant.GetUserRoleID(c, op)
+	roleID, ok := pkgcontext.GetUserRoleID(c, op)
 	if !ok {
 		return
 	}
@@ -194,29 +194,29 @@ func (h *WorkspaceTenantHandler) ListWorkspacesTenant(c *gin.Context) {
 func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 	const op = "WorkspaceTenantHandler.GetWorkspaceCatalogTenant"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Zone ID từ header thông qua helper
-	zoneID, ok := constant.GetZoneID(c, op)
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Tenant ID từ header thông qua helper
-	tenantID, ok := constant.GetTenantID(c, op)
+	tenantID, ok := pkgcontext.GetTenantID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Active Role ID từ header thông qua helper
-	roleID, ok := constant.GetUserRoleID(c, op)
+	roleID, ok := pkgcontext.GetUserRoleID(c, op)
 	if !ok {
 		return
 	}
@@ -253,7 +253,7 @@ func (h *WorkspaceTenantHandler) GetWorkspaceCatalogTenant(c *gin.Context) {
 // @Router       /api/v1/tenant/hierarchy/workspaces/{workspace_id} [delete]
 func (h *WorkspaceTenantHandler) DeleteWorkspaceTenant(c *gin.Context) {
 	const op = "WorkspaceTenantHandler.DeleteWorkspaceTenant"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	workspaceIDStr := c.Param("workspace_id")
@@ -265,7 +265,7 @@ func (h *WorkspaceTenantHandler) DeleteWorkspaceTenant(c *gin.Context) {
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Tenant ID từ header thông qua helper
-	tenantID, ok := constant.GetTenantID(c, op)
+	tenantID, ok := pkgcontext.GetTenantID(c, op)
 	if !ok {
 		return
 	}

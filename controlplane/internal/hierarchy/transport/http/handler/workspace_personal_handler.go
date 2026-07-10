@@ -11,7 +11,7 @@ import (
 	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -45,17 +45,17 @@ func NewWorkspacePersonalHandler(
 func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 	const op = "WorkspacePersonalHandler.CreateWorkspacePersonal"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Zone ID từ header thông qua helper
-	zoneID, ok := constant.GetZoneID(c, op)
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	ownerID, ok := constant.GetUserID(c, op)
+	ownerID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -114,11 +114,11 @@ func (h *WorkspacePersonalHandler) CreateWorkspacePersonal(c *gin.Context) {
 func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 	const op = "WorkspacePersonalHandler.ListWorkspacesPersonal"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -157,17 +157,17 @@ func (h *WorkspacePersonalHandler) ListWorkspacesPersonal(c *gin.Context) {
 func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 	const op = "WorkspacePersonalHandler.GetWorkspaceCatalogPersonal"
 	// [COMMENT]: Thiết lập context với timeout và định danh operation
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh Zone ID từ header thông qua helper
-	zoneID, ok := constant.GetZoneID(c, op)
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
@@ -204,7 +204,7 @@ func (h *WorkspacePersonalHandler) GetWorkspaceCatalogPersonal(c *gin.Context) {
 // @Router       /api/v1/me/hierarchy/workspace/delete/{workspace_id} [delete]
 func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 	const op = "WorkspacePersonalHandler.DeleteWorkspacePersonal"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	workspaceIDStr := c.Param("workspace_id")
@@ -216,7 +216,7 @@ func (h *WorkspacePersonalHandler) DeleteWorkspacePersonal(c *gin.Context) {
 	}
 
 	// [COMMENT]: Trích xuất và kiểm tra định danh User ID từ header thông qua helper
-	ownerUserID, ok := constant.GetUserID(c, op)
+	ownerUserID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}

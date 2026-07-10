@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -74,7 +74,7 @@ func Init(meterProvider metric.MeterProvider) {
 // ServiceCall ghi nhận một lần gọi service Core.
 func ServiceCall(ctx context.Context, outcome string) {
 	if serviceCallsCounter != nil {
-		op := constant.GetOperation(ctx)
+		op := pkgcontext.GetOperation(ctx)
 		serviceCallsCounter.Add(ctx, 1,
 			metric.WithAttributes(
 				attribute.String("op", op),
@@ -91,7 +91,7 @@ func Downstream(ctx context.Context, kind, destination, outcome string, duration
 		if err != nil {
 			status = "error"
 		}
-		op := constant.GetOperation(ctx)
+		op := pkgcontext.GetOperation(ctx)
 		downstreamDuration.Record(ctx, duration.Seconds(),
 			metric.WithAttributes(
 				attribute.String("kind", kind),

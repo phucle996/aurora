@@ -8,7 +8,7 @@ import (
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +28,7 @@ func NewDevicePlatformHandler(deviceSvc domainservice.DevicePlatformService) *De
 // [COMMENT]: ListUserDevicesPlatform lấy danh sách thiết bị của một user bất kỳ (phải có level cao hơn target user)
 func (h *DevicePlatformHandler) ListUserDevicesPlatform(c *gin.Context) {
 	const op = "iam.device.list_user_devices_platform"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// 1. Lấy target user ID từ router param
@@ -40,7 +40,7 @@ func (h *DevicePlatformHandler) ListUserDevicesPlatform(c *gin.Context) {
 	}
 
 	// 2. Lấy caller level từ header
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}

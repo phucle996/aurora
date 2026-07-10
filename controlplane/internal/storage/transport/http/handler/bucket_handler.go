@@ -13,7 +13,7 @@ import (
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageDto "controlplane/internal/storage/transport/http/dto"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 )
 
@@ -36,21 +36,21 @@ func NewBucketHandler(
 
 func (h *BucketHandler) Create(c *gin.Context) {
 	const op = "storage.bucket.create"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// 1. Trích xuất thông tin định danh từ HTTP Headers (đã được ACR & middleware validate)
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
-	workspaceID, ok := constant.GetWorkspaceID(c, op)
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
 	if !ok {
 		return
 	}
 
-	zoneIDStr := constant.GetOptionalZoneIDStr(c)
+	zoneIDStr := pkgcontext.GetOptionalZoneIDStr(c)
 	if zoneIDStr == "" {
 		apires.RespondBadRequest(c, "missing mandatory target zone header")
 		return
@@ -61,7 +61,7 @@ func (h *BucketHandler) Create(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 
 	// 2. Bind JSON Request Body sử dụng cấu trúc DTO
 	var req storageDto.CreateBucketRequest
@@ -135,7 +135,7 @@ func (h *BucketHandler) Create(c *gin.Context) {
 
 func (h *BucketHandler) Get(c *gin.Context) {
 	const op = "storage.bucket.get"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	idStr := c.Param("id")
@@ -145,7 +145,7 @@ func (h *BucketHandler) Get(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	var bucket interface{}
 	var getErr error
 
@@ -170,17 +170,17 @@ func (h *BucketHandler) Get(c *gin.Context) {
 
 func (h *BucketHandler) List(c *gin.Context) {
 	const op = "storage.bucket.list"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
-	zoneIDStr := constant.GetOptionalZoneIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
+	zoneIDStr := pkgcontext.GetOptionalZoneIDStr(c)
 
 	var list interface{}
 	var listErr error
 
 	if tenantIDStr == "" {
-		workspaceID, ok := constant.GetWorkspaceID(c, op)
+		workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
 		if !ok {
 			return
 		}
@@ -214,7 +214,7 @@ func (h *BucketHandler) List(c *gin.Context) {
 
 func (h *BucketHandler) UpdateQuota(c *gin.Context) {
 	const op = "storage.bucket.update_quota"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	idStr := c.Param("id")
@@ -231,7 +231,7 @@ func (h *BucketHandler) UpdateQuota(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	var updateErr error
 
 	if tenantIDStr == "" {
@@ -255,7 +255,7 @@ func (h *BucketHandler) UpdateQuota(c *gin.Context) {
 
 func (h *BucketHandler) Suspend(c *gin.Context) {
 	const op = "storage.bucket.suspend"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	idStr := c.Param("id")
@@ -265,7 +265,7 @@ func (h *BucketHandler) Suspend(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	var actionErr error
 
 	if tenantIDStr == "" {
@@ -289,7 +289,7 @@ func (h *BucketHandler) Suspend(c *gin.Context) {
 
 func (h *BucketHandler) Resume(c *gin.Context) {
 	const op = "storage.bucket.resume"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	idStr := c.Param("id")
@@ -299,7 +299,7 @@ func (h *BucketHandler) Resume(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	var actionErr error
 
 	if tenantIDStr == "" {
@@ -323,7 +323,7 @@ func (h *BucketHandler) Resume(c *gin.Context) {
 
 func (h *BucketHandler) Delete(c *gin.Context) {
 	const op = "storage.bucket.delete"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	idStr := c.Param("id")
@@ -333,7 +333,7 @@ func (h *BucketHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	tenantIDStr := constant.GetOptionalTenantIDStr(c)
+	tenantIDStr := pkgcontext.GetOptionalTenantIDStr(c)
 	var deleteErr error
 
 	if tenantIDStr == "" {

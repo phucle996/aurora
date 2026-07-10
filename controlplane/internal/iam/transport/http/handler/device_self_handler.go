@@ -10,7 +10,7 @@ import (
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +33,7 @@ func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -85,11 +85,11 @@ func (h *DeviceSelfHandler) ListMyDevices(c *gin.Context) {
 // [COMMENT]: RevokeMyDevice thu hồi quyền truy cập của một thiết bị cụ thể thuộc sở hữu chính user
 func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 	const op = "iam.device.revoke_my_device"
-	ctx := constant.WithOperation(c.Request.Context(), op)
+	ctx := pkgcontext.WithOperation(c.Request.Context(), op)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -100,7 +100,7 @@ func (h *DeviceSelfHandler) RevokeMyDevice(c *gin.Context) {
 		return
 	}
 
-	currentDeviceID, ok := constant.GetClientDeviceID(c, op)
+	currentDeviceID, ok := pkgcontext.GetClientDeviceID(c, op)
 	if !ok {
 		return
 	}
@@ -135,12 +135,12 @@ func (h *DeviceSelfHandler) LogoutOtherDevices(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
 
-	currentDeviceID, ok := constant.GetClientDeviceID(c, op)
+	currentDeviceID, ok := pkgcontext.GetClientDeviceID(c, op)
 	if !ok {
 		return
 	}

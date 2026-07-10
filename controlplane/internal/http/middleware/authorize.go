@@ -2,13 +2,15 @@ package middleware
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"controlplane/internal/cacheengine"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
+	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,8 +44,8 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		ctx := c.Request.Context()
 		const op = "auth.authorize"
 
-		// 1. Trích xuất User ID từ Header (inject bởi ACR sau khi xác thực JWT)
-		userID, ok := constant.GetUserID(c, op)
+		// 1. Trích xuất User ID từ Gin Context (nạp sẵn bởi ContextInjector)
+		userID, ok := pkgcontext.GetUserID(c, op)
 		if !ok {
 			c.Abort()
 			return
@@ -51,27 +53,29 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 
 		// [COMMENT]: 2.1. Kiểm tra User Level nếu requiredLevel khác "*"
 		if requiredLevel != "*" {
-			actorLevel, ok := constant.GetUserLevel(c, op)
+			actorLevel, ok := pkgcontext.GetUserLevel(c, op)
 			if !ok {
 				c.Abort()
 				return
 			}
 			reqLevel, err := strconv.Atoi(requiredLevel)
 			if err != nil {
+				logger.HandlerError(c, op, fmt.Errorf("invalid required level configuration: %w", err))
 				apires.RespondInternalError(c, "invalid required level configuration")
 				c.Abort()
 				return
 			}
 			// Càng nhỏ level càng cao: Root=0, Admin=1... User=8
 			if actorLevel > uint8(reqLevel) {
+				logger.HandlerWarn(c, op, nil, fmt.Sprintf("insufficient level hierarchy: actor level %d > required %d", actorLevel, reqLevel))
 				apires.RespondForbidden(c, "insufficient level hierarchy")
 				c.Abort()
 				return
 			}
 		}
 
-		// 3. Trích xuất Role UUID từ Header X-User-Role-ID (inject bởi ACR từ JWT claims)
-		roleID, ok := constant.GetUserRoleID(c, op)
+		// 3. Trích xuất Role UUID từ Gin Context (nạp sẵn bởi ContextInjector)
+		roleID, ok := pkgcontext.GetUserRoleID(c, op)
 		if !ok {
 			c.Abort()
 			return
@@ -80,13 +84,14 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		// 4. Validate format requiredPermission phải đúng 3 phần: <module>:<object>:<behavior>
 		parts := strings.SplitN(requiredPermission, ":", 3)
 		if len(parts) != 3 {
+			logger.HandlerWarn(c, op, nil, fmt.Sprintf("invalid required permission format: %s", requiredPermission))
 			apires.RespondInternalError(c, "invalid required permission format: must be <module>:<object>:<behavior>")
 			c.Abort()
 			return
 		}
 
 		// 5. Trích xuất Workspace UUID (luôn bắt buộc — user luôn có ít nhất 1 workspace)
-		workspaceID, ok := constant.GetWorkspaceID(c, op)
+		workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
 		if !ok {
 			c.Abort()
 			return
@@ -94,7 +99,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 
 		// 6. Xác định cấp 1 theo nhánh và build expected key 5 cấp đầy đủ
 		// Format DB đã lưu sẵn: <cấp1>:<workspace_uuid>:<module>:<object>:<behavior>
-		tenantID := constant.GetOptionalTenantIDStr(c)
+		tenantID := pkgcontext.GetOptionalTenantIDStr(c)
 
 		var scopeCtx string
 		var cacheParam string
@@ -107,7 +112,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 			cacheNamespace = "tenant_role"
 		} else {
 			// [COMMENT]: Nhánh Personal — cache key bậc 1: user_role:<userID>
-			username, ok := constant.GetUserName(c, op)
+			username, ok := pkgcontext.GetUserName(c, op)
 			if !ok {
 				c.Abort()
 				return
@@ -120,6 +125,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		// 8. Tra cứu L1 cache theo namespace tương ứng
 		val, err := cacheEngine.GetOrLoad(ctx, cacheNamespace, cacheParam)
 		if err != nil || val == nil {
+			logger.HandlerWarn(c, op, err, fmt.Sprintf("role permissions not found for cacheParam %s", cacheParam))
 			apires.RespondForbidden(c, "role permissions not found")
 			c.Abort()
 			return
@@ -127,6 +133,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 
 		roleEntry, ok := val.(*iamproto.RoleEntry)
 		if !ok {
+			logger.HandlerError(c, op, fmt.Errorf("invalid permissions cache type mapping for cacheParam %s", cacheParam))
 			apires.RespondInternalError(c, "invalid permissions cache type mapping")
 			c.Abort()
 			return
@@ -147,6 +154,7 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 		}
 
 		if !hasPermission {
+			logger.HandlerWarn(c, op, nil, fmt.Sprintf("permission denied: expected %s or %s, but has not matched", expectedKey, wildcardExpectedKey))
 			apires.RespondForbidden(c, "permission denied")
 			c.Abort()
 			return

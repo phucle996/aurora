@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -82,7 +82,7 @@ func ServiceCall(ctx context.Context, outcome string) {
 	// Chỉ kiểm tra con trỏ khác nil thay vì gọi ensureInit() liên tục
 	if serviceCallsCounter != nil {
 		// Trích xuất tên operation từ context
-		op := constant.GetOperation(ctx)
+		op := pkgcontext.GetOperation(ctx)
 
 		// Ghi nhận counter, truyền ctx để OTel có thể đính kèm Trace ID dưới dạng Exemplar.
 		// Nhãn được đổi tên từ 'workflow' sang 'op' và 'result' sang 'outcome' để tăng tính nhất quán.
@@ -105,7 +105,7 @@ func Downstream(ctx context.Context, kind, destination, outcome string, duration
 			status = "error"
 		}
 		// Trích xuất tên operation từ context
-		op := constant.GetOperation(ctx)
+		op := pkgcontext.GetOperation(ctx)
 
 		// Ghi nhận latency histogram, truyền ctx để hỗ trợ Trace Exemplar.
 		// Áp dụng nhãn 'op' cho operation cha và 'outcome' cho kết quả của downstream call.

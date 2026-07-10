@@ -11,7 +11,7 @@ import (
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -31,10 +31,10 @@ func NewUserHandler(userSvc domainservice.UserService) *UserHandler {
 // [COMMENT]: ListUsersPlatform trả về danh sách users thô từ logic phân cấp bảo mật
 func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 	const op = "iam.users.list"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}
@@ -74,10 +74,10 @@ func (h *UserHandler) ListUsersPlatform(c *gin.Context) {
 // [COMMENT]: UpdateUserStatusPlatform thực hiện cập nhật trạng thái hoạt động (vô hiệu hóa) của user
 func (h *UserHandler) UpdateUserStatusPlatform(c *gin.Context) {
 	const op = "iam.users.update_status"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}
@@ -136,10 +136,10 @@ func (h *UserHandler) UpdateUserStatusPlatform(c *gin.Context) {
 // [COMMENT]: ResetUserPasswordPlatform thực hiện reset mật khẩu của user bởi Admin
 func (h *UserHandler) ResetUserPasswordPlatform(c *gin.Context) {
 	const op = "iam.users.reset_password"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}
@@ -185,10 +185,10 @@ func (h *UserHandler) ResetUserPasswordPlatform(c *gin.Context) {
 // [COMMENT]: GetMyProfile trả về thông tin profile hiển thị của chính user đó (self-service, bypass permissions check)
 func (h *UserHandler) GetMyProfile(c *gin.Context) {
 	const op = "iam.users.get_my_profile"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}

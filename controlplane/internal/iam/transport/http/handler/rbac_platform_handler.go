@@ -13,7 +13,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -35,7 +35,7 @@ func (h *RbacPlatformHandler) AssignUserRole(c *gin.Context) {
 	const op = "iam.rbac.assign_user_role"
 
 	// 1. Trích xuất level của caller từ context headers (X-User-Level)
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}
@@ -60,7 +60,7 @@ func (h *RbacPlatformHandler) AssignUserRole(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// 4. Gọi Service thực thi phân quyền và kiểm tra phân cấp
@@ -92,11 +92,11 @@ func (h *RbacPlatformHandler) AssignUserRole(c *gin.Context) {
 // [COMMENT]: ListRolesPlatform trả về danh sách platform-scoped roles có level thấp hơn caller
 func (h *RbacPlatformHandler) ListRolesPlatform(c *gin.Context) {
 	const op = "iam.rbac.list_platform_roles"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Lấy callerLevel từ header X-User-Level do ACR inject để lọc roles có level thấp hơn
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}
@@ -125,7 +125,7 @@ func (h *RbacPlatformHandler) ListRolesPlatform(c *gin.Context) {
 // [COMMENT]: CreateRole tạo vai trò hệ thống mới và map permissions
 func (h *RbacPlatformHandler) CreateRole(c *gin.Context) {
 	const op = "iam.rbac.create_role"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	var req iamReq.CreateRoleRequest
@@ -194,12 +194,12 @@ func (h *RbacPlatformHandler) GetUserRolesPlatform(c *gin.Context) {
 		return
 	}
 
-	callerLevel, ok := constant.GetUserLevel(c, op)
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
 	if !ok {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	role, err := h.rbacPlatformSvc.GetUserRoleDetails(ctx, targetUserID, int32(callerLevel))
@@ -224,10 +224,10 @@ func (h *RbacPlatformHandler) GetUserRolesPlatform(c *gin.Context) {
 // [COMMENT]: GetRenderContext trả về cấu hình Navigation và Capabilities cho console UI dựa theo user id
 func (h *RbacPlatformHandler) GetRenderContext(c *gin.Context) {
 	const op = "iam.rbac.get_render_context"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	userID, ok := constant.GetUserID(c, op)
+	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -262,7 +262,7 @@ func (h *RbacPlatformHandler) GetRenderContext(c *gin.Context) {
 // [COMMENT]: ListPermissions trả về danh sách tất cả các permissions catalog có trong hệ thống
 func (h *RbacPlatformHandler) ListPermissions(c *gin.Context) {
 	const op = "iam.rbac.list_permissions"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	perms, err := h.rbacPlatformSvc.ListPermissions(ctx)

@@ -16,7 +16,7 @@ import (
 	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
 	requestdto "controlplane/internal/hierarchy/transport/http/dto/req"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/constant"
+	"controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -51,7 +51,7 @@ func NewTenantHandler(tenantSvc coreSvcInterface.TenantService) *TenantHandler {
 // @Router       /api/v1/tenants [post]
 func (h *TenantHandler) CreateTenant(c *gin.Context) {
 	const op = "tenant.create"
-	ctx, cancel := context.WithTimeout(constant.WithOperation(c.Request.Context(), op), 5*time.Second)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	// [COMMENT]: Ràng buộc: không được phép tạo Tenant bên trong một Tenant context cũ

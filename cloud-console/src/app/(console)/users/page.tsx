@@ -71,6 +71,10 @@ function UserDirectoryContent() {
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [activeDetailTab, setActiveDetailTab] = useState("Overview");
 
+  // [COMMENT]: State quản lý việc sắp xếp cột của bảng Users
+  const [sortKey, setSortKey] = useState<string>("username");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
   const usersPerPage = 10;
 
   const loadUsers = useCallback(async (isRefresh = false) => {
@@ -111,8 +115,18 @@ function UserDirectoryContent() {
     }));
   }, [users]);
 
+  // [COMMENT]: Toggle sắp xếp khi click tiêu đề cột
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
   const filteredUsers = useMemo(() => {
-    return extendedUsers.filter((u) => {
+    const res = extendedUsers.filter((u) => {
       const matchSearch =
         u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
         u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -127,7 +141,36 @@ function UserDirectoryContent() {
 
       return matchSearch && matchStatus && matchRole && matchMfa;
     });
-  }, [extendedUsers, searchTerm, statusFilter, roleFilter, mfaFilter]);
+
+    return [...res].sort((a, b) => {
+      let va: any = "";
+      let vb: any = "";
+
+      if (sortKey === "username") {
+        va = a.ext.fullname.toLowerCase();
+        vb = b.ext.fullname.toLowerCase();
+      } else if (sortKey === "status") {
+        va = a.status.toLowerCase();
+        vb = b.status.toLowerCase();
+      } else if (sortKey === "role") {
+        va = (a.ext.displayRole || "").toLowerCase();
+        vb = (b.ext.displayRole || "").toLowerCase();
+      } else if (sortKey === "mfa") {
+        va = a.ext.mfaEnabled ? 1 : 0;
+        vb = b.ext.mfaEnabled ? 1 : 0;
+      } else if (sortKey === "devices") {
+        va = a.ext.devicesCount;
+        vb = b.ext.devicesCount;
+      } else if (sortKey === "last_active") {
+        va = a.last_seen_at ? new Date(a.last_seen_at).getTime() : 0;
+        vb = b.last_seen_at ? new Date(b.last_seen_at).getTime() : 0;
+      }
+
+      if (va < vb) return sortDir === "asc" ? -1 : 1;
+      if (va > vb) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+  }, [extendedUsers, searchTerm, statusFilter, roleFilter, mfaFilter, sortKey, sortDir]);
 
   const selectedUser = useMemo(() => {
     if (!selectedUserId) return null;
@@ -200,8 +243,8 @@ function UserDirectoryContent() {
           </div>
         </div>
 
-        {/* 2. Flat Filters + Table Container */}
-        <div className="bg-card text-card-foreground border border-border rounded-xl overflow-hidden divide-y divide-border shadow-sm">
+        {/* 2. Flat Toolbar & User Filters */}
+        <div className="flex flex-col gap-4">
           <UserFilters
             searchTerm={searchTerm}
             setSearchTerm={setSearchTerm}
@@ -230,6 +273,9 @@ function UserDirectoryContent() {
             totalUsers={totalUsers}
             totalPages={totalPages}
             getAvatarColors={getAvatarColors}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={handleSort}
           />
         </div>
       </div>

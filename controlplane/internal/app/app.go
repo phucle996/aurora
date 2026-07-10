@@ -204,6 +204,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	engine.Use(
 		gin.Recovery(),
 		middleware.RequestID(),
+		middleware.ContextInjector(),
 		middleware.OTelTraceContext(otelObs),
 		middleware.OTelHTTPMetrics(promObs),
 		middleware.AccessLog(),
