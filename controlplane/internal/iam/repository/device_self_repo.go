@@ -358,9 +358,9 @@ func (r *DeviceSelfRepository) ListUsersExceedingDeviceCap(ctx context.Context, 
 	return out, rows.Err()
 }
 
-// [COMMENT]: EvictDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
+// [COMMENT]: EvictDevices thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
 // đồng thời xóa bỏ Refresh Token tương ứng trong database bằng 1 câu lệnh CTE duy nhất để tối ưu hiệu năng.
-func (r *DeviceSelfRepository) EvictDevicesByClientDeviceIDs(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
+func (r *DeviceSelfRepository) EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
 	if len(clientDeviceIDs) == 0 {
 		return nil
 	}

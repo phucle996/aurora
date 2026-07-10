@@ -222,7 +222,7 @@ func (s *DeviceSelfService) EvictDevices(ctx context.Context, userID uuid.UUID, 
 	if len(clientDeviceIDs) == 0 {
 		return nil
 	}
-	return s.deviceRepo.EvictDevicesByClientDeviceIDs(ctx, userID, clientDeviceIDs)
+	return s.deviceRepo.EvictDevices(ctx, userID, clientDeviceIDs)
 }
 
 // [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ
