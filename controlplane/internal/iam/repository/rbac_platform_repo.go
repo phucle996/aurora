@@ -153,11 +153,31 @@ func (r *RbacPlatformRepository) AssignUserRole(ctx context.Context, callerLevel
 // [COMMENT]: ListPlatformRoles lấy danh sách roles có scope là platform có level thấp hơn (role_level > callerLevel)
 func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLevel uint8) ([]iamEntity.Role, error) {
 	query := fmt.Sprintf(`
-		SELECT id, code, name, COALESCE(description, ''), role_level, scope, created_at, updated_at
-		FROM %s.roles
-		WHERE scope = 'platform' AND role_level > $1
-		ORDER BY role_level ASC
-	`, r.schema)
+		SELECT 
+			r.id, 
+			r.code, 
+			r.name, 
+			COALESCE(r.description, ''), 
+			r.role_level, 
+			r.scope, 
+			COALESCE(sub_ur.cnt, 0) as assignments_count,
+			COALESCE(sub_rp.cnt, 0) as permissions_count,
+			r.created_at, 
+			r.updated_at
+		FROM %s.roles r
+		LEFT JOIN (
+			SELECT role_id, COUNT(id) as cnt 
+			FROM %s.user_role 
+			GROUP BY role_id
+		) sub_ur ON sub_ur.role_id = r.id
+		LEFT JOIN (
+			SELECT role_id, COUNT(permission_id) as cnt 
+			FROM %s.role_permissions 
+			GROUP BY role_id
+		) sub_rp ON sub_rp.role_id = r.id
+		WHERE r.scope = 'platform' AND r.role_level > $1
+		ORDER BY r.role_level ASC
+	`, r.schema, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, callerLevel)
 	if err != nil {
@@ -168,6 +188,7 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 	var roles []iamEntity.Role
 	for rows.Next() {
 		var role iamModel.Role
+		var assignmentsCount, permissionsCount int
 		err := rows.Scan(
 			&role.ID,
 			&role.Code,
@@ -175,13 +196,18 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 			&role.Description,
 			&role.RoleLevel,
 			&role.Scope,
+			&assignmentsCount,
+			&permissionsCount,
 			&role.CreatedAt,
 			&role.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("rbac platform repo: scan platform role row: %w", err)
 		}
-		roles = append(roles, iamModel.RoleModelToEntity(role))
+		entityRole := iamModel.RoleModelToEntity(role)
+		entityRole.AssignmentsCount = assignmentsCount
+		entityRole.PermissionsCount = permissionsCount
+		roles = append(roles, entityRole)
 	}
 
 	if err := rows.Err(); err != nil {

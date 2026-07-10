@@ -659,8 +659,8 @@ function CreateRoleContent() {
                                             key={b.id}
                                             onClick={() => handleTogglePerm(b.id)}
                                             className={`flex items-start gap-2 p-2 rounded-lg border transition-all cursor-pointer select-none group ${isChecked
-                                                ? "bg-blue-500/10 border-blue-500/30 text-blue-200"
-                                                : "bg-white dark:bg-slate-900/40 border-slate-200 dark:border-slate-800/80 hover:border-slate-355 dark:hover:border-slate-705"
+                                              ? "bg-blue-500/10 border-blue-500/30 text-blue-200"
+                                              : "bg-white dark:bg-slate-900/40 border-slate-200 dark:border-slate-800/80 hover:border-slate-355 dark:hover:border-slate-705"
                                               }`}
                                           >
                                             <div className="mt-0.5 text-slate-400 group-hover:text-blue-500 transition-colors">
@@ -793,7 +793,7 @@ function CreateRoleContent() {
 
 export default function CreateRolePage() {
   return (
-    <RouteGuard requiredKey="iam:role" requiredAction="create">
+    <RouteGuard requiredKey="iam:role" requiredAction="write">
       <CreateRoleContent />
     </RouteGuard>
   );

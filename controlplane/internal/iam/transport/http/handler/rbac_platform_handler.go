@@ -13,7 +13,7 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamReq "controlplane/internal/iam/transport/http/dto/req"
 	"controlplane/pkg/apires"
-	"controlplane/pkg/context"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -111,11 +111,16 @@ func (h *RbacPlatformHandler) ListRolesPlatform(c *gin.Context) {
 	resp := make([]gin.H, 0, len(roles))
 	for _, r := range roles {
 		resp = append(resp, gin.H{
-			"id":         r.ID.String(),
-			"code":       r.Code,
-			"name":       r.Name,
-			"role_level": r.RoleLevel,
-			"scope":      r.Scope,
+			"id":                r.ID.String(),
+			"code":              r.Code,
+			"name":              r.Name,
+			"description":       r.Description,
+			"role_level":        r.RoleLevel,
+			"scope":             r.Scope,
+			"assignments_count": r.AssignmentsCount,
+			"permissions_count": r.PermissionsCount,
+			"created_at":        r.CreatedAt.Format(time.RFC3339),
+			"updated_at":        r.UpdatedAt.Format(time.RFC3339),
 		})
 	}
 

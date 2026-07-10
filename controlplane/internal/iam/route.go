@@ -111,9 +111,9 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.RbacPlatformHandler.CreateRole,
 		)
 
-		// [COMMENT]: Lấy danh sách toàn bộ các permissions hệ thống (yêu cầu quyền iam:permission:read và level 2) thông qua platform handler
+		// [COMMENT]: Lấy danh sách toàn bộ các permissions hệ thống (yêu cầu quyền iam:permissions:read và level 2) thông qua platform handler
 		personalGroup.GET("/iam/rbac/permissions",
-			middleware.Authorize("iam:permission:read", module.L1Registry, "2"),
+			middleware.Authorize("iam:permissions:read", module.L1Registry, "2"),
 			module.RbacPlatformHandler.ListPermissions,
 		)
 
@@ -141,9 +141,9 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.RbacTenantHandler.ListRolesTenant,
 		)
 
-		// [COMMENT]: Lấy danh sách permissions khả dụng cho Tenant (yêu cầu quyền iam:permission:read và level *) thông qua platform handler
+		// [COMMENT]: Lấy danh sách permissions khả dụng cho Tenant (yêu cầu quyền iam:permissions:read và level *) thông qua platform handler
 		tenantGroup.GET("/iam/rbac/permissions",
-			middleware.Authorize("iam:permission:read", module.L1Registry, "*"),
+			middleware.Authorize("iam:permissions:read", module.L1Registry, "*"),
 			module.RbacPlatformHandler.ListPermissions,
 		)
 

@@ -33,16 +33,18 @@ type TenantRole struct {
 	UpdatedAt   time.Time // Thời điểm cập nhật
 }
 
-// [COMMENT]: Role đại diện cho định nghĩa vai trò hệ thống (Platform/Tenant scope)
+// [COMMENT]: Role đại diện cho định nghĩa vai trò hệ thống, bổ sung các trường thống kê phục vụ hiển thị danh sách (Platform/Tenant scope)
 type Role struct {
-	ID          uuid.UUID
-	Code        string
-	Name        string
-	Description string
-	RoleLevel   int
-	Scope       string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID               uuid.UUID
+	Code             string
+	Name             string
+	Description      string
+	RoleLevel        int
+	Scope            string
+	AssignmentsCount int
+	PermissionsCount int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // [COMMENT]: NavigationItem định nghĩa cấu trúc menu gom nhóm 2 cấp (Module:Object) kèm theo các hành động (behavior/action) được phép

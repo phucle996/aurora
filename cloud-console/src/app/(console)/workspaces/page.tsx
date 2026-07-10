@@ -418,10 +418,10 @@ export default function MyWorkspacesPage() {
                             <span className="font-semibold text-foreground truncate">
                               {ws.name}
                             </span>
-                            {/* [COMMENT]: Selected badge chỉ hiện khi là active workspace */}
+                            {/* [COMMENT]: Current badge chỉ hiện khi là active workspace */}
                             {isActive && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider bg-blue-500/10 text-blue-500 border border-blue-500/20 shrink-0">
-                                Selected
+                                Current
                               </span>
                             )}
                           </div>

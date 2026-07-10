@@ -97,7 +97,7 @@ func TenantRoleModelToEntity(input TenantRole) iamEntity.TenantRole {
 	}
 }
 
-// [COMMENT]: Role đại diện cho bảng roles trong PostgreSQL
+// [COMMENT]: Role đại diện cho bảng roles trong PostgreSQL (ánh xạ đúng các cột của bảng roles)
 type Role struct {
 	ID          uuid.UUID `db:"id"`
 	Code        string    `db:"code"`

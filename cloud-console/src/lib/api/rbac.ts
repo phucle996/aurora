@@ -7,6 +7,10 @@ export type PlatformRoleItem = {
   role_level: number;
   description?: string; // [COMMENT]: Mô tả chi tiết vai trò thực tế từ backend
   scope: string;
+  assignments_count: number;
+  permissions_count: number;
+  created_at: string;
+  updated_at: string;
 };
 
 // [COMMENT]: listRoles lấy danh sách các vai trò platform hỗ trợ phân quyền
