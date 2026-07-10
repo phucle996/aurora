@@ -16,8 +16,6 @@ SELECT 'mfa_challenges' AS object_name, to_regclass('mfa_challenges') AS regclas
 SELECT 'permissions' AS object_name, to_regclass('permissions') AS regclass;
 SELECT 'roles' AS object_name, to_regclass('roles') AS regclass;
 SELECT 'user_role_assignments' AS object_name, to_regclass('user_role_assignments') AS regclass;
-SELECT 'audit_events' AS object_name, to_regclass('audit_events') AS regclass;
-SELECT 'admin_action_audits' AS object_name, to_regclass('admin_action_audits') AS regclass;
 
 -- ============================================================================
 -- 2) Index existence (pg_indexes)
@@ -36,8 +34,7 @@ WHERE schemaname = current_schema()
     'roles_code_uidx',
     'user_role_assignments_platform_scope_uidx',
     'user_role_assignments_tenant_scope_uidx',
-    'user_role_assignments_workspace_scope_uidx',
-    'audit_events_event_idx'
+    'user_role_assignments_workspace_scope_uidx'
   )
 ORDER BY tablename, indexname;
 
@@ -58,15 +55,8 @@ ORDER BY table_name::text, conname;
 -- ============================================================================
 -- 4) Contract comments (obj_description + col_description)
 -- ============================================================================
-SELECT 'audit_events' AS table_name, obj_description('audit_events'::regclass) AS table_comment;
-SELECT 'admin_action_audits' AS table_name, obj_description('admin_action_audits'::regclass) AS table_comment;
 SELECT 'refresh_tokens' AS table_name, obj_description('refresh_tokens'::regclass) AS table_comment;
 
-SELECT 'audit_events.event' AS column_name,
-       col_description('audit_events'::regclass, (
-         SELECT attnum FROM pg_attribute
-         WHERE attrelid = 'audit_events'::regclass AND attname = 'event'
-       )) AS column_comment;
 
 SELECT 'refresh_tokens.device_id' AS column_name,
        col_description('refresh_tokens'::regclass, (

@@ -8,13 +8,12 @@ import (
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamTaxonomy "controlplane/internal/iam/taxonomy" // [COMMENT]: Import taxonomy để trả về lỗi phân cấp ErrActionNotAllowed
-	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// [COMMENT]: DevicePlatformRepository thực thi việc truy vấn thiết bị phục vụ platform audit
+// [COMMENT]: DevicePlatformRepository thực thi việc truy vấn thiết bị để giám sát và quản lý thiết bị toàn hệ thống
 type DevicePlatformRepository struct {
 	db     *pgxpool.Pool
 	schema string
@@ -89,32 +88,4 @@ func (r *DevicePlatformRepository) ListDevicesByUserIDWithHierarchy(ctx context.
 	}
 
 	return items, nil
-}
-
-// [COMMENT]: InsertAuditEvent ghi nhận sự kiện nhật ký platform
-func (r *DevicePlatformRepository) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error {
-	var ipStr, uaStr string
-	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
-		ipStr = v
-	}
-	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
-		uaStr = v
-	}
-	var ip *string
-	if ipStr != "" {
-		ip = &ipStr
-	}
-	var userAgent *string
-	if uaStr != "" {
-		userAgent = &uaStr
-	}
-
-	query := fmt.Sprintf(`
-		INSERT INTO %s.audit_events (actor_user_id, tenant_id, workspace_id, event, severity, ip_address, user_agent, created_at)
-		VALUES ($1, NULL, NULL, $2, $3::audit_severity, $4, $5, now())
-	`, r.schema)
-	if _, err := r.db.Exec(ctx, query, actorUserID, event, severity, ip, userAgent); err != nil {
-		return fmt.Errorf("iam repo: insert audit event: %w", err)
-	}
-	return nil
 }

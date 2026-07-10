@@ -1,14 +1,5 @@
 DROP INDEX IF EXISTS idx_iam_outbox_pending;
-DROP INDEX IF EXISTS audit_events_created_at_idx;
-DROP INDEX IF EXISTS audit_events_severity_idx;
-DROP INDEX IF EXISTS audit_events_event_idx;
-DROP INDEX IF EXISTS audit_events_tenant_workspace_idx;
-DROP INDEX IF EXISTS audit_events_actor_user_id_idx;
 
-DROP INDEX IF EXISTS admin_action_audits_status_created_at_idx;
-DROP INDEX IF EXISTS admin_action_audits_resource_idx;
-DROP INDEX IF EXISTS admin_action_audits_action_created_at_idx;
-DROP INDEX IF EXISTS admin_action_audits_created_at_idx;
 
 -- [COMMENT]: Bỏ drop index admin do bảng đã xóa
 DROP INDEX IF EXISTS oauth_tokens_expires_at_idx;

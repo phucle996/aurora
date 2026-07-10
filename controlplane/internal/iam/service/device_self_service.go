@@ -17,7 +17,6 @@ import (
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	"controlplane/pkg/apperr"
-	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
@@ -161,7 +160,6 @@ func (s *DeviceSelfService) RevokeMyDevice(ctx context.Context, userID uuid.UUID
 	}()
 
 	iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "RevokeMyDevice", iamMetrics.OutcomeSuccess, time.Since(repoStart), nil)
-	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.revoked", "warning")
 	return nil
 }
 
@@ -200,7 +198,6 @@ func (s *DeviceSelfService) LogoutOtherDevices(ctx context.Context, userID uuid.
 		}()
 	}
 
-	_ = s.deviceRepo.InsertAuditEvent(ctx, &userID, "device.logout_others", "warning")
 	iamMetrics.ServiceCall(ctx, iamMetrics.OutcomeSuccess)
 	return int64(len(otherDeviceIDs)), nil
 }
@@ -223,27 +220,6 @@ func (s *DeviceSelfService) EvictDevices(ctx context.Context, userID uuid.UUID, 
 		return nil
 	}
 	return s.deviceRepo.EvictDevices(ctx, userID, clientDeviceIDs)
-}
-
-// [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ
-func (s *DeviceSelfService) PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string) {
-	var ip, ua string
-	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
-		ip = v
-	}
-	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
-		ua = v
-	}
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		op := constant.GetOperation(ctx)
-		bgCtx = constant.WithOperation(bgCtx, op)
-		bgCtx = context.WithValue(bgCtx, constant.RemoteIPKey, ip)
-		bgCtx = context.WithValue(bgCtx, constant.UserAgentKey, ua)
-		_ = s.deviceRepo.InsertAuditEvent(bgCtx, &userID, event, severity)
-		iamMetrics.ServiceCall(bgCtx, iamMetrics.OutcomeSuccess)
-	}()
 }
 
 // [COMMENT]: ResolveDeviceIDByKey trả về ID thiết bị khớp với fingerprint của khóa công khai

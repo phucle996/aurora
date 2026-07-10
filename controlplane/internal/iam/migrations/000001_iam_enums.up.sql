@@ -145,22 +145,5 @@ BEGIN
 END
 $$;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'audit_severity' AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE audit_severity AS ENUM ('info', 'warning', 'critical');
-    END IF;
-END
-$$;
-DO $$
-BEGIN
-    EXECUTE format('ALTER TYPE %I.audit_severity ADD VALUE IF NOT EXISTS %L', current_schema(), 'info');
-    EXECUTE format('ALTER TYPE %I.audit_severity ADD VALUE IF NOT EXISTS %L', current_schema(), 'warning');
-    EXECUTE format('ALTER TYPE %I.audit_severity ADD VALUE IF NOT EXISTS %L', current_schema(), 'critical');
-END
-$$;
+
+

@@ -86,16 +86,8 @@ CREATE INDEX IF NOT EXISTS oauth_tokens_user_id_idx ON oauth_tokens(user_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_grant_id_idx ON oauth_tokens(grant_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at_idx ON oauth_tokens(expires_at);
 
-CREATE INDEX IF NOT EXISTS audit_events_actor_user_id_idx ON audit_events(actor_user_id);
-CREATE INDEX IF NOT EXISTS audit_events_tenant_workspace_idx ON audit_events(tenant_id, workspace_id);
-CREATE INDEX IF NOT EXISTS audit_events_event_idx ON audit_events(event);
-CREATE INDEX IF NOT EXISTS audit_events_severity_idx ON audit_events(severity);
-CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events(created_at);
--- Admin action audit v1 indexes
-CREATE INDEX IF NOT EXISTS admin_action_audits_created_at_idx ON admin_action_audits(created_at);
-CREATE INDEX IF NOT EXISTS admin_action_audits_action_created_at_idx ON admin_action_audits(action, created_at);
-CREATE INDEX IF NOT EXISTS admin_action_audits_resource_idx ON admin_action_audits(resource_type, resource_id);
-CREATE INDEX IF NOT EXISTS admin_action_audits_status_created_at_idx ON admin_action_audits(status, created_at);
+
+
 
 -- [COMMENT]: Bỏ index admin_2fa_settings và admin_recovery_codes do bảng đã được xóa
 

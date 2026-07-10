@@ -28,14 +28,6 @@ type DeviceSelfRepository interface {
 	// [COMMENT]: BulkTouchDevices cập nhật hàng loạt trạng thái hoạt động (last_seen_at/ip/ua) cho nhiều thiết bị cùng lúc
 	BulkTouchDevices(ctx context.Context, updates []iamEntity.DevicePresenceUpdate) error
 
-	// [COMMENT]: InsertAuditEvent ghi nhận sự kiện nhật ký bảo mật của user
-	InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error
-
-	// [COMMENT]: EvictExcessDevices loại bỏ các thiết bị vượt quá số lượng tối đa cho phép
-	EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamEntity.EvictedDevice, error)
-
-	// [COMMENT]: ListUsersExceedingDeviceCap lấy danh sách ID người dùng có số lượng thiết bị vượt giới hạn
-	ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error)
 	// [COMMENT]: EvictDevices thu hồi hàng loạt thiết bị của một user theo danh sách client_device_id và xóa refresh token tương ứng
 	EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error
 }

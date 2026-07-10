@@ -466,55 +466,8 @@ COMMENT ON COLUMN oauth_tokens.rotated_at IS 'Timestamp when the token was rotat
 COMMENT ON COLUMN oauth_tokens.revoked_at IS 'Timestamp when the token was revoked.';
 COMMENT ON COLUMN oauth_tokens.created_at IS 'Timestamp when the OAuth token record was created.';
 
-CREATE TABLE IF NOT EXISTS audit_events (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID audit event
-    actor_user_id uuid NULL REFERENCES users(id) ON DELETE SET NULL, -- User thực hiện action
-    tenant_id uuid NULL, -- Tenant context
-    workspace_id uuid NULL, -- Workspace context
-    event varchar(255) NOT NULL, -- Event user/RBAC
-    severity audit_severity NOT NULL DEFAULT 'info', -- Mức độ event
-    ip_address inet NULL, -- IP request
-    user_agent text NULL, -- User-agent request
-    created_at timestamptz NOT NULL DEFAULT now() -- Thời điểm xảy ra event
-);
 
-COMMENT ON TABLE audit_events IS 'Stores user-facing IAM/RBAC activity events such as login, password change, MFA updates, role assignment effects, and device/session actions. This table is not for admin API key audits.';
-COMMENT ON COLUMN audit_events.id IS 'Primary key of the audit event record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN audit_events.actor_user_id IS 'User who performed the audited action. Nullable.';
-COMMENT ON COLUMN audit_events.tenant_id IS 'Optional tenant context for the event.';
-COMMENT ON COLUMN audit_events.workspace_id IS 'Optional workspace context for the event.';
-COMMENT ON COLUMN audit_events.event IS 'Machine-readable user/RBAC event, for example auth.login.success, mfa.challenge.verified, or rbac.role.assigned.';
-COMMENT ON COLUMN audit_events.severity IS 'Severity of the event. Allowed values are info, warning, and critical.';
-COMMENT ON COLUMN audit_events.ip_address IS 'IP address related to the audited event.';
-COMMENT ON COLUMN audit_events.user_agent IS 'User agent related to the audited event.';
-COMMENT ON COLUMN audit_events.created_at IS 'Timestamp when the audited event occurred.';
 
-CREATE TABLE IF NOT EXISTS admin_action_audits (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID audit record
-    action text NOT NULL, -- Hành động admin (rotate_key, upsert_zone, ...)
-    resource_type text NOT NULL, -- Loại resource (admin_api_key, zone, ...)
-    resource_id text NULL, -- ID resource nếu có
-    status text NOT NULL, -- Kết quả: success hoặc failed
-    request_ip text NULL, -- IP request
-    request_path text NOT NULL, -- Path request
-    request_method text NOT NULL, -- HTTP method
-    error_code text NULL, -- Mã lỗi logic (nếu failed)
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb, -- Metadata bổ sung để debug/audit
-    created_at timestamptz NOT NULL DEFAULT now() -- Thời điểm ghi log audit
-);
-
-COMMENT ON TABLE admin_action_audits IS 'Dedicated audit log for critical admin actions executed via admin-only flow.';
-COMMENT ON COLUMN admin_action_audits.id IS 'Primary key of admin action audit record. Generated automatically with gen_random_uuid().';
-COMMENT ON COLUMN admin_action_audits.action IS 'Admin action name, for example admin.api_key.rotate or core.zone.update.';
-COMMENT ON COLUMN admin_action_audits.resource_type IS 'Logical target type of the action, for example admin_api_key, zone, or zone_service.';
-COMMENT ON COLUMN admin_action_audits.resource_id IS 'Optional target resource identifier, when available.';
-COMMENT ON COLUMN admin_action_audits.status IS 'Result status of the action, typically success or failed.';
-COMMENT ON COLUMN admin_action_audits.request_ip IS 'Source IP captured from the request path to support incident investigation.';
-COMMENT ON COLUMN admin_action_audits.request_path IS 'HTTP request path of the audited admin action.';
-COMMENT ON COLUMN admin_action_audits.request_method IS 'HTTP request method of the audited admin action.';
-COMMENT ON COLUMN admin_action_audits.error_code IS 'Optional business error code when action fails.';
-COMMENT ON COLUMN admin_action_audits.metadata IS 'JSONB metadata for contextual details while avoiding secret leakage.';
-COMMENT ON COLUMN admin_action_audits.created_at IS 'Timestamp when the admin action audit record was created.';
 
 -- -------------------------------------------------------------
 -- Bảng outbox lưu trữ các sự kiện/tác vụ bất đồng bộ của module IAM để CDC đồng bộ sang Redis/Kafka

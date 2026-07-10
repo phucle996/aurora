@@ -11,7 +11,6 @@ import (
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamModel "controlplane/internal/iam/model"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	"controlplane/pkg/constant"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -261,103 +260,6 @@ func (r *DeviceSelfRepository) BulkTouchDevices(ctx context.Context, updates []i
 	return nil
 }
 
-// [COMMENT]: InsertAuditEvent ghi nhận sự kiện nhật ký
-func (r *DeviceSelfRepository) InsertAuditEvent(ctx context.Context, actorUserID *uuid.UUID, event string, severity string) error {
-	var ipStr, uaStr string
-	if v, ok := ctx.Value(constant.RemoteIPKey).(string); ok {
-		ipStr = v
-	}
-	if v, ok := ctx.Value(constant.UserAgentKey).(string); ok {
-		uaStr = v
-	}
-	var ip *string
-	if ipStr != "" {
-		ip = &ipStr
-	}
-	var userAgent *string
-	if uaStr != "" {
-		userAgent = &uaStr
-	}
-
-	query := fmt.Sprintf(`
-		INSERT INTO %s.audit_events (actor_user_id, tenant_id, workspace_id, event, severity, ip_address, user_agent, created_at)
-		VALUES ($1, NULL, NULL, $2, $3::audit_severity, $4, $5, now())
-	`, r.schema)
-	if _, err := r.db.Exec(ctx, query, actorUserID, event, severity, ip, userAgent); err != nil {
-		return fmt.Errorf("iam repo: insert audit event: %w", err)
-	}
-	return nil
-}
-
-// [COMMENT]: EvictExcessDevices loại bỏ các thiết bị vượt quá số lượng tối đa
-func (r *DeviceSelfRepository) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamEntity.EvictedDevice, error) {
-	if cap <= 0 {
-		return nil, fmt.Errorf("iam repo: cap must be positive")
-	}
-	query := fmt.Sprintf(`
-		WITH excess AS (
-			SELECT id, client_device_id
-			FROM %s.devices
-			WHERE user_id = $1 AND status != 'revoked'
-			ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
-			OFFSET $2
-		), revoked AS (
-			UPDATE %s.devices d
-			SET status='revoked', revoked_at=now(), updated_at=now()
-			FROM excess e
-			WHERE d.id = e.id
-			RETURNING d.id, d.client_device_id
-		)
-		SELECT id, client_device_id FROM revoked
-	`, r.schema, r.schema)
-	rows, err := r.db.Query(ctx, query, userID, cap)
-	if err != nil {
-		return nil, fmt.Errorf("iam repo: evict excess devices: %w", err)
-	}
-	defer rows.Close()
-	out := make([]iamEntity.EvictedDevice, 0)
-	for rows.Next() {
-		var item iamEntity.EvictedDevice
-		if err := rows.Scan(&item.DeviceID, &item.ClientDeviceID); err != nil {
-			return nil, fmt.Errorf("iam repo: scan evicted device: %w", err)
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
-}
-
-// [COMMENT]: ListUsersExceedingDeviceCap lấy danh sách ID người dùng có số lượng thiết bị vượt giới hạn
-func (r *DeviceSelfRepository) ListUsersExceedingDeviceCap(ctx context.Context, cap int, limit int) ([]uuid.UUID, error) {
-	if cap <= 0 {
-		return nil, fmt.Errorf("iam repo: cap must be positive")
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	query := fmt.Sprintf(`
-		SELECT user_id
-		FROM %s.devices
-		WHERE status != 'revoked'
-		GROUP BY user_id
-		HAVING count(*) > $1
-		LIMIT $2
-	`, r.schema)
-	rows, err := r.db.Query(ctx, query, cap, limit)
-	if err != nil {
-		return nil, fmt.Errorf("iam repo: list users exceeding cap: %w", err)
-	}
-	defer rows.Close()
-	out := make([]uuid.UUID, 0)
-	for rows.Next() {
-		var id uuid.UUID
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			return nil, fmt.Errorf("iam repo: scan user id: %w", scanErr)
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
 // [COMMENT]: EvictDevices thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id,
 // đồng thời xóa bỏ Refresh Token tương ứng trong database bằng 1 câu lệnh CTE duy nhất để tối ưu hiệu năng.
 func (r *DeviceSelfRepository) EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error {
@@ -379,4 +281,3 @@ func (r *DeviceSelfRepository) EvictDevices(ctx context.Context, userID uuid.UUI
 	}
 	return nil
 }
-

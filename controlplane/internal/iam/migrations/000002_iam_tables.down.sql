@@ -1,5 +1,4 @@
 DROP TABLE IF EXISTS iam_outbox_records;
-DROP TABLE IF EXISTS audit_events;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_grants;
 DROP TABLE IF EXISTS oauth_authorization_codes;
@@ -7,7 +6,6 @@ DROP TABLE IF EXISTS oauth_client_secrets;
 DROP TABLE IF EXISTS oauth_clients;
 DROP TABLE IF EXISTS admin_recovery_codes;
 DROP TABLE IF EXISTS admin_2fa_settings;
-DROP TABLE IF EXISTS admin_action_audits;
 DROP TABLE IF EXISTS admin_devices;
 DROP TABLE IF EXISTS tenant_role;
 DROP TABLE IF EXISTS user_role;
