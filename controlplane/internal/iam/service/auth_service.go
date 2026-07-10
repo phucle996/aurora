@@ -345,7 +345,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	}
 
 	// [COMMENT]: 4. Phân giải/Tìm kiếm thiết bị đang hoạt động tương thích
-	matchedClientDeviceID, err := s.deviceSvc.GetActiveDeviceID(ctx, user.ID, req.DevicePublicKey)
+	matchedClientDeviceID, err := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
 
 	var clientDeviceID string
 	if err != nil || matchedClientDeviceID == "" {

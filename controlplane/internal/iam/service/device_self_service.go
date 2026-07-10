@@ -246,9 +246,9 @@ func (s *DeviceSelfService) PublishDeviceAuditAsync(ctx context.Context, userID 
 	}()
 }
 
-// [COMMENT]: GetActiveDeviceID trả về ID thiết bị đang hoạt động khớp với fingerprint
-func (s *DeviceSelfService) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
+// [COMMENT]: ResolveDeviceIDByKey trả về ID thiết bị khớp với fingerprint của khóa công khai
+func (s *DeviceSelfService) ResolveDeviceIDByKey(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error) {
 	fp := sha256.Sum256([]byte(devicePublicKey))
 	fingerprint := hex.EncodeToString(fp[:])
-	return s.deviceRepo.GetActiveDeviceID(ctx, userID, fingerprint)
+	return s.deviceRepo.ResolveDeviceIDByFingerprint(ctx, userID, fingerprint)
 }

@@ -111,8 +111,8 @@ func (r *DeviceSelfRepository) ListDevicesByUserID(ctx context.Context, userID u
 	return items, nil
 }
 
-// [COMMENT]: GetActiveDeviceID trả về client_device_id của thiết bị đang hoạt động khớp với user và fingerprint
-func (r *DeviceSelfRepository) GetActiveDeviceID(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error) {
+// [COMMENT]: ResolveDeviceIDByFingerprint trả về client_device_id của thiết bị khớp với user và fingerprint
+func (r *DeviceSelfRepository) ResolveDeviceIDByFingerprint(ctx context.Context, userID uuid.UUID, fingerprint string) (string, error) {
 	query := fmt.Sprintf(`
 		SELECT client_device_id
 		FROM %s.devices
@@ -124,7 +124,7 @@ func (r *DeviceSelfRepository) GetActiveDeviceID(ctx context.Context, userID uui
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil
 		}
-		return "", fmt.Errorf("iam repo: get active device ID: %w", err)
+		return "", fmt.Errorf("iam repo: resolve device ID: %w", err)
 	}
 	if clientDeviceID == nil {
 		return "", nil

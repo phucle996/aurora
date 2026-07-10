@@ -28,8 +28,8 @@ type DeviceSelfService interface {
 	// [COMMENT]: PublishDeviceAuditAsync ghi nhận sự kiện nhật ký thiết bị bất đồng bộ
 	PublishDeviceAuditAsync(ctx context.Context, userID uuid.UUID, event string, severity string, extras map[string]string)
 
-	// [COMMENT]: GetActiveDeviceID trả về client_device_id của thiết bị đang hoạt động khớp với user và khóa công khai
-	GetActiveDeviceID(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
+	// [COMMENT]: ResolveDeviceIDByKey trả về client_device_id của thiết bị khớp với user và khóa công khai
+	ResolveDeviceIDByKey(ctx context.Context, userID uuid.UUID, devicePublicKey string) (string, error)
 	// [COMMENT]: EvictDevicesByClientDeviceIDs thu hồi hàng loạt thiết bị của một user dựa trên danh sách client_device_id và xóa token
 	EvictDevices(ctx context.Context, userID uuid.UUID, clientDeviceIDs []string) error
 }
