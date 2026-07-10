@@ -383,6 +383,41 @@ impl ZoneManager {
         }
     }
 
+    /// Cập nhật nóng cache (Copy on Write / Write-through) khi nhận sự kiện từ Control Plane qua NATS
+    pub async fn invalidate_zone(&self, event: &crate::service::zone::client::zone_proto::ZoneInvalidatedEvent) {
+        let clean_code = event.zone_code.trim().to_lowercase();
+        
+        if event.deleted {
+            Logger::sys_info(
+                "zone.manager",
+                &format!("Evicting zone {} from cache (deleted)", clean_code),
+            );
+            self.l1_set_negative(&clean_code).await;
+            self.l2_set_negative(&clean_code).await;
+        } else {
+            Logger::sys_info(
+                "zone.manager",
+                &format!("CoW updating zone {} cache: ID={}, status={}, name={}", clean_code, event.zone_id, event.status, event.name),
+            );
+            
+            // 1. Ghi L1 Cache
+            self.l1_set_zone(&clean_code, &event.zone_id, &event.status).await;
+            
+            // 2. Ghi ID -> Name vào L1 Cache
+            let expiry = Instant::now() + Duration::from_secs(600);
+            self.zone_id_to_name.write().await.insert(
+                event.zone_id.clone(),
+                CacheEntry {
+                    value: CacheValue::Found(event.name.clone()),
+                    expiry,
+                },
+            );
+            
+            // 3. Ghi L2 Cache (Redis L2)
+            self.l2_set_zone(&clean_code, &event.zone_id, &event.status).await;
+        }
+    }
+
     async fn get_redis_conn(&self) -> Result<redis::aio::Connection, String> {
         self.redis_client
             .get_async_connection()

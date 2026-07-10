@@ -79,7 +79,7 @@ func (h *ZoneNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error)
 			return
 		}
 
-		zones, err := h.zoneService.RPCListZones(ctx)
+		zones, err := h.zoneService.AcrListZones(ctx)
 		if err != nil {
 			respondError(fmt.Sprintf("failed to list zones: %v", err))
 			return
@@ -143,7 +143,7 @@ func (h *ZoneNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error)
 			return
 		}
 
-		zones, err := h.zoneService.RPCListZones(ctx)
+		zones, err := h.zoneService.AcrListZones(ctx)
 		if err != nil {
 			respondError(fmt.Sprintf("failed to list zones for resolution: %v", err))
 			return

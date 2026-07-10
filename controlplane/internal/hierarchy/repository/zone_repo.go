@@ -183,9 +183,9 @@ func (r *ZoneRepoImpl) ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	return out, rows.Err()
 }
 
-// RPCListZones lấy danh sách các zone tối giản chỉ bao gồm ID, Code, Name, Status.
-// Phù hợp sử dụng cho các luồng hot-path RPC phục vụ Edge Gateway/ACL Service.
-func (r *ZoneRepoImpl) RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
+// AcrListZones lấy danh sách các zone tối giản chỉ bao gồm ID, Code, Name, Status.
+// Phù hợp sử dụng cho các luồng hot-path phục vụ Edge Gateway/ACR Service.
+func (r *ZoneRepoImpl) AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, error) {
 	// Thực hiện truy vấn qua rpcListZonesQuery đã biên dịch trước
 	rows, err := r.db.Query(ctx, r.rpcListZonesQuery)
 	if err != nil {

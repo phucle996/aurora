@@ -97,7 +97,7 @@ func NewModule(
 	}
 
 	// 5) Zone management service - Chỉ truyền một đối tượng cacheEngine duy nhất
-	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds)
+	zoneService := coreSvcImpl.NewZoneService(zoneRepo, rds, natsConn)
 	if zoneService == nil {
 		return nil, fmt.Errorf("zone module: zone service unavailable: zone service is nil")
 	}
@@ -170,3 +170,21 @@ func NewModule(
 	}, nil
 }
 
+// Stop hủy các background goroutine của module Core an toàn.
+func (m *Module) Stop() {
+	if m == nil {
+		return
+	}
+	if m.listenCancel != nil {
+		m.listenCancel()
+		m.listenCancel = nil
+	}
+
+	// [COMMENT]: Hủy đăng ký NATS subscriptions trước khi tắt ứng dụng
+	for _, sub := range m.natsSubs {
+		if sub != nil {
+			_ = sub.Unsubscribe()
+		}
+	}
+	m.natsSubs = nil
+}

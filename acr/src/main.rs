@@ -140,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         nats.client().clone(),
         session_mgr.clone(),
         Arc::new(auth_service.clone()),
+        zone_mgr.clone(),
     );
     nats_router.start().await;
 

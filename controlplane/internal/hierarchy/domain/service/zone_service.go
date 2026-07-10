@@ -10,8 +10,8 @@ import (
 type ZoneService interface {
 	// ListZones trả về danh sách tất cả các zone
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
-	// RPCListZones phục vụ luồng gRPC sync sang ACL chỉ lấy 4 thuộc tính (ID, Code, Name, Status)
-	RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error)
+	// AcrListZones phục vụ luồng sync sang ACR chỉ lấy 4 thuộc tính (ID, Code, Name, Status)
+	AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, error)
 
 	// get zone detail for admin ui
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)

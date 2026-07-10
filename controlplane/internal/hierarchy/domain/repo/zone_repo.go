@@ -11,9 +11,9 @@ type ZoneRepository interface {
 	// trả danh sách zone cho trang quản trị web
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 
-	// RPCListZones truy vấn tối giản danh sách Zone (4 trường) để tối ưu hóa đồng bộ qua gRPC.
+	// AcrListZones truy vấn tối giản danh sách Zone (4 trường) để tối ưu hóa đồng bộ qua NATS.
 	// service này phục vụ acr lấy danh sách để chạy l1 cho phân giải zone context / trả zone catalog cho client
-	RPCListZones(ctx context.Context) ([]coreEntity.RPCZone, error)
+	AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, error)
 
 	// tạo zone mới
 	CreateZone(ctx context.Context, zone coreEntity.Zone, svcs map[coreEntity.ZoneServiceType]bool) error
