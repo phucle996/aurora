@@ -1148,8 +1148,8 @@
       {
         "current": {
           "selected": true,
-          "text": "redis://controlplane-redis:6379",
-          "value": "redis://controlplane-redis:6379"
+          "text": "redis://controlplane-cp-redis:6379",
+          "value": "redis://controlplane-cp-redis:6379"
         },
         "datasource": {
           "type": "prometheus",

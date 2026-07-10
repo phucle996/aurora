@@ -54,8 +54,9 @@ pub async fn start_presence_flush_worker(
                 .await;
 
             if let Err(e) = renamed {
-                // [COMMENT]: RENAME lỗi thường là do key không tồn tại (chưa có heartbeat nào) — đây là trường hợp bình thường
-                if !e.to_string().contains("ERR no such key") {
+                // [COMMENT]: RENAME lỗi thường là do key không tồn tại (chưa có heartbeat nào) — đây là trường hợp bình thường.
+                // Redis Rust client format thực tế: "ResponseError: no such key" (không có prefix ERR).
+                if !e.to_string().contains("no such key") {
                     Logger::sys_error(
                         "presence.worker",
                         "Failed to RENAME heartbeat key",

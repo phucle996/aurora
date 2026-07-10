@@ -25,7 +25,7 @@ receivers:
           scrape_interval: 15s
           static_configs:
             - targets:
-                - 'redis://controlplane-redis:6379'
+                - 'redis://controlplane-cp-redis:6379'
                 - 'redis://controlplane-redis-job:6379'
                 - 'redis://controlplane-redis-dataplane-z1:6379'
           metrics_path: /scrape

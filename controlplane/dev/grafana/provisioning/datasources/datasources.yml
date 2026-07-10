@@ -79,7 +79,7 @@ datasources:
     uid: redis-core
     type: redis-datasource
     access: proxy
-    url: redis://controlplane-redis:6379
+    url: redis://controlplane-cp-redis:6379
     editable: false
 
   # Datasource Redis Job phục vụ giám sát hàng đợi công việc (Job Stream)
