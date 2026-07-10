@@ -60,3 +60,10 @@ type DevicePresenceUpdate struct {
 	LastSeenIP        string
 	LastSeenUserAgent string
 }
+
+// [COMMENT]: EvictedDevice là output của EvictExcessDevices
+type EvictedDevice struct {
+	DeviceID       uuid.UUID
+	ClientDeviceID *string
+}
+

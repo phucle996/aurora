@@ -290,7 +290,7 @@ func (r *DeviceSelfRepository) InsertAuditEvent(ctx context.Context, actorUserID
 }
 
 // [COMMENT]: EvictExcessDevices loại bỏ các thiết bị vượt quá số lượng tối đa
-func (r *DeviceSelfRepository) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamRepoInterface.EvictedDevice, error) {
+func (r *DeviceSelfRepository) EvictExcessDevices(ctx context.Context, userID uuid.UUID, cap int) ([]iamEntity.EvictedDevice, error) {
 	if cap <= 0 {
 		return nil, fmt.Errorf("iam repo: cap must be positive")
 	}
@@ -315,9 +315,9 @@ func (r *DeviceSelfRepository) EvictExcessDevices(ctx context.Context, userID uu
 		return nil, fmt.Errorf("iam repo: evict excess devices: %w", err)
 	}
 	defer rows.Close()
-	out := make([]iamRepoInterface.EvictedDevice, 0)
+	out := make([]iamEntity.EvictedDevice, 0)
 	for rows.Next() {
-		var item iamRepoInterface.EvictedDevice
+		var item iamEntity.EvictedDevice
 		if err := rows.Scan(&item.DeviceID, &item.ClientDeviceID); err != nil {
 			return nil, fmt.Errorf("iam repo: scan evicted device: %w", err)
 		}
