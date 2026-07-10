@@ -91,16 +91,27 @@ func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.
 
 	capabilities := make(map[string]bool)
 	groupMap := make(map[string][]string)
+	isPersonal := true
+
 	for _, p := range rawPerms {
 		capabilities[p] = true
 
 		parts := strings.Split(p, ":")
-		if len(parts) < 3 {
+		// [COMMENT]: RBAC Policy tuân thủ cấu trúc 5 bậc (Identity:Workspace:Module:Object:Behavior)
+		// định nghĩa trong rbac_god_view_workflow.md.
+		if len(parts) != 5 {
 			continue
 		}
-		// logic: module:object:behavior -> key = module.object, action = behavior
-		key := parts[0] + "." + parts[1]
-		behavior := parts[2]
+
+		// [COMMENT]: Phát hiện Tenant context bằng cách kiểm tra Bậc 1 (Identity) có phải là UUID hay không.
+		if _, err := uuid.Parse(parts[0]); err == nil {
+			isPersonal = false
+		}
+
+		// [COMMENT]: Key chỉ chứa Module và Object (Module:Object) để giấu sạch Identity và Workspace ID
+		// tránh rò rỉ dữ liệu nhạy cảm lên Client/Frontend.
+		key := parts[2] + ":" + parts[3]
+		behavior := parts[4]
 
 		// Đảm bảo không trùng lặp các hành vi (actions)
 		exists := false
@@ -126,5 +137,6 @@ func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.
 	return &iamEntity.RenderContext{
 		Navigation:   navigation,
 		Capabilities: capabilities,
+		IsPersonal:   isPersonal,
 	}, nil
 }

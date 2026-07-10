@@ -11,20 +11,24 @@ import (
 	"controlplane/internal/observability"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 )
 
 type UserService struct {
 	repo     iamRepoInterface.UserRepository
 	registry *cacheengine.CacheRegistry
+	nc       *nats.Conn
 }
 
 func NewUserService(
 	repo iamRepoInterface.UserRepository,
 	registry *cacheengine.CacheRegistry,
+	nc *nats.Conn,
 ) iamSvcInterface.UserService {
 	return &UserService{
 		repo:     repo,
 		registry: registry,
+		nc:       nc,
 	}
 }
 
@@ -36,20 +40,22 @@ func (s *UserService) ListUsers(ctx context.Context, callerLevel uint8, limit in
 	return users, err
 }
 
-// [COMMENT]: UpdateUserStatus thực hiện vô hiệu hóa (disable) trạng thái của user, dọn dẹp cache L1 cục bộ và truyền tin fanout invalidate cache
-func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID) error {
-	// [COMMENT]: 1. Gọi Repository để cập nhật status user sang 'disabled' dưới DB
-	if err := s.repo.UpdateUserStatus(ctx, targetUserID, "disabled"); err != nil {
+// [COMMENT]: UpdateUserStatus thực hiện vô hiệu hóa hoặc cập nhật trạng thái hoạt động của user, dọn dẹp cache L1 cục bộ và truyền tin invalidation qua NATS Core
+func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, targetUserID uuid.UUID, status string) error {
+	// [COMMENT]: 1. Gọi Repository để cập nhật status user dưới DB với cơ chế phân cấp
+	if err := s.repo.UpdateUserStatus(ctx, callerLevel, targetUserID, status); err != nil {
 		return err
 	}
 
 	// [COMMENT]: 2. Thu hồi cache user_role của target user trên L1 cục bộ
 	s.registry.L1.Delete("user_role:" + targetUserID.String())
 
-	// [COMMENT]: 3. Phát tán lệnh invalidation cache (Delete) qua Redis Pub/Sub Fanout đến các instances khác trong cụm HA
-	_, err := s.registry.Fanout.Publish(ctx, "user_role:"+targetUserID.String(), nil)
-	if err != nil {
-		return err
+	// [COMMENT]: 3. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
+	if s.nc != nil {
+		err := s.nc.Publish("core.user_role.invalidated", []byte(targetUserID.String()))
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil

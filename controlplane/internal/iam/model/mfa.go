@@ -11,12 +11,8 @@ import (
 type MFASetting struct {
 	ID               uuid.UUID  `db:"id"`
 	UserID           uuid.UUID  `db:"user_id"`
-	Type             string     `db:"type"`
-	Status           string     `db:"status"`
 	SecretCiphertext *string    `db:"secret_ciphertext"`
 	SecretKeyID      *string    `db:"secret_key_id"`
-	Label            *string    `db:"label"`
-	ConfirmedAt      *time.Time `db:"confirmed_at"`
 	DisabledAt       *time.Time `db:"disabled_at"`
 	CreatedAt        time.Time  `db:"created_at"`
 	UpdatedAt        time.Time  `db:"updated_at"`
@@ -26,12 +22,8 @@ func MFASettingEntityToModel(input iamEntity.MFASetting) MFASetting {
 	return MFASetting{
 		ID:               input.ID,
 		UserID:           input.UserID,
-		Type:             string(input.Type),
-		Status:           string(input.Status),
 		SecretCiphertext: input.SecretCiphertext,
 		SecretKeyID:      input.SecretKeyID,
-		Label:            input.Label,
-		ConfirmedAt:      input.ConfirmedAt,
 		DisabledAt:       input.DisabledAt,
 		CreatedAt:        input.CreatedAt,
 		UpdatedAt:        input.UpdatedAt}
@@ -40,12 +32,8 @@ func MFASettingModelToEntity(input MFASetting) iamEntity.MFASetting {
 	return iamEntity.MFASetting{
 		ID:               input.ID,
 		UserID:           input.UserID,
-		Type:             iamEntity.MFAType(input.Type),
-		Status:           iamEntity.MFAStatus(input.Status),
 		SecretCiphertext: input.SecretCiphertext,
 		SecretKeyID:      input.SecretKeyID,
-		Label:            input.Label,
-		ConfirmedAt:      input.ConfirmedAt,
 		DisabledAt:       input.DisabledAt,
 		CreatedAt:        input.CreatedAt,
 		UpdatedAt:        input.UpdatedAt}

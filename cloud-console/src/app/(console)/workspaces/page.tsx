@@ -27,12 +27,12 @@ export default function MyWorkspacesPage() {
 
   // [COMMENT]: Kiểm quyền tạo Workspace
   const canCreate = useMemo(() => {
-    return checkPermission("*:*:hierarchy:workspace", "create");
+    return checkPermission("hierarchy:workspace", "create");
   }, [checkPermission]);
 
   // [COMMENT]: Kiểm quyền xóa Workspace
   const canDelete = useMemo(() => {
-    return checkPermission("*:*:hierarchy:workspace", "delete");
+    return checkPermission("hierarchy:workspace", "delete");
   }, [checkPermission]);
 
   // Modal State

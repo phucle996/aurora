@@ -15,7 +15,6 @@ type SessionRefreshService interface {
 	// CreateRefreshToken tạo mới một session refresh token đục (opaque) khi đăng nhập thành công trên thiết bị tin cậy.
 	CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error)
 
-
 	// [COMMENT]: Xóa bỏ refresh token theo giá trị raw nhận được từ cookie (băm và xóa)
 	RevokeOpaqueRefreshToken(ctx context.Context, rawRefreshToken string) error
 

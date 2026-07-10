@@ -34,7 +34,8 @@ CREATE INDEX IF NOT EXISTS devices_user_active_seen_idx
 -- [COMMENT]: Bỏ index device_challenges do bảng đã được xóa
 
 CREATE INDEX IF NOT EXISTS mfa_settings_user_id_idx ON mfa_settings(user_id);
-CREATE INDEX IF NOT EXISTS mfa_settings_status_idx ON mfa_settings(status);
+-- [COMMENT]: Bỏ index mfa_settings_status_idx do cột status đã được xóa
+-- CREATE INDEX IF NOT EXISTS mfa_settings_status_idx ON mfa_settings(status);
 
 CREATE INDEX IF NOT EXISTS mfa_challenges_user_id_idx ON mfa_challenges(user_id);
 CREATE INDEX IF NOT EXISTS mfa_challenges_status_idx ON mfa_challenges(status);

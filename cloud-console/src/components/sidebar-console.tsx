@@ -61,11 +61,12 @@ export default function SidebarConsole({
     if (!navs) return false;
 
     const matchParts = matchKey.split(":");
-    if (matchParts.length !== 4) return false;
+    // [COMMENT]: So khớp 2 phần (Module:Object) sau khi loại bỏ các tiền tố Bậc 1/Bậc 2
+    if (matchParts.length !== 2) return false;
 
     return navs.some(nav => {
       const navParts = nav.key.split(":");
-      if (navParts.length !== 4) return false;
+      if (navParts.length !== 2) return false;
       // So khớp từng phần: "*" trong matchKey chấp nhận bất kỳ giá trị nào từ nav key
       const keyMatch = matchParts.every((part, i) => part === "*" || part === navParts[i]);
       if (!keyMatch) return false;
@@ -74,17 +75,9 @@ export default function SidebarConsole({
     });
   }, [renderContext]);
 
-  // [COMMENT]: Detect if current context is Personal (Bậc 1 is not a UUID)
+  // [COMMENT]: Xác định xem Actor đang ở trong ngữ cảnh cá nhân thông qua cờ is_personal do Backend trả về
   const isPersonal = React.useMemo(() => {
-    const navs = renderContext?.navigation;
-    if (!navs || navs.length === 0) return true;
-    const firstKey = navs[0].key;
-    const parts = firstKey.split(":");
-    if (parts.length > 0) {
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parts[0]);
-      return !isUuid;
-    }
-    return true;
+    return renderContext?.is_personal ?? true;
   }, [renderContext]);
 
   // [COMMENT]: Map các menu động từ renderContext nhận từ API
@@ -99,7 +92,7 @@ export default function SidebarConsole({
         name: isPersonal ? "My Workspaces" : "Workspaces",
         icon: LayoutGrid,
         path: "/workspaces",
-        matchKey: isPersonal ? "*:*:hierarchy:workspace" : "*:*:tenant:workspaces",
+        matchKey: isPersonal ? "hierarchy:workspace" : "tenant:workspaces",
         requiredAction: isPersonal ? "read" : "list"
       },
       {
@@ -107,7 +100,7 @@ export default function SidebarConsole({
         name: "User Directory",
         icon: Users,
         path: "/users",
-        matchKey: "*:*:iam:users",
+        matchKey: "iam:users",
         // [COMMENT]: Chỉ render khi user có quyền read trên iam:users
         requiredAction: "read"
       },
@@ -116,7 +109,7 @@ export default function SidebarConsole({
         name: "Access Control (RBAC)",
         icon: Lock,
         path: "/rbac",
-        matchKey: "*:*:iam:role",
+        matchKey: "iam:role",
         // [COMMENT]: Chỉ render khi user có quyền read trên iam:role
         requiredAction: "read"
       }

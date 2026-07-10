@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { Users, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { listAdminUsers, deleteAdminUser, type AdminUserItem } from "@/lib/api/session";
+import { listAdminUsers, updateUserStatusAdmin, type AdminUserItem } from "@/lib/api/session";
 import { useUserSession } from "@/hooks/useUserSession";
 import { cn } from "@/lib/utils";
 import RouteGuard from "@/components/route-guard";
@@ -84,7 +84,7 @@ function UserDirectoryContent() {
   const [riskFilter, setRiskFilter] = useState("All");
 
   const [currentPage, setCurrentPage] = useState(1);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [activeDetailTab, setActiveDetailTab] = useState("Overview");
 
@@ -108,19 +108,16 @@ function UserDirectoryContent() {
     void loadUsers();
   }, [loadUsers]);
 
-  const handleDelete = async (id: string, username: string) => {
-    if (confirm(`Are you absolutely sure you want to permanently delete platform user @${username}?`)) {
-      setDeletingId(id);
-      try {
-        await deleteAdminUser(id);
-        toast.success(`User @${username} has been deleted`);
-        if (selectedUserId === id) setSelectedUserId(null);
-        await loadUsers(false);
-      } catch (e: any) {
-        toast.error(e.message || `Failed to delete @${username}`);
-      } finally {
-        setDeletingId(null);
-      }
+  const handleUpdateStatus = async (id: string, status: string, username: string) => {
+    setUpdatingId(id);
+    try {
+      await updateUserStatusAdmin(id, status);
+      toast.success(`User @${username} status has been updated to ${status}`);
+      await loadUsers(false);
+    } catch (e: any) {
+      toast.error(e.message || `Failed to update status`);
+    } finally {
+      setUpdatingId(null);
     }
   };
 
@@ -157,7 +154,7 @@ function UserDirectoryContent() {
   }, [extendedUsers, selectedUserId]);
 
   const canDeleteUser = useMemo(() => {
-    return checkPermission("*:*:iam:users", "delete");
+    return checkPermission("iam:users", "delete");
   }, [checkPermission]);
 
   const totalUsers = filteredUsers.length;
@@ -268,9 +265,8 @@ function UserDirectoryContent() {
         <UserDetailPanel
           selectedUser={selectedUser}
           onClose={() => setSelectedUserId(null)}
-          canDeleteUser={canDeleteUser}
-          deletingId={deletingId}
-          onDelete={handleDelete}
+          updatingId={updatingId}
+          onUpdateStatus={handleUpdateStatus}
         />
       )}
     </div>
@@ -279,7 +275,7 @@ function UserDirectoryContent() {
 
 export default function UserDirectoryPage() {
   return (
-    <RouteGuard requiredKey="*:*:iam:users" requiredAction="read">
+    <RouteGuard requiredKey="iam:users" requiredAction="read">
       <UserDirectoryContent />
     </RouteGuard>
   );

@@ -12,6 +12,7 @@ export type NavigationItem = {
 export type RenderContext = {
   navigation: NavigationItem[];
   capabilities: Record<string, boolean>;
+  is_personal: boolean;
 };
 
 export type UserProfile = {
@@ -92,9 +93,9 @@ export async function listAdminUsers(limit = 20, offset = 0, signal?: AbortSigna
   return res?.data?.users || [];
 }
 
-// [COMMENT]: deleteAdminUser gọi endpoint xóa người dùng theo ID
-export async function deleteAdminUser(id: string, signal?: AbortSignal): Promise<void> {
-  await fetchJSON(`/api/v1/iam/users/${id}`, {
+// [COMMENT]: updateUserStatusAdmin gọi endpoint cập nhật trạng thái hoạt động của người dùng
+export async function updateUserStatusAdmin(id: string, status: string, signal?: AbortSignal): Promise<void> {
+  await fetchJSON(`/api/v1/iam/users/${id}?status=${status}`, {
     method: "DELETE",
     signal,
   });

@@ -21,6 +21,8 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getUserRolePlatform, getUserDevicesPlatform, type PlatformRoleItem } from "@/lib/api/session";
+import { useUserSession } from "@/hooks/useUserSession";
+import { getUserMfaPlatform, type PlatformMfaStatus } from "@/lib/api/mfa";
 
 // [COMMENT]: Sinh màu sắc avatar ngẫu nhiên đẹp mắt (nhất quán với page.tsx)
 const getAvatarColors = (name: string) => {
@@ -40,29 +42,45 @@ const getAvatarColors = (name: string) => {
 interface UserDetailPanelProps {
   selectedUser: any; // extendedUser object
   onClose: () => void;
-  canDeleteUser: boolean;
-  deletingId: string | null;
-  onDelete: (id: string, username: string) => void;
+  updatingId: string | null;
+  onUpdateStatus: (id: string, status: string, username: string) => void;
 }
 
 export function UserDetailPanel({
   selectedUser,
   onClose,
-  canDeleteUser,
-  deletingId,
-  onDelete
+  updatingId,
+  onUpdateStatus
 }: UserDetailPanelProps) {
+  const { checkPermission } = useUserSession();
+
+  // [COMMENT]: Sinh danh sách tab động dựa theo quyền hạn thực tế của actor
+  const tabs = React.useMemo(() => {
+    const list = ["Overview"];
+    if (checkPermission("iam:role", "read")) {
+      list.push("Roles");
+    }
+    if (checkPermission("iam:device", "read")) {
+      list.push("Devices");
+    }
+    list.push("MFA");
+    return list;
+  }, [checkPermission]);
+
   const [activeDetailTab, setActiveDetailTab] = useState("Overview");
   const [roleData, setRoleData] = useState<PlatformRoleItem | null>(null);
   const [loadingRole, setLoadingRole] = useState(false);
   const [devicesData, setDevicesData] = useState<any[]>([]); // [COMMENT]: State lưu trữ danh sách thiết bị thực tế của user
   const [loadingDevices, setLoadingDevices] = useState(false); // [COMMENT]: Trạng thái loading khi fetch thiết bị
+  const [mfaData, setMfaData] = useState<PlatformMfaStatus | null>(null); // [COMMENT]: Lưu trữ trạng thái MFA thực tế của user
+  const [loadingMfa, setLoadingMfa] = useState(false); // [COMMENT]: Trạng thái loading khi kiểm tra MFA
 
   // [COMMENT]: Reset tab và dữ liệu role/devices khi người dùng chọn user khác
   useEffect(() => {
     setActiveDetailTab("Overview");
     setRoleData(null);
     setDevicesData([]);
+    setMfaData(null);
   }, [selectedUser?.id]);
 
   // [COMMENT]: Thực hiện lazy load dữ liệu vai trò từ backend khi chuyển sang tab Roles
@@ -131,6 +149,39 @@ export function UserDetailPanel({
     };
   }, [activeDetailTab, selectedUser?.id]);
 
+  // [COMMENT]: Thực hiện lazy load dữ liệu MFA thực tế từ backend khi chuyển sang tab MFA
+  useEffect(() => {
+    if (activeDetailTab !== "MFA" || !selectedUser?.id) {
+      return;
+    }
+
+    let active = true;
+    const fetchMfa = async () => {
+      setLoadingMfa(true);
+      try {
+        const res = await getUserMfaPlatform(selectedUser.id);
+        if (active) {
+          setMfaData(res);
+        }
+      } catch (err) {
+        console.error("Failed to fetch mfa status", err);
+        if (active) {
+          setMfaData(null);
+        }
+      } finally {
+        if (active) {
+          setLoadingMfa(false);
+        }
+      }
+    };
+
+    fetchMfa();
+
+    return () => {
+      active = false;
+    };
+  }, [activeDetailTab, selectedUser?.id]);
+
   const renderDetailTab = () => {
     switch (activeDetailTab) {
       case "Overview":
@@ -138,16 +189,16 @@ export function UserDetailPanel({
           <div className="flex flex-col gap-5 text-xs select-none">
             {/* Basic Information */}
             <div className="pb-5 border-b border-border/60 flex flex-col gap-3">
-              <span className="font-bold text-foreground text-xs uppercase tracking-wider block mb-1">Basic Information</span>
+              <span className="font-semibold text-foreground text-xs block mb-1">Basic information</span>
 
               <div className="flex flex-col gap-2">
                 <div className="flex justify-between items-start border-b border-border/30 py-2">
-                  <span className="text-[11px] font-bold text-muted-foreground uppercase">User ID</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground">User ID</span>
                   <span className="font-mono text-[11px] text-foreground break-all select-all font-semibold max-w-[200px] text-right">{selectedUser.id}</span>
                 </div>
 
                 <div className="flex justify-between items-center border-b border-border/30 py-2">
-                  <span className="text-[11px] font-bold text-muted-foreground uppercase">Email</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground">Email</span>
                   <div className="flex items-center gap-1.5">
                     <span className="font-semibold text-foreground">{selectedUser.email}</span>
                     <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/30 font-extrabold uppercase tracking-wider text-[9px] h-4">
@@ -157,11 +208,11 @@ export function UserDetailPanel({
                   </div>
                 </div>
                 <div className="flex justify-between items-center border-b border-border/30 py-2">
-                  <span className="text-[11px] font-bold text-muted-foreground uppercase">Full Name</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground">Full name</span>
                   <span className="font-semibold text-foreground">{selectedUser.ext.fullname}</span>
                 </div>
                 <div className="flex justify-between items-center border-b border-border/30 py-2">
-                  <span className="text-[11px] font-bold text-muted-foreground uppercase">Status</span>
+                  <span className="text-[11px] font-semibold text-muted-foreground">Status</span>
                   <Badge variant="outline" className={cn(
                     "capitalize font-bold text-[9px] h-5 border",
                     selectedUser.status === "active"
@@ -175,8 +226,8 @@ export function UserDetailPanel({
                 </div>
 
                 <div className="flex flex-col pt-2">
-                  <span className="text-[11px] font-bold text-muted-foreground uppercase mb-1">Notes</span>
-                  <p className="text-[11px] text-foreground/80 leading-normal font-semibold bg-muted/30 dark:bg-muted/10 p-2.5 rounded-lg border border-border/60">
+                  <span className="text-[11px] font-semibold text-muted-foreground mb-1">Notes</span>
+                  <p className="text-[11px] text-foreground/80 leading-normal font-medium">
                     Platform administrator. Desired state monitor.
                   </p>
                 </div>
@@ -185,7 +236,7 @@ export function UserDetailPanel({
 
             {/* Security Summary */}
             <div className="flex flex-col gap-3 pt-1">
-              <span className="font-bold text-foreground text-xs uppercase tracking-wider block mb-1">Security Summary</span>
+              <span className="font-semibold text-foreground text-xs block mb-1">Security summary</span>
 
               <div className="flex items-center justify-between border-b border-border/30 py-2">
                 <div className="flex items-center gap-2.5">
@@ -252,7 +303,7 @@ export function UserDetailPanel({
           return (
             <div className="flex flex-col items-center justify-center py-12 select-none text-muted-foreground gap-2">
               <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
-              <span className="text-[11px] font-bold uppercase tracking-wider">Loading role allocation...</span>
+              <span className="text-[11px] font-semibold">Loading role allocation...</span>
             </div>
           );
         }
@@ -261,7 +312,7 @@ export function UserDetailPanel({
           return (
             <div className="flex flex-col items-center justify-center py-10 select-none text-muted-foreground/80 gap-1.5 text-center border border-border/40 bg-muted/5 rounded-lg p-4">
               <Lock className="h-5 w-5 text-red-500/60" />
-              <span className="text-[11px] font-bold uppercase tracking-wider text-foreground">Access Restricted</span>
+              <span className="text-[11px] font-semibold text-foreground">Access restricted</span>
               <p className="text-[10px] max-w-[220px] leading-normal font-semibold text-muted-foreground mt-0.5">
                 Insufficient level hierarchy to view. This account possesses a higher administrative rank than your current credentials.
               </p>
@@ -270,44 +321,57 @@ export function UserDetailPanel({
         }
 
         return (
-          <div className="flex flex-col gap-3 text-xs select-none animate-in fade-in duration-200">
+          <div className="flex flex-col gap-4 text-xs select-none animate-in fade-in duration-200">
             <div>
-              <span className="font-bold text-foreground block mb-2 text-xs uppercase tracking-wider">Platform Role</span>
+              <span className="font-semibold text-foreground block mb-2 text-xs">Platform role</span>
               {/* [COMMENT]: Sử dụng helper getAvatarColors sinh màu tự động, đảm bảo công bằng cho mọi Role */}
               <Badge variant="outline" className={cn(
-                "inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold tracking-wider mb-4 border h-5",
+                "inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold tracking-wider mb-3 border h-5",
                 getAvatarColors(roleData.name)
               )}>
                 {roleData.name}
               </Badge>
 
-              {/* [COMMENT]: Hiển thị mô tả vai trò thực tế trả về từ backend API */}
+              {/* [COMMENT]: Hiển thị mô tả vai trò dạng phẳng với hairline nhẹ */}
               {roleData.description && (
-                <div className="mb-4 bg-muted/20 dark:bg-muted/10 p-2.5 rounded-lg border border-border/60">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase block mb-1">Description</span>
-                  <p className="text-[11px] text-foreground/80 leading-normal font-semibold">
+                <div className="flex flex-col gap-1.5 py-2 border-b border-border/30">
+                  <span className="text-[11px] font-semibold text-muted-foreground">Description</span>
+                  <p className="text-[11px] text-foreground/85 leading-relaxed font-medium">
                     {roleData.description}
                   </p>
                 </div>
               )}
 
-              {/* [COMMENT]: Render động cấu hình vai trò không dùng hardcode điều kiện */}
-              <div className="flex flex-col gap-2.5 border-t border-border/40 pt-3">
-                <span className="font-bold text-foreground text-[11px] uppercase">Role Specifications</span>
-                <div className="grid grid-cols-2 gap-2 text-[11px] font-semibold text-foreground/80">
-                  <div className="bg-muted/10 border border-border/40 p-2 rounded-md">
-                    <span className="text-[9px] text-muted-foreground uppercase block mb-0.5">Role Level</span>
-                    <span>Level {roleData.role_level}</span>
+              {/* [COMMENT]: Render động cấu hình vai trò dạng danh sách phẳng Azure-like */}
+              <div className="flex flex-col gap-2 pt-3">
+                <span className="font-semibold text-foreground text-[11px] block mb-1">Role specifications</span>
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between items-center border-b border-border/30 py-2">
+                    <span className="text-[11px] font-semibold text-muted-foreground">Role level</span>
+                    <span className="font-semibold text-foreground">Level {roleData.role_level}</span>
                   </div>
-                  <div className="bg-muted/10 border border-border/40 p-2 rounded-md">
-                    <span className="text-[9px] text-muted-foreground uppercase block mb-0.5">Scope</span>
-                    <span className="capitalize">{roleData.scope}</span>
+                  <div className="flex justify-between items-center border-b border-border/30 py-2">
+                    <span className="text-[11px] font-semibold text-muted-foreground">Scope</span>
+                    <span className="font-semibold text-foreground capitalize">{roleData.scope}</span>
                   </div>
-                  <div className="bg-muted/10 border border-border/40 p-2 rounded-md col-span-2">
-                    <span className="text-[9px] text-muted-foreground uppercase block mb-0.5">System Code</span>
-                    <code className="font-mono text-[10px] bg-muted/40 px-1 py-0.5 rounded">{roleData.code}</code>
+                  <div className="flex justify-between items-center border-b border-border/30 py-2">
+                    <span className="text-[11px] font-semibold text-muted-foreground">System code</span>
+                    <code className="font-mono text-[11px] text-foreground font-semibold bg-muted/30 dark:bg-muted/10 px-1.5 py-0.5 rounded border border-border/40">{roleData.code}</code>
                   </div>
                 </div>
+              </div>
+
+              {/* [COMMENT]: Nút gán vai trò nằm trực tiếp trong ngữ cảnh quản trị tab Roles */}
+              <div className="mt-5 border-t border-border/40 pt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => toast.info("Role allocation manager opening")}
+                  className="w-full font-bold text-foreground cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <UserCheck className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span>Assign Role</span>
+                </Button>
               </div>
             </div>
           </div>
@@ -324,7 +388,7 @@ export function UserDetailPanel({
         return (
           <div className="flex flex-col gap-3 text-xs select-none animate-in fade-in duration-200">
             <div>
-              <span className="font-bold text-foreground block mb-3 text-xs uppercase tracking-wider">Registered Devices ({devicesData.length})</span>
+              <span className="font-semibold text-foreground block mb-3 text-xs">Registered devices ({devicesData.length})</span>
               {devicesData.length === 0 ? (
                 <div className="py-6 text-center text-muted-foreground font-bold">No devices registered.</div>
               ) : (
@@ -381,10 +445,21 @@ export function UserDetailPanel({
           </div>
         );
       case "MFA":
+        if (loadingMfa) {
+          return (
+            <div className="flex flex-col items-center justify-center py-12 select-none text-muted-foreground gap-2">
+              <Loader2 className="h-5 w-5 animate-spin text-blue-500" />
+              <span className="text-[11px] font-semibold">Checking MFA configurations...</span>
+            </div>
+          );
+        }
+
+        const isMfaEnabled = mfaData ? mfaData.mfa_enabled : false;
+
         return (
           <div className="flex flex-col gap-3 text-xs select-none">
             <div>
-              <span className="font-bold text-foreground block mb-3 text-xs uppercase tracking-wider">MFA Authentication</span>
+              <span className="font-semibold text-foreground block mb-3 text-xs">MFA authentication</span>
               <div className="flex items-start gap-2.5 mb-4">
                 <Fingerprint className="h-6 w-6 text-blue-500 mt-0.5" />
                 <div className="flex-1">
@@ -396,39 +471,22 @@ export function UserDetailPanel({
               </div>
 
               <div className="flex items-center justify-between border-t border-border/40 pt-3">
-                <span className="text-muted-foreground font-bold uppercase text-[10px]">MFA Status</span>
+                <div className="flex flex-col">
+                  <span className="text-muted-foreground font-semibold text-[10px]">MFA status</span>
+                  {isMfaEnabled && mfaData?.created_at && (
+                    <span className="text-[9px] text-muted-foreground/80 mt-0.5 font-semibold">
+                      Enabled: {new Date(mfaData.created_at).toLocaleString()}
+                    </span>
+                  )}
+                </div>
                 <Badge variant="outline" className={cn(
                   "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold tracking-wider border h-5",
-                  selectedUser.ext.mfaEnabled
-                    ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-450 dark:border-emerald-500/30"
+                  isMfaEnabled
+                    ? "bg-emerald-500/10 text-emerald-650 dark:text-emerald-450 dark:border-emerald-500/30"
                     : "bg-muted text-muted-foreground border-border"
                 )}>
-                  {selectedUser.ext.mfaEnabled ? "ENABLED" : "DISABLED"}
+                  {isMfaEnabled ? "ENABLED" : "DISABLED"}
                 </Badge>
-              </div>
-            </div>
-          </div>
-        );
-      case "Sessions":
-        return (
-          <div className="flex flex-col gap-3 text-xs select-none">
-            <div>
-              <span className="font-bold text-foreground block mb-3 text-xs uppercase tracking-wider">Active Web Sessions</span>
-              <div className="space-y-3">
-                <div className="flex items-start justify-between">
-                  <div className="flex gap-2">
-                    <Globe className="h-4.5 w-4.5 text-blue-500 mt-0.5" />
-                    <div className="flex flex-col">
-                      <span className="font-bold text-foreground">Hanoi, Vietnam</span>
-                      <span className="text-[10px] text-muted-foreground font-medium">
-                        Chrome on macOS • Active Session (Current)
-                      </span>
-                    </div>
-                  </div>
-                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/30 font-extrabold uppercase tracking-wider text-[9px] h-4">
-                    Active
-                  </Badge>
-                </div>
               </div>
             </div>
           </div>
@@ -480,7 +538,7 @@ export function UserDetailPanel({
 
       {/* Navigation Tabs */}
       <div className="flex border-b border-border text-[11px] font-bold text-muted-foreground select-none">
-        {["Overview", "Roles", "Devices", "MFA", "Sessions"].map((tab) => (
+        {tabs.map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveDetailTab(tab)}
@@ -507,48 +565,36 @@ export function UserDetailPanel({
           <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
           <span>Reset Password</span>
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => toast.info(`Access states update dispatched for @${selectedUser.username}`)}
-          className="border-red-200 dark:border-red-900/50 text-red-650 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer flex items-center gap-1.5"
-        >
-          <Power className="h-3.5 w-3.5" />
-          <span>Disable User</span>
-        </Button>
+        {checkPermission("iam:users", "delete") && !selectedUser.ext.isMe && (
+          selectedUser.status === "disabled" || selectedUser.status === "suspended" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onUpdateStatus(selectedUser.id, "active", selectedUser.username)}
+              disabled={updatingId !== null}
+              className="border-emerald-200 dark:border-emerald-900/50 text-emerald-600 dark:text-emerald-450 font-bold hover:bg-emerald-50 dark:hover:bg-emerald-950/20 transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <Power className="h-3.5 w-3.5" />
+              <span>{updatingId === selectedUser.id ? "Enabling..." : "Enable User"}</span>
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onUpdateStatus(selectedUser.id, "disabled", selectedUser.username)}
+              disabled={updatingId !== null}
+              className="border-red-200 dark:border-red-900/50 text-red-650 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <Power className="h-3.5 w-3.5" />
+              <span>{updatingId === selectedUser.id ? "Disabling..." : "Disable User"}</span>
+            </Button>
+          )
+        )}
       </div>
 
       {/* Tab view rendering (NO MORE SCROLL OR MAX-HEIGHT) */}
       <div className="flex flex-col gap-4.5">
         {renderDetailTab()}
-      </div>
-
-      {/* Quick Actions Footer */}
-      <div className="border-t border-border pt-3 select-none flex flex-col gap-2.5">
-        <span className="text-[10px] uppercase font-extrabold text-muted-foreground tracking-wider">Quick Actions</span>
-        <div className="flex flex-col sm:flex-row gap-2 text-[10px]">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => toast.info("Role allocation manager opening")}
-            className="flex-1 font-bold text-foreground cursor-pointer flex items-center justify-center gap-1 transition-colors"
-          >
-            <UserCheck className="h-3.5 w-3.5 text-muted-foreground" />
-            <span>Assign Roles</span>
-          </Button>
-          {canDeleteUser && !selectedUser.ext.isMe && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onDelete(selectedUser.id, selectedUser.username)}
-              disabled={deletingId !== null}
-              className="flex-1 border-red-200 dark:border-red-900/50 bg-red-50/20 dark:bg-red-950/10 text-red-655 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/20 cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50 transition-colors"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              <span>{deletingId === selectedUser.id ? "Deleting..." : "Delete User"}</span>
-            </Button>
-          )}
-        </div>
       </div>
     </div>
   );

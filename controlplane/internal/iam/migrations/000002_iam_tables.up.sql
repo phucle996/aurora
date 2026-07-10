@@ -126,27 +126,19 @@ ALTER TABLE refresh_tokens
 CREATE TABLE IF NOT EXISTS mfa_settings (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- ID MFA setting
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- User sở hữu MFA setting
-    type mfa_type NOT NULL, -- Loại MFA: totp hoặc recovery_code
-    status mfa_status NOT NULL DEFAULT 'pending', -- Trạng thái MFA setting
     secret_ciphertext text NULL, -- Secret đã mã hóa, dùng cho TOTP
     secret_key_id varchar(255) NULL, -- ID key dùng để encrypt/decrypt secret
-    label varchar(255) NULL, -- Nhãn hiển thị
-    confirmed_at timestamptz NULL, -- Thời điểm confirm MFA thành công
     disabled_at timestamptz NULL, -- Thời điểm disable MFA
     created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo setting
     updated_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm cập nhật setting
-    CONSTRAINT mfa_settings_user_type_key UNIQUE (user_id, type)
+    CONSTRAINT mfa_settings_user_id_key UNIQUE (user_id)
 );
 
-COMMENT ON TABLE mfa_settings IS 'Stores MFA settings per user such as TOTP configuration or recovery_code status. Plain secrets must never be stored.';
+COMMENT ON TABLE mfa_settings IS 'Stores MFA settings per user. Plain secrets must never be stored.';
 COMMENT ON COLUMN mfa_settings.id IS 'Primary key of the MFA setting record. Generated automatically with gen_random_uuid().';
 COMMENT ON COLUMN mfa_settings.user_id IS 'User who owns this MFA setting.';
-COMMENT ON COLUMN mfa_settings.type IS 'Type of MFA setting. Allowed values are totp and recovery_code.';
-COMMENT ON COLUMN mfa_settings.status IS 'Current lifecycle status of the MFA setting.';
 COMMENT ON COLUMN mfa_settings.secret_ciphertext IS 'Encrypted MFA secret, typically used for TOTP. Plain secret must never be stored.';
 COMMENT ON COLUMN mfa_settings.secret_key_id IS 'Identifier of the key used to encrypt or decrypt the MFA secret.';
-COMMENT ON COLUMN mfa_settings.label IS 'User-visible label for the MFA setting, for example Authenticator App.';
-COMMENT ON COLUMN mfa_settings.confirmed_at IS 'Timestamp when the user confirmed this MFA setting successfully.';
 COMMENT ON COLUMN mfa_settings.disabled_at IS 'Timestamp when this MFA setting was disabled.';
 COMMENT ON COLUMN mfa_settings.created_at IS 'Timestamp when the MFA setting was created.';
 COMMENT ON COLUMN mfa_settings.updated_at IS 'Timestamp when the MFA setting was last updated.';

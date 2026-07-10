@@ -46,7 +46,7 @@ DROP INDEX IF EXISTS mfa_challenges_expires_at_idx;
 DROP INDEX IF EXISTS mfa_challenges_status_idx;
 DROP INDEX IF EXISTS mfa_challenges_user_id_idx;
 
-DROP INDEX IF EXISTS mfa_settings_status_idx;
+-- DROP INDEX IF EXISTS mfa_settings_status_idx;
 DROP INDEX IF EXISTS mfa_settings_user_id_idx;
 
 -- [COMMENT]: Bỏ drop index device_challenges do bảng đã xóa

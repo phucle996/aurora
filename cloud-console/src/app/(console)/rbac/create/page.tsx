@@ -793,7 +793,7 @@ function CreateRoleContent() {
 
 export default function CreateRolePage() {
   return (
-    <RouteGuard requiredKey="*:*:iam:role" requiredAction="create">
+    <RouteGuard requiredKey="iam:role" requiredAction="create">
       <CreateRoleContent />
     </RouteGuard>
   );

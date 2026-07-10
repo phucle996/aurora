@@ -47,7 +47,7 @@ WHERE conname IN (
   'refresh_tokens_device_id_fkey',
   'device_challenges_nonce_key',
   'device_challenges_expires_after_created_chk',
-  'mfa_settings_user_type_key',
+  'mfa_settings_user_id_key',
   'roles_role_level_check'
 )
 ORDER BY table_name::text, conname;

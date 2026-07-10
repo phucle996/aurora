@@ -32,6 +32,7 @@ type IAMModule struct {
 	DevicePlatformHandler *iamHandler.DevicePlatformHandler // [COMMENT]: Handler giám sát thiết bị platform
 	RbacPlatformHandler   *iamHandler.RbacPlatformHandler   // [COMMENT]: Handler cho các tác vụ platform-scoped RBAC
 	RbacTenantHandler     *iamHandler.RbacTenantHandler     // [COMMENT]: Handler cho các tác vụ tenant-scoped RBAC
+	MfaHandler            *iamHandler.MfaHandler            // [COMMENT]: Handler phục vụ tra cứu thông tin MFA platform audit
 
 	// Core Services & Sync Engines
 	RbacPlatformRepository   iamRepoInterface.RbacPlatformRepository   // [COMMENT]: Repo quản lý platform role
@@ -183,7 +184,7 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
 	}
 
-	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine)
+	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, natsConn)
 	if userService == nil {
 		return nil, errors.New("iam module: failed to construct core user service implementation")
 	}
@@ -215,6 +216,11 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP RBAC tenant handler")
 	}
 
+	// [COMMENT]: Khởi tạo các thành phần DI phục vụ tra cứu trạng thái MFA
+	mfaRepo := iamRepoImpl.NewMfaRepository(cfg, db)
+	mfaSvc := iamSvcImpl.NewMfaService(mfaRepo)
+	mfaHandler := iamHandler.NewMfaHandler(mfaSvc)
+
 	// ------------------------------------------------------------------------
 	// 🎉 GIAI ĐOẠN 6: RETURN FULLY INITIALIZED MODULE CONTAINER
 	// ------------------------------------------------------------------------
@@ -235,6 +241,7 @@ func NewModule(
 		DevicePlatformHandler:    devicePlatformHandler,
 		RbacPlatformHandler:      rbacPlatformHandler,
 		RbacTenantHandler:        rbacTenantHandler,
+		MfaHandler:               mfaHandler,
 		RbacPlatformRepository:   rbacPlatformRepo,
 		RbacTenantRepository:     rbacTenantRepo,
 		DeviceSelfRepository:     deviceSelfRepo,

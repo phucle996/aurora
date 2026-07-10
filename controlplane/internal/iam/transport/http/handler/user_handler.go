@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	iamEntity "controlplane/internal/iam/domain/entity"
 	domainservice "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	apires "controlplane/pkg/apires"
@@ -91,7 +92,25 @@ func (h *UserHandler) UpdateUserStatusPlatform(c *gin.Context) {
 		return
 	}
 
-	if err := h.userSvc.UpdateUserStatus(ctx, callerLevel, targetUserID); err != nil {
+	// [COMMENT]: Nhận và parse strict trạng thái status truyền lên từ query params để tránh lệch mọi tình huống
+	statusStr := strings.TrimSpace(c.Query("status"))
+	var status iamEntity.UserStatus
+	switch statusStr {
+	case string(iamEntity.UserStatusPendingActive):
+		status = iamEntity.UserStatusPendingActive
+	case string(iamEntity.UserStatusActive):
+		status = iamEntity.UserStatusActive
+	case string(iamEntity.UserStatusSuspended):
+		status = iamEntity.UserStatusSuspended
+	case string(iamEntity.UserStatusDisabled):
+		status = iamEntity.UserStatusDisabled
+	default:
+		logger.HandlerWarn(c, op, nil, "missing or invalid status parameter")
+		apires.RespondBadRequest(c, "invalid or missing status parameter")
+		return
+	}
+
+	if err := h.userSvc.UpdateUserStatus(ctx, callerLevel, targetUserID, string(status)); err != nil {
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
 			logger.HandlerWarn(c, op, err, "insufficient role hierarchy permissions")
 			apires.RespondForbidden(c, "forbidden")

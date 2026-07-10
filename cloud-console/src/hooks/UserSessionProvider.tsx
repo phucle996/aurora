@@ -332,11 +332,12 @@ export function UserSessionProvider({ children }: { children: ReactNode }) {
     if (!navs) return false;
 
     const matchParts = matchKey.split(":");
-    if (matchParts.length !== 4) return false;
+    // [COMMENT]: Chuyển sang so khớp 2 phần (Module:Object) sau khi lược bỏ các tiền tố Bậc 1/Bậc 2
+    if (matchParts.length !== 2) return false;
 
     for (const nav of navs) {
       const navParts = nav.key.split(":");
-      if (navParts.length !== 4) continue;
+      if (navParts.length !== 2) continue;
 
       const isMatch = matchParts.every((part, i) => part === "*" || part === navParts[i]);
       if (isMatch && nav.actions.includes(action)) {

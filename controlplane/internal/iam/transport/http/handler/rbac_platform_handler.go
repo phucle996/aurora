@@ -196,9 +196,11 @@ func (h *RbacPlatformHandler) GetRenderContext(c *gin.Context) {
 		})
 	}
 
+	// [COMMENT]: Trả về thông tin render context kèm cờ is_personal để frontend xác định giao diện personal/tenant
 	apires.RespondSuccess(c, gin.H{
 		"navigation":   navDTOs,
 		"capabilities": renderContext.Capabilities,
+		"is_personal":  renderContext.IsPersonal,
 	}, "success")
 }
 

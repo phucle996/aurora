@@ -15,7 +15,7 @@ function AccessControlContent() {
   const [loading, setLoading] = useState(true);
   const { checkPermission } = useUserSession();
 
-  const canCreate = checkPermission("*:*:iam:role", "create");
+  const canCreate = checkPermission("iam:role", "create");
 
   // [COMMENT]: Gọi API lấy danh sách Platform Roles
   const loadRoles = useCallback(async (showToast = false) => {
@@ -156,7 +156,7 @@ function AccessControlContent() {
 
 export default function AccessControlPage() {
   return (
-    <RouteGuard requiredKey="*:*:iam:role" requiredAction="read">
+    <RouteGuard requiredKey="iam:role" requiredAction="read">
       <AccessControlContent />
     </RouteGuard>
   );

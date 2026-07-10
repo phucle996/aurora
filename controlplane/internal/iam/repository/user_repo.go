@@ -44,7 +44,7 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 			ur.role_name, 
 			EXISTS (
 				SELECT 1 FROM %s.mfa_settings ms 
-				WHERE ms.user_id = u.id AND ms.type = 'totp' AND ms.status = 'enabled'
+				WHERE ms.user_id = u.id AND ms.disabled_at IS NULL
 			) AS mfa_enabled,
 			(
 				SELECT COUNT(*) FROM %s.devices d 
@@ -84,16 +84,42 @@ func (r *UserRepository) ListUsers(ctx context.Context, callerLevel uint8, limit
 	return users, nil
 }
 
-// [COMMENT]: UpdateUserStatus thực hiện cập nhật trạng thái hoạt động (status) của user dưới DB
-func (r *UserRepository) UpdateUserStatus(ctx context.Context, userID uuid.UUID, status string) error {
-	query := fmt.Sprintf("UPDATE %s.users SET status = $1, updated_at = NOW() WHERE id = $2", r.schema)
-	res, err := r.db.Exec(ctx, query, status, userID)
+// [COMMENT]: UpdateUserStatus thực hiện cập nhật trạng thái hoạt động (status) của user dưới DB nếu đủ phân cấp dùng 1 query CTE để tối ưu và tránh race condition
+func (r *UserRepository) UpdateUserStatus(ctx context.Context, callerLevel uint8, userID uuid.UUID, status string) error {
+	query := fmt.Sprintf(`
+		WITH target_user AS (
+			SELECT role_level 
+			FROM %s.user_role 
+			WHERE user_id = $2 AND workspace_id = '00000000-0000-0000-0000-000000000000'
+		),
+		updater AS (
+			UPDATE %s.users u
+			SET status = $1, updated_at = NOW()
+			FROM target_user tu
+			WHERE u.id = $2 AND tu.role_level > $3
+			RETURNING u.id
+		)
+		SELECT 
+			(SELECT COUNT(*) FROM target_user) AS user_exists,
+			(SELECT COUNT(*) FROM updater) AS update_success
+	`, r.schema, r.schema)
+
+	var userExists, updateSuccess int
+	err := r.db.QueryRow(ctx, query, status, userID, callerLevel).Scan(&userExists, &updateSuccess)
 	if err != nil {
 		return err
 	}
-	if res.RowsAffected() == 0 {
+
+	// [COMMENT]: Xử lý kết quả trả về từ CTE:
+	// 1. Nếu user_exists == 0 -> Đối tượng đích không tồn tại
+	if userExists == 0 {
 		return iamTaxonomy.ErrUserNotFound
 	}
+	// 2. Nếu user_exists == 1 nhưng update_success == 0 -> Phân cấp callerLevel >= targetLevel (không đủ quyền lực)
+	if updateSuccess == 0 {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+
 	return nil
 }
 

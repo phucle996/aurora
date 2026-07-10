@@ -78,7 +78,7 @@ func NewZoneRepoImpl(cfg *config.Config, db *pgxpool.Pool) coreRepoInterface.Zon
 		`, schema),
 		getZoneDetailByIDQuery: fmt.Sprintf(`
 			SELECT 
-				z.id, z.code, z.name, z.location, z.description, z.status, z.created_at, z.updated_at,
+				z.id, z.code, z.name, z.location, COALESCE(z.description, '') AS description, z.status, z.created_at, z.updated_at,
 				s.id, s.zone_id, s.service_type, s.desired_state, s.actual_state, s.created_at, s.updated_at
 			FROM %s.zones z
 			LEFT JOIN %s.zone_services s ON z.id = s.zone_id

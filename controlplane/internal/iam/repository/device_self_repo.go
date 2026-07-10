@@ -239,7 +239,7 @@ func (r *DeviceSelfRepository) BulkTouchDevices(ctx context.Context, updates []i
 		UPDATE %s.devices AS d
 		SET
 			last_seen_at = to_timestamp(v.ts),
-			last_seen_ip = NULLIF(v.ip, ''),
+			last_seen_ip = NULLIF(v.ip, '')::inet,
 			last_seen_user_agent = NULLIF(v.ua, ''),
 			updated_at = now()
 		FROM (

@@ -12,8 +12,8 @@ import (
 type UserRepository interface {
 	// [COMMENT]: ListUsers lấy danh sách users có level thấp hơn caller level (role_level số lớn hơn)
 	ListUsers(ctx context.Context, callerLevel uint8, limit int, offset int) ([]*iamEntity.User, error)
-	// [COMMENT]: UpdateUserStatus cập nhật trạng thái hoạt động (status) của user dưới DB
-	UpdateUserStatus(ctx context.Context, userID uuid.UUID, status string) error
+	// [COMMENT]: UpdateUserStatus cập nhật trạng thái hoạt động (status) của user dưới DB nếu đủ phân cấp
+	UpdateUserStatus(ctx context.Context, callerLevel uint8, userID uuid.UUID, status string) error
 	// [COMMENT]: GetUserProfile lấy thông tin profile hiển thị của user từ bảng user_profiles
 	GetUserProfile(ctx context.Context, userID uuid.UUID) (*iamEntity.UserProfile, error)
 }
