@@ -188,3 +188,62 @@ FROM users u
 CROSS JOIN roles r
 WHERE u.username = 'audit_viewer' AND r.code = 'platform_support_operator'
 ON CONFLICT DO NOTHING;
+
+-- 6) Seed personal workspaces for active users existing in system
+DO $$
+DECLARE
+    u RECORD;
+    v_zone_id UUID;
+    v_workspace_id UUID;
+    v_role_id UUID;
+    v_role_name TEXT;
+    v_role_level INT;
+BEGIN
+    SELECT id INTO v_zone_id FROM hierarchy.zones WHERE status = 'active' LIMIT 1;
+    IF v_zone_id IS NULL THEN
+        SELECT id INTO v_zone_id FROM hierarchy.zones LIMIT 1;
+    END IF;
+ 
+    IF v_zone_id IS NULL THEN
+        v_zone_id := '019f3d3e-997d-7894-9236-c5122634cb4f'::UUID;
+        INSERT INTO hierarchy.zones (id, code, name, location, status)
+        VALUES (v_zone_id, 'edge-viet-nam-1', 'Edge việt nam 1', 'Hà Nội, Vietnam', 'active')
+        ON CONFLICT (id) DO NOTHING;
+    END IF;
+ 
+    FOR u IN SELECT id, username FROM users WHERE status = 'active' LOOP
+        IF NOT EXISTS (SELECT 1 FROM hierarchy.personal_workspaces WHERE owner_id = u.id) THEN
+            v_workspace_id := gen_random_uuid();
+            INSERT INTO hierarchy.personal_workspaces (id, name, code, zone_id, owner_id)
+            VALUES (
+                v_workspace_id,
+                'Default Workspace',
+                'default-' || lower(u.username),
+                v_zone_id,
+                u.id
+            );
+ 
+            SELECT id, name, role_level INTO v_role_id, v_role_name, v_role_level 
+            FROM roles 
+            WHERE code = 'platform_user';
+ 
+            IF v_role_id IS NOT NULL THEN
+                INSERT INTO user_role (
+                    id, user_id, username, workspace_id, role_id, role_name, role_level, list_perm
+                )
+                VALUES (
+                    gen_random_uuid(),
+                    u.id,
+                    u.username,
+                    v_workspace_id,
+                    v_role_id,
+                    v_role_name,
+                    v_role_level,
+                    decode('', 'hex')
+                )
+                ON CONFLICT (user_id, workspace_id, role_id) DO NOTHING;
+            END IF;
+        END IF;
+    END LOOP;
+END;
+$$;

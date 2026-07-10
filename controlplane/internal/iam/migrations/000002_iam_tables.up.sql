@@ -107,9 +107,6 @@ COMMENT ON COLUMN devices.os_name IS 'Operating system name of the device.';
 COMMENT ON COLUMN devices.browser_name IS 'Browser name when the device is used through a web login flow.';
 COMMENT ON COLUMN devices.public_key IS 'Public key registered for device-bound authentication. Private key must remain on the client device.';
 COMMENT ON COLUMN devices.public_key_fingerprint IS 'Fingerprint of the stored public key. Unique per user.';
-COMMENT ON COLUMN devices.status IS 'Current lifecycle/security status of the device. Allowed values: new, recognized, trusted, suspicious, revoked.';
-COMMENT ON COLUMN devices.trusted_at IS 'Timestamp when the device was marked trusted.';
-COMMENT ON COLUMN devices.quarantined_at IS 'Timestamp when the device was marked quarantined.';
 COMMENT ON COLUMN devices.risk_flags IS 'Risk flags for the device in key-value form. Must not contain raw secrets or token material.';
 COMMENT ON COLUMN devices.revoked_at IS 'Timestamp when the device was revoked.';
 COMMENT ON COLUMN devices.client_device_id IS 'Persistent opaque device identifier supplied by the client (X-Client-Device-Id) or bootstrapped by server. Identity key for repeat logins; never exposes devices.id.';
@@ -493,3 +490,13 @@ CREATE TABLE IF NOT EXISTS iam_outbox_records (
     error_code VARCHAR(100),
     error_message TEXT
 );
+
+-- Sửa các ràng buộc CHECK regex lỗi định dạng khoảng ký tự '-'
+ALTER TABLE hierarchy.tenants DROP CONSTRAINT IF EXISTS ck_tenants_code_format;
+ALTER TABLE hierarchy.tenants ADD CONSTRAINT ck_tenants_code_format CHECK (code ~ '^[a-z0-9_\-]+$');
+
+ALTER TABLE hierarchy.personal_workspaces DROP CONSTRAINT IF EXISTS ck_personal_workspaces_code_format;
+ALTER TABLE hierarchy.personal_workspaces ADD CONSTRAINT ck_personal_workspaces_code_format CHECK (code ~ '^[a-z0-9_\-]+$');
+
+ALTER TABLE hierarchy.tenant_workspaces DROP CONSTRAINT IF EXISTS ck_tenant_workspaces_code_format;
+ALTER TABLE hierarchy.tenant_workspaces ADD CONSTRAINT ck_tenant_workspaces_code_format CHECK (code ~ '^[a-z0-9_\-]+$');

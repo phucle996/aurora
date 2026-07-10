@@ -21,7 +21,6 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_expires_at_idx ON refresh_tokens(expir
 -- [COMMENT]: Xóa unique constraint để cho phép nhiều user đăng nhập chung browser/cặp khóa Ed25519
 CREATE INDEX IF NOT EXISTS devices_user_fingerprint_idx ON devices(user_id, public_key_fingerprint);
 CREATE INDEX IF NOT EXISTS devices_user_id_idx ON devices(user_id);
-CREATE INDEX IF NOT EXISTS devices_status_idx ON devices(status);
 CREATE INDEX IF NOT EXISTS devices_last_seen_at_idx ON devices(last_seen_at);
 
 CREATE UNIQUE INDEX IF NOT EXISTS devices_user_client_device_uidx
@@ -30,7 +29,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS devices_user_client_device_uidx
 
 CREATE INDEX IF NOT EXISTS devices_user_active_seen_idx
     ON devices (user_id, last_seen_at DESC, created_at DESC)
-    WHERE status != 'revoked';
+    WHERE revoked_at IS NULL;
 
 -- [COMMENT]: Bỏ index device_challenges do bảng đã được xóa
 

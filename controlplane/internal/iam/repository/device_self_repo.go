@@ -115,7 +115,7 @@ func (r *DeviceSelfRepository) ResolveDeviceIDByFingerprint(ctx context.Context,
 	query := fmt.Sprintf(`
 		SELECT client_device_id
 		FROM %s.devices
-		WHERE user_id = $1 AND public_key_fingerprint = $2 AND status != 'revoked'
+		WHERE user_id = $1 AND public_key_fingerprint = $2 AND revoked_at IS NULL
 		LIMIT 1
 	`, r.schema)
 	var clientDeviceID *string
@@ -269,7 +269,7 @@ func (r *DeviceSelfRepository) EvictDevices(ctx context.Context, userID uuid.UUI
 	query := fmt.Sprintf(`
 		WITH updated_devices AS (
 			UPDATE %s.devices
-			SET status = 'revoked', revoked_at = now(), updated_at = now()
+			SET revoked_at = now(), updated_at = now()
 			WHERE user_id = $1 AND client_device_id = ANY($2)
 			RETURNING id
 		)

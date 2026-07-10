@@ -1,6 +1,7 @@
 -- IAM migration layer 000005
--- Auto-update updated_at on mutable tables.
+-- SQL Triggers
 
+-- 1) Auto-update updated_at triggers on mutable tables.
 DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
 CREATE TRIGGER trg_users_updated_at
 BEFORE UPDATE ON users
@@ -48,3 +49,10 @@ CREATE TRIGGER trg_oauth_clients_updated_at
 BEFORE UPDATE ON oauth_clients
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
+
+-- 2) Auto seed workspace trigger
+DROP TRIGGER IF EXISTS trg_auto_seed_workspace_on_user_active ON users;
+CREATE TRIGGER trg_auto_seed_workspace_on_user_active
+AFTER INSERT OR UPDATE ON users
+FOR EACH ROW
+EXECUTE FUNCTION auto_seed_workspace_on_user_active();
