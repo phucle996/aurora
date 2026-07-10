@@ -42,12 +42,14 @@ import (
 	coreRepoImpl "controlplane/internal/hierarchy/repository"
 	coreSvcImpl "controlplane/internal/hierarchy/service"
 	zoneHandler "controlplane/internal/hierarchy/transport/http/handler"
-	zoneRpcHandler "controlplane/internal/hierarchy/transport/rpc/handler"
-	zoneProto "controlplane/internal/hierarchy/transport/rpc/proto"
 
 	"controlplane/pkg/logger"
 
+	pubsubHandler "controlplane/internal/hierarchy/transport/pubsub/handler"
+	"controlplane/internal/observability"
+
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 )
@@ -55,6 +57,9 @@ import (
 type Module struct {
 	cfg            *config.Config
 	rds            *goredis.Client
+	natsConn       *nats.Conn
+	otel           *observability.OTel
+	natsSubs       []*nats.Subscription
 	ZoneRepository coreRepoInterface.ZoneRepository
 	ZoneService    coreSvcInterface.ZoneService
 	ZoneHandler    *zoneHandler.ZoneHandler
@@ -80,6 +85,8 @@ func NewModule(
 	db *pgxpool.Pool,
 	rds *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
+	natsConn *nats.Conn,
+	otel *observability.OTel,
 ) (*Module, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("zone module: config is required")
@@ -151,6 +158,8 @@ func NewModule(
 	return &Module{
 		cfg:                         cfg,
 		rds:                         rds,
+		natsConn:                    natsConn,
+		otel:                        otel,
 		ZoneRepository:              zoneRepo,
 		ZoneService:                 zoneService,
 		ZoneHandler:                 zHandler,
@@ -169,21 +178,23 @@ func NewModule(
 
 // RegisterGRPCServices phơi ra phương thức đăng ký grpc services phục vụ app bootstrap layer.
 func (m *Module) RegisterGRPCServices(server *grpc.Server) {
-	if m == nil {
-		return
-	}
-	// [COMMENT]: Loại bỏ RegisterBackpressureServiceServer do luồng báo tải gRPC đã được dọn dẹp theo God View.
-	if m.ZoneService != nil {
-		zoneHandler := zoneRpcHandler.NewZoneGRPCHandler(m.ZoneService)
-		zoneProto.RegisterZoneServiceServer(server, zoneHandler)
-		logger.SysInfo("grpc", "registered ZoneService onto gRPC server")
-	}
 }
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
 	if m == nil || m.rds == nil {
 		return nil
+	}
+
+	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Zone qua NATS
+	if m.natsConn != nil && m.ZoneService != nil {
+		handler := pubsubHandler.NewZoneNatsHandler(m.cfg, m.ZoneService, m.otel)
+		subs, err := handler.Subscribe(m.natsConn)
+		if err != nil {
+			return fmt.Errorf("hierarchy bootstrap: failed to subscribe NATS handler: %w", err)
+		}
+		m.natsSubs = append(m.natsSubs, subs...)
+		logger.SysInfo("hierarchy.nats", "Successfully registered NATS zone handlers")
 	}
 
 	// [COMMENT]: Khởi tạo sub-context riêng biệt để kiểm soát luồng background listener
@@ -263,4 +274,12 @@ func (m *Module) Stop() {
 		m.listenCancel()
 		m.listenCancel = nil
 	}
+
+	// [COMMENT]: Hủy đăng ký NATS subscriptions trước khi tắt ứng dụng
+	for _, sub := range m.natsSubs {
+		if sub != nil {
+			_ = sub.Unsubscribe()
+		}
+	}
+	m.natsSubs = nil
 }

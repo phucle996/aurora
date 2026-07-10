@@ -87,7 +87,7 @@ func NewGlobalModules(cfg *config.Config,
 	// ------------------------------------------------------------------------
 
 	// 3) Core module bootstrap: source runtime provider cho secrets/security.
-	coreModule, err := core.NewModule(cfg, db, rds, cacheEngine)
+	coreModule, err := core.NewModule(cfg, db, rds, cacheEngine, natsConn, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical core module: %w", err)
 	}

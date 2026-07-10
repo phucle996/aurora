@@ -60,6 +60,21 @@ impl Nats {
     }
 
     pub async fn get_zone_list(&self) -> Result<Vec<zone_proto::ZoneEntry>, tonic::Status> {
-        Ok(vec![])
+        use prost::Message;
+        let req = zone_proto::GetZoneListRequest {};
+        let mut buf = Vec::new();
+        req.encode(&mut buf)
+            .map_err(|e| tonic::Status::internal(format!("Failed to encode request: {}", e)))?;
+
+        match self.nats_client.request("core.zone.get_zone_list".to_string(), buf.into()).await {
+            Ok(msg) => {
+                let resp = zone_proto::GetZoneListResponse::decode(msg.payload)
+                    .map_err(|e| tonic::Status::internal(format!("Failed to decode GetZoneListResponse: {}", e)))?;
+                Ok(resp.zones)
+            }
+            Err(e) => {
+                Err(tonic::Status::internal(format!("NATS request failed: {}", e)))
+            }
+        }
     }
 }
