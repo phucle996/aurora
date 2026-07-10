@@ -15,14 +15,25 @@ import (
 
 // Bootstrap khởi tạo các side-effect lâu dài và chạy các background task của module Core.
 func (m *Module) Bootstrap(ctx context.Context) error {
-	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Zone qua NATS
+	// [COMMENT]: Đăng ký độc lập từng NATS Handler phục vụ đồng bộ và phân giải Zone
 	if m.natsConn != nil && m.ZoneService != nil {
 		handler := pubsubHandler.NewZoneNatsHandler(m.cfg, m.ZoneService, m.otel)
-		subs, err := handler.Subscribe(m.natsConn)
+		const queueGroup = "hierarchy_zone_service"
+
+		// 1. Luồng đồng bộ danh sách Zones (GetZoneList)
+		subGetList, err := m.natsConn.QueueSubscribe("core.zone.get_zone_list", queueGroup, handler.HandleGetZoneList)
 		if err != nil {
-			return fmt.Errorf("hierarchy bootstrap: failed to subscribe NATS handler: %w", err)
+			return fmt.Errorf("hierarchy bootstrap: failed to subscribe HandleGetZoneList: %w", err)
 		}
-		m.natsSubs = append(m.natsSubs, subs...)
+		m.natsSubs = append(m.natsSubs, subGetList)
+
+		// 2. Luồng phân giải Zone (ResolveZone)
+		subResolve, err := m.natsConn.QueueSubscribe("core.zone.resolve_zone", queueGroup, handler.HandleResolveZone)
+		if err != nil {
+			return fmt.Errorf("hierarchy bootstrap: failed to subscribe HandleResolveZone: %w", err)
+		}
+		m.natsSubs = append(m.natsSubs, subResolve)
+
 		logger.SysInfo("hierarchy.nats", "Successfully registered NATS zone handlers")
 	}
 

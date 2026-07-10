@@ -22,7 +22,7 @@ import (
 	coreSvcInterface "controlplane/internal/hierarchy/domain/service"
 	coreMetric "controlplane/internal/hierarchy/metrics"
 	coreTaxonomy "controlplane/internal/hierarchy/taxonomy"
-	zoneProto "controlplane/internal/hierarchy/transport/rpc/proto"
+	zoneProto "controlplane/internal/hierarchy/transport/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/logger"
 
@@ -168,7 +168,7 @@ func (s *ZoneService) UpdateZoneStatus(ctx context.Context, zoneID uuid.UUID, to
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
-	
+
 	// [COMMENT]: Cập nhật trạng thái mới vào Redis L2 và bắn event invalidation qua NATS
 	if s.rds != nil {
 		redisKey := fmt.Sprintf("zone:code:%s", zoneCode)
@@ -188,7 +188,7 @@ func (s *ZoneService) DeleteZone(ctx context.Context, zoneID uuid.UUID) error {
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return err
 	}
-	
+
 	// [COMMENT]: Xóa cache Redis L2 và bắn event invalidation qua NATS
 	if s.rds != nil {
 		redisKey := fmt.Sprintf("zone:code:%s", deletedCode)
@@ -207,12 +207,26 @@ func (s *ZoneService) UpdateZoneService(ctx context.Context, zoneID uuid.UUID, s
 		coreMetric.ServiceCall(ctx, coreMetric.OutcomeFailure)
 		return nil, err
 	}
-	
+
 	// [COMMENT]: Bắn event invalidation vì cấu hình dịch vụ thay đổi qua NATS
 	s.publishInvalidation(ctx, zoneID, false)
 
 	coreMetric.ServiceCall(ctx, coreMetric.OutcomeSuccess)
 	return svc, nil
+}
+
+// AcrResolveZone phân giải một Zone cụ thể theo mã code phục vụ ACR.
+func (s *ZoneService) AcrResolveZone(ctx context.Context, code string) (*coreEntity.RPCZone, error) {
+	zones, err := s.AcrListZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, z := range zones {
+		if z.Code == code {
+			return &z, nil
+		}
+	}
+	return nil, nil
 }
 
 // publishInvalidation lấy trạng thái mới nhất của Zone từ database (SoT) và phát tán sự kiện invalidated qua NATS Core.

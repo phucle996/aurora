@@ -12,6 +12,8 @@ type ZoneService interface {
 	ListZones(ctx context.Context) ([]coreEntity.Zone, error)
 	// AcrListZones phục vụ luồng sync sang ACR chỉ lấy 4 thuộc tính (ID, Code, Name, Status)
 	AcrListZones(ctx context.Context) ([]coreEntity.RPCZone, error)
+	// AcrResolveZone phân giải một Zone cụ thể theo mã code phục vụ ACR
+	AcrResolveZone(ctx context.Context, code string) (*coreEntity.RPCZone, error)
 
 	// get zone detail for admin ui
 	GetZoneDetailByID(ctx context.Context, id uuid.UUID) (*coreEntity.ZoneDetail, error)
