@@ -290,3 +290,163 @@ func (h *RbacPlatformHandler) ListPermissions(c *gin.Context) {
 
 	apires.RespondSuccess(c, gin.H{"permissions": resp}, "permissions fetched successfully")
 }
+
+// [COMMENT]: DeleteRolePlatform xóa vai trò platform hệ thống
+func (h *RbacPlatformHandler) DeleteRolePlatform(c *gin.Context) {
+	const op = "iam.rbac.delete_role"
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	roleIDStr := c.Param("role_id")
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid role id format")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	err = h.rbacPlatformSvc.DeleteRolePlatform(ctx, callerLevel, roleID)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			apires.RespondForbidden(c, "Action not allowed: hierarchical check failed or role is currently assigned to users/tenants")
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			apires.RespondNotFound(c, "Role not found")
+			return
+		}
+		apires.RespondInternalError(c, "internal error occurred")
+		return
+	}
+
+	apires.RespondSuccess(c, nil, "Role deleted successfully")
+}
+
+// [COMMENT]: GetRoleDetailsPlatform trả về chi tiết vai trò platform cùng danh sách quyền phẳng
+func (h *RbacPlatformHandler) GetRoleDetailsPlatform(c *gin.Context) {
+	const op = "iam.rbac.get_role_details"
+
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	roleIDStr := c.Param("role_id")
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid role id format")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	role, permissions, err := h.rbacPlatformSvc.GetRoleDetails(ctx, callerLevel, roleID)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			apires.RespondNotFound(c, "Role not found")
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			apires.RespondForbidden(c, "Action not allowed: hierarchical check failed")
+			return
+		}
+		apires.RespondInternalError(c, "internal error occurred")
+		return
+	}
+
+	// [COMMENT]: Map danh sách đối tượng permission phẳng sang JSON phẳng
+	permsResp := make([]gin.H, 0, len(permissions))
+	for _, p := range permissions {
+		permsResp = append(permsResp, gin.H{
+			"id":          p.ID.String(),
+			"module":      p.Module,
+			"object":      p.Object,
+			"behavior":    p.Behavior,
+			"description": p.Description,
+		})
+	}
+
+	resp := gin.H{
+		"id":                role.ID.String(),
+		"code":              role.Code,
+		"name":              role.Name,
+		"description":       role.Description,
+		"role_level":        role.RoleLevel,
+		"scope":             role.Scope,
+		"assignments_count": role.AssignmentsCount,
+		"permissions_count": role.PermissionsCount,
+		"created_at":        role.CreatedAt.Format(time.RFC3339),
+		"updated_at":        role.UpdatedAt.Format(time.RFC3339),
+		"permissions":       permsResp,
+	}
+
+	apires.RespondSuccess(c, gin.H{"role": resp}, "role details fetched successfully")
+}
+
+// [COMMENT]: UpdateRolePlatform thực hiện cập nhật thông tin vai trò platform và đồng bộ danh sách quyền được gán có kiểm tra cấp bậc caller level
+func (h *RbacPlatformHandler) UpdateRolePlatform(c *gin.Context) {
+	const op = "iam.rbac.update_role"
+
+	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	roleIDStr := c.Param("role_id")
+	roleID, err := uuid.Parse(roleIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid role id format")
+		return
+	}
+
+	var req iamReq.UpdateRolePlatformReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apires.RespondBadRequest(c, err.Error())
+		return
+	}
+
+	// [COMMENT]: Chuyển đổi mảng string permission_ids sang uuid.UUID
+	permIDs := make([]uuid.UUID, len(req.PermissionIDs))
+	for i, idStr := range req.PermissionIDs {
+		pID, err := uuid.Parse(idStr)
+		if err != nil {
+			apires.RespondBadRequest(c, fmt.Sprintf("invalid permission id format at index %d", i))
+			return
+		}
+		permIDs[i] = pID
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	input := &iamEntity.UpdateRoleInput{
+		ID:            roleID,
+		Name:          req.Name,
+		Description:   req.Description,
+		PermissionIDs: permIDs,
+	}
+
+	err = h.rbacPlatformSvc.UpdateRole(ctx, callerLevel, input)
+	if err != nil {
+		logger.HandlerError(c, op, err)
+		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
+			apires.RespondNotFound(c, "Role not found")
+			return
+		}
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			apires.RespondForbidden(c, "Action not allowed: hierarchical check failed")
+			return
+		}
+		apires.RespondInternalError(c, "internal error occurred")
+		return
+	}
+
+	apires.RespondSuccess(c, nil, "Role updated successfully")
+}

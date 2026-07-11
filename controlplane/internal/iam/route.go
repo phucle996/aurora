@@ -105,10 +105,28 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 			module.RbacPlatformHandler.ListRolesPlatform,
 		)
 
+		// [COMMENT]: Lấy chi tiết một vai trò platform dạng cây bậc 3 (yêu cầu quyền iam:role:read và level 2)
+		personalGroup.GET("/iam/rbac/role/:role_id",
+			middleware.Authorize("iam:role:read", module.L1Registry, "2"),
+			module.RbacPlatformHandler.GetRoleDetailsPlatform,
+		)
+
 		// [COMMENT]: Tạo vai trò hệ thống mới (yêu cầu quyền iam:role:write và level 2) thông qua platform handler
 		personalGroup.POST("/iam/rbac/role",
 			middleware.Authorize("iam:role:write", module.L1Registry, "2"),
 			module.RbacPlatformHandler.CreateRole,
+		)
+
+		// [COMMENT]: Xóa vai trò hệ thống (yêu cầu quyền iam:role:delete và level 2) thông qua platform handler
+		personalGroup.DELETE("/iam/rbac/role/:role_id",
+			middleware.Authorize("iam:role:delete", module.L1Registry, "2"),
+			module.RbacPlatformHandler.DeleteRolePlatform,
+		)
+
+		// [COMMENT]: Cập nhật vai trò hệ thống (yêu cầu quyền iam:role:write và level 2) thông qua platform handler
+		personalGroup.PUT("/iam/rbac/role/:role_id",
+			middleware.Authorize("iam:role:write", module.L1Registry, "2"),
+			module.RbacPlatformHandler.UpdateRolePlatform,
 		)
 
 		// [COMMENT]: Lấy danh sách toàn bộ các permissions hệ thống (yêu cầu quyền iam:permissions:read và level 2) thông qua platform handler

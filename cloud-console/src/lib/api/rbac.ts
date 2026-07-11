@@ -79,3 +79,42 @@ export async function assignUserRole(userID: string, roleID: string, signal?: Ab
     signal,
   });
 }
+
+// [COMMENT]: deleteRole gọi endpoint xóa vai trò platform hệ thống
+export async function deleteRole(roleID: string, signal?: AbortSignal): Promise<void> {
+  await fetchJSON(`/api/v1/iam/rbac/role/${roleID}`, {
+    method: "DELETE",
+    signal,
+  });
+}
+
+export type UpdateRoleInput = {
+  name: string;
+  description: string;
+  permission_ids: string[];
+};
+
+export type PlatformRoleDetails = PlatformRoleItem & {
+  permissions: PermissionItem[];
+};
+
+// [COMMENT]: getRoleDetails lấy chi tiết vai trò kèm danh sách permissions phẳng được gán
+export async function getRoleDetails(roleID: string, signal?: AbortSignal): Promise<PlatformRoleDetails> {
+  const res = await fetchJSON<{ data?: { role?: PlatformRoleDetails } }>(`/api/v1/iam/rbac/role/${roleID}`, {
+    method: "GET",
+    signal,
+  });
+  if (!res?.data?.role) {
+    throw new Error("Role details not found in API response");
+  }
+  return res.data.role;
+}
+
+// [COMMENT]: updateRole cập nhật thông tin và danh sách permissions của vai trò
+export async function updateRole(roleID: string, input: UpdateRoleInput, signal?: AbortSignal): Promise<void> {
+  await fetchJSON(`/api/v1/iam/rbac/role/${roleID}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+    signal,
+  });
+}

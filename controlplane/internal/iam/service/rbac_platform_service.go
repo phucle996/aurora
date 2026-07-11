@@ -156,3 +156,29 @@ func (s *RbacPlatformService) GetRenderContext(ctx context.Context, userID uuid.
 		IsPersonal:   isPersonal,
 	}, nil
 }
+
+// [COMMENT]: DeleteRolePlatform thực hiện xóa vai trò platform thông qua repository
+func (s *RbacPlatformService) DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error {
+	return s.repo.DeleteRolePlatform(ctx, callerLevel, roleID)
+}
+
+// [COMMENT]: GetRoleDetails lấy chi tiết một vai trò platform cùng danh sách đối tượng permission bậc 3
+func (s *RbacPlatformService) GetRoleDetails(ctx context.Context, callerLevel uint8, roleID uuid.UUID) (*iamEntity.Role, []iamEntity.Permission, error) {
+	return s.repo.GetRoleDetails(ctx, callerLevel, roleID)
+}
+
+// [COMMENT]: UpdateRole cập nhật thông tin vai trò platform cùng danh sách permissions được gán có kiểm tra cấp bậc caller level, thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core cho các user bị ảnh hưởng
+func (s *RbacPlatformService) UpdateRole(ctx context.Context, callerLevel uint8, input *iamEntity.UpdateRoleInput) error {
+	affectedUserIDs, err := s.repo.UpdateRole(ctx, callerLevel, input)
+	if err != nil {
+		return err
+	}
+
+	// [COMMENT]: Thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core cho các user bị ảnh hưởng
+	for _, uID := range affectedUserIDs {
+		s.cacheEngine.L1.Delete("user_role:" + uID.String())
+		_ = s.nc.Publish("iam.user_role.invalidated", []byte(uID.String()))
+	}
+
+	return nil
+}

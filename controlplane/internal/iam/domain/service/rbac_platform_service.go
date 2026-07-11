@@ -30,4 +30,13 @@ type RbacPlatformService interface {
 
 	// [COMMENT]: GetRenderContext sinh cấu hình Navigation và Capabilities từ bytes RBAC L1 cache theo user id
 	GetRenderContext(ctx context.Context, userID uuid.UUID) (*iamEntity.RenderContext, error)
+
+	// [COMMENT]: DeleteRolePlatform xóa vai trò platform nếu callerLevel < roleLevel và không còn user/tenant nào được gán
+	DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error
+
+	// [COMMENT]: GetRoleDetails lấy chi tiết một vai trò platform cùng danh sách đối tượng permission bậc 3
+	GetRoleDetails(ctx context.Context, callerLevel uint8, roleID uuid.UUID) (*iamEntity.Role, []iamEntity.Permission, error)
+
+	// [COMMENT]: UpdateRole cập nhật thông tin vai trò platform cùng danh sách permissions được gán có kiểm tra cấp bậc caller level
+	UpdateRole(ctx context.Context, callerLevel uint8, input *iamEntity.UpdateRoleInput) error
 }

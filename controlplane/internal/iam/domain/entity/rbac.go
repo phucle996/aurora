@@ -47,6 +47,14 @@ type Role struct {
 	UpdatedAt        time.Time
 }
 
+// [COMMENT]: UpdateRoleInput đại diện cho thực thể đầu vào phục vụ cập nhật vai trò platform
+type UpdateRoleInput struct {
+	ID            uuid.UUID
+	Name          string
+	Description   string
+	PermissionIDs []uuid.UUID
+}
+
 // [COMMENT]: NavigationItem định nghĩa cấu trúc menu gom nhóm 2 cấp (Module:Object) kèm theo các hành động (behavior/action) được phép
 type NavigationItem struct {
 	Key     string     // format: <module>:<object>

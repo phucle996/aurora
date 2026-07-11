@@ -14,10 +14,11 @@ import {
   Search,
   Settings,
   User,
-  MoreVertical
+  MoreVertical,
+  Trash2
 } from "lucide-react";
 import { toast } from "sonner";
-import { listRoles, type PlatformRoleItem } from "@/lib/api/rbac";
+import { listRoles, deleteRole, type PlatformRoleItem } from "@/lib/api/rbac";
 import { cn } from "@/lib/utils";
 import RouteGuard from "@/components/route-guard";
 import { useUserSession } from "@/hooks/useUserSession";
@@ -109,6 +110,26 @@ function AccessControlContent() {
   const [levelFilter, setLevelFilter] = useState("all");
 
   const canCreate = checkPermission("iam:role", "write");
+  const canDelete = checkPermission("iam:role", "delete");
+
+  const [roleToDelete, setRoleToDelete] = useState<PlatformRoleItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteRole = async () => {
+    if (!roleToDelete) return;
+    setDeleting(true);
+    try {
+      await deleteRole(roleToDelete.id);
+      toast.success(`Role "${roleToDelete.name}" deleted successfully.`);
+      setRoleToDelete(null);
+      void loadRoles();
+    } catch (err) {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "Failed to delete role.");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // [COMMENT]: Gọi API lấy danh sách Platform Roles
   const loadRoles = useCallback(async (showToast = false) => {
@@ -303,15 +324,18 @@ function AccessControlContent() {
                       className="group relative hover:bg-slate-50/50 dark:hover:bg-slate-800/5 transition-all"
                     >
                       {/* Name & Desc */}
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-start gap-3">
+                      <td className="px-5 py-3.5 relative before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px] before:bg-blue-500 before:scale-y-0 group-hover:before:scale-y-100 before:transition-transform before:origin-center">
+                        <div className="flex items-start gap-3 pl-1">
                           <div className={cn("h-7 w-7 flex items-center justify-center rounded-lg border border-slate-200/50 dark:border-slate-800/50 shrink-0 mt-0.5", meta.iconColor)}>
                             <Icon className="h-3.5 w-3.5" />
                           </div>
                           <div className="flex flex-col min-w-0">
-                            <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">
+                            <Link
+                              href={`/rbac/${r.id}`}
+                              className="font-semibold text-slate-850 dark:text-slate-200 hover:text-blue-500 transition-colors truncate"
+                            >
                               {r.name}
-                            </span>
+                            </Link>
                             <span className="text-[10px] text-slate-450 dark:text-slate-500 truncate mt-0.5 max-w-[240px]">
                               {r.description || meta.fallbackDesc}
                             </span>
@@ -330,7 +354,7 @@ function AccessControlContent() {
                           style={{ backgroundColor: "#2b2112", color: "#F5B642" }}
                           className="inline-flex items-center px-1.5 py-0.5 rounded text-[9.5px] font-bold font-mono tracking-wider border border-[#F5B642]/10"
                         >
-                          L{r.role_level}
+                          Level {r.role_level}
                         </span>
                       </td>
 
@@ -363,9 +387,15 @@ function AccessControlContent() {
 
                       {/* Actions */}
                       <td className="px-5 py-3.5 text-right pr-6">
-                        <button className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition-colors p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer">
-                          <MoreVertical className="h-3.5 w-3.5" />
-                        </button>
+                        {canDelete && (
+                          <button
+                            onClick={() => setRoleToDelete(r)}
+                            className="text-slate-450 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 transition-colors p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-850 cursor-pointer"
+                            title="Delete Role"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );
@@ -375,6 +405,42 @@ function AccessControlContent() {
           </div>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {roleToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="w-full max-w-md bg-white dark:bg-slate-950 border border-slate-250 dark:border-slate-850 rounded-xl shadow-xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center gap-3 text-red-500">
+              <ShieldAlert className="h-6 w-6" />
+              <h3 className="text-sm font-bold uppercase tracking-wider select-none">Delete Role</h3>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-450 leading-relaxed">
+              Are you sure you want to delete the role <strong className="text-slate-800 dark:text-slate-200">{roleToDelete.name}</strong> (<code className="text-[10px] font-mono bg-slate-100 dark:bg-slate-900 px-1 py-0.5 rounded">{roleToDelete.code}</code>)? This action cannot be undone.
+            </p>
+            {roleToDelete.assignments_count > 0 && (
+              <div className="p-3 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-500 text-[11px] font-medium border border-amber-500/20">
+                Warning: This role is currently assigned to {roleToDelete.assignments_count} users. You must unassign them before deleting.
+              </div>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setRoleToDelete(null)}
+                disabled={deleting}
+                className="h-8 px-3.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-600 dark:text-slate-350 transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteRole}
+                disabled={deleting || roleToDelete.assignments_count > 0}
+                className="h-8 px-3.5 rounded-lg bg-red-600 hover:bg-red-700 text-xs font-semibold text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-xs"
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

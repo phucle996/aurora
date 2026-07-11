@@ -27,3 +27,9 @@ type AssignUserRolePlatformRequest struct {
 	UserID string `json:"user_id" binding:"required"`
 	RoleID string `json:"role_id" binding:"required"`
 }
+
+type UpdateRolePlatformReq struct {
+	Name          string   `json:"name" binding:"required,min=1,max=100"`
+	Description   string   `json:"description" binding:"max=255"`
+	PermissionIDs []string `json:"permission_ids"`
+}

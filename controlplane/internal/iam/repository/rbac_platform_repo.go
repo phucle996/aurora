@@ -401,3 +401,265 @@ func (r *RbacPlatformRepository) GetRoleIDByUserID(ctx context.Context, userID u
 
 	return roleIDStr, roleLevel, nil
 }
+
+// [COMMENT]: DeleteRolePlatform xóa vai trò platform nếu callerLevel < roleLevel và không còn user/tenant nào được gán
+func (r *RbacPlatformRepository) DeleteRolePlatform(ctx context.Context, callerLevel uint8, roleID uuid.UUID) error {
+	query := fmt.Sprintf(`
+		WITH check_role AS (
+			SELECT role_level, scope FROM %s.roles WHERE id = $2
+		),
+		check_user_assignments AS (
+			SELECT COUNT(id) as cnt FROM %s.user_role WHERE role_id = $2
+		),
+		check_tenant_assignments AS (
+			SELECT COUNT(id) as cnt FROM %s.tenant_role WHERE role_id = $2
+		),
+		delete_role AS (
+			DELETE FROM %s.roles
+			WHERE id = $2
+			  AND (SELECT role_level FROM check_role) > $1
+			  AND (SELECT cnt FROM check_user_assignments) = 0
+			  AND (SELECT cnt FROM check_tenant_assignments) = 0
+			RETURNING id
+		)
+		SELECT 
+			EXISTS(SELECT 1 FROM check_role) AS role_exists,
+			COALESCE((SELECT role_level FROM check_role), 0) > $1 AS hierarchy_ok,
+			((SELECT cnt FROM check_user_assignments) = 0 AND (SELECT cnt FROM check_tenant_assignments) = 0) AS not_in_use,
+			EXISTS(SELECT 1 FROM delete_role) AS deleted;
+	`, r.schema, r.schema, r.schema, r.schema)
+
+	var roleExists, hierarchyOk, notInUse, deleted bool
+	err := r.db.QueryRow(ctx, query, callerLevel, roleID).Scan(&roleExists, &hierarchyOk, &notInUse, &deleted)
+	if err != nil {
+		return fmt.Errorf("rbac platform repo: execute delete role cte: %w", err)
+	}
+
+	if !roleExists {
+		return iamTaxonomy.ErrRoleNotFound
+	}
+	if !hierarchyOk || !notInUse {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+	if !deleted {
+		return iamTaxonomy.ErrZeroRowsAffected
+	}
+
+	return nil
+}
+
+// [COMMENT]: GetRoleDetails lấy chi tiết một vai trò platform cùng danh sách đối tượng permission bậc 3 dưới dạng truy vấn kết hợp (JOIN) và kiểm tra caller level
+func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel uint8, roleID uuid.UUID) (*iamEntity.Role, []iamEntity.Permission, error) {
+	query := fmt.Sprintf(`
+		SELECT 
+			r.id, 
+			r.code, 
+			r.name, 
+			COALESCE(r.description, ''), 
+			r.role_level, 
+			r.scope, 
+			COALESCE(sub_ur.cnt, 0) as assignments_count,
+			r.created_at, 
+			r.updated_at,
+			COALESCE(p.id, '00000000-0000-0000-0000-000000000000'::uuid) as perm_id,
+			COALESCE(p.module, '') as perm_module,
+			COALESCE(p.object, '') as perm_object,
+			COALESCE(p.behavior, '') as perm_behavior,
+			COALESCE(p.description, '') as perm_description,
+			COALESCE(p.created_at, '0001-01-01 00:00:00Z'::timestamptz) as perm_created_at,
+			COALESCE(p.updated_at, '0001-01-01 00:00:00Z'::timestamptz) as perm_updated_at
+		FROM %s.roles r
+		LEFT JOIN (
+			SELECT role_id, COUNT(id) as cnt 
+			FROM %s.user_role 
+			GROUP BY role_id
+		) sub_ur ON sub_ur.role_id = r.id
+		LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id
+		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
+		WHERE r.id = $1 AND r.scope = 'platform'
+	`, r.schema, r.schema, r.schema, r.schema)
+
+	rows, err := r.db.Query(ctx, query, roleID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("rbac platform repo: query role details join: %w", err)
+	}
+	defer rows.Close()
+
+	var role *iamEntity.Role
+	var permissions []iamEntity.Permission
+
+	for rows.Next() {
+		var roleModel iamModel.Role
+		var permModel iamModel.Permission
+		var assignmentsCount int
+
+		err := rows.Scan(
+			&roleModel.ID,
+			&roleModel.Code,
+			&roleModel.Name,
+			&roleModel.Description,
+			&roleModel.RoleLevel,
+			&roleModel.Scope,
+			&assignmentsCount,
+			&roleModel.CreatedAt,
+			&roleModel.UpdatedAt,
+			&permModel.ID,
+			&permModel.Module,
+			&permModel.Object,
+			&permModel.Behavior,
+			&permModel.Description,
+			&permModel.CreatedAt,
+			&permModel.UpdatedAt,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rbac platform repo: scan role detail join row: %w", err)
+		}
+
+		if role == nil {
+			// Ràng buộc kiểm tra cấp bậc: callerLevel phải có quyền cao hơn (chỉ số nhỏ hơn) so với role Level lấy ra
+			if roleModel.RoleLevel <= int(callerLevel) {
+				return nil, nil, iamTaxonomy.ErrActionNotAllowed
+			}
+
+			entityRole := iamModel.RoleModelToEntity(roleModel)
+			entityRole.AssignmentsCount = assignmentsCount
+			role = &entityRole
+		}
+
+		if permModel.ID != uuid.Nil {
+			permissions = append(permissions, iamModel.PermissionModelToEntity(permModel))
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	if role == nil {
+		return nil, nil, iamTaxonomy.ErrRoleNotFound
+	}
+
+	role.PermissionsCount = len(permissions)
+	return role, permissions, nil
+}
+
+// [COMMENT]: UpdateRole thực hiện cập nhật tên, mô tả, đồng bộ quyền gán cho vai trò platform, biên dịch lại nhị phân list_perm cho tất cả users đang gán vai trò này và trả về danh sách user ID bị ảnh hưởng trong 1 RTT CTE
+// [COMMENT]: UpdateRole thực hiện cập nhật tên, mô tả, đồng bộ quyền gán cho vai trò platform, biên dịch lại nhị phân list_perm cho tất cả users đang gán vai trò này và trả về danh sách user ID bị ảnh hưởng dưới dạng Transaction nguyên tử
+func (r *RbacPlatformRepository) UpdateRole(ctx context.Context, callerLevel uint8, input *iamEntity.UpdateRoleInput) ([]uuid.UUID, error) {
+	// 1. Khởi tạo một Transaction để đảm bảo tính cô lập và nguyên tử
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("platform rbac repo: begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	// A. Lấy danh sách string permissions tương ứng với PermissionIDs trong phạm vi transaction
+	queryPerms := fmt.Sprintf(`
+		SELECT module || ':' || object || ':' || behavior
+		FROM %s.permissions
+		WHERE id = ANY($1::uuid[])
+	`, r.schema)
+
+	rows, err := tx.Query(ctx, queryPerms, input.PermissionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("rbac platform repo: query permission strings: %w", err)
+	}
+	defer rows.Close()
+
+	var perms []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("rbac platform repo: scan permission string: %w", err)
+		}
+		perms = append(perms, p)
+	}
+	rows.Close()
+
+	// B. Marshal danh sách permissions thành Protobuf binary byte array
+	roleEntry := &iamproto.RoleEntry{
+		Permissions: perms,
+	}
+	binaryBytes, err := proto.Marshal(roleEntry)
+	if err != nil {
+		return nil, fmt.Errorf("rbac platform repo: marshal role entry: %w", err)
+	}
+
+	// C. Thực thi CTE cập nhật đa bảng nguyên tử và lấy về danh sách user_id
+	query := fmt.Sprintf(`
+		WITH checked_role AS (
+			-- A. Kiểm tra phân cấp và khóa dòng ghi
+			SELECT id, role_level
+			FROM %s.roles
+			WHERE id = $1 AND scope = 'platform' AND role_level > $2
+			FOR UPDATE
+		),
+		update_role AS (
+			-- B. Cập nhật thông tin cơ bản của vai trò
+			UPDATE %s.roles r
+			SET 
+				name = $3,
+				description = $4,
+				updated_at = NOW()
+			FROM checked_role cr
+			WHERE r.id = cr.id
+			RETURNING r.id
+		),
+		delete_old_perms AS (
+			-- C. Xóa liên kết quyền cũ
+			DELETE FROM %s.role_permissions rp
+			USING checked_role cr
+			WHERE rp.role_id = cr.id
+		),
+		insert_new_perms AS (
+			-- D. Gán liên kết quyền mới từ mảng unnested
+			INSERT INTO %s.role_permissions (role_id, permission_id)
+			SELECT cr.id, unnest($5::uuid[])
+			FROM checked_role cr
+			RETURNING role_id
+		),
+		update_users AS (
+			-- E. Cập nhật nhị phân permissions gán sẵn trong user_role cho các user đang được gán role này
+			UPDATE %s.user_role ur
+			SET 
+				list_perm = $6,
+				updated_at = NOW()
+			FROM checked_role cr
+			WHERE ur.role_id = cr.id
+			RETURNING ur.user_id
+		)
+		-- F. Trả về kết quả kiểm tra trạng thái vai trò để xác định loại lỗi cụ thể ở tầng Go
+		SELECT 
+			EXISTS(SELECT 1 FROM %s.roles WHERE id = $1 AND scope = 'platform') as role_exists,
+			COALESCE((SELECT role_level FROM %s.roles WHERE id = $1 AND scope = 'platform'), 0) > $2 as hierarchy_ok,
+			COALESCE((SELECT array_agg(user_id) FROM update_users), '{}'::uuid[]) as affected_users;
+	`, r.schema, r.schema, r.schema, r.schema, r.schema, r.schema, r.schema)
+
+	var roleExists, hierarchyOk bool
+	var affectedUserIDs []uuid.UUID
+
+	err = tx.QueryRow(ctx, query, input.ID, callerLevel, input.Name, input.Description, input.PermissionIDs, binaryBytes).Scan(
+		&roleExists,
+		&hierarchyOk,
+		&affectedUserIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("rbac platform repo: execute update role cte: %w", err)
+	}
+
+	if !roleExists {
+		return nil, iamTaxonomy.ErrRoleNotFound
+	}
+	if !hierarchyOk {
+		return nil, iamTaxonomy.ErrActionNotAllowed
+	}
+
+	// D. Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("platform rbac repo: commit transaction: %w", err)
+	}
+
+	return affectedUserIDs, nil
+}
