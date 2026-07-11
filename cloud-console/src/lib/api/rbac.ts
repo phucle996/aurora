@@ -9,6 +9,8 @@ export type PlatformRoleItem = {
   scope: string;
   assignments_count: number;
   permissions_count: number;
+  created_by: string;
+  created_by_name: string;
   created_at: string;
   updated_at: string;
 };

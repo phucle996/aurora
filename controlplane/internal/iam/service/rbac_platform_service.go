@@ -65,15 +65,15 @@ func (s *RbacPlatformService) ListPlatformRoles(ctx context.Context, callerLevel
 	return s.repo.ListPlatformRoles(ctx, callerLevel)
 }
 
-// [COMMENT]: CreateRole tạo vai trò hệ thống mới và map permissions
-func (s *RbacPlatformService) CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error {
+// [COMMENT]: CreateRole tạo vai trò hệ thống mới và map permissions kèm kiểm tra sở hữu tập con quyền của caller
+func (s *RbacPlatformService) CreateRole(ctx context.Context, callerUserID uuid.UUID, role *iamEntity.Role, permissionIDs []uuid.UUID) error {
 	role.ID = uuid.New()
-	return s.repo.CreateRole(ctx, role, permissionIDs)
+	return s.repo.CreateRole(ctx, callerUserID, role, permissionIDs)
 }
 
-// [COMMENT]: ListPermissions lấy danh sách permissions catalog hệ thống
-func (s *RbacPlatformService) ListPermissions(ctx context.Context) ([]iamEntity.Permission, error) {
-	return s.repo.ListPermissions(ctx)
+// [COMMENT]: ListPermissions lấy danh sách permissions catalog hệ thống được lọc theo quyền của caller
+func (s *RbacPlatformService) ListPermissions(ctx context.Context, callerUserID uuid.UUID) ([]iamEntity.Permission, error) {
+	return s.repo.ListPermissions(ctx, callerUserID)
 }
 
 // [COMMENT]: GetUserRoleDetails lấy thông tin chi tiết vai trò của user hệ thống
@@ -168,8 +168,8 @@ func (s *RbacPlatformService) GetRoleDetails(ctx context.Context, callerLevel ui
 }
 
 // [COMMENT]: UpdateRole cập nhật thông tin vai trò platform cùng danh sách permissions được gán có kiểm tra cấp bậc caller level, thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core cho các user bị ảnh hưởng
-func (s *RbacPlatformService) UpdateRole(ctx context.Context, callerLevel uint8, input *iamEntity.UpdateRoleInput) error {
-	affectedUserIDs, err := s.repo.UpdateRole(ctx, callerLevel, input)
+func (s *RbacPlatformService) UpdateRole(ctx context.Context, callerUserID uuid.UUID, callerLevel uint8, input *iamEntity.UpdateRoleInput) error {
+	affectedUserIDs, err := s.repo.UpdateRole(ctx, callerUserID, callerLevel, input)
 	if err != nil {
 		return err
 	}

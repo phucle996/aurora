@@ -19,11 +19,11 @@ type RbacPlatformService interface {
 	// [COMMENT]: ListPlatformRoles lấy danh sách roles có scope là platform có level thấp hơn (role_level > callerLevel)
 	ListPlatformRoles(ctx context.Context, callerLevel uint8) ([]iamEntity.Role, error)
 
-	// [COMMENT]: CreateRole tạo vai trò hệ thống mới kèm liên kết permissions
-	CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error
+	// [COMMENT]: CreateRole tạo vai trò hệ thống mới kèm liên kết permissions và kiểm tra giới hạn tập con quyền của caller
+	CreateRole(ctx context.Context, callerUserID uuid.UUID, role *iamEntity.Role, permissionIDs []uuid.UUID) error
 
-	// [COMMENT]: ListPermissions lấy toàn bộ danh sách permissions catalog trong hệ thống
-	ListPermissions(ctx context.Context) ([]iamEntity.Permission, error)
+	// [COMMENT]: ListPermissions lấy danh sách permissions catalog được lọc dựa theo quyền của caller
+	ListPermissions(ctx context.Context, callerUserID uuid.UUID) ([]iamEntity.Permission, error)
 
 	// [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user theo user id
 	GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error)
@@ -38,5 +38,5 @@ type RbacPlatformService interface {
 	GetRoleDetails(ctx context.Context, callerLevel uint8, roleID uuid.UUID) (*iamEntity.Role, []iamEntity.Permission, error)
 
 	// [COMMENT]: UpdateRole cập nhật thông tin vai trò platform cùng danh sách permissions được gán có kiểm tra cấp bậc caller level
-	UpdateRole(ctx context.Context, callerLevel uint8, input *iamEntity.UpdateRoleInput) error
+	UpdateRole(ctx context.Context, callerUserID uuid.UUID, callerLevel uint8, input *iamEntity.UpdateRoleInput) error
 }

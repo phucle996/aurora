@@ -98,6 +98,7 @@ func TenantRoleModelToEntity(input TenantRole) iamEntity.TenantRole {
 }
 
 // [COMMENT]: Role đại diện cho bảng roles trong PostgreSQL (ánh xạ đúng các cột của bảng roles)
+// [COMMENT]: Role chỉ ánh xạ các cột thực tế trong bảng roles — không thêm cột tính toán/JOIN vào đây
 type Role struct {
 	ID          uuid.UUID `db:"id"`
 	Code        string    `db:"code"`
@@ -105,6 +106,7 @@ type Role struct {
 	Description string    `db:"description"`
 	RoleLevel   int       `db:"role_level"`
 	Scope       string    `db:"scope"`
+	CreatedBy   uuid.UUID `db:"created_by"`
 	CreatedAt   time.Time `db:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"`
 }
@@ -118,6 +120,7 @@ func RoleModelToEntity(input Role) iamEntity.Role {
 		Description: input.Description,
 		RoleLevel:   input.RoleLevel,
 		Scope:       input.Scope,
+		CreatedBy:   input.CreatedBy,
 		CreatedAt:   input.CreatedAt,
 		UpdatedAt:   input.UpdatedAt,
 	}

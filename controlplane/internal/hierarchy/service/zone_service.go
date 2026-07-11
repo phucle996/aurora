@@ -265,7 +265,7 @@ func (s *ZoneService) publishInvalidation(ctx context.Context, zoneID uuid.UUID,
 		return
 	}
 
-	if err := s.nc.Publish("core.zone.invalidated", data); err != nil {
+	if err := s.nc.Publish("hierarchy.zone.invalidated", data); err != nil {
 		logger.SysError("zone_service.publishInvalidation", fmt.Sprintf("Failed to publish to NATS: %v", err))
 	} else {
 		logger.SysInfo("zone_service.publishInvalidation", fmt.Sprintf("Successfully published NATS invalidation for zone: %s (deleted=%t)", code, deleted))

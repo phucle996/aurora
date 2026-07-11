@@ -1,19 +1,19 @@
 // ======================================================================================================
 // 📂 MODULE: acr/src/core/zone.rs
-//            Quản Lý Zone Cache - L1 in-memory → Redis L2 (shared) → gRPC CP fallback
+//            Quản Lý Zone Cache - L1 in-memory → Redis L2 (shared) → NATS CP fallback
 //
 // 🔄 LUỒNG CACHE:
 //   1. L1 Cache (in-process HashMap với TTL) - riêng từng node ACR
-//   2. Redis L2 Cache (shared giữa tất cả ACR node) - node nào gRPC xong thì ghi L2
-//   3. gRPC fallback sang Controlplane - chỉ khi cả L1 và L2 đều miss
-//      → Sau khi gRPC trả về, ghi ngược lại L1 + L2 để các node khác hưởng lợi
+//   2. Redis L2 Cache (shared giữa tất cả ACR node) - node nào sync xong thì ghi L2
+//   3. NATS fallback sang Controlplane - chỉ khi cả L1 và L2 đều miss
+//      → Sau khi NATS trả về, ghi ngược lại L1 + L2 để các node khác hưởng lợi
 //
 // 🔒 NEGATIVE CACHE: key không tồn tại được ghi tombstone 3 phút để tránh stampede DB
 // ======================================================================================================
 
 use crate::infra::nats::Nats;
-use crate::service::zone::client::get_zone_list;
 use crate::observability::logger::Logger;
+use crate::service::zone::client::get_zone_list;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -60,15 +60,12 @@ pub struct ZoneManager {
     zone_id_to_status: RwLock<HashMap<String, CacheEntry<String>>>,
     zone_id_to_name: RwLock<HashMap<String, CacheEntry<String>>>,
 
-    // [COMMENT]: Single Flight Mutex - chỉ 1 goroutine trong node gọi gRPC cùng lúc
+    // [COMMENT]: Single Flight Mutex - chỉ 1 task trong node gọi NATS cùng lúc
     single_flight_mutex: Mutex<()>,
 }
 
 impl ZoneManager {
-    pub fn new(
-        nats: Arc<Nats>,
-        redis_client: Arc<redis::Client>,
-    ) -> Self {
+    pub fn new(nats: Arc<Nats>, redis_client: Arc<redis::Client>) -> Self {
         Self {
             nats,
             redis_client,
@@ -88,8 +85,8 @@ impl ZoneManager {
     }
 
     pub async fn get_all_zones(&self) -> Vec<ZoneItem> {
-        // [COMMENT]: Luôn sync từ gRPC để đảm bảo danh sách đầy đủ
-        self.sync_zones_from_rpc().await;
+        // [COMMENT]: Luôn sync từ NATS để đảm bảo danh sách đầy đủ
+        self.sync_zones_from_nats().await;
 
         let map = self.zone_code_to_id.read().await;
         let status_map = self.zone_id_to_status.read().await;
@@ -136,10 +133,10 @@ impl ZoneManager {
             .collect()
     }
 
-    // ─── Core Resolution: L1 → Redis L2 → gRPC → Negative Cache ────────────
+    // ─── Core Resolution: L1 → Redis L2 → NATS → Negative Cache ────────────
 
     /// Phân giải zone_code → (zone_id, status)
-    /// Thứ tự: L1 Cache → Redis L2 (shared) → gRPC Controlplane → Negative Cache
+    /// Thứ tự: L1 Cache → Redis L2 (shared) → NATS Controlplane → Negative Cache
     pub async fn resolve_code_to_id_and_status(&self, zone_code: &str) -> Option<(String, String)> {
         let clean_code = zone_code.trim().to_lowercase();
 
@@ -159,9 +156,9 @@ impl ZoneManager {
             return result;
         }
 
-        // 3. gRPC Controlplane fallback (Single Flight bảo vệ)
-        // [COMMENT]: Sau khi sync gRPC, kết quả ghi vào Redis L2 để các node khác dùng
-        self.sync_zones_from_rpc().await;
+        // 3. NATS Controlplane fallback (Single Flight bảo vệ)
+        // [COMMENT]: Sau khi sync NATS, kết quả ghi vào Redis L2 để các node khác dùng
+        self.sync_zones_from_nats().await;
 
         // Đọc lại L1 sau sync
         if let Some(result) = self.l1_lookup(&clean_code).await {
@@ -204,8 +201,8 @@ impl ZoneManager {
         drop(status_map);
         drop(name_map);
 
-        // Fallback: sync gRPC rồi đọc lại
-        self.sync_zones_from_rpc().await;
+        // Fallback: sync NATS rồi đọc lại
+        self.sync_zones_from_nats().await;
 
         let status_map = self.zone_id_to_status.read().await;
         let name_map = self.zone_id_to_name.read().await;
@@ -337,16 +334,16 @@ impl ZoneManager {
         }
     }
 
-    // ─── gRPC Sync từ Controlplane ───────────────────────────────────────────
+    // ─── NATS Sync từ Controlplane ───────────────────────────────────────────
 
-    /// Sync toàn bộ zone list từ CP qua gRPC, ghi vào L1 + Redis L2.
+    /// Sync toàn bộ zone list từ CP qua NATS request-reply, ghi vào L1 + Redis L2.
     /// Dùng Mutex (single flight) để chỉ 1 task trong node thực hiện tại 1 thời điểm.
-    async fn sync_zones_from_rpc(&self) {
+    async fn sync_zones_from_nats(&self) {
         let _lock = self.single_flight_mutex.lock().await;
 
         Logger::sys_info(
             "zone.manager",
-            "Syncing zones from Controlplane via gRPC...",
+            "Syncing zones from Controlplane via NATS...",
         );
 
         match get_zone_list(self.nats.client()).await {
@@ -374,19 +371,23 @@ impl ZoneManager {
                 }
                 Logger::sys_info(
                     "zone.manager",
-                    &format!("Synced {} zones to L1 + Redis L2.", zones.len()),
+                    &format!("Synced {} zones to L1 + Redis L2 via NATS.", zones.len()),
                 );
             }
             Err(e) => {
-                Logger::sys_error("zone.manager", "gRPC zone sync failed", &e.to_string());
+                // [COMMENT]: e là String — không có tonic::Status nữa, không lồng message
+                Logger::sys_error("zone.manager", "NATS zone sync failed", &e);
             }
         }
     }
 
     /// Cập nhật nóng cache (Copy on Write / Write-through) khi nhận sự kiện từ Control Plane qua NATS
-    pub async fn invalidate_zone(&self, event: &crate::service::zone::client::zone_proto::ZoneInvalidatedEvent) {
+    pub async fn invalidate_zone(
+        &self,
+        event: &crate::service::zone::client::zone_proto::ZoneInvalidatedEvent,
+    ) {
         let clean_code = event.zone_code.trim().to_lowercase();
-        
+
         if event.deleted {
             Logger::sys_info(
                 "zone.manager",
@@ -397,12 +398,16 @@ impl ZoneManager {
         } else {
             Logger::sys_info(
                 "zone.manager",
-                &format!("CoW updating zone {} cache: ID={}, status={}, name={}", clean_code, event.zone_id, event.status, event.name),
+                &format!(
+                    "CoW updating zone {} cache: ID={}, status={}, name={}",
+                    clean_code, event.zone_id, event.status, event.name
+                ),
             );
-            
+
             // 1. Ghi L1 Cache
-            self.l1_set_zone(&clean_code, &event.zone_id, &event.status).await;
-            
+            self.l1_set_zone(&clean_code, &event.zone_id, &event.status)
+                .await;
+
             // 2. Ghi ID -> Name vào L1 Cache
             let expiry = Instant::now() + Duration::from_secs(600);
             self.zone_id_to_name.write().await.insert(
@@ -412,9 +417,10 @@ impl ZoneManager {
                     expiry,
                 },
             );
-            
+
             // 3. Ghi L2 Cache (Redis L2)
-            self.l2_set_zone(&clean_code, &event.zone_id, &event.status).await;
+            self.l2_set_zone(&clean_code, &event.zone_id, &event.status)
+                .await;
         }
     }
 

@@ -212,6 +212,7 @@ CREATE TABLE IF NOT EXISTS roles (
     description text NULL, -- Mô tả role
     role_level integer NOT NULL DEFAULT 100, -- Hierarchy level của role, càng nhỏ càng cao
     scope varchar(32) NOT NULL DEFAULT 'platform', -- Phạm vi áp dụng: platform hoặc tenant
+    created_by uuid NOT NULL REFERENCES users(id), -- ID người tạo vai trò
     created_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm tạo role
     updated_at timestamptz NOT NULL DEFAULT now(), -- Thời điểm cập nhật role
     CONSTRAINT roles_role_level_check CHECK (role_level >= 0)

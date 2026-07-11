@@ -12,11 +12,11 @@
 -- NOTE: password_hash below must match the default plain password above.
 INSERT INTO users (id, username, email, password_hash, status)
 VALUES
-    (gen_random_uuid(), 'root', 'root', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active'),
-    (gen_random_uuid(), 'sys_admin', 'sys_admin', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active'),
-    (gen_random_uuid(), 'support_operator', 'support_operator', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active'),
-    (gen_random_uuid(), 'audit_viewer', 'audit_viewer', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active')
-ON CONFLICT DO NOTHING;
+    ('00000000-0000-0000-0000-000000000001', 'root', 'root', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active'),
+    ('00000000-0000-0000-0000-000000000002', 'sys_admin', 'sys_admin', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active'),
+    ('00000000-0000-0000-0000-000000000003', 'support_operator', 'support_operator', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active'),
+    ('00000000-0000-0000-0000-000000000004', 'audit_viewer', 'audit_viewer', 'argon2id$v=19$m=65536,t=1,p=2$vYGk/DrySMoSKrini+XPWw$43iqwaG1qll2360XKiADPE2ng7IbWhsIbMO69N/+KFY', 'active')
+ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO user_profiles (user_id, fullname, bio, locale, timezone)
 SELECT u.id, v.fullname, v.bio, 'vi-VN', 'Asia/Ho_Chi_Minh'
@@ -72,23 +72,24 @@ SET
 -- ----------------------------------------------------------------------------
 -- 3) Seed system roles (with real random UUIDs)
 -- ----------------------------------------------------------------------------
-INSERT INTO roles (id, code, name, description, role_level, scope)
+INSERT INTO roles (id, code, name, description, role_level, scope, created_by)
 VALUES
-    (gen_random_uuid(), 'platform_root', 'Root', 'Highest platform-level system authority', 0, 'platform'),
-    (gen_random_uuid(), 'platform_user', 'Platform User', 'Default global role for registered user not joined to any tenant', 8, 'platform'),
-    (gen_random_uuid(), 'platform_admin', 'System Admin', 'Platform administration role', 1, 'platform'),
-    (gen_random_uuid(), 'platform_support_operator', 'Support Operator', 'Platform support operation role', 2, 'platform'),
-    (gen_random_uuid(), 'tenant_owner', 'Owner', 'Tenant owner role', 3, 'tenant'),
-    (gen_random_uuid(), 'tenant_admin', 'Admin', 'Tenant administrator role', 4, 'tenant'),
-    (gen_random_uuid(), 'tenant_manager', 'Manager', 'Tenant manager role', 5, 'tenant'),
-    (gen_random_uuid(), 'tenant_member', 'Member', 'Tenant member role', 6, 'tenant'),
-    (gen_random_uuid(), 'tenant_viewer', 'Viewer', 'Tenant read-only role', 7, 'tenant')
+    (gen_random_uuid(), 'platform_root', 'Root', 'Highest platform-level system authority', 0, 'platform', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'platform_user', 'Platform User', 'Default global role for registered user not joined to any tenant', 8, 'platform', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'platform_admin', 'System Admin', 'Platform administration role', 1, 'platform', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'platform_support_operator', 'Support Operator', 'Platform support operation role', 2, 'platform', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'tenant_owner', 'Owner', 'Tenant owner role', 3, 'tenant', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'tenant_admin', 'Admin', 'Tenant administrator role', 4, 'tenant', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'tenant_manager', 'Manager', 'Tenant manager role', 5, 'tenant', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'tenant_member', 'Member', 'Tenant member role', 6, 'tenant', '00000000-0000-0000-0000-000000000001'),
+    (gen_random_uuid(), 'tenant_viewer', 'Viewer', 'Tenant read-only role', 7, 'tenant', '00000000-0000-0000-0000-000000000001')
 ON CONFLICT (code) DO UPDATE
 SET
     name = EXCLUDED.name,
     description = EXCLUDED.description,
     role_level = EXCLUDED.role_level,
     scope = EXCLUDED.scope,
+    created_by = EXCLUDED.created_by,
     updated_at = now();
 
 -- ----------------------------------------------------------------------------

@@ -160,11 +160,14 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 			COALESCE(r.description, ''), 
 			r.role_level, 
 			r.scope, 
+			r.created_by,
+			COALESCE(up_creator.fullname, '') as created_by_name,
 			COALESCE(sub_ur.cnt, 0) as assignments_count,
 			COALESCE(sub_rp.cnt, 0) as permissions_count,
 			r.created_at, 
 			r.updated_at
 		FROM %s.roles r
+		LEFT JOIN %s.user_profiles up_creator ON r.created_by = up_creator.user_id
 		LEFT JOIN (
 			SELECT role_id, COUNT(id) as cnt 
 			FROM %s.user_role 
@@ -177,7 +180,7 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 		) sub_rp ON sub_rp.role_id = r.id
 		WHERE r.scope = 'platform' AND r.role_level > $1
 		ORDER BY r.role_level ASC
-	`, r.schema, r.schema, r.schema)
+	`, r.schema, r.schema, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, callerLevel)
 	if err != nil {
@@ -188,6 +191,7 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 	var roles []iamEntity.Role
 	for rows.Next() {
 		var role iamModel.Role
+		var createdByName string // [COMMENT]: kết quả JOIN từ user_profiles — không phải cột trong bảng roles
 		var assignmentsCount, permissionsCount int
 		err := rows.Scan(
 			&role.ID,
@@ -196,6 +200,8 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 			&role.Description,
 			&role.RoleLevel,
 			&role.Scope,
+			&role.CreatedBy,
+			&createdByName,
 			&assignmentsCount,
 			&permissionsCount,
 			&role.CreatedAt,
@@ -205,6 +211,7 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 			return nil, fmt.Errorf("rbac platform repo: scan platform role row: %w", err)
 		}
 		entityRole := iamModel.RoleModelToEntity(role)
+		entityRole.CreatedByName = createdByName
 		entityRole.AssignmentsCount = assignmentsCount
 		entityRole.PermissionsCount = permissionsCount
 		roles = append(roles, entityRole)
@@ -217,21 +224,52 @@ func (r *RbacPlatformRepository) ListPlatformRoles(ctx context.Context, callerLe
 	return roles, nil
 }
 
-// [COMMENT]: CreateRole tạo một vai trò hệ thống mới và map permissions
-func (r *RbacPlatformRepository) CreateRole(ctx context.Context, role *iamEntity.Role, permissionIDs []uuid.UUID) error {
+// [COMMENT]: CreateRole tạo một vai trò hệ thống mới và map permissions kèm kiểm tra sở hữu tập con quyền của caller
+func (r *RbacPlatformRepository) CreateRole(ctx context.Context, callerUserID uuid.UUID, role *iamEntity.Role, permissionIDs []uuid.UUID) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("rbac platform repo: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
+	// 0. Kiểm tra xem tất cả permissions gán vào có là tập con của caller permissions hay không (ngoại trừ super-admin)
+	checkQuery := fmt.Sprintf(`
+		SELECT 
+			COALESCE((
+				SELECT MIN(role_level) 
+				FROM %s.user_role 
+				WHERE user_id = $1 AND workspace_id = '00000000-0000-0000-0000-000000000000'
+			), 999) as caller_level,
+			(
+				SELECT COUNT(*)
+				FROM unnest($2::uuid[]) AS input_perm_id
+				WHERE input_perm_id NOT IN (
+					SELECT rp.permission_id
+					FROM %s.user_role ur
+					JOIN %s.role_permissions rp ON ur.role_id = rp.role_id
+					WHERE ur.user_id = $1 AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+				)
+			) as unowned_perms_count
+	`, r.schema, r.schema, r.schema)
+
+	var callerLevel int
+	var unownedPermsCount int
+	err = tx.QueryRow(ctx, checkQuery, callerUserID, permissionIDs).Scan(&callerLevel, &unownedPermsCount)
+	if err != nil {
+		return fmt.Errorf("rbac platform repo: check caller permission subset: %w", err)
+	}
+
+	if callerLevel > 0 && unownedPermsCount > 0 {
+		return iamTaxonomy.ErrActionNotAllowed
+	}
+
 	// 1. Insert role
 	roleQuery := fmt.Sprintf(`
-		INSERT INTO %s.roles (id, code, name, description, role_level, scope, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+		INSERT INTO %s.roles (id, code, name, description, role_level, scope, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
 	`, r.schema)
 
-	_, err = tx.Exec(ctx, roleQuery, role.ID, role.Code, role.Name, role.Description, role.RoleLevel, role.Scope)
+	_, err = tx.Exec(ctx, roleQuery, role.ID, role.Code, role.Name, role.Description, role.RoleLevel, role.Scope, role.CreatedBy)
 	if err != nil {
 		return fmt.Errorf("rbac platform repo: insert role: %w", err)
 	}
@@ -258,15 +296,47 @@ func (r *RbacPlatformRepository) CreateRole(ctx context.Context, role *iamEntity
 	return nil
 }
 
-// [COMMENT]: ListPermissions lấy danh sách toàn bộ permissions catalog trong DB
-func (r *RbacPlatformRepository) ListPermissions(ctx context.Context) ([]iamEntity.Permission, error) {
-	query := fmt.Sprintf(`
-		SELECT id, module, object, behavior, COALESCE(description, ''), created_at, updated_at
-		FROM %s.permissions
-		ORDER BY module ASC, object ASC, behavior ASC
+// [COMMENT]: ListPermissions lấy danh sách permissions catalog được lọc dựa theo quyền của caller
+func (r *RbacPlatformRepository) ListPermissions(ctx context.Context, callerUserID uuid.UUID) ([]iamEntity.Permission, error) {
+	// A. Lấy level của caller để check xem có phải super-admin không
+	checkQuery := fmt.Sprintf(`
+		SELECT COALESCE((
+			SELECT MIN(role_level) 
+			FROM %s.user_role 
+			WHERE user_id = $1 AND workspace_id = '00000000-0000-0000-0000-000000000000'
+		), 999) as caller_level
 	`, r.schema)
 
-	rows, err := r.db.Query(ctx, query)
+	var callerLevel int
+	err := r.db.QueryRow(ctx, checkQuery, callerUserID).Scan(&callerLevel)
+	if err != nil {
+		return nil, fmt.Errorf("rbac platform repo: check caller level: %w", err)
+	}
+
+	var query string
+	var args []interface{}
+
+	if callerLevel == 0 {
+		// B1. Super-admin lấy toàn bộ catalog
+		query = fmt.Sprintf(`
+			SELECT id, module, object, behavior, COALESCE(description, ''), created_at, updated_at
+			FROM %s.permissions
+			ORDER BY module ASC, object ASC, behavior ASC
+		`, r.schema)
+	} else {
+		// B2. Các admin khác chỉ lấy danh sách các permissions mà mình đang sở hữu
+		query = fmt.Sprintf(`
+			SELECT DISTINCT p.id, p.module, p.object, p.behavior, COALESCE(p.description, ''), p.created_at, p.updated_at
+			FROM %s.permissions p
+			JOIN %s.role_permissions rp ON p.id = rp.permission_id
+			JOIN %s.user_role ur ON rp.role_id = ur.role_id
+			WHERE ur.user_id = $1 AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+			ORDER BY p.module ASC, p.object ASC, p.behavior ASC
+		`, r.schema, r.schema, r.schema)
+		args = append(args, callerUserID)
+	}
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("rbac platform repo: query permissions: %w", err)
 	}
@@ -289,7 +359,6 @@ func (r *RbacPlatformRepository) ListPermissions(ctx context.Context) ([]iamEnti
 		}
 		perms = append(perms, iamModel.PermissionModelToEntity(p))
 	}
-
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
@@ -458,6 +527,8 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 			COALESCE(r.description, ''), 
 			r.role_level, 
 			r.scope, 
+			r.created_by,
+			COALESCE(up_creator.fullname, '') as created_by_name,
 			COALESCE(sub_ur.cnt, 0) as assignments_count,
 			r.created_at, 
 			r.updated_at,
@@ -469,6 +540,7 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 			COALESCE(p.created_at, '0001-01-01 00:00:00Z'::timestamptz) as perm_created_at,
 			COALESCE(p.updated_at, '0001-01-01 00:00:00Z'::timestamptz) as perm_updated_at
 		FROM %s.roles r
+		LEFT JOIN %s.user_profiles up_creator ON r.created_by = up_creator.user_id
 		LEFT JOIN (
 			SELECT role_id, COUNT(id) as cnt 
 			FROM %s.user_role 
@@ -477,7 +549,7 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 		LEFT JOIN %s.role_permissions rp ON rp.role_id = r.id
 		LEFT JOIN %s.permissions p ON rp.permission_id = p.id
 		WHERE r.id = $1 AND r.scope = 'platform'
-	`, r.schema, r.schema, r.schema, r.schema)
+	`, r.schema, r.schema, r.schema, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, roleID)
 	if err != nil {
@@ -491,6 +563,7 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 	for rows.Next() {
 		var roleModel iamModel.Role
 		var permModel iamModel.Permission
+		var createdByName string // [COMMENT]: kết quả JOIN từ user_profiles — không phải cột trong bảng roles
 		var assignmentsCount int
 
 		err := rows.Scan(
@@ -500,6 +573,8 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 			&roleModel.Description,
 			&roleModel.RoleLevel,
 			&roleModel.Scope,
+			&roleModel.CreatedBy,
+			&createdByName,
 			&assignmentsCount,
 			&roleModel.CreatedAt,
 			&roleModel.UpdatedAt,
@@ -522,6 +597,7 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 			}
 
 			entityRole := iamModel.RoleModelToEntity(roleModel)
+			entityRole.CreatedByName = createdByName
 			entityRole.AssignmentsCount = assignmentsCount
 			role = &entityRole
 		}
@@ -543,9 +619,8 @@ func (r *RbacPlatformRepository) GetRoleDetails(ctx context.Context, callerLevel
 	return role, permissions, nil
 }
 
-// [COMMENT]: UpdateRole thực hiện cập nhật tên, mô tả, đồng bộ quyền gán cho vai trò platform, biên dịch lại nhị phân list_perm cho tất cả users đang gán vai trò này và trả về danh sách user ID bị ảnh hưởng trong 1 RTT CTE
 // [COMMENT]: UpdateRole thực hiện cập nhật tên, mô tả, đồng bộ quyền gán cho vai trò platform, biên dịch lại nhị phân list_perm cho tất cả users đang gán vai trò này và trả về danh sách user ID bị ảnh hưởng dưới dạng Transaction nguyên tử
-func (r *RbacPlatformRepository) UpdateRole(ctx context.Context, callerLevel uint8, input *iamEntity.UpdateRoleInput) ([]uuid.UUID, error) {
+func (r *RbacPlatformRepository) UpdateRole(ctx context.Context, callerUserID uuid.UUID, callerLevel uint8, input *iamEntity.UpdateRoleInput) ([]uuid.UUID, error) {
 	// 1. Khởi tạo một Transaction để đảm bảo tính cô lập và nguyên tử
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -554,6 +629,37 @@ func (r *RbacPlatformRepository) UpdateRole(ctx context.Context, callerLevel uin
 	defer func() {
 		_ = tx.Rollback(ctx)
 	}()
+
+	// 0. Kiểm tra xem tất cả permissions gán vào có là tập con của caller permissions hay không (ngoại trừ super-admin)
+	checkQuery := fmt.Sprintf(`
+		SELECT 
+			COALESCE((
+				SELECT MIN(role_level) 
+				FROM %s.user_role 
+				WHERE user_id = $1 AND workspace_id = '00000000-0000-0000-0000-000000000000'
+			), 999) as caller_level,
+			(
+				SELECT COUNT(*)
+				FROM unnest($2::uuid[]) AS input_perm_id
+				WHERE input_perm_id NOT IN (
+					SELECT rp.permission_id
+					FROM %s.user_role ur
+					JOIN %s.role_permissions rp ON ur.role_id = rp.role_id
+					WHERE ur.user_id = $1 AND ur.workspace_id = '00000000-0000-0000-0000-000000000000'
+				)
+			) as unowned_perms_count
+	`, r.schema, r.schema, r.schema)
+
+	var callerUserLevel int
+	var unownedPermsCount int
+	err = tx.QueryRow(ctx, checkQuery, callerUserID, input.PermissionIDs).Scan(&callerUserLevel, &unownedPermsCount)
+	if err != nil {
+		return nil, fmt.Errorf("rbac platform repo: check caller permission subset: %w", err)
+	}
+
+	if callerUserLevel > 0 && unownedPermsCount > 0 {
+		return nil, iamTaxonomy.ErrActionNotAllowed
+	}
 
 	// A. Lấy danh sách string permissions tương ứng với PermissionIDs trong phạm vi transaction
 	queryPerms := fmt.Sprintf(`

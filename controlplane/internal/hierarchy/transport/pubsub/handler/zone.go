@@ -47,7 +47,7 @@ func NewZoneNatsHandler(
 
 // HandleGetZoneList xử lý yêu cầu lấy danh sách Zone, unmarshal payload thô và chuyển giao xuống service layer.
 func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
-	const op = "core.zone.rpc.get_zone_list"
+	const op = "hierarchy.zone.get_zone_list"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), op), 5*time.Second)
 	defer cancel()
 
@@ -108,7 +108,7 @@ func (h *ZoneNatsHandler) HandleGetZoneList(msg *nats.Msg) {
 
 // HandleResolveZone xử lý yêu cầu phân giải một Zone cụ thể, unmarshal payload thô và chuyển giao xuống service layer.
 func (h *ZoneNatsHandler) HandleResolveZone(msg *nats.Msg) {
-	const op = "core.zone.rpc.resolve_zone"
+	const op = "hierarchy.zone.resolve_zone"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(context.Background(), op), 5*time.Second)
 	defer cancel()
 

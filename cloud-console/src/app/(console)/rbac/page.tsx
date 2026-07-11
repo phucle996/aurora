@@ -308,6 +308,7 @@ function AccessControlContent() {
                   <th className="px-5 py-3.5">Scope</th>
                   <th className="px-5 py-3.5">Assignments</th>
                   <th className="px-5 py-3.5">Permissions</th>
+                  <th className="px-5 py-3.5">Created By</th>
                   <th className="px-5 py-3.5">Created</th>
                   <th className="px-5 py-3.5">Updated</th>
                   <th className="px-5 py-3.5 text-right pr-6">Actions</th>
@@ -373,6 +374,13 @@ function AccessControlContent() {
                       {/* Permissions */}
                       <td className="px-5 py-3.5 font-medium text-slate-600 dark:text-slate-350">
                         {r.permissions_count === 1 ? "1 perm" : `${r.permissions_count} perms`}
+                      </td>
+
+                      {/* Created By */}
+                      <td className="px-5 py-3.5">
+                        <span className="text-xs font-semibold text-slate-700 dark:text-slate-350">
+                          {r.created_by_name || "—"}
+                        </span>
                       </td>
 
                       {/* Created */}

@@ -189,7 +189,7 @@ impl NatsEventRouter {
         let zmgr = self.zone_mgr.clone();
         tokio::spawn(async move {
             let mut sub = match nc
-                .subscribe("core.zone.invalidated".to_string())
+                .subscribe("hierarchy.zone.invalidated".to_string())
                 .await
             {
                 Ok(s) => s,

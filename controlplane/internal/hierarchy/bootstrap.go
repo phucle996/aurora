@@ -1,6 +1,7 @@
 // ======================================================================================================
 // 📂 MODULE: controlplane/internal/hierarchy/bootstrap.go
-//            Khởi tạo các tác vụ chạy nền, đăng ký NATS/gRPC cho Core Module
+//            Khởi tạo các tác vụ chạy nền, đăng ký NATS handler cho Core Module
+//            Transport: NATS — không dùng gRPC trực tiếp
 // ======================================================================================================
 
 package core
@@ -20,15 +21,15 @@ func (m *Module) Bootstrap(ctx context.Context) error {
 		handler := pubsubHandler.NewZoneNatsHandler(m.cfg, m.ZoneService, m.otel)
 		const queueGroup = "hierarchy_zone_service"
 
-		// 1. Luồng đồng bộ danh sách Zones (GetZoneList)
-		subGetList, err := m.natsConn.QueueSubscribe("core.zone.get_zone_list", queueGroup, handler.HandleGetZoneList)
+		// 1. Luồng đồng bộ danh sách Zones (GetZoneList) — NATS subject chuẩn hóa
+		subGetList, err := m.natsConn.QueueSubscribe("hierarchy.zone.get_zone_list", queueGroup, handler.HandleGetZoneList)
 		if err != nil {
 			return fmt.Errorf("hierarchy bootstrap: failed to subscribe HandleGetZoneList: %w", err)
 		}
 		m.natsSubs = append(m.natsSubs, subGetList)
 
-		// 2. Luồng phân giải Zone (ResolveZone)
-		subResolve, err := m.natsConn.QueueSubscribe("core.zone.resolve_zone", queueGroup, handler.HandleResolveZone)
+		// 2. Luồng phân giải Zone (ResolveZone) — NATS subject chuẩn hóa
+		subResolve, err := m.natsConn.QueueSubscribe("hierarchy.zone.resolve_zone", queueGroup, handler.HandleResolveZone)
 		if err != nil {
 			return fmt.Errorf("hierarchy bootstrap: failed to subscribe HandleResolveZone: %w", err)
 		}

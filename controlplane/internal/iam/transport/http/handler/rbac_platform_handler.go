@@ -119,6 +119,8 @@ func (h *RbacPlatformHandler) ListRolesPlatform(c *gin.Context) {
 			"scope":             r.Scope,
 			"assignments_count": r.AssignmentsCount,
 			"permissions_count": r.PermissionsCount,
+			"created_by":        r.CreatedBy.String(),
+			"created_by_name":   r.CreatedByName,
 			"created_at":        r.CreatedAt.Format(time.RFC3339),
 			"updated_at":        r.UpdatedAt.Format(time.RFC3339),
 		})
@@ -127,11 +129,16 @@ func (h *RbacPlatformHandler) ListRolesPlatform(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"roles": resp}, "success")
 }
 
-// [COMMENT]: CreateRole tạo vai trò hệ thống mới và map permissions
+// [COMMENT]: CreateRole tạo vai trò hệ thống mới và map permissions kèm kiểm tra sở hữu tập con quyền của caller
 func (h *RbacPlatformHandler) CreateRole(c *gin.Context) {
 	const op = "iam.rbac.create_role"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
+
+	callerUserID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
 
 	var req iamReq.CreateRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -176,11 +183,16 @@ func (h *RbacPlatformHandler) CreateRole(c *gin.Context) {
 		Description: strings.TrimSpace(req.Description),
 		RoleLevel:   req.RoleLevel,
 		Scope:       req.Scope,
+		CreatedBy:   callerUserID,
 	}
 
-	err := h.rbacPlatformSvc.CreateRole(ctx, role, permUUIDs)
+	err := h.rbacPlatformSvc.CreateRole(ctx, callerUserID, role, permUUIDs)
 	if err != nil {
 		logger.HandlerError(c, op, err)
+		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
+			apires.RespondForbidden(c, "insufficient_permission_subset: cannot assign unowned permissions")
+			return
+		}
 		apires.RespondInternalError(c, "failed to create role")
 		return
 	}
@@ -264,13 +276,18 @@ func (h *RbacPlatformHandler) GetRenderContext(c *gin.Context) {
 	}, "success")
 }
 
-// [COMMENT]: ListPermissions trả về danh sách tất cả các permissions catalog có trong hệ thống
+// [COMMENT]: ListPermissions trả về danh sách các permissions catalog được lọc theo quyền của caller
 func (h *RbacPlatformHandler) ListPermissions(c *gin.Context) {
 	const op = "iam.rbac.list_permissions"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	perms, err := h.rbacPlatformSvc.ListPermissions(ctx)
+	callerUserID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	perms, err := h.rbacPlatformSvc.ListPermissions(ctx, callerUserID)
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "failed to load permissions")
@@ -382,6 +399,8 @@ func (h *RbacPlatformHandler) GetRoleDetailsPlatform(c *gin.Context) {
 		"scope":             role.Scope,
 		"assignments_count": role.AssignmentsCount,
 		"permissions_count": role.PermissionsCount,
+		"created_by":        role.CreatedBy.String(),
+		"created_by_name":   role.CreatedByName,
 		"created_at":        role.CreatedAt.Format(time.RFC3339),
 		"updated_at":        role.UpdatedAt.Format(time.RFC3339),
 		"permissions":       permsResp,
@@ -390,11 +409,16 @@ func (h *RbacPlatformHandler) GetRoleDetailsPlatform(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{"role": resp}, "role details fetched successfully")
 }
 
-// [COMMENT]: UpdateRolePlatform thực hiện cập nhật thông tin vai trò platform và đồng bộ danh sách quyền được gán có kiểm tra cấp bậc caller level
+// [COMMENT]: UpdateRolePlatform thực hiện cập nhật thông tin vai trò platform và đồng bộ danh sách quyền được gán có kiểm tra cấp bậc caller level cùng tập con quyền của caller
 func (h *RbacPlatformHandler) UpdateRolePlatform(c *gin.Context) {
 	const op = "iam.rbac.update_role"
 
 	callerLevel, ok := pkgcontext.GetUserLevel(c, op)
+	if !ok {
+		return
+	}
+
+	callerUserID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -433,7 +457,7 @@ func (h *RbacPlatformHandler) UpdateRolePlatform(c *gin.Context) {
 		PermissionIDs: permIDs,
 	}
 
-	err = h.rbacPlatformSvc.UpdateRole(ctx, callerLevel, input)
+	err = h.rbacPlatformSvc.UpdateRole(ctx, callerUserID, callerLevel, input)
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		if errors.Is(err, iamTaxonomy.ErrRoleNotFound) {
@@ -441,7 +465,7 @@ func (h *RbacPlatformHandler) UpdateRolePlatform(c *gin.Context) {
 			return
 		}
 		if errors.Is(err, iamTaxonomy.ErrActionNotAllowed) {
-			apires.RespondForbidden(c, "Action not allowed: hierarchical check failed")
+			apires.RespondForbidden(c, "Action not allowed: hierarchical check or permission subset check failed")
 			return
 		}
 		apires.RespondInternalError(c, "internal error occurred")

@@ -41,6 +41,8 @@ type Role struct {
 	Description      string
 	RoleLevel        int
 	Scope            string
+	CreatedBy        uuid.UUID  // ID người dùng tạo vai trò này
+	CreatedByName    string     // Tên đầy đủ (fullname) người dùng tạo vai trò này
 	AssignmentsCount int
 	PermissionsCount int
 	CreatedAt        time.Time
