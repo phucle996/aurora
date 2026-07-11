@@ -69,6 +69,13 @@ impl AppContainer {
             self.redis_internal_zone.clone(),
         );
 
+        // [COMMENT]: Khởi động luồng quét dung lượng bucket định kỳ mỗi 15s
+        crate::executor::storage::StorageSizesSyncer::start(
+            self.config.clone(),
+            self.redis_internal_zone.clone(),
+            self.redis_job.clone(),
+        );
+
         // Sinh node_id độc nhất cho instance Dataplane này (dùng hostname hoặc uuid làm fallback)
         let node_id = hostname::get()
             .map(|h| h.to_string_lossy().into_owned())

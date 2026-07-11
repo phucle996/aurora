@@ -28,6 +28,7 @@ type PersonalBucket struct {
 	ZoneID             uuid.UUID    // ID của Infrastructure Zone chứa bucket này
 	Status             BucketStatus // Trạng thái hoạt động hiện tại
 	CapacityQuotaBytes int64        // Hạn mức dung lượng lưu trữ tối đa (Bytes)
+	UsedBytes          int64        // Hạn mức dung lượng lưu trữ hiện tại đang sử dụng (Bytes)
 	CreatedAt          time.Time    // Thời gian tạo bản ghi
 	UpdatedAt          time.Time    // Thời gian cập nhật bản ghi cuối
 }
@@ -41,6 +42,7 @@ type TenantBucket struct {
 	TenantID           uuid.UUID    // ID của tổ chức doanh nghiệp sở hữu bucket (NOT NULL)
 	Status             BucketStatus // Trạng thái hoạt động hiện tại
 	CapacityQuotaBytes int64        // Hạn mức dung lượng lưu trữ tối đa (Bytes)
+	UsedBytes          int64        // Hạn mức dung lượng lưu trữ hiện tại đang sử dụng (Bytes)
 	CreatedAt          time.Time    // Thời gian tạo bản ghi
 	UpdatedAt          time.Time    // Thời gian cập nhật bản ghi cuối
 }

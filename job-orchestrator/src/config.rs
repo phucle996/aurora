@@ -21,6 +21,7 @@ pub struct Config {
 
 
     /// Cấu hình OpenTelemetry exporter (gửi traces/metrics đến OTel Collector)
+    pub env_nats_url: String,
     pub otel_exporter_otlp_endpoint: String,
     /// Định danh vùng (zone_id) để đánh nhãn metrics/traces
     pub zone_id: String,
@@ -50,7 +51,8 @@ impl Config {
         let result_stream_name =
             env::var("RESULT_STREAM_NAME").unwrap_or_else(|_| "job_results_stream".to_string());
 
-
+        // Đọc nats_url từ biến môi trường
+        let env_nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://controlplane-nats:4222".to_string());
 
         // Đọc endpoint của OpenTelemetry Collector (mặc định trỏ tới otel-collector trên cổng 4317)
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -80,7 +82,7 @@ impl Config {
             slot_name,
             publication_name,
             result_stream_name,
-
+            env_nats_url,
             otel_exporter_otlp_endpoint,
             zone_id,
             cdc_sources,

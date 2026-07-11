@@ -119,7 +119,7 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 
 func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.created_at, b.updated_at
+		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
 		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
@@ -134,6 +134,7 @@ func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, user
 		&m.ZoneID,
 		&m.Status,
 		&m.CapacityQuotaBytes,
+		&m.UsedBytes,
 		&m.CreatedAt,
 		&m.UpdatedAt,
 	)
@@ -151,7 +152,7 @@ func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, user
 
 func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, status, capacity_quota_bytes, created_at, updated_at
+		SELECT id, name, workspace_id, zone_id, status, capacity_quota_bytes, used_bytes, created_at, updated_at
 		FROM %s.personal_buckets
 		WHERE name = $1
 	`, r.schema)
@@ -165,6 +166,7 @@ func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*s
 		&m.ZoneID,
 		&m.Status,
 		&m.CapacityQuotaBytes,
+		&m.UsedBytes,
 		&m.CreatedAt,
 		&m.UpdatedAt,
 	)
@@ -179,10 +181,9 @@ func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*s
 	// [COMMENT]: Trả về Domain Entity chuyển đổi từ DB Model
 	return storageModel.PersonalBucketModelToEntity(&m), nil
 }
-
 func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT b.id, b.name, b.status, b.capacity_quota_bytes, b.created_at, b.updated_at
+		SELECT b.id, b.name, b.status, b.capacity_quota_bytes, b.used_bytes, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
 		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.workspace_id = $1 AND b.zone_id = $2 AND w.owner_id = $3 AND w.zone_id = $2
@@ -204,6 +205,7 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 			&m.Name,
 			&m.Status,
 			&m.CapacityQuotaBytes,
+			&m.UsedBytes,
 			&m.CreatedAt,
 			&m.UpdatedAt,
 		)
@@ -266,6 +268,23 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 		return fmt.Errorf("storage repo: delete personal bucket failed: %w", err)
 	}
 	// [COMMENT]: Nếu không có bản ghi nào bị tác động thì trả về ErrNotFound
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
+	return nil
+}
+
+func (r *PersonalBucketRepoImpl) UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error {
+	query := fmt.Sprintf(`
+		UPDATE %s.personal_buckets
+		SET used_bytes = $1, updated_at = now()
+		WHERE name = $2
+	`, r.schema)
+
+	res, err := r.db.Exec(ctx, query, usedBytes, name)
+	if err != nil {
+		return fmt.Errorf("storage repo: update personal bucket used_bytes failed: %w", err)
+	}
 	if res.RowsAffected() == 0 {
 		return storageTaxonomy.ErrNotFound
 	}

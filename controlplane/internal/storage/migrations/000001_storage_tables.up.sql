@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS personal_buckets (
     zone_id UUID NOT NULL,      -- Tham chiếu logic tới hierarchy.zones(id)
     status VARCHAR(50) NOT NULL DEFAULT 'creating', -- Trạng thái vòng đời (creating, active, suspended, deleted)
     capacity_quota_bytes BIGINT NOT NULL DEFAULT 0, -- Hạn mức dung lượng tối đa (Bytes)
+    used_bytes BIGINT NOT NULL DEFAULT 0,          -- Dung lượng thực tế đang sử dụng (Bytes)
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tenant_buckets (
     tenant_id UUID NOT NULL,    -- Tham chiếu logic tới hierarchy.tenants(id)
     status VARCHAR(50) NOT NULL DEFAULT 'creating', -- Trạng thái vòng đời (creating, active, suspended, deleted)
     capacity_quota_bytes BIGINT NOT NULL DEFAULT 0, -- Hạn mức dung lượng tối đa (Bytes)
+    used_bytes BIGINT NOT NULL DEFAULT 0,          -- Dung lượng thực tế đang sử dụng (Bytes)
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 

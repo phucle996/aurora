@@ -11,14 +11,16 @@ pub mod job_proto {
 pub struct ResultConsumer {
     config: Config,
     redis_client: redis::Client,
+    nats_client: async_nats::Client,
 }
 
 impl ResultConsumer {
     /// Khởi tạo một ResultConsumer mới
-    pub fn new(config: Config, redis_client: redis::Client) -> Self {
+    pub fn new(config: Config, redis_client: redis::Client, nats_client: async_nats::Client) -> Self {
         Self {
             config,
             redis_client,
+            nats_client,
         }
     }
 
@@ -141,7 +143,6 @@ impl ResultConsumer {
                                                     .process_result(
                                                         &payload,
                                                         &client,
-                                                        &mut redis_conn,
                                                     )
                                                     .await
                                                 {
@@ -180,7 +181,6 @@ impl ResultConsumer {
         &self,
         payload_bytes: &[u8],
         pg_client: &tokio_postgres::Client,
-        redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
         use prost::Message;
 
@@ -293,7 +293,13 @@ impl ResultConsumer {
             pg_client
                 .query_opt(
                     &query_failed,
-                    &[&status, &error_code, &error_message, &job_uuid, &result.job_topic],
+                    &[
+                        &status,
+                        &error_code,
+                        &error_message,
+                        &job_uuid,
+                        &result.job_topic,
+                    ],
                 )
                 .await?
         };
@@ -316,11 +322,11 @@ impl ResultConsumer {
             let trace_id = if trace_id_bytes.is_empty() {
                 String::new()
             } else {
-                trace_id_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                trace_id_bytes
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>()
             };
-            let resource_id = row.get::<_, Option<String>>(3).unwrap_or_default();
-
-
 
             // Thiết lập scope trace_id và gửi thông báo real-time qua OTel span
             let trace_id_clone = trace_id.clone();
@@ -367,7 +373,7 @@ impl ResultConsumer {
                             &job_topic_clone,
                             &result_message,
                             &trace_id,
-                            redis_conn,
+                            &self.nats_client,
                         )
                         .await;
 

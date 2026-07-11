@@ -29,4 +29,7 @@ type TenantBucketService interface {
 	
 	// [COMMENT]: Yêu cầu xóa Bucket (đánh dấu deleted và trigger outbox xóa vật lý).
 	DeleteBucket(ctx context.Context, bucketID uuid.UUID) error
+
+	// [COMMENT]: Cập nhật dung lượng thực tế đang sử dụng của Bucket doanh nghiệp.
+	UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error
 }

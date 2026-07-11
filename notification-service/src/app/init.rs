@@ -1,9 +1,9 @@
 use crate::config::Config;
 use crate::handler::connect::AppState;
 use crate::infra::centrifugo::CentrifugoClient;
-use crate::infra::nats::NatsAuthClient;
-use crate::infra::redis::RedisSubscriber;
+use crate::infra::nats::NatsClient;
 use crate::observability::logger::Logger;
+use crate::listener::NatsListener;
 use std::sync::Arc;
 
 // Khởi tạo toàn bộ tài nguyên kết nối hạ tầng và chạy ngầm các listener
@@ -11,8 +11,8 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
     // [ignoring loop detection]
     Logger::sys_info("infra.init", "Initializing infrastructure services...");
 
-    // 1. Khởi tạo NATS client kết nối đến ACR service — xác thực Trinity Token qua NATS
-    let auth_client = NatsAuthClient::new(
+    // 1. Khởi tạo NATS client kết nối đến NATS Core
+    let nats_client = NatsClient::new(
         cfg.nats_url.clone(),
         cfg.nats_ca_cert.clone(),
         cfg.nats_client_cert.clone(),
@@ -22,7 +22,7 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
     Logger::sys_info(
         "infra.nats",
         &format!(
-            "ACR NATS auth client initialized → {}",
+            "NATS client connection pool initialized → {}",
             cfg.nats_url
         ),
     );
@@ -33,13 +33,19 @@ pub async fn init_infrastructure(cfg: &Config) -> Arc<AppState> {
         cfg.centrifugo_api_key.clone(),
     );
 
-    // 3. Khởi tạo Redis Stream Subscriber và truyền centrifugo_client vào để xử lý tin nhắn
-    let redis_sub = RedisSubscriber::new(&cfg.redis_url, centrifugo_client);
+    // 3. Khởi tạo NATS Listener cho việc đồng bộ dung lượng và kết quả công việc
+    let nats_listener = NatsListener::new(
+        nats_client.clone(),
+        centrifugo_client.clone(),
+    );
 
-    // 4. Khởi chạy ngầm vòng lặp lắng nghe dòng sự kiện (Redis Stream) trong background thread
+    // 4. Khởi chạy ngầm vòng lặp lắng nghe NATS Core
     tokio::spawn(async move {
-        redis_sub.start_listening().await;
+        nats_listener.start_listening().await;
     });
 
-    Arc::new(AppState { auth_client })
+    Arc::new(AppState {
+        nats_client,
+        _centrifugo_client: centrifugo_client,
+    })
 }

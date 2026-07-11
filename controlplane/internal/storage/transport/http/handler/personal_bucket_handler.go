@@ -139,6 +139,7 @@ func (h *PersonalBucketHandler) Get(c *gin.Context) {
 		"zone_id":              bucket.ZoneID.String(),
 		"status":               string(bucket.Status),
 		"capacity_quota_bytes": bucket.CapacityQuotaBytes,
+		"used_bytes":           bucket.UsedBytes,
 		"created_at":           bucket.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at":           bucket.UpdatedAt.UTC().Format(time.RFC3339),
 	}, "get bucket details success")
@@ -180,6 +181,7 @@ func (h *PersonalBucketHandler) List(c *gin.Context) {
 			"name":                 b.Name,
 			"status":               string(b.Status),
 			"capacity_quota_bytes": b.CapacityQuotaBytes,
+			"used_bytes":           b.UsedBytes,
 			"created_at":           b.CreatedAt.UTC().Format(time.RFC3339),
 			"updated_at":           b.UpdatedAt.UTC().Format(time.RFC3339),
 		}

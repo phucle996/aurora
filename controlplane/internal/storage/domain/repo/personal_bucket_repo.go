@@ -29,4 +29,7 @@ type PersonalBucketRepo interface {
 	
 	// [COMMENT]: Xóa vĩnh viễn bản ghi Bucket ra khỏi Database có check quyền sở hữu của user.
 	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+
+	// [COMMENT]: Cập nhật dung lượng thực tế đang sử dụng của Bucket.
+	UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error
 }

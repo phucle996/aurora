@@ -1,16 +1,10 @@
 use crate::observability::logger::Logger;
-use prost::Message;
 
-pub mod job_proto {
-    // Nạp struct sinh tự động từ protobuf (job_event.proto)
-    include!(concat!(env!("OUT_DIR"), "/job.rs"));
-}
-
-/// Bộ phát sự kiện thông báo real-time chuyên biệt phục vụ kiến trúc hướng sự kiện (EDA)
+/// [COMMENT]: Bộ phát sự kiện thông báo real-time chuyên biệt phục vụ kiến trúc hướng sự kiện (EDA)
 pub struct JobNotifier;
 
 impl JobNotifier {
-    /// Phát sự kiện thông báo real-time tới Redis stream:job_notifications
+    /// [COMMENT]: Phát sự kiện thông báo real-time tới NATS Core thay thế cho Redis Stream
     pub async fn notify_realtime(
         job_id: &str,
         user_id: &str,
@@ -19,14 +13,14 @@ impl JobNotifier {
         job_topic: &str,
         message: &str,
         trace_id: &str,
-        redis_conn: &mut redis::aio::MultiplexedConnection,
+        nats_client: &async_nats::Client,
     ) -> Result<(), Box<dyn std::error::Error>> {
         Logger::job_log(
             job_id,
             user_id,
             attempt,
             "result_consumer.notify_start",
-            &format!("Bắt đầu tạo sự kiện realtime cho user {}", user_id),
+            &format!("Bắt đầu tạo sự kiện realtime NATS cho user {}", user_id),
         );
 
         let notification_status = if status == "SUCCEEDED" {
@@ -37,33 +31,26 @@ impl JobNotifier {
             "FAILED".to_string()
         };
 
-        // Đóng gói sự kiện JobNotificationEvent theo cấu trúc Protobuf
-        let event = job_proto::JobNotificationEvent {
-            job_id: job_id.to_string(),
-            user_id: user_id.to_string(),
-            status: notification_status,
-            event_type: job_topic.to_string(),
-            title: match job_topic {
+        // [COMMENT]: Đóng gói thông báo trực tiếp dạng JSON gửi qua NATS
+        let nats_payload = serde_json::json!({
+            "status": notification_status,
+            "title": match job_topic {
                 "mail.test_connection" => "SMTP Connection Test".to_string(),
                 _ => "Job Execution Result".to_string(),
             },
-            message: message.to_string(),
-            created_at: chrono::Utc::now().timestamp(),
-            trace_parent: trace_id.to_string(),
-        };
+            "message": message,
+            "created_at": chrono::Utc::now().to_rfc3339(),
+            "job_id": job_id,
+            "event_type": job_topic,
+            "trace_parent": trace_id,
+        });
 
-        // Mã hóa sự kiện sang dạng nhị phân Protobuf bytes
-        let mut binary_buf = Vec::new();
-        event.encode(&mut binary_buf)?;
+        // [COMMENT]: Serialize JSON payload
+        let payload_bin = serde_json::to_vec(&nats_payload)?;
 
-        // Đẩy dữ liệu nhị phân vào Redis Stream bằng câu lệnh XADD
-        let _: String = redis::cmd("XADD")
-            .arg("stream:job_notifications")
-            .arg("*")
-            .arg("data")
-            .arg(&binary_buf)
-            .query_async(redis_conn)
-            .await?;
+        // [COMMENT]: Bắn sự kiện lên NATS Core theo chủ đề định hướng người dùng cụ thể
+        let subject = format!("jobs.notifications.{}", user_id);
+        nats_client.publish(subject.clone(), payload_bin.into()).await?;
 
         // Tăng chỉ số metrics số thông báo realtime đã gửi thành công
         crate::observability::metrics::MetricsManager::inc_notifications_sent();
@@ -73,7 +60,7 @@ impl JobNotifier {
             user_id,
             attempt,
             "result_consumer.notify_sent",
-            "Đã đẩy thành công sự kiện thông báo vào stream:job_notifications",
+            &format!("Đã đẩy thành công sự kiện thông báo vào NATS Core chủ đề: {}", subject),
         );
 
         Ok(())

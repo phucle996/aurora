@@ -1,4 +1,5 @@
-use crate::infra::nats::NatsAuthClient;
+use crate::infra::nats::NatsClient;
+use crate::infra::centrifugo::CentrifugoClient;
 use crate::observability::logger::Logger;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,9 @@ use std::sync::Arc;
 // Trạng thái chia sẻ cho Route Handler
 #[derive(Clone)]
 pub struct AppState {
-    // [COMMENT]: NATS client trỏ đến ACR service (Rust) — xác thực cả User và Admin Trinity Token
-    pub auth_client: NatsAuthClient,
+    // [COMMENT]: NATS client trỏ đến kết nối NATS Core
+    pub nats_client: NatsClient,
+    pub _centrifugo_client: CentrifugoClient,
 }
 
 // Request gửi từ Centrifugo Connect Proxy chứa định danh client và request payload
@@ -137,10 +139,13 @@ pub async fn handle_connect(
                     return (StatusCode::UNAUTHORIZED, "Missing credentials").into_response();
                 }
 
-                match state
-                    .auth_client
-                    .verify_admin_trinity_token(token, access_key, access_secret)
-                    .await
+                match crate::service::auth::admin::verify_admin_token(
+                    &state.nats_client.client(),
+                    token,
+                    access_key,
+                    access_secret,
+                )
+                .await
                 {
                     Ok(res) => {
                         let latency = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -235,10 +240,13 @@ pub async fn handle_connect(
                     return (StatusCode::UNAUTHORIZED, "Missing credentials").into_response();
                 }
 
-                match state
-                    .auth_client
-                    .verify_user_trinity_token(token, access_key, access_secret)
-                    .await
+                match crate::service::auth::user::verify_user_token(
+                    &state.nats_client.client(),
+                    token,
+                    access_key,
+                    access_secret,
+                )
+                .await
                 {
                     Ok(res) => {
                         let latency = start_time.elapsed().as_secs_f64() * 1000.0;

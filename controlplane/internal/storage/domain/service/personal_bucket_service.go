@@ -29,4 +29,7 @@ type PersonalBucketService interface {
 	
 	// [COMMENT]: Yêu cầu xóa Bucket cá nhân.
 	DeleteBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error
+
+	// [COMMENT]: Cập nhật dung lượng thực tế đang sử dụng của Bucket cá nhân.
+	UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error
 }

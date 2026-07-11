@@ -194,3 +194,11 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UU
 	}
 	return nil
 }
+
+func (s *TenantBucketSvcImpl) UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error {
+	err := s.repo.UpdateUsedBytes(ctx, name, usedBytes)
+	if err != nil {
+		return apperr.Wrap(err, err, "update_used_bytes_failed")
+	}
+	return nil
+}

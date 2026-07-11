@@ -1,22 +1,11 @@
-// Sinh mã Rust từ protobuf definitions của trinity.proto
-pub mod trinity {
-    tonic::include_proto!("trinity.rpc");
-}
-
-use trinity::{
-    VerifyAdminTrinityTokenRequest, VerifyAdminTrinityTokenResponse,
-    VerifyUserTrinityTokenRequest, VerifyUserTrinityTokenResponse,
-};
-use crate::observability::logger::Logger;
-use prost::Message;
-use tonic::Status;
 
 #[derive(Clone)]
-pub struct NatsAuthClient {
-    nats_client: async_nats::Client,
+pub struct NatsClient {
+    client: async_nats::Client,
 }
 
-impl NatsAuthClient {
+impl NatsClient {
+    // [COMMENT]: Khởi tạo NATS client kết nối hỗ trợ TLS/mTLS
     pub async fn new(
         nats_url: String,
         ca_cert: Option<String>,
@@ -41,88 +30,11 @@ impl NatsAuthClient {
             .await
             .unwrap_or_else(|e| panic!("Failed to connect to NATS at {}: {}", nats_url, e));
 
-        Self { nats_client }
+        Self { client: nats_client }
     }
 
-    // Gửi yêu cầu xác thực Admin qua NATS Core đến ACR
-    pub async fn verify_admin_trinity_token(
-        &self,
-        access_token: String,
-        access_key: String,
-        access_secret: String,
-    ) -> Result<VerifyAdminTrinityTokenResponse, Status> {
-        let start_time = std::time::Instant::now();
-        Logger::sys_info(
-            "nats.auth_call",
-            "Verifying admin trinity token via NATS Request-Reply",
-        );
-
-        let req = VerifyAdminTrinityTokenRequest {
-            access_token,
-            access_key,
-            access_secret,
-        };
-
-        let mut payload = Vec::new();
-        req.encode(&mut payload)
-            .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
-
-        let response_msg = match self
-            .nats_client
-            .request("iam.auth.verify_admin_trinity".to_string(), payload.into())
-            .await
-        {
-            Ok(msg) => msg,
-            Err(e) => return Err(Status::unavailable(format!("NATS request failed: {}", e))),
-        };
-
-        let res = VerifyAdminTrinityTokenResponse::decode(response_msg.payload.as_ref())
-            .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
-
-        let latency = start_time.elapsed();
-        crate::observability::metrics::MetricsManager::record_grpc_call("verify_admin_trinity_token", "ok", latency);
-
-        Ok(res)
-    }
-
-    // Gửi yêu cầu xác thực User qua NATS Core đến ACR
-    pub async fn verify_user_trinity_token(
-        &self,
-        access_token: String,
-        access_key: String,
-        access_secret: String,
-    ) -> Result<VerifyUserTrinityTokenResponse, Status> {
-        let start_time = std::time::Instant::now();
-        Logger::sys_info(
-            "nats.auth_call",
-            "Verifying user trinity token via NATS Request-Reply",
-        );
-
-        let req = VerifyUserTrinityTokenRequest {
-            access_token,
-            access_key,
-            access_secret,
-        };
-
-        let mut payload = Vec::new();
-        req.encode(&mut payload)
-            .map_err(|e| Status::internal(format!("Failed to encode request: {}", e)))?;
-
-        let response_msg = match self
-            .nats_client
-            .request("iam.auth.verify_user_trinity".to_string(), payload.into())
-            .await
-        {
-            Ok(msg) => msg,
-            Err(e) => return Err(Status::unavailable(format!("NATS request failed: {}", e))),
-        };
-
-        let res = VerifyUserTrinityTokenResponse::decode(response_msg.payload.as_ref())
-            .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
-
-        let latency = start_time.elapsed();
-        crate::observability::metrics::MetricsManager::record_grpc_call("verify_user_trinity_token", "ok", latency);
-
-        Ok(res)
+    /// Lấy bản sao client NATS phục vụ các dịch vụ
+    pub fn client(&self) -> async_nats::Client {
+        self.client.clone()
     }
 }

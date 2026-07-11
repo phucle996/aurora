@@ -194,3 +194,11 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.
 	}
 	return nil
 }
+
+func (s *PersonalBucketSvcImpl) UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error {
+	err := s.repo.UpdateUsedBytes(ctx, name, usedBytes)
+	if err != nil {
+		return apperr.Wrap(err, err, "update_used_bytes_failed")
+	}
+	return nil
+}

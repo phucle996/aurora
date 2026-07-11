@@ -42,13 +42,18 @@ impl MinioClient {
         Self { s3_client }
     }
 
-    /// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
-    pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
-        self.s3_client
-            .create_bucket()
-            .bucket(bucket_name)
-            .send()
-            .await?;
-        Ok(())
-    }
+	/// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
+	pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+		self.s3_client
+			.create_bucket()
+			.bucket(bucket_name)
+			.send()
+			.await?;
+		Ok(())
+	}
+
+	/// Lấy tham chiếu đến S3 Client nội bộ
+	pub fn s3(&self) -> &S3Client {
+		&self.s3_client
+	}
 }

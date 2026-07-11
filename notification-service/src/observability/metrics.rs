@@ -1,20 +1,20 @@
-use opentelemetry::{global, KeyValue};
 use opentelemetry::metrics::{Counter, Histogram};
+use opentelemetry::{global, KeyValue};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 // ============================================================================
 // 📂 MODULE: observability/metrics.rs - Native OTel Metrics for Notification
 // ============================================================================
-// Quản lý và khai báo các OTel Metric Instruments trực tiếp mà không qua
-// wrapper giả lập Prometheus. Định dạng push-based truyền trực tiếp sang OTel Collector.
+// Quản lý và khai báo các OTel Metric Instruments trực tiếp.
+// Định dạng push-based truyền trực tiếp sang OTel Collector.
 // ============================================================================
 
 static HTTP_REQUESTS: OnceLock<Counter<u64>> = OnceLock::new();
 static HTTP_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
-static GRPC_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
-static GRPC_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
-static REDIS_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
+static NATS_CALLS: OnceLock<Counter<u64>> = OnceLock::new();
+static NATS_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
+static NATS_EVENTS: OnceLock<Counter<u64>> = OnceLock::new();
 static CENTRIFUGO_PUBLISHES: OnceLock<Counter<u64>> = OnceLock::new();
 static DELIVERED_EVENT_LAG: OnceLock<Histogram<f64>> = OnceLock::new();
 
@@ -25,9 +25,9 @@ impl MetricsManager {
     pub fn init() {
         let _ = Self::http_requests();
         let _ = Self::http_duration();
-        let _ = Self::grpc_calls();
-        let _ = Self::grpc_duration();
-        let _ = Self::redis_events();
+        let _ = Self::nats_calls();
+        let _ = Self::nats_duration();
+        let _ = Self::nats_events();
         let _ = Self::centrifugo_publishes();
         let _ = Self::delivered_event_lag();
     }
@@ -50,29 +50,29 @@ impl MetricsManager {
         })
     }
 
-    fn grpc_calls() -> &'static Counter<u64> {
-        GRPC_CALLS.get_or_init(|| {
+    fn nats_calls() -> &'static Counter<u64> {
+        NATS_CALLS.get_or_init(|| {
             global::meter("aurora-notification-service")
-                .u64_counter("notification_grpc_calls_total")
-                .with_description("Tong so luong cuoc goi gRPC sang Controlplane")
+                .u64_counter("notification_nats_calls_total")
+                .with_description("Tong so luong yeu cau request-reply qua NATS Core")
                 .init()
         })
     }
 
-    fn grpc_duration() -> &'static Histogram<f64> {
-        GRPC_DURATION.get_or_init(|| {
+    fn nats_duration() -> &'static Histogram<f64> {
+        NATS_DURATION.get_or_init(|| {
             global::meter("aurora-notification-service")
-                .f64_histogram("notification_grpc_call_duration_seconds")
-                .with_description("Do tre cuoc goi gRPC den Controlplane (seconds)")
+                .f64_histogram("notification_nats_call_duration_seconds")
+                .with_description("Do tre yeu cau request-reply qua NATS Core (seconds)")
                 .init()
         })
     }
 
-    fn redis_events() -> &'static Counter<u64> {
-        REDIS_EVENTS.get_or_init(|| {
+    fn nats_events() -> &'static Counter<u64> {
+        NATS_EVENTS.get_or_init(|| {
             global::meter("aurora-notification-service")
-                .u64_counter("notification_redis_events_total")
-                .with_description("Tong so luong su kien tieu thu tu Redis Stream")
+                .u64_counter("notification_nats_events_total")
+                .with_description("Tong so luong su kien tieu thu tu NATS Core")
                 .init()
         })
     }
@@ -90,7 +90,7 @@ impl MetricsManager {
         DELIVERED_EVENT_LAG.get_or_init(|| {
             global::meter("aurora-notification-service")
                 .f64_histogram("notification_delivered_event_lag_seconds")
-                .with_description("Do tre tu luc tao job trong Postgres den luc Centrifugo publish (seconds)")
+                .with_description("Do tre tu luc tao job den luc Centrifugo publish (seconds)")
                 .init()
         })
     }
@@ -105,19 +105,23 @@ impl MetricsManager {
         Self::http_duration().record(duration.as_secs_f64(), &attrs);
     }
 
-    /// Ghi nhận chỉ số cuộc gọi gRPC tới Controlplane
-    pub fn record_grpc_call(method: &str, status: &str, duration: Duration) {
+    /// Ghi nhận chỉ số cuộc gọi request-reply tới NATS Core
+    pub fn record_nats_call(subject: &str, status: &str, duration: Duration) {
         let attrs = [
-            KeyValue::new("method", method.to_string()),
+            KeyValue::new("subject", subject.to_string()),
             KeyValue::new("status", status.to_string()),
         ];
-        Self::grpc_calls().add(1, &attrs);
-        Self::grpc_duration().record(duration.as_secs_f64(), &attrs);
+        Self::nats_calls().add(1, &attrs);
+        Self::nats_duration().record(duration.as_secs_f64(), &attrs);
     }
 
-    /// Ghi nhận chỉ số sự kiện Redis Stream
-    pub fn record_redis_event(status: &str) {
-        Self::redis_events().add(1, &[KeyValue::new("status", status.to_string())]);
+    /// Ghi nhận chỉ số sự kiện NATS Core
+    pub fn record_nats_event(subject: &str, status: &str) {
+        let attrs = [
+            KeyValue::new("subject", subject.to_string()),
+            KeyValue::new("status", status.to_string()),
+        ];
+        Self::nats_events().add(1, &attrs);
     }
 
     /// Ghi nhận chỉ số đẩy thông báo sang Centrifugo

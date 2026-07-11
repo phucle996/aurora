@@ -15,6 +15,7 @@ type PersonalBucket struct {
 	ZoneID             uuid.UUID `db:"zone_id"`
 	Status             string    `db:"status"`
 	CapacityQuotaBytes int64     `db:"capacity_quota_bytes"`
+	UsedBytes          int64     `db:"used_bytes"`
 	CreatedAt          time.Time `db:"created_at"`
 	UpdatedAt          time.Time `db:"updated_at"`
 }
@@ -28,6 +29,7 @@ type TenantBucket struct {
 	TenantID           uuid.UUID `db:"tenant_id"`
 	Status             string    `db:"status"`
 	CapacityQuotaBytes int64     `db:"capacity_quota_bytes"`
+	UsedBytes          int64     `db:"used_bytes"`
 	CreatedAt          time.Time `db:"created_at"`
 	UpdatedAt          time.Time `db:"updated_at"`
 }
@@ -44,6 +46,7 @@ func PersonalBucketEntityToModel(e *storageEntity.PersonalBucket) *PersonalBucke
 		ZoneID:             e.ZoneID,
 		Status:             string(e.Status),
 		CapacityQuotaBytes: e.CapacityQuotaBytes,
+		UsedBytes:          e.UsedBytes,
 		CreatedAt:          e.CreatedAt,
 		UpdatedAt:          e.UpdatedAt,
 	}
@@ -61,6 +64,7 @@ func PersonalBucketModelToEntity(m *PersonalBucket) *storageEntity.PersonalBucke
 		ZoneID:             m.ZoneID,
 		Status:             storageEntity.BucketStatus(m.Status),
 		CapacityQuotaBytes: m.CapacityQuotaBytes,
+		UsedBytes:          m.UsedBytes,
 		CreatedAt:          m.CreatedAt,
 		UpdatedAt:          m.UpdatedAt,
 	}
@@ -79,6 +83,7 @@ func TenantBucketEntityToModel(e *storageEntity.TenantBucket) *TenantBucket {
 		TenantID:           e.TenantID,
 		Status:             string(e.Status),
 		CapacityQuotaBytes: e.CapacityQuotaBytes,
+		UsedBytes:          e.UsedBytes,
 		CreatedAt:          e.CreatedAt,
 		UpdatedAt:          e.UpdatedAt,
 	}
@@ -97,6 +102,7 @@ func TenantBucketModelToEntity(m *TenantBucket) *storageEntity.TenantBucket {
 		TenantID:           m.TenantID,
 		Status:             storageEntity.BucketStatus(m.Status),
 		CapacityQuotaBytes: m.CapacityQuotaBytes,
+		UsedBytes:          m.UsedBytes,
 		CreatedAt:          m.CreatedAt,
 		UpdatedAt:          m.UpdatedAt,
 	}

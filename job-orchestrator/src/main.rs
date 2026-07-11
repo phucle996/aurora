@@ -42,9 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Khởi tạo và kiểm tra hạ tầng Logical Replication (Chạy một lần duy nhất lúc khởi động app, tự động reconnect)
     cdc::setup::setup_replication_infrastructure(&config).await?;
 
-    // 3. Khởi tạo kết nối Redis
+    // 3. Khởi tạo kết nối Redis & NATS
     let redis_client = redis::Client::open(config.redis_url.clone())?;
     Logger::sys_info("main.init", "Đã khởi tạo Redis Client thành công.");
+
+    let nats_client = async_nats::connect(&config.env_nats_url).await?;
+    Logger::sys_info("main.init", &format!("Đã kết nối thành công tới NATS Core tại: {}", config.env_nats_url));
 
     // 3. Khởi tạo các cấu phần proxy 2 chiều
     // [COMMENT]: CdcStreamer::new là async — bootstrap desired_state_cache từ DB trước khi run.
@@ -52,8 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let streamer = CdcStreamer::new(config.clone(), redis_client.clone())
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { format!("CDC bootstrap thất bại: {}", e).into() })?;
-    let consumer = ResultConsumer::new(config.clone(), redis_client.clone());
-    let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone());
+    let consumer = ResultConsumer::new(config.clone(), redis_client.clone(), nats_client.clone());
+    let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone(), nats_client);
 
     // 4. Chạy song song các luồng nền độc lập (HA)
     tokio::select! {
