@@ -40,13 +40,17 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 	mc := storageModel.PersonalCredentialEntityToModel(credential)
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: CTE 3-way: insert nguyên tử (atomic) bucket + credential + outbox record.
-	// RETURNING id từ ins_bucket để gắn bucket_id vào credential đúng ngay trong CTE.
+	// [COMMENT]: CTE 3-way check ownership: insert nguyên tử bucket + credential + outbox record chỉ khi workspace thuộc về user_id ($19).
 	query := fmt.Sprintf(`
-		WITH ins_bucket AS (
+		WITH check_workspace AS (
+			SELECT 1 FROM hierarchy.personal_workspaces WHERE id = $3 AND owner_id = $19
+		),
+		ins_bucket AS (
 			INSERT INTO %s.personal_buckets (
 				id, name, workspace_id, zone_id, status, capacity_quota_bytes, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			)
+			SELECT $1, $2, $3, $4, $5, $6, $7, $8
+			FROM check_workspace
 			RETURNING id
 		),
 		ins_credential AS (
@@ -60,10 +64,12 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+		)
+		SELECT $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+		FROM ins_bucket
 	`, r.schema, r.schema, r.schema)
 
-	_, err := r.db.Exec(ctx, query,
+	res, err := r.db.Exec(ctx, query,
 		// [COMMENT]: $1-$8 — personal_buckets fields
 		m.ID,
 		m.Name,
@@ -104,19 +110,24 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		}
 		return fmt.Errorf("storage repo: create personal bucket failed: %w", err)
 	}
+	// [COMMENT]: Nếu RowsAffected == 0 tức là workspace không tồn tại hoặc không thuộc sở hữu của userID ($19)
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
 	return nil
 }
 
-func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalBucket, error) {
+func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, status, capacity_quota_bytes, created_at, updated_at
-		FROM %s.personal_buckets
-		WHERE id = $1
+		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.created_at, b.updated_at
+		FROM %s.personal_buckets b
+		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
+		WHERE b.id = $1 AND w.owner_id = $2
 	`, r.schema)
 
 	var m storageModel.PersonalBucket
 
-	err := r.db.QueryRow(ctx, query, id).Scan(
+	err := r.db.QueryRow(ctx, query, id, userID).Scan(
 		&m.ID,
 		&m.Name,
 		&m.WorkspaceID,
@@ -169,15 +180,16 @@ func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*s
 	return storageModel.PersonalBucketModelToEntity(&m), nil
 }
 
-func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
+func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, status, capacity_quota_bytes, created_at, updated_at
-		FROM %s.personal_buckets
-		WHERE workspace_id = $1
-		ORDER BY created_at DESC
+		SELECT b.id, b.name, b.status, b.capacity_quota_bytes, b.created_at, b.updated_at
+		FROM %s.personal_buckets b
+		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
+		WHERE b.workspace_id = $1 AND b.zone_id = $2 AND w.owner_id = $3 AND w.zone_id = $2
+		ORDER BY b.created_at DESC
 	`, r.schema)
 
-	rows, err := r.db.Query(ctx, query, workspaceID)
+	rows, err := r.db.Query(ctx, query, workspaceID, zoneID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("storage repo: list personal buckets by workspace failed: %w", err)
 	}
@@ -190,8 +202,6 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 		err := rows.Scan(
 			&m.ID,
 			&m.Name,
-			&m.WorkspaceID,
-			&m.ZoneID,
 			&m.Status,
 			&m.CapacityQuotaBytes,
 			&m.CreatedAt,
@@ -206,14 +216,15 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 	return buckets, nil
 }
 
-func (r *PersonalBucketRepoImpl) UpdateStatus(ctx context.Context, id uuid.UUID, status storageEntity.BucketStatus) error {
+func (r *PersonalBucketRepoImpl) UpdateStatus(ctx context.Context, id uuid.UUID, userID uuid.UUID, status storageEntity.BucketStatus) error {
 	query := fmt.Sprintf(`
-		UPDATE %s.personal_buckets
+		UPDATE %s.personal_buckets b
 		SET status = $1, updated_at = $2
-		WHERE id = $3
+		FROM hierarchy.personal_workspaces w
+		WHERE b.id = $3 AND b.workspace_id = w.id AND w.owner_id = $4
 	`, r.schema)
 
-	res, err := r.db.Exec(ctx, query, string(status), time.Now(), id)
+	res, err := r.db.Exec(ctx, query, string(status), time.Now(), id, userID)
 	if err != nil {
 		return fmt.Errorf("storage repo: update personal bucket status failed: %w", err)
 	}
@@ -224,14 +235,15 @@ func (r *PersonalBucketRepoImpl) UpdateStatus(ctx context.Context, id uuid.UUID,
 	return nil
 }
 
-func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64) error {
+func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, userID uuid.UUID, quotaBytes int64) error {
 	query := fmt.Sprintf(`
-		UPDATE %s.personal_buckets
+		UPDATE %s.personal_buckets b
 		SET capacity_quota_bytes = $1, updated_at = $2
-		WHERE id = $3
+		FROM hierarchy.personal_workspaces w
+		WHERE b.id = $3 AND b.workspace_id = w.id AND w.owner_id = $4
 	`, r.schema)
 
-	res, err := r.db.Exec(ctx, query, quotaBytes, time.Now(), id)
+	res, err := r.db.Exec(ctx, query, quotaBytes, time.Now(), id, userID)
 	if err != nil {
 		return fmt.Errorf("storage repo: update personal bucket quota failed: %w", err)
 	}
@@ -242,13 +254,14 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 	return nil
 }
 
-func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID) error {
+func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
 	query := fmt.Sprintf(`
-		DELETE FROM %s.personal_buckets
-		WHERE id = $1
+		DELETE FROM %s.personal_buckets b
+		USING hierarchy.personal_workspaces w
+		WHERE b.id = $1 AND b.workspace_id = w.id AND w.owner_id = $2
 	`, r.schema)
 
-	res, err := r.db.Exec(ctx, query, id)
+	res, err := r.db.Exec(ctx, query, id, userID)
 	if err != nil {
 		return fmt.Errorf("storage repo: delete personal bucket failed: %w", err)
 	}

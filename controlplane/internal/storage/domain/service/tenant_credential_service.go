@@ -21,18 +21,3 @@ type TenantCredentialService interface {
 	// [COMMENT]: Thu hồi / Xóa bỏ Access Key.
 	RevokeCredential(ctx context.Context, credID uuid.UUID, userID uuid.UUID) error
 }
-
-// [COMMENT]: PersonalCredentialService định nghĩa logic nghiệp vụ quản lý khóa truy cập Access Keys cho Bucket cá nhân.
-type PersonalCredentialService interface {
-	// [COMMENT]: Khởi tạo một cặp Access Key mới cho Bucket cá nhân.
-	CreateCredential(ctx context.Context, param *storageEntity.CreatePersonalCredential) (*storageEntity.PersonalCredential, error)
-	
-	// [COMMENT]: Lấy chi tiết thông tin Credentials.
-	GetCredential(ctx context.Context, credID uuid.UUID) (*storageEntity.PersonalCredential, error)
-	
-	// [COMMENT]: Liệt kê danh sách các Keys đang hoạt động của Bucket cá nhân.
-	ListCredentials(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.PersonalCredential, error)
-	
-	// [COMMENT]: Thu hồi / Xóa bỏ Access Key.
-	RevokeCredential(ctx context.Context, credID uuid.UUID, userID uuid.UUID) error
-}

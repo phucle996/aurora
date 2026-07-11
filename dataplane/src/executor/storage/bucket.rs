@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use prost::Message;
 
+use crate::executor::storage::core::{MinioAdminClient, MinioClient};
 use crate::executor::{ExecutionResult, Executor, ExecutorError};
-use crate::executor::storage::core::{MinioClient, MinioAdminClient};
 use crate::job_lifecycle::message::JobPayload;
 use crate::observability::logger::Logger;
 
@@ -22,7 +22,7 @@ pub struct BucketCreateExecutor;
 #[async_trait]
 impl Executor for BucketCreateExecutor {
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
-        let op = "storage.bucket.executor.create";
+        let op = "storage.bucket.create";
 
         // 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct BucketSync
         let sync_data = match storage_proto::BucketSync::decode(&payload.payload[..]) {
@@ -38,40 +38,55 @@ impl Executor for BucketCreateExecutor {
         // [COMMENT]: Validate credential fields — bắt buộc phải có đủ thông tin credential
         if sync_data.access_key.is_empty() || sync_data.secret_key.is_empty() {
             return Err(ExecutorError::ExecutionFailed(
-                "BucketSync payload missing credential fields (access_key / secret_key)".to_string()
+                "BucketSync payload missing credential fields (access_key / secret_key)"
+                    .to_string(),
             ));
         }
 
         Logger::sys_info(
             op,
             &format!(
-                "BucketCreateExecutor: Khởi chạy provisioning bucket. Name: {}, Zone: {}, Quota: {} bytes, CredentialID: {}",
-                sync_data.name, sync_data.zone_id, sync_data.capacity_quota_bytes, sync_data.credential_id
+                "BucketCreateExecutor: Khởi chạy provisioning bucket. Name: {}, AccessKey: {}",
+                sync_data.name, sync_data.access_key
             ),
         );
 
         // 2. Khởi tạo MinIO client (S3 SDK) và Admin client
-        let minio_client  = MinioClient::from_env().await;
-        let admin_client  = MinioAdminClient::from_env();
+        let minio_client = MinioClient::from_env().await;
+        let admin_client = MinioAdminClient::from_env();
 
         // ─────────────────────────────────────────────────────────────────────
         // STEP 1: Tạo bucket vật lý (idempotent — BucketAlreadyExists = success)
         // ─────────────────────────────────────────────────────────────────────
-        Logger::sys_info(op, &format!("Step 1/3: Tạo bucket vật lý '{}'...", sync_data.name));
+        Logger::sys_info(
+            op,
+            &format!("Step 1/3: Tạo bucket vật lý '{}'...", sync_data.name),
+        );
         match minio_client.create_bucket(&sync_data.name).await {
             Ok(_) => {
-                Logger::sys_info(op, &format!("Step 1/3 OK: Bucket '{}' tạo thành công.", sync_data.name));
+                Logger::sys_info(
+                    op,
+                    &format!("Step 1/3 OK: Bucket '{}' tạo thành công.", sync_data.name),
+                );
             }
             Err(e) => {
                 let err_str = e.to_string();
                 // [COMMENT]: Idempotency — bucket đã tồn tại = success
-                if err_str.contains("BucketAlreadyExists") || err_str.contains("BucketAlreadyOwnedByYou") {
+                if err_str.contains("BucketAlreadyExists")
+                    || err_str.contains("BucketAlreadyOwnedByYou")
+                {
                     Logger::sys_info(
                         op,
-                        &format!("Step 1/3 SKIP: Bucket '{}' đã tồn tại (idempotent).", sync_data.name),
+                        &format!(
+                            "Step 1/3 SKIP: Bucket '{}' đã tồn tại (idempotent).",
+                            sync_data.name
+                        ),
                     );
                 } else {
-                    let msg = format!("Step 1/3 FAIL: Không thể tạo bucket '{}': {}", sync_data.name, e);
+                    let msg = format!(
+                        "Step 1/3 FAIL: Không thể tạo bucket '{}': {}",
+                        sync_data.name, e
+                    );
                     Logger::sys_error(op, &msg, "BUCKET_CREATE_FAILED");
                     return Err(ExecutorError::ExecutionFailed(msg));
                 }
@@ -82,28 +97,47 @@ impl Executor for BucketCreateExecutor {
         // STEP 2: Tạo MinIO User với access_key + secret_key từ payload
         // (idempotent — user đã tồn tại = success)
         // ─────────────────────────────────────────────────────────────────────
-        Logger::sys_info(op, &format!("Step 2/3: Tạo MinIO user '{}'...", sync_data.access_key));
+        Logger::sys_info(
+            op,
+            &format!("Step 2/3: Tạo MinIO user '{}'...", sync_data.access_key),
+        );
         if let Err(e) = admin_client
             .create_user(&sync_data.access_key, &sync_data.secret_key)
             .await
         {
-            let msg = format!("Step 2/3 FAIL: Không thể tạo MinIO user '{}': {}", sync_data.access_key, e);
+            let msg = format!(
+                "Step 2/3 FAIL: Không thể tạo MinIO user '{}': {}",
+                sync_data.access_key, e
+            );
             Logger::sys_error(op, &msg, "MINIO_USER_CREATE_FAILED");
             return Err(ExecutorError::ExecutionFailed(msg));
         }
-        Logger::sys_info(op, &format!("Step 2/3 OK: MinIO user '{}' đã sẵn sàng.", sync_data.access_key));
+        Logger::sys_info(
+            op,
+            &format!(
+                "Step 2/3 OK: MinIO user '{}' đã sẵn sàng.",
+                sync_data.access_key
+            ),
+        );
 
         // ─────────────────────────────────────────────────────────────────────
         // STEP 3: Tạo policy và gắn bucket policy giới hạn quyền của user này
         // vào đúng bucket đó (1 user : 1 bucket = scope tối thiểu)
         // ─────────────────────────────────────────────────────────────────────
-        Logger::sys_info(op, &format!("Step 3/3: Gán bucket policy cho user '{}'...", sync_data.access_key));
+        Logger::sys_info(
+            op,
+            &format!(
+                "Step 3/3: Gán bucket policy cho user '{}'...",
+                sync_data.access_key
+            ),
+        );
 
-        // [COMMENT]: Dùng credential_id làm policy name để đảm bảo unique và traceable
-        let policy_name = format!("policy-{}", sync_data.credential_id);
+        // [COMMENT]: Dùng access_key làm policy name để đảm bảo unique và traceable
+        let policy_name = format!("policy-{}", sync_data.access_key);
 
         // [COMMENT]: Tạo policy JSON S3-compatible (giới hạn đúng bucket này)
-        let bucket_policy_json = format!(r#"{{
+        let bucket_policy_json = format!(
+            r#"{{
             "Version": "2012-10-17",
             "Statement": [{{
                 "Effect": "Allow",
@@ -146,8 +180,8 @@ impl Executor for BucketCreateExecutor {
 
         Ok(ExecutionResult {
             message: format!(
-                "Bucket '{}' provisioned với credential '{}' (user + policy + bucket)",
-                sync_data.name, sync_data.credential_id
+                "Bucket '{}' provisioned với access key '{}' (user + policy + bucket)",
+                sync_data.name, sync_data.access_key
             ),
         })
     }

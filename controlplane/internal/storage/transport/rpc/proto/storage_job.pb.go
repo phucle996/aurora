@@ -23,20 +23,11 @@ const (
 
 // Cấu hình đồng bộ hóa Bucket vật lý từ Controlplane sang Dataplane
 type BucketSync struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Id                 string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                                              // ID bucket dạng UUID string
-	Name               string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                                          // Tên vật lý của bucket
-	ZoneId             string                 `protobuf:"bytes,3,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`                                        // ID zone sở hữu bucket
-	WorkspaceId        string                 `protobuf:"bytes,4,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`                         // ID workspace sở hữu bucket
-	TenantId           string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                                  // ID tenant sở hữu bucket (nếu là tenant bucket, để trống nếu personal)
-	Status             string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                                                      // Trạng thái (creating, active, suspended, deleted)
-	CapacityQuotaBytes int64                  `protobuf:"varint,7,opt,name=capacity_quota_bytes,json=capacityQuotaBytes,proto3" json:"capacity_quota_bytes,omitempty"` // Hạn mức quota bytes
-	UpdatedAt          int64                  `protobuf:"varint,8,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`                              // Thời điểm cập nhật cuối (Epoch Milliseconds)
-	// [COMMENT]: Thông tin Credential do CP tự sinh, dùng để DP provisioning MinIO Service Account
-	CredentialId  string `protobuf:"bytes,9,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"` // ID credential trong DB
-	AccessKey     string `protobuf:"bytes,10,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`         // Access Key sẽ được tạo trên MinIO
-	SecretKey     string `protobuf:"bytes,11,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`         // Secret Key (plaintext trong payload, transit qua internal infra)
-	Policy        string `protobuf:"bytes,12,opt,name=policy,proto3" json:"policy,omitempty"`                                // JSON policy giới hạn quyền truy cập chỉ vào bucket này
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                            // Tên vật lý của bucket
+	AccessKey     string                 `protobuf:"bytes,2,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"` // Access Key sẽ được tạo trên MinIO
+	SecretKey     string                 `protobuf:"bytes,3,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"` // Secret Key (plaintext trong payload, transit qua internal infra)
+	Policy        string                 `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`                        // JSON policy giới hạn quyền truy cập chỉ vào bucket này
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -71,65 +62,9 @@ func (*BucketSync) Descriptor() ([]byte, []int) {
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *BucketSync) GetId() string {
-	if x != nil {
-		return x.Id
-	}
-	return ""
-}
-
 func (x *BucketSync) GetName() string {
 	if x != nil {
 		return x.Name
-	}
-	return ""
-}
-
-func (x *BucketSync) GetZoneId() string {
-	if x != nil {
-		return x.ZoneId
-	}
-	return ""
-}
-
-func (x *BucketSync) GetWorkspaceId() string {
-	if x != nil {
-		return x.WorkspaceId
-	}
-	return ""
-}
-
-func (x *BucketSync) GetTenantId() string {
-	if x != nil {
-		return x.TenantId
-	}
-	return ""
-}
-
-func (x *BucketSync) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
-func (x *BucketSync) GetCapacityQuotaBytes() int64 {
-	if x != nil {
-		return x.CapacityQuotaBytes
-	}
-	return 0
-}
-
-func (x *BucketSync) GetUpdatedAt() int64 {
-	if x != nil {
-		return x.UpdatedAt
-	}
-	return 0
-}
-
-func (x *BucketSync) GetCredentialId() string {
-	if x != nil {
-		return x.CredentialId
 	}
 	return ""
 }
@@ -158,13 +93,12 @@ func (x *BucketSync) GetPolicy() string {
 // Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane
 type CredentialSync struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                 // ID credential dạng UUID string
-	BucketId      string                 `protobuf:"bytes,2,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`     // ID bucket liên kết
-	AccessKey     string                 `protobuf:"bytes,3,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`  // Access Key MinIO
-	SecretKey     string                 `protobuf:"bytes,4,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`  // Secret Key MinIO
-	Policy        string                 `protobuf:"bytes,5,opt,name=policy,proto3" json:"policy,omitempty"`                         // JSON policy
-	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                         // Trạng thái hoạt động (active, revoked)
-	UpdatedAt     int64                  `protobuf:"varint,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // Thời điểm cập nhật cuối (Epoch Milliseconds)
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                // ID credential dạng UUID string
+	BucketId      string                 `protobuf:"bytes,2,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`    // ID bucket liên kết
+	AccessKey     string                 `protobuf:"bytes,3,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"` // Access Key MinIO
+	SecretKey     string                 `protobuf:"bytes,4,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"` // Secret Key MinIO
+	Policy        string                 `protobuf:"bytes,5,opt,name=policy,proto3" json:"policy,omitempty"`                        // JSON policy
+	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                        // Trạng thái hoạt động (active, revoked)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -241,36 +175,19 @@ func (x *CredentialSync) GetStatus() string {
 	return ""
 }
 
-func (x *CredentialSync) GetUpdatedAt() int64 {
-	if x != nil {
-		return x.UpdatedAt
-	}
-	return 0
-}
-
 var File_internal_storage_transport_rpc_proto_storage_job_proto protoreflect.FileDescriptor
 
 const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"\n" +
-	"6internal/storage/transport/rpc/proto/storage_job.proto\x12\astorage\"\xed\x02\n" +
+	"6internal/storage/transport/rpc/proto/storage_job.proto\x12\astorage\"v\n" +
 	"\n" +
-	"BucketSync\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x17\n" +
-	"\azone_id\x18\x03 \x01(\tR\x06zoneId\x12!\n" +
-	"\fworkspace_id\x18\x04 \x01(\tR\vworkspaceId\x12\x1b\n" +
-	"\ttenant_id\x18\x05 \x01(\tR\btenantId\x12\x16\n" +
-	"\x06status\x18\x06 \x01(\tR\x06status\x120\n" +
-	"\x14capacity_quota_bytes\x18\a \x01(\x03R\x12capacityQuotaBytes\x12\x1d\n" +
+	"BucketSync\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\b \x01(\x03R\tupdatedAt\x12#\n" +
-	"\rcredential_id\x18\t \x01(\tR\fcredentialId\x12\x1d\n" +
+	"access_key\x18\x02 \x01(\tR\taccessKey\x12\x1d\n" +
 	"\n" +
-	"access_key\x18\n" +
-	" \x01(\tR\taccessKey\x12\x1d\n" +
-	"\n" +
-	"secret_key\x18\v \x01(\tR\tsecretKey\x12\x16\n" +
-	"\x06policy\x18\f \x01(\tR\x06policy\"\xca\x01\n" +
+	"secret_key\x18\x03 \x01(\tR\tsecretKey\x12\x16\n" +
+	"\x06policy\x18\x04 \x01(\tR\x06policy\"\xab\x01\n" +
 	"\x0eCredentialSync\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tbucket_id\x18\x02 \x01(\tR\bbucketId\x12\x1d\n" +
@@ -279,9 +196,7 @@ const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"\n" +
 	"secret_key\x18\x04 \x01(\tR\tsecretKey\x12\x16\n" +
 	"\x06policy\x18\x05 \x01(\tR\x06policy\x12\x16\n" +
-	"\x06status\x18\x06 \x01(\tR\x06status\x12\x1d\n" +
-	"\n" +
-	"updated_at\x18\a \x01(\x03R\tupdatedAtB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
+	"\x06status\x18\x06 \x01(\tR\x06statusB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
 
 var (
 	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce sync.Once

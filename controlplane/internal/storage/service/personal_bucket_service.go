@@ -42,10 +42,18 @@ func buildPersonalBucketPolicy(bucketName string) string {
 }
 
 func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, param *storageEntity.CreatePersonalBucket) (*storageEntity.CreatedBucketResult, error) {
-	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào
+	// [COMMENT]: Khởi tạo thực thể Bucket cá nhân từ tham số đầu vào với UUID v7
+	bucketID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của WorkspaceID
+	physicalName := fmt.Sprintf("ws-%s-%s", param.WorkspaceID.String()[:8], param.Name)
+
 	bucket := &storageEntity.PersonalBucket{
-		ID:                 uuid.New(),
-		Name:               param.Name,
+		ID:                 bucketID,
+		Name:               physicalName,
 		WorkspaceID:        param.WorkspaceID,
 		ZoneID:             param.ZoneID,
 		Status:             storageEntity.BucketStatusCreating,
@@ -67,9 +75,14 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	// [COMMENT]: Sinh bucket policy giới hạn quyền chỉ vào đúng bucket này
 	policy := buildPersonalBucketPolicy(bucket.Name)
 
-	// [COMMENT]: Tạo credential entity — gắn kèm vào bucket cá nhân
+	// [COMMENT]: Tạo credential entity — gắn kèm vào bucket cá nhân với UUID v7
+	credID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
 	credential := &storageEntity.PersonalCredential{
-		ID:        uuid.New(),
+		ID:        credID,
 		BucketID:  bucket.ID,
 		AccessKey: accessKey,
 		SecretKey: secretKey, // TODO: AES-GCM encrypt trước khi lưu
@@ -87,28 +100,24 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 
 	// [COMMENT]: Serialize BucketSync payload kèm credential để DP provisioning MinIO Service Account
 	syncEvent := &storageproto.BucketSync{
-		Id:                 bucket.ID.String(),
-		Name:               bucket.Name,
-		ZoneId:             bucket.ZoneID.String(),
-		WorkspaceId:        bucket.WorkspaceID.String(),
-		TenantId:           "", // Cá nhân không có Tenant ID
-		Status:             string(bucket.Status),
-		CapacityQuotaBytes: bucket.CapacityQuotaBytes,
-		UpdatedAt:          bucket.UpdatedAt.UnixMilli(),
-		// [COMMENT]: Thông tin credential để Dataplane tạo MinIO Service Account trong 1 job
-		CredentialId: credential.ID.String(),
-		AccessKey:    accessKey,
-		SecretKey:    secretKey,
-		Policy:       policy,
+		Name:      bucket.Name,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		Policy:    policy,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
-	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction
+	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction với UUID v7
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              uuid.New(),
+		EventID:              eventID,
 		RoutingScope:         "zone:" + bucket.ZoneID.String(),
 		JobTopic:             "storage.bucket.create",
 		Payload:              payloadBytes,
@@ -137,49 +146,49 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	}, nil
 }
 
-func (s *PersonalBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID) (*storageEntity.PersonalBucket, error) {
-	bucket, err := s.repo.GetByID(ctx, bucketID)
+func (s *PersonalBucketSvcImpl) GetBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error) {
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "get_failed")
 	}
 	return bucket, nil
 }
 
-func (s *PersonalBucketSvcImpl) ListBuckets(ctx context.Context, workspaceID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
-	// [COMMENT]: Liệt kê các bucket theo workspace_id cho luồng cá nhân
-	buckets, err := s.repo.ListByWorkspace(ctx, workspaceID)
+func (s *PersonalBucketSvcImpl) ListBuckets(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
+	// [COMMENT]: Liệt kê các bucket theo workspace_id cho luồng cá nhân có check userID và zoneID
+	buckets, err := s.repo.ListByWorkspace(ctx, workspaceID, zoneID, userID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_failed")
 	}
 	return buckets, nil
 }
 
-func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, quotaBytes int64) error {
-	err := s.repo.UpdateQuota(ctx, bucketID, quotaBytes)
+func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error {
+	err := s.repo.UpdateQuota(ctx, bucketID, userID, quotaBytes)
 	if err != nil {
 		return apperr.Wrap(err, err, "update_quota_failed")
 	}
 	return nil
 }
 
-func (s *PersonalBucketSvcImpl) SuspendBucket(ctx context.Context, bucketID uuid.UUID) error {
-	err := s.repo.UpdateStatus(ctx, bucketID, storageEntity.BucketStatusSuspended)
+func (s *PersonalBucketSvcImpl) SuspendBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
+	err := s.repo.UpdateStatus(ctx, bucketID, userID, storageEntity.BucketStatusSuspended)
 	if err != nil {
 		return apperr.Wrap(err, err, "suspend_failed")
 	}
 	return nil
 }
 
-func (s *PersonalBucketSvcImpl) ResumeBucket(ctx context.Context, bucketID uuid.UUID) error {
-	err := s.repo.UpdateStatus(ctx, bucketID, storageEntity.BucketStatusActive)
+func (s *PersonalBucketSvcImpl) ResumeBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
+	err := s.repo.UpdateStatus(ctx, bucketID, userID, storageEntity.BucketStatusActive)
 	if err != nil {
 		return apperr.Wrap(err, err, "resume_failed")
 	}
 	return nil
 }
 
-func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UUID) error {
-	err := s.repo.Delete(ctx, bucketID)
+func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
+	err := s.repo.Delete(ctx, bucketID, userID)
 	if err != nil {
 		return apperr.Wrap(err, err, "delete_failed")
 	}

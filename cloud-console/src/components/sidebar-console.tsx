@@ -8,6 +8,7 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
+  HardDrive,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -111,6 +112,15 @@ export default function SidebarConsole({
         path: "/rbac",
         matchKey: "iam:role",
         // [COMMENT]: Chỉ render khi user có quyền read trên iam:role
+        requiredAction: "read"
+      },
+      {
+        id: "storage",
+        name: "Object Storage",
+        icon: HardDrive,
+        path: "/storage",
+        matchKey: "storage:bucket",
+        // [COMMENT]: Chỉ render khi user có quyền read trên storage:bucket
         requiredAction: "read"
       }
     ];

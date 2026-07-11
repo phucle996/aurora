@@ -9,10 +9,11 @@ import (
 	"controlplane/internal/cacheengine"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 	apires "controlplane/pkg/apires"
-	"controlplane/pkg/context"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 var ErrRoleNotFound = errors.New("role not found")
@@ -99,7 +100,12 @@ func Authorize(requiredPermission string, cacheEngine *cacheengine.CacheRegistry
 
 		// 6. Xác định cấp 1 theo nhánh và build expected key 5 cấp đầy đủ
 		// Format DB đã lưu sẵn: <cấp1>:<workspace_uuid>:<module>:<object>:<behavior>
-		tenantID := pkgcontext.GetOptionalTenantIDStr(c)
+		var tenantID string
+		if val, exists := c.Get(pkgcontext.CtxTenantID); exists {
+			if id, ok := val.(uuid.UUID); ok {
+				tenantID = id.String()
+			}
+		}
 
 		var scopeCtx string
 		var cacheParam string

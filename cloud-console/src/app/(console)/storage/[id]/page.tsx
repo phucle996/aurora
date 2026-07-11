@@ -1,0 +1,227 @@
+"use client";
+
+import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { useRouter, useParams } from "next/navigation";
+import Link from "next/link";
+import {
+  HardDrive,
+  ArrowLeft,
+  Loader2,
+  RefreshCw,
+  Info,
+  KeyRound,
+  FolderOpen,
+} from "lucide-react";
+import { toast } from "sonner";
+import { getBucketDetails, type BucketItem } from "@/lib/api/storage";
+import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
+import { useUserSession } from "@/hooks/useUserSession";
+import RouteGuard from "@/components/route-guard";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+
+import { OverviewTab } from "./components/OverviewTab";
+import { CredentialsTab } from "./components/CredentialsTab";
+import { ObjectsTab } from "./components/ObjectsTab";
+
+function ViewBucketContent() {
+  const router = useRouter();
+  const { id } = useParams() as { id: string };
+  const { checkPermission } = useUserSession();
+
+  const [bucket, setBucket] = useState<BucketItem | null>(null);
+  const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("Overview");
+
+  // Load zones catalog
+  useEffect(() => {
+    let active = true;
+    async function loadZones() {
+      try {
+        const zoneData = await fetchZoneCatalog();
+        if (active) {
+          setZones(zoneData || []);
+        }
+      } catch (err) {
+        console.error("Failed to load zone catalog:", err);
+      }
+    }
+    void loadZones();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const loadBucketDetails = useCallback(async (isRefresh = false) => {
+    if (!id) return;
+    try {
+      if (isRefresh) {
+        setLoading(true);
+      }
+      const data = await getBucketDetails(id);
+      setBucket(data);
+    } catch (e: any) {
+      toast.error(e.message || "Failed to load bucket details");
+      router.push("/storage");
+    } finally {
+      setLoading(false);
+    }
+  }, [id, router]);
+
+  // Load details on mount / id change
+  useEffect(() => {
+    void loadBucketDetails(true);
+  }, [loadBucketDetails]);
+
+  const zoneName = useMemo(() => {
+    if (!bucket) return "—";
+    const matched = zones.find((z) => z.id === bucket.ZoneID);
+    return matched ? matched.name : bucket.ZoneID;
+  }, [bucket, zones]);
+
+  const tabs = useMemo(() => {
+    const list = ["Overview"];
+    if (checkPermission("storage:credential", "read")) {
+      list.push("Credentials");
+    }
+    list.push("Objects");
+    return list;
+  }, [checkPermission]);
+
+  const renderActiveTab = () => {
+    if (!bucket) return null;
+    switch (activeTab) {
+      case "Overview":
+        return (
+          <OverviewTab
+            bucket={bucket}
+            zoneName={zoneName}
+            onRefresh={() => void loadBucketDetails(false)}
+          />
+        );
+      case "Credentials":
+        return <CredentialsTab bucket={bucket} />;
+      case "Objects":
+        return <ObjectsTab bucket={bucket} />;
+      default:
+        return null;
+    }
+  };
+
+  const getTabIcon = (tabName: string) => {
+    switch (tabName) {
+      case "Overview":
+        return <Info className="h-3.5 w-3.5" />;
+      case "Credentials":
+        return <KeyRound className="h-3.5 w-3.5" />;
+      case "Objects":
+        return <FolderOpen className="h-3.5 w-3.5" />;
+      default:
+        return null;
+    }
+  };
+
+  if (loading && !bucket) {
+    return (
+      <div className="flex flex-col items-center justify-center py-40 text-muted-foreground select-none">
+        <Loader2 className="h-9 w-9 animate-spin text-blue-500 mb-3" />
+        <span className="text-xs font-bold uppercase tracking-wider animate-pulse">
+          Loading Bucket Profile...
+        </span>
+      </div>
+    );
+  }
+
+  if (!bucket) return null;
+
+  return (
+    <div className="flex flex-col gap-6 w-full relative pb-10 text-foreground min-h-[calc(100vh-110px)] items-stretch px-6">
+      
+      {/* 1. Header Section with Back Arrow */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border pb-5">
+        <div className="flex items-center gap-4">
+          <Link
+            href="/storage"
+            className="h-9 w-9 flex items-center justify-center rounded-lg border border-border bg-background text-muted-foreground hover:text-foreground cursor-pointer transition-colors outline-none"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <div className="flex flex-col">
+            <div className="flex items-center gap-2.5">
+              <div className="h-7 w-7 flex items-center justify-center rounded-lg bg-blue-600/10 text-blue-500 border border-blue-500/20">
+                <HardDrive className="h-4 w-4" />
+              </div>
+              <h1 className="text-xl font-bold text-foreground tracking-tight select-all">
+                {bucket.Name}
+              </h1>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "capitalize font-bold text-[9px] px-1.5 py-0.2 h-4.5 border",
+                  bucket.Status === "active"
+                    ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-450 dark:border-emerald-500/30"
+                    : bucket.Status === "creating"
+                    ? "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400 dark:border-amber-500/30"
+                    : "bg-red-500/10 text-red-655 border-red-500/20 dark:text-red-450 dark:border-red-500/30"
+                )}
+              >
+                {bucket.Status}
+              </Badge>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1 font-mono uppercase tracking-wider select-none">
+              Physical Object Storage Bucket Detail Node
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => void loadBucketDetails(true)}
+            disabled={loading}
+            variant="outline"
+            size="sm"
+            className="font-bold cursor-pointer transition-colors"
+          >
+            <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            <span>Sync</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* 2. Flat Tab Navigation Bar */}
+      <div className="flex border-b border-border text-[13px] font-bold text-muted-foreground select-none gap-2">
+        {tabs.map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={cn(
+              "pb-2.5 px-3.5 border-b-2 -mb-[2px] transition-all cursor-pointer font-bold flex items-center gap-2 outline-none",
+              activeTab === tab
+                ? "border-blue-600 text-blue-600 dark:text-blue-450"
+                : "border-transparent hover:text-foreground hover:border-slate-300 dark:hover:border-slate-800"
+            )}
+          >
+            {getTabIcon(tab)}
+            <span>{tab}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* 3. Active Tab Render Container */}
+      <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+        {renderActiveTab()}
+      </div>
+
+    </div>
+  );
+}
+
+export default function ViewBucketPage() {
+  return (
+    <RouteGuard requiredKey="storage:bucket" requiredAction="read">
+      <ViewBucketContent />
+    </RouteGuard>
+  );
+}

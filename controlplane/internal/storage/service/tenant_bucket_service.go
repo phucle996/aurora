@@ -42,10 +42,18 @@ func buildTenantBucketPolicy(bucketName string) string {
 }
 
 func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *storageEntity.CreateTenantBucket) (*storageEntity.CreatedBucketResult, error) {
-	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào
+	// [COMMENT]: Khởi tạo thực thể Bucket doanh nghiệp từ tham số đầu vào với UUID v7
+	bucketID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của TenantID
+	physicalName := fmt.Sprintf("tn-%s-%s", param.TenantID.String()[:8], param.Name)
+
 	bucket := &storageEntity.TenantBucket{
-		ID:                 uuid.New(),
-		Name:               param.Name,
+		ID:                 bucketID,
+		Name:               physicalName,
 		WorkspaceID:        param.WorkspaceID,
 		ZoneID:             param.ZoneID,
 		TenantID:           param.TenantID,
@@ -68,9 +76,14 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	// [COMMENT]: Sinh bucket policy giới hạn quyền chỉ vào đúng bucket này
 	policy := buildTenantBucketPolicy(bucket.Name)
 
-	// [COMMENT]: Tạo credential entity — secret_key lưu DB dưới dạng plain text (cần thêm encryption sau)
+	// [COMMENT]: Tạo credential entity — gắn kèm vào bucket doanh nghiệp với UUID v7
+	credID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
 	credential := &storageEntity.TenantCredential{
-		ID:        uuid.New(),
+		ID:        credID,
 		BucketID:  bucket.ID,
 		AccessKey: accessKey,
 		SecretKey: secretKey, // TODO: AES-GCM encrypt trước khi lưu
@@ -88,28 +101,24 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 
 	// [COMMENT]: Serialize BucketSync payload kèm thông tin credential để DP provisioning MinIO Service Account
 	syncEvent := &storageproto.BucketSync{
-		Id:                 bucket.ID.String(),
-		Name:               bucket.Name,
-		ZoneId:             bucket.ZoneID.String(),
-		WorkspaceId:        bucket.WorkspaceID.String(),
-		TenantId:           bucket.TenantID.String(),
-		Status:             string(bucket.Status),
-		CapacityQuotaBytes: bucket.CapacityQuotaBytes,
-		UpdatedAt:          bucket.UpdatedAt.UnixMilli(),
-		// [COMMENT]: Thông tin credential để Dataplane tạo MinIO Service Account ngay trong 1 job
-		CredentialId: credential.ID.String(),
-		AccessKey:    accessKey,
-		SecretKey:    secretKey,
-		Policy:       policy,
+		Name:      bucket.Name,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		Policy:    policy,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
-	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction
+	// [COMMENT]: Tạo thực thể Outbox Record để chèn đồng thời trong DB transaction với UUID v7
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              uuid.New(),
+		EventID:              eventID,
 		RoutingScope:         "zone:" + bucket.ZoneID.String(),
 		JobTopic:             "storage.bucket.create",
 		Payload:              payloadBytes,

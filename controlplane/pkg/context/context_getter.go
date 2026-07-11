@@ -193,25 +193,6 @@ func GetClientDeviceID(c *gin.Context, op string) (uuid.UUID, bool) {
 	return uuid.Nil, false
 }
 
-// [COMMENT]: GetOptionalTenantIDStr trích xuất Tenant ID dưới dạng chuỗi từ Gin Context.
-func GetOptionalTenantIDStr(c *gin.Context) string {
-	if val, ok := c.Get(CtxTenantID); ok {
-		if id, ok := val.(uuid.UUID); ok {
-			return id.String()
-		}
-	}
-	return ""
-}
-
-// [COMMENT]: GetOptionalZoneIDStr trích xuất Zone ID dưới dạng chuỗi từ Gin Context.
-func GetOptionalZoneIDStr(c *gin.Context) string {
-	if val, ok := c.Get(CtxZoneID); ok {
-		if id, ok := val.(uuid.UUID); ok {
-			return id.String()
-		}
-	}
-	return ""
-}
 
 // [COMMENT]: GetTraceparent trích xuất traceparent header cho mục đích tracing telemetry (nếu có).
 func GetTraceparent(c *gin.Context) string {

@@ -25,8 +25,10 @@ type StorageModule struct {
 	L1Registry  *cacheengine.CacheRegistry
 
 	// HTTP Transport Handlers
-	BucketHandler     *storageHandler.BucketHandler
-	CredentialHandler *storageHandler.CredentialHandler
+	PersonalBucketHandler     *storageHandler.PersonalBucketHandler
+	TenantBucketHandler       *storageHandler.TenantBucketHandler
+	PersonalCredentialHandler *storageHandler.PersonalCredentialHandler
+	TenantCredentialHandler   *storageHandler.TenantCredentialHandler
 
 	// Core Services
 	TenantBucketService       storageSvcInterface.TenantBucketService
@@ -127,13 +129,21 @@ func NewModule(
 	}
 
 	// 3. Khởi tạo HTTP handlers
-	bucketHandler := storageHandler.NewBucketHandler(tenantBucketSvc, personalBucketSvc)
-	if bucketHandler == nil {
-		return nil, errors.New("storage module: failed to construct bucket handler")
+	personalBucketHandler := storageHandler.NewPersonalBucketHandler(personalBucketSvc)
+	if personalBucketHandler == nil {
+		return nil, errors.New("storage module: failed to construct personal bucket handler")
 	}
-	credentialHandler := storageHandler.NewCredentialHandler(tenantCredentialSvc, personalCredentialSvc)
-	if credentialHandler == nil {
-		return nil, errors.New("storage module: failed to construct credential handler")
+	tenantBucketHandler := storageHandler.NewTenantBucketHandler(tenantBucketSvc)
+	if tenantBucketHandler == nil {
+		return nil, errors.New("storage module: failed to construct tenant bucket handler")
+	}
+	personalCredentialHandler := storageHandler.NewPersonalCredentialHandler(personalCredentialSvc)
+	if personalCredentialHandler == nil {
+		return nil, errors.New("storage module: failed to construct personal credential handler")
+	}
+	tenantCredentialHandler := storageHandler.NewTenantCredentialHandler(tenantCredentialSvc)
+	if tenantCredentialHandler == nil {
+		return nil, errors.New("storage module: failed to construct tenant credential handler")
 	}
 
 	return &StorageModule{
@@ -150,7 +160,9 @@ func NewModule(
 		PersonalBucketService:     personalBucketSvc,
 		TenantCredentialService:   tenantCredentialSvc,
 		PersonalCredentialService: personalCredentialSvc,
-		BucketHandler:             bucketHandler,
-		CredentialHandler:         credentialHandler,
+		PersonalBucketHandler:     personalBucketHandler,
+		TenantBucketHandler:       tenantBucketHandler,
+		PersonalCredentialHandler: personalCredentialHandler,
+		TenantCredentialHandler:   tenantCredentialHandler,
 	}, nil
 }

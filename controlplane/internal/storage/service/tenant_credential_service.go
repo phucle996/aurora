@@ -87,7 +87,6 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 		SecretKey: rawSecretKey,
 		Policy:    cred.Policy,
 		Status:    "active",
-		UpdatedAt: cred.UpdatedAt.UnixMilli(),
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -172,7 +171,6 @@ func (s *TenantCredentialSvcImpl) RevokeCredential(ctx context.Context, credID u
 		SecretKey: "",
 		Policy:    cred.Policy,
 		Status:    "revoked",
-		UpdatedAt: time.Now().UnixMilli(),
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {

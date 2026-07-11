@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
@@ -12,6 +11,8 @@ import (
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
+
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -38,7 +39,7 @@ func NewPersonalCredentialService(
 
 func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param *storageEntity.CreatePersonalCredential) (*storageEntity.PersonalCredential, error) {
 	// [COMMENT]: Kiểm tra sự tồn tại của Bucket liên kết (Entity Existence Check)
-	bucket, err := s.bucketRepo.GetByID(ctx, param.BucketID)
+	bucket, err := s.bucketRepo.GetByID(ctx, param.BucketID, param.UserID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "get_bucket_failed")
 	}
@@ -87,7 +88,6 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 		SecretKey: rawSecretKey,
 		Policy:    cred.Policy,
 		Status:    "active",
-		UpdatedAt: cred.UpdatedAt.UnixMilli(),
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -118,7 +118,7 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	return cred, nil
 }
 
-func (s *PersonalCredentialSvcImpl) GetCredential(ctx context.Context, credID uuid.UUID) (*storageEntity.PersonalCredential, error) {
+func (s *PersonalCredentialSvcImpl) GetCredential(ctx context.Context, credID uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalCredential, error) {
 	cred, err := s.repo.GetByID(ctx, credID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "get_failed")
@@ -127,10 +127,22 @@ func (s *PersonalCredentialSvcImpl) GetCredential(ctx context.Context, credID uu
 		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "credential_not_found")
 	}
 
+	// [COMMENT]: Validate bucket ownership using GetByID check
+	bucket, err := s.bucketRepo.GetByID(ctx, cred.BucketID, userID)
+	if err != nil || bucket == nil {
+		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
+	}
+
 	return cred, nil
 }
 
-func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.PersonalCredential, error) {
+func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalCredential, error) {
+	// [COMMENT]: Validate bucket ownership using GetByID check
+	bucket, err := s.bucketRepo.GetByID(ctx, bucketID, userID)
+	if err != nil || bucket == nil {
+		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
+	}
+
 	creds, err := s.repo.ListByBucket(ctx, bucketID)
 	if err != nil {
 		return nil, apperr.Wrap(err, err, "list_failed")
@@ -148,7 +160,7 @@ func (s *PersonalCredentialSvcImpl) RevokeCredential(ctx context.Context, credID
 	}
 
 	// [COMMENT]: Tìm bucket liên kết để xác định ZoneID định tuyến Outbox
-	bucket, err := s.bucketRepo.GetByID(ctx, cred.BucketID)
+	bucket, err := s.bucketRepo.GetByID(ctx, cred.BucketID, userID)
 	if err != nil {
 		return apperr.Wrap(err, err, "get_bucket_failed")
 	}
@@ -171,7 +183,6 @@ func (s *PersonalCredentialSvcImpl) RevokeCredential(ctx context.Context, credID
 		SecretKey: "",
 		Policy:    cred.Policy,
 		Status:    "revoked",
-		UpdatedAt: time.Now().UnixMilli(),
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
