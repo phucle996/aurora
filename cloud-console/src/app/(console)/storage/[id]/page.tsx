@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -14,12 +14,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { getBucketDetails, type BucketItem } from "@/lib/api/storage";
-import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
 import { useUserSession } from "@/hooks/useUserSession";
 import RouteGuard from "@/components/route-guard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 
 import { OverviewTab } from "./components/OverviewTab";
 import { CredentialsTab } from "./components/CredentialsTab";
@@ -30,56 +30,31 @@ function ViewBucketContent() {
   const { id } = useParams() as { id: string };
   const { checkPermission } = useUserSession();
 
-  const [bucket, setBucket] = useState<BucketItem | null>(null);
-  const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
-  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("Overview");
 
-  // Load zones catalog
-  useEffect(() => {
-    let active = true;
-    async function loadZones() {
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý chi tiết bucket.
+  // Tự động retry và cache dữ liệu, giảm thiểu gọi API dư thừa.
+  const {
+    data: bucket = null,
+    isLoading: loading,
+    isRefetching: refreshing,
+    refetch: loadBucketDetails,
+  } = useQuery<BucketItem | null>({
+    queryKey: ["bucket", id],
+    queryFn: async () => {
+      if (!id) return null;
       try {
-        const zoneData = await fetchZoneCatalog();
-        if (active) {
-          setZones(zoneData || []);
-        }
-      } catch (err) {
-        console.error("Failed to load zone catalog:", err);
+        return await getBucketDetails(id);
+      } catch (err: any) {
+        toast.error(err.message || "Failed to load bucket details");
+        router.push("/storage");
+        return null;
       }
-    }
-    void loadZones();
-    return () => {
-      active = false;
-    };
-  }, []);
+    },
+    enabled: !!id,
+  });
 
-  const loadBucketDetails = useCallback(async (isRefresh = false) => {
-    if (!id) return;
-    try {
-      if (isRefresh) {
-        setLoading(true);
-      }
-      const data = await getBucketDetails(id);
-      setBucket(data);
-    } catch (e: any) {
-      toast.error(e.message || "Failed to load bucket details");
-      router.push("/storage");
-    } finally {
-      setLoading(false);
-    }
-  }, [id, router]);
 
-  // Load details on mount / id change
-  useEffect(() => {
-    void loadBucketDetails(true);
-  }, [loadBucketDetails]);
-
-  const zoneName = useMemo(() => {
-    if (!bucket) return "—";
-    const matched = zones.find((z) => z.id === bucket.ZoneID);
-    return matched ? matched.name : bucket.ZoneID;
-  }, [bucket, zones]);
 
   const tabs = useMemo(() => {
     const list = ["Overview"];
@@ -97,8 +72,7 @@ function ViewBucketContent() {
         return (
           <OverviewTab
             bucket={bucket}
-            zoneName={zoneName}
-            onRefresh={() => void loadBucketDetails(false)}
+            onRefresh={() => void loadBucketDetails()}
           />
         );
       case "Credentials":
@@ -178,13 +152,13 @@ function ViewBucketContent() {
 
         <div className="flex items-center gap-2">
           <Button
-            onClick={() => void loadBucketDetails(true)}
-            disabled={loading}
+            onClick={() => void loadBucketDetails()}
+            disabled={loading || refreshing}
             variant="outline"
             size="sm"
             className="font-bold cursor-pointer transition-colors"
           >
-            <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            <RefreshCw className={loading || refreshing ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
             <span>Sync</span>
           </Button>
         </div>

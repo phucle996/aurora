@@ -48,14 +48,11 @@ func NewSessionRefreshService(
 
 // [COMMENT]: CreateRefreshToken tạo mới một session refresh token opaque khi đăng nhập thành công.
 func (s *SessionRefreshService) CreateRefreshToken(ctx context.Context, userID uuid.UUID, deviceID uuid.UUID, tenantID *uuid.UUID) (string, time.Time, error) {
-	// [COMMENT]: 1. Tạo chuỗi entropy ngẫu nhiên dài 32 ký tự
-	entropy, err := security.GenerateToken(32)
+	// [COMMENT]: 1. Tạo chuỗi entropy ngẫu nhiên dài 128 ký tự
+	rawRefresh, err := security.GenerateToken(128)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("session refresh: failed to generate refresh token entropy: %w", err)
 	}
-
-	// [COMMENT]: 2. Kết hợp với userID để tạo token hoàn chỉnh định dạng user_token (tổng cộng 36 + 1 + 32 = 69 ký tự)
-	rawRefresh := fmt.Sprintf("%s_%s", userID.String(), entropy)
 
 	// [COMMENT]: 3. Tạo UUID v7 cho ID
 	refreshID, err := uuid.NewV7()

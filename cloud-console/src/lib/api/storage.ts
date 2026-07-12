@@ -6,8 +6,6 @@ export type BucketItem = {
   ID: string;
   Name: string;
   WorkspaceID: string;
-  ZoneID: string;
-  TenantID?: string; // Chỉ xuất hiện với Tenant Bucket
   Status: "creating" | "active" | "suspended" | "deleted";
   CapacityQuotaBytes: number;
   CreatedAt: string;
@@ -50,14 +48,10 @@ export async function listBuckets(signal?: AbortSignal): Promise<BucketItem[]> {
 export async function createBucket(
   name: string,
   quotaBytes: number,
-  zoneID: string,
   signal?: AbortSignal
 ): Promise<CreatedBucketResult> {
   const res = await fetchJSON<{ data?: CreatedBucketResult }>("/api/v1/storage/buckets", {
     method: "POST",
-    headers: {
-      "X-Zone-ID": zoneID,
-    },
     body: {
       name,
       quota_bytes: quotaBytes,

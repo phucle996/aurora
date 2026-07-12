@@ -1,47 +1,27 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Loader2, Laptop } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { getUserDevices } from "@/lib/api/device";
+import { useQuery } from "@tanstack/react-query";
 
 interface DevicesTabProps {
   selectedUser: any;
 }
 
 export function DevicesTab({ selectedUser }: DevicesTabProps) {
-  const [devicesData, setDevicesData] = useState<any[]>([]);
-  const [loadingDevices, setLoadingDevices] = useState(false);
-
-  useEffect(() => {
-    setDevicesData([]);
-  }, [selectedUser?.id]);
-
-  useEffect(() => {
-    if (!selectedUser?.id) return;
-    let active = true;
-    const fetchDevices = async () => {
-      setLoadingDevices(true);
-      try {
-        const res = await getUserDevices(selectedUser.id);
-        if (active && res) {
-          setDevicesData(res.items);
-        }
-      } catch (err) {
-        console.error("Failed to fetch devices", err);
-        if (active) {
-          setDevicesData([]);
-        }
-      } finally {
-        if (active) {
-          setLoadingDevices(false);
-        }
-      }
-    };
-    fetchDevices();
-    return () => {
-      active = false;
-    };
-  }, [selectedUser?.id]);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý danh sách thiết bị.
+  const {
+    data: devicesData = [],
+    isLoading: loadingDevices,
+  } = useQuery<any[]>({
+    queryKey: ["userDevices", selectedUser?.id],
+    queryFn: async () => {
+      const res = await getUserDevices(selectedUser.id);
+      return res?.items || [];
+    },
+    enabled: !!selectedUser?.id,
+  });
 
   if (loadingDevices) {
     return (

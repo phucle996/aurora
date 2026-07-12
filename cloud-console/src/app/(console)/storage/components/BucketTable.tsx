@@ -26,7 +26,6 @@ interface BucketTableProps {
   sortKey: string;
   sortDir: "asc" | "desc";
   onSort: (key: string) => void;
-  zoneMap: Record<string, string>; // Maps Zone ID -> Zone Name
 }
 
 // [COMMENT]: Chuyển đổi dung lượng bytes sang đơn vị GB dễ đọc
@@ -73,7 +72,6 @@ export function BucketTable({
   sortKey,
   sortDir,
   onSort,
-  zoneMap,
 }: BucketTableProps) {
   const SortIcon = ({ col }: { col: string }) => (
     <ArrowUpDown
@@ -114,14 +112,7 @@ export function BucketTable({
                     Bucket Name <SortIcon col="name" />
                   </span>
                 </th>
-                <th
-                  className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors"
-                  onClick={() => onSort("zone")}
-                >
-                  <span className="inline-flex items-center">
-                    Infrastructure Zone <SortIcon col="zone" />
-                  </span>
-                </th>
+
                 <th
                   className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors"
                   onClick={() => onSort("status")}
@@ -150,7 +141,6 @@ export function BucketTable({
             </thead>
             <tbody className="divide-y divide-border text-[13px]">
               {paginatedBuckets.map((b) => {
-                const zoneName = zoneMap[b.ZoneID] || b.ZoneID || "—";
                 return (
                   <tr
                     key={b.ID}
@@ -164,11 +154,6 @@ export function BucketTable({
                       >
                         {b.Name}
                       </Link>
-                    </td>
-
-                    {/* Zone Name */}
-                    <td className="px-6 py-3.5 text-slate-700 dark:text-slate-300 font-medium">
-                      {zoneName}
                     </td>
 
                     {/* Status Dot */}

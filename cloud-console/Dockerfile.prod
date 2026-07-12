@@ -3,6 +3,16 @@
 # ============================================================================
 FROM node:20-alpine AS builder
 WORKDIR /app
+
+# [COMMENT]: Khai báo ARG nhận các biến môi trường build-time cho Next.js Client-side.
+# Các biến NEXT_PUBLIC_ là công khai nên truyền qua ARG là hoàn toàn an toàn (không chứa dữ liệu nhạy cảm).
+ARG NEXT_PUBLIC_ENVOY_URL
+ARG NEXT_PUBLIC_CENTRIFUGO_WS_URL
+
+# [COMMENT]: Xuất các ARG thành ENV để trình biên dịch 'next build' có thể nhúng cứng vào JS bundle.
+ENV NEXT_PUBLIC_ENVOY_URL=$NEXT_PUBLIC_ENVOY_URL
+ENV NEXT_PUBLIC_CENTRIFUGO_WS_URL=$NEXT_PUBLIC_CENTRIFUGO_WS_URL
+
 COPY package*.json ./
 RUN npm install --legacy-peer-deps
 COPY . .

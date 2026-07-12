@@ -1,8 +1,8 @@
-// [COMMENT]: Sử dụng relative path "" trên client-side (browser) để request đi qua cùng origin
-// (ví dụ: https://cloud.aurora.local/api/v1/auth/login), giúp trình duyệt chấp nhận cookie domain "aurora.local".
-// Trên server-side (Next.js SSR), giữ fallback là absolute URL để tránh lỗi fetch.
+// [COMMENT]: Sử dụng relative path "" trên client-side để request đi cùng origin (same-origin),
+// giúp trình duyệt tự động gửi cookie mà không bị chặn bởi chính sách CORS.
+// Trên server-side (Next.js SSR), sử dụng địa chỉ Envoy cấu hình trực tiếp từ biến môi trường (không dùng fallback).
 export const controlplaneBaseURL =
   typeof window !== "undefined"
     ? ""
-    : (process.env.NEXT_PUBLIC_CONTROLPLANE_URL?.trim() || "http://localhost:28000");
+    : (process.env.NEXT_PUBLIC_ENVOY_URL?.trim() || "");
 

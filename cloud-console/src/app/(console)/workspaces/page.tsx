@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import {
   LayoutGrid,
   Plus,
@@ -24,6 +24,7 @@ import {
 import { useUserSession } from "@/hooks/useUserSession";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import { cn } from "@/lib/utils";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 // [COMMENT]: Cột sort được hỗ trợ
 type SortKey = "name" | "code" | "created_at";
@@ -55,16 +56,13 @@ function CopyBadge({ value }: { value: string }) {
 }
 
 export default function MyWorkspacesPage() {
+  const queryClient = useQueryClient();
   const { profile, checkPermission } = useUserSession();
   const {
     activeWorkspaceID,
     addWorkspaceToCatalog,
     removeWorkspaceFromCatalog,
   } = useWorkspace();
-
-  const [workspaces, setWorkspaces] = useState<WorkspaceItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
 
   // [COMMENT]: Kiểm quyền tạo / xóa Workspace
   const canCreate = useMemo(() => checkPermission("hierarchy:workspace", "create"), [checkPermission]);
@@ -77,7 +75,6 @@ export default function MyWorkspacesPage() {
 
   // [COMMENT]: Modal tạo workspace
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [createLoading, setCreateLoading] = useState(false);
   const [wsName, setWsName] = useState("");
   const [wsCode, setWsCode] = useState("");
   const [wsDescription, setWsDescription] = useState("");
@@ -86,31 +83,19 @@ export default function MyWorkspacesPage() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceItem | null>(null);
   const [deleteConfirmCode, setDeleteConfirmCode] = useState("");
-  const [deleteLoading, setDeleteLoading] = useState(false);
 
-  // [COMMENT]: Lấy danh sách Workspace thuộc personal context
-  const loadWorkspaces = useCallback(
-    async (isRefresh = false) => {
-      if (!profile?.user_id) return;
-      if (isRefresh) setRefreshing(true);
-      else setLoading(true);
-      try {
-        const list = await listWorkspaces();
-        setWorkspaces(list);
-        if (isRefresh) toast.success("Workspace list synchronized.");
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to load workspaces.");
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    },
-    [profile]
-  );
-
-  useEffect(() => {
-    if (profile?.user_id) void loadWorkspaces();
-  }, [profile, loadWorkspaces]);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý danh sách workspaces.
+  // Tự động deduplicate requests, cache và đồng bộ dữ liệu ngầm.
+  const {
+    data: workspaces = [],
+    isLoading: loading,
+    isRefetching: refreshing,
+    refetch: loadWorkspaces,
+  } = useQuery<WorkspaceItem[]>({
+    queryKey: ["workspaces"],
+    queryFn: () => listWorkspaces(),
+    enabled: !!profile?.user_id,
+  });
 
   // [COMMENT]: Auto-generate workspace code slug từ tên
   const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -124,36 +109,44 @@ export default function MyWorkspacesPage() {
     );
   };
 
+  // [COMMENT]: Mutation tạo mới Workspace và update local cache + global dropdown catalog
+  const createWorkspaceMutation = useMutation<WorkspaceItem, Error, { name: string; code: string; description: string }>({
+    mutationFn: (variables) => createWorkspace(variables),
+    onSuccess: (newWs) => {
+      toast.success("Workspace created successfully.");
+      setWsName("");
+      setWsCode("");
+      setWsDescription("");
+      setIsModalOpen(false);
+
+      if (newWs) {
+        queryClient.setQueryData<WorkspaceItem[]>(["workspaces"], (prev) => {
+          if (!prev) return [newWs];
+          return [...prev, newWs];
+        });
+        addWorkspaceToCatalog({ id: newWs.id, code: newWs.code, name: newWs.name });
+      }
+    },
+    onError: (err) => {
+      toast.error(err instanceof Error ? err.message : "Failed to create workspace.");
+    },
+  });
+
+  const createLoading = createWorkspaceMutation.isPending;
+
   // [COMMENT]: Xử lý submit tạo mới Workspace
-  const handleCreateWorkspace = async (e: React.FormEvent) => {
+  const handleCreateWorkspace = (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile?.user_id) return;
     if (!wsName.trim() || !wsCode.trim()) {
       toast.error("Please enter a valid workspace name and code.");
       return;
     }
-    setCreateLoading(true);
-    try {
-      const newWs = await createWorkspace({
-        name: wsName.trim(),
-        code: wsCode.trim(),
-        description: wsDescription.trim(),
-      });
-      toast.success("Workspace created successfully.");
-      setWsName("");
-      setWsCode("");
-      setWsDescription("");
-      setIsModalOpen(false);
-      // [COMMENT]: Zero-Request merge — không reload API, cập nhật local state + global catalog
-      if (newWs) {
-        setWorkspaces((prev) => [...prev, newWs]);
-        addWorkspaceToCatalog({ id: newWs.id, code: newWs.code, name: newWs.name });
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to create workspace.");
-    } finally {
-      setCreateLoading(false);
-    }
+    createWorkspaceMutation.mutate({
+      name: wsName.trim(),
+      code: wsCode.trim(),
+      description: wsDescription.trim(),
+    });
   };
 
   // [COMMENT]: Mở modal xác nhận xóa
@@ -164,24 +157,22 @@ export default function MyWorkspacesPage() {
     setIsDeleteModalOpen(true);
   };
 
-  // [COMMENT]: Xử lý xóa Workspace sau khi người dùng nhập đúng code/slug để xác nhận
-  const handleDeleteWorkspace = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!deleteTarget) return;
-    if (deleteConfirmCode !== deleteTarget.code) {
-      toast.error("Workspace code does not match.");
-      return;
-    }
-
-    setDeleteLoading(true);
-    try {
-      await deleteWorkspace(deleteTarget.id);
-      toast.success(`Workspace "${deleteTarget.name}" deleted.`);
-      setWorkspaces((prev) => prev.filter((item) => item.id !== deleteTarget.id));
-      removeWorkspaceFromCatalog(deleteTarget.id);
+  // [COMMENT]: Mutation xóa Workspace và cập nhật local cache + global dropdown catalog
+  const deleteWorkspaceMutation = useMutation<void, Error, string>({
+    mutationFn: (id) => deleteWorkspace(id),
+    onSuccess: (_, id) => {
+      if (deleteTarget) {
+        toast.success(`Workspace "${deleteTarget.name}" deleted.`);
+      }
+      queryClient.setQueryData<WorkspaceItem[]>(["workspaces"], (prev) => {
+        if (!prev) return [];
+        return prev.filter((item) => item.id !== id);
+      });
+      removeWorkspaceFromCatalog(id);
       setIsDeleteModalOpen(false);
       setDeleteTarget(null);
-    } catch (err) {
+    },
+    onError: (err) => {
       const msg = err instanceof Error ? err.message : "Failed to delete workspace.";
       if (msg.includes("cannot delete the last remaining workspace")) {
         toast.error("Deletion rejected: At least one workspace must exist.");
@@ -190,9 +181,20 @@ export default function MyWorkspacesPage() {
       } else {
         toast.error(msg);
       }
-    } finally {
-      setDeleteLoading(false);
+    },
+  });
+
+  const deleteLoading = deleteWorkspaceMutation.isPending;
+
+  // [COMMENT]: Xử lý xóa Workspace sau khi người dùng nhập đúng code/slug để xác nhận
+  const handleDeleteWorkspace = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deleteTarget) return;
+    if (deleteConfirmCode !== deleteTarget.code) {
+      toast.error("Workspace code does not match.");
+      return;
     }
+    deleteWorkspaceMutation.mutate(deleteTarget.id);
   };
 
   // [COMMENT]: Toggle sort — nếu click cùng cột thì đảo chiều, khác cột thì set mới
@@ -267,7 +269,7 @@ export default function MyWorkspacesPage() {
         <div className="flex items-center gap-2 shrink-0">
           {/* Refresh */}
           <button
-            onClick={() => void loadWorkspaces(true)}
+            onClick={() => void loadWorkspaces()}
             disabled={refreshing}
             className="flex items-center justify-center h-8 w-8 rounded-lg border border-border hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-50"
             title="Refresh"

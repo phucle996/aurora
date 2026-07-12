@@ -1,30 +1,55 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { HardDrive, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { listBuckets, type BucketItem } from "@/lib/api/storage";
-import { fetchZoneCatalog, type ZoneCatalogItem } from "@/lib/api/zone";
 import { useUserSession } from "@/hooks/useUserSession";
 import { useWorkspace } from "@/context/WorkspaceContext";
 import RouteGuard from "@/components/route-guard";
 import { Button } from "@/components/ui/button";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { BucketFilters } from "./components/BucketFilters";
 import { BucketTable } from "./components/BucketTable";
-import { CreateBucketModal } from "./components/CreateBucketModal";
+import { useBucketSizesSync } from "@/hooks/useBucketSizesSync";
 
 function StorageDirectoryContent() {
-  const { checkPermission } = useUserSession();
+  const router = useRouter();
+  const { checkPermission, profile } = useUserSession();
   const { activeWorkspaceID, loading: wsLoading } = useWorkspace();
 
-  const [buckets, setBuckets] = useState<BucketItem[]>([]);
-  const [zones, setZones] = useState<ZoneCatalogItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+  // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket.
+  // Cập nhật trực tiếp dữ liệu vào cache của React Query để tránh flicker UI và tối ưu tải mạng.
+  useBucketSizesSync(
+    profile?.user_id,
+    useCallback((updatedSizes: Record<string, number>) => {
+      queryClient.setQueryData<BucketItem[]>(
+        ["buckets", activeWorkspaceID],
+        (prevBuckets) => {
+          if (!prevBuckets) return [];
+          return prevBuckets.map((bucket) => {
+            if (updatedSizes[bucket.Name] !== undefined) {
+              return {
+                ...bucket,
+                UsedBytes: updatedSizes[bucket.Name],
+              };
+            }
+            return bucket;
+          });
+        }
+      );
+      toast.success("Storage bucket capacities synced in real-time", {
+        id: "realtime-bucket-sizes-sync",
+      });
+    }, [queryClient, activeWorkspaceID])
+  );
+
 
   // Filter states
   const [searchTerm, setSearchTerm] = useState("");
-  const [zoneFilter, setZoneFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
 
   // Pagination states
@@ -35,60 +60,18 @@ function StorageDirectoryContent() {
   const [sortKey, setSortKey] = useState<string>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
-  // Create Modal state
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-
-  // Load zones catalog
-  useEffect(() => {
-    let active = true;
-    async function loadZones() {
-      try {
-        const zoneData = await fetchZoneCatalog();
-        if (active) {
-          setZones(zoneData || []);
-        }
-      } catch (err: any) {
-        console.error("Failed to load zone catalog:", err);
-      }
-    }
-    void loadZones();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Map Zone ID -> Zone Name for table lookup
-  const zoneMap = useMemo(() => {
-    const map: Record<string, string> = {};
-    zones.forEach((z) => {
-      map[z.id] = z.name;
-    });
-    return map;
-  }, [zones]);
-
-  const loadBuckets = useCallback(async (isRefresh = false) => {
-    if (!activeWorkspaceID) {
-      setBuckets([]);
-      setLoading(false);
-      return;
-    }
-    try {
-      if (isRefresh) {
-        setLoading(true);
-      }
-      const data = await listBuckets();
-      setBuckets(data || []);
-    } catch (e: any) {
-      toast.error(e.message || "Failed to load object storage buckets");
-    } finally {
-      setLoading(false);
-    }
-  }, [activeWorkspaceID]);
-
-  // Load buckets on mount / workspace change
-  useEffect(() => {
-    void loadBuckets(true);
-  }, [loadBuckets]);
+  // [COMMENT]: Sử dụng hook useQuery từ TanStack Query để quản lý danh sách storage buckets.
+  // Cơ chế này tự động xử lý caching, deduplication request, và tự động đồng bộ ngầm.
+  const {
+    data: buckets = [],
+    isLoading: loading, // Map state loading cũ sang isLoading để giữ tương thích với UI
+    isRefetching,
+    refetch,
+  } = useQuery<BucketItem[]>({
+    queryKey: ["buckets", activeWorkspaceID],
+    queryFn: () => listBuckets(),
+    enabled: !!activeWorkspaceID && !wsLoading,
+  });
 
   // Sorting toggle
   const handleSort = (key: string) => {
@@ -104,9 +87,8 @@ function StorageDirectoryContent() {
   const filteredBuckets = useMemo(() => {
     const res = buckets.filter((b) => {
       const matchSearch = b.Name.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchZone = zoneFilter === "All" || b.ZoneID === zoneFilter;
       const matchStatus = statusFilter === "All" || b.Status === statusFilter;
-      return matchSearch && matchZone && matchStatus;
+      return matchSearch && matchStatus;
     });
 
     return [...res].sort((a, b) => {
@@ -116,9 +98,6 @@ function StorageDirectoryContent() {
       if (sortKey === "name") {
         va = a.Name.toLowerCase();
         vb = b.Name.toLowerCase();
-      } else if (sortKey === "zone") {
-        va = (zoneMap[a.ZoneID] || "").toLowerCase();
-        vb = (zoneMap[b.ZoneID] || "").toLowerCase();
       } else if (sortKey === "status") {
         va = a.Status.toLowerCase();
         vb = b.Status.toLowerCase();
@@ -134,7 +113,7 @@ function StorageDirectoryContent() {
       if (va > vb) return sortDir === "asc" ? 1 : -1;
       return 0;
     });
-  }, [buckets, searchTerm, zoneFilter, statusFilter, sortKey, sortDir, zoneMap]);
+  }, [buckets, searchTerm, statusFilter, sortKey, sortDir]);
 
   // Pagination calculation
   const totalBuckets = filteredBuckets.length;
@@ -146,7 +125,6 @@ function StorageDirectoryContent() {
 
   const handleClearFilters = () => {
     setSearchTerm("");
-    setZoneFilter("All");
     setStatusFilter("All");
     setCurrentPage(1);
     toast.success("Storage bucket filter terms cleared");
@@ -176,13 +154,13 @@ function StorageDirectoryContent() {
 
         <div className="flex items-center gap-2">
           <Button
-            onClick={() => void loadBuckets(true)}
-            disabled={loading || wsLoading}
+            onClick={() => void refetch()}
+            disabled={loading || isRefetching || wsLoading}
             variant="outline"
             size="sm"
             className="font-bold cursor-pointer transition-colors"
           >
-            <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+            <RefreshCw className={loading || isRefetching ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
             <span>Sync</span>
           </Button>
         </div>
@@ -193,14 +171,11 @@ function StorageDirectoryContent() {
         <BucketFilters
           searchTerm={searchTerm}
           setSearchTerm={setSearchTerm}
-          zoneFilter={zoneFilter}
-          setZoneFilter={setZoneFilter}
           statusFilter={statusFilter}
           setStatusFilter={setStatusFilter}
-          uniqueZones={zones.map((z) => ({ id: z.id, name: z.name }))}
           handleClearFilters={handleClearFilters}
           setCurrentPage={setCurrentPage}
-          onCreateClick={() => setIsCreateOpen(true)}
+          onCreateClick={() => router.push("/storage/create")}
           canCreate={canCreate}
         />
 
@@ -217,17 +192,8 @@ function StorageDirectoryContent() {
           sortKey={sortKey}
           sortDir={sortDir}
           onSort={handleSort}
-          zoneMap={zoneMap}
         />
       </div>
-
-      {/* 3. Create Modal */}
-      <CreateBucketModal
-        isOpen={isCreateOpen}
-        onClose={() => setIsCreateOpen(false)}
-        onSuccess={() => void loadBuckets(true)}
-        zones={zones}
-      />
     </div>
   );
 }

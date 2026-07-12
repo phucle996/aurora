@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getUserRole, listRoles, assignUserRole, type PlatformRoleItem } from "@/lib/api/rbac";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface RolesTabProps {
   selectedUser: any;
@@ -12,73 +13,63 @@ interface RolesTabProps {
 }
 
 export function RolesTab({ selectedUser, getAvatarColors }: RolesTabProps) {
-  const [roleData, setRoleData] = useState<PlatformRoleItem | null>(null);
-  const [loadingRole, setLoadingRole] = useState(false);
+  const queryClient = useQueryClient();
   const [showAssignForm, setShowAssignForm] = useState(false);
   const [selectedRoleID, setSelectedRoleID] = useState("");
-  const [rolesList, setRolesList] = useState<PlatformRoleItem[]>([]);
-  const [assigningRole, setAssigningRole] = useState(false);
 
-  // [COMMENT]: Reset tab state khi đổi user
+  // [COMMENT]: Reset tab local state khi đổi user
   useEffect(() => {
-    setRoleData(null);
     setShowAssignForm(false);
     setSelectedRoleID("");
-    setAssigningRole(false);
   }, [selectedUser?.id]);
 
-  // [COMMENT]: Lazy load chi tiết vai trò
-  useEffect(() => {
-    if (!selectedUser?.id) return;
-    let active = true;
-    const fetchRole = async () => {
-      setLoadingRole(true);
-      try {
-        const [role, roles] = await Promise.all([
-          getUserRole(selectedUser.id),
-          listRoles(),
-        ]);
-        if (active) {
-          setRoleData(role);
-          setRolesList(roles || []);
-        }
-      } catch (err) {
-        console.error("Failed to fetch role", err);
-        if (active) {
-          setRoleData(null);
-          setRolesList([]);
-        }
-      } finally {
-        if (active) {
-          setLoadingRole(false);
-        }
-      }
-    };
-    fetchRole();
-    return () => {
-      active = false;
-    };
-  }, [selectedUser?.id]);
+  // [COMMENT]: Sử dụng useQuery để quản lý thông tin role của user được chọn.
+  // retry: false giúp tránh việc gọi lại API thừa thãi khi user bị chặn quyền (Insufficient level)
+  const {
+    data: roleData = null,
+    isLoading: loadingUserRole,
+    error: userRoleError,
+  } = useQuery<PlatformRoleItem | null>({
+    queryKey: ["userRole", selectedUser?.id],
+    queryFn: () => getUserRole(selectedUser.id),
+    enabled: !!selectedUser?.id,
+    retry: false,
+  });
 
-  const handleAssignRole = async () => {
+  // [COMMENT]: Sử dụng useQuery để lấy danh sách tất cả các roles có sẵn trong hệ thống
+  const {
+    data: rolesList = [],
+    isLoading: loadingRolesList,
+  } = useQuery<PlatformRoleItem[]>({
+    queryKey: ["roles"],
+    queryFn: () => listRoles(),
+    enabled: !!selectedUser?.id,
+  });
+
+  const loadingRole = loadingUserRole || loadingRolesList;
+
+  // [COMMENT]: Mutation gán role mới cho User, tự động re-fetch query thông tin userRole sau khi gán thành công
+  const assignRoleMutation = useMutation<void, Error, string>({
+    mutationFn: (roleID) => assignUserRole(selectedUser.id, roleID),
+    onSuccess: () => {
+      toast.success(`Role has been assigned to @${selectedUser.username} successfully`);
+      setShowAssignForm(false);
+      setSelectedRoleID("");
+      queryClient.invalidateQueries({ queryKey: ["userRole", selectedUser.id] });
+    },
+    onError: (err: any) => {
+      toast.error(err.message || "Failed to assign role");
+    },
+  });
+
+  const assigningRole = assignRoleMutation.isPending;
+
+  const handleAssignRole = () => {
     if (!selectedRoleID) {
       toast.error("Please select a role to assign");
       return;
     }
-    setAssigningRole(true);
-    try {
-      await assignUserRole(selectedUser.id, selectedRoleID);
-      toast.success(`Role has been assigned to @${selectedUser.username} successfully`);
-      setShowAssignForm(false);
-      setSelectedRoleID("");
-      // Refresh current roleData
-      const updatedRole = await getUserRole(selectedUser.id);
-      setRoleData(updatedRole);
-    } catch (e: any) {
-      toast.error(e.message || "Failed to assign role");
-    } finally {
-      setAssigningRole(false);
-    }
+    assignRoleMutation.mutate(selectedRoleID);
   };
 
   if (loadingRole) {
@@ -90,7 +81,8 @@ export function RolesTab({ selectedUser, getAvatarColors }: RolesTabProps) {
     );
   }
 
-  if (!roleData) {
+  // [COMMENT]: Nếu xảy ra lỗi phân quyền hoặc không thể fetch roleData -> hiển thị banner Access restricted
+  if (!roleData || !!userRoleError) {
     return (
       <div className="flex flex-col items-center justify-center py-10 select-none text-muted-foreground/80 gap-1.5 text-center border border-border/40 bg-muted/5 rounded-lg p-4">
         <Lock className="h-5 w-5 text-red-500/60" />

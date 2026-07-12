@@ -6,6 +6,7 @@ import { Shield, ArrowLeft, Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { listPermissions, getRoleDetails, updateRole, type PermissionItem } from "@/lib/api/rbac";
 import RouteGuard from "@/components/route-guard";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 // Sub-components import
 import RoleDetailsCard from "./components/RoleDetailsCard";
@@ -16,10 +17,6 @@ import SelectedPreviewCard from "./components/SelectedPreviewCard";
 function EditRoleContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
-
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [permissions, setPermissions] = useState<PermissionItem[]>([]);
 
   // [COMMENT]: State cho các trường thông tin của Role và audit metadata
   const [name, setName] = useState("");
@@ -43,56 +40,64 @@ function EditRoleContent() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
 
-  // [COMMENT]: Load danh sách permissions catalog và thông tin chi tiết vai trò từ API
-  useEffect(() => {
-    let active = true;
-    async function loadData() {
-      setLoading(true);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để tải permissions catalog
+  const {
+    data: permissions = [],
+    isLoading: loadingPerms,
+  } = useQuery<PermissionItem[]>({
+    queryKey: ["permissions"],
+    queryFn: () => listPermissions(),
+  });
+
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để tải chi tiết Role
+  const {
+    data: roleData = null,
+    isLoading: loadingRole,
+  } = useQuery({
+    queryKey: ["role", id],
+    queryFn: async () => {
       try {
-        const [permsData, roleData] = await Promise.all([
-          listPermissions(),
-          getRoleDetails(id)
-        ]);
-
-        if (active) {
-          setPermissions(permsData);
-
-          // Cập nhật thông tin vai trò
-          setName(roleData.name);
-          setCode(roleData.code);
-          setDescription(roleData.description || "");
-          setRoleLevel(roleData.role_level);
-          setScope(roleData.scope);
-          setAssignmentsCount(roleData.assignments_count || 0);
-          setCreatedAt(roleData.created_at || "");
-          setUpdatedAt(roleData.updated_at || "");
-          const flatIds = (roleData.permissions || []).map((p) => p.id);
-          setSelectedPerms(flatIds);
-          setOriginalPerms(flatIds);
-
-          // Mặc định expand tất cả các Module khi hiển thị lần đầu
-          const initialModules: Record<string, boolean> = {};
-          permsData.forEach((p) => {
-            if (p.module) {
-              initialModules[p.module] = true;
-            }
-          });
-          setExpandedModules(initialModules);
-        }
-      } catch (err) {
-        console.error(err);
-        toast.error("Failed to load role details or permissions catalog.");
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
+        return await getRoleDetails(id);
+      } catch (err: any) {
+        toast.error(err.message || "Failed to load role details.");
+        router.push("/rbac");
+        return null;
       }
+    },
+    enabled: !!id,
+  });
+
+  const loading = loadingPerms || loadingRole;
+
+  // Cập nhật thông tin vai trò khi roleData đã tải xong
+  useEffect(() => {
+    if (roleData) {
+      setName(roleData.name);
+      setCode(roleData.code);
+      setDescription(roleData.description || "");
+      setRoleLevel(roleData.role_level);
+      setScope(roleData.scope);
+      setAssignmentsCount(roleData.assignments_count || 0);
+      setCreatedAt(roleData.created_at || "");
+      setUpdatedAt(roleData.updated_at || "");
+      const flatIds = (roleData.permissions || []).map((p) => p.id);
+      setSelectedPerms(flatIds);
+      setOriginalPerms(flatIds);
     }
-    void loadData();
-    return () => {
-      active = false;
-    };
-  }, [id]);
+  }, [roleData]);
+
+  // Mặc định expand tất cả các Module khi hiển thị lần đầu sau khi permissions load xong
+  useEffect(() => {
+    if (permissions.length > 0) {
+      const initialModules: Record<string, boolean> = {};
+      permissions.forEach((p) => {
+        if (p.module) {
+          initialModules[p.module] = true;
+        }
+      });
+      setExpandedModules(initialModules);
+    }
+  }, [permissions]);
 
   // [COMMENT]: Xử lý nhóm và lọc permissions phẳng thành cấu trúc cây 3 bậc (Module -> Object -> Behaviors)
   const tree = useMemo(() => {
@@ -234,29 +239,38 @@ function EditRoleContent() {
     setShowImport(false);
   };
 
+  const queryClient = useQueryClient();
+
+  // [COMMENT]: Mutation gửi API cập nhật Role và invalidate cache liên quan
+  const updateRoleMutation = useMutation<void, Error, any>({
+    mutationFn: (variables) => updateRole(id, variables),
+    onSuccess: () => {
+      toast.success("Role updated successfully.");
+      queryClient.invalidateQueries({ queryKey: ["role", id] });
+      queryClient.invalidateQueries({ queryKey: ["roles"] });
+      router.push(`/rbac/${id}`);
+    },
+    onError: (err) => {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "Failed to update role.");
+    },
+  });
+
+  const submitting = updateRoleMutation.isPending;
+
   // [COMMENT]: Xử lý submit lưu thay đổi thông tin Role thông qua API backend
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       toast.error("Role name is required.");
       return;
     }
 
-    setSubmitting(true);
-    try {
-      await updateRole(id, {
-        name: name.trim(),
-        description: description.trim(),
-        permission_ids: selectedPerms,
-      });
-      toast.success("Role updated successfully.");
-      router.push(`/rbac/${id}`);
-    } catch (err) {
-      console.error(err);
-      toast.error(err instanceof Error ? err.message : "Failed to update role.");
-    } finally {
-      setSubmitting(false);
-    }
+    updateRoleMutation.mutate({
+      name: name.trim(),
+      description: description.trim(),
+      permission_ids: selectedPerms,
+    });
   };
 
   if (loading) {

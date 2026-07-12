@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useMemo } from "react";
 import {
   KeyRound,
   Plus,
@@ -22,6 +22,7 @@ import {
   type BucketItem,
 } from "@/lib/api/storage";
 import { cn } from "@/lib/utils";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface CredentialsTabProps {
   bucket: BucketItem;
@@ -59,15 +60,13 @@ const READ_ONLY_POLICY = `{
 }`;
 
 export function CredentialsTab({ bucket }: CredentialsTabProps) {
-  const [credentials, setCredentials] = useState<CredentialItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
 
   // Modal states for creating key
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalStep, setModalStep] = useState<"policy" | "result">("policy");
   const [selectedPolicyTemplate, setSelectedPolicyTemplate] = useState<"readwrite" | "readonly" | "custom">("readwrite");
   const [customPolicyText, setCustomPolicyText] = useState(READ_WRITE_POLICY);
-  const [creatingKey, setCreatingKey] = useState(false);
   const [createdResult, setCreatedResult] = useState<CredentialItem | null>(null);
 
   // Result display copy states
@@ -84,20 +83,17 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
   // Revoke state
   const [revokingId, setRevokingId] = useState<string | null>(null);
 
-  const fetchKeys = useCallback(async () => {
-    try {
-      const data = await listCredentials(bucket.ID);
-      setCredentials(data || []);
-    } catch (err: any) {
-      toast.error(err.message || "Failed to load bucket access credentials");
-    } finally {
-      setLoading(false);
-    }
-  }, [bucket.ID]);
-
-  useEffect(() => {
-    void fetchKeys();
-  }, [fetchKeys]);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý danh sách credentials.
+  // Tự động gộp request, lưu cache và đồng bộ dữ liệu.
+  const {
+    data: credentials = [],
+    isLoading: loading,
+    refetch: fetchKeys,
+  } = useQuery<CredentialItem[]>({
+    queryKey: ["credentials", bucket.ID],
+    queryFn: () => listCredentials(bucket.ID),
+    enabled: !!bucket.ID,
+  });
 
   const copyToClipboard = (text: string, type: "access" | "secret" | "row", rowId?: string) => {
     navigator.clipboard.writeText(text);
@@ -114,48 +110,64 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     toast.success("Copied to clipboard");
   };
 
-  const handleGenerateKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setCreatingKey(true);
-    try {
-      let finalPolicy = "";
-      if (selectedPolicyTemplate === "readwrite") finalPolicy = READ_WRITE_POLICY;
-      else if (selectedPolicyTemplate === "readonly") finalPolicy = READ_ONLY_POLICY;
-      else {
-        // Parse validation
-        try {
-          JSON.parse(customPolicyText);
-          finalPolicy = customPolicyText;
-        } catch {
-          toast.error("Invalid custom policy JSON syntax");
-          setCreatingKey(false);
-          return;
-        }
-      }
-
-      const res = await createCredential(bucket.ID, finalPolicy);
+  // [COMMENT]: Mutation tạo access key mới, tự động invalidate query cache sau khi tạo thành công.
+  const createCredentialMutation = useMutation<CredentialItem, Error, string>({
+    mutationFn: (policy) => createCredential(bucket.ID, policy),
+    onSuccess: (res) => {
       setCreatedResult(res);
       setModalStep("result");
       toast.success("Access credential generated successfully");
-    } catch (err: any) {
+      queryClient.invalidateQueries({ queryKey: ["credentials", bucket.ID] });
+    },
+    onError: (err: any) => {
       toast.error(err.message || "Failed to generate credentials");
-    } finally {
-      setCreatingKey(false);
+    },
+  });
+
+  const creatingKey = createCredentialMutation.isPending;
+
+  const handleGenerateKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    let finalPolicy = "";
+    if (selectedPolicyTemplate === "readwrite") finalPolicy = READ_WRITE_POLICY;
+    else if (selectedPolicyTemplate === "readonly") finalPolicy = READ_ONLY_POLICY;
+    else {
+      // Parse validation
+      try {
+        JSON.parse(customPolicyText);
+        finalPolicy = customPolicyText;
+      } catch {
+        toast.error("Invalid custom policy JSON syntax");
+        return;
+      }
     }
+    createCredentialMutation.mutate(finalPolicy);
   };
 
-  const handleRevoke = async (id: string) => {
-    if (!confirm("Are you sure you want to revoke this Access Key? All applications using it will lose access immediately.")) return;
-    setRevokingId(id);
-    try {
-      await revokeCredential(id);
+  // [COMMENT]: Mutation thu hồi (xóa) access key, tự động update local cache để nâng cao UX (Zero-Request UI update).
+  const revokeCredentialMutation = useMutation<void, Error, string>({
+    mutationFn: (id) => revokeCredential(id),
+    onMutate: async (id) => {
+      setRevokingId(id);
+    },
+    onSuccess: (_, id) => {
       toast.success("Access Key successfully revoked");
-      await fetchKeys();
-    } catch (err: any) {
+      queryClient.setQueryData<CredentialItem[]>(["credentials", bucket.ID], (prev) => {
+        if (!prev) return [];
+        return prev.filter((item) => item.id !== id);
+      });
+    },
+    onError: (err: any) => {
       toast.error(err.message || "Failed to revoke credential");
-    } finally {
+    },
+    onSettled: () => {
       setRevokingId(null);
-    }
+    },
+  });
+
+  const handleRevoke = (id: string) => {
+    if (!confirm("Are you sure you want to revoke this Access Key? All applications using it will lose access immediately.")) return;
+    revokeCredentialMutation.mutate(id);
   };
 
   const handleCloseModal = () => {
@@ -163,7 +175,7 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     setModalStep("policy");
     setConfirmedSave(false);
     setCreatedResult(null);
-    void fetchKeys();
+    queryClient.invalidateQueries({ queryKey: ["credentials", bucket.ID] });
   };
 
   const getPolicyName = (policyJSON: string) => {

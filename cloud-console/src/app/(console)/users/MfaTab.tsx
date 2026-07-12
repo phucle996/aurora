@@ -1,47 +1,24 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Loader2, Fingerprint } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { getUserMfaPlatform, type PlatformMfaStatus } from "@/lib/api/mfa";
+import { useQuery } from "@tanstack/react-query";
 
 interface MfaTabProps {
   selectedUser: any;
 }
 
 export function MfaTab({ selectedUser }: MfaTabProps) {
-  const [mfaData, setMfaData] = useState<PlatformMfaStatus | null>(null);
-  const [loadingMfa, setLoadingMfa] = useState(false);
-
-  useEffect(() => {
-    setMfaData(null);
-  }, [selectedUser?.id]);
-
-  useEffect(() => {
-    if (!selectedUser?.id) return;
-    let active = true;
-    const fetchMfa = async () => {
-      setLoadingMfa(true);
-      try {
-        const res = await getUserMfaPlatform(selectedUser.id);
-        if (active) {
-          setMfaData(res);
-        }
-      } catch (err) {
-        console.error("Failed to fetch mfa status", err);
-        if (active) {
-          setMfaData(null);
-        }
-      } finally {
-        if (active) {
-          setLoadingMfa(false);
-        }
-      }
-    };
-    fetchMfa();
-    return () => {
-      active = false;
-    };
-  }, [selectedUser?.id]);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý thông tin MFA status.
+  const {
+    data: mfaData = null,
+    isLoading: loadingMfa,
+  } = useQuery<PlatformMfaStatus | null>({
+    queryKey: ["userMfa", selectedUser?.id],
+    queryFn: () => getUserMfaPlatform(selectedUser.id),
+    enabled: !!selectedUser?.id,
+  });
 
   if (loadingMfa) {
     return (

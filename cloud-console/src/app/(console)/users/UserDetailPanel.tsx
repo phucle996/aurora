@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { KeyRound, Power } from "lucide-react";
+import { KeyRound, Power, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { resetUserPassword } from "@/lib/api/user";
 import { useUserSession } from "@/hooks/useUserSession";
+import { useMutation } from "@tanstack/react-query";
 
 import { OverviewTab } from "./OverviewTab";
 import { RolesTab } from "./RolesTab";
@@ -83,16 +84,22 @@ export function UserDetailPanel({
     }
   };
 
-  const handleResetPassword = async () => {
-    if (!newPassword) return;
-    try {
-      await resetUserPassword(selectedUser.id, newPassword);
+  // [COMMENT]: Mutation reset mật khẩu người dùng
+  const resetPasswordMutation = useMutation<void, Error, string>({
+    mutationFn: (password) => resetUserPassword(selectedUser.id, password),
+    onSuccess: () => {
       toast.success(`Password for @${selectedUser.username} has been reset successfully`);
       setShowResetForm(false);
       setNewPassword("");
-    } catch (e: any) {
-      toast.error(e.message || "Failed to reset password");
-    }
+    },
+    onError: (err: any) => {
+      toast.error(err.message || "Failed to reset password");
+    },
+  });
+
+  const handleResetPassword = () => {
+    if (!newPassword) return;
+    resetPasswordMutation.mutate(newPassword);
   };
 
   return (
@@ -243,11 +250,12 @@ export function UserDetailPanel({
             <Button
               size="xs"
               variant="default"
-              disabled={updatingId !== null || !newPassword.trim()}
+              disabled={updatingId !== null || resetPasswordMutation.isPending || !newPassword.trim()}
               onClick={handleResetPassword}
-              className="!bg-blue-600 hover:!bg-blue-700 !text-white font-bold cursor-pointer h-7 px-2.5"
+              className="!bg-blue-600 hover:!bg-blue-700 !text-white font-bold cursor-pointer h-7 px-2.5 flex items-center gap-1"
             >
-              Confirm
+              {resetPasswordMutation.isPending && <Loader2 className="h-3 w-3 animate-spin text-white" />}
+              <span>Confirm</span>
             </Button>
             <Button
               size="xs"

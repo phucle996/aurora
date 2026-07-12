@@ -20,13 +20,10 @@ import {
 import { toast } from "sonner";
 import { listPermissions, createRole, type PermissionItem } from "@/lib/api/rbac";
 import RouteGuard from "@/components/route-guard";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 function CreateRoleContent() {
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [permissions, setPermissions] = useState<PermissionItem[]>([]);
-
   // [COMMENT]: Khởi tạo state cho các trường thông tin của Role và tìm kiếm
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -43,39 +40,27 @@ function CreateRoleContent() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
 
-  // [COMMENT]: Load danh sách permissions catalog từ Backend API
-  useEffect(() => {
-    let active = true;
-    async function loadData() {
-      setLoading(true);
-      try {
-        const data = await listPermissions();
-        if (active) {
-          setPermissions(data);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để tải permissions catalog
+  const {
+    data: permissions = [],
+    isLoading: loading,
+  } = useQuery<PermissionItem[]>({
+    queryKey: ["permissions"],
+    queryFn: () => listPermissions(),
+  });
 
-          // Mặc định expand tất cả các Module khi hiển thị lần đầu
-          const initialModules: Record<string, boolean> = {};
-          data.forEach((p) => {
-            if (p.module) {
-              initialModules[p.module] = true;
-            }
-          });
-          setExpandedModules(initialModules);
+  // Mặc định expand tất cả các Module khi hiển thị lần đầu sau khi permissions load xong
+  useEffect(() => {
+    if (permissions.length > 0) {
+      const initialModules: Record<string, boolean> = {};
+      permissions.forEach((p) => {
+        if (p.module) {
+          initialModules[p.module] = true;
         }
-      } catch (err) {
-        console.error(err);
-        toast.error("Failed to load permissions catalog.");
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
+      });
+      setExpandedModules(initialModules);
     }
-    void loadData();
-    return () => {
-      active = false;
-    };
-  }, []);
+  }, [permissions]);
 
   // [COMMENT]: Xử lý nhóm và lọc permissions phẳng thành cấu trúc cây 3 bậc (Module -> Object -> Behaviors)
   const tree = React.useMemo(() => {
@@ -251,8 +236,26 @@ function CreateRoleContent() {
     setShowImport(false);
   };
 
+  const queryClient = useQueryClient();
+
+  // [COMMENT]: Mutation gửi API tạo mới Role và tự động invalidate query danh sách roles
+  const createRoleMutation = useMutation<void, Error, any>({
+    mutationFn: (variables) => createRole(variables),
+    onSuccess: () => {
+      toast.success("Role created successfully.");
+      queryClient.invalidateQueries({ queryKey: ["roles"] });
+      router.push("/rbac");
+    },
+    onError: (err) => {
+      console.error(err);
+      toast.error(err instanceof Error ? err.message : "Failed to create role.");
+    },
+  });
+
+  const submitting = createRoleMutation.isPending;
+
   // [COMMENT]: Xử lý submit tạo mới Role thông qua API backend
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       toast.error("Role name is required.");
@@ -264,24 +267,14 @@ function CreateRoleContent() {
       return;
     }
 
-    setSubmitting(true);
-    try {
-      await createRole({
-        name: name.trim(),
-        code: cleanCode,
-        description: description.trim(),
-        role_level: Number(roleLevel),
-        scope: "platform", // Luôn gửi scope: platform theo nghiệp vụ console admin
-        permission_ids: selectedPerms,
-      });
-      toast.success("Role created successfully.");
-      router.push("/rbac");
-    } catch (err) {
-      console.error(err);
-      toast.error(err instanceof Error ? err.message : "Failed to create role.");
-    } finally {
-      setSubmitting(false);
-    }
+    createRoleMutation.mutate({
+      name: name.trim(),
+      code: cleanCode,
+      description: description.trim(),
+      role_level: Number(roleLevel),
+      scope: "platform", // Luôn gửi scope: platform theo nghiệp vụ console admin
+      permission_ids: selectedPerms,
+    });
   };
 
   return (

@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 
 interface OverviewTabProps {
   bucket: BucketItem;
-  zoneName: string;
   onRefresh: () => void;
 }
 
@@ -17,7 +16,7 @@ function bytesToGB(bytes: number): number {
   return Math.round(bytes / (1024 * 1024 * 1024));
 }
 
-export function OverviewTab({ bucket, zoneName, onRefresh }: OverviewTabProps) {
+export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   const router = useRouter();
   const [updatingQuota, setUpdatingQuota] = useState(false);
   const [newQuotaGB, setNewQuotaGB] = useState<number>(() => bytesToGB(bucket.CapacityQuotaBytes));
@@ -147,10 +146,7 @@ export function OverviewTab({ bucket, zoneName, onRefresh }: OverviewTabProps) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-1">
-            <span className="font-bold text-muted-foreground">Infrastructure Zone</span>
-            <span className="font-semibold text-foreground">{zoneName}</span>
-          </div>
+
 
           <div className="flex flex-col gap-1">
             <span className="font-bold text-muted-foreground">Workspace ID</span>

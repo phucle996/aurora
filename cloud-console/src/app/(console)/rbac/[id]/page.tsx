@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { getRoleDetails, type PermissionItem } from "@/lib/api/rbac";
 import RouteGuard from "@/components/route-guard";
+import { useQuery } from "@tanstack/react-query";
 
 // [COMMENT]: Định dạng ngày tháng hiển thị thông minh
 function formatDate(dateStr: string): string {
@@ -71,71 +72,52 @@ function ViewRoleContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
 
-  const [loading, setLoading] = useState(true);
-
-  // [COMMENT]: State cho thông tin vai trò
-  const [name, setName] = useState("");
-  const [code, setCode] = useState("");
-  const [description, setDescription] = useState("");
-  const [roleLevel, setRoleLevel] = useState(8);
-  const [scope, setScope] = useState("platform");
-  const [assignmentsCount, setAssignmentsCount] = useState(0);
-  const [permissionsCount, setPermissionsCount] = useState(0);
-  const [createdAt, setCreatedAt] = useState("");
-  const [updatedAt, setUpdatedAt] = useState("");
-
-  // [COMMENT]: Lưu trữ danh sách quyền phẳng được trả về trực tiếp từ Backend
-  const [grantedTree, setGrantedTree] = useState<PermissionItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
-
   const [expandedModules, setExpandedModules] = useState<Record<string, boolean>>({});
   const [expandedObjects, setExpandedObjects] = useState<Record<string, boolean>>({});
 
-  // [COMMENT]: Tải dữ liệu ban đầu
-  useEffect(() => {
-    let active = true;
-    async function loadData() {
-      setLoading(true);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý chi tiết Role
+  const {
+    data: roleData = null,
+    isLoading: loading,
+  } = useQuery({
+    queryKey: ["role", id],
+    queryFn: async () => {
       try {
-        const roleData = await getRoleDetails(id);
-
-        if (active) {
-          setName(roleData.name);
-          setCode(roleData.code);
-          setDescription(roleData.description || "");
-          setRoleLevel(roleData.role_level);
-          setScope(roleData.scope);
-          setAssignmentsCount(roleData.assignments_count || 0);
-          setPermissionsCount(roleData.permissions_count || 0);
-          setCreatedAt(roleData.created_at || "");
-          setUpdatedAt(roleData.updated_at || "");
-          setGrantedTree(roleData.permissions || []);
-
-          // Mặc định expand tất cả các Module có trong quyền được gán
-          const initialModules: Record<string, boolean> = {};
-          if (roleData.permissions) {
-            roleData.permissions.forEach((p) => {
-              if (p.module) {
-                initialModules[p.module] = true;
-              }
-            });
-          }
-          setExpandedModules(initialModules);
-        }
-      } catch (err) {
-        console.error(err);
-        toast.error("Failed to load role details.");
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
+        const data = await getRoleDetails(id);
+        return data;
+      } catch (err: any) {
+        toast.error(err.message || "Failed to load role details.");
+        router.push("/rbac");
+        return null;
       }
+    },
+    enabled: !!id,
+  });
+
+  // Mặc định expand tất cả các Module có trong quyền được gán sau khi roleData được load
+  useEffect(() => {
+    if (roleData?.permissions) {
+      const initialModules: Record<string, boolean> = {};
+      roleData.permissions.forEach((p) => {
+        if (p.module) {
+          initialModules[p.module] = true;
+        }
+      });
+      setExpandedModules(initialModules);
     }
-    void loadData();
-    return () => {
-      active = false;
-    };
-  }, [id]);
+  }, [roleData]);
+
+  const name = roleData?.name || "";
+  const code = roleData?.code || "";
+  const description = roleData?.description || "";
+  const roleLevel = roleData?.role_level ?? 8;
+  const scope = roleData?.scope || "platform";
+  const assignmentsCount = roleData?.assignments_count || 0;
+  const permissionsCount = roleData?.permissions_count || 0;
+  const createdAt = roleData?.created_at || "";
+  const updatedAt = roleData?.updated_at || "";
+  const grantedTree = roleData?.permissions || [];
 
   // [COMMENT]: Thực hiện bộ lọc tìm kiếm và dựng cây 3 bậc từ danh sách phẳng
   const filteredTree = useMemo(() => {

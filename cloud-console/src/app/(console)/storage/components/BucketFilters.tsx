@@ -5,11 +5,8 @@ import { Button } from "@/components/ui/button";
 interface BucketFiltersProps {
   searchTerm: string;
   setSearchTerm: (val: string) => void;
-  zoneFilter: string;
-  setZoneFilter: (val: string) => void;
   statusFilter: string;
   setStatusFilter: (val: string) => void;
-  uniqueZones: Array<{ id: string; name: string }>;
   handleClearFilters: () => void;
   setCurrentPage: (page: number) => void;
   onCreateClick: () => void;
@@ -19,18 +16,15 @@ interface BucketFiltersProps {
 export function BucketFilters({
   searchTerm,
   setSearchTerm,
-  zoneFilter,
-  setZoneFilter,
   statusFilter,
   setStatusFilter,
-  uniqueZones,
   handleClearFilters,
   setCurrentPage,
   onCreateClick,
   canCreate,
 }: BucketFiltersProps) {
   const hasActiveFilters =
-    searchTerm !== "" || zoneFilter !== "All" || statusFilter !== "All";
+    searchTerm !== "" || statusFilter !== "All";
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 text-xs w-full">
@@ -60,23 +54,6 @@ export function BucketFilters({
             </button>
           )}
         </div>
-
-        {/* Zone Dropdown */}
-        <select
-          value={zoneFilter}
-          onChange={(e) => {
-            setZoneFilter(e.target.value);
-            setCurrentPage(1);
-          }}
-          className="h-8 px-2.5 rounded-lg bg-background border border-border text-xs text-foreground font-medium focus:outline-none cursor-pointer hover:bg-muted/40 transition-colors"
-        >
-          <option value="All">Zone: All</option>
-          {uniqueZones.map((z) => (
-            <option key={z.id} value={z.id}>
-              Zone: {z.name}
-            </option>
-          ))}
-        </select>
 
         {/* Status Dropdown */}
         <select

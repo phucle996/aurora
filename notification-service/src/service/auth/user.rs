@@ -1,10 +1,7 @@
-// Sinh mã Rust từ protobuf definitions của trinity.proto
-pub mod trinity {
-    tonic::include_proto!("trinity.rpc");
-}
-
-use trinity::{VerifyUserTrinityTokenRequest, VerifyUserTrinityTokenResponse};
 use crate::observability::logger::Logger;
+use crate::service::auth::trinity::{
+    VerifyUserTrinityTokenRequest, VerifyUserTrinityTokenResponse,
+};
 use prost::Message;
 use tonic::Status;
 
@@ -43,7 +40,11 @@ pub async fn verify_user_token(
         .map_err(|e| Status::internal(format!("Failed to decode response: {}", e)))?;
 
     let latency = start_time.elapsed();
-    crate::observability::metrics::MetricsManager::record_nats_call("verify_user_trinity_token", "ok", latency);
+    crate::observability::metrics::MetricsManager::record_nats_call(
+        "verify_user_trinity_token",
+        "ok",
+        latency,
+    );
 
     Ok(res)
 }

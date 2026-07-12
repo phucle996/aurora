@@ -143,7 +143,7 @@ services:
       - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
     ports:
       - "80:8080" # Cổng HTTP tiêu chuẩn định tuyến đến Cloud UI/Admin UI
-      - "443:8443" # Cổng HTTPS bảo mật terminate TLS cho các giao tiếp an toàn
+      - "443:443" # Cổng HTTPS bảo mật terminate TLS cho các giao tiếp an toàn (đã chuyển listener port của container sang 443)
       - "28000:8080" # Cổng gRPC / API Gateway phục vụ các ứng dụng khách bên ngoài
       - "29901:9901" # Cổng Envoy Administration & Statistics Dashboard để giám sát hiệu năng
     depends_on:
@@ -153,6 +153,10 @@ services:
         condition: service_started
       controlplane3:
         condition: service_started
+    networks:
+      default:
+        aliases:
+          - controlplane.aurora.local
     restart: unless-stopped
 
   psql:
@@ -521,9 +525,14 @@ services:
     build:
       context: ../cloud-console
       dockerfile: Dockerfile.prod
+      args:
+        - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
+        - NEXT_PUBLIC_CENTRIFUGO_WS_URL=ws://localhost:8000/connection/websocket
     container_name: cloud-console-dev
     environment:
-      - NEXT_PUBLIC_CONTROLPLANE_URL=https://envoy:8443
+      - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
+      - NEXT_PUBLIC_CENTRIFUGO_WS_URL=ws://localhost:8000/connection/websocket
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     restart: unless-stopped
 
   admin-ui-nginx:
@@ -605,7 +614,7 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-acr-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "vault-root-dev-token-2026"
+      VAULT_TOKEN: "hvs.8lKIu9hCSzp9mu9CFNj3Rd6h"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
@@ -620,6 +629,7 @@ services:
       CONTROLPLANE_GRPC_DOMAIN: "localhost"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       NATS_ADDR: "nats://nats:4222"
+      APP_PUBLIC_DOMAIN: "aurora.local"
     depends_on:
       acr-redis:
         condition: service_healthy

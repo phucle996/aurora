@@ -3,8 +3,9 @@ package storageModel
 import (
 	"time"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
+
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: PersonalBucket đại diện cho cấu trúc bảng personal_buckets trong PostgreSQL.

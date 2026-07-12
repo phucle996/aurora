@@ -1,11 +1,9 @@
 package security
 
 import (
-	"crypto/hmac"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,17 +37,6 @@ func GenerateToken(length int) (string, error) {
 		token = token[:length]
 	}
 	return token, nil
-}
-
-func HashToken(token, secret string) (string, error) {
-	if strings.TrimSpace(secret) == "" {
-		return "", ErrEmptySecret
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	if _, err := mac.Write([]byte(strings.TrimSpace(token))); err != nil {
-		return "", fmt.Errorf("security: hash token: %w", err)
-	}
-	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
 // deterministic trong memory -> luôn không fail

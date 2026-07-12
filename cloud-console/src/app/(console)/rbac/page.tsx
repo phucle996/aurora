@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useState } from "react";
 import Link from "next/link";
 import {
   Shield,
@@ -22,6 +22,7 @@ import { listRoles, deleteRole, type PlatformRoleItem } from "@/lib/api/rbac";
 import { cn } from "@/lib/utils";
 import RouteGuard from "@/components/route-guard";
 import { useUserSession } from "@/hooks/useUserSession";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 // [COMMENT]: Component CopyBadge giúp copy nhanh code của vai trò với phong cách Monospace tinh tế
 function CopyBadge({ value }: { value: string }) {
@@ -100,8 +101,7 @@ const getRoleIcon = (code: string) => {
 
 // [COMMENT]: Trang AccessControlPage hiển thị danh sách vai trò (System Roles) phục vụ phân quyền RBAC
 function AccessControlContent() {
-  const [roles, setRoles] = useState<PlatformRoleItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const { checkPermission } = useUserSession();
 
   // Local Filtering states
@@ -115,42 +115,43 @@ function AccessControlContent() {
   const [roleToDelete, setRoleToDelete] = useState<PlatformRoleItem | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const handleDeleteRole = async () => {
-    if (!roleToDelete) return;
-    setDeleting(true);
-    try {
-      await deleteRole(roleToDelete.id);
-      toast.success(`Role "${roleToDelete.name}" deleted successfully.`);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý danh sách roles
+  const {
+    data: roles = [],
+    isLoading: loading,
+    refetch: loadRoles,
+  } = useQuery<PlatformRoleItem[]>({
+    queryKey: ["roles"],
+    queryFn: () => listRoles(),
+  });
+
+  // [COMMENT]: Mutation xóa Role và tự động cập nhật local query cache (Zero-Request UI update)
+  const deleteRoleMutation = useMutation<void, Error, string>({
+    mutationFn: (id) => deleteRole(id),
+    onSuccess: (_, id) => {
+      if (roleToDelete) {
+        toast.success(`Role "${roleToDelete.name}" deleted successfully.`);
+      }
+      queryClient.setQueryData<PlatformRoleItem[]>(["roles"], (prev) => {
+        if (!prev) return [];
+        return prev.filter((item) => item.id !== id);
+      });
       setRoleToDelete(null);
-      void loadRoles();
-    } catch (err) {
+    },
+    onError: (err) => {
       console.error(err);
       toast.error(err instanceof Error ? err.message : "Failed to delete role.");
-    } finally {
+    },
+    onSettled: () => {
       setDeleting(false);
-    }
+    },
+  });
+
+  const handleDeleteRole = () => {
+    if (!roleToDelete) return;
+    setDeleting(true);
+    deleteRoleMutation.mutate(roleToDelete.id);
   };
-
-  // [COMMENT]: Gọi API lấy danh sách Platform Roles
-  const loadRoles = useCallback(async (showToast = false) => {
-    setLoading(true);
-    try {
-      const data = await listRoles();
-      setRoles(data);
-      if (showToast) {
-        toast.success("Platform roles synchronized.");
-      }
-    } catch (err) {
-      console.error(err);
-      toast.error(err instanceof Error ? err.message : "Failed to load roles list.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadRoles();
-  }, [loadRoles]);
 
   // Apply filters on front-end list
   const filteredRoles = roles.filter((r) => {
@@ -257,7 +258,7 @@ function AccessControlContent() {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => void loadRoles(true)}
+            onClick={() => void loadRoles()}
             disabled={loading}
             className="flex items-center justify-center h-8 px-3 rounded-lg border border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-slate-100 transition-colors disabled:opacity-50 cursor-pointer"
           >

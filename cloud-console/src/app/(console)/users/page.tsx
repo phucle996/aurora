@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { Users, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { listUsers, updateUserStatus, type PlatformUserItem } from "@/lib/api/user";
@@ -11,6 +11,7 @@ import { UserDetailPanel } from "./UserDetailPanel";
 import { Button } from "@/components/ui/button";
 import { UserFilters } from "./UserFilters";
 import { UserTable } from "./UserTable";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 const getExtendedUserData = (u: PlatformUserItem) => {
   const mfaEnabled = u.mfa_enabled ?? false;
@@ -59,8 +60,7 @@ function UserDirectoryContent() {
   const { checkPermission, profile } = useUserSession();
   const currentUserId = profile?.user_id;
 
-  const [users, setUsers] = useState<PlatformUserItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [roleFilter, setRoleFilter] = useState("All");
@@ -77,35 +77,40 @@ function UserDirectoryContent() {
 
   const usersPerPage = 10;
 
-  const loadUsers = useCallback(async (isRefresh = false) => {
-    try {
-      if (isRefresh) {
-        setLoading(true);
-      }
-      const data = await listUsers();
-      setUsers(data || []);
-    } catch (e: any) {
-      toast.error(e.message || "Failed to load platform directory");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý danh sách users
+  const {
+    data: users = [],
+    isLoading: loading,
+    isRefetching: refreshing,
+    refetch: loadUsers,
+  } = useQuery<PlatformUserItem[]>({
+    queryKey: ["users"],
+    queryFn: () => listUsers(),
+  });
 
-  useEffect(() => {
-    void loadUsers();
-  }, [loadUsers]);
-
-  const handleUpdateStatus = async (id: string, status: string, username: string) => {
-    setUpdatingId(id);
-    try {
-      await updateUserStatus(id, status);
+  // [COMMENT]: Mutation cập nhật trạng thái hoạt động của User và update local cache
+  const updateStatusMutation = useMutation<void, Error, { id: string; status: string; username: string }>({
+    mutationFn: ({ id, status }) => updateUserStatus(id, status),
+    onMutate: async ({ id }) => {
+      setUpdatingId(id);
+    },
+    onSuccess: (_, { id, status, username }) => {
       toast.success(`User @${username} status has been updated to ${status}`);
-      await loadUsers(false);
-    } catch (e: any) {
-      toast.error(e.message || `Failed to update status`);
-    } finally {
+      queryClient.setQueryData<PlatformUserItem[]>(["users"], (prev) => {
+        if (!prev) return [];
+        return prev.map((u) => (u.id === id ? { ...u, status } : u));
+      });
+    },
+    onError: (err) => {
+      toast.error(err.message || `Failed to update status`);
+    },
+    onSettled: () => {
       setUpdatingId(null);
-    }
+    },
+  });
+
+  const handleUpdateStatus = (id: string, status: string, username: string) => {
+    updateStatusMutation.mutate({ id, status, username });
   };
 
   const extendedUsers = useMemo(() => {
@@ -231,13 +236,13 @@ function UserDirectoryContent() {
 
           <div className="flex items-center gap-2">
             <Button
-              onClick={() => void loadUsers(true)}
-              disabled={loading}
+              onClick={() => void loadUsers()}
+              disabled={loading || refreshing}
               variant="outline"
               size="sm"
               className="font-bold cursor-pointer transition-colors"
             >
-              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+              <RefreshCw className={cn("h-3.5 w-3.5", (loading || refreshing) && "animate-spin")} />
               <span>Sync</span>
             </Button>
           </div>
