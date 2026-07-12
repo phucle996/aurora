@@ -347,6 +347,7 @@ services:
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
       APP_LOG_LEVEL: "info"
+      TZ: "Asia/Ho_Chi_Minh"
       # Cổng export Prometheus metrics endpoint /metrics
       METRICS_PORT: "2112"
       # Endpoint gRPC của OTel Collector để gửi traces (Tempo)
@@ -389,6 +390,7 @@ services:
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       APP_LOG_LEVEL: "info"
+      TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "2112"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       MINIO_HOST: "minio"
@@ -421,6 +423,7 @@ services:
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
       REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
       APP_LOG_LEVEL: "info"
+      TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "2112"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       MINIO_HOST: "minio"
@@ -567,6 +570,7 @@ services:
       PUBLICATION_NAME: "outbox_pub"
       RESULT_STREAM_NAME: "job_results_stream"
       APP_LOG_LEVEL: "debug"
+      TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "9102"
       CDC_SOURCES: "mail.mail_outbox_records,iam.iam_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
@@ -613,6 +617,7 @@ services:
     volumes:
       - ./dev/tls:/etc/acr/tls:ro
     environment:
+      TZ: "Asia/Ho_Chi_Minh"
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-acr-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
@@ -624,11 +629,6 @@ services:
       VAULT_MAX_RETRIES: "3"
       SESSION_TTL_SECS: "1800"
       REFRESH_THRESHOLD_SECS: "900"
-      CONTROLPLANE_GRPC_ENDPOINT: "controlplane-dev-1:9090"
-      CONTROLPLANE_GRPC_CA_CERT: "/etc/acr/tls/ca.crt"
-      CONTROLPLANE_GRPC_CLIENT_CERT: "/etc/acr/tls/grpc-server.crt"
-      CONTROLPLANE_GRPC_CLIENT_KEY: "/etc/acr/tls/grpc-server.key"
-      CONTROLPLANE_GRPC_DOMAIN: "localhost"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       NATS_ADDR: "nats://nats:4222"
       APP_PUBLIC_DOMAIN: "aurora.local"
@@ -648,17 +648,13 @@ services:
     container_name: aurora-notification-service
     ports:
       - "8083:8083"
-      # Cổng xuất bản Prometheus Metrics
-      - "2112:2112"
     environment:
+      - TZ=Asia/Ho_Chi_Minh
       - APP_PORT=8083
-      # Chỉ định cổng chạy Metrics Exporter
-      - METRICS_PORT=2112
       - CENTRIFUGO_API_URL=http://centrifugo:8000/api
       - CENTRIFUGO_API_KEY=your_centrifugo_api_key_secret
-      - REDIS_URL=redis://controlplane-redis-job:6379/0
-      # [COMMENT]: ACR service phục vụ toàn bộ xác thực Trinity Token (User + Admin) — internal network, không mTLS
-      - ACR_GRPC_ENDPOINT=acr:50051
+      # [COMMENT]: Kết nối trực tiếp tới NATS Core phục vụ realtime pubsub
+      - NATS_ADDR=nats://nats:4222
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4317
     depends_on:

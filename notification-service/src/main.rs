@@ -15,6 +15,11 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
+    if std::env::var("TZ").is_err() {
+        std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
+    }
+
     // [ignoring loop detection]
     // Khởi tạo Logger đầu tiên để phục vụ ghi log hệ thống
     Logger::init();

@@ -49,18 +49,24 @@ impl Logger {
         }
     }
 
+    // [COMMENT]: Lấy mốc thời gian hiện tại theo múi giờ local của ứng dụng (được điều khiển qua biến môi trường TZ chuẩn).
+    fn get_timestamp() -> String {
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
+    }
+
     pub fn init() {
         let level = Self::get_level();
-        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let timestamp = Self::get_timestamp();
+        let tz = std::env::var("TZ").unwrap_or_else(|_| "UTC".to_string());
         println!(
-            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"Observability Logger: JSON structured logging pipeline initialized. Level={:?}\"}}",
-            timestamp, level
+            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"Observability Logger: JSON structured logging pipeline initialized. Level={:?}, TZ={}\"}}",
+            timestamp, level, tz
         );
     }
 
     pub fn access_log(op: &str, method: &str, route: &str, status_code: i32, latency_ms: f64) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_part = Self::get_trace_part();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"method\":\"{}\",\"route\":\"{}\",\"status_code\":{},\"latency_ms\":{:.3}{}}}",
@@ -71,7 +77,7 @@ impl Logger {
 
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_part = Self::get_trace_part();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"{}}}",
@@ -82,7 +88,7 @@ impl Logger {
 
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_part = Self::get_trace_part();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
@@ -93,7 +99,7 @@ impl Logger {
 
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_part = Self::get_trace_part();
             eprintln!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"{}}}",

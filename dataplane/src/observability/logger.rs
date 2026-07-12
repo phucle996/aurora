@@ -61,20 +61,26 @@ impl Logger {
         })
     }
 
+    // [COMMENT]: Lấy mốc thời gian hiện tại theo múi giờ local của ứng dụng (được điều khiển qua biến môi trường TZ chuẩn).
+    fn get_timestamp() -> String {
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
+    }
+
     /// Khởi tạo định dạng logger thô (JSON Formatter).
     pub fn init() {
         let level = Self::get_level();
-        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let timestamp = Self::get_timestamp();
+        let tz = std::env::var("TZ").unwrap_or_else(|_| "UTC".to_string());
         println!(
-            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"Observability Logger: JSON structured logging pipeline initialized. Level={:?}\"}}",
-            timestamp, level
+            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"Observability Logger: JSON structured logging pipeline initialized. Level={:?}, TZ={}\"}}",
+            timestamp, level, tz
         );
     }
 
     /// Ghi nhận nhật ký gỡ lỗi hệ thống cấp thấp (System Debug Logs).
     pub fn sys_debug(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Debug {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
             let trace_segment = if let Some(ref tid) = trace_id {
                 format!(",\"trace_id\":\"{}\"", tid)
@@ -93,7 +99,7 @@ impl Logger {
     /// Ghi nhận nhật ký hệ thống cấp thấp (System Info Logs).
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
             let trace_segment = if let Some(ref tid) = trace_id {
                 format!(",\"trace_id\":\"{}\"", tid)
@@ -110,7 +116,7 @@ impl Logger {
     /// Ghi nhận nhật ký cảnh báo lỗi hệ thống cấp thấp (System Warn Logs).
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
             let trace_segment = if let Some(ref tid) = trace_id {
                 format!(",\"trace_id\":\"{}\"", tid)
@@ -127,7 +133,7 @@ impl Logger {
     /// Ghi nhận nhật ký lỗi hệ thống nghiêm trọng (System Error Logs).
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
             let trace_segment = if let Some(ref tid) = trace_id {
                 format!(",\"trace_id\":\"{}\"", tid)
@@ -144,7 +150,7 @@ impl Logger {
     /// Ghi nhận toàn bộ vết di chuyển của một Job nghiệp vụ (Job Logs).
     pub fn job_log(job_id: &str, job_topic: &str, attempt: u32, op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_id = crate::observability::otel::OtelTracer::get_current_trace_id();
             let trace_segment = if let Some(ref tid) = trace_id {
                 format!(",\"trace_id\":\"{}\"", tid)

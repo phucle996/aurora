@@ -14,6 +14,11 @@ use crate::observability::logger::Logger;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
+    if std::env::var("TZ").is_err() {
+        std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
+    }
+
     // 1. Run bootstrap actions to initialize infrastructure & resources
     let boot_result = bootstrap::run_actions()?;
 

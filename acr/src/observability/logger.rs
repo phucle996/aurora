@@ -71,20 +71,26 @@ impl Logger {
         }
     }
 
+    // [COMMENT]: Lấy mốc thời gian hiện tại theo múi giờ local của ứng dụng (được điều khiển qua biến môi trường TZ chuẩn).
+    fn get_timestamp() -> String {
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
+    }
+
     /// Khởi tạo định dạng logger thô (JSON Formatter).
     pub fn init() {
         let level = Self::get_level();
-        let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let timestamp = Self::get_timestamp();
+        let tz = std::env::var("TZ").unwrap_or_else(|_| "UTC".to_string());
         println!(
-            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"ACL Logger: JSON structured logging pipeline initialized. Level={:?}\"}}",
-            timestamp, level
+            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"ACL Logger: JSON structured logging pipeline initialized. Level={:?}, TZ={}\"}}",
+            timestamp, level, tz
         );
     }
 
     /// Ghi nhận nhật ký gỡ lỗi hệ thống cấp thấp (System Debug Logs).
     pub fn sys_debug(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Debug {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_seg = Self::trace_segment();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"debug\",\"message\":\"{}\"{}}}",
@@ -96,7 +102,7 @@ impl Logger {
     /// Ghi nhận nhật ký hệ thống cấp thông tin (System Info Logs).
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_seg = Self::trace_segment();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"info\",\"message\":\"{}\"{}}}",
@@ -108,7 +114,7 @@ impl Logger {
     /// Ghi nhận nhật ký cảnh báo hệ thống (System Warn Logs).
     pub fn sys_warn(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Warn {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_seg = Self::trace_segment();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"warn\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
@@ -120,7 +126,7 @@ impl Logger {
     /// Ghi nhận nhật ký lỗi hệ thống nghiêm trọng (System Error Logs).
     pub fn sys_error(op: &str, message: &str, err_msg: &str) {
         if Self::get_level() <= LogLevel::Error {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_seg = Self::trace_segment();
             eprintln!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"op\":\"{}\",\"level\":\"error\",\"message\":\"{}\",\"error\":\"{}\"{}}}",
@@ -132,7 +138,7 @@ impl Logger {
     /// Ghi nhận toàn bộ quyết định authorize từ ext_authz (Authz Decision Logs).
     pub fn authz_log(user_id: &str, method: &str, path: &str, decision: &str, reason: &str) {
         if Self::get_level() <= LogLevel::Info {
-            let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let timestamp = Self::get_timestamp();
             let trace_seg = Self::trace_segment();
             println!(
                 "{{\"time\":\"{}\",\"log_type\":\"{}\",\"user_id\":\"{}\",\"method\":\"{}\",\"path\":\"{}\",\"decision\":\"{}\",\"reason\":\"{}\"{}}}",

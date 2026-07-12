@@ -31,6 +31,11 @@ use crate::service::session::release_session::device_proto::device_service_serve
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
+    if std::env::var("TZ").is_err() {
+        std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
+    }
+
     // 1. Khởi tạo hệ thống Structured JSON Logger
     Logger::init();
 

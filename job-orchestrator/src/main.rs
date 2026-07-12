@@ -14,6 +14,11 @@ use reverse_provider::ReverseProvider;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // [COMMENT]: Thiết lập mặc định múi giờ TZ là Asia/Ho_Chi_Minh nếu chưa được định nghĩa
+    if std::env::var("TZ").is_err() {
+        std::env::set_var("TZ", "Asia/Ho_Chi_Minh");
+    }
+
     // 1. Nạp cấu hình từ biến môi trường đầu tiên để phục vụ khởi tạo Observability
     let config = match Config::from_env() {
         Ok(cfg) => cfg,
