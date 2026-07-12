@@ -18,6 +18,6 @@ type TenantCredentialRepo interface {
 	// [COMMENT]: Liệt kê toàn bộ Access Keys thuộc một Bucket doanh nghiệp.
 	ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.TenantCredential, error)
 	
-	// [COMMENT]: Xóa thông tin Access Key khỏi Database cùng sự kiện Outbox.
-	Delete(ctx context.Context, id uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error
+	// [COMMENT]: Xóa thông tin Access Key khỏi Database cùng sự kiện Outbox (scoping theo struct params).
+	Delete(ctx context.Context, param *storageEntity.DeleteTenantCredential, outbox *storageEntity.StorageOutboxRecord) error
 }

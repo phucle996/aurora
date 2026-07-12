@@ -30,6 +30,18 @@ pub async fn dispatch_storage_job(
             exec.execute(payload).await
         }
 
+        // [COMMENT]: Định tuyến tạo credential
+        "credential.create" => {
+            let exec = super::CredentialCreateExecutor;
+            exec.execute(payload).await
+        }
+
+        // [COMMENT]: Định tuyến xóa credential
+        "credential.delete" => {
+            let exec = super::CredentialDeleteExecutor;
+            exec.execute(payload).await
+        }
+
         // Gặp hành động không được hỗ trợ
         _ => Err(ExecutorError::ExecutionFailed(format!(
             "Unsupported storage action: {}",

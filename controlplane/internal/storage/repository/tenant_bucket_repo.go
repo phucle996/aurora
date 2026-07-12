@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"controlplane/internal/config"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
@@ -19,18 +20,18 @@ import (
 
 // [COMMENT]: TenantBucketRepoImpl thực thi interface TenantBucketRepo cho kết nối PostgreSQL.
 type TenantBucketRepoImpl struct {
-	db     *pgxpool.Pool
-	schema string
+	db      *pgxpool.Pool
+	storage string // schema storage
 }
 
 // [COMMENT]: NewTenantBucketRepo khởi tạo repository quản lý bucket doanh nghiệp.
 func NewTenantBucketRepo(
 	db *pgxpool.Pool,
-	schema string,
+	cfg *config.Config,
 ) storageRepoInterface.TenantBucketRepo {
 	return &TenantBucketRepoImpl{
-		db:     db,
-		schema: schema,
+		db:      db,
+		storage: cfg.SchemaSQL.Storage,
 	}
 }
 
@@ -51,17 +52,17 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		),
 		ins_credential AS (
 			INSERT INTO %s.tenant_credentials (
-				id, bucket_id, access_key, secret_key, policy, created_at, updated_at
+				id, bucket_id, access_key, policy, created_at, updated_at
 			)
-			SELECT $10, id, $11, $12, $13, $14, $15
+			SELECT $10, id, $11, $12, $13, $14
 			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
-	`, r.schema, r.schema, r.schema)
+		) VALUES ($15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+	`, r.storage, r.storage, r.storage)
 
 	_, err := r.db.Exec(ctx, query,
 		// [COMMENT]: $1-$9 — tenant_buckets fields
@@ -74,14 +75,13 @@ func (r *TenantBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity
 		m.CapacityQuotaBytes,
 		m.CreatedAt,
 		m.UpdatedAt,
-		// [COMMENT]: $10-$15 — tenant_credentials fields
+		// [COMMENT]: $10-$14 — tenant_credentials fields (secret_key removed)
 		mc.ID,
 		mc.AccessKey,
-		mc.SecretKey,
 		mc.Policy,
 		mc.CreatedAt,
 		mc.UpdatedAt,
-		// [COMMENT]: $16-$29 — storage_outbox_records fields
+		// [COMMENT]: $15-$28 — storage_outbox_records fields
 		mo.EventID,
 		mo.RoutingScope,
 		mo.JobTopic,
@@ -112,7 +112,7 @@ func (r *TenantBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*stor
 		SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes, created_at, updated_at
 		FROM %s.tenant_buckets
 		WHERE id = $1
-	`, r.schema)
+	`, r.storage)
 
 	var m storageModel.TenantBucket
 
@@ -145,7 +145,7 @@ func (r *TenantBucketRepoImpl) GetByName(ctx context.Context, name string) (*sto
 		SELECT id, name, workspace_id, zone_id, tenant_id, status, capacity_quota_bytes, used_bytes, created_at, updated_at
 		FROM %s.tenant_buckets
 		WHERE name = $1
-	`, r.schema)
+	`, r.storage)
 
 	var m storageModel.TenantBucket
 
@@ -179,7 +179,7 @@ func (r *TenantBucketRepoImpl) ListByTenantAndZone(ctx context.Context, tenantID
 		FROM %s.tenant_buckets
 		WHERE tenant_id = $1 AND zone_id = $2
 		ORDER BY created_at DESC
-	`, r.schema)
+	`, r.storage)
 
 	rows, err := r.db.Query(ctx, query, tenantID, zoneID)
 	if err != nil {
@@ -217,7 +217,7 @@ func (r *TenantBucketRepoImpl) UpdateStatus(ctx context.Context, id uuid.UUID, s
 		UPDATE %s.tenant_buckets
 		SET status = $1, updated_at = $2
 		WHERE id = $3
-	`, r.schema)
+	`, r.storage)
 
 	res, err := r.db.Exec(ctx, query, string(status), time.Now(), id)
 	if err != nil {
@@ -235,7 +235,7 @@ func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, qu
 		UPDATE %s.tenant_buckets
 		SET capacity_quota_bytes = $1, updated_at = $2
 		WHERE id = $3
-	`, r.schema)
+	`, r.storage)
 
 	res, err := r.db.Exec(ctx, query, quotaBytes, time.Now(), id)
 	if err != nil {
@@ -252,7 +252,7 @@ func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID) error {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.tenant_buckets
 		WHERE id = $1
-	`, r.schema)
+	`, r.storage)
 
 	res, err := r.db.Exec(ctx, query, id)
 	if err != nil {
@@ -270,7 +270,7 @@ func (r *TenantBucketRepoImpl) UpdateUsedBytes(ctx context.Context, name string,
 		UPDATE %s.tenant_buckets
 		SET used_bytes = $1, updated_at = now()
 		WHERE name = $2
-	`, r.schema)
+	`, r.storage)
 
 	res, err := r.db.Exec(ctx, query, usedBytes, name)
 	if err != nil {

@@ -85,7 +85,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		ID:        credID,
 		BucketID:  bucket.ID,
 		AccessKey: accessKey,
-		SecretKey: secretKey, // TODO: AES-GCM encrypt trước khi lưu
+		// [COMMENT]: Lược bỏ SecretKey khỏi thực thể lưu CSDL lâu dài để tăng tính bảo mật
 		Policy:    policy,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

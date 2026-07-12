@@ -128,20 +128,22 @@ function ViewBucketContent() {
                 <HardDrive className="h-4 w-4" />
               </div>
               <h1 className="text-xl font-bold text-foreground tracking-tight select-all">
-                {bucket.Name}
+                {/* [COMMENT]: Đổi sang sử dụng thuộc tính lowercase 'name' theo backend */}
+                {bucket.name}
               </h1>
               <Badge
                 variant="outline"
                 className={cn(
                   "capitalize font-bold text-[9px] px-1.5 py-0.2 h-4.5 border",
-                  bucket.Status === "active"
+                  bucket.status === "active"
                     ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-450 dark:border-emerald-500/30"
-                    : bucket.Status === "creating"
+                    : bucket.status === "creating"
                     ? "bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400 dark:border-amber-500/30"
                     : "bg-red-500/10 text-red-655 border-red-500/20 dark:text-red-450 dark:border-red-500/30"
                 )}
               >
-                {bucket.Status}
+                {/* [COMMENT]: Đổi sang sử dụng thuộc tính lowercase 'status' theo backend */}
+                {bucket.status}
               </Badge>
             </div>
             <p className="text-[10px] text-muted-foreground mt-1 font-mono uppercase tracking-wider select-none">

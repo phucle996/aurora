@@ -23,4 +23,4 @@ func NewTenantCredentialHandler(
 func (h *TenantCredentialHandler) Create(c *gin.Context) {}
 func (h *TenantCredentialHandler) Get(c *gin.Context)    {}
 func (h *TenantCredentialHandler) List(c *gin.Context)   {}
-func (h *TenantCredentialHandler) Revoke(c *gin.Context) {}
+func (h *TenantCredentialHandler) Delete(c *gin.Context) {}

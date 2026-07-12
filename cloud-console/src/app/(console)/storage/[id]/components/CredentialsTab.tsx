@@ -17,12 +17,14 @@ import { toast } from "sonner";
 import {
   listCredentials,
   createCredential,
-  revokeCredential,
+  deleteCredential,
   type CredentialItem,
   type BucketItem,
 } from "@/lib/api/storage";
 import { cn } from "@/lib/utils";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { PolicyViewModal } from "./PolicyViewModal";
+import { DeleteKeyModal } from "./DeleteKeyModal";
 
 interface CredentialsTabProps {
   bucket: BucketItem;
@@ -80,8 +82,9 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
   // Policy view state
   const [viewingPolicy, setViewingPolicy] = useState<string | null>(null);
 
-  // Revoke state
-  const [revokingId, setRevokingId] = useState<string | null>(null);
+  // Delete state
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deletingCred, setDeletingCred] = useState<CredentialItem | null>(null);
 
   // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý danh sách credentials.
   // Tự động gộp request, lưu cache và đồng bộ dữ liệu.
@@ -90,9 +93,10 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     isLoading: loading,
     refetch: fetchKeys,
   } = useQuery<CredentialItem[]>({
-    queryKey: ["credentials", bucket.ID],
-    queryFn: () => listCredentials(bucket.ID),
-    enabled: !!bucket.ID,
+    // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
+    queryKey: ["credentials", bucket.id],
+    queryFn: () => listCredentials(bucket.id),
+    enabled: !!bucket.id,
   });
 
   const copyToClipboard = (text: string, type: "access" | "secret" | "row", rowId?: string) => {
@@ -112,12 +116,14 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
 
   // [COMMENT]: Mutation tạo access key mới, tự động invalidate query cache sau khi tạo thành công.
   const createCredentialMutation = useMutation<CredentialItem, Error, string>({
-    mutationFn: (policy) => createCredential(bucket.ID, policy),
+    // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
+    mutationFn: (policy) => createCredential(bucket.id, policy),
     onSuccess: (res) => {
       setCreatedResult(res);
       setModalStep("result");
       toast.success("Access credential generated successfully");
-      queryClient.invalidateQueries({ queryKey: ["credentials", bucket.ID] });
+      // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
+      queryClient.invalidateQueries({ queryKey: ["credentials", bucket.id] });
     },
     onError: (err: any) => {
       toast.error(err.message || "Failed to generate credentials");
@@ -144,30 +150,36 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     createCredentialMutation.mutate(finalPolicy);
   };
 
-  // [COMMENT]: Mutation thu hồi (xóa) access key, tự động update local cache để nâng cao UX (Zero-Request UI update).
-  const revokeCredentialMutation = useMutation<void, Error, string>({
-    mutationFn: (id) => revokeCredential(id),
+  // [COMMENT]: Mutation xóa access key, tự động update local cache để nâng cao UX (Zero-Request UI update).
+  const deleteCredentialMutation = useMutation<void, Error, string>({
+    mutationFn: (id) => deleteCredential(bucket.id, id),
     onMutate: async (id) => {
-      setRevokingId(id);
+      setDeletingId(id);
     },
     onSuccess: (_, id) => {
-      toast.success("Access Key successfully revoked");
-      queryClient.setQueryData<CredentialItem[]>(["credentials", bucket.ID], (prev) => {
+      toast.success("Access Key successfully deleted");
+      // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
+      queryClient.setQueryData<CredentialItem[]>(["credentials", bucket.id], (prev) => {
         if (!prev) return [];
         return prev.filter((item) => item.id !== id);
       });
     },
     onError: (err: any) => {
-      toast.error(err.message || "Failed to revoke credential");
+      toast.error(err.message || "Failed to delete credential");
     },
     onSettled: () => {
-      setRevokingId(null);
+      setDeletingId(null);
     },
   });
 
-  const handleRevoke = (id: string) => {
-    if (!confirm("Are you sure you want to revoke this Access Key? All applications using it will lose access immediately.")) return;
-    revokeCredentialMutation.mutate(id);
+  // [COMMENT]: Xử lý sự kiện xác nhận xóa Access Key từ Modal
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteCredentialMutation.mutateAsync(id);
+      setDeletingCred(null);
+    } catch {
+      // Bắt lỗi để tránh Unhandled Promise Rejection (đã có toast thông báo trong onError)
+    }
   };
 
   const handleCloseModal = () => {
@@ -175,7 +187,8 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     setModalStep("policy");
     setConfirmedSave(false);
     setCreatedResult(null);
-    queryClient.invalidateQueries({ queryKey: ["credentials", bucket.ID] });
+    // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
+    queryClient.invalidateQueries({ queryKey: ["credentials", bucket.id] });
   };
 
   const getPolicyName = (policyJSON: string) => {
@@ -186,7 +199,7 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
 
   return (
     <div className="space-y-6 text-xs py-4 select-none">
-      
+
       {/* Tab Header Toolbar */}
       <div className="flex items-center justify-between border-b border-border pb-3.5">
         <div className="flex items-center gap-2">
@@ -239,7 +252,7 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
                 const isRO = cred.policy === READ_ONLY_POLICY;
                 return (
                   <tr key={cred.id} className="hover:bg-muted/40 transition-colors">
-                    
+
                     {/* Access Key */}
                     <td className="px-6 py-3.5">
                       <div className="flex items-center gap-2">
@@ -269,8 +282,8 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
                             isRW
                               ? "bg-blue-500/10 text-blue-600 border-blue-500/20"
                               : isRO
-                              ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
-                              : "bg-amber-500/10 text-amber-600 border-amber-500/20"
+                                ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                                : "bg-amber-500/10 text-amber-600 border-amber-500/20"
                           )}
                         >
                           {getPolicyName(cred.policy)}
@@ -294,12 +307,12 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
                     <td className="px-6 py-3.5 text-right pr-6">
                       <Button
                         variant="ghost"
-                        onClick={() => handleRevoke(cred.id)}
-                        disabled={revokingId === cred.id}
-                        className="h-7 px-2 hover:bg-red-500/10 text-red-655 hover:text-red-700 dark:hover:text-red-400 text-xs font-bold transition-all cursor-pointer rounded-md border border-transparent hover:border-red-500/20 disabled:opacity-50"
+                        onClick={() => setDeletingCred(cred)}
+                        disabled={deletingId === cred.id}
+                        className="flex items-center gap-1 hover:text-red-500 transition-colors disabled:opacity-50"
                       >
-                        <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                        <span>Revoke</span>
+                        <X className="h-3.5 w-3.5" />
+                        <span>Delete</span>
                       </Button>
                     </td>
 
@@ -315,7 +328,7 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs">
           <div className="w-full max-w-lg bg-card text-card-foreground border border-border shadow-lg rounded-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            
+
             {/* Modal Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-border">
               <div className="flex items-center gap-2">
@@ -507,39 +520,19 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
         </div>
       )}
 
-      {/* POLICY VIEW PANEL (INLINE DIALOG) */}
-      {viewingPolicy && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs">
-          <div className="w-full max-w-lg bg-card text-card-foreground border border-border shadow-lg rounded-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-              <span className="font-bold text-sm text-foreground flex items-center gap-1.5">
-                <FileCode className="h-4 w-4 text-blue-500" />
-                <span>Access Policy JSON</span>
-              </span>
-              <button
-                onClick={() => setViewingPolicy(null)}
-                className="text-muted-foreground/60 hover:text-foreground cursor-pointer outline-none"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="p-5">
-              <pre className="p-4 bg-slate-950 text-slate-100 rounded-md font-mono text-[11px] overflow-x-auto max-h-72">
-                {viewingPolicy}
-              </pre>
-            </div>
-            <div className="flex items-center justify-end px-5 py-3.5 bg-muted/20 border-t border-border">
-              <Button
-                type="button"
-                onClick={() => setViewingPolicy(null)}
-                className="h-8.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white rounded-md cursor-pointer"
-              >
-                Close
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* POLICY VIEW PANEL (EXTRACTED COMPONENT) */}
+      <PolicyViewModal
+        policy={viewingPolicy}
+        onClose={() => setViewingPolicy(null)}
+      />
+
+      {/* DELETE KEY CONFIRMATION MODAL */}
+      <DeleteKeyModal
+        accessKey={deletingCred ? deletingCred.access_key : null}
+        isDeleting={!!deletingId}
+        onConfirm={() => deletingCred && handleDelete(deletingCred.id)}
+        onClose={() => setDeletingCred(null)}
+      />
 
     </div>
   );

@@ -88,10 +88,10 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.PersonalCredentialHandler.Get,
 		)
 
-		// [COMMENT]: Thu hồi / Xóa bỏ Access Key
-		personalGroup.DELETE("/storage/credentials/:id",
+		// [COMMENT]: Xóa bỏ Access Key
+		personalGroup.DELETE("/storage/buckets/:bucket_id/credentials/:id",
 			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
-			module.PersonalCredentialHandler.Revoke,
+			module.PersonalCredentialHandler.Delete,
 		)
 	}
 
@@ -168,10 +168,10 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.TenantCredentialHandler.Get,
 		)
 
-		// [COMMENT]: Thu hồi / Xóa bỏ Access Key
-		tenantGroup.DELETE("/storage/credentials/:id",
+		// [COMMENT]: Xóa bỏ Access Key
+		tenantGroup.DELETE("/storage/buckets/:bucket_id/credentials/:id",
 			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
-			module.TenantCredentialHandler.Revoke,
+			module.TenantCredentialHandler.Delete,
 		)
 	}
 }

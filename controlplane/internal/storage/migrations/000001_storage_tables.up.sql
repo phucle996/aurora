@@ -45,7 +45,6 @@ CREATE TABLE IF NOT EXISTS personal_credentials (
     id UUID PRIMARY KEY,
     bucket_id UUID NOT NULL, -- Khóa ngoại trỏ trực tiếp đến bảng personal_buckets
     access_key VARCHAR(255) NOT NULL, -- Mã access key truy cập MinIO
-    secret_key TEXT NOT NULL,         -- Secret Key (mã hóa)
     policy TEXT NOT NULL,             -- JSON policy
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -61,7 +60,6 @@ CREATE TABLE IF NOT EXISTS tenant_credentials (
     id UUID PRIMARY KEY,
     bucket_id UUID NOT NULL, -- Khóa ngoại trỏ trực tiếp đến bảng tenant_buckets
     access_key VARCHAR(255) NOT NULL, -- Mã access key truy cập MinIO
-    secret_key TEXT NOT NULL,         -- Secret Key (mã hóa)
     policy TEXT NOT NULL,             -- JSON policy
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

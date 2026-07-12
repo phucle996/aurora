@@ -36,7 +36,7 @@ func NewTenantCredentialService(
 	}
 }
 
-func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *storageEntity.CreateTenantCredential) (*storageEntity.TenantCredential, error) {
+func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *storageEntity.CreateTenantCredential) (*storageEntity.CreatedTenantCredential, error) {
 	// [COMMENT]: Kiểm tra sự tồn tại của Bucket liên kết (Entity Existence Check)
 	bucket, err := s.bucketRepo.GetByID(ctx, param.BucketID)
 	if err != nil {
@@ -56,20 +56,25 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 		return nil, apperr.Wrap(err, err, "generate_secret_key_failed")
 	}
 
-	// [COMMENT]: Mã hóa đối xứng Secret Key bằng Master Key trước khi lưu DB
-	encryptedSecret, err := crypto.Encrypt(rawSecretKey, s.masterKey)
-	if err != nil {
-		return nil, apperr.Wrap(err, err, "encrypt_secret_failed")
-	}
-
+	// [COMMENT]: Khởi tạo thực thể TenantCredential (không chứa SecretKey) để lưu xuống DB
 	cred := &storageEntity.TenantCredential{
 		ID:        uuid.New(),
 		BucketID:  param.BucketID,
 		AccessKey: accessKey,
-		SecretKey: encryptedSecret,
 		Policy:    param.Policy,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+	}
+
+	// [COMMENT]: Khởi tạo thực thể CreatedTenantCredential chứa raw Secret Key phản hồi cho Client
+	createdCred := &storageEntity.CreatedTenantCredential{
+		ID:        cred.ID,
+		BucketID:  cred.BucketID,
+		AccessKey: cred.AccessKey,
+		SecretKey: rawSecretKey,
+		Policy:    cred.Policy,
+		CreatedAt: cred.CreatedAt,
+		UpdatedAt: cred.UpdatedAt,
 	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
@@ -112,9 +117,7 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
-	// [COMMENT]: Trả lại thực thể chứa rawSecretKey cho Handler hiển thị duy nhất một lần cho User
-	cred.SecretKey = rawSecretKey
-	return cred, nil
+	return createdCred, nil
 }
 
 func (s *TenantCredentialSvcImpl) GetCredential(ctx context.Context, credID uuid.UUID) (*storageEntity.TenantCredential, error) {
@@ -138,22 +141,15 @@ func (s *TenantCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID 
 	return creds, nil
 }
 
-func (s *TenantCredentialSvcImpl) RevokeCredential(ctx context.Context, credID uuid.UUID, userID uuid.UUID) error {
-	cred, err := s.repo.GetByID(ctx, credID)
+func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *storageEntity.DeleteTenantCredential) error {
+	// [COMMENT]: Chỉ lấy thông tin credential để build proto payload (access_key, policy).
+	// Toàn bộ việc validate quyền sở hữu (workspace → user → bucket → credential) sẽ do CTE trong repo đảm nhiệm nguyên tử.
+	cred, err := s.repo.GetByID(ctx, param.CredentialID)
 	if err != nil {
 		return apperr.Wrap(err, err, "get_failed")
 	}
 	if cred == nil {
 		return apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "credential_not_found")
-	}
-
-	// [COMMENT]: Tìm bucket liên kết để xác định ZoneID định tuyến Outbox
-	bucket, err := s.bucketRepo.GetByID(ctx, cred.BucketID)
-	if err != nil {
-		return apperr.Wrap(err, err, "get_bucket_failed")
-	}
-	if bucket == nil {
-		return apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
 	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
@@ -163,26 +159,27 @@ func (s *TenantCredentialSvcImpl) RevokeCredential(ctx context.Context, credID u
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Tạo sự kiện Outbox đồng bộ thu hồi (revoked) tài khoản trên MinIO
+	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO
 	syncEvent := &storageproto.CredentialSync{
 		Id:        cred.ID.String(),
 		BucketId:  cred.BucketID.String(),
 		AccessKey: cred.AccessKey,
 		SecretKey: "",
 		Policy:    cred.Policy,
-		Status:    "revoked",
+		Status:    "deleted",
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
 		return apperr.Wrap(err, err, "marshal_payload_failed")
 	}
 
+	// [COMMENT]: RoutingScope được resolve trực tiếp từ zone_id trong context — không cần JOIN DB hay để trống.
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:              uuid.New(),
-		RoutingScope:         "zone:" + bucket.ZoneID.String(),
-		JobTopic:             "storage.credential.revoke",
+		RoutingScope:         "zone:" + param.ZoneID.String(),
+		JobTopic:             "storage.credential.delete",
 		Payload:              payloadBytes,
-		UserID:               userID.String(),
+		UserID:               param.UserID.String(),
 		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
 		ResourceID:           cred.ID.String(),
@@ -191,10 +188,12 @@ func (s *TenantCredentialSvcImpl) RevokeCredential(ctx context.Context, credID u
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Thực thi xóa cứng Credential khỏi DB Controlplane và chèn Outbox event nguyên tử
-	if err := s.repo.Delete(ctx, credID, outbox); err != nil {
+	// [COMMENT]: Thực thi xóa cứng Credential khỏi DB và chèn Outbox event nguyên tử.
+	// CTE tự validate scope chain và tự tính routing_scope từ zone_id.
+	if err := s.repo.Delete(ctx, param, outbox); err != nil {
 		return apperr.Wrap(err, err, "delete_failed")
 	}
 
 	return nil
 }
+

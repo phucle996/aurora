@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
+
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -86,7 +87,7 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		ID:        credID,
 		BucketID:  bucket.ID,
 		AccessKey: accessKey,
-		SecretKey: secretKey, // TODO: AES-GCM encrypt trước khi lưu
+		// [COMMENT]: Lược bỏ SecretKey khỏi thực thể lưu CSDL lâu dài để tăng tính bảo mật
 		Policy:    policy,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

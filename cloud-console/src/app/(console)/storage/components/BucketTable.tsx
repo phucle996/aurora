@@ -143,16 +143,17 @@ export function BucketTable({
               {paginatedBuckets.map((b) => {
                 return (
                   <tr
-                    key={b.ID}
+                    key={b.id}
                     className="hover:bg-muted/40 transition-colors select-none"
                   >
                     {/* Bucket Name */}
                     <td className="px-6 py-3.5">
                       <Link
-                        href={`/storage/${b.ID}`}
-                        className="font-bold text-foreground text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:underline cursor-pointer outline-none"
+                        href={`/storage/${b.id}`}
+                        className="font-bold text-foreground text-blue-600 hover:text-blue-700 dark:text-blue-450 dark:hover:text-blue-300 hover:underline cursor-pointer outline-none"
                       >
-                        {b.Name}
+                        {/* [COMMENT]: Đổi sang sử dụng thuộc tính lowercase 'name' theo backend */}
+                        {b.name}
                       </Link>
                     </td>
 
@@ -162,11 +163,11 @@ export function BucketTable({
                         <span
                           className={cn(
                             "h-1.5 w-1.5 rounded-full",
-                            b.Status === "active"
+                            b.status === "active"
                               ? "bg-emerald-500 animate-pulse"
-                              : b.Status === "creating"
+                              : b.status === "creating"
                               ? "bg-amber-500"
-                              : b.Status === "suspended"
+                              : b.status === "suspended"
                               ? "bg-red-500"
                               : "bg-slate-400"
                           )}
@@ -174,28 +175,31 @@ export function BucketTable({
                         <span
                           className={cn(
                             "capitalize",
-                            b.Status === "active"
+                            b.status === "active"
                               ? "text-emerald-600 dark:text-emerald-400"
-                              : b.Status === "creating"
+                              : b.status === "creating"
                               ? "text-amber-600 dark:text-amber-400"
-                              : b.Status === "suspended"
+                              : b.status === "suspended"
                               ? "text-red-600 dark:text-red-400"
                               : "text-slate-500"
                           )}
                         >
-                          {b.Status}
+                          {/* [COMMENT]: Đổi sang sử dụng thuộc tính lowercase 'status' theo backend */}
+                          {b.status}
                         </span>
                       </span>
                     </td>
 
                     {/* Capacity Quota */}
                     <td className="px-6 py-3.5 font-semibold text-slate-750 dark:text-slate-350">
-                      {formatQuota(b.CapacityQuotaBytes)}
+                      {/* [COMMENT]: Đổi sang sử dụng thuộc tính 'capacity_quota_bytes' */}
+                      {formatQuota(b.capacity_quota_bytes)}
                     </td>
 
                     {/* Created At */}
                     <td className="px-6 py-3.5 text-slate-400 dark:text-slate-500">
-                      {formatDate(b.CreatedAt)}
+                      {/* [COMMENT]: Đổi sang sử dụng thuộc tính 'created_at' */}
+                      {formatDate(b.created_at)}
                     </td>
                   </tr>
                 );

@@ -80,14 +80,14 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		return
 	}
 
-	res := &storageDto.CredentialResponse{
-		ID:        cred.ID.String(),
-		BucketID:  cred.BucketID.String(),
-		AccessKey: cred.AccessKey,
-		SecretKey: cred.SecretKey, // Chứa raw secret key
-		Policy:    cred.Policy,
-		CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+	// [COMMENT]: Viết inline phản hồi bằng gin.H thay vì sử dụng struct DTO
+	res := gin.H{
+		"id":         cred.ID.String(),
+		"access_key": cred.AccessKey,
+		"secret_key": cred.SecretKey, // Chứa raw secret key
+		"policy":     cred.Policy,
+		"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 	apires.RespondCreated(c, res, "credential created successfully")
 }
@@ -131,13 +131,13 @@ func (h *PersonalCredentialHandler) Get(c *gin.Context) {
 		return
 	}
 
-	res := &storageDto.CredentialResponse{
-		ID:        cred.ID.String(),
-		BucketID:  cred.BucketID.String(),
-		AccessKey: cred.AccessKey,
-		Policy:    cred.Policy,
-		CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+	// [COMMENT]: Viết inline phản hồi bằng gin.H thay vì sử dụng struct DTO
+	res := gin.H{
+		"id":         cred.ID.String(),
+		"access_key": cred.AccessKey,
+		"policy":     cred.Policy,
+		"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
+		"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 	apires.RespondSuccess(c, res, "success")
 }
@@ -173,28 +173,53 @@ func (h *PersonalCredentialHandler) List(c *gin.Context) {
 		return
 	}
 
-	var res []*storageDto.CredentialResponse
+	// [COMMENT]: Trả về danh sách dạng inline bằng slice of gin.H thay vì DTO slice
+	var res []gin.H
 	for _, cred := range creds {
-		res = append(res, &storageDto.CredentialResponse{
-			ID:        cred.ID.String(),
-			BucketID:  cred.BucketID.String(),
-			AccessKey: cred.AccessKey,
-			Policy:    cred.Policy,
-			CreatedAt: cred.CreatedAt.UTC().Format(time.RFC3339),
-			UpdatedAt: cred.UpdatedAt.UTC().Format(time.RFC3339),
+		res = append(res, gin.H{
+			"id":         cred.ID.String(),
+			"access_key": cred.AccessKey,
+			"policy":     cred.Policy,
+			"created_at": cred.CreatedAt.UTC().Format(time.RFC3339),
+			"updated_at": cred.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	apires.RespondSuccess(c, res, "success")
 }
 
-// [COMMENT]: Revoke thu hồi và vô hiệu hóa access credential cá nhân.
-func (h *PersonalCredentialHandler) Revoke(c *gin.Context) {
-	const op = "storage.personal_credential.revoke"
+// [COMMENT]: Delete xóa bỏ access credential cá nhân thuộc một bucket xác định.
+func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
+	const op = "storage.personal_credential.delete"
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
 	userID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
+		return
+	}
+
+	// [COMMENT]: Lấy workspace_id từ context để thực hiện validate chéo scope
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+
+	// [COMMENT]: Lấy zone_id từ context (middleware-injected từ workspace → zone mapping).
+	// Zone là thuộc tính cố định của workspace, dùng để xác định routing_scope cho Outbox.
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+
+	bucketIDStr := strings.TrimSpace(c.Param("bucket_id"))
+	if bucketIDStr == "" {
+		apires.RespondBadRequest(c, "missing bucket id")
+		return
+	}
+
+	bucketID, err := uuid.Parse(bucketIDStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
 		return
 	}
 
@@ -210,7 +235,17 @@ func (h *PersonalCredentialHandler) Revoke(c *gin.Context) {
 		return
 	}
 
-	err = h.personalSvc.RevokeCredential(ctx, credID, userID)
+	// [COMMENT]: Tạo thực thể chứa đầy đủ tham số để validate chéo scope đa thuê
+	param := &storageEntity.DeletePersonalCredential{
+		CredentialID: credID,
+		BucketID:     bucketID,
+		WorkspaceID:  workspaceID,
+		UserID:       userID,
+		ZoneID:       zoneID, // từ context, không cần JOIN DB để lấy
+	}
+
+	// [COMMENT]: Gọi service xóa credential với xác thực chéo các ID
+	err = h.personalSvc.DeleteCredential(ctx, param)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "credential not found")
@@ -220,5 +255,5 @@ func (h *PersonalCredentialHandler) Revoke(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondSuccess(c, nil, "credential revoked successfully")
+	apires.RespondSuccess(c, nil, "credential deleted successfully")
 }

@@ -31,10 +31,11 @@ function StorageDirectoryContent() {
         (prevBuckets) => {
           if (!prevBuckets) return [];
           return prevBuckets.map((bucket) => {
-            if (updatedSizes[bucket.Name] !== undefined) {
+            // [COMMENT]: Đồng bộ dung lượng thực tế theo key 'name' (lowercase) của backend
+            if (updatedSizes[bucket.name] !== undefined) {
               return {
                 ...bucket,
-                UsedBytes: updatedSizes[bucket.Name],
+                used_bytes: updatedSizes[bucket.name],
               };
             }
             return bucket;
@@ -86,8 +87,9 @@ function StorageDirectoryContent() {
   // Filter and Sort logic
   const filteredBuckets = useMemo(() => {
     const res = buckets.filter((b) => {
-      const matchSearch = b.Name.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchStatus = statusFilter === "All" || b.Status === statusFilter;
+      // [COMMENT]: Lọc dữ liệu sử dụng thuộc tính 'name' và 'status' dạng snake_case/lowercase
+      const matchSearch = b.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchStatus = statusFilter === "All" || b.status === statusFilter;
       return matchSearch && matchStatus;
     });
 
@@ -95,18 +97,19 @@ function StorageDirectoryContent() {
       let va: any = "";
       let vb: any = "";
 
+      // [COMMENT]: Sắp xếp dựa theo các thuộc tính đã đổi thành snake_case/lowercase
       if (sortKey === "name") {
-        va = a.Name.toLowerCase();
-        vb = b.Name.toLowerCase();
+        va = a.name.toLowerCase();
+        vb = b.name.toLowerCase();
       } else if (sortKey === "status") {
-        va = a.Status.toLowerCase();
-        vb = b.Status.toLowerCase();
+        va = a.status.toLowerCase();
+        vb = b.status.toLowerCase();
       } else if (sortKey === "quota") {
-        va = a.CapacityQuotaBytes;
-        vb = b.CapacityQuotaBytes;
+        va = a.capacity_quota_bytes;
+        vb = b.capacity_quota_bytes;
       } else if (sortKey === "created_at") {
-        va = new Date(a.CreatedAt).getTime();
-        vb = new Date(b.CreatedAt).getTime();
+        va = new Date(a.created_at).getTime();
+        vb = new Date(b.created_at).getTime();
       }
 
       if (va < vb) return sortDir === "asc" ? -1 : 1;

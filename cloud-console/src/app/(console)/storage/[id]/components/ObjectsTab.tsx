@@ -141,7 +141,8 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
             className="flex items-center gap-1 text-slate-500 hover:text-foreground cursor-pointer outline-none"
           >
             <HardDrive className="h-4 w-4" />
-            <span>{bucket.Name}</span>
+            {/* [COMMENT]: Đổi sang b.name theo thuộc tính lowercase của backend */}
+            <span>{bucket.name}</span>
           </button>
           
           {currentPath.map((folder, index) => (

@@ -52,6 +52,16 @@ impl MinioClient {
 		Ok(())
 	}
 
+	// [COMMENT]: Xóa bucket vật lý khỏi MinIO phục vụ cơ chế rollback khi tạo lỗi
+	pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+		self.s3_client
+			.delete_bucket()
+			.bucket(bucket_name)
+			.send()
+			.await?;
+		Ok(())
+	}
+
 	/// Lấy tham chiếu đến S3 Client nội bộ
 	pub fn s3(&self) -> &S3Client {
 		&self.s3_client

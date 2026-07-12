@@ -3,8 +3,9 @@ package storageModel
 import (
 	"time"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
+
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: PersonalCredential đại diện cho cấu trúc bảng personal_credentials trong PostgreSQL.
@@ -12,7 +13,7 @@ type PersonalCredential struct {
 	ID        uuid.UUID `db:"id"`
 	BucketID  uuid.UUID `db:"bucket_id"`
 	AccessKey string    `db:"access_key"`
-	SecretKey string    `db:"secret_key"`
+	// [COMMENT]: Loại bỏ SecretKey khỏi DB model vì cột này đã được drop khỏi CSDL
 	Policy    string    `db:"policy"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
@@ -23,7 +24,7 @@ type TenantCredential struct {
 	ID        uuid.UUID `db:"id"`
 	BucketID  uuid.UUID `db:"bucket_id"`
 	AccessKey string    `db:"access_key"`
-	SecretKey string    `db:"secret_key"`
+	// [COMMENT]: Loại bỏ SecretKey khỏi DB model vì cột này đã được drop khỏi CSDL
 	Policy    string    `db:"policy"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
@@ -38,7 +39,6 @@ func PersonalCredentialEntityToModel(e *storageEntity.PersonalCredential) *Perso
 		ID:        e.ID,
 		BucketID:  e.BucketID,
 		AccessKey: e.AccessKey,
-		SecretKey: e.SecretKey,
 		Policy:    e.Policy,
 		CreatedAt: e.CreatedAt,
 		UpdatedAt: e.UpdatedAt,
@@ -54,7 +54,6 @@ func PersonalCredentialModelToEntity(m *PersonalCredential) *storageEntity.Perso
 		ID:        m.ID,
 		BucketID:  m.BucketID,
 		AccessKey: m.AccessKey,
-		SecretKey: m.SecretKey,
 		Policy:    m.Policy,
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
@@ -70,7 +69,6 @@ func TenantCredentialEntityToModel(e *storageEntity.TenantCredential) *TenantCre
 		ID:        e.ID,
 		BucketID:  e.BucketID,
 		AccessKey: e.AccessKey,
-		SecretKey: e.SecretKey,
 		Policy:    e.Policy,
 		CreatedAt: e.CreatedAt,
 		UpdatedAt: e.UpdatedAt,
@@ -86,7 +84,6 @@ func TenantCredentialModelToEntity(m *TenantCredential) *storageEntity.TenantCre
 		ID:        m.ID,
 		BucketID:  m.BucketID,
 		AccessKey: m.AccessKey,
-		SecretKey: m.SecretKey,
 		Policy:    m.Policy,
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,

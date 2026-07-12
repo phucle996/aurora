@@ -7,22 +7,26 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"controlplane/internal/config"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
+	storageTaxonomy "controlplane/internal/storage/taxonomy"
 )
 
 // [COMMENT]: TenantCredentialRepoImpl thực thi interface TenantCredentialRepo kết nối PostgreSQL.
 type TenantCredentialRepoImpl struct {
-	db     *pgxpool.Pool
-	schema string
+	db        *pgxpool.Pool
+	storage   string // schema storage
+	hierarchy string // schema hierarchy
 }
 
 // [COMMENT]: NewTenantCredentialRepo khởi tạo repository quản lý credentials cho bucket doanh nghiệp.
-func NewTenantCredentialRepo(db *pgxpool.Pool, schema string) storageRepoInterface.TenantCredentialRepo {
+func NewTenantCredentialRepo(db *pgxpool.Pool, cfg *config.Config) storageRepoInterface.TenantCredentialRepo {
 	return &TenantCredentialRepoImpl{
-		db:     db,
-		schema: schema,
+		db:        db,
+		storage:   cfg.SchemaSQL.Storage,
+		hierarchy: cfg.SchemaSQL.Hierarchy,
 	}
 }
 
@@ -30,25 +34,24 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 	m := storageModel.TenantCredentialEntityToModel(cred)
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: Dùng CTE để ghi nhận đồng thời thông tin Credentials và sự kiện Outbox nguyên tử.
+	// [COMMENT]: Dùng CTE để ghi nhận đồng thời thông tin Credentials và sự kiện Outbox nguyên tử (lược bỏ secret_key)
 	query := fmt.Sprintf(`
 		WITH ins_cred AS (
 			INSERT INTO %s.tenant_credentials (
-				id, bucket_id, access_key, secret_key, policy, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7)
+				id, bucket_id, access_key, policy, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6)
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-	`, r.schema, r.schema)
+		) VALUES ($7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+	`, r.storage, r.storage)
 
 	_, err := r.db.Exec(ctx, query,
 		m.ID,
 		m.BucketID,
 		m.AccessKey,
-		m.SecretKey,
 		m.Policy,
 		m.CreatedAt,
 		m.UpdatedAt,
@@ -75,18 +78,18 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 }
 
 func (r *TenantCredentialRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.TenantCredential, error) {
+	// [COMMENT]: Lược bỏ cột secret_key trong SELECT query
 	query := fmt.Sprintf(`
-		SELECT id, bucket_id, access_key, secret_key, policy, created_at, updated_at
+		SELECT id, bucket_id, access_key, policy, created_at, updated_at
 		FROM %s.tenant_credentials
 		WHERE id = $1
-	`, r.schema)
+	`, r.storage)
 
 	var m storageModel.TenantCredential
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&m.ID,
 		&m.BucketID,
 		&m.AccessKey,
-		&m.SecretKey,
 		&m.Policy,
 		&m.CreatedAt,
 		&m.UpdatedAt,
@@ -102,12 +105,13 @@ func (r *TenantCredentialRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*
 }
 
 func (r *TenantCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.TenantCredential, error) {
+	// [COMMENT]: Lược bỏ cột secret_key trong SELECT query
 	query := fmt.Sprintf(`
-		SELECT id, bucket_id, access_key, secret_key, policy, created_at, updated_at
+		SELECT id, bucket_id, access_key, policy, created_at, updated_at
 		FROM %s.tenant_credentials
 		WHERE bucket_id = $1
 		ORDER BY created_at DESC
-	`, r.schema)
+	`, r.storage)
 
 	rows, err := r.db.Query(ctx, query, bucketID)
 	if err != nil {
@@ -122,7 +126,6 @@ func (r *TenantCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uu
 			&m.ID,
 			&m.BucketID,
 			&m.AccessKey,
-			&m.SecretKey,
 			&m.Policy,
 			&m.CreatedAt,
 			&m.UpdatedAt,
@@ -136,42 +139,65 @@ func (r *TenantCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uu
 	return result, nil
 }
 
-func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
+func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEntity.DeleteTenantCredential, outbox *storageEntity.StorageOutboxRecord) error {
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: Dùng CTE để xóa bản ghi Credentials và chèn sự kiện Outbox báo revoke nguyên tử.
+	// [COMMENT]: CTE 3 bước nguyên tử:
+	//   1. verified_bucket: xác minh toàn bộ ownership chain (credential → bucket → workspace → user).
+	//   2. del_cred: xóa credential chỉ khi verified_bucket trả về kết quả hợp lệ.
+	//   3. INSERT outbox: routing_scope được truyền trực tiếp từ param ($6) — đã được build sẵn từ zone_id trong context.
 	query := fmt.Sprintf(`
-		WITH del_cred AS (
+		WITH verified_bucket AS (
+			SELECT tb.id
+			FROM %s.tenant_buckets tb
+			JOIN %s.workspaces w ON tb.workspace_id = w.id
+			WHERE tb.id = $2 AND w.user_id = $3 AND tb.workspace_id = $4
+		),
+		del_cred AS (
 			DELETE FROM %s.tenant_credentials
-			WHERE id = $1
+			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
+			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-	`, r.schema, r.schema)
+		)
+		SELECT $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+		FROM del_cred
+	`, r.storage, r.hierarchy, r.storage, r.storage)
 
-	_, err := r.db.Exec(ctx, query,
-		id,
-		mo.EventID,
-		mo.RoutingScope,
-		mo.JobTopic,
-		mo.Payload,
-		mo.UserID,
-		mo.Status,
-		mo.CompletedAt,
-		mo.JobVersion,
-		mo.ResourceID,
-		mo.PayloadSchemaVersion,
-		mo.TraceID,
-		mo.Idle,
-		mo.ErrorCode,
-		mo.ErrorMessage,
+	// [COMMENT]: routing_scope truyền trực tiếp từ outbox.RoutingScope (=zone_id từ context, đã có sẵn)
+	res, err := r.db.Exec(ctx, query,
+		param.CredentialID,      // $1
+		param.BucketID,          // $2
+		param.UserID,            // $3
+		param.WorkspaceID,       // $4
+		mo.EventID,              // $5
+		mo.RoutingScope,         // $6  ('zone:' + zoneID từ context)
+		mo.JobTopic,             // $7
+		mo.Payload,              // $8
+		mo.UserID,               // $9
+		mo.Status,               // $10
+		mo.CompletedAt,          // $11
+		mo.JobVersion,           // $12
+		mo.ResourceID,           // $13
+		mo.PayloadSchemaVersion, // $14
+		mo.TraceID,              // $15
+		mo.Idle,                 // $16
+		mo.ErrorCode,            // $17
+		mo.ErrorMessage,         // $18
 	)
 	if err != nil {
 		return err
 	}
 
+	// [COMMENT]: RowsAffected == 0 khi: credential không tồn tại, bucket không khớp, workspace sai, hoặc user không phải chủ sở hữu
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
+
 	return nil
 }
+
+

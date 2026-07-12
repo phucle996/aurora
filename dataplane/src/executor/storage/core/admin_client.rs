@@ -205,4 +205,94 @@ impl MinioAdminClient {
             stderr.trim()
         ))
     }
+
+    // [COMMENT]: Xóa MinIO User chỉ định phục vụ cơ chế rollback khi tạo lỗi
+    // Dùng: mc admin user remove <alias> <access_key>
+    pub async fn delete_user(&self, access_key: &str) -> Result<(), String> {
+        let op = "storage.admin.delete_user";
+
+        // Cấu hình mc alias trước khi thực hiện
+        self.setup_alias().await?;
+
+        let output = Command::new("mc")
+            .arg("admin")
+            .arg("user")
+            .arg("remove")
+            .arg(&self.alias)
+            .arg(access_key)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run 'mc admin user remove': {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if output.status.success() {
+            Logger::sys_info(
+                op,
+                &format!("MinIO user '{}' removed via mc: {}", access_key, stdout.trim()),
+            );
+            return Ok(());
+        }
+
+        // Idempotency: nếu user không tồn tại hoặc đã bị xóa trước đó
+        if stderr.contains("does not exist") || stdout.contains("does not exist") {
+            Logger::sys_info(
+                op,
+                &format!("MinIO user '{}' does not exist, idempotent skip.", access_key),
+            );
+            return Ok(());
+        }
+
+        Err(format!(
+            "mc admin user remove failed: stdout={} stderr={}",
+            stdout.trim(),
+            stderr.trim()
+        ))
+    }
+
+    // [COMMENT]: Xóa MinIO policy chỉ định phục vụ cơ chế rollback khi tạo lỗi
+    // Dùng: mc admin policy remove <alias> <policy_name>
+    pub async fn delete_policy(&self, policy_name: &str) -> Result<(), String> {
+        let op = "storage.admin.delete_policy";
+
+        // Cấu hình mc alias trước khi thực hiện
+        self.setup_alias().await?;
+
+        let output = Command::new("mc")
+            .arg("admin")
+            .arg("policy")
+            .arg("remove")
+            .arg(&self.alias)
+            .arg(policy_name)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run 'mc admin policy remove': {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if output.status.success() {
+            Logger::sys_info(
+                op,
+                &format!("MinIO policy '{}' removed via mc: {}", policy_name, stdout.trim()),
+            );
+            return Ok(());
+        }
+
+        // Idempotency: nếu policy không tồn tại hoặc đã bị xóa trước đó
+        if stderr.contains("does not exist") || stdout.contains("does not exist") {
+            Logger::sys_info(
+                op,
+                &format!("MinIO policy '{}' does not exist, idempotent skip.", policy_name),
+            );
+            return Ok(());
+        }
+
+        Err(format!(
+            "mc admin policy remove failed: stdout={} stderr={}",
+            stdout.trim(),
+            stderr.trim()
+        ))
+    }
 }

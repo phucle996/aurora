@@ -59,7 +59,8 @@ function CreateBucketContent() {
   const existingBucketsList = useMemo(() => {
     if (hasFullCache) {
       const fullBuckets = queryClient.getQueryData<any[]>(["buckets", activeWorkspaceID]);
-      return fullBuckets?.map((b) => b.Name) || [];
+      // [COMMENT]: Đổi sang b.name theo thuộc tính lowercase của backend
+      return fullBuckets?.map((b) => b.name) || [];
     }
     return bucketNames || [];
   }, [hasFullCache, bucketNames, activeWorkspaceID, queryClient]);

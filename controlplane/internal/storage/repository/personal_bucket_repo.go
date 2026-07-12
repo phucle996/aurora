@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"controlplane/internal/config"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
@@ -19,18 +20,20 @@ import (
 
 // [COMMENT]: PersonalBucketRepoImpl thực thi interface PersonalBucketRepo cho kết nối PostgreSQL.
 type PersonalBucketRepoImpl struct {
-	db     *pgxpool.Pool
-	schema string
+	db        *pgxpool.Pool
+	storage   string // schema storage
+	hierarchy string // schema hierarchy
 }
 
 // [COMMENT]: NewPersonalBucketRepo khởi tạo repository quản lý bucket cá nhân.
 func NewPersonalBucketRepo(
 	db *pgxpool.Pool,
-	schema string,
+	cfg *config.Config,
 ) storageRepoInterface.PersonalBucketRepo {
 	return &PersonalBucketRepoImpl{
-		db:     db,
-		schema: schema,
+		db:        db,
+		storage:   cfg.SchemaSQL.Storage,
+		hierarchy: cfg.SchemaSQL.Hierarchy,
 	}
 }
 
@@ -43,7 +46,7 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 	// [COMMENT]: CTE 3-way check ownership: insert nguyên tử bucket + credential + outbox record chỉ khi workspace thuộc về user_id ($19).
 	query := fmt.Sprintf(`
 		WITH check_workspace AS (
-			SELECT 1 FROM hierarchy.personal_workspaces WHERE id = $3 AND owner_id = $19
+			SELECT 1 FROM %s.personal_workspaces WHERE id = $3 AND owner_id = $19
 		),
 		ins_bucket AS (
 			INSERT INTO %s.personal_buckets (
@@ -55,9 +58,9 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		),
 		ins_credential AS (
 			INSERT INTO %s.personal_credentials (
-				id, bucket_id, access_key, secret_key, policy, created_at, updated_at
+				id, bucket_id, access_key, policy, created_at, updated_at
 			)
-			SELECT $9, id, $10, $11, $12, $13, $14
+			SELECT $9, id, $10, $11, $12, $13
 			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
@@ -65,9 +68,9 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
 		)
-		SELECT $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+		SELECT $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
 		FROM ins_bucket
-	`, r.schema, r.schema, r.schema)
+	`, r.hierarchy, r.storage, r.storage, r.storage)
 
 	res, err := r.db.Exec(ctx, query,
 		// [COMMENT]: $1-$8 — personal_buckets fields
@@ -79,14 +82,13 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		m.CapacityQuotaBytes,
 		m.CreatedAt,
 		m.UpdatedAt,
-		// [COMMENT]: $9-$14 — personal_credentials fields
+		// [COMMENT]: $9-$13 — personal_credentials fields (secret_key removed)
 		mc.ID,
 		mc.AccessKey,
-		mc.SecretKey,
 		mc.Policy,
 		mc.CreatedAt,
 		mc.UpdatedAt,
-		// [COMMENT]: $15-$28 — storage_outbox_records fields
+		// [COMMENT]: $14-$27 — storage_outbox_records fields
 		mo.EventID,
 		mo.RoutingScope,
 		mo.JobTopic,
@@ -121,9 +123,9 @@ func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, user
 	query := fmt.Sprintf(`
 		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
-		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
+		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
-	`, r.schema)
+	`, r.storage, r.hierarchy)
 
 	var m storageModel.PersonalBucket
 
@@ -155,7 +157,7 @@ func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*s
 		SELECT id, name, workspace_id, zone_id, status, capacity_quota_bytes, used_bytes, created_at, updated_at
 		FROM %s.personal_buckets
 		WHERE name = $1
-	`, r.schema)
+	`, r.storage)
 
 	var m storageModel.PersonalBucket
 
@@ -185,10 +187,10 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 	query := fmt.Sprintf(`
 		SELECT b.id, b.name, b.status, b.capacity_quota_bytes, b.used_bytes, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
-		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
+		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.workspace_id = $1 AND b.zone_id = $2 AND w.owner_id = $3 AND w.zone_id = $2
 		ORDER BY b.created_at DESC
-	`, r.schema)
+	`, r.storage, r.hierarchy)
 
 	rows, err := r.db.Query(ctx, query, workspaceID, zoneID, userID)
 	if err != nil {
@@ -222,9 +224,9 @@ func (r *PersonalBucketRepoImpl) UpdateStatus(ctx context.Context, id uuid.UUID,
 	query := fmt.Sprintf(`
 		UPDATE %s.personal_buckets b
 		SET status = $1, updated_at = $2
-		FROM hierarchy.personal_workspaces w
+		FROM %s.personal_workspaces w
 		WHERE b.id = $3 AND b.workspace_id = w.id AND w.owner_id = $4
-	`, r.schema)
+	`, r.storage, r.hierarchy)
 
 	res, err := r.db.Exec(ctx, query, string(status), time.Now(), id, userID)
 	if err != nil {
@@ -241,9 +243,9 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 	query := fmt.Sprintf(`
 		UPDATE %s.personal_buckets b
 		SET capacity_quota_bytes = $1, updated_at = $2
-		FROM hierarchy.personal_workspaces w
+		FROM %s.personal_workspaces w
 		WHERE b.id = $3 AND b.workspace_id = w.id AND w.owner_id = $4
-	`, r.schema)
+	`, r.storage, r.hierarchy)
 
 	res, err := r.db.Exec(ctx, query, quotaBytes, time.Now(), id, userID)
 	if err != nil {
@@ -259,9 +261,9 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
 	query := fmt.Sprintf(`
 		DELETE FROM %s.personal_buckets b
-		USING hierarchy.personal_workspaces w
+		USING %s.personal_workspaces w
 		WHERE b.id = $1 AND b.workspace_id = w.id AND w.owner_id = $2
-	`, r.schema)
+	`, r.storage, r.hierarchy)
 
 	res, err := r.db.Exec(ctx, query, id, userID)
 	if err != nil {
@@ -279,7 +281,7 @@ func (r *PersonalBucketRepoImpl) UpdateUsedBytes(ctx context.Context, name strin
 		UPDATE %s.personal_buckets
 		SET used_bytes = $1, updated_at = now()
 		WHERE name = $2
-	`, r.schema)
+	`, r.storage)
 
 	res, err := r.db.Exec(ctx, query, usedBytes, name)
 	if err != nil {
@@ -296,10 +298,10 @@ func (r *PersonalBucketRepoImpl) ListNamesByWorkspace(ctx context.Context, works
 	query := fmt.Sprintf(`
 		SELECT b.name
 		FROM %s.personal_buckets b
-		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
+		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.workspace_id = $1 AND b.zone_id = $2 AND w.owner_id = $3 AND w.zone_id = $2
 		ORDER BY b.created_at DESC
-	`, r.schema)
+	`, r.storage, r.hierarchy)
 
 	rows, err := r.db.Query(ctx, query, workspaceID, zoneID, userID)
 	if err != nil {

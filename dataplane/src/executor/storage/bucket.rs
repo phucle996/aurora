@@ -110,6 +110,16 @@ impl Executor for BucketCreateExecutor {
                 sync_data.access_key, e
             );
             Logger::sys_error(op, &msg, "MINIO_USER_CREATE_FAILED");
+
+            // [COMMENT]: Rollback Step 1: Xóa bucket vừa tạo do không thể tạo user tương ứng
+            Logger::sys_info(op, &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name));
+            if let Err(rollback_err) = minio_client.delete_bucket(&sync_data.name).await {
+                Logger::sys_error(
+                    op,
+                    &format!("Rollback Step 1 FAIL: Không thể xóa bucket '{}': {}", sync_data.name, rollback_err),
+                    "ROLLBACK_FAILED"
+                );
+            }
             return Err(ExecutorError::ExecutionFailed(msg));
         }
         Logger::sys_info(
@@ -157,6 +167,15 @@ impl Executor for BucketCreateExecutor {
         {
             let msg = format!("Step 3/3 FAIL (set_policy): {}", e);
             Logger::sys_error(op, &msg, "MINIO_POLICY_CREATE_FAILED");
+
+            // [COMMENT]: Rollback Step 2: Xóa user vừa tạo ở Step 2
+            Logger::sys_info(op, &format!("Rollback Step 2: Đang xóa user '{}'...", sync_data.access_key));
+            let _ = admin_client.delete_user(&sync_data.access_key).await;
+
+            // [COMMENT]: Rollback Step 1: Xóa bucket ở Step 1
+            Logger::sys_info(op, &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name));
+            let _ = minio_client.delete_bucket(&sync_data.name).await;
+
             return Err(ExecutorError::ExecutionFailed(msg));
         }
 
@@ -167,6 +186,19 @@ impl Executor for BucketCreateExecutor {
         {
             let msg = format!("Step 3/3 FAIL (attach_policy): {}", e);
             Logger::sys_error(op, &msg, "MINIO_POLICY_ATTACH_FAILED");
+
+            // [COMMENT]: Rollback Step 3: Xóa policy vừa tạo
+            Logger::sys_info(op, &format!("Rollback Step 3: Đang xóa policy '{}'...", policy_name));
+            let _ = admin_client.delete_policy(&policy_name).await;
+
+            // [COMMENT]: Rollback Step 2: Xóa user
+            Logger::sys_info(op, &format!("Rollback Step 2: Đang xóa user '{}'...", sync_data.access_key));
+            let _ = admin_client.delete_user(&sync_data.access_key).await;
+
+            // [COMMENT]: Rollback Step 1: Xóa bucket
+            Logger::sys_info(op, &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name));
+            let _ = minio_client.delete_bucket(&sync_data.name).await;
+
             return Err(ExecutorError::ExecutionFailed(msg));
         }
 

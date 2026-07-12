@@ -20,12 +20,12 @@ import (
 type StorageModule struct {
 	enabled    bool
 	err        error // [COMMENT]: Lưu vết lỗi khởi tạo của phân hệ Storage phục vụ SRE monitoring.
-	cfg         *config.Config
-	db          *pgxpool.Pool
-	rds         *goredis.Client
-	L1Registry  *cacheengine.CacheRegistry
-	natsConn    *nats.Conn
-	natsSubs    []*nats.Subscription
+	cfg        *config.Config
+	db         *pgxpool.Pool
+	rds        *goredis.Client
+	L1Registry *cacheengine.CacheRegistry
+	natsConn   *nats.Conn
+	natsSubs   []*nats.Subscription
 
 	// HTTP Transport Handlers
 	PersonalBucketHandler     *storageHandler.PersonalBucketHandler
@@ -35,15 +35,15 @@ type StorageModule struct {
 
 	// Core Services
 	TenantBucketService       storageSvcInterface.TenantBucketService
-	PersonalBucketService      storageSvcInterface.PersonalBucketService
+	PersonalBucketService     storageSvcInterface.PersonalBucketService
 	TenantCredentialService   storageSvcInterface.TenantCredentialService
 	PersonalCredentialService storageSvcInterface.PersonalCredentialService
 
 	// Repositories
 	TenantBucketRepo       storageRepoInterface.TenantBucketRepo
-	PersonalBucketRepo      storageRepoInterface.PersonalBucketRepo
+	PersonalBucketRepo     storageRepoInterface.PersonalBucketRepo
 	TenantCredentialRepo   storageRepoInterface.TenantCredentialRepo
-	PersonalCredentialRepo  storageRepoInterface.PersonalCredentialRepo
+	PersonalCredentialRepo storageRepoInterface.PersonalCredentialRepo
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -100,19 +100,19 @@ func NewModule(
 	// ------------------------------------------------------------------------
 
 	// 1. Khởi tạo repositories riêng biệt theo scope
-	tenantBucketRepo := storageRepoImpl.NewTenantBucketRepo(db, cfg.SchemaSQL.Storage)
+	tenantBucketRepo := storageRepoImpl.NewTenantBucketRepo(db, cfg)
 	if tenantBucketRepo == nil {
 		return nil, errors.New("storage module: failed to construct tenant bucket repository")
 	}
-	personalBucketRepo := storageRepoImpl.NewPersonalBucketRepo(db, cfg.SchemaSQL.Storage)
+	personalBucketRepo := storageRepoImpl.NewPersonalBucketRepo(db, cfg)
 	if personalBucketRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal bucket repository")
 	}
-	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db, cfg.SchemaSQL.Storage)
+	tenantCredentialRepo := storageRepoImpl.NewTenantCredentialRepo(db, cfg)
 	if tenantCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential repository")
 	}
-	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db, cfg.SchemaSQL.Storage)
+	personalCredentialRepo := storageRepoImpl.NewPersonalCredentialRepo(db, cfg)
 	if personalCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal credential repository")
 	}
@@ -161,9 +161,9 @@ func NewModule(
 		L1Registry:                cacheEngine,
 		natsConn:                  natsConn,
 		TenantBucketRepo:          tenantBucketRepo,
-		PersonalBucketRepo:         personalBucketRepo,
+		PersonalBucketRepo:        personalBucketRepo,
 		TenantCredentialRepo:      tenantCredentialRepo,
-		PersonalCredentialRepo:     personalCredentialRepo,
+		PersonalCredentialRepo:    personalCredentialRepo,
 		TenantBucketService:       tenantBucketSvc,
 		PersonalBucketService:     personalBucketSvc,
 		TenantCredentialService:   tenantCredentialSvc,

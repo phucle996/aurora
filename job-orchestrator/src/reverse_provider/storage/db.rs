@@ -89,19 +89,34 @@ pub async fn update_outbox_record(
     );
 
     let row_opt = if status == "SUCCEEDED" {
+        // [COMMENT]: Khi job thành công, xóa hoàn toàn outbox record để tránh lưu trữ Secret Key bản rõ lâu dài, đồng thời đổi status của personal/tenant bucket thành 'active'
         pg_client
             .query_opt(
-                "UPDATE storage.storage_outbox_records \
-                 SET status = $1, \
-                     completed_at = CURRENT_TIMESTAMP, \
-                     error_code = NULL, \
-                     error_message = NULL \
-                 WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
-                &[&status, &job_uuid, &job_topic],
+                "WITH updated_outbox AS ( \
+                     DELETE FROM storage.storage_outbox_records \
+                     WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
+                     RETURNING user_id, job_topic, trace_id, resource_id \
+                 ), \
+                 updated_personal AS ( \
+                     UPDATE storage.personal_buckets \
+                     SET status = 'active', updated_at = NOW() \
+                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
+                       AND (SELECT job_topic FROM updated_outbox) = 'storage.bucket.create' \
+                     RETURNING id \
+                 ), \
+                 updated_tenant AS ( \
+                     UPDATE storage.tenant_buckets \
+                     SET status = 'active', updated_at = NOW() \
+                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
+                       AND (SELECT job_topic FROM updated_outbox) = 'storage.bucket.create' \
+                     RETURNING id \
+                 ) \
+                 SELECT * FROM updated_outbox",
+                &[&job_uuid, &job_topic],
             )
             .await?
     } else if status == "PROCESSING" {
+        // [COMMENT]: Khi job đang chạy, chỉ cập nhật trạng thái outbox sang 'PROCESSING'
         pg_client
             .query_opt(
                 "UPDATE storage.storage_outbox_records \
@@ -114,15 +129,31 @@ pub async fn update_outbox_record(
             )
             .await?
     } else {
+        // [COMMENT]: Khi job thất bại, cập nhật outbox đồng thời xóa hoàn toàn record bucket khỏi DB để cho phép retry đặt trùng tên và làm sạch dữ liệu
         pg_client
             .query_opt(
-                "UPDATE storage.storage_outbox_records \
-                 SET status = $1, \
-                     completed_at = CURRENT_TIMESTAMP, \
-                     error_code = $2, \
-                     error_message = $3 \
-                 WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                "WITH updated_outbox AS ( \
+                     UPDATE storage.storage_outbox_records \
+                     SET status = $1, \
+                         completed_at = CURRENT_TIMESTAMP, \
+                         error_code = $2, \
+                         error_message = $3 \
+                     WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
+                     RETURNING user_id, job_topic, trace_id, resource_id \
+                 ), \
+                 deleted_personal AS ( \
+                     DELETE FROM storage.personal_buckets \
+                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
+                       AND (SELECT job_topic FROM updated_outbox) = 'storage.bucket.create' \
+                     RETURNING id \
+                 ), \
+                 deleted_tenant AS ( \
+                     DELETE FROM storage.tenant_buckets \
+                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
+                       AND (SELECT job_topic FROM updated_outbox) = 'storage.bucket.create' \
+                     RETURNING id \
+                 ) \
+                 SELECT * FROM updated_outbox",
                 &[&status, &error_code, &error_message, &job_uuid, &job_topic],
             )
             .await?

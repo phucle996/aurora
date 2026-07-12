@@ -1,15 +1,16 @@
 import { fetchJSON } from "./fetcher";
 
 // [COMMENT]: BucketItem đại diện cho thông tin một Bucket được trả về từ GET/LIST API.
-// ⚠ Lưu ý: Do Backend trả về Entity trực tiếp không qua DTO nên các key bắt đầu bằng chữ HOA.
+// Đã đồng bộ theo cấu trúc JSON snake_case thực tế của Backend.
 export type BucketItem = {
-  ID: string;
-  Name: string;
-  WorkspaceID: string;
-  Status: "creating" | "active" | "suspended" | "deleted";
-  CapacityQuotaBytes: number;
-  CreatedAt: string;
-  UpdatedAt: string;
+  id: string;
+  name: string;
+  workspace_id: string;
+  status: "creating" | "active" | "suspended" | "deleted";
+  capacity_quota_bytes: number;
+  used_bytes?: number; // Dung lượng thực tế đã sử dụng
+  created_at: string;
+  updated_at: string;
 };
 
 // [COMMENT]: CreatedBucketResult chứa thông tin bucket và credential thô vừa được khởi tạo.
@@ -27,7 +28,8 @@ export type CreatedBucketResult = {
 // ⚠ Lưu ý: Dùng DTO ở backend nên các key dùng snake_case chữ thường.
 export type CredentialItem = {
   id: string;
-  bucket_id: string;
+  // [COMMENT]: Làm cho bucket_id là trường tùy chọn vì API list credentials đã tối ưu không trả về
+  bucket_id?: string;
   access_key: string;
   secret_key?: string; // Chỉ xuất hiện khi tạo mới
   policy: string;
@@ -164,12 +166,13 @@ export async function createCredential(
   return res.data;
 }
 
-// [COMMENT]: Thu hồi / Xóa bỏ Access Key
-export async function revokeCredential(
+// [COMMENT]: Xóa bỏ Access Key
+export async function deleteCredential(
+  bucketId: string,
   credentialID: string,
   signal?: AbortSignal
 ): Promise<void> {
-  await fetchJSON(`/api/v1/storage/credentials/${credentialID}`, {
+  await fetchJSON(`/api/v1/storage/buckets/${bucketId}/credentials/${credentialID}`, {
     method: "DELETE",
     signal,
   });
