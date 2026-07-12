@@ -1,17 +1,23 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from "react";
 import { Centrifuge } from "centrifuge";
 import { useUserSession } from "@/hooks/useUserSession";
+
+// Định nghĩa kiểu dữ liệu callback nhận payload của event
+type RealtimeCallback = (payload: any) => void;
 
 interface RealtimeContextType {
   centrifuge: Centrifuge | null;
   isConnected: boolean;
+  // [COMMENT]: Hàm global đăng ký lắng nghe sự kiện cụ thể qua eventType, trả về hàm hủy đăng ký (cleanup)
+  subscribeToEvent: (eventType: string, callback: RealtimeCallback) => () => void;
 }
 
 const RealtimeContext = createContext<RealtimeContextType>({
   centrifuge: null,
   isConnected: false,
+  subscribeToEvent: () => () => {},
 });
 
 export const useRealtime = () => useContext(RealtimeContext);
@@ -22,6 +28,28 @@ export const RealtimeProvider: React.FC<{
 }> = ({ children, userId }) => {
   const [centrifuge, setCentrifuge] = useState<Centrifuge | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+
+  // [COMMENT]: Lưu trữ danh sách listeners đăng ký theo từng eventType dưới dạng Set để đảm bảo không trùng lặp
+  const listenersRef = useRef<Record<string, Set<RealtimeCallback>>>({});
+
+  // [COMMENT]: Định nghĩa hàm đăng ký sự kiện, sử dụng useCallback để tránh tạo lại hàm khi re-render
+  const subscribeToEvent = useCallback((eventType: string, callback: RealtimeCallback) => {
+    if (!listenersRef.current[eventType]) {
+      listenersRef.current[eventType] = new Set();
+    }
+    listenersRef.current[eventType].add(callback);
+
+    // Trả về hàm dọn dẹp (cleanup) để xóa listener khi component unmount
+    return () => {
+      const eventListeners = listenersRef.current[eventType];
+      if (eventListeners) {
+        eventListeners.delete(callback);
+        if (eventListeners.size === 0) {
+          delete listenersRef.current[eventType];
+        }
+      }
+    };
+  }, []);
 
   useEffect(() => {
     // Chỉ chạy ở môi trường trình duyệt (Client-side) và khi có userId của phiên đăng nhập
@@ -39,6 +67,7 @@ export const RealtimeProvider: React.FC<{
 
     console.log("🔌 Initializing Centrifugo connection to:", wsUrl);
 
+    // Khởi tạo Centrifuge client không có token để bắt buộc dùng connect proxy qua cookie auth
     const client = new Centrifuge(wsUrl);
 
     client.on("connected", () => {
@@ -51,6 +80,29 @@ export const RealtimeProvider: React.FC<{
       setIsConnected(false);
     });
 
+    // [COMMENT]: Vì Connect Proxy ở Backend (connect.rs) tự động trả về kênh `personal:${userId}`
+    // trong danh sách channels kết nối, Centrifugo sẽ tự động đăng ký (Server-side subscribe) kênh này.
+    // Client-side không được gọi `newSubscription` nữa để tránh trùng lặp và báo lỗi 'already subscribed'.
+    // Thay vào đó, lắng nghe sự kiện `publication` trực tiếp trên client instance.
+    client.on("publication", (ctx) => {
+      console.log("📥 Global Realtime publication received (Server-side sub):", ctx);
+      
+      // Định tuyến sự kiện dựa theo event_type
+      if (ctx.data && ctx.data.event_type) {
+        const eventType = ctx.data.event_type;
+        const callbacks = listenersRef.current[eventType];
+        if (callbacks) {
+          callbacks.forEach((cb) => {
+            try {
+              cb(ctx.data.payload);
+            } catch (err) {
+              console.error(`Error executing realtime callback for event ${eventType}:`, err);
+            }
+          });
+        }
+      }
+    });
+
     client.connect();
     setCentrifuge(client);
 
@@ -61,7 +113,7 @@ export const RealtimeProvider: React.FC<{
   }, [userId]);
 
   return (
-    <RealtimeContext.Provider value={{ centrifuge, isConnected }}>
+    <RealtimeContext.Provider value={{ centrifuge, isConnected, subscribeToEvent }}>
       {children}
     </RealtimeContext.Provider>
   );

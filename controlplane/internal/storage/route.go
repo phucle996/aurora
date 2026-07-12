@@ -24,6 +24,12 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.PersonalBucketHandler.Create,
 		)
 
+		// [COMMENT]: Liệt kê danh sách tên của tất cả các buckets (truy vấn nhẹ)
+		personalGroup.GET("/storage/buckets/names",
+			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+			module.PersonalBucketHandler.ListNames,
+		)
+
 		// [COMMENT]: Lấy chi tiết thông tin bucket
 		personalGroup.GET("/storage/buckets/:id",
 			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),

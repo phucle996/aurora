@@ -21,6 +21,9 @@ type PersonalBucketRepo interface {
 	// [COMMENT]: Liệt kê các Bucket thuộc sở hữu của một Workspace cụ thể trong một Zone kèm theo userID để validate.
 	ListByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error)
 	
+	// [COMMENT]: Liệt kê danh sách tên vật lý của tất cả các bucket trong workspace và zone phục vụ kiểm tra trùng tên (lightweight).
+	ListNamesByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]string, error)
+	
 	// [COMMENT]: Cập nhật trạng thái vận hành của Bucket (Active, Suspended, Deleted) có check quyền sở hữu của user.
 	UpdateStatus(ctx context.Context, id uuid.UUID, userID uuid.UUID, status storageEntity.BucketStatus) error
 	

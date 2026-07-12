@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"controlplane/internal/observability"
-	"controlplane/pkg/context"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"

@@ -163,6 +163,15 @@ func (s *PersonalBucketSvcImpl) ListBuckets(ctx context.Context, workspaceID uui
 	return buckets, nil
 }
 
+// [COMMENT]: ListBucketNames gọi repo để lấy danh sách tên vật lý của các bucket cá nhân
+func (s *PersonalBucketSvcImpl) ListBucketNames(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]string, error) {
+	names, err := s.repo.ListNamesByWorkspace(ctx, workspaceID, zoneID, userID)
+	if err != nil {
+		return nil, apperr.Wrap(err, err, "list_names_failed")
+	}
+	return names, nil
+}
+
 func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error {
 	err := s.repo.UpdateQuota(ctx, bucketID, userID, quotaBytes)
 	if err != nil {

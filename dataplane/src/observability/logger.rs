@@ -152,7 +152,7 @@ impl Logger {
                 "".to_string()
             };
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"{}}}",
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"level\":\"info\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"{}}}",
                 timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message, trace_segment
             );
         }

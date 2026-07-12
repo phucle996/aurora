@@ -290,3 +290,31 @@ func (r *PersonalBucketRepoImpl) UpdateUsedBytes(ctx context.Context, name strin
 	}
 	return nil
 }
+
+// [COMMENT]: ListNamesByWorkspace truy vấn siêu nhẹ chỉ lấy duy nhất trường name từ CSDL
+func (r *PersonalBucketRepoImpl) ListNamesByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]string, error) {
+	query := fmt.Sprintf(`
+		SELECT b.name
+		FROM %s.personal_buckets b
+		JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id
+		WHERE b.workspace_id = $1 AND b.zone_id = $2 AND w.owner_id = $3 AND w.zone_id = $2
+		ORDER BY b.created_at DESC
+	`, r.schema)
+
+	rows, err := r.db.Query(ctx, query, workspaceID, zoneID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: list personal bucket names failed: %w", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("storage repo: scan personal bucket name row failed: %w", err)
+		}
+		names = append(names, name)
+	}
+
+	return names, nil
+}

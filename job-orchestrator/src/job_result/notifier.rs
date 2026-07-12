@@ -1,10 +1,10 @@
 use crate::observability::logger::Logger;
 
-/// [COMMENT]: Bộ phát sự kiện thông báo real-time chuyên biệt phục vụ kiến trúc hướng sự kiện (EDA)
+// [COMMENT]: Bộ phát sự kiện thông báo real-time chuyên biệt phục vụ kiến trúc hướng sự kiện (EDA)
 pub struct JobNotifier;
 
 impl JobNotifier {
-    /// [COMMENT]: Phát sự kiện thông báo real-time tới NATS Core thay thế cho Redis Stream
+    // [COMMENT]: Phát sự kiện thông báo real-time tới NATS Core thay thế cho Redis Stream
     pub async fn notify_realtime(
         job_id: &str,
         user_id: &str,
@@ -19,7 +19,7 @@ impl JobNotifier {
             job_id,
             user_id,
             attempt,
-            "result_consumer.notify_start",
+            "job_result.notify_start",
             &format!("Bắt đầu tạo sự kiện realtime NATS cho user {}", user_id),
         );
 
@@ -59,7 +59,7 @@ impl JobNotifier {
             job_id,
             user_id,
             attempt,
-            "result_consumer.notify_sent",
+            "job_result.notify_sent",
             &format!("Đã đẩy thành công sự kiện thông báo vào NATS Core chủ đề: {}", subject),
         );
 

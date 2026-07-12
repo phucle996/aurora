@@ -1,12 +1,12 @@
 mod config;
 mod cdc;
-mod result_consumer;
+mod job_result;
 mod observability;
 mod reverse_provider;
 
 use config::Config;
 use cdc::CdcStreamer;
-use result_consumer::ResultConsumer;
+use job_result::JobResultConsumer;
 use observability::logger::Logger;
 use observability::otel::OtelTracer;
 use observability::metrics::MetricsManager;
@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let streamer = CdcStreamer::new(config.clone(), redis_client.clone())
         .await
         .map_err(|e| -> Box<dyn std::error::Error> { format!("CDC bootstrap thất bại: {}", e).into() })?;
-    let consumer = ResultConsumer::new(config.clone(), redis_client.clone(), nats_client.clone());
+    let consumer = JobResultConsumer::new(config.clone(), redis_client.clone(), nats_client.clone());
     let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone(), nats_client);
 
     // 4. Chạy song song các luồng nền độc lập (HA)

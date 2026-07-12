@@ -190,6 +190,38 @@ func (h *PersonalBucketHandler) List(c *gin.Context) {
 	apires.RespondSuccess(c, resList, "list buckets success")
 }
 
+// [COMMENT]: ListNames chỉ trả về mảng danh sách tên vật lý của các bucket cá nhân (truy vấn nhẹ).
+func (h *PersonalBucketHandler) ListNames(c *gin.Context) {
+	const op = "storage.personal_bucket.list_names"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// Trích xuất userID để xác thực quyền sở hữu
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+
+	names, listErr := h.personalSvc.ListBucketNames(ctx, workspaceID, zoneID, userID)
+	if listErr != nil {
+		logger.HandlerError(c, op, listErr)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	apires.RespondSuccess(c, names, "list bucket names success")
+}
+
 // [COMMENT]: UpdateQuota điều chỉnh dung lượng tối đa của bucket cá nhân.
 func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 	const op = "storage.personal_bucket.update_quota"

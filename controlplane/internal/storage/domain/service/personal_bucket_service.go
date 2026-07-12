@@ -18,6 +18,9 @@ type PersonalBucketService interface {
 	// [COMMENT]: Danh sách Bucket thuộc sở hữu cá nhân trong một Workspace tại một Zone.
 	ListBuckets(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error)
 	
+	// [COMMENT]: Danh sách tên vật lý của các Bucket thuộc sở hữu cá nhân trong một Workspace tại một Zone.
+	ListBucketNames(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]string, error)
+	
 	// [COMMENT]: Thay đổi hạn mức quota cho bucket cá nhân.
 	UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error
 	

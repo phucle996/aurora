@@ -1,4 +1,4 @@
 pub mod consumer;
 pub mod notifier;
 
-pub use consumer::ResultConsumer;
+pub use consumer::JobResultConsumer;

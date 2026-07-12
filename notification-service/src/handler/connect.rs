@@ -1,7 +1,12 @@
-use crate::infra::nats::NatsClient;
 use crate::infra::centrifugo::CentrifugoClient;
+use crate::infra::nats::NatsClient;
 use crate::observability::logger::Logger;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,18 +19,17 @@ pub struct AppState {
     pub _centrifugo_client: CentrifugoClient,
 }
 
-// Request gửi từ Centrifugo Connect Proxy chứa định danh client và request payload
 #[derive(Deserialize)]
 pub struct ConnectRequest {
     // ID định danh kết nối của Centrifugo Client
     pub client: String,
     // Thông tin chi tiết request (bao gồm headers/cookies)
-    pub request: RequestInfo,
+    pub request: Option<RequestInfo>,
 }
 
 #[derive(Deserialize)]
 pub struct RequestInfo {
-    pub headers: HashMap<String, String>,
+    pub headers: Option<HashMap<String, String>>,
 }
 
 // Response trả về cho Centrifugo
@@ -42,17 +46,49 @@ pub struct ConnectResult {
 
 pub async fn handle_connect(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<ConnectRequest>,
+    // [COMMENT]: Nhận HTTP headers từ Centrifugo proxy POST request
+    // Centrifugo forward Cookie qua header khi proxy_http_headers được config đúng
+    http_headers: HeaderMap,
+    Json(raw_payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let start_time = std::time::Instant::now();
+
+    // Thử parse sang ConnectRequest struct để log chi tiết nếu lỗi
+    let payload: ConnectRequest = match serde_json::from_value(raw_payload.clone()) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            let raw_str = serde_json::to_string(&raw_payload).unwrap_or_default();
+            Logger::sys_error(
+                "http.connect_deserialize_failed",
+                "Failed to deserialize ConnectRequest from Centrifugo",
+                &format!("Error: {}, Raw payload: {}", err, raw_str),
+            );
+            let latency = start_time.elapsed().as_secs_f64() * 1000.0;
+            Logger::access_log(
+                "connect_proxy",
+                "POST",
+                "/api/v1/realtime/connect",
+                422,
+                latency,
+            );
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Deserialization failed: {}", err),
+            )
+                .into_response();
+        }
+    };
 
     // 1. Phân tích và trích xuất Trace Context từ headers Centrifugo gửi sang
     let traceparent_header = payload
         .request
-        .headers
-        .get("traceparent")
-        .or_else(|| payload.request.headers.get("Traceparent"))
-        .or_else(|| payload.request.headers.get("TRACEPARENT"))
+        .as_ref()
+        .and_then(|r| r.headers.as_ref())
+        .and_then(|h| {
+            h.get("traceparent")
+                .or_else(|| h.get("Traceparent"))
+                .or_else(|| h.get("TRACEPARENT"))
+        })
         .map(|s| s.as_str())
         .unwrap_or("");
 
@@ -89,13 +125,34 @@ pub async fn handle_connect(
                 ),
             );
 
-            // BƯỚC 1: Phân tích toàn bộ cookies thành key-value map để dễ truy vấn
-            let cookie_header = payload
-                .request
-                .headers
-                .get("cookie")
-                .cloned()
-                .unwrap_or_default();
+            // BƯỚC 1: Ưu tiên đọc cookie từ HTTP header Centrifugo forward sang
+            // Centrifugo forward Cookie qua proxy_http_headers → HTTP header của POST request
+            let cookie_header = {
+                let from_http = http_headers
+                    .get("cookie")
+                    .or_else(|| http_headers.get("Cookie"))
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+
+                if !from_http.is_empty() {
+                    // Ưu tiên HTTP header (Centrifugo proxy forward)
+                    from_http
+                } else {
+                    // Fallback: đọc từ JSON body (future Centrifugo versions)
+                    payload
+                        .request
+                        .as_ref()
+                        .and_then(|r| r.headers.as_ref())
+                        .and_then(|h| {
+                            h.get("cookie")
+                                .or_else(|| h.get("Cookie"))
+                                .or_else(|| h.get("COOKIE"))
+                        })
+                        .cloned()
+                        .unwrap_or_default()
+                }
+            };
             let mut cookies = HashMap::new();
             for cookie in cookie_header.split(';') {
                 let parts: Vec<&str> = cookie.split('=').map(|s| s.trim()).collect();

@@ -116,7 +116,7 @@ impl Logger {
             let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             let trace_segment = Self::get_trace_segment();
             println!(
-                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"{}}}",
+                "{{\"time\":\"{}\",\"log_type\":\"{}\",\"level\":\"info\",\"job_id\":\"{}\",\"job_topic\":\"{}\",\"attempt\":{},\"op\":\"{}\",\"message\":\"{}\"{}}}",
                 timestamp, LOG_TYPE_JOB, job_id, job_topic, attempt, op, message, trace_segment
             );
         }

@@ -11,34 +11,27 @@ export const useBucketSizesSync = (
   userId: string | undefined,
   onSync: (sizes: Record<string, number>) => void
 ) => {
-  const { centrifuge, isConnected } = useRealtime();
+  const { subscribeToEvent, isConnected } = useRealtime();
 
   useEffect(() => {
-    if (!centrifuge || !isConnected || !userId) return;
+    // [COMMENT]: Chỉ kích hoạt lắng nghe khi kết nối WebSocket đã sẵn sàng và có thông tin định danh người dùng
+    if (!isConnected || !userId) return;
 
-    const channelName = `personal:${userId}`;
-    console.log(`📡 Subscribing to personal channel: ${channelName}`);
-    
-    const sub = centrifuge.newSubscription(channelName);
+    console.log("📡 Registering local event listener for: storage.bucket.sizes.sync");
 
-    sub.on("publication", (ctx) => {
-      console.log("📥 Realtime publication received:", ctx);
-      
-      // Khớp loại sự kiện được Notification Service chuyển tiếp từ NATS
-      if (ctx.data && ctx.data.event_type === "storage.bucket.sizes.sync") {
-        const payload = ctx.data.payload as SyncSizesPayload;
-        if (payload && payload.sizes) {
-          console.log("⚡ Auto-syncing updated bucket sizes:", payload.sizes);
-          onSync(payload.sizes);
-        }
+    // [COMMENT]: Đăng ký listener vào Registry toàn cục thông qua subscribeToEvent của Context
+    // Khi nhận được sự kiện, dispatch trực tiếp đến handler của trang mà không cần subscribe/unsubscribe lại WebSocket
+    const unsubscribe = subscribeToEvent("storage.bucket.sizes.sync", (payload: SyncSizesPayload) => {
+      if (payload && payload.sizes) {
+        console.log("⚡ Auto-syncing updated bucket sizes globally dispatched:", payload.sizes);
+        onSync(payload.sizes);
       }
     });
 
-    sub.subscribe();
-
+    // Cleanup: hủy đăng ký listener khỏi Event Registry khi hook unmount
     return () => {
-      console.log(`📡 Unsubscribing from personal channel: ${channelName}`);
-      sub.unsubscribe();
+      console.log("📡 Cleaning up local event listener for: storage.bucket.sizes.sync");
+      unsubscribe();
     };
-  }, [centrifuge, isConnected, userId, onSync]);
+  }, [isConnected, userId, onSync, subscribeToEvent]);
 };

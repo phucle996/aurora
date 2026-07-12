@@ -174,3 +174,12 @@ export async function revokeCredential(
     signal,
   });
 }
+
+// [COMMENT]: Liệt kê danh sách tên vật lý của tất cả các buckets thuộc Workspace hiện tại (Personal) - Lightweight API.
+export async function listBucketNames(signal?: AbortSignal): Promise<string[]> {
+  const res = await fetchJSON<{ data?: string[] }>("/api/v1/storage/buckets/names", {
+    method: "GET",
+    signal,
+  });
+  return res?.data || [];
+}

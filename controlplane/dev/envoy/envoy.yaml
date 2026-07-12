@@ -174,53 +174,6 @@ static_resources:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                               disabled: true
 
-                    - name: adminui_dev_vhost
-                      domains:
-                        - "adminui-dev.aurora.local"
-                        - "adminui-dev.aurora.local:443"
-                      typed_per_filter_config:
-                        envoy.filters.http.cors:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
-                          allow_origin_string_match:
-                            - safe_regex:
-                                google_re2: {}
-                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
-                            - exact: "http://localhost:5173"
-                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          allow_credentials:
-                            value: true
-                          max_age: "86400"
-                      routes:
-                        - match: { prefix: "/admin/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
-                        - match: { prefix: "/api/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
-                        - match: { prefix: "/" }
-                          route:
-                            cluster: admin_ui_dev_cluster
-                            timeout: 15s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 5s
-                          # [COMMENT]: Bỏ qua ext_authz cho các file tĩnh và giao diện dev để giảm thiểu latency
-                          typed_per_filter_config:
-                            envoy.filters.http.ext_authz:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                              disabled: true
                     - name: cloud_vhost
                       domains:
                         - "cloud.aurora.local"
@@ -239,6 +192,12 @@ static_resources:
                             value: true
                           max_age: "86400"
                       routes:
+                        - match: { prefix: "/connection/" }
+                          route:
+                            cluster: centrifugo_cluster
+                            timeout: 0s
+                            upgrade_configs:
+                              - upgrade_type: websocket
                         - match: { prefix: "/api/" }
                           route:
                             cluster: controlplane_cluster
@@ -389,20 +348,6 @@ static_resources:
                       address: admin-ui-nginx
                       port_value: 5173
 
-    - name: admin_ui_dev_cluster
-      connect_timeout: 1s
-      type: STRICT_DNS
-      lb_policy: LEAST_REQUEST
-      load_assignment:
-        cluster_name: admin_ui_dev_cluster
-        endpoints:
-          - lb_endpoints:
-              - endpoint:
-                  address:
-                    socket_address:
-                      address: admin-ui
-                      port_value: 5173
-
     - name: cloud_ui_cluster
       connect_timeout: 1s
       type: STRICT_DNS
@@ -436,6 +381,20 @@ static_resources:
                     socket_address:
                       address: acr
                       port_value: 50051
+
+    - name: centrifugo_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: centrifugo_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: centrifugo
+                      port_value: 8000
 
 admin:
   access_log_path: /tmp/admin_access.log

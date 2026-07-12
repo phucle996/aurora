@@ -527,11 +527,13 @@ services:
       dockerfile: Dockerfile.prod
       args:
         - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
-        - NEXT_PUBLIC_CENTRIFUGO_WS_URL=ws://localhost:8000/connection/websocket
+        # [COMMENT]: WebSocket đi qua Envoy (wss://) để TLS terminate và proxy sang centrifugo:8000 nội bộ
+        - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
     container_name: cloud-console-dev
     environment:
       - NEXT_PUBLIC_ENVOY_URL=https://controlplane.aurora.local
-      - NEXT_PUBLIC_CENTRIFUGO_WS_URL=ws://localhost:8000/connection/websocket
+      # [COMMENT]: Giá trị này được baked vào bundle lúc build, runtime env không có tác dụng với NEXT_PUBLIC_ nhưng để tham chiếu
+      - NEXT_PUBLIC_CENTRIFUGO_WS_URL=wss://cloud.aurora.local/connection/websocket
       - NODE_TLS_REJECT_UNAUTHORIZED=0
     restart: unless-stopped
 
