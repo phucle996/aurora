@@ -175,7 +175,7 @@ function StorageDirectoryContent() {
           setStatusFilter={setStatusFilter}
           handleClearFilters={handleClearFilters}
           setCurrentPage={setCurrentPage}
-          onCreateClick={() => router.push("/storage/create")}
+          onCreateClick={() => router.push("/storage/new")}
           canCreate={canCreate}
         />
 
