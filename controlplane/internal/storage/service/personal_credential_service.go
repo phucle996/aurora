@@ -57,7 +57,6 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 
 	// [COMMENT]: Điền các trường thông tin credential được sinh vào param
 	param.ID = uuid.New()
-	param.AccessKey = accessKey
 
 	// [COMMENT]: Khởi tạo thực thể CreatedPersonalCredential chứa raw Secret Key phản hồi cho Client
 	createdCred := &storageEntity.CreatedPersonalCredential{
@@ -79,7 +78,7 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	// [COMMENT]: Gửi bản nháp dạng raw Secret Key qua CDC Outbox sang Dataplane (không kèm BucketId và Status)
 	syncEvent := &storageproto.CredentialSync{
 		Id:        param.ID.String(),
-		AccessKey: param.AccessKey,
+		AccessKey: accessKey,
 		SecretKey: rawSecretKey,
 		Policy:    param.Policy,
 	}
