@@ -169,3 +169,32 @@ export async function listBucketNames(signal?: AbortSignal): Promise<string[]> {
   });
   return res?.data || [];
 }
+
+// [COMMENT]: Đăng ký yêu cầu thực hiện thao tác Object (list/upload/download/delete) qua Presigned URL/Outbox thô
+export async function registerObjectPresignRequest(
+  bucketId: string,
+  bucketName: string,
+  action: "list" | "upload" | "download" | "delete",
+  key?: string,
+  contentType?: string,
+  signal?: AbortSignal
+): Promise<{ event_id: string }> {
+  const res = await fetchJSON<{ data?: { event_id: string } }>(
+    `/api/v1/personal/storage/buckets/${bucketId}/objects/presigned-requests`,
+    {
+      method: "POST",
+      body: {
+        action,
+        bucket_name: bucketName,
+        key,
+        content_type: contentType,
+      },
+      signal,
+    }
+  );
+  if (!res?.data) {
+    throw new Error(`Failed to register object presign request: ${action}`);
+  }
+  return res.data;
+}
+

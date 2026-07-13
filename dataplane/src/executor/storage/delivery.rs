@@ -54,6 +54,12 @@ pub async fn dispatch_storage_job(
             exec.execute(payload).await
         }
 
+        // [COMMENT]: Định tuyến ký URL duyệt thư mục hoặc thao tác tệp tin
+        "object.presign" => {
+            let exec = super::ObjectPresignExecutor;
+            exec.execute(payload).await
+        }
+
         // Gặp hành động không được hỗ trợ
         _ => Err(ExecutorError::ExecutionFailed(format!(
             "Unsupported storage action: {}",

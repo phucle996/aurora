@@ -63,7 +63,7 @@ SELECT
     sum(bytes_sent) AS total_download_bytes,
     count() AS request_count
 FROM storage.metering_logs
-WHERE status = 200
+WHERE status >= 200 AND status < 300
 GROUP BY hour, access_key, bucket_name;
 
 -- 5. Materialized View parse logs từ otel_logs sang metering_logs phẳng
@@ -80,6 +80,4 @@ SELECT
     toUInt32(coalesce(LogAttributes['duration_ms'], '0')) AS duration_ms,
     LogAttributes['path'] AS path
 FROM otlp.otel_logs
-WHERE mapContains(LogAttributes, 'access_key')
-  AND mapContains(LogAttributes, 'bytes_received')
-  AND mapContains(LogAttributes, 'bytes_sent');
+WHERE LogAttributes['log_type'] = 'envoy-storage-access';

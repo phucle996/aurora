@@ -35,7 +35,7 @@ type Config struct {
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
 	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
-	Vault         VaultCfg
+	Vault VaultCfg
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -181,8 +181,8 @@ func LoadConfig() *Config {
 
 		Security: SecurityCfg{
 			RuntimeMasterKey: getEnv("SECURITY_MASTER_KEY", "aurora-storage-master-secret-key-32bytes"),
-			OneTimeTokenTTL: 15 * time.Minute,
-			RefreshTokenTTL: 30 * 24 * time.Hour,
+			OneTimeTokenTTL:  15 * time.Minute,
+			RefreshTokenTTL:  30 * 24 * time.Hour,
 		},
 		Psql: PsqlCfg{
 			Host:          getEnv("PSQL_HOST", "localhost"),

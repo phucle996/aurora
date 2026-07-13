@@ -116,7 +116,7 @@ impl StorageSizesSyncer {
                 }
 
                 // [COMMENT]: Khởi tạo MinIO client (S3 SDK)
-                let minio_client = MinioClient::from_env().await;
+                let minio_client = MinioClient::from_env_private().await;
                 let s3 = minio_client.s3();
 
                 // [COMMENT]: 1. Quét danh sách tất cả các buckets hiện có

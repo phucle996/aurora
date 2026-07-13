@@ -32,18 +32,21 @@ type StorageModule struct {
 	TenantBucketHandler       *storageHandler.TenantBucketHandler
 	PersonalCredentialHandler *storageHandler.PersonalCredentialHandler
 	TenantCredentialHandler   *storageHandler.TenantCredentialHandler
+	PersonalObjectHandler     *storageHandler.PersonalObjectHandler
 
 	// Core Services
 	TenantBucketService       storageSvcInterface.TenantBucketService
 	PersonalBucketService     storageSvcInterface.PersonalBucketService
 	TenantCredentialService   storageSvcInterface.TenantCredentialService
 	PersonalCredentialService storageSvcInterface.PersonalCredentialService
+	PersonalObjectService     storageSvcInterface.PersonalObjectService
 
 	// Repositories
 	TenantBucketRepo       storageRepoInterface.TenantBucketRepo
 	PersonalBucketRepo     storageRepoInterface.PersonalBucketRepo
 	TenantCredentialRepo   storageRepoInterface.TenantCredentialRepo
 	PersonalCredentialRepo storageRepoInterface.PersonalCredentialRepo
+	PersonalObjectRepo     storageRepoInterface.PersonalObjectRepo
 }
 
 // [COMMENT]: IsEnabled trả về trạng thái hoạt động của Storage module.
@@ -116,6 +119,10 @@ func NewModule(
 	if personalCredentialRepo == nil {
 		return nil, errors.New("storage module: failed to construct personal credential repository")
 	}
+	personalObjectRepo := storageRepoImpl.NewPersonalObjectRepo(db, cfg)
+	if personalObjectRepo == nil {
+		return nil, errors.New("storage module: failed to construct personal object repository")
+	}
 
 	// 2. Khởi tạo services tách biệt theo scope
 	tenantBucketSvc := storageSvcImpl.NewTenantBucketService(tenantBucketRepo)
@@ -133,6 +140,10 @@ func NewModule(
 	personalCredentialSvc := storageSvcImpl.NewPersonalCredentialService(personalCredentialRepo, personalBucketRepo, cfg.Security.RuntimeMasterKey)
 	if personalCredentialSvc == nil {
 		return nil, errors.New("storage module: failed to construct personal credential service")
+	}
+	personalObjectSvc := storageSvcImpl.NewPersonalObjectService(personalObjectRepo, personalBucketRepo, cfg)
+	if personalObjectSvc == nil {
+		return nil, errors.New("storage module: failed to construct personal object service")
 	}
 
 	// 3. Khởi tạo HTTP handlers
@@ -152,6 +163,10 @@ func NewModule(
 	if tenantCredentialHandler == nil {
 		return nil, errors.New("storage module: failed to construct tenant credential handler")
 	}
+	personalObjectHandler := storageHandler.NewPersonalObjectHandler(personalObjectSvc)
+	if personalObjectHandler == nil {
+		return nil, errors.New("storage module: failed to construct personal object handler")
+	}
 
 	return &StorageModule{
 		enabled:                   true,
@@ -164,13 +179,16 @@ func NewModule(
 		PersonalBucketRepo:        personalBucketRepo,
 		TenantCredentialRepo:      tenantCredentialRepo,
 		PersonalCredentialRepo:    personalCredentialRepo,
+		PersonalObjectRepo:        personalObjectRepo,
 		TenantBucketService:       tenantBucketSvc,
 		PersonalBucketService:     personalBucketSvc,
 		TenantCredentialService:   tenantCredentialSvc,
 		PersonalCredentialService: personalCredentialSvc,
+		PersonalObjectService:     personalObjectSvc,
 		PersonalBucketHandler:     personalBucketHandler,
 		TenantBucketHandler:       tenantBucketHandler,
 		PersonalCredentialHandler: personalCredentialHandler,
 		TenantCredentialHandler:   tenantCredentialHandler,
+		PersonalObjectHandler:     personalObjectHandler,
 	}, nil
 }

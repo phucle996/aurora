@@ -42,7 +42,7 @@ impl Executor for BucketDeleteExecutor {
         );
 
         let admin_client = MinioAdminClient::from_env();
-        let s3_client = MinioClient::from_env().await;
+        let s3_client = MinioClient::from_env_private().await;
 
         // [COMMENT]: Step 1: Xóa bucket vật lý trước. Nếu bucket không rỗng hoặc có lỗi kết nối,
         // lệnh sẽ dừng lại ngay lập tức và báo lỗi. Tránh tình trạng xóa mất key truy cập nhưng bucket vẫn tồn tại.

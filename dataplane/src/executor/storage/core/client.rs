@@ -10,23 +10,16 @@ pub struct MinioClient {
 }
 
 impl MinioClient {
-    /// Khởi tạo MinIO Client bằng cách đọc cấu hình Root credentials từ môi trường
-    pub async fn from_env() -> Self {
-        let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
-        let port_str = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
-
-        // Root credentials của cụm MinIO để thực hiện các thao tác quản trị (tạo bucket)
+    // [COMMENT]: Helper nội bộ: khởi tạo S3 Client từ endpoint_url bất kỳ với credentials từ môi trường.
+    // Tất cả config chung (path style, region, credential provider) được tập trung tại đây.
+    async fn build_from_endpoint(endpoint_url: String, provider_name: &'static str) -> Self {
         let access_key =
             std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
         let secret_key =
             std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
 
-        let endpoint_url = format!("http://{}:{}", host, port_str);
+        let credentials = Credentials::new(access_key, secret_key, None, None, provider_name);
 
-        // Tạo AWS Credentials thủ công cho MinIO
-        let credentials = Credentials::new(access_key, secret_key, None, None, "minio-admin");
-
-        // Cấu hình AWS SDK trỏ tới MinIO endpoint local
         let sdk_config = aws_config::defaults(BehaviorVersion::latest())
             .credentials_provider(credentials)
             .endpoint_url(endpoint_url)
@@ -34,36 +27,52 @@ impl MinioClient {
             .load()
             .await;
 
-        // Ép cấu hình sử dụng path style access cho MinIO (bắt buộc đối với local IP/domain không có subdomain routing)
+        // Ép cấu hình sử dụng path style access (bắt buộc đối với local IP/domain không có subdomain routing)
         let s3_config = Builder::from(&sdk_config).force_path_style(true).build();
-
         let s3_client = S3Client::from_conf(s3_config);
 
         Self { s3_client }
     }
 
-	/// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
-	pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
-		self.s3_client
-			.create_bucket()
-			.bucket(bucket_name)
-			.send()
-			.await?;
-		Ok(())
-	}
+    /// [COMMENT]: Khởi tạo MinIO Client kết nối qua Private Endpoint (internal network: MINIO_HOST:MINIO_PORT).
+    /// Sử dụng cho các tác vụ quản trị nội bộ: tạo/xóa bucket, list objects, monitor.
+    pub async fn from_env_private() -> Self {
+        let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
+        let port = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
+        let endpoint_url = format!("http://{}:{}", host, port);
+        Self::build_from_endpoint(endpoint_url, "minio-private").await
+    }
 
-	// [COMMENT]: Xóa bucket vật lý khỏi MinIO phục vụ cơ chế rollback khi tạo lỗi
-	pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
-		self.s3_client
-			.delete_bucket()
-			.bucket(bucket_name)
-			.send()
-			.await?;
-		Ok(())
-	}
+    /// [COMMENT]: Khởi tạo MinIO Client kết nối qua Public Endpoint (Envoy-facing: MINIO_PUBLIC_ENDPOINT).
+    /// Sử dụng dành riêng cho luồng ký Presigned URL để URL được ký trùng Host header với browser gọi qua Envoy.
+    pub async fn from_env_public() -> Self {
+        let endpoint_url = std::env::var("MINIO_PUBLIC_ENDPOINT")
+            .unwrap_or_else(|_| "http://localhost:29000".to_string());
+        Self::build_from_endpoint(endpoint_url, "minio-signer").await
+    }
 
-	/// Lấy tham chiếu đến S3 Client nội bộ
-	pub fn s3(&self) -> &S3Client {
-		&self.s3_client
-	}
+    /// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
+    pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+        self.s3_client
+            .create_bucket()
+            .bucket(bucket_name)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    // [COMMENT]: Xóa bucket vật lý khỏi MinIO phục vụ cơ chế rollback khi tạo lỗi
+    pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
+        self.s3_client
+            .delete_bucket()
+            .bucket(bucket_name)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    /// Lấy tham chiếu đến S3 Client nội bộ
+    pub fn s3(&self) -> &S3Client {
+        &self.s3_client
+    }
 }

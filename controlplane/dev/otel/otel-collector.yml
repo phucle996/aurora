@@ -135,21 +135,21 @@ processors:
     log_statements:
       - context: log
         statements:
-          - set(attributes["access_key"], Extract(attributes["authorization"], "Credential=([^/\\s]+)", 1)) where attributes["authorization"] != nil
-          - set(attributes["bucket_name"], Extract(attributes["path"], "^/([^/]+)", 1)) where attributes["path"] != nil
+          - merge_maps(attributes, ExtractPatterns(attributes["authorization"], "Credential=(?P<access_key>[^/\\s]+)"), "upsert") where attributes["authorization"] != nil
+          - merge_maps(attributes, ExtractPatterns(attributes["path"], "^/(?P<bucket_name>[^/]+)"), "upsert") where attributes["path"] != nil
 
   # filter/only_storage_envoy: Chỉ cho phép logs chứa dữ liệu băng thông của Envoy Storage đi qua
   filter/only_storage_envoy:
     error_mode: ignore
     logs:
       log_record:
-        - attributes["bytes_received"] == nil or attributes["bytes_sent"] == nil
+        - attributes["log_type"] != "envoy-storage-access"
 
 exporters:
   clickhouse:
     endpoint: "tcp://clickhouse:9000"
     database: "otlp"
-    ttl: 7d
+    ttl: 168h
   debug:
     verbosity: basic
   # Exporter gửi dữ liệu metrics sang VictoriaMetrics bằng chuẩn Remote Write

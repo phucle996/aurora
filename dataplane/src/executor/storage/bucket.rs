@@ -50,7 +50,7 @@ impl Executor for BucketCreateExecutor {
         );
 
         // 2. Khởi tạo MinIO client (S3 SDK) và Admin client
-        let minio_client = MinioClient::from_env().await;
+        let minio_client = MinioClient::from_env_private().await;
         let admin_client = MinioAdminClient::from_env();
 
         // ─────────────────────────────────────────────────────────────────────

@@ -174,11 +174,14 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     container_name: clickhouse-server
+    environment:
+      - CLICKHOUSE_SKIP_USER_SETUP=1
     ports:
       - "18123:8123" # Cổng HTTP interface để push logs & query debug
       - "19000:9000" # Cổng native protocol của ClickHouse
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./dev/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
 
   psql:

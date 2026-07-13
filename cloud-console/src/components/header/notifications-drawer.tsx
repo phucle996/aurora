@@ -59,7 +59,7 @@ export function NotificationsDrawer() {
       };
 
       const statusType = typeMap[payload.status] || "info";
-      const notifId = payload.job_id || Math.random().toString();
+      const notifId = payload.transaction_id || Math.random().toString();
       const notifTitle = payload.title || "System Event";
       const notifMsg = payload.message || "";
 

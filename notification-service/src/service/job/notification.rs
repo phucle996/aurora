@@ -9,12 +9,13 @@ pub async fn handle_job_notification(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let channel_name = format!("personal:{}", user_id);
 
-    // [COMMENT]: Lọc dữ liệu thông báo tránh rò rỉ thông tin hạ tầng nội bộ (job_id, trace_id, event_type)
+    // [COMMENT]: Lọc dữ liệu thông báo tránh rò rỉ thông tin hạ tầng nội bộ
     let filtered_data = serde_json::json!({
         "status": payload.get("status").cloned().unwrap_or(serde_json::Value::Null),
         "title": payload.get("title").cloned().unwrap_or(serde_json::Value::Null),
         "message": payload.get("message").cloned().unwrap_or(serde_json::Value::Null),
         "created_at": payload.get("created_at").cloned().unwrap_or(serde_json::Value::Null),
+        "transaction_id": payload.get("job_id").cloned().unwrap_or(serde_json::Value::Null),
     });
 
     // Đóng gói định dạng thông báo chuẩn hóa kèm event_type

@@ -32,3 +32,12 @@ message BucketDeleteSync {
   string name = 1;                  // Tên vật lý của bucket cần xóa
   repeated string access_keys = 2; // Danh sách access keys cần thu hồi/xóa sạch
 }
+
+// Cấu hình yêu cầu ký/thao tác đối tượng (list/upload/download/delete)
+message ObjectPresignRequest {
+  string bucket_name = 1;
+  string key = 2;
+  string action = 3;             // "list", "upload", "download", "delete"
+  string content_type = 4;
+}
+

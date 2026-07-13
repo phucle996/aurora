@@ -17,7 +17,7 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		// ========================================================================
 		// 🗄️ PHÂN KHÚC BUCKETS: QUẢN TRỊ STORAGE BUCKETS (PERSONAL)
 		// ========================================================================
-		
+
 		// [COMMENT]: Tạo mới storage bucket
 		personalGroup.POST("/storage/buckets",
 			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
@@ -75,6 +75,16 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
 			module.PersonalCredentialHandler.Delete,
 		)
+
+		// ========================================================================
+		// 📦 PHÂN KHÚC OBJECTS: QUẢN LÝ ĐỐI TƯỢNG (PERSONAL)
+		// ========================================================================
+
+		// [COMMENT]: Đăng ký job thao tác đối tượng (List/Upload/Download/Delete) thông qua Presigned URL
+		personalGroup.POST("/storage/buckets/:id/objects/presigned-requests",
+			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+			module.PersonalObjectHandler.RegisterObjectPresign,
+		)
 	}
 
 	// ------------------------------------------------------------------------
@@ -85,7 +95,7 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		// ========================================================================
 		// 🗄️ PHÂN KHÚC BUCKETS: QUẢN TRỊ STORAGE BUCKETS (TENANT)
 		// ========================================================================
-		
+
 		// [COMMENT]: Tạo mới storage bucket
 		tenantGroup.POST("/storage/buckets",
 			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
