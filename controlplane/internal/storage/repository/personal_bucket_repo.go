@@ -37,9 +37,8 @@ func NewPersonalBucketRepo(
 	}
 }
 
-func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.PersonalBucket, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
-	// [COMMENT]: Convert Entity sang Model chứa các tag db
-	m := storageModel.PersonalBucketEntityToModel(bucket)
+func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEntity.PersonalBucket, workspaceID uuid.UUID, zoneID uuid.UUID, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
+	// [COMMENT]: Convert Entity sang Model chứa các tag db cho credential và outbox
 	mc := storageModel.PersonalCredentialEntityToModel(credential)
 	mo := storageModel.OutboxEntityToModel(outbox)
 
@@ -74,14 +73,14 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 
 	res, err := r.db.Exec(ctx, query,
 		// [COMMENT]: $1-$8 — personal_buckets fields
-		m.ID,
-		m.Name,
-		m.WorkspaceID,
-		m.ZoneID,
-		m.Status,
-		m.CapacityQuotaBytes,
-		m.CreatedAt,
-		m.UpdatedAt,
+		bucket.ID,
+		bucket.Name,
+		workspaceID,
+		zoneID,
+		bucket.Status,
+		bucket.CapacityQuotaBytes,
+		bucket.CreatedAt,
+		bucket.UpdatedAt,
 		// [COMMENT]: $9-$13 — personal_credentials fields (secret_key removed)
 		mc.ID,
 		mc.AccessKey,
@@ -121,24 +120,22 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 
 func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT b.id, b.name, b.workspace_id, b.zone_id, b.status, b.capacity_quota_bytes, b.used_bytes, b.created_at, b.updated_at
+		SELECT b.id, b.name, b.status, b.capacity_quota_bytes, b.used_bytes, b.created_at, b.updated_at
 		FROM %s.personal_buckets b
 		JOIN %s.personal_workspaces w ON b.workspace_id = w.id
 		WHERE b.id = $1 AND w.owner_id = $2
 	`, r.storage, r.hierarchy)
 
-	var m storageModel.PersonalBucket
+	var b storageEntity.PersonalBucket
 
 	err := r.db.QueryRow(ctx, query, id, userID).Scan(
-		&m.ID,
-		&m.Name,
-		&m.WorkspaceID,
-		&m.ZoneID,
-		&m.Status,
-		&m.CapacityQuotaBytes,
-		&m.UsedBytes,
-		&m.CreatedAt,
-		&m.UpdatedAt,
+		&b.ID,
+		&b.Name,
+		&b.Status,
+		&b.CapacityQuotaBytes,
+		&b.UsedBytes,
+		&b.CreatedAt,
+		&b.UpdatedAt,
 	)
 	if err != nil {
 		// [COMMENT]: Ánh xạ lỗi ErrNoRows thành domain error ErrNotFound
@@ -148,29 +145,26 @@ func (r *PersonalBucketRepoImpl) GetByID(ctx context.Context, id uuid.UUID, user
 		return nil, fmt.Errorf("storage repo: get personal bucket by id failed: %w", err)
 	}
 
-	// [COMMENT]: Trả về Domain Entity chuyển đổi từ DB Model
-	return storageModel.PersonalBucketModelToEntity(&m), nil
+	return &b, nil
 }
 
 func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
-		SELECT id, name, workspace_id, zone_id, status, capacity_quota_bytes, used_bytes, created_at, updated_at
+		SELECT id, name, status, capacity_quota_bytes, used_bytes, created_at, updated_at
 		FROM %s.personal_buckets
 		WHERE name = $1
 	`, r.storage)
 
-	var m storageModel.PersonalBucket
+	var b storageEntity.PersonalBucket
 
 	err := r.db.QueryRow(ctx, query, name).Scan(
-		&m.ID,
-		&m.Name,
-		&m.WorkspaceID,
-		&m.ZoneID,
-		&m.Status,
-		&m.CapacityQuotaBytes,
-		&m.UsedBytes,
-		&m.CreatedAt,
-		&m.UpdatedAt,
+		&b.ID,
+		&b.Name,
+		&b.Status,
+		&b.CapacityQuotaBytes,
+		&b.UsedBytes,
+		&b.CreatedAt,
+		&b.UpdatedAt,
 	)
 	if err != nil {
 		// [COMMENT]: Ánh xạ lỗi ErrNoRows thành domain error ErrNotFound
@@ -180,8 +174,7 @@ func (r *PersonalBucketRepoImpl) GetByName(ctx context.Context, name string) (*s
 		return nil, fmt.Errorf("storage repo: get personal bucket by name failed: %w", err)
 	}
 
-	// [COMMENT]: Trả về Domain Entity chuyển đổi từ DB Model
-	return storageModel.PersonalBucketModelToEntity(&m), nil
+	return &b, nil
 }
 func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalBucket, error) {
 	query := fmt.Sprintf(`
@@ -200,21 +193,21 @@ func (r *PersonalBucketRepoImpl) ListByWorkspace(ctx context.Context, workspaceI
 
 	var buckets []*storageEntity.PersonalBucket
 	for rows.Next() {
-		var m storageModel.PersonalBucket
+		var b storageEntity.PersonalBucket
 
 		err := rows.Scan(
-			&m.ID,
-			&m.Name,
-			&m.Status,
-			&m.CapacityQuotaBytes,
-			&m.UsedBytes,
-			&m.CreatedAt,
-			&m.UpdatedAt,
+			&b.ID,
+			&b.Name,
+			&b.Status,
+			&b.CapacityQuotaBytes,
+			&b.UsedBytes,
+			&b.CreatedAt,
+			&b.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("storage repo: scan personal bucket row failed: %w", err)
 		}
-		buckets = append(buckets, storageModel.PersonalBucketModelToEntity(&m))
+		buckets = append(buckets, &b)
 	}
 
 	return buckets, nil

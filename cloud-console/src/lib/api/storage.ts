@@ -146,12 +146,12 @@ export async function listCredentials(
 
 // [COMMENT]: Sinh thêm Access Key mới cho bucket
 export async function createCredential(
-  bucketID: string,
+  bucketName: string,
   policy: string,
   signal?: AbortSignal
 ): Promise<CredentialItem> {
   const res = await fetchJSON<{ data?: CredentialItem }>(
-    `/api/v1/storage/buckets/${bucketID}/credentials`,
+    `/api/v1/storage/buckets/${bucketName}/credentials`,
     {
       method: "POST",
       body: {

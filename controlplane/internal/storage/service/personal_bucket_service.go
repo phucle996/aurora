@@ -54,8 +54,6 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	bucket := &storageEntity.PersonalBucket{
 		ID:                 bucketID,
 		Name:               physicalName,
-		WorkspaceID:        param.WorkspaceID,
-		ZoneID:             param.ZoneID,
 		Status:             storageEntity.BucketStatusCreating,
 		CapacityQuotaBytes: param.CapacityQuotaBytes,
 		CreatedAt:          time.Now(),
@@ -118,7 +116,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:              eventID,
-		RoutingScope:         "zone:" + bucket.ZoneID.String(),
+		RoutingScope:         "zone:" + param.ZoneID.String(),
 		JobTopic:             "storage.bucket.create",
 		Payload:              payloadBytes,
 		UserID:               param.UserID.String(),
@@ -131,7 +129,7 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	}
 
 	// [COMMENT]: Gọi DB chèn nguyên tử (atomic) 3-way CTE: bucket + credential + outbox record
-	if err := s.repo.Create(ctx, bucket, credential, outbox); err != nil {
+	if err := s.repo.Create(ctx, bucket, param.WorkspaceID, param.ZoneID, credential, outbox); err != nil {
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 

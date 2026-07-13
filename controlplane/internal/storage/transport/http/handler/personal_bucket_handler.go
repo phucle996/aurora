@@ -135,8 +135,6 @@ func (h *PersonalBucketHandler) Get(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                   bucket.ID.String(),
 		"name":                 bucket.Name,
-		"workspace_id":         bucket.WorkspaceID.String(),
-		"zone_id":              bucket.ZoneID.String(),
 		"status":               string(bucket.Status),
 		"capacity_quota_bytes": bucket.CapacityQuotaBytes,
 		"used_bytes":           bucket.UsedBytes,

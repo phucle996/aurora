@@ -102,7 +102,7 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
   // [COMMENT]: Mutation tạo access key mới, tự động invalidate query cache sau khi tạo thành công.
   const createCredentialMutation = useMutation<CredentialItem, Error, string>({
     // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
-    mutationFn: (policy) => createCredential(bucket.id, policy),
+    mutationFn: (policy) => createCredential(bucket.name, policy),
     onSuccess: (res) => {
       setCreatedResult(res);
       toast.success("Access credential generated successfully");

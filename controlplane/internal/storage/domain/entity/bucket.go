@@ -24,8 +24,6 @@ const (
 type PersonalBucket struct {
 	ID                 uuid.UUID    // ID định danh duy nhất của bucket
 	Name               string       // Tên bucket vật lý (phải unique toàn hệ thống)
-	WorkspaceID        uuid.UUID    // ID của Workspace chứa bucket này
-	ZoneID             uuid.UUID    // ID của Infrastructure Zone chứa bucket này
 	Status             BucketStatus // Trạng thái hoạt động hiện tại
 	CapacityQuotaBytes int64        // Hạn mức dung lượng lưu trữ tối đa (Bytes)
 	UsedBytes          int64        // Hạn mức dung lượng lưu trữ hiện tại đang sử dụng (Bytes)

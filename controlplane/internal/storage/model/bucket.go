@@ -35,42 +35,6 @@ type TenantBucket struct {
 	UpdatedAt          time.Time `db:"updated_at"`
 }
 
-// [COMMENT]: PersonalBucketEntityToModel chuyển đổi Domain Entity sang Database Model.
-func PersonalBucketEntityToModel(e *storageEntity.PersonalBucket) *PersonalBucket {
-	if e == nil {
-		return nil
-	}
-	return &PersonalBucket{
-		ID:                 e.ID,
-		Name:               e.Name,
-		WorkspaceID:        e.WorkspaceID,
-		ZoneID:             e.ZoneID,
-		Status:             string(e.Status),
-		CapacityQuotaBytes: e.CapacityQuotaBytes,
-		UsedBytes:          e.UsedBytes,
-		CreatedAt:          e.CreatedAt,
-		UpdatedAt:          e.UpdatedAt,
-	}
-}
-
-// [COMMENT]: PersonalBucketModelToEntity chuyển đổi Database Model sang Domain Entity.
-func PersonalBucketModelToEntity(m *PersonalBucket) *storageEntity.PersonalBucket {
-	if m == nil {
-		return nil
-	}
-	return &storageEntity.PersonalBucket{
-		ID:                 m.ID,
-		Name:               m.Name,
-		WorkspaceID:        m.WorkspaceID,
-		ZoneID:             m.ZoneID,
-		Status:             storageEntity.BucketStatus(m.Status),
-		CapacityQuotaBytes: m.CapacityQuotaBytes,
-		UsedBytes:          m.UsedBytes,
-		CreatedAt:          m.CreatedAt,
-		UpdatedAt:          m.UpdatedAt,
-	}
-}
-
 // [COMMENT]: TenantBucketEntityToModel chuyển đổi Domain Entity sang Database Model.
 func TenantBucketEntityToModel(e *storageEntity.TenantBucket) *TenantBucket {
 	if e == nil {

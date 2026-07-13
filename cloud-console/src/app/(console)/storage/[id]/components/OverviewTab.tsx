@@ -16,6 +16,15 @@ function bytesToGB(bytes: number): number {
   return Math.round(bytes / (1024 * 1024 * 1024));
 }
 
+// [COMMENT]: Định dạng bytes sang đơn vị trực quan tương ứng (Bytes, KB, MB, GB, TB)
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
 export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   const router = useRouter();
   const [updatingQuota, setUpdatingQuota] = useState(false);
@@ -29,12 +38,11 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
   const [copiedId, setCopiedId] = useState(false);
 
-  // Mock static usage for dynamic visualization (state-of-the-art UI requirement)
-  // [COMMENT]: Đổi sang capacity_quota_bytes theo snake_case của backend
-  const mockUsedBytes = bucket.capacity_quota_bytes * 0.248; // 24.8% mock usage
-  const mockUsedGB = (mockUsedBytes / (1024 * 1024 * 1024)).toFixed(2);
-  const totalGB = bytesToGB(bucket.capacity_quota_bytes);
-  const usagePercentage = Math.min((parseFloat(mockUsedGB) / totalGB) * 100, 100);
+  // [COMMENT]: Sử dụng dung lượng thực tế (used_bytes) thay thế cho mock dữ liệu tĩnh
+  const usedBytes = bucket.used_bytes || 0;
+  const usedGB = usedBytes / (1024 * 1024 * 1024);
+  const totalGB = bucket.capacity_quota_bytes / (1024 * 1024 * 1024);
+  const usagePercentage = totalGB > 0 ? Math.min((usedGB / totalGB) * 100, 100) : 0;
 
   // [COMMENT]: Khởi tạo state cho chi phí tích lũy theo thời gian thực (Live ticking cost)
   const [liveCost, setLiveCost] = useState("0.000000");
@@ -140,19 +148,19 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-500">Allocated Quota Limit</span>
               <span className="font-mono font-bold text-slate-800 dark:text-slate-100 text-sm">
-                {mockUsedGB} GB of {totalGB} GB used
+                {formatBytes(usedBytes)} of {totalGB.toFixed(0)} GB used
               </span>
             </div>
             {/* Progress bar */}
             <div className="w-full bg-slate-200 dark:bg-slate-800 h-2.5 rounded-full overflow-hidden">
               <div
                 style={{ width: `${usagePercentage}%` }}
-                className="bg-blue-600 h-full rounded-full transition-all duration-500 ease-out"
+                className="bg-gradient-to-r from-blue-500 to-indigo-600 h-full rounded-full transition-all duration-500 ease-out"
               />
             </div>
             <div className="flex items-center justify-between text-[10px] text-muted-foreground font-semibold">
-              <span>{usagePercentage.toFixed(1)}% Usage</span>
-              <span>{(totalGB - parseFloat(mockUsedGB)).toFixed(2)} GB Available</span>
+              <span>{usagePercentage.toFixed(2)}% Usage</span>
+              <span>{formatBytes(Math.max(0, bucket.capacity_quota_bytes - usedBytes))} Available</span>
             </div>
           </div>
         </div>
@@ -178,10 +186,20 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
               </div>
             </div>
 
+
             <div className="flex flex-col gap-1">
-              <span className="font-bold text-muted-foreground">Workspace ID</span>
-              {/* [COMMENT]: Đổi sang bucket.workspace_id theo snake_case của backend */}
-              <span className="font-mono text-[11px] text-foreground">{bucket.workspace_id}</span>
+              <span className="font-bold text-muted-foreground">Status</span>
+              <div>
+                <span className={cn(
+                  "inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                  bucket.status === "active" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20",
+                  bucket.status === "creating" && "bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20",
+                  bucket.status === "suspended" && "bg-amber-500/10 text-amber-600 dark:text-amber-450 border border-amber-500/20",
+                  bucket.status === "deleted" && "bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20"
+                )}>
+                  {bucket.status}
+                </span>
+              </div>
             </div>
 
             <div className="flex flex-col gap-1">

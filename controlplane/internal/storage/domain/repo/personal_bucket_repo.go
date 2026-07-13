@@ -10,7 +10,7 @@ import (
 // [COMMENT]: PersonalBucketRepo định nghĩa các phương thức giao tiếp CSDL cho Bucket Cá nhân (Individual).
 type PersonalBucketRepo interface {
 	// [COMMENT]: Tạo mới Bucket + Credential + Outbox Record trong một atomic CTE duy nhất.
-	Create(ctx context.Context, bucket *storageEntity.PersonalBucket, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error
+	Create(ctx context.Context, bucket *storageEntity.PersonalBucket, workspaceID uuid.UUID, zoneID uuid.UUID, credential *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error
 	
 	// [COMMENT]: Tìm kiếm thông tin chi tiết của một Bucket theo ID kèm theo userID để validate.
 	GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalBucket, error)
