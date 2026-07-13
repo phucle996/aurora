@@ -87,14 +87,15 @@ export const RealtimeProvider: React.FC<{
     client.on("publication", (ctx) => {
       console.log("📥 Global Realtime publication received (Server-side sub):", ctx);
       
-      // Định tuyến sự kiện dựa theo event_type
+      // [COMMENT]: Định tuyến sự kiện dựa theo event_type. Dùng ctx.data.data làm payload chính (khớp với JSON của backend).
       if (ctx.data && ctx.data.event_type) {
         const eventType = ctx.data.event_type;
         const callbacks = listenersRef.current[eventType];
         if (callbacks) {
+          const eventData = ctx.data.data !== undefined ? ctx.data.data : ctx.data.payload;
           callbacks.forEach((cb) => {
             try {
-              cb(ctx.data.payload);
+              cb(eventData);
             } catch (err) {
               console.error(`Error executing realtime callback for event ${eventType}:`, err);
             }

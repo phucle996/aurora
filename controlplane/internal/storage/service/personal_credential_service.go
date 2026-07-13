@@ -2,6 +2,8 @@ package storageSvcImpl
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	storageEntity "controlplane/internal/storage/domain/entity"
@@ -38,13 +40,9 @@ func NewPersonalCredentialService(
 }
 
 func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param *storageEntity.CreatePersonalCredential) (*storageEntity.CreatedPersonalCredential, error) {
-	// [COMMENT]: Kiểm tra sự tồn tại của Bucket liên kết (Entity Existence Check)
-	bucket, err := s.bucketRepo.GetByID(ctx, param.BucketID, param.UserID)
-	if err != nil {
-		return nil, apperr.Wrap(err, err, "get_bucket_failed")
-	}
-	if bucket == nil {
-		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
+	// [COMMENT]: Kiểm tra an toàn: Đảm bảo policy JSON chỉ cho phép truy cập vào đúng bucketName được truyền
+	if !validatePolicyBucketName(param.Policy, param.BucketName) {
+		return nil, apperr.Wrap(storageTaxonomy.ErrInvalidPolicy, storageTaxonomy.ErrInvalidPolicy, "policy_violates_bucket_boundary")
 	}
 
 	// [COMMENT]: Sinh ngẫu nhiên cặp Access Key và Secret Key
@@ -57,25 +55,18 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 		return nil, apperr.Wrap(err, err, "generate_secret_key_failed")
 	}
 
-	// [COMMENT]: Khởi tạo thực thể PersonalCredential (không chứa SecretKey) để lưu xuống DB
-	cred := &storageEntity.PersonalCredential{
-		ID:        uuid.New(),
-		BucketID:  param.BucketID,
-		AccessKey: accessKey,
-		Policy:    param.Policy,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
+	// [COMMENT]: Điền các trường thông tin credential được sinh vào param
+	param.ID = uuid.New()
+	param.AccessKey = accessKey
 
 	// [COMMENT]: Khởi tạo thực thể CreatedPersonalCredential chứa raw Secret Key phản hồi cho Client
 	createdCred := &storageEntity.CreatedPersonalCredential{
-		ID:        cred.ID,
-		BucketID:  cred.BucketID,
-		AccessKey: cred.AccessKey,
+		ID:        param.ID,
+		AccessKey: accessKey,
 		SecretKey: rawSecretKey,
-		Policy:    cred.Policy,
-		CreatedAt: cred.CreatedAt,
-		UpdatedAt: cred.UpdatedAt,
+		Policy:    param.Policy,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
@@ -85,14 +76,12 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Gửi bản nháp dạng raw Secret Key qua CDC Outbox sang Dataplane
+	// [COMMENT]: Gửi bản nháp dạng raw Secret Key qua CDC Outbox sang Dataplane (không kèm BucketId và Status)
 	syncEvent := &storageproto.CredentialSync{
-		Id:        cred.ID.String(),
-		BucketId:  cred.BucketID.String(),
-		AccessKey: cred.AccessKey,
+		Id:        param.ID.String(),
+		AccessKey: param.AccessKey,
 		SecretKey: rawSecretKey,
-		Policy:    cred.Policy,
-		Status:    "active",
+		Policy:    param.Policy,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -101,23 +90,25 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 
 	outbox := &storageEntity.StorageOutboxRecord{
 		EventID:              uuid.New(),
-		RoutingScope:         "zone:" + bucket.ZoneID.String(),
+		RoutingScope:         "zone:" + param.ZoneID.String(),
 		JobTopic:             "storage.credential.create",
 		Payload:              payloadBytes,
 		UserID:               param.UserID.String(),
 		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
-		ResourceID:           cred.ID.String(),
+		ResourceID:           param.ID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Thực thi chèn đồng thời Credential và Outbox record
-	if err := s.repo.Create(ctx, cred, outbox); err != nil {
+	// [COMMENT]: Thực thi chèn đồng thời Credential và Outbox record với xác thực chéo scope
+	bucketID, err := s.repo.Create(ctx, param, outbox)
+	if err != nil {
 		return nil, apperr.Wrap(err, err, "create_failed")
 	}
 
+	createdCred.BucketID = bucketID
 	return createdCred, nil
 }
 
@@ -175,11 +166,9 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO
 	syncEvent := &storageproto.CredentialSync{
 		Id:        cred.ID.String(),
-		BucketId:  cred.BucketID.String(),
 		AccessKey: cred.AccessKey,
 		SecretKey: "",
 		Policy:    cred.Policy,
-		Status:    "deleted",
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -198,7 +187,7 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 		ResourceID:           cred.ID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
-		Idle:                 60,
+		Idle:                 30,
 	}
 
 	// [COMMENT]: Thực thi xóa cứng Credential khỏi DB và chèn Outbox event nguyên tử.
@@ -210,3 +199,43 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 	return nil
 }
 
+// [COMMENT]: PolicyStatement và PolicyDoc dùng để parse cấu trúc JSON Policy từ Client
+type PolicyStatement struct {
+	Effect   string `json:"Effect"`
+	Resource any    `json:"Resource"`
+}
+
+type PolicyDoc struct {
+	Statement []PolicyStatement `json:"Statement"`
+}
+
+// [COMMENT]: validatePolicyBucketName xác thực chéo mọi Resource trong Allow statements phải thuộc về bucketName
+func validatePolicyBucketName(policyJSON string, bucketName string) bool {
+	var doc PolicyDoc
+	if err := json.Unmarshal([]byte(policyJSON), &doc); err != nil {
+		return false
+	}
+	allowedPrefix := "arn:aws:s3:::" + bucketName
+	for _, stmt := range doc.Statement {
+		if stmt.Effect == "Allow" && stmt.Resource != nil {
+			var resources []string
+			switch r := stmt.Resource.(type) {
+			case string:
+				resources = []string{r}
+			case []any:
+				for _, item := range r {
+					if str, ok := item.(string); ok {
+						resources = append(resources, str)
+					}
+				}
+			}
+			for _, res := range resources {
+				// Phải khớp chính xác bucketName hoặc là sub-path (bắt đầu bằng bucketName/)
+				if res != allowedPrefix && !strings.HasPrefix(res, allowedPrefix+"/") {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}

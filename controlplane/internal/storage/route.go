@@ -89,7 +89,7 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		)
 
 		// [COMMENT]: Xóa bỏ Access Key
-		personalGroup.DELETE("/storage/buckets/:bucket_id/credentials/:id",
+		personalGroup.DELETE("/storage/buckets/:id/credentials/:credential_id",
 			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
 			module.PersonalCredentialHandler.Delete,
 		)
@@ -169,7 +169,7 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		)
 
 		// [COMMENT]: Xóa bỏ Access Key
-		tenantGroup.DELETE("/storage/buckets/:bucket_id/credentials/:id",
+		tenantGroup.DELETE("/storage/buckets/:id/credentials/:credential_id",
 			middleware.Authorize("storage:credential:delete", module.L1Registry, "*"),
 			module.TenantCredentialHandler.Delete,
 		)

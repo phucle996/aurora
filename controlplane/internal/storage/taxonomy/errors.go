@@ -18,4 +18,7 @@ var (
 
 	// [COMMENT]: Không tìm thấy cặp Access Key / Credentials tương ứng.
 	ErrCredentialNotFound = errors.New("storage: credential not found")
+
+	// [COMMENT]: JSON Policy không hợp lệ hoặc vi phạm ranh giới bucket chỉ định.
+	ErrInvalidPolicy = errors.New("storage: invalid JSON policy format or target resource")
 )

@@ -87,11 +87,9 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 	// [COMMENT]: Gửi bản nháp dạng raw Secret Key qua CDC Outbox sang Dataplane
 	syncEvent := &storageproto.CredentialSync{
 		Id:        cred.ID.String(),
-		BucketId:  cred.BucketID.String(),
 		AccessKey: cred.AccessKey,
 		SecretKey: rawSecretKey,
 		Policy:    cred.Policy,
-		Status:    "active",
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -162,11 +160,9 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO
 	syncEvent := &storageproto.CredentialSync{
 		Id:        cred.ID.String(),
-		BucketId:  cred.BucketID.String(),
 		AccessKey: cred.AccessKey,
 		SecretKey: "",
 		Policy:    cred.Policy,
-		Status:    "deleted",
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {

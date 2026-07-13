@@ -73,9 +73,8 @@ pub async fn update_tenant_bucket_size(
     Ok(user_ids)
 }
 
-// [COMMENT]: Cập nhật trạng thái và lưu kết quả của Storage Outbox Record vào database Postgres.
-// Trả về RETURNING user_id, job_topic, trace_id, resource_id phục vụ OTel và phát sự kiện real-time.
-pub async fn update_outbox_record(
+// [COMMENT]: Xử lý khép lại vòng đời của job tạo Bucket (xóa Outbox và chuyển status bucket sang 'active' trên SUCCESS, hoặc xóa bucket trên FAILURE).
+pub async fn resolve_bucket_creation(
     pg_client: &tokio_postgres::Client,
     job_uuid: uuid::Uuid,
     job_topic: &str,
@@ -84,12 +83,15 @@ pub async fn update_outbox_record(
     error_message: Option<&str>,
 ) -> Result<Option<tokio_postgres::Row>, tokio_postgres::Error> {
     Logger::sys_info(
-        "storage_db.update_outbox",
-        &format!("Cập nhật trạng thái Outbox cho Storage Job: {} -> {}", job_uuid, status),
+        "storage_db.resolve_bucket_creation",
+        &format!(
+            "Khép lại vòng đời Outbox cho Bucket Job: {} -> {}",
+            job_uuid, status
+        ),
     );
 
     let row_opt = if status == "SUCCEEDED" {
-        // [COMMENT]: Khi job thành công, xóa hoàn toàn outbox record để tránh lưu trữ Secret Key bản rõ lâu dài, đồng thời đổi status của personal/tenant bucket thành 'active'
+        // [COMMENT]: Khi job thành công, xóa hoàn toàn outbox record và đổi status của personal/tenant bucket thành 'active'
         pg_client
             .query_opt(
                 "WITH updated_outbox AS ( \

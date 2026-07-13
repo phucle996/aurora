@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { usePathname } from "next/navigation";
 import SidebarConsole from "@/components/sidebar-console";
-import HeaderConsole from "@/components/header-console";
+import HeaderConsole from "@/components/header";
 import CommandPalette from "@/components/command-palette";
 import { useUserSession } from "@/hooks/useUserSession";
 import { useTheme, type ThemeMode } from "@/context/ThemeContext";

@@ -2,7 +2,9 @@ package storageRepoImpl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	storageEntity "controlplane/internal/storage/domain/entity"
@@ -31,51 +33,71 @@ func NewPersonalCredentialRepo(db *pgxpool.Pool, cfg *config.Config) storageRepo
 	}
 }
 
-func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, cred *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error {
-	m := storageModel.PersonalCredentialEntityToModel(cred)
+func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageEntity.CreatePersonalCredential, outbox *storageEntity.StorageOutboxRecord) (uuid.UUID, error) {
 	mo := storageModel.OutboxEntityToModel(outbox)
 
-	// [COMMENT]: Dùng CTE để ghi nhận đồng thời thông tin Credentials và sự kiện Outbox nguyên tử (lược bỏ secret_key)
+	// [COMMENT]: Dùng CTE để ghi nhận đồng thời thông tin Credentials và sự kiện Outbox nguyên tử
+	// và thực hiện xác minh chéo quyền sở hữu của bucket và workspace dựa trên BucketName vật lý
 	query := fmt.Sprintf(`
-		WITH ins_cred AS (
+		WITH verified_bucket AS (
+			SELECT pb.id
+			FROM %s.personal_buckets pb
+			JOIN %s.personal_workspaces w ON pb.workspace_id = w.id
+			WHERE pb.name = $2 AND w.owner_id = $3 AND pb.workspace_id = $4
+		),
+		ins_cred AS (
 			INSERT INTO %s.personal_credentials (
 				id, bucket_id, access_key, policy, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6)
+			)
+			SELECT $1, id, $5, $6, $7, $8
+			FROM verified_bucket
+			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
 			error_code, error_message
-		) VALUES ($7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-	`, r.storage, r.storage)
+		)
+		SELECT $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+		FROM ins_cred
+		RETURNING (SELECT id FROM verified_bucket)
+	`, r.storage, r.hierarchy, r.storage, r.storage)
 
-	_, err := r.db.Exec(ctx, query,
-		m.ID,
-		m.BucketID,
-		m.AccessKey,
-		m.Policy,
-		m.CreatedAt,
-		m.UpdatedAt,
-		mo.EventID,
-		mo.RoutingScope,
-		mo.JobTopic,
-		mo.Payload,
-		mo.UserID,
-		mo.Status,
-		mo.CompletedAt,
-		mo.JobVersion,
-		mo.ResourceID,
-		mo.PayloadSchemaVersion,
-		mo.TraceID,
-		mo.Idle,
-		mo.ErrorCode,
-		mo.ErrorMessage,
-	)
+	now := time.Now()
+	var bucketID uuid.UUID
+	err := r.db.QueryRow(ctx, query,
+		param.ID,                   // $1
+		param.BucketName,           // $2
+		param.UserID,               // $3
+		param.WorkspaceID,          // $4
+		param.AccessKey,            // $5
+		param.Policy,               // $6
+		now,                        // $7
+		now,                        // $8
+		mo.EventID,                 // $9
+		mo.RoutingScope,            // $10
+		mo.JobTopic,                // $11
+		mo.Payload,                 // $12
+		mo.UserID,                  // $13
+		mo.Status,                  // $14
+		mo.CompletedAt,             // $15
+		mo.JobVersion,              // $16
+		mo.ResourceID,              // $17
+		mo.PayloadSchemaVersion,    // $18
+		mo.TraceID,                 // $19
+		mo.Idle,                    // $20
+		mo.ErrorCode,               // $21
+		mo.ErrorMessage,            // $22
+	).Scan(&bucketID)
+
 	if err != nil {
-		return err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, storageTaxonomy.ErrNotFound
+		}
+		return uuid.Nil, err
 	}
 
-	return nil
+	return bucketID, nil
 }
 
 func (r *PersonalCredentialRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalCredential, error) {
@@ -145,19 +167,19 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 
 	// [COMMENT]: CTE 3 bước nguyên tử:
 	//   1. verified_bucket: xác minh toàn bộ ownership chain (credential → bucket → workspace → user).
-	//   2. del_cred: xóa credential chỉ khi verified_bucket trả về kết quả hợp lệ.
-	//   3. INSERT outbox: routing_scope được truyền trực tiếp từ param ($6) — đã được build sẵn từ zone_id trong context.
+	//   2. verified_cred: kiểm tra credential thuộc bucket hợp lệ mà không thực hiện xóa cứng ngay.
+	//   3. INSERT outbox: chỉ ghi nhận sự kiện xóa khi kiểm tra tính hợp lệ thành công.
 	query := fmt.Sprintf(`
 		WITH verified_bucket AS (
 			SELECT pb.id
 			FROM %s.personal_buckets pb
-			JOIN %s.workspaces w ON pb.workspace_id = w.id
-			WHERE pb.id = $2 AND w.user_id = $3 AND pb.workspace_id = $4
+			JOIN %s.personal_workspaces w ON pb.workspace_id = w.id
+			WHERE pb.id = $2 AND w.owner_id = $3 AND pb.workspace_id = $4
 		),
-		del_cred AS (
-			DELETE FROM %s.personal_credentials
+		verified_cred AS (
+			SELECT id
+			FROM %s.personal_credentials
 			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
-			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
@@ -165,7 +187,7 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			error_code, error_message
 		)
 		SELECT $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
-		FROM del_cred
+		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
 	// [COMMENT]: routing_scope truyền trực tiếp từ outbox.RoutingScope (=zone_id từ context, đã có sẵn)

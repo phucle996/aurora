@@ -94,11 +94,9 @@ func (x *BucketSync) GetPolicy() string {
 type CredentialSync struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                // ID credential dạng UUID string
-	BucketId      string                 `protobuf:"bytes,2,opt,name=bucket_id,json=bucketId,proto3" json:"bucket_id,omitempty"`    // ID bucket liên kết
-	AccessKey     string                 `protobuf:"bytes,3,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"` // Access Key MinIO
-	SecretKey     string                 `protobuf:"bytes,4,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"` // Secret Key MinIO
-	Policy        string                 `protobuf:"bytes,5,opt,name=policy,proto3" json:"policy,omitempty"`                        // JSON policy
-	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                        // Trạng thái hoạt động (active, revoked)
+	AccessKey     string                 `protobuf:"bytes,2,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"` // Access Key MinIO
+	SecretKey     string                 `protobuf:"bytes,3,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"` // Secret Key MinIO
+	Policy        string                 `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`                        // JSON policy
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -140,13 +138,6 @@ func (x *CredentialSync) GetId() string {
 	return ""
 }
 
-func (x *CredentialSync) GetBucketId() string {
-	if x != nil {
-		return x.BucketId
-	}
-	return ""
-}
-
 func (x *CredentialSync) GetAccessKey() string {
 	if x != nil {
 		return x.AccessKey
@@ -168,13 +159,6 @@ func (x *CredentialSync) GetPolicy() string {
 	return ""
 }
 
-func (x *CredentialSync) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
 var File_internal_storage_transport_rpc_proto_storage_job_proto protoreflect.FileDescriptor
 
 const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
@@ -187,16 +171,14 @@ const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"access_key\x18\x02 \x01(\tR\taccessKey\x12\x1d\n" +
 	"\n" +
 	"secret_key\x18\x03 \x01(\tR\tsecretKey\x12\x16\n" +
-	"\x06policy\x18\x04 \x01(\tR\x06policy\"\xab\x01\n" +
+	"\x06policy\x18\x04 \x01(\tR\x06policy\"v\n" +
 	"\x0eCredentialSync\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
-	"\tbucket_id\x18\x02 \x01(\tR\bbucketId\x12\x1d\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
-	"access_key\x18\x03 \x01(\tR\taccessKey\x12\x1d\n" +
+	"access_key\x18\x02 \x01(\tR\taccessKey\x12\x1d\n" +
 	"\n" +
-	"secret_key\x18\x04 \x01(\tR\tsecretKey\x12\x16\n" +
-	"\x06policy\x18\x05 \x01(\tR\x06policy\x12\x16\n" +
-	"\x06status\x18\x06 \x01(\tR\x06statusB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
+	"secret_key\x18\x03 \x01(\tR\tsecretKey\x12\x16\n" +
+	"\x06policy\x18\x04 \x01(\tR\x06policyB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
 
 var (
 	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce sync.Once

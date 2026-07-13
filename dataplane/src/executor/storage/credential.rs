@@ -39,8 +39,8 @@ impl Executor for CredentialCreateExecutor {
         Logger::sys_info(
             op,
             &format!(
-                "CredentialCreateExecutor: Bắt đầu tạo Access Key '{}' cho Bucket ID '{}'",
-                sync_data.access_key, sync_data.bucket_id
+                "CredentialCreateExecutor: Bắt đầu tạo Access Key '{}'",
+                sync_data.access_key
             ),
         );
 

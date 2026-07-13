@@ -44,15 +44,19 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 		return
 	}
 
-	bucketIDStr := strings.TrimSpace(c.Param("id"))
-	if bucketIDStr == "" {
-		apires.RespondBadRequest(c, "missing mandatory bucket id")
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
 		return
 	}
 
-	bucketID, err := uuid.Parse(bucketIDStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid bucket id format")
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+
+	bucketName := strings.TrimSpace(c.Param("id"))
+	if bucketName == "" {
+		apires.RespondBadRequest(c, "missing mandatory bucket name")
 		return
 	}
 
@@ -65,14 +69,18 @@ func (h *PersonalCredentialHandler) Create(c *gin.Context) {
 
 	// 3. Thực thi nghiệp vụ qua personal service
 	param := &storageEntity.CreatePersonalCredential{
-		BucketID: bucketID,
-		Policy:   req.Policy,
-		UserID:   userID,
+		BucketName:  bucketName,
+		Policy:      req.Policy,
+		UserID:      userID,
+		WorkspaceID: workspaceID,
+		ZoneID:      zoneID,
 	}
 	cred, err := h.personalSvc.CreateCredential(ctx, param)
 	if err != nil {
 		if errors.Is(err, storageTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "bucket not found")
+		} else if errors.Is(err, storageTaxonomy.ErrInvalidPolicy) {
+			apires.RespondBadRequest(c, err.Error())
 		} else {
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -211,7 +219,7 @@ func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	bucketIDStr := strings.TrimSpace(c.Param("bucket_id"))
+	bucketIDStr := strings.TrimSpace(c.Param("id"))
 	if bucketIDStr == "" {
 		apires.RespondBadRequest(c, "missing bucket id")
 		return
@@ -223,7 +231,7 @@ func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	credIDStr := strings.TrimSpace(c.Param("id"))
+	credIDStr := strings.TrimSpace(c.Param("credential_id"))
 	if credIDStr == "" {
 		apires.RespondBadRequest(c, "missing credential id")
 		return
@@ -241,7 +249,7 @@ func (h *PersonalCredentialHandler) Delete(c *gin.Context) {
 		BucketID:     bucketID,
 		WorkspaceID:  workspaceID,
 		UserID:       userID,
-		ZoneID:       zoneID, // từ context, không cần JOIN DB để lấy
+		ZoneID:       zoneID,
 	}
 
 	// [COMMENT]: Gọi service xóa credential với xác thực chéo các ID

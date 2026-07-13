@@ -39,16 +39,22 @@ type CreatedPersonalCredential struct {
 
 // [COMMENT]: CreatePersonalCredential chứa các tham số dùng để khởi tạo Access Key cá nhân.
 type CreatePersonalCredential struct {
-	BucketID uuid.UUID
-	Policy   string
-	UserID   uuid.UUID
+	ID          uuid.UUID
+	BucketName  string
+	AccessKey   string
+	Policy      string
+	UserID      uuid.UUID
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
 }
 
 // [COMMENT]: CreateTenantCredential chứa các tham số dùng để khởi tạo Access Key doanh nghiệp.
 type CreateTenantCredential struct {
-	BucketID uuid.UUID
-	Policy   string
-	UserID   uuid.UUID
+	BucketID    uuid.UUID
+	Policy      string
+	UserID      uuid.UUID
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
 }
 
 // [COMMENT]: PersonalCredentialListItem chứa thông tin rút gọn cho danh sách credentials, tối ưu hóa không bao gồm BucketID.

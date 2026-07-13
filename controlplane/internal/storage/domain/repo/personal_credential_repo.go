@@ -11,7 +11,7 @@ import (
 // [COMMENT]: PersonalCredentialRepo định nghĩa các phương thức giao tiếp CSDL cho Access Keys của Bucket cá nhân.
 type PersonalCredentialRepo interface {
 	// [COMMENT]: Lưu trữ Access Key mới liên kết với Bucket cá nhân cùng sự kiện Outbox.
-	Create(ctx context.Context, cred *storageEntity.PersonalCredential, outbox *storageEntity.StorageOutboxRecord) error
+	Create(ctx context.Context, param *storageEntity.CreatePersonalCredential, outbox *storageEntity.StorageOutboxRecord) (uuid.UUID, error)
 
 	// [COMMENT]: Truy xuất thông tin Access Key theo ID.
 	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalCredential, error)

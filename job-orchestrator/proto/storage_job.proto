@@ -12,9 +12,7 @@ message BucketSync {
 // Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane
 message CredentialSync {
   string id = 1;                  // ID credential dạng UUID string
-  string bucket_id = 2;           // ID bucket liên kết
-  string access_key = 3;          // Access Key MinIO
-  string secret_key = 4;          // Secret Key MinIO
-  string policy = 5;              // JSON policy
-  string status = 6;              // Trạng thái hoạt động (active, revoked)
+  string access_key = 2;          // Access Key MinIO
+  string secret_key = 3;          // Secret Key MinIO
+  string policy = 4;              // JSON policy
 }

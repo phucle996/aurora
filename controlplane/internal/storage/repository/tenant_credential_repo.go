@@ -144,19 +144,19 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 
 	// [COMMENT]: CTE 3 bước nguyên tử:
 	//   1. verified_bucket: xác minh toàn bộ ownership chain (credential → bucket → workspace → user).
-	//   2. del_cred: xóa credential chỉ khi verified_bucket trả về kết quả hợp lệ.
-	//   3. INSERT outbox: routing_scope được truyền trực tiếp từ param ($6) — đã được build sẵn từ zone_id trong context.
+	//   2. verified_cred: kiểm tra credential thuộc bucket hợp lệ mà không thực hiện xóa cứng ngay.
+	//   3. INSERT outbox: chỉ ghi nhận sự kiện xóa khi kiểm tra tính hợp lệ thành công.
 	query := fmt.Sprintf(`
 		WITH verified_bucket AS (
 			SELECT tb.id
 			FROM %s.tenant_buckets tb
-			JOIN %s.workspaces w ON tb.workspace_id = w.id
-			WHERE tb.id = $2 AND w.user_id = $3 AND tb.workspace_id = $4
+			JOIN %s.tenant_workspaces w ON tb.workspace_id = w.id
+			WHERE tb.id = $2 AND w.owner_id = $3 AND tb.workspace_id = $4
 		),
-		del_cred AS (
-			DELETE FROM %s.tenant_credentials
+		verified_cred AS (
+			SELECT id
+			FROM %s.tenant_credentials
 			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
-			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
 			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
@@ -164,8 +164,9 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 			error_code, error_message
 		)
 		SELECT $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
-		FROM del_cred
+		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
+
 
 	// [COMMENT]: routing_scope truyền trực tiếp từ outbox.RoutingScope (=zone_id từ context, đã có sẵn)
 	res, err := r.db.Exec(ctx, query,
