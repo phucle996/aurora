@@ -24,9 +24,12 @@ type PersonalBucketRepo interface {
 	// [COMMENT]: Liệt kê danh sách tên vật lý của tất cả các bucket trong workspace và zone phục vụ kiểm tra trùng tên (lightweight).
 	ListNamesByWorkspace(ctx context.Context, workspaceID uuid.UUID, zoneID uuid.UUID, userID uuid.UUID) ([]string, error)
 
-	// [COMMENT]: Cập nhật hạn mức lưu trữ quota của Bucket có check quyền sở hữu của user.
-	UpdateQuota(ctx context.Context, id uuid.UUID, userID uuid.UUID, quotaBytes int64) error
+	// [COMMENT]: Cập nhật hạn mức lưu trữ quota của Bucket có check quyền sở hữu của user và ghi nhận outbox.
+	UpdateQuota(ctx context.Context, id uuid.UUID, userID uuid.UUID, quotaBytes int64, outbox *storageEntity.StorageOutboxRecord) error
 
-	// [COMMENT]: Xóa vĩnh viễn bản ghi Bucket ra khỏi Database có check quyền sở hữu của user.
-	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+	// [COMMENT]: Xóa vĩnh viễn bản ghi Bucket ra khỏi Database có check quyền sở hữu của user và ghi nhận outbox.
+	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error
+
+	// [COMMENT]: Lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
+	ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error)
 }

@@ -21,9 +21,12 @@ type TenantBucketRepo interface {
 	// [COMMENT]: Liệt kê các Bucket thuộc sở hữu của một Tenant trong một Zone cụ thể.
 	ListByTenantAndZone(ctx context.Context, tenantID uuid.UUID, zoneID uuid.UUID) ([]*storageEntity.TenantBucket, error)
 
-	// [COMMENT]: Cập nhật hạn mức lưu trữ quota của Bucket.
-	UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64) error
+	// [COMMENT]: Cập nhật hạn mức lưu trữ quota của Bucket và ghi nhận outbox.
+	UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64, outbox *storageEntity.StorageOutboxRecord) error
 
-	// [COMMENT]: Xóa vĩnh viễn bản ghi Bucket ra khỏi Database.
-	Delete(ctx context.Context, id uuid.UUID) error
+	// [COMMENT]: Xóa vĩnh viễn bản ghi Bucket ra khỏi Database và ghi nhận outbox.
+	Delete(ctx context.Context, id uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error
+
+	// [COMMENT]: Lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
+	ListAccessKeys(ctx context.Context, bucketID uuid.UUID) ([]string, error)
 }

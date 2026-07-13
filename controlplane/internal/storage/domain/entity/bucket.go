@@ -11,6 +11,7 @@ import (
 type PersonalBucket struct {
 	ID                 uuid.UUID // ID định danh duy nhất của bucket
 	Name               string    // Tên bucket vật lý (phải unique toàn hệ thống)
+	ZoneID             uuid.UUID // ID of Infrastructure Zone containing this bucket
 	CapacityQuotaBytes int64     // Hạn mức dung lượng lưu trữ tối đa (Bytes)
 	UsedBytes          int64     // Hạn mức dung lượng lưu trữ hiện tại đang sử dụng (Bytes)
 	CreatedAt          time.Time // Thời gian tạo bản ghi
@@ -59,4 +60,22 @@ type CreatedBucketResult struct {
 	AccessKey    string    // Access Key (plain) trả về user
 	SecretKey    string    // Secret Key (plain) trả về user — chỉ hiển thị 1 lần duy nhất
 	Policy       string    // JSON bucket policy được áp dụng
+}
+
+// [COMMENT]: DeletePersonalBucket chứa thông tin tham số để thực hiện xóa bucket cá nhân và credentials liên quan.
+type DeletePersonalBucket struct {
+	BucketID    uuid.UUID
+	BucketName  string
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
+	UserID      uuid.UUID
+}
+
+// [COMMENT]: DeleteTenantBucket chứa thông tin tham số để thực hiện xóa bucket doanh nghiệp và credentials liên quan.
+type DeleteTenantBucket struct {
+	BucketID    uuid.UUID
+	BucketName  string
+	WorkspaceID uuid.UUID
+	ZoneID      uuid.UUID
+	UserID      uuid.UUID
 }

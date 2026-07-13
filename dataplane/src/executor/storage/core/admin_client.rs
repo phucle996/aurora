@@ -7,8 +7,8 @@ use crate::observability::logger::Logger;
 /// (vì Admin API dùng format mã hóa nội bộ không có Rust SDK chính thức).
 /// `mc` tự xử lý SigV4 signing và body encryption đúng chuẩn MinIO.
 pub struct MinioAdminClient {
-    alias:      String, // mc alias name, e.g. "minio"
-    endpoint:   String, // e.g. "http://minio:9000"
+    alias: String,      // mc alias name, e.g. "minio"
+    endpoint: String,   // e.g. "http://minio:9000"
     access_key: String, // Root access key
     secret_key: String, // Root secret key
 }
@@ -80,7 +80,11 @@ impl MinioAdminClient {
         if output.status.success() {
             Logger::sys_info(
                 op,
-                &format!("MinIO user '{}' created via mc: {}", access_key, stdout.trim()),
+                &format!(
+                    "MinIO user '{}' created via mc: {}",
+                    access_key,
+                    stdout.trim()
+                ),
             );
             return Ok(());
         }
@@ -89,7 +93,10 @@ impl MinioAdminClient {
         if stderr.contains("already exists") || stdout.contains("already exists") {
             Logger::sys_info(
                 op,
-                &format!("MinIO user '{}' already exists, idempotent skip.", access_key),
+                &format!(
+                    "MinIO user '{}' already exists, idempotent skip.",
+                    access_key
+                ),
             );
             return Ok(());
         }
@@ -135,14 +142,18 @@ impl MinioAdminClient {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        if output.status.success() || stdout.contains("Created policy") || stdout.contains("policy") {
+        if output.status.success() || stdout.contains("Created policy") || stdout.contains("policy")
+        {
             Logger::sys_info(op, &format!("MinIO policy '{}' created.", policy_name));
             return Ok(());
         }
 
         // [COMMENT]: Idempotency — policy đã tồn tại
         if stderr.contains("already exists") || stdout.contains("already exists") {
-            Logger::sys_info(op, &format!("MinIO policy '{}' already exists, skip.", policy_name));
+            Logger::sys_info(
+                op,
+                &format!("MinIO policy '{}' already exists, skip.", policy_name),
+            );
             return Ok(());
         }
 
@@ -194,7 +205,10 @@ impl MinioAdminClient {
         if stderr.contains("already") || stdout.contains("already") {
             Logger::sys_info(
                 op,
-                &format!("Policy '{}' already attached to '{}', skip.", policy_name, access_key),
+                &format!(
+                    "Policy '{}' already attached to '{}', skip.",
+                    policy_name, access_key
+                ),
             );
             return Ok(());
         }
@@ -230,7 +244,11 @@ impl MinioAdminClient {
         if output.status.success() {
             Logger::sys_info(
                 op,
-                &format!("MinIO user '{}' removed via mc: {}", access_key, stdout.trim()),
+                &format!(
+                    "MinIO user '{}' removed via mc: {}",
+                    access_key,
+                    stdout.trim()
+                ),
             );
             return Ok(());
         }
@@ -239,7 +257,10 @@ impl MinioAdminClient {
         if stderr.contains("does not exist") || stdout.contains("does not exist") {
             Logger::sys_info(
                 op,
-                &format!("MinIO user '{}' does not exist, idempotent skip.", access_key),
+                &format!(
+                    "MinIO user '{}' does not exist, idempotent skip.",
+                    access_key
+                ),
             );
             return Ok(());
         }
@@ -275,7 +296,11 @@ impl MinioAdminClient {
         if output.status.success() {
             Logger::sys_info(
                 op,
-                &format!("MinIO policy '{}' removed via mc: {}", policy_name, stdout.trim()),
+                &format!(
+                    "MinIO policy '{}' removed via mc: {}",
+                    policy_name,
+                    stdout.trim()
+                ),
             );
             return Ok(());
         }
@@ -284,13 +309,61 @@ impl MinioAdminClient {
         if stderr.contains("does not exist") || stdout.contains("does not exist") {
             Logger::sys_info(
                 op,
-                &format!("MinIO policy '{}' does not exist, idempotent skip.", policy_name),
+                &format!(
+                    "MinIO policy '{}' does not exist, idempotent skip.",
+                    policy_name
+                ),
             );
             return Ok(());
         }
 
         Err(format!(
             "mc admin policy remove failed: stdout={} stderr={}",
+            stdout.trim(),
+            stderr.trim()
+        ))
+    }
+
+    /// [COMMENT]: Cấu hình hạn mức dung lượng (quota) cho bucket.
+    /// Dùng: mc admin bucket quota <alias> <bucket_name> --hard <quota_bytes>
+    pub async fn set_bucket_quota(
+        &self,
+        bucket_name: &str,
+        quota_bytes: i64,
+    ) -> Result<(), String> {
+        let op = "storage.admin.set_quota";
+
+        self.setup_alias().await?;
+
+        let quota_str = format!("{}", quota_bytes);
+        let output = Command::new("mc")
+            .arg("admin")
+            .arg("bucket")
+            .arg("quota")
+            .arg(&self.alias)
+            .arg(bucket_name)
+            .arg("--hard")
+            .arg(&quota_str)
+            .output()
+            .await
+            .map_err(|e| format!("Failed to run 'mc admin bucket quota': {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if output.status.success() {
+            Logger::sys_info(
+                op,
+                &format!(
+                    "Bucket '{}' quota set to {} bytes via mc.",
+                    bucket_name, quota_bytes
+                ),
+            );
+            return Ok(());
+        }
+
+        Err(format!(
+            "mc admin bucket quota failed: stdout={} stderr={}",
             stdout.trim(),
             stderr.trim()
         ))

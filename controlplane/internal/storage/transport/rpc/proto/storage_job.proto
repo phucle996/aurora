@@ -18,3 +18,17 @@ message CredentialSync {
   string secret_key = 3;          // Secret Key MinIO
   string policy = 4;              // JSON policy
 }
+
+// Cấu hình đồng bộ hóa thay đổi hạn mức (resize) Bucket
+message BucketResizeSync {
+  string bucket_id = 1;            // ID bucket dạng UUID string để DP ghi log
+  string name = 2;                 // Tên vật lý của bucket
+  int64 current_quota_bytes = 3;   // Quota hiện tại
+  int64 requested_quota_bytes = 4; // Quota muốn thay đổi
+}
+
+// Cấu hình đồng bộ hóa xóa Bucket vật lý
+message BucketDeleteSync {
+  string name = 1;                  // Tên vật lý của bucket cần xóa
+  repeated string access_keys = 2; // Danh sách access keys cần thu hồi/xóa sạch
+}

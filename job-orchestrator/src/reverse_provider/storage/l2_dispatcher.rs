@@ -15,6 +15,11 @@ pub async fn dispatch_storage_result(
         &format!("Storage L2 Dispatcher: Nhận job_topic='{}'", job_topic),
     );
 
+    // [COMMENT]: Gọi giả lập để compiler biết các Struct và Hàm được sử dụng, triệt tiêu warnings
+    if false {
+        db::bucket::silence_unused_proto_structs();
+    }
+
     match job_topic {
         "storage.bucket.create" => {
             db::bucket::resolve_bucket_creation(
@@ -40,6 +45,28 @@ pub async fn dispatch_storage_result(
         }
         "storage.credential.delete" => {
             db::credential::resolve_credential_deletion(
+                pg_client,
+                job_uuid,
+                job_topic,
+                status,
+                error_code,
+                error_message,
+            )
+            .await
+        }
+        "storage.bucket.resize" => {
+            db::bucket::resolve_bucket_resize(
+                pg_client,
+                job_uuid,
+                job_topic,
+                status,
+                error_code,
+                error_message,
+            )
+            .await
+        }
+        "storage.bucket.delete" => {
+            db::bucket::resolve_bucket_deletion(
                 pg_client,
                 job_uuid,
                 job_topic,

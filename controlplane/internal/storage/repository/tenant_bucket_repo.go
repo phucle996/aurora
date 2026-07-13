@@ -206,36 +206,158 @@ func (r *TenantBucketRepoImpl) ListByTenantAndZone(ctx context.Context, tenantID
 	return buckets, nil
 }
 
-func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64) error {
-	query := fmt.Sprintf(`
+func (r *TenantBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, quotaBytes int64, outbox *storageEntity.StorageOutboxRecord) error {
+	// [COMMENT]: Khởi tạo transaction để đảm bảo atomic cho cả kiểm tra quota, update quota và ghi outbox
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("storage repo: begin tx failed: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// [COMMENT]: 1. SELECT FOR UPDATE để validate sự tồn tại và lock row tránh race condition
+	selectQuery := fmt.Sprintf(`
+		SELECT capacity_quota_bytes, used_bytes
+		FROM %s.tenant_buckets
+		WHERE id = $1
+		FOR UPDATE
+	`, r.storage)
+
+	var currentQuota, usedBytes int64
+	err = tx.QueryRow(ctx, selectQuery, id).Scan(&currentQuota, &usedBytes)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return storageTaxonomy.ErrNotFound
+		}
+		return fmt.Errorf("storage repo: select tenant bucket for update failed: %w", err)
+	}
+
+	// [COMMENT]: 2. Kiểm tra nghiệp vụ: Hạn mức quota mới phải trống ít nhất 1GB (1_073_741_824 bytes) so với used_bytes hiện tại
+	if quotaBytes - usedBytes < 1073741824 {
+		return storageTaxonomy.ErrResizeLimitTooLow
+	}
+
+	// [COMMENT]: 3. Thực hiện cập nhật DB hạn mức quota mới
+	updateQuery := fmt.Sprintf(`
 		UPDATE %s.tenant_buckets
 		SET capacity_quota_bytes = $1, updated_at = $2
 		WHERE id = $3
 	`, r.storage)
 
-	res, err := r.db.Exec(ctx, query, quotaBytes, time.Now(), id)
+	_, err = tx.Exec(ctx, updateQuery, quotaBytes, time.Now(), id)
 	if err != nil {
-		return fmt.Errorf("storage repo: update tenant bucket quota failed: %w", err)
+		return fmt.Errorf("storage repo: update tenant bucket capacity failed: %w", err)
 	}
-	if res.RowsAffected() == 0 {
-		return storageTaxonomy.ErrNotFound
+
+	// [COMMENT]: 4. Chèn outbox record để đồng bộ lệnh resize xuống dataplane
+	mo := storageModel.OutboxEntityToModel(outbox)
+	insertOutboxQuery := fmt.Sprintf(`
+		INSERT INTO %s.storage_outbox_records (
+			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			job_version, resource_id, payload_schema_version, trace_id, idle,
+			error_code, error_message
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+	`, r.storage)
+
+	_, err = tx.Exec(ctx, insertOutboxQuery,
+		mo.EventID,
+		mo.RoutingScope,
+		mo.JobTopic,
+		mo.Payload,
+		mo.UserID,
+		mo.Status,
+		mo.CompletedAt,
+		mo.JobVersion,
+		mo.ResourceID,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.ErrorCode,
+		mo.ErrorMessage,
+	)
+	if err != nil {
+		return fmt.Errorf("storage repo: insert resize outbox failed: %w", err)
 	}
+
+	// [COMMENT]: Commit transaction sau khi tất cả các bước thành công
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("storage repo: commit resize tx failed: %w", err)
+	}
+
 	return nil
 }
 
-func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID) error {
-	query := fmt.Sprintf(`
-		DELETE FROM %s.tenant_buckets
-		WHERE id = $1
-	`, r.storage)
+func (r *TenantBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, outbox *storageEntity.StorageOutboxRecord) error {
+	// [COMMENT]: Map outbox record sang model DB
+	mo := storageModel.OutboxEntityToModel(outbox)
 
-	res, err := r.db.Exec(ctx, query, id)
+	// [COMMENT]: Sử dụng single atomic CTE để kiểm tra tồn tại (SELECT FOR UPDATE) và chèn outbox record đồng thời
+	query := fmt.Sprintf(`
+		WITH locked_bucket AS (
+			SELECT id
+			FROM %s.tenant_buckets
+			WHERE id = $1
+			FOR UPDATE
+		)
+		INSERT INTO %s.storage_outbox_records (
+			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			job_version, resource_id, payload_schema_version, trace_id, idle,
+			error_code, error_message
+		)
+		SELECT $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+		FROM locked_bucket
+	`, r.storage, r.storage)
+
+	res, err := r.db.Exec(ctx, query,
+		id,
+		mo.EventID,
+		mo.RoutingScope,
+		mo.JobTopic,
+		mo.Payload,
+		mo.UserID,
+		mo.Status,
+		mo.CompletedAt,
+		mo.JobVersion,
+		mo.ResourceID,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.ErrorCode,
+		mo.ErrorMessage,
+	)
 	if err != nil {
-		return fmt.Errorf("storage repo: delete tenant bucket failed: %w", err)
+		return fmt.Errorf("storage repo: atomic delete tenant bucket outbox failed: %w", err)
 	}
+
+	// [COMMENT]: Nếu không có dòng nào bị ảnh hưởng (tức locked_bucket rỗng), trả về ErrNotFound
 	if res.RowsAffected() == 0 {
 		return storageTaxonomy.ErrNotFound
 	}
+
 	return nil
+}
+
+func (r *TenantBucketRepoImpl) ListAccessKeys(ctx context.Context, bucketID uuid.UUID) ([]string, error) {
+	// [COMMENT]: Truy vấn danh sách access_key của toàn bộ credentials thuộc bucket chỉ định của tenant
+	query := fmt.Sprintf(`
+		SELECT access_key
+		FROM %s.tenant_credentials
+		WHERE bucket_id = $1
+	`, r.storage)
+
+	rows, err := r.db.Query(ctx, query, bucketID)
+	if err != nil {
+		return nil, fmt.Errorf("storage repo: query tenant access keys failed: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("storage repo: scan tenant access key failed: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
 

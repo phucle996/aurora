@@ -105,7 +105,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
     setDeleting(true);
     try {
-      await deleteBucket(bucket.id);
+      await deleteBucket(bucket.id, bucket.name);
       toast.success("Bucket deletion sequence initiated");
       router.push("/storage");
     } catch (err: any) {

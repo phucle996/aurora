@@ -23,5 +23,5 @@ type TenantBucketService interface {
 	UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, quotaBytes int64) error
 
 	// [COMMENT]: Yêu cầu xóa Bucket.
-	DeleteBucket(ctx context.Context, bucketID uuid.UUID) error
+	DeleteBucket(ctx context.Context, param *storageEntity.DeleteTenantBucket) error
 }

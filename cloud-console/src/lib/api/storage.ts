@@ -101,9 +101,10 @@ export async function updateBucketQuota(
 // [COMMENT]: Yêu cầu xóa bucket
 export async function deleteBucket(
   id: string,
+  name: string,
   signal?: AbortSignal
 ): Promise<void> {
-  await fetchJSON(`/api/v1/storage/buckets/${id}`, {
+  await fetchJSON(`/api/v1/storage/buckets/${id}?name=${encodeURIComponent(name)}`, {
     method: "DELETE",
     signal,
   });

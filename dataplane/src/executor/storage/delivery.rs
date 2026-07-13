@@ -42,6 +42,18 @@ pub async fn dispatch_storage_job(
             exec.execute(payload).await
         }
 
+        // [COMMENT]: Định tuyến thay đổi hạn mức quota bucket
+        "bucket.resize" => {
+            let exec = super::BucketResizeExecutor;
+            exec.execute(payload).await
+        }
+
+        // [COMMENT]: Định tuyến xóa bucket
+        "bucket.delete" => {
+            let exec = super::BucketDeleteExecutor;
+            exec.execute(payload).await
+        }
+
         // Gặp hành động không được hỗ trợ
         _ => Err(ExecutorError::ExecutionFailed(format!(
             "Unsupported storage action: {}",

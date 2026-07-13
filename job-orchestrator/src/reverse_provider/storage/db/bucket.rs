@@ -1,5 +1,16 @@
 use crate::observability::logger::Logger;
+use prost::Message;
 use tokio_postgres::NoTls;
+
+pub mod storage_proto {
+    include!(concat!(env!("OUT_DIR"), "/storage.rs"));
+}
+
+pub fn silence_unused_proto_structs() {
+    let _ = storage_proto::BucketSync::default();
+    let _ = storage_proto::CredentialSync::default();
+    let _ = storage_proto::BucketDeleteSync::default();
+}
 
 // [COMMENT]: Cập nhật dung lượng used_bytes cho bucket cá nhân trực tiếp vào DB và trả về owner_id (User ID)
 pub async fn update_personal_bucket_size(
@@ -140,6 +151,179 @@ pub async fn resolve_bucket_creation(
                      RETURNING id \
                  ) \
                  SELECT * FROM updated_outbox",
+                &[&status, &error_code, &error_message, &job_uuid, &job_topic],
+            )
+            .await?
+    };
+
+    Ok(row_opt)
+}
+
+// [COMMENT]: Xử lý khép lại vòng đời của job resize Bucket (phục hồi quota cũ trên FAILURE).
+pub async fn resolve_bucket_resize(
+    pg_client: &tokio_postgres::Client,
+    job_uuid: uuid::Uuid,
+    job_topic: &str,
+    status: &str,
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) -> Result<Option<tokio_postgres::Row>, tokio_postgres::Error> {
+    Logger::sys_info(
+        "storage_db.resolve_bucket_resize",
+        &format!(
+            "Khép lại vòng đời Outbox cho Bucket Resize Job: {} -> {}",
+            job_uuid, status
+        ),
+    );
+
+    let row_opt = if status == "SUCCEEDED" {
+        // [COMMENT]: Khi job thành công, chỉ cần xóa outbox record
+        pg_client
+            .query_opt(
+                "DELETE FROM storage.storage_outbox_records \
+                 WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING user_id, job_topic, trace_id, resource_id",
+                &[&job_uuid, &job_topic],
+            )
+            .await?
+    } else if status == "PROCESSING" {
+        // [COMMENT]: Khi job dang chay, cap nhat status outbox sang PROCESSING
+        pg_client
+            .query_opt(
+                "UPDATE storage.storage_outbox_records \
+                 SET status = $1, \
+                     error_code = NULL, \
+                     error_message = NULL \
+                 WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING user_id, job_topic, trace_id, resource_id",
+                &[&status, &job_uuid, &job_topic],
+            )
+            .await?
+    } else {
+        // [COMMENT]: Khi job thất bại (FAILED/error):
+        // 1. SELECT lấy payload của outbox record hiện tại để lấy quota cũ (current_quota_bytes)
+        let outbox_row = pg_client
+            .query_opt(
+                "SELECT payload FROM storage.storage_outbox_records \
+                 WHERE event_id = $1::uuid AND job_topic = $2",
+                &[&job_uuid, &job_topic],
+            )
+            .await?;
+
+        if let Some(r) = outbox_row {
+            let payload_bytes: Vec<u8> = r.get(0);
+            if let Ok(sync_data) = storage_proto::BucketResizeSync::decode(payload_bytes.as_slice())
+            {
+                // 2. Rollback quota cũ về DB dựa vào physical name prefix
+                if sync_data.name.starts_with("ws-") {
+                    let _ = pg_client
+                        .execute(
+                            "UPDATE storage.personal_buckets \
+                             SET capacity_quota_bytes = $1, updated_at = NOW() \
+                             WHERE name = $2",
+                            &[&sync_data.current_quota_bytes, &sync_data.name],
+                        )
+                        .await;
+                } else if sync_data.name.starts_with("tn-") {
+                    let _ = pg_client
+                        .execute(
+                            "UPDATE storage.tenant_buckets \
+                             SET capacity_quota_bytes = $1, updated_at = NOW() \
+                             WHERE name = $2",
+                            &[&sync_data.current_quota_bytes, &sync_data.name],
+                        )
+                        .await;
+                }
+            }
+        }
+
+        // 3. Cập nhật outbox record sang status FAILED kèm mã lỗi
+        pg_client
+            .query_opt(
+                "UPDATE storage.storage_outbox_records \
+                 SET status = $1, \
+                     completed_at = CURRENT_TIMESTAMP, \
+                     error_code = $2, \
+                     error_message = $3 \
+                 WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING user_id, job_topic, trace_id, resource_id",
+                &[&status, &error_code, &error_message, &job_uuid, &job_topic],
+            )
+            .await?
+    };
+
+    Ok(row_opt)
+}
+
+// [COMMENT]: Xử lý khép lại vòng đời của job xóa Bucket (chỉ cần xóa outbox record trên SUCCESS, hoặc cập nhật status outbox sang FAILED kèm lỗi trên FAILURE).
+pub async fn resolve_bucket_deletion(
+    pg_client: &tokio_postgres::Client,
+    job_uuid: uuid::Uuid,
+    job_topic: &str,
+    status: &str,
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+) -> Result<Option<tokio_postgres::Row>, tokio_postgres::Error> {
+    Logger::sys_info(
+        "storage_db.resolve_bucket_deletion",
+        &format!(
+            "Khép lại vòng đời Outbox cho Bucket Delete Job: {} -> {}",
+            job_uuid, status
+        ),
+    );
+
+    let row_opt = if status == "SUCCEEDED" {
+        // [COMMENT]: Khi job thành công, tiến hành xóa thực sự credentials và bản ghi bucket trong CSDL CP
+        pg_client
+            .query_opt(
+                "WITH updated_outbox AS ( \
+                     DELETE FROM storage.storage_outbox_records \
+                     WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
+                     RETURNING user_id, job_topic, trace_id, resource_id \
+                 ), \
+                 deleted_personal_creds AS ( \
+                     DELETE FROM storage.personal_credentials \
+                     WHERE bucket_id::text = (SELECT resource_id FROM updated_outbox) \
+                 ), \
+                 deleted_personal_bucket AS ( \
+                     DELETE FROM storage.personal_buckets \
+                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
+                 ), \
+                 deleted_tenant_creds AS ( \
+                     DELETE FROM storage.tenant_credentials \
+                     WHERE bucket_id::text = (SELECT resource_id FROM updated_outbox) \
+                 ), \
+                 deleted_tenant_bucket AS ( \
+                     DELETE FROM storage.tenant_buckets \
+                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
+                 ) \
+                 SELECT * FROM updated_outbox",
+                &[&job_uuid, &job_topic],
+            )
+            .await?
+    } else if status == "PROCESSING" {
+        pg_client
+            .query_opt(
+                "UPDATE storage.storage_outbox_records \
+                 SET status = $1, \
+                     error_code = NULL, \
+                     error_message = NULL \
+                 WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING user_id, job_topic, trace_id, resource_id",
+                &[&status, &job_uuid, &job_topic],
+            )
+            .await?
+    } else {
+        // [COMMENT]: Khi job thất bại, cập nhật outbox record sang FAILED kèm lỗi để admin xử lý
+        pg_client
+            .query_opt(
+                "UPDATE storage.storage_outbox_records \
+                 SET status = $1, \
+                     completed_at = CURRENT_TIMESTAMP, \
+                     error_code = $2, \
+                     error_message = $3 \
+                 WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING user_id, job_topic, trace_id, resource_id",
                 &[&status, &error_code, &error_message, &job_uuid, &job_topic],
             )
             .await?

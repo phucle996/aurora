@@ -26,5 +26,5 @@ type PersonalBucketService interface {
 	UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error
 
 	// [COMMENT]: Yêu cầu xóa Bucket cá nhân.
-	DeleteBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error
+	DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error
 }

@@ -159,6 +159,28 @@ services:
           - controlplane.aurora.local
     restart: unless-stopped
 
+  storage-envoy:
+    image: envoyproxy/envoy:v1.33.2
+    container_name: storage-envoy
+    command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
+    volumes:
+      - ./dev/envoy/envoy-storage.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "29000:8080" # Cổng S3 Gateway proxy qua Envoy hướng đến MinIO
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-server
+    ports:
+      - "18123:8123" # Cổng HTTP interface để push logs & query debug
+      - "19000:9000" # Cổng native protocol của ClickHouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    restart: unless-stopped
+
   psql:
     image: postgres:18
     container_name: controlplane-psql
@@ -459,6 +481,8 @@ services:
     depends_on:
       victoriatraces:
         condition: service_started
+      clickhouse:
+        condition: service_started
     restart: unless-stopped
 
   victoriatraces:
@@ -733,23 +757,16 @@ volumes:
   controlplane_vtraces_data: # Bộ đệm dữ liệu traces của VictoriaTraces
 
   controlplane_vlogs_data: # Bộ đệm dữ liệu logs của VictoriaLogs
-
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
-
   admin_ui_node_modules:
-
   controlplane_redis_job_data: # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 1
-
   controlplane_redis_dp_z1_data: # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 2
-
-  controlplane_redis_dp_z2_data: # Các ổ đĩa lưu cache biên dịch Cargo Target và Cargo Registry độc lập cho từng Dataplane Node
-
-  # giúp triệt tiêu tuyệt đối lỗi ghi đè file nhị phân chéo khi các cụm Rust Nodes khởi động song song.
+  controlplane_redis_dp_z2_data:
   dataplane_cargo_target_z1:
   dataplane_cargo_cache_z1:
   dataplane_cargo_target_z2_n1:
   dataplane_cargo_cache_z2_n1:
   dataplane_cargo_target_z2_n2:
   dataplane_cargo_cache_z2_n2:
-
   minio_data:
+  clickhouse_data:

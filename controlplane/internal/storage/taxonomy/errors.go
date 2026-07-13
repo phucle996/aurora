@@ -21,4 +21,7 @@ var (
 
 	// [COMMENT]: JSON Policy không hợp lệ hoặc vi phạm ranh giới bucket chỉ định.
 	ErrInvalidPolicy = errors.New("storage: invalid JSON policy format or target resource")
+
+	// [COMMENT]: Dung lượng resize mới quá nhỏ so với used_bytes hiện tại (cần trống ít nhất 1GB).
+	ErrResizeLimitTooLow = errors.New("storage: requested quota must leave at least 1GB of free space above current usage")
 )

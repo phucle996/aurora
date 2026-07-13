@@ -249,6 +249,10 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 			apires.RespondNotFound(c, "bucket not found")
 			return
 		}
+		if errors.Is(updateErr, storageTaxonomy.ErrResizeLimitTooLow) {
+			apires.RespondBadRequest(c, "requested quota must leave at least 1GB of free space above current usage")
+			return
+		}
 		logger.HandlerError(c, op, updateErr)
 		apires.RespondInternalError(c, "internal_error")
 		return
@@ -263,8 +267,18 @@ func (h *PersonalBucketHandler) Delete(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	// Trích xuất userID để xác thực quyền sở hữu
+	// [COMMENT]: Trích xuất userID, workspaceID, zoneID từ request context
 	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
 	if !ok {
 		return
 	}
@@ -276,7 +290,23 @@ func (h *PersonalBucketHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	deleteErr := h.personalSvc.DeleteBucket(ctx, bucketID, userID)
+	// [COMMENT]: Lấy bucket name vật lý từ URL query parameter
+	bucketName := strings.TrimSpace(c.Query("name"))
+	if bucketName == "" {
+		apires.RespondBadRequest(c, "missing bucket name query parameter")
+		return
+	}
+
+	// [COMMENT]: Khởi tạo thực thể tham số xóa
+	param := &storageEntity.DeletePersonalBucket{
+		BucketID:    bucketID,
+		BucketName:  bucketName,
+		WorkspaceID: workspaceID,
+		ZoneID:      zoneID,
+		UserID:      userID,
+	}
+
+	deleteErr := h.personalSvc.DeleteBucket(ctx, param)
 	if deleteErr != nil {
 		if errors.Is(deleteErr, storageTaxonomy.ErrNotFound) {
 			apires.RespondNotFound(c, "bucket not found")

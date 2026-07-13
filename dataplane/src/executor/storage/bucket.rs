@@ -6,10 +6,8 @@ use crate::executor::{ExecutionResult, Executor, ExecutorError};
 use crate::job_lifecycle::message::JobPayload;
 use crate::observability::logger::Logger;
 
-// [COMMENT]: Import Struct được tự động sinh ra bởi prost_build từ storage_job.proto
-pub mod storage_proto {
-    include!(concat!(env!("OUT_DIR"), "/storage.rs"));
-}
+// [COMMENT]: Sử dụng Struct được tự động sinh ra bởi prost_build từ parent module storage_proto
+use super::storage_proto;
 
 /// [COMMENT]: Executor chịu trách nhiệm khởi tạo vật lý Storage Bucket trên cụm MinIO.
 /// Thực hiện 3 bước nguyên tử theo thứ tự:
@@ -112,12 +110,18 @@ impl Executor for BucketCreateExecutor {
             Logger::sys_error(op, &msg, "MINIO_USER_CREATE_FAILED");
 
             // [COMMENT]: Rollback Step 1: Xóa bucket vừa tạo do không thể tạo user tương ứng
-            Logger::sys_info(op, &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name));
+            Logger::sys_info(
+                op,
+                &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name),
+            );
             if let Err(rollback_err) = minio_client.delete_bucket(&sync_data.name).await {
                 Logger::sys_error(
                     op,
-                    &format!("Rollback Step 1 FAIL: Không thể xóa bucket '{}': {}", sync_data.name, rollback_err),
-                    "ROLLBACK_FAILED"
+                    &format!(
+                        "Rollback Step 1 FAIL: Không thể xóa bucket '{}': {}",
+                        sync_data.name, rollback_err
+                    ),
+                    "ROLLBACK_FAILED",
                 );
             }
             return Err(ExecutorError::ExecutionFailed(msg));
@@ -169,11 +173,20 @@ impl Executor for BucketCreateExecutor {
             Logger::sys_error(op, &msg, "MINIO_POLICY_CREATE_FAILED");
 
             // [COMMENT]: Rollback Step 2: Xóa user vừa tạo ở Step 2
-            Logger::sys_info(op, &format!("Rollback Step 2: Đang xóa user '{}'...", sync_data.access_key));
+            Logger::sys_info(
+                op,
+                &format!(
+                    "Rollback Step 2: Đang xóa user '{}'...",
+                    sync_data.access_key
+                ),
+            );
             let _ = admin_client.delete_user(&sync_data.access_key).await;
 
             // [COMMENT]: Rollback Step 1: Xóa bucket ở Step 1
-            Logger::sys_info(op, &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name));
+            Logger::sys_info(
+                op,
+                &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name),
+            );
             let _ = minio_client.delete_bucket(&sync_data.name).await;
 
             return Err(ExecutorError::ExecutionFailed(msg));
@@ -188,15 +201,27 @@ impl Executor for BucketCreateExecutor {
             Logger::sys_error(op, &msg, "MINIO_POLICY_ATTACH_FAILED");
 
             // [COMMENT]: Rollback Step 3: Xóa policy vừa tạo
-            Logger::sys_info(op, &format!("Rollback Step 3: Đang xóa policy '{}'...", policy_name));
+            Logger::sys_info(
+                op,
+                &format!("Rollback Step 3: Đang xóa policy '{}'...", policy_name),
+            );
             let _ = admin_client.delete_policy(&policy_name).await;
 
             // [COMMENT]: Rollback Step 2: Xóa user
-            Logger::sys_info(op, &format!("Rollback Step 2: Đang xóa user '{}'...", sync_data.access_key));
+            Logger::sys_info(
+                op,
+                &format!(
+                    "Rollback Step 2: Đang xóa user '{}'...",
+                    sync_data.access_key
+                ),
+            );
             let _ = admin_client.delete_user(&sync_data.access_key).await;
 
             // [COMMENT]: Rollback Step 1: Xóa bucket
-            Logger::sys_info(op, &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name));
+            Logger::sys_info(
+                op,
+                &format!("Rollback Step 1: Đang xóa bucket '{}'...", sync_data.name),
+            );
             let _ = minio_client.delete_bucket(&sync_data.name).await;
 
             return Err(ExecutorError::ExecutionFailed(msg));

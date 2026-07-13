@@ -171,21 +171,107 @@ func (s *PersonalBucketSvcImpl) ListBucketNames(ctx context.Context, workspaceID
 }
 
 func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID, quotaBytes int64) error {
-	err := s.repo.UpdateQuota(ctx, bucketID, userID, quotaBytes)
+	// [COMMENT]: 1. Lấy thông tin hiện tại của bucket để làm metadata cho outbox payload (name, current quota)
+	bucket, err := s.repo.GetByID(ctx, bucketID, userID)
+	if err != nil {
+		return apperr.Wrap(err, err, "get_failed")
+	}
+
+	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	// [COMMENT]: 2. Chuẩn bị proto event đồng bộ resize gửi xuống dataplane
+	syncEvent := &storageproto.BucketResizeSync{
+		BucketId:            bucket.ID.String(),
+		Name:                bucket.Name,
+		CurrentQuotaBytes:   bucket.CapacityQuotaBytes,
+		RequestedQuotaBytes: quotaBytes,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	// [COMMENT]: 3. Khởi tạo Outbox Record để cập nhật đồng thời trong transaction
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		RoutingScope:         "zone:" + bucket.ZoneID.String(),
+		JobTopic:             "storage.bucket.resize",
+		Payload:              payloadBytes,
+		UserID:               userID.String(),
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           bucket.ID.String(),
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	// [COMMENT]: 4. Thực thi cập nhật DB và ghi outbox nguyên tử
+	err = s.repo.UpdateQuota(ctx, bucketID, userID, quotaBytes, outbox)
 	if err != nil {
 		return apperr.Wrap(err, err, "update_quota_failed")
 	}
 	return nil
 }
 
+func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error {
+	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết để xóa sạch trên MinIO
+	accessKeys, err := s.repo.ListAccessKeys(ctx, param.BucketID, param.UserID)
+	if err != nil {
+		return apperr.Wrap(err, err, "list_credentials_failed")
+	}
 
+	// [COMMENT]: Trích xuất Trace ID phục vụ tracing
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
 
-func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
-	err := s.repo.Delete(ctx, bucketID, userID)
+	// [COMMENT]: 2. Khởi tạo và mã hóa payload protobuf BucketDeleteSync sử dụng tên từ param input
+	syncEvent := &storageproto.BucketDeleteSync{
+		Name:       param.BucketName,
+		AccessKeys: accessKeys,
+	}
+	payloadBytes, err := proto.Marshal(syncEvent)
+	if err != nil {
+		return apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	// [COMMENT]: 3. Cấu hình outbox record với zone_id từ param input
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		RoutingScope:         "zone:" + param.ZoneID.String(),
+		JobTopic:             "storage.bucket.delete",
+		Payload:              payloadBytes,
+		UserID:               param.UserID.String(),
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           param.BucketID.String(),
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	// [COMMENT]: 4. Thực thi xóa cứng DB và ghi outbox nguyên tử
+	err = s.repo.Delete(ctx, param.BucketID, param.UserID, outbox)
 	if err != nil {
 		return apperr.Wrap(err, err, "delete_failed")
 	}
 	return nil
 }
-
-
