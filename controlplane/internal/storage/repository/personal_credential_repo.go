@@ -66,28 +66,28 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 	now := time.Now()
 	var bucketID uuid.UUID
 	err := r.db.QueryRow(ctx, query,
-		param.ID,                   // $1
-		param.BucketName,           // $2
-		param.UserID,               // $3
-		param.WorkspaceID,          // $4
-		param.AccessKey,            // $5
-		param.Policy,               // $6
-		now,                        // $7
-		now,                        // $8
-		mo.EventID,                 // $9
-		mo.RoutingScope,            // $10
-		mo.JobTopic,                // $11
-		mo.Payload,                 // $12
-		mo.UserID,                  // $13
-		mo.Status,                  // $14
-		mo.CompletedAt,             // $15
-		mo.JobVersion,              // $16
-		mo.ResourceID,              // $17
-		mo.PayloadSchemaVersion,    // $18
-		mo.TraceID,                 // $19
-		mo.Idle,                    // $20
-		mo.ErrorCode,               // $21
-		mo.ErrorMessage,            // $22
+		param.ID,                // $1
+		param.BucketName,        // $2
+		param.UserID,            // $3
+		param.WorkspaceID,       // $4
+		param.AccessKey,         // $5
+		param.Policy,            // $6
+		now,                     // $7
+		now,                     // $8
+		mo.EventID,              // $9
+		mo.RoutingScope,         // $10
+		mo.JobTopic,             // $11
+		mo.Payload,              // $12
+		mo.UserID,               // $13
+		mo.Status,               // $14
+		mo.CompletedAt,          // $15
+		mo.JobVersion,           // $16
+		mo.ResourceID,           // $17
+		mo.PayloadSchemaVersion, // $18
+		mo.TraceID,              // $19
+		mo.Idle,                 // $20
+		mo.ErrorCode,            // $21
+		mo.ErrorMessage,         // $22
 	).Scan(&bucketID)
 
 	if err != nil {
@@ -98,33 +98,6 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 	}
 
 	return bucketID, nil
-}
-
-func (r *PersonalCredentialRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalCredential, error) {
-	// [COMMENT]: Lược bỏ cột secret_key trong SELECT query
-	query := fmt.Sprintf(`
-		SELECT id, bucket_id, access_key, policy, created_at, updated_at
-		FROM %s.personal_credentials
-		WHERE id = $1
-	`, r.storage)
-
-	var m storageModel.PersonalCredential
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&m.ID,
-		&m.BucketID,
-		&m.AccessKey,
-		&m.Policy,
-		&m.CreatedAt,
-		&m.UpdatedAt,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	return storageModel.PersonalCredentialModelToEntity(&m), nil
 }
 
 func (r *PersonalCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error) {

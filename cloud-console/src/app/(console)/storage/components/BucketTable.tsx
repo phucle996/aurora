@@ -113,14 +113,7 @@ export function BucketTable({
                   </span>
                 </th>
 
-                <th
-                  className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors"
-                  onClick={() => onSort("status")}
-                >
-                  <span className="inline-flex items-center">
-                    Status <SortIcon col="status" />
-                  </span>
-                </th>
+
                 <th
                   className="px-6 py-3.5 cursor-pointer hover:text-foreground transition-colors"
                   onClick={() => onSort("quota")}
@@ -155,39 +148,6 @@ export function BucketTable({
                         {/* [COMMENT]: Đổi sang sử dụng thuộc tính lowercase 'name' theo backend */}
                         {b.name}
                       </Link>
-                    </td>
-
-                    {/* Status Dot */}
-                    <td className="px-6 py-3.5">
-                      <span className="inline-flex items-center gap-2 text-xs font-bold select-none">
-                        <span
-                          className={cn(
-                            "h-1.5 w-1.5 rounded-full",
-                            b.status === "active"
-                              ? "bg-emerald-500 animate-pulse"
-                              : b.status === "creating"
-                              ? "bg-amber-500"
-                              : b.status === "suspended"
-                              ? "bg-red-500"
-                              : "bg-slate-400"
-                          )}
-                        />
-                        <span
-                          className={cn(
-                            "capitalize",
-                            b.status === "active"
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : b.status === "creating"
-                              ? "text-amber-600 dark:text-amber-400"
-                              : b.status === "suspended"
-                              ? "text-red-600 dark:text-red-400"
-                              : "text-slate-500"
-                          )}
-                        >
-                          {/* [COMMENT]: Đổi sang sử dụng thuộc tính lowercase 'status' theo backend */}
-                          {b.status}
-                        </span>
-                      </span>
                     </td>
 
                     {/* Capacity Quota */}

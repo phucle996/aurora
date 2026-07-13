@@ -51,10 +51,10 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của WorkspaceID
 	physicalName := fmt.Sprintf("ws-%s-%s", param.WorkspaceID.String()[:8], param.Name)
 
+	// [COMMENT]: Bucket không còn status field — tồn tại trong DB là đủ để xác định là active
 	bucket := &storageEntity.PersonalBucket{
 		ID:                 bucketID,
 		Name:               physicalName,
-		Status:             storageEntity.BucketStatusCreating,
 		CapacityQuotaBytes: param.CapacityQuotaBytes,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
@@ -178,21 +178,7 @@ func (s *PersonalBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID 
 	return nil
 }
 
-func (s *PersonalBucketSvcImpl) SuspendBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
-	err := s.repo.UpdateStatus(ctx, bucketID, userID, storageEntity.BucketStatusSuspended)
-	if err != nil {
-		return apperr.Wrap(err, err, "suspend_failed")
-	}
-	return nil
-}
 
-func (s *PersonalBucketSvcImpl) ResumeBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
-	err := s.repo.UpdateStatus(ctx, bucketID, userID, storageEntity.BucketStatusActive)
-	if err != nil {
-		return apperr.Wrap(err, err, "resume_failed")
-	}
-	return nil
-}
 
 func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) error {
 	err := s.repo.Delete(ctx, bucketID, userID)
@@ -202,10 +188,4 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.
 	return nil
 }
 
-func (s *PersonalBucketSvcImpl) UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error {
-	err := s.repo.UpdateUsedBytes(ctx, name, usedBytes)
-	if err != nil {
-		return apperr.Wrap(err, err, "update_used_bytes_failed")
-	}
-	return nil
-}
+

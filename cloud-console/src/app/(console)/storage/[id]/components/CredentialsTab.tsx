@@ -120,15 +120,14 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     createCredentialMutation.mutate(policy);
   };
 
-  // [COMMENT]: Mutation xóa access key, tự động update local cache để nâng cao UX (Zero-Request UI update).
-  const deleteCredentialMutation = useMutation<void, Error, string>({
-    mutationFn: (id) => deleteCredential(bucket.id, id),
-    onMutate: async (id) => {
+  // [COMMENT]: Mutation xóa access key — truyền cả id lẫn access_key để backend không cần DB lookup thêm.
+  const deleteCredentialMutation = useMutation<void, Error, { id: string; accessKey: string }>({
+    mutationFn: ({ id, accessKey }) => deleteCredential(bucket.id, id, accessKey),
+    onMutate: async ({ id }) => {
       setDeletingId(id);
     },
-    onSuccess: (_, id) => {
+    onSuccess: (_, { id }) => {
       toast.success("Access Key successfully deleted");
-      // [COMMENT]: Đổi sang bucket.id theo snake_case của backend
       queryClient.setQueryData<CredentialItem[]>(["credentials", bucket.id], (prev) => {
         if (!prev) return [];
         return prev.filter((item) => item.id !== id);
@@ -142,10 +141,12 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
     },
   });
 
-  // [COMMENT]: Xử lý sự kiện xác nhận xóa Access Key từ Modal
+  // [COMMENT]: Xử lý sự kiện xác nhận xóa Access Key từ Modal.
+  // access_key được lấy từ deletingCred state (đã có sẵn từ List response), không cần fetch thêm.
   const handleDelete = async (id: string) => {
+    if (!deletingCred) return;
     try {
-      await deleteCredentialMutation.mutateAsync(id);
+      await deleteCredentialMutation.mutateAsync({ id, accessKey: deletingCred.access_key });
       setDeletingCred(null);
     } catch {
       // Bắt lỗi để tránh Unhandled Promise Rejection (đã có toast thông báo trong onError)

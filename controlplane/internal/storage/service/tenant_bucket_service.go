@@ -52,13 +52,13 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	// [COMMENT]: Sinh tên vật lý duy nhất toàn cục với prefix là 8 ký tự đầu của TenantID
 	physicalName := fmt.Sprintf("tn-%s-%s", param.TenantID.String()[:8], param.Name)
 
+	// [COMMENT]: Bucket không còn status field — tồn tại trong DB là đủ để xác định là active
 	bucket := &storageEntity.TenantBucket{
 		ID:                 bucketID,
 		Name:               physicalName,
 		WorkspaceID:        param.WorkspaceID,
 		ZoneID:             param.ZoneID,
 		TenantID:           param.TenantID,
-		Status:             storageEntity.BucketStatusCreating, // provisioning = creating
 		CapacityQuotaBytes: param.CapacityQuotaBytes,
 		CreatedAt:          time.Now(),
 		UpdatedAt:          time.Now(),
@@ -172,21 +172,7 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	return nil
 }
 
-func (s *TenantBucketSvcImpl) SuspendBucket(ctx context.Context, bucketID uuid.UUID) error {
-	err := s.repo.UpdateStatus(ctx, bucketID, storageEntity.BucketStatusSuspended)
-	if err != nil {
-		return apperr.Wrap(err, err, "suspend_failed")
-	}
-	return nil
-}
 
-func (s *TenantBucketSvcImpl) ResumeBucket(ctx context.Context, bucketID uuid.UUID) error {
-	err := s.repo.UpdateStatus(ctx, bucketID, storageEntity.BucketStatusActive)
-	if err != nil {
-		return apperr.Wrap(err, err, "resume_failed")
-	}
-	return nil
-}
 
 func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UUID) error {
 	err := s.repo.Delete(ctx, bucketID)
@@ -196,10 +182,4 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, bucketID uuid.UU
 	return nil
 }
 
-func (s *TenantBucketSvcImpl) UpdateUsedBytes(ctx context.Context, name string, usedBytes int64) error {
-	err := s.repo.UpdateUsedBytes(ctx, name, usedBytes)
-	if err != nil {
-		return apperr.Wrap(err, err, "update_used_bytes_failed")
-	}
-	return nil
-}
+

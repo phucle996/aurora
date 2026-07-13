@@ -5,8 +5,6 @@ import { Button } from "@/components/ui/button";
 interface BucketFiltersProps {
   searchTerm: string;
   setSearchTerm: (val: string) => void;
-  statusFilter: string;
-  setStatusFilter: (val: string) => void;
   handleClearFilters: () => void;
   setCurrentPage: (page: number) => void;
   onCreateClick: () => void;
@@ -16,15 +14,12 @@ interface BucketFiltersProps {
 export function BucketFilters({
   searchTerm,
   setSearchTerm,
-  statusFilter,
-  setStatusFilter,
   handleClearFilters,
   setCurrentPage,
   onCreateClick,
   canCreate,
 }: BucketFiltersProps) {
-  const hasActiveFilters =
-    searchTerm !== "" || statusFilter !== "All";
+  const hasActiveFilters = searchTerm !== "";
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 text-xs w-full">
@@ -55,22 +50,6 @@ export function BucketFilters({
           )}
         </div>
 
-        {/* Status Dropdown */}
-        <select
-          value={statusFilter}
-          onChange={(e) => {
-            setStatusFilter(e.target.value);
-            setCurrentPage(1);
-          }}
-          className="h-8 px-2.5 rounded-lg bg-background border border-border text-xs text-foreground font-medium focus:outline-none cursor-pointer hover:bg-muted/40 transition-colors"
-        >
-          <option value="All">Status: All</option>
-          <option value="creating">Status: Creating</option>
-          <option value="active">Status: Active</option>
-          <option value="suspended">Status: Suspended</option>
-          <option value="deleted">Status: Deleted</option>
-        </select>
-
         {/* Clear Button */}
         {hasActiveFilters && (
           <button
@@ -83,16 +62,17 @@ export function BucketFilters({
         )}
       </div>
 
-      {canCreate && (
-        <Button
-          onClick={onCreateClick}
-          size="sm"
-          className="font-bold flex items-center gap-1 cursor-pointer bg-blue-600 hover:bg-blue-700 text-white rounded-md h-8"
-        >
-          <Plus className="h-4.5 w-4.5" />
-          <span>Create Bucket</span>
-        </Button>
-      )}
+      <div>
+        {canCreate && (
+          <Button
+            onClick={onCreateClick}
+            className="h-8 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 flex items-center gap-1 font-bold cursor-pointer transition-all active:scale-[0.98] shadow-sm select-none"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Create Bucket</span>
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

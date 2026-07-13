@@ -57,6 +57,7 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 
 	// [COMMENT]: Điền các trường thông tin credential được sinh vào param
 	param.ID = uuid.New()
+	param.AccessKey = accessKey
 
 	// [COMMENT]: Khởi tạo thực thể CreatedPersonalCredential chứa raw Secret Key phản hồi cho Client
 	createdCred := &storageEntity.CreatedPersonalCredential{
@@ -111,24 +112,6 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	return createdCred, nil
 }
 
-func (s *PersonalCredentialSvcImpl) GetCredential(ctx context.Context, credID uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalCredential, error) {
-	cred, err := s.repo.GetByID(ctx, credID)
-	if err != nil {
-		return nil, apperr.Wrap(err, err, "get_failed")
-	}
-	if cred == nil {
-		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "credential_not_found")
-	}
-
-	// [COMMENT]: Validate bucket ownership using GetByID check
-	bucket, err := s.bucketRepo.GetByID(ctx, cred.BucketID, userID)
-	if err != nil || bucket == nil {
-		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "bucket_not_found")
-	}
-
-	return cred, nil
-}
-
 func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error) {
 	// [COMMENT]: Validate bucket ownership using GetByID check
 	bucket, err := s.bucketRepo.GetByID(ctx, bucketID, userID)
@@ -145,15 +128,6 @@ func (s *PersonalCredentialSvcImpl) ListCredentials(ctx context.Context, bucketI
 }
 
 func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param *storageEntity.DeletePersonalCredential) error {
-	// [COMMENT]: Chỉ lấy thông tin credential để build proto payload (access_key, policy).
-	// Toàn bộ việc validate quyền sở hữu (workspace → user → bucket → credential) sẽ do CTE trong repo đảm nhiệm nguyên tử.
-	cred, err := s.repo.GetByID(ctx, param.CredentialID)
-	if err != nil {
-		return apperr.Wrap(err, err, "get_failed")
-	}
-	if cred == nil {
-		return apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "credential_not_found")
-	}
 
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
@@ -162,12 +136,14 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO
+	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO.
+	// Chỉ cần access_key để MinIO xác định user và derive policy_name = "policy-{access_key}".
+	// Không cần policy JSON — Dataplane tự tính policy_name từ access_key khi xóa.
 	syncEvent := &storageproto.CredentialSync{
-		Id:        cred.ID.String(),
-		AccessKey: cred.AccessKey,
+		Id:        param.CredentialID.String(),
+		AccessKey: param.AccessKey,
 		SecretKey: "",
-		Policy:    cred.Policy,
+		Policy:    "",
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -183,7 +159,7 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 		UserID:               param.UserID.String(),
 		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
-		ResourceID:           cred.ID.String(),
+		ResourceID:           param.CredentialID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 30,

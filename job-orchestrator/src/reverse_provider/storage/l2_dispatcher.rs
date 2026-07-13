@@ -27,6 +27,17 @@ pub async fn dispatch_storage_result(
             )
             .await
         }
+        "storage.credential.create" => {
+            db::credential::resolve_credential_creation(
+                pg_client,
+                job_uuid,
+                job_topic,
+                status,
+                error_code,
+                error_message,
+            )
+            .await
+        }
         "storage.credential.delete" => {
             db::credential::resolve_credential_deletion(
                 pg_client,

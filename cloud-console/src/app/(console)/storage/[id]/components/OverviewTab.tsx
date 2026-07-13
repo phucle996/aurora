@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { HardDrive, RefreshCw, Power, Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
+import { HardDrive, RefreshCw, Trash2, Edit2, Check, Copy, Loader2, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { updateBucketQuota, suspendBucket, resumeBucket, deleteBucket, type BucketItem } from "@/lib/api/storage";
+import { updateBucketQuota, deleteBucket, type BucketItem } from "@/lib/api/storage";
 import { cn } from "@/lib/utils";
 
 interface OverviewTabProps {
@@ -32,7 +32,6 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
   const [newQuotaGB, setNewQuotaGB] = useState<number>(() => bytesToGB(bucket.capacity_quota_bytes));
   const [showEditQuota, setShowEditQuota] = useState(false);
 
-  const [togglingStatus, setTogglingStatus] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmName, setDeleteConfirmName] = useState("");
@@ -96,24 +95,6 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
     }
   };
 
-  const handleToggleStatus = async () => {
-    setTogglingStatus(true);
-    try {
-      // [COMMENT]: Đổi sang bucket.status và bucket.id theo snake_case của backend
-      if (bucket.status === "suspended") {
-        await resumeBucket(bucket.id);
-        toast.success("Bucket resumed and is now active");
-      } else {
-        await suspendBucket(bucket.id);
-        toast.warning("Bucket suspended and is read-only/paused");
-      }
-      onRefresh();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to toggle status");
-    } finally {
-      setTogglingStatus(false);
-    }
-  };
 
   const handleDelete = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -188,21 +169,6 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
 
 
             <div className="flex flex-col gap-1">
-              <span className="font-bold text-muted-foreground">Status</span>
-              <div>
-                <span className={cn(
-                  "inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
-                  bucket.status === "active" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20",
-                  bucket.status === "creating" && "bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20",
-                  bucket.status === "suspended" && "bg-amber-500/10 text-amber-600 dark:text-amber-450 border border-amber-500/20",
-                  bucket.status === "deleted" && "bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20"
-                )}>
-                  {bucket.status}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1">
               <span className="font-bold text-muted-foreground">Created At</span>
               <span className="font-semibold text-foreground">
                 {/* [COMMENT]: Đổi sang bucket.created_at theo snake_case của backend */}
@@ -272,40 +238,7 @@ export function OverviewTab({ bucket, onRefresh }: OverviewTabProps) {
             </div>
           </div>
 
-          {/* Action B: Suspend/Resume */}
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-2 border-t border-border/40">
-            <div className="space-y-0.5 max-w-md">
-              <h4 className="font-bold text-foreground text-sm">
-                {/* [COMMENT]: Đổi sang bucket.status theo snake_case của backend */}
-                {bucket.status === "suspended" ? "Resume Storage Operations" : "Suspend Storage Operations"}
-              </h4>
-              <p className="text-muted-foreground text-[11px] leading-normal font-medium">
-                {bucket.status === "suspended"
-                  ? "Re-activate the bucket to allow clients to download and upload files normally."
-                  : "Temporarily freeze the bucket. Read and write actions will be disabled, but no files will be deleted."}
-              </p>
-            </div>
-            <div>
-              <Button
-                variant="outline"
-                onClick={handleToggleStatus}
-                disabled={togglingStatus}
-                className={cn(
-                  "h-8 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5",
-                  bucket.status === "suspended"
-                    ? "border-emerald-200 dark:border-emerald-950 text-emerald-600 dark:text-emerald-450 hover:bg-emerald-50 dark:hover:bg-emerald-950/20"
-                    : "border-amber-200 dark:border-amber-955 text-amber-600 dark:text-amber-450 hover:bg-amber-50 dark:hover:bg-amber-950/20"
-                )}
-              >
-                <Power className="h-3.5 w-3.5" />
-                <span>
-                  {togglingStatus ? "Toggling..." : bucket.status === "suspended" ? "Resume Bucket" : "Suspend Bucket"}
-                </span>
-              </Button>
-            </div>
-          </div>
 
-          {/* Action C: Delete Bucket */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-2 border-t border-border/40">
             <div className="space-y-0.5 max-w-md">
               <h4 className="font-bold text-red-600 dark:text-red-400 text-sm">Danger Zone: Delete Bucket</h4>

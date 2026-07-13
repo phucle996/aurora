@@ -13,9 +13,6 @@ type PersonalCredentialRepo interface {
 	// [COMMENT]: Lưu trữ Access Key mới liên kết với Bucket cá nhân cùng sự kiện Outbox.
 	Create(ctx context.Context, param *storageEntity.CreatePersonalCredential, outbox *storageEntity.StorageOutboxRecord) (uuid.UUID, error)
 
-	// [COMMENT]: Truy xuất thông tin Access Key theo ID.
-	GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.PersonalCredential, error)
-
 	// [COMMENT]: Liệt kê toàn bộ Access Keys thuộc một Bucket cá nhân dưới dạng rút gọn (không gồm BucketID)
 	ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error)
 

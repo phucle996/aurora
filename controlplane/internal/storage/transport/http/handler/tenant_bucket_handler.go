@@ -24,6 +24,4 @@ func (h *TenantBucketHandler) Create(c *gin.Context)      {}
 func (h *TenantBucketHandler) Get(c *gin.Context)         {}
 func (h *TenantBucketHandler) List(c *gin.Context)        {}
 func (h *TenantBucketHandler) UpdateQuota(c *gin.Context) {}
-func (h *TenantBucketHandler) Suspend(c *gin.Context)     {}
-func (h *TenantBucketHandler) Resume(c *gin.Context)      {}
 func (h *TenantBucketHandler) Delete(c *gin.Context)      {}

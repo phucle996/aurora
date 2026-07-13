@@ -48,18 +48,6 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.PersonalBucketHandler.UpdateQuota,
 		)
 
-		// [COMMENT]: Tạm ngưng hoạt động của bucket
-		personalGroup.POST("/storage/buckets/:id/suspend",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.PersonalBucketHandler.Suspend,
-		)
-
-		// [COMMENT]: Kích hoạt lại bucket bị suspend
-		personalGroup.POST("/storage/buckets/:id/resume",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.PersonalBucketHandler.Resume,
-		)
-
 		// [COMMENT]: Yêu cầu xóa bucket
 		personalGroup.DELETE("/storage/buckets/:id",
 			middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
@@ -80,12 +68,6 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		personalGroup.GET("/storage/buckets/:id/credentials",
 			middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
 			module.PersonalCredentialHandler.List,
-		)
-
-		// [COMMENT]: Chi tiết một Access Key cụ thể
-		personalGroup.GET("/storage/credentials/:id",
-			middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
-			module.PersonalCredentialHandler.Get,
 		)
 
 		// [COMMENT]: Xóa bỏ Access Key
@@ -128,18 +110,6 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.TenantBucketHandler.UpdateQuota,
 		)
 
-		// [COMMENT]: Tạm ngưng hoạt động của bucket
-		tenantGroup.POST("/storage/buckets/:id/suspend",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.TenantBucketHandler.Suspend,
-		)
-
-		// [COMMENT]: Kích hoạt lại bucket bị suspend
-		tenantGroup.POST("/storage/buckets/:id/resume",
-			middleware.Authorize("storage:bucket:write", module.L1Registry, "*"),
-			module.TenantBucketHandler.Resume,
-		)
-
 		// [COMMENT]: Yêu cầu xóa bucket
 		tenantGroup.DELETE("/storage/buckets/:id",
 			middleware.Authorize("storage:bucket:delete", module.L1Registry, "*"),
@@ -160,12 +130,6 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		tenantGroup.GET("/storage/buckets/:id/credentials",
 			middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
 			module.TenantCredentialHandler.List,
-		)
-
-		// [COMMENT]: Chi tiết một Access Key cụ thể
-		tenantGroup.GET("/storage/credentials/:id",
-			middleware.Authorize("storage:credential:read", module.L1Registry, "*"),
-			module.TenantCredentialHandler.Get,
 		)
 
 		// [COMMENT]: Xóa bỏ Access Key

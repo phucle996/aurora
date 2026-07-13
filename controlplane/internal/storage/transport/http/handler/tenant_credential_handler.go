@@ -2,6 +2,7 @@ package storageHandler
 
 import (
 	storageSvcInterface "controlplane/internal/storage/domain/service"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -21,6 +22,5 @@ func NewTenantCredentialHandler(
 }
 
 func (h *TenantCredentialHandler) Create(c *gin.Context) {}
-func (h *TenantCredentialHandler) Get(c *gin.Context)    {}
 func (h *TenantCredentialHandler) List(c *gin.Context)   {}
 func (h *TenantCredentialHandler) Delete(c *gin.Context) {}

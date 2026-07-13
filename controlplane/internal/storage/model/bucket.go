@@ -9,12 +9,12 @@ import (
 )
 
 // [COMMENT]: PersonalBucket đại diện cho cấu trúc bảng personal_buckets trong PostgreSQL.
+// Cột status đã bị drop khỏi schema (migration 000003).
 type PersonalBucket struct {
 	ID                 uuid.UUID `db:"id"`
 	Name               string    `db:"name"`
 	WorkspaceID        uuid.UUID `db:"workspace_id"`
 	ZoneID             uuid.UUID `db:"zone_id"`
-	Status             string    `db:"status"`
 	CapacityQuotaBytes int64     `db:"capacity_quota_bytes"`
 	UsedBytes          int64     `db:"used_bytes"`
 	CreatedAt          time.Time `db:"created_at"`
@@ -22,13 +22,13 @@ type PersonalBucket struct {
 }
 
 // [COMMENT]: TenantBucket đại diện cho cấu trúc bảng tenant_buckets trong PostgreSQL.
+// Cột status đã bị drop khỏi schema (migration 000003).
 type TenantBucket struct {
 	ID                 uuid.UUID `db:"id"`
 	Name               string    `db:"name"`
 	WorkspaceID        uuid.UUID `db:"workspace_id"`
 	ZoneID             uuid.UUID `db:"zone_id"`
 	TenantID           uuid.UUID `db:"tenant_id"`
-	Status             string    `db:"status"`
 	CapacityQuotaBytes int64     `db:"capacity_quota_bytes"`
 	UsedBytes          int64     `db:"used_bytes"`
 	CreatedAt          time.Time `db:"created_at"`
@@ -46,7 +46,6 @@ func TenantBucketEntityToModel(e *storageEntity.TenantBucket) *TenantBucket {
 		WorkspaceID:        e.WorkspaceID,
 		ZoneID:             e.ZoneID,
 		TenantID:           e.TenantID,
-		Status:             string(e.Status),
 		CapacityQuotaBytes: e.CapacityQuotaBytes,
 		UsedBytes:          e.UsedBytes,
 		CreatedAt:          e.CreatedAt,
@@ -65,7 +64,6 @@ func TenantBucketModelToEntity(m *TenantBucket) *storageEntity.TenantBucket {
 		WorkspaceID:        m.WorkspaceID,
 		ZoneID:             m.ZoneID,
 		TenantID:           m.TenantID,
-		Status:             storageEntity.BucketStatus(m.Status),
 		CapacityQuotaBytes: m.CapacityQuotaBytes,
 		UsedBytes:          m.UsedBytes,
 		CreatedAt:          m.CreatedAt,

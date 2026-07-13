@@ -91,29 +91,13 @@ pub async fn resolve_bucket_creation(
     );
 
     let row_opt = if status == "SUCCEEDED" {
-        // [COMMENT]: Khi job thành công, xóa hoàn toàn outbox record và đổi status của personal/tenant bucket thành 'active'
+        // [COMMENT]: Khi job thành công, chỉ cần xóa outbox record.
+        // Bucket đã tồn tại trong DB từ lúc INSERT — không cần update status vì status column đã bị drop.
         pg_client
             .query_opt(
-                "WITH updated_outbox AS ( \
-                     DELETE FROM storage.storage_outbox_records \
-                     WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                     RETURNING user_id, job_topic, trace_id, resource_id \
-                 ), \
-                 updated_personal AS ( \
-                     UPDATE storage.personal_buckets \
-                     SET status = 'active', updated_at = NOW() \
-                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
-                       AND (SELECT job_topic FROM updated_outbox) = 'storage.bucket.create' \
-                     RETURNING id \
-                 ), \
-                 updated_tenant AS ( \
-                     UPDATE storage.tenant_buckets \
-                     SET status = 'active', updated_at = NOW() \
-                     WHERE id::text = (SELECT resource_id FROM updated_outbox) \
-                       AND (SELECT job_topic FROM updated_outbox) = 'storage.bucket.create' \
-                     RETURNING id \
-                 ) \
-                 SELECT * FROM updated_outbox",
+                "DELETE FROM storage.storage_outbox_records \
+                 WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
+                 RETURNING user_id, job_topic, trace_id, resource_id",
                 &[&job_uuid, &job_topic],
             )
             .await?

@@ -621,7 +621,7 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-acr-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.8lKIu9hCSzp9mu9CFNj3Rd6h"
+      VAULT_TOKEN: "hvs.GpdDZl2hfrc6qvE3ZWFzUjxV"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"

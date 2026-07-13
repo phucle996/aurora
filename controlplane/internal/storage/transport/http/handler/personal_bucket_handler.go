@@ -135,7 +135,6 @@ func (h *PersonalBucketHandler) Get(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                   bucket.ID.String(),
 		"name":                 bucket.Name,
-		"status":               string(bucket.Status),
 		"capacity_quota_bytes": bucket.CapacityQuotaBytes,
 		"used_bytes":           bucket.UsedBytes,
 		"created_at":           bucket.CreatedAt.UTC().Format(time.RFC3339),
@@ -177,7 +176,6 @@ func (h *PersonalBucketHandler) List(c *gin.Context) {
 		resList[i] = gin.H{
 			"id":                   b.ID.String(),
 			"name":                 b.Name,
-			"status":               string(b.Status),
 			"capacity_quota_bytes": b.CapacityQuotaBytes,
 			"used_bytes":           b.UsedBytes,
 			"created_at":           b.CreatedAt.UTC().Format(time.RFC3339),
@@ -257,72 +255,6 @@ func (h *PersonalBucketHandler) UpdateQuota(c *gin.Context) {
 	}
 
 	apires.RespondSuccess(c, nil, "bucket quota updated")
-}
-
-// [COMMENT]: Suspend tạm dừng hoạt động bucket cá nhân.
-func (h *PersonalBucketHandler) Suspend(c *gin.Context) {
-	const op = "storage.personal_bucket.suspend"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	// Trích xuất userID để xác thực quyền sở hữu
-	userID, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
-		return
-	}
-
-	idStr := c.Param("id")
-	bucketID, err := uuid.Parse(idStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid bucket id format")
-		return
-	}
-
-	actionErr := h.personalSvc.SuspendBucket(ctx, bucketID, userID)
-	if actionErr != nil {
-		if errors.Is(actionErr, storageTaxonomy.ErrNotFound) {
-			apires.RespondNotFound(c, "bucket not found")
-			return
-		}
-		logger.HandlerError(c, op, actionErr)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-
-	apires.RespondSuccess(c, nil, "bucket suspended")
-}
-
-// [COMMENT]: Resume tái kích hoạt bucket cá nhân đang suspend.
-func (h *PersonalBucketHandler) Resume(c *gin.Context) {
-	const op = "storage.personal_bucket.resume"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	// Trích xuất userID để xác thực quyền sở hữu
-	userID, ok := pkgcontext.GetUserID(c, op)
-	if !ok {
-		return
-	}
-
-	idStr := c.Param("id")
-	bucketID, err := uuid.Parse(idStr)
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid bucket id format")
-		return
-	}
-
-	actionErr := h.personalSvc.ResumeBucket(ctx, bucketID, userID)
-	if actionErr != nil {
-		if errors.Is(actionErr, storageTaxonomy.ErrNotFound) {
-			apires.RespondNotFound(c, "bucket not found")
-			return
-		}
-		logger.HandlerError(c, op, actionErr)
-		apires.RespondInternalError(c, "internal_error")
-		return
-	}
-
-	apires.RespondSuccess(c, nil, "bucket resumed")
 }
 
 // [COMMENT]: Delete khởi động tiến trình xóa hoàn toàn bucket cá nhân.

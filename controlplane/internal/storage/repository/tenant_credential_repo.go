@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"controlplane/internal/config"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageModel "controlplane/internal/storage/model"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // [COMMENT]: TenantCredentialRepoImpl thực thi interface TenantCredentialRepo kết nối PostgreSQL.
@@ -77,33 +77,6 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 	return nil
 }
 
-func (r *TenantCredentialRepoImpl) GetByID(ctx context.Context, id uuid.UUID) (*storageEntity.TenantCredential, error) {
-	// [COMMENT]: Lược bỏ cột secret_key trong SELECT query
-	query := fmt.Sprintf(`
-		SELECT id, bucket_id, access_key, policy, created_at, updated_at
-		FROM %s.tenant_credentials
-		WHERE id = $1
-	`, r.storage)
-
-	var m storageModel.TenantCredential
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&m.ID,
-		&m.BucketID,
-		&m.AccessKey,
-		&m.Policy,
-		&m.CreatedAt,
-		&m.UpdatedAt,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	return storageModel.TenantCredentialModelToEntity(&m), nil
-}
-
 func (r *TenantCredentialRepoImpl) ListByBucket(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.TenantCredential, error) {
 	// [COMMENT]: Lược bỏ cột secret_key trong SELECT query
 	query := fmt.Sprintf(`
@@ -167,7 +140,6 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
-
 	// [COMMENT]: routing_scope truyền trực tiếp từ outbox.RoutingScope (=zone_id từ context, đã có sẵn)
 	res, err := r.db.Exec(ctx, query,
 		param.CredentialID,      // $1
@@ -200,5 +172,3 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 
 	return nil
 }
-
-

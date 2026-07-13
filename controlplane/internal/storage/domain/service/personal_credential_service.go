@@ -12,9 +12,6 @@ type PersonalCredentialService interface {
 	// [COMMENT]: Khởi tạo một cặp Access Key mới cho Bucket cá nhân, trả về struct kết quả chứa raw Secret Key.
 	CreateCredential(ctx context.Context, param *storageEntity.CreatePersonalCredential) (*storageEntity.CreatedPersonalCredential, error)
 	
-	// [COMMENT]: Lấy chi tiết thông tin Credentials có check quyền sở hữu.
-	GetCredential(ctx context.Context, credID uuid.UUID, userID uuid.UUID) (*storageEntity.PersonalCredential, error)
-	
 	// [COMMENT]: Liệt kê danh sách các Keys đang hoạt động của Bucket cá nhân có check quyền sở hữu, trả về list item được rút gọn (không gồm BucketID)
 	ListCredentials(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]*storageEntity.PersonalCredentialListItem, error)
 	

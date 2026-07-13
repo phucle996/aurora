@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
@@ -12,6 +11,8 @@ import (
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
+
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -118,19 +119,6 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 	return createdCred, nil
 }
 
-func (s *TenantCredentialSvcImpl) GetCredential(ctx context.Context, credID uuid.UUID) (*storageEntity.TenantCredential, error) {
-	cred, err := s.repo.GetByID(ctx, credID)
-	if err != nil {
-		return nil, apperr.Wrap(err, err, "get_failed")
-	}
-	if cred == nil {
-		return nil, apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "credential_not_found")
-	}
-
-	// [COMMENT]: Trả về thông tin credential, giữ nguyên SecretKey đã mã hóa (hoặc giải mã nếu cần, ở đây giữ nguyên bảo mật)
-	return cred, nil
-}
-
 func (s *TenantCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID uuid.UUID) ([]*storageEntity.TenantCredential, error) {
 	creds, err := s.repo.ListByBucket(ctx, bucketID)
 	if err != nil {
@@ -140,16 +128,6 @@ func (s *TenantCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID 
 }
 
 func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *storageEntity.DeleteTenantCredential) error {
-	// [COMMENT]: Chỉ lấy thông tin credential để build proto payload (access_key, policy).
-	// Toàn bộ việc validate quyền sở hữu (workspace → user → bucket → credential) sẽ do CTE trong repo đảm nhiệm nguyên tử.
-	cred, err := s.repo.GetByID(ctx, param.CredentialID)
-	if err != nil {
-		return apperr.Wrap(err, err, "get_failed")
-	}
-	if cred == nil {
-		return apperr.Wrap(storageTaxonomy.ErrNotFound, storageTaxonomy.ErrNotFound, "credential_not_found")
-	}
-
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
@@ -157,12 +135,13 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO
+	// [COMMENT]: Tạo sự kiện Outbox đồng bộ xóa (deleted) tài khoản trên MinIO.
+	// Chỉ cần access_key để MinIO xác định user và tự derive policy_name = "policy-{access_key}".
 	syncEvent := &storageproto.CredentialSync{
-		Id:        cred.ID.String(),
-		AccessKey: cred.AccessKey,
+		Id:        param.CredentialID.String(),
+		AccessKey: param.AccessKey,
 		SecretKey: "",
-		Policy:    cred.Policy,
+		Policy:    "",
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {
@@ -178,7 +157,7 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 		UserID:               param.UserID.String(),
 		Status:               storageEntity.StorageOutboxStatusPending,
 		JobVersion:           1,
-		ResourceID:           cred.ID.String(),
+		ResourceID:           param.CredentialID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
 		Idle:                 60,
@@ -192,4 +171,3 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 
 	return nil
 }
-

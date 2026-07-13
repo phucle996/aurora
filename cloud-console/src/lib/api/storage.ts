@@ -6,7 +6,7 @@ export type BucketItem = {
   id: string;
   name: string;
   workspace_id: string;
-  status: "creating" | "active" | "suspended" | "deleted";
+  // [COMMENT]: status đã bị bỏ — bucket tồn tại trong DB là đủ để xác định active
   capacity_quota_bytes: number;
   used_bytes?: number; // Dung lượng thực tế đã sử dụng
   created_at: string;
@@ -96,27 +96,7 @@ export async function updateBucketQuota(
   });
 }
 
-// [COMMENT]: Tạm đình chỉ hoạt động của bucket
-export async function suspendBucket(
-  id: string,
-  signal?: AbortSignal
-): Promise<void> {
-  await fetchJSON(`/api/v1/storage/buckets/${id}/suspend`, {
-    method: "POST",
-    signal,
-  });
-}
 
-// [COMMENT]: Kích hoạt lại bucket bị suspend
-export async function resumeBucket(
-  id: string,
-  signal?: AbortSignal
-): Promise<void> {
-  await fetchJSON(`/api/v1/storage/buckets/${id}/resume`, {
-    method: "POST",
-    signal,
-  });
-}
 
 // [COMMENT]: Yêu cầu xóa bucket
 export async function deleteBucket(
@@ -166,14 +146,16 @@ export async function createCredential(
   return res.data;
 }
 
-// [COMMENT]: Xóa bỏ Access Key
+// [COMMENT]: Xóa bỏ Access Key — cần truyền access_key trong body để backend gửi lệnh xóa tới MinIO mà không cần DB lookup thêm.
 export async function deleteCredential(
   bucketId: string,
   credentialID: string,
+  accessKey: string,
   signal?: AbortSignal
 ): Promise<void> {
   await fetchJSON(`/api/v1/storage/buckets/${bucketId}/credentials/${credentialID}`, {
     method: "DELETE",
+    body: { access_key: accessKey },
     signal,
   });
 }

@@ -51,7 +51,6 @@ function StorageDirectoryContent() {
 
   // Filter states
   const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState("All");
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -87,10 +86,9 @@ function StorageDirectoryContent() {
   // Filter and Sort logic
   const filteredBuckets = useMemo(() => {
     const res = buckets.filter((b) => {
-      // [COMMENT]: Lọc dữ liệu sử dụng thuộc tính 'name' và 'status' dạng snake_case/lowercase
+      // [COMMENT]: Lọc dữ liệu sử dụng thuộc tính 'name' dạng snake_case/lowercase
       const matchSearch = b.name.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchStatus = statusFilter === "All" || b.status === statusFilter;
-      return matchSearch && matchStatus;
+      return matchSearch;
     });
 
     return [...res].sort((a, b) => {
@@ -101,9 +99,6 @@ function StorageDirectoryContent() {
       if (sortKey === "name") {
         va = a.name.toLowerCase();
         vb = b.name.toLowerCase();
-      } else if (sortKey === "status") {
-        va = a.status.toLowerCase();
-        vb = b.status.toLowerCase();
       } else if (sortKey === "quota") {
         va = a.capacity_quota_bytes;
         vb = b.capacity_quota_bytes;
@@ -116,7 +111,7 @@ function StorageDirectoryContent() {
       if (va > vb) return sortDir === "asc" ? 1 : -1;
       return 0;
     });
-  }, [buckets, searchTerm, statusFilter, sortKey, sortDir]);
+  }, [buckets, searchTerm, sortKey, sortDir]);
 
   // Pagination calculation
   const totalBuckets = filteredBuckets.length;
@@ -128,7 +123,6 @@ function StorageDirectoryContent() {
 
   const handleClearFilters = () => {
     setSearchTerm("");
-    setStatusFilter("All");
     setCurrentPage(1);
     toast.success("Storage bucket filter terms cleared");
   };
@@ -174,8 +168,6 @@ function StorageDirectoryContent() {
         <BucketFilters
           searchTerm={searchTerm}
           setSearchTerm={setSearchTerm}
-          statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
           handleClearFilters={handleClearFilters}
           setCurrentPage={setCurrentPage}
           onCreateClick={() => router.push("/storage/new")}

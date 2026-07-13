@@ -87,20 +87,39 @@ export const RealtimeProvider: React.FC<{
     client.on("publication", (ctx) => {
       console.log("📥 Global Realtime publication received (Server-side sub):", ctx);
       
-      // [COMMENT]: Định tuyến sự kiện dựa theo event_type. Dùng ctx.data.data làm payload chính (khớp với JSON của backend).
       if (ctx.data && ctx.data.event_type) {
-        const eventType = ctx.data.event_type;
-        const callbacks = listenersRef.current[eventType];
-        if (callbacks) {
-          const eventData = ctx.data.data !== undefined ? ctx.data.data : ctx.data.payload;
-          callbacks.forEach((cb) => {
-            try {
-              cb(eventData);
-            } catch (err) {
-              console.error(`Error executing realtime callback for event ${eventType}:`, err);
-            }
-          });
+        const eventType: string = ctx.data.event_type;
+        // [COMMENT]: Lấy payload chính từ ctx.data
+        const eventData = ctx.data.data !== undefined ? ctx.data.data : ctx.data;
+
+        // [COMMENT]: Helper fire callbacks — tránh lặp code
+        const fireCallbacks = (key: string) => {
+          const cbs = listenersRef.current[key];
+          if (cbs) {
+            cbs.forEach((cb) => {
+              try {
+                cb(eventData);
+              } catch (err) {
+                console.error(`Error executing realtime callback [${key}] for event ${eventType}:`, err);
+              }
+            });
+          }
+        };
+
+        // [COMMENT]: 1. Fire listener cụ thể theo event_type chính xác (e.g. "storage.bucket.sizes.sync")
+        fireCallbacks(eventType);
+
+        // [COMMENT]: 2. Fire namespace wildcard theo prefix — "storage.*" bắt tất cả storage events,
+        // "mail.*" bắt tất cả mail events, v.v.
+        const dotIdx = eventType.indexOf(".");
+        if (dotIdx !== -1) {
+          const namespaceWildcard = eventType.substring(0, dotIdx) + ".*";
+          fireCallbacks(namespaceWildcard);
         }
+
+        // [COMMENT]: 3. Fire global wildcard "job.notification" để NotificationsDrawer bắt được TẤT CẢ job events
+        // bất kể namespace nào (storage.*, mail.*, iam.*, v.v.)
+        fireCallbacks("job.notification");
       }
     });
 
