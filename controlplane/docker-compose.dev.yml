@@ -205,6 +205,45 @@ services:
       retries: 10
     restart: unless-stopped
 
+  billing-psql:
+    image: postgres:18
+    container_name: billing-psql
+    environment:
+      POSTGRES_DB: billing
+      POSTGRES_USER: billing_admin
+      POSTGRES_PASSWORD: billing_secure_password
+    ports:
+      - "15435:5432" # Direct debug port for billing migrations
+    volumes:
+      - billing_psql_data:/var/lib/postgresql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U billing_admin -d billing" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  cost-manager:
+    build:
+      context: ../cost-manager
+      dockerfile: Dockerfile.dev
+    container_name: cost-manager
+    ports:
+      - "8084:8084" # REST API port
+      - "9094:9094" # gRPC port
+    environment:
+      - DATABASE_URL=postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable
+      - CLICKHOUSE_URL=http://clickhouse-server:8123
+      - REDIS_URL=redis://controlplane-acr-redis:6379
+    volumes:
+      - ../cost-manager/api:/app/api
+    depends_on:
+      billing-psql:
+        condition: service_healthy
+      clickhouse:
+        condition: service_started
+    restart: unless-stopped
+
   pbouncer:
     image: edoburu/pgbouncer:latest
     container_name: controlplane-pbouncer
@@ -770,3 +809,4 @@ volumes:
   dataplane_cargo_cache_z2_n2:
   minio_data:
   clickhouse_data:
+  billing_psql_data:

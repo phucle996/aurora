@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package billingproto;
+
+option go_package = "cost-manager/api/proto/billingproto";
+
+service BillingService {
+  rpc CheckWalletStatus (WalletStatusRequest) returns (WalletStatusResponse);
+}
+
+message WalletStatusRequest {
+  string owner_id = 1;
+  string owner_type = 2;
+}
+
+message WalletStatusResponse {
+  string wallet_id = 1;
+  string status = 2;
+  double balance = 3;
+  double overdraft_limit = 4;
+}

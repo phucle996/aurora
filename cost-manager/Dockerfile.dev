@@ -1,0 +1,28 @@
+# Stage 1: Biên dịch Rust Engine sử dụng bản Rust mới nhất để tương thích với các crates hiện đại
+FROM rust:latest AS rust-builder
+WORKDIR /app/engine
+COPY engine/Cargo.toml engine/Cargo.lock* ./
+# Tạo src giả lập để cargo compile cached dependencies trước
+RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release
+# Copy code thực tế và build
+COPY engine/src ./src
+RUN touch src/main.rs && cargo build --release
+
+# Stage 2: Môi trường chạy Go và Rust Engine
+FROM golang:1.26-bookworm
+WORKDIR /app/api
+
+# Copy Rust Engine binary vào PATH hệ thống
+COPY --from=rust-builder /app/engine/target/release/cost-manager-engine /usr/local/bin/cost-manager-engine
+
+# Copy Go API code
+COPY api/go.mod api/go.sum ./
+RUN go mod download
+
+COPY api/ .
+
+# Expose ports
+EXPOSE 8084 9094
+
+# Chạy Go API (API sẽ tự động spawn Rust Engine chạy ngầm)
+CMD ["go", "run", "main.go"]
