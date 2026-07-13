@@ -20,12 +20,12 @@ pub async fn init_pg_pool(config: &Config) -> Result<PgPool, sqlx::Error> {
     pg_conn_options = pg_conn_options.ssl_mode(pg_ssl_mode);
 
     // [COMMENT]: Nạp Certificate Authority (CA) root cert để xác thực chứng chỉ từ Server Postgres
-    if let Some(ref ca_path) = config.pg_ssl_root_cert {
+    if let Some(ca_path) = &config.pg_ssl_root_cert {
         pg_conn_options = pg_conn_options.ssl_root_cert(Path::new(ca_path));
     }
     
     // [COMMENT]: Nạp Client Certificate và Private Key dùng cho xác thực hai chiều mTLS
-    if let (Some(ref cert_path), Some(ref key_path)) = (&config.pg_ssl_client_cert, &config.pg_ssl_client_key) {
+    if let (Some(cert_path), Some(key_path)) = (&config.pg_ssl_client_cert, &config.pg_ssl_client_key) {
         pg_conn_options = pg_conn_options.ssl_client_cert(Path::new(cert_path));
         pg_conn_options = pg_conn_options.ssl_client_key(Path::new(key_path));
     }

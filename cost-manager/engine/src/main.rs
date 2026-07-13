@@ -18,25 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pg_pool = infra::psql::init_pg_pool(&app_config).await?;
     println!("Kết nối thành công tới Postgres (billing-psql)!");
 
-    // [COMMENT]: 3. Khởi tạo kết nối ClickHouse client hỗ trợ TLS/mTLS (HTTPS)
-    let mut ch_http_builder = reqwest::Client::builder();
-
-    // Nạp root cert cho ClickHouse
-    if let Some(ref ca_path) = app_config.ch_ssl_root_cert {
-        let ca_cert = std::fs::read(ca_path)?;
-        let reqwest_cert = reqwest::Certificate::from_pem(&ca_cert)?;
-        ch_http_builder = ch_http_builder.add_root_certificate(reqwest_cert);
-    }
-    // Nạp client credentials cho ClickHouse mTLS
-    if let (Some(ref cert_path), Some(ref key_path)) = (&app_config.ch_ssl_client_cert, &app_config.ch_ssl_client_key) {
-        let cert_pem = std::fs::read(cert_path)?;
-        let key_pem = std::fs::read(key_path)?;
-        let identity = reqwest::Identity::from_pem(&[cert_pem, key_pem].concat())?;
-        ch_http_builder = ch_http_builder.identity(identity);
-    }
-
-    let ch_http_client = ch_http_builder.build()?;
-    let ch_client = ClickhouseClient::with_http_client(ch_http_client)
+    // [COMMENT]: 3. Khởi tạo kết nối ClickHouse client.
+    // TLS/mTLS cho ClickHouse được xử lý ở tầng hạ tầng (service mesh / proxy) nên
+    // application kết nối qua HTTP plain tới local endpoint.
+    let ch_client = ClickhouseClient::default()
         .with_url(&app_config.clickhouse_url)
         .with_database("storage");
     println!("Kết nối thành công tới ClickHouse!");
