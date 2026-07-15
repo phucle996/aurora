@@ -46,7 +46,7 @@ function isExpired(entry: { expires_at: number }, bufferMs = 0): boolean {
 
 function safeGet<T>(key: string): T | null {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = sessionStorage.getItem(key);
     if (!raw) return null;
     return JSON.parse(raw) as T;
   } catch {
@@ -56,9 +56,9 @@ function safeGet<T>(key: string): T | null {
 
 function safeSet(key: string, value: unknown): void {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    sessionStorage.setItem(key, JSON.stringify(value));
   } catch {
-    // localStorage có thể full (QuotaExceededError) — silently skip
+    // sessionStorage có thể full (QuotaExceededError) — silently skip
   }
 }
 
@@ -70,7 +70,7 @@ function safeSet(key: string, value: unknown): void {
 export function getCachedObjectList(bucketId: string): CachedRawObject[] | null {
   const entry = safeGet<CachedListEntry>(listKey(bucketId));
   if (!entry || isExpired(entry)) {
-    localStorage.removeItem(listKey(bucketId));
+    sessionStorage.removeItem(listKey(bucketId));
     return null;
   }
   return entry.data;
@@ -87,7 +87,7 @@ export function setCachedObjectList(bucketId: string, data: CachedRawObject[]): 
 
 /** Xóa cache danh sách objects khi có thay đổi (upload/delete thành công). */
 export function invalidateObjectListCache(bucketId: string): void {
-  localStorage.removeItem(listKey(bucketId));
+  sessionStorage.removeItem(listKey(bucketId));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ export function getCachedPresignUrl(bucketId: string, objectKey: string): string
   const entry = safeGet<CachedPresignEntry>(presignKey(bucketId, objectKey));
   // [COMMENT]: Dùng SAFE_BUFFER_MS để tránh trả về URL đang sắp hết hạn (<60s)
   if (!entry || isExpired(entry, SAFE_BUFFER_MS)) {
-    localStorage.removeItem(presignKey(bucketId, objectKey));
+    sessionStorage.removeItem(presignKey(bucketId, objectKey));
     return null;
   }
   return entry.url;

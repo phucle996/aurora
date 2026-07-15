@@ -115,6 +115,40 @@ impl StorageSizesSyncer {
                     continue;
                 }
 
+                // [COMMENT]: Sử dụng khóa phân tán (Distributed Lock) NX PX trên Redis L2
+                // Chỉ cho phép tối đa 1 replica Dataplane thực hiện quét kích thước tệp tin tại 1 chu kỳ (15s),
+                // hạn chế trùng lặp ghi nhận và giảm tải lượng query lên MinIO API.
+                let lock_key = "locks:storage:sizes_syncer";
+                let lock_res: Result<Option<String>, redis::RedisError> = redis::cmd("SET")
+                    .arg(lock_key)
+                    .arg("acquired")
+                    .arg("NX")
+                    .arg("PX")
+                    .arg("12000") // Khóa tồn tại trong 12 giây (dưới chu kỳ 15 giây)
+                    .query_async(&mut conn_l2)
+                    .await;
+
+                match lock_res {
+                    Ok(Some(status)) if status == "OK" => {
+                        Logger::sys_debug(
+                            "storage_syncer.lock_acquired",
+                            "Đã chiếm thành công khóa phân tán. Bắt đầu tiến hành quét dung lượng..."
+                        );
+                    }
+                    Ok(_) => {
+                        // Khóa đang được giữ bởi replica khác, bỏ qua chu kỳ này
+                        continue;
+                    }
+                    Err(e) => {
+                        Logger::sys_warn(
+                            "storage_syncer.lock_error",
+                            "Gặp lỗi khi truy vấn khóa phân tán trên Redis L2, bỏ qua chu kỳ để đảm bảo an toàn",
+                            &e.to_string(),
+                        );
+                        continue;
+                    }
+                }
+
                 // [COMMENT]: Khởi tạo MinIO client (S3 SDK)
                 let minio_client = MinioClient::from_env_private().await;
                 let s3 = minio_client.s3();

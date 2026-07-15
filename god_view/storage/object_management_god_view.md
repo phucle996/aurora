@@ -1,8 +1,8 @@
-# Storage Object Management (List & Presigned URLs) — God View (Master SoT)
+# Storage Object Management (STS & Client-Direct S3) — God View (Master SoT)
 
 > [!IMPORTANT]
-> Tài liệu này là **Source of Truth (SoT) duy nhất** cho toàn bộ vòng đời và luồng xử lý truy vấn duyệt đối tượng (Object Browsing via Presigned List) và tạo Presigned URL cho các thao tác (Upload/Download/Delete) trong phân hệ Storage.
-> **Mọi thay đổi** liên quan đến: API Gateway route, cấu trúc Outbox table, cơ chế CDC của Job Orchestrator, thuật toán ký của Dataplane local zone, và Observability **đều phải tham chiếu và cập nhật** tệp này trước.
+> Tài liệu này là **Source of Truth (SoT) duy nhất** cho toàn bộ vòng đời và luồng xử lý cấp quyền truy cập đối tượng tạm thời (STS - Security Token Service) và các thao tác (List/Head Metadata/Get Tags/Upload/Download/Delete) trực tiếp dưới client trong phân hệ Storage.
+> **Mọi thay đổi** liên quan đến: API Gateway route, cấu trúc Outbox table, cơ chế CDC của Job Orchestrator, thuật toán tạo Service Account/AssumeRole của Dataplane local zone, và cấu hình Client-side SDK **đều phải tham chiếu và cập nhật** tệp này trước.
 
 ---
 
@@ -12,10 +12,10 @@
 2. [Cơ Chế Chống Lỗi IDOR & Bảo Mật Khoá Ký](#2-cơ-chế-chống-lỗi-idor--bảo-mật-khoá-ký)
 3. [Database Query Contract & Outbox Schema](#3-database-query-contract--outbox-schema)
 4. [Luồng Kỹ Thuật Chi Tiết — End-to-End](#4-luồng-kỹ-thuật-chi-tiết--end-to-end)
-   - [Phase 1: Đăng ký Job tại Control Plane (Hồ Chí Minh)](#phase-1-đăng-ký-job-tại-control-plane-hồ-chí-minh)
+   - [Phase 1: Yêu cầu STS Token tại Control Plane (Hồ Chí Minh)](#phase-1-yêu-cầu-sts-token-tại-control-plane-hồ-chí-minh)
    - [Phase 2: CDC & Dispatcher tại Job Orchestrator (Central)](#phase-2-cdc--dispatcher-tại-job-orchestrator-central)
-   - [Phase 3: Thực thi ký tại Dataplane (Hà Nội Local)](#phase-3-thực-thi-ký-tại-dataplane-hà-nội-local)
-   - [Phase 4: Nhận kết quả và Client Direct S3 Query](#phase-4-nhận-kết-quả-và-client-direct-s3-query)
+   - [Phase 3: Tạo STS Credentials tại Dataplane (Hà Nội Local)](#phase-3-tạo-sts-credentials-tại-dataplane-hà-nội-local)
+   - [Phase 4: Nhận Token và Client-Direct S3 Query](#phase-4-nhận-token-và-client-direct-s3-query)
 5. [Bảo Vệ Tải & HA Guards](#5-bảo-vệ-tải--ha-guards)
 6. [Observability (Giám Sát Vận Hành)](#6-observability-giám-sát-vận-hành)
 7. [Danh Sách Keys (Redis, NATS & Centrifugo)](#7-danh-sách-keys-redis-nats--centrifugo)
@@ -25,13 +25,13 @@
 
 ## 1. Tổng Quan Kiến Trúc & Chuỗi Nhân Quả
 
-Hệ thống quản lý đối tượng (Object Management) vận hành theo nguyên lý **phân tách địa lý** và **không kết nối trực tiếp**:
-* **Control Plane (HCM)**: Không được mở kết nối trực tiếp đến MinIO Cluster (Hà Nội). Tất cả các nghiệp vụ dữ liệu thô (list, upload, download, delete) của Client đều giao tiếp trực tiếp với MinIO qua local **Envoy Storage** của zone đó.
-* **Dataplane (Hà Nội)**: Là thành phần duy nhất giữ Credentials và kết nối trực tiếp với MinIO Cluster để thực hiện ký Presigned URL offline.
-* **Mô hình lai (Hybrid model)**:
-  1. **Xem đối tượng (List Objects)**: CP chỉ cấp 1 Presigned S3 List URL thô (wildcard, thời hạn 1 giờ) chỉ có quyền `s3:ListBucket` (không có quyền đọc/ghi file). Client gọi URL này 1 lần duy nhất để tải về toàn bộ metadata XML của bucket và tự động lọc cây thư mục (Client-side filter) trên RAM. Điều này giúp duyệt thư mục ảo với **độ trễ bằng 0ms** khi chuyển folder.
-  2. **Thao tác dữ liệu (Upload / Download / Delete)**: Chỉ khi người dùng click vào Action cụ thể (tải, upload, xóa 1 file), UI mới gửi yêu cầu xin cấp Presigned URL thô cho đúng file đó thông qua Outbox Job. Điều này đảm bảo tính bảo mật tối đa (Least Privilege) trước mã độc XSS.
-* **Kênh kết nối (Outbox Pipeline)**: Đồng bộ bất đồng bộ từ HCM ra Hà Nội qua PostgreSQL CDC -> Job Orchestrator -> Redis Stream, và trả kết quả ngược lại qua Redis Stream -> NATS Core -> Centrifugo Websocket thẳng về Client Browser (Bypass CP GET API).
+Hệ thống quản lý đối tượng (Object Management) vận hành theo nguyên lý **phân tách địa lý**, **least privilege**, và **Client-Direct S3**:
+* **Control Plane (HCM)**: Không được mở kết nối trực tiếp đến MinIO Cluster (Hà Nội). CP chỉ đóng vai trò xác thực quyền (IDOR) và điều phối việc cấp quyền truy cập tạm thời thông qua Outbox.
+* **Dataplane (Hà Nội)**: Giữ thông tin Admin Credentials nội bộ, kết nối trực tiếp với MinIO Cluster để sinh bộ khoá tạm thời (STS Credentials) thông qua API `AssumeRole` hoặc MinIO Service Account.
+* **Mô hình Client-Direct S3 qua STS (Security Token Service)**:
+  1. **Ủy quyền một lần (Single Bootstrap)**: Khi người dùng mở giao diện quản lý tệp tin của Bucket, Control Plane yêu cầu Dataplane khởi tạo một bộ tài khoản tạm thời **STS Credentials** (AccessKey, SecretKey, SessionToken, Expiry - hiệu lực 30 phút) thông qua Outbox Job.
+  2. **Thao tác dữ liệu trực tiếp (Client-Direct)**: Trình duyệt React sử dụng S3 Client nội bộ, nạp bộ tài khoản tạm thời này để tự ký Signature V4 và gửi request trực tiếp lên **Envoy Storage local (Hà Nội)**. Mọi thao tác List Objects, Head Metadata, Get Object Tagging, Upload, Download, và Delete đều được xử lý tức thời (dưới 50ms), hoàn toàn bypass qua Control Plane (HCM) và Job Orchestrator.
+  3. **Ràng buộc Least Privilege**: Bộ tài khoản tạm thời được giới hạn chỉ được thao tác trong duy nhất bucket đích qua Inline Policy.
 
 ```mermaid
 flowchart TD
@@ -59,29 +59,32 @@ flowchart TD
     DP["⚙️ Dataplane (Hà Nội Local)"]:::dp
     Redis_DP["⚡ Redis Local (Zone Stream)"]:::queue
 
-    %% 1. Đăng ký yêu cầu
-    UI -->|1. POST /objects/presigned-requests| CP
+    %% 1. Đăng ký yêu cầu STS
+    UI -->|1. POST /buckets/:id/sts-token| CP
     CP -->|2. Check Session & IDOR| CP
     CP -->|3. INSERT outbox record| PG_DB
-    CP -->|"4. HTTP 202 Accepted (job_id)"| UI
+    CP -->|"4. HTTP 202 Accepted (transaction_id)"| UI
 
     %% 2. Truyền Job đi
     PG_DB -.->|"5. CDC (Logical Replication)"| JO
     JO -->|"6. Dispatch Job (XADD)"| Redis_DP
     Redis_DP -.->|7. Read Stream| DP
 
-    %% 3. Thực thi ký tại local
-    DP -->|8. Ký S3 Presigned URL offline| DP
-    DP -->|"9. Push L1 Job Result (XADD)"| Redis_DP
-    Redis_DP -.->|10. Read Result Stream| JO
+    %% 3. Thực thi xin cấp STS
+    DP -->|8. Request STS:AssumeRole| MinIO
+    MinIO -->|9. Return STS Credentials| DP
+    DP -->|"10. Push Job Result (XADD)"| Redis_DP
+    Redis_DP -.->|11. Read Result Stream| JO
 
-    %% 4. Trả kết quả và UI gọi trực tiếp
-    JO -->|11. UPDATE status = SUCCEEDED| PG_DB
-    JO -->|12. Publish complete event| NATS
-    NATS -->|13. Push result payload| Centri
-    Centri -.->|"14. WebSocket Push: presigned_url"| UI
-    UI -->|15. GET/PUT/DELETE trực tiếp| Envoy_S3
-    Envoy_S3 -->|16. Forward request| MinIO
+    %% 4. Trả kết quả về UI
+    JO -->|12. DELETE outbox record| PG_DB
+    JO -->|13. Publish complete event| NATS
+    NATS -->|14. Push credentials payload| Centri
+    Centri -.->|"15. WebSocket Push: STS Credentials"| UI
+    
+    %% 5. Thao tác trực tiếp
+    UI ====>|16. List / Head / Tags / Upload / Download / Delete (Signed with STS)| Envoy_S3
+    Envoy_S3 ====>|17. Forward request| MinIO
 ```
 
 ---
@@ -102,18 +105,17 @@ flowchart TD
   ```
   Nếu không khớp, CP trả về `403 Forbidden` lập tức, không ghi Outbox Job.
 
-### Lớp 2: Bảo mật Khoá Ký (Secret Key Protection)
-* Private Key / Secret Key truy cập MinIO chỉ được lưu trữ và sử dụng **cục bộ (locally)** tại Dataplane.
-* Client Browser không nhận được bất kỳ credentials thô hay token tạm thời nào (triệt tiêu rủi ro bị đọc trộm qua XSS).
-* Client chỉ nhận được **Presigned URL** chứa sẵn tham số chữ ký (`X-Amz-Signature`) trong query string. Client chỉ việc gửi request HTTP thô trực tiếp đến URL đó. Không cần logic ký hay đính kèm custom headers thô ở Browser.
+### Lớp 2: Bảo mật Khoá Ký và Giới Hạn Phạm Vi (Least Privilege STS)
+* Thay vì trả về khoá Master Admin, Dataplane tạo một bộ khoá tạm thời (STS) với Inline Policy cực kỳ chặt chẽ chỉ cho phép làm việc trên đúng một bucket và các keys con thuộc bucket đó: `"Resource": ["arn:aws:s3:::<bucket_name>", "arn:aws:s3:::<bucket_name>/*"]`.
+* Bộ khoá tạm thời (STS) này chỉ tồn tại trong vòng tối đa **30 phút**. Sau 30 phút, bộ khoá sẽ tự động bị vô hiệu hóa ở tầng MinIO, hạn chế tối đa rủi ro bị khai thác nếu client bị tấn công XSS.
 
 ---
 
 ## 3. Database Query Contract & Outbox Schema
 
 * **Bảng Outbox**: `storage_outbox_records` trong schema `storage`.
-* **Khai báo các Topic Job mới**:
-  1. `storage.object.presign`: Job yêu cầu Dataplane thực hiện ký Presigned URL hoặc duyệt danh sách đối tượng (được phân loại động bằng thuộc tính `action` bên trong payload).
+* **Topic Job mới**:
+  1. `storage.object.sts`: Job yêu cầu Dataplane tạo STS credentials ngắn hạn cho bucket chỉ định.
 
 ### Contract Insert Outbox:
 ```sql
@@ -122,22 +124,22 @@ INSERT INTO storage.storage_outbox_records (
 ) VALUES ($1, $2, $3, $4, $5, 'PENDING');
 ```
 * **`$1`**: UUID sinh cho `transaction_id`.
-* **`$2`**: `zone:<zone_id>` trích xuất từ cấu hình bucket (giới hạn định tuyến đến Dataplane local của zone đó).
-* **`$3`**: `"storage.object.presign"`.
-* **`$4`**: Payload Protobuf `ObjectPresignRequest` chứa metadata yêu cầu.
+* **`$2`**: `zone:<zone_id>` trích xuất từ cấu hình bucket (để định tuyến tới Dataplane local của zone đó).
+* **`$3`**: `"storage.object.sts"`.
+* **`$4`**: Payload Protobuf `ObjectStsRequest` chứa metadata yêu cầu (`bucket_name`, `duration_seconds`).
 
 ---
 
 ## 4. Luồng Kỹ Thuật Chi Tiết — End-to-End
 
-### Phase 1: Đăng ký Job tại Control Plane (Hồ Chí Minh)
+### Phase 1: Yêu cầu STS Token tại Control Plane (Hồ Chí Minh)
 
 #### A. Phân tích chi tiết trao đổi thông tin (Protocol Specification)
 
 ```
 [Client Browser] 
     |
-    | (1) POST /api/v1/storage/buckets/:id/objects/presigned-requests
+    | (1) POST /api/v1/storage/buckets/:id/sts-token
     | Cookies: access_token, workspace_id, etc.
     |
 [Envoy Ingress Gateway]
@@ -146,9 +148,9 @@ INSERT INTO storage.storage_outbox_records (
     |
 [acr (Edge Authz)]
     |
-    |-- a. Giải mã JWT 'access_token' -> lấy user_id, username, role_id
+    |-- a. Giải mã JWT 'access_token' -> lấy user_id
     |-- b. Đọc Redis -> lấy zone_id của workspace
-    |-- c. Rewrite URI -> /api/v1/personal/storage/buckets/:id/objects/...
+    |-- c. Rewrite URI -> /api/v1/personal/storage/buckets/:id/sts-token
     |
     | (3) gRPC CheckResponse OK + Inject Headers (X-User-Id, X-Workspace-Id, X-Zone-Id, etc.)
     |
@@ -161,7 +163,7 @@ INSERT INTO storage.storage_outbox_records (
     |-- a. Auth Middleware: So khớp Permission Key
     |-- b. IDOR Check: SELECT b.name FROM storage.personal_buckets JOIN personal_workspaces ... WHERE owner_id = X-User-Id
     |-- c. Sinh transaction_id (UUID v7)
-    |-- d. INSERT PENDING record vào bảng storage_outbox_records
+    |-- d. INSERT PENDING record vào bảng storage_outbox_records (job_topic: "storage.object.sts")
     |
     | (5) HTTP 202 Accepted (Body: { "transaction_id": "<uuid>" })
     v
@@ -170,26 +172,22 @@ INSERT INTO storage.storage_outbox_records (
 
 #### B. Payload chi tiết của request:
 
-1. **Yêu cầu xin cấp liên kết hoặc duyệt đối tượng (Object Presigned Request)**:
+1. **Yêu cầu cấp khoá tạm thời (Object STS Request)**:
    * **Client gửi**:
-     * Method / URL: `POST /api/v1/storage/buckets/:id/objects/presigned-requests`
+     * Method / URL: `POST /api/v1/storage/buckets/:id/sts-token`
      * Body (JSON):
        ```json
        {
-         "action": "list" | "upload" | "download" | "delete",
          "bucket_name": "ws-a1b2c3d4-mybucket",
-         "key": "assets/images/logo.png",
-         "content_type": "image/png"
+         "duration_seconds": 1800
        }
        ```
-       *(Trường `action` nhận các giá trị: `"list"` để duyệt, `"upload"` để tải lên, `"download"` để tải về, `"delete"` để xóa. Trường `key` bắt buộc khi action khác `"list"`. Trường `content_type` tùy chọn cho `"upload"`).*
    * **Control Plane nhận**:
      * Headers: `X-User-Id`, `X-Workspace-Id`, `X-Zone-Id`, v.v.
-     * Body: JSON chứa `action`, `bucket_name`, `key`, `content_type`.
-     * *Lưu ý về Quota*: Control Plane đóng vai trò ủy quyền (Delegation) đơn thuần: CP chỉ kiểm tra tính hợp lệ của Session và quyền sở hữu (IDOR prevention). CP **không** thực hiện kiểm tra hoặc đặt trước (Reserve) quota tại HCM, vì MinIO local đã được cấu hình quota vật lý trên chính bucket và sẽ tự động từ chối (reject) request upload (PUT) từ Client nếu vượt quá hạn mức.
-    * **Control Plane ghi Outbox Record**:
-      * `job_topic`: `"storage.object.presign"`
-      * `payload`: `ObjectPresignRequest` Protobuf chứa đầy đủ thông tin yêu cầu.
+     * Body: JSON chứa `bucket_name`, `duration_seconds`.
+     * **Control Plane ghi Outbox Record**:
+       * `job_topic`: `"storage.object.sts"`
+       * `payload`: `ObjectStsRequest` Protobuf chứa đầy đủ thông tin yêu cầu.
    * **Control Plane trả về**:
      * Status code: `202 Accepted`
      * Body (JSON): `{ "transaction_id": "6a2f3e8b-11c9-4a4b-9eef-1234567890ab" }`
@@ -209,32 +207,23 @@ INSERT INTO storage.storage_outbox_records (
 
 ---
 
-### Phase 3: Thực thi ký tại Dataplane (Hà Nội Local)
+### Phase 3: Tạo STS Credentials tại Dataplane (Hà Nội Local)
 
 1. **Dataplane (Rust)** tại Hà Nội block read từ Redis Stream local:
    `XREADGROUP GROUP dp_group local_worker STREAMS storage:jobs:vn-han-1 >`
 2. **DP phân giải Job**:
    * Giải mã binary payload của Job.
-   * Lấy credentials truy cập MinIO được quản lý local (đã được provisioning từ trước).
-3. **DP ký S3 Presigned URL (AWS Signature Version 4 offline)**:
-   * **Đối với job `storage.object.list_presigned`**:
-     * DP gọi MinIO/S3 Client SDK tạo Presigned GET URL cho path `/<bucket_name>`.
-     * Ràng buộc ký: Chỉ định query params `list-type=2`. **Không truyền prefix/delimiter**.
-     * Thiết lập thời hạn hết hạn ký (Expires) là 1 giờ.
-     * URL trả về chỉ có quyền ListObjectsV2 thô, ví dụ: `https://envoy.storage.local/ws-a1b2c3d4-mybucket?list-type=2&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=...&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=...`
-   * **Đối với job `storage.object.presigned_url`**:
-     * Dựa trên `action` yêu cầu, DP gọi SDK ký offline:
-       * `"upload"` $\to$ Ký Presigned PUT URL cho object key đó.
-       * `"download"` $\to$ Ký Presigned GET URL cho object key đó.
-       * `"delete"` $\to$ Ký Presigned DELETE URL cho object key đó.
-     * URL trả về chứa trực tiếp signature token trong query string.
+   * Lấy Admin credentials truy cập MinIO được quản lý local.
+3. **DP gọi API STS hoặc Admin API của MinIO**:
+   * Thực hiện gọi API `AssumeRole` lên MinIO, truyền vào thời gian hết hạn (ví dụ: 1800 giây) và **Inline Policy** giới hạn chặt chẽ chỉ cho phép thao tác trên đúng `bucket_name` này.
+   * Bộ khoá trả về chứa: `access_key`, `secret_key`, `session_token`, và `expiration`.
 4. **DP trả kết quả**:
-   * DP gửi kết quả đã ký ngược lại cho `job-orchestrator` bằng cách đẩy vào Redis Stream kết quả chung:
+   * DP gửi kết quả đã tạo ngược lại cho `job-orchestrator` bằng cách đẩy vào Redis Stream kết quả chung:
      `XADD storage:results * job_id <job_id> status SUCCEEDED payload <result_protobuf>`
 
 ---
 
-### Phase 4: Nhận kết quả và Client Direct S3 Query
+### Phase 4: Nhận Token và Client-Direct S3 Query
 
 1. **Job Orchestrator (Central)** đọc Redis Stream `storage:results`.
 2. **JO xử lý**:
@@ -242,7 +231,17 @@ INSERT INTO storage.storage_outbox_records (
    * **JO phát tin nhắn (NATS Core)**:
      * Topic: `storage.job.completed.<transaction_id>`
      * Payload (JSON): Chứa dữ liệu trả về từ Dataplane:
-       * Đối với list/upload/download/delete: `{ "status": "COMPLETED", "presigned_url": "https://envoy.storage.local/ws-..." }`
+       ```json
+       {
+         "status": "COMPLETED",
+         "credentials": {
+           "access_key": "sts-access-key-id",
+           "secret_key": "sts-secret-access-key",
+           "session_token": "sts-long-session-token-string...",
+           "expiration": "2026-07-15T09:43:27Z"
+         }
+       }
+       ```
 3. **Notification Service & Centrifugo**:
    * Dịch vụ Notification lắng nghe topic NATS `storage.job.completed.*`.
    * Nó thực hiện POST API gửi payload này sang **Centrifugo WS Gateway**:
@@ -250,19 +249,23 @@ INSERT INTO storage.storage_outbox_records (
 4. **Console UI (React)**:
    * Client nhận được push event WebSocket từ Centrifugo:
      * Event name: `"job_completed"`
-     * Payload: Chứa `presigned_url`.
-   * **Thao tác truy cập trực tiếp (Bypass Control Plane)**:
-     * **Với List**: UI thực hiện `GET <presigned_url>` trực tiếp lên Envoy Storage local. Envoy định tuyến đến MinIO và trả về XML. UI parse XML thành danh sách file/folder lưu vào RAM (`allObjects`).
-     * **Với Upload**: UI thực hiện `PUT <presigned_url>` trực tiếp (Payload là file binary thô).
-     * **Với Download**: UI chỉ việc trigger `window.open(presigned_url, '_blank')` để tải file.
-     * **Với Delete**: UI thực hiện `DELETE <presigned_url>` trực tiếp.
+     * Payload: Chứa `credentials`.
+   * **Lưu Cache**: UI lưu Credentials này vào bộ nhớ (RAM state hoặc SessionStorage) với thời gian sống trùng với thời hạn `expiration` (sau đó tự động xóa và xin cấp token mới).
+   * **Khởi tạo Client S3 động**: UI nạp SDK `@aws-sdk/client-s3` trực tiếp ở Client, cấu hình với `endpoint` là Envoy Gateway local và truyền bộ khoá STS nhận được.
+   * **Thao tác trực tiếp (Bypass hoàn toàn Control Plane & Dataplane)**:
+     * **Với List**: UI thực hiện lệnh `ListObjectsV2Command` để duyệt danh sách đối tượng trực tiếp.
+     * **Với Metadata & Tags**: Khi người dùng click chọn tệp tin, UI thực hiện đồng thời `HeadObjectCommand` và `GetObjectTaggingCommand` để lấy thông tin mô tả chi tiết và nhãn (tags) của tệp tin. Độ trễ hiển thị chỉ còn **< 50ms**.
+     * **Với Upload**: UI thực hiện `PutObjectCommand` để tải tệp lên trực tiếp.
+     * **Với Download**: UI gọi `GetObjectCommand` trực tiếp hoặc tạo đường dẫn ngắn hạn bằng Client-side SDK để tải tệp xuống.
+     * **Với Delete**: UI thực hiện `DeleteObjectCommand` trực tiếp để xóa tệp.
 
 ---
 
 ## 5. Bảo Vệ Tải & HA Guards
 
-1. **Bảo vệ tải WAN Network**: Luồng dữ liệu thô (List XML, file upload/download) đi trực tiếp từ Client tới Envoy Gateway local tại Hà Nội, không tốn băng thông đường truyền WAN liên vùng (HCM - HN) của Control Plane.
-2. **Graceful Timeout**: Client UI lắng nghe Websocket tối đa 30 giây. Quá 30 giây mà mạng WAN HCM-HN bị ngắt làm chậm trễ Job, UI sẽ báo timeout và chuyển hướng sang chế độ retry.
+1. **Bảo vệ tải WAN Network**: Toàn bộ luồng thao tác dữ liệu (List, Get, Put, Delete, Head Metadata) đều đi trực tiếp từ Client tới Envoy Gateway local tại Hà Nội, không tốn băng thông đường truyền WAN liên vùng (HCM - HN) của Control Plane.
+2. **Giảm tải outbox**: Không còn các outbox record phát sinh cho từng cú click chuột của người dùng, giúp cơ sở dữ liệu PostgreSQL ở Control Plane luôn hoạt động mượt mà, tránh nghẽn luồng CDC.
+3. **Quản lý Token Hết Hạn (Token Expiry Guard)**: Frontend React tự động theo dõi thời hạn hết hạn của Token. Khi token còn 2 phút hiệu lực, nếu người dùng vẫn tương tác tích cực, frontend sẽ thực hiện yêu cầu ngầm (silent bootstrap) để lấy STS token mới mà không gây gián đoạn trải nghiệm.
 
 ---
 
@@ -272,10 +275,9 @@ INSERT INTO storage.storage_outbox_records (
 
 | Mã Operation (`op`) | Thành phần | Vị trí | Ý nghĩa / Mục tiêu |
 |:---|:---|:---|:---|
-| **`storage.object.list_request`** | Controlplane | `personal_bucket_handler.go` | Tiếp nhận đăng ký job List Objects |
-| **`storage.object.presigned_url_request`** | Controlplane | `personal_bucket_handler.go` | Tiếp nhận đăng ký job Presigned URL |
-| **`storage.object.sign_executor`**| Dataplane | `object_signer.rs` | Ghi nhận Dataplane local ký thành công URL |
-| **`storage.job.completed`**       | Job Orchestrator | `object_resolve.rs` | Ghi nhận hoàn thành vòng đời job, gửi push notification |
+| **`storage.object.sts_request`** | Controlplane | `personal_bucket_handler.go` | Tiếp nhận đăng ký job xin cấp STS token |
+| **`storage.object.sts_executor`** | Dataplane | `object_signer.rs` | Ghi nhận Dataplane gọi STS tạo credentials thành công |
+| **`storage.job.completed`**       | Job Orchestrator | `object_resolve.rs` | Ghi nhận hoàn thành vòng đời job, gửi push notification chứa token |
 
 ---
 
@@ -298,5 +300,6 @@ INSERT INTO storage.storage_outbox_records (
 | **Go Handler** | [`personal_bucket_handler.go`](../../controlplane/internal/storage/transport/http/handler/personal_bucket_handler.go) | Handler nhận request và ghi outbox |
 | **Rust L2 Dispatcher** | [`l2_dispatcher.rs`](../../job-orchestrator/src/reverse_provider/storage/l2_dispatcher.rs) | Định tuyến kết quả job về từ Dataplane |
 | **Rust L2 Resolver** | [`object_resolve.rs`](../../job-orchestrator/src/reverse_provider/storage/db/object_resolve.rs) | Cập nhật DB Outbox và bắn NATS |
-| **Rust DP Signer** | [`object_signer.rs`](../../dataplane/src/executor/storage/object_signer.rs) | Thực thi ký Presigned URL local |
-| **UI Component** | [`ObjectsTab.tsx`](../../cloud-console/src/app/\(console\)/storage/\[id\]/components/ObjectsTab.tsx) | UI gửi request, nhận Websocket, gọi Envoy và filter RAM |
+| **Rust DP Signer** | [`object_signer.rs`](../../dataplane/src/executor/storage/object_signer.rs) | Thực thi gọi API STS tạo credentials |
+| **UI Component** | [`ObjectsTab.tsx`](../../cloud-console/src/app/\(console\)/storage/\[id\]/components/ObjectsTab.tsx) | UI gửi request lấy STS, khởi tạo S3 client trực tiếp và gọi Envoy |
+

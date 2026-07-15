@@ -41,6 +41,52 @@ export function NotificationsDrawer() {
   }, []);
 
   useEffect(() => {
+    // [COMMENT]: Lắng nghe sự kiện thông báo local từ ObjectsTab khi bắt đầu upload
+    const handleLocalNotificationAdd = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { id, title, message, type } = customEvent.detail;
+      
+      const newNotif: NotificationItem = {
+        id,
+        title,
+        message,
+        type,
+        time: "Just now",
+        read: false,
+      };
+
+      setNotifications((prev) => {
+        if (prev.some((n) => n.id === id)) return prev;
+        return [newNotif, ...prev].slice(0, 10);
+      });
+    };
+
+    // [COMMENT]: Lắng nghe sự kiện cập nhật trạng thái upload từ ObjectsTab (thành công/thất bại)
+    const handleLocalNotificationUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const { id, status, error } = customEvent.detail;
+
+      setNotifications((prev) =>
+        prev.map((n) => {
+          if (n.id === id) {
+            return {
+              ...n,
+              title: status === "SUCCESS" ? "Tải lên hoàn tất" : "Tải lên thất bại",
+              message: status === "SUCCESS" 
+                ? `Tệp ${n.message.split(" ")[1] || "tin"} đã được tải lên thành công.` 
+                : `Lỗi tải lên: ${error || "Không rõ nguyên nhân"}`,
+              type: status === "SUCCESS" ? "success" : "error",
+            };
+          }
+          return n;
+        })
+      );
+    };
+
+    window.addEventListener("local-notification:add", handleLocalNotificationAdd);
+    window.addEventListener("local-notification:update", handleLocalNotificationUpdate);
+
+    // [COMMENT]: Lắng nghe WebSocket kết quả của các Job không silent từ Centrifugo
     const unsubscribe = subscribeToEvent("job.notification", (payload: any) => {
       console.log("🔔 Realtime notification received in drawer component:", payload);
       if (!payload) return;
@@ -49,6 +95,14 @@ export function NotificationsDrawer() {
         return;
       }
       if (!payload.title && !payload.message) {
+        return;
+      }
+
+      // Các operation này được xử lý silent ở component tương ứng
+      const SILENT_OPERATIONS = new Set([
+        "storage.object.presign",
+      ]);
+      if (payload.operation && SILENT_OPERATIONS.has(payload.operation)) {
         return;
       }
 
@@ -63,34 +117,40 @@ export function NotificationsDrawer() {
       const notifTitle = payload.title || "System Event";
       const notifMsg = payload.message || "";
 
-      // 1. Update history list
-      const newNotif: NotificationItem = {
-        id: notifId,
-        title: notifTitle,
-        message: notifMsg,
-        type: statusType,
-        time: "Just now",
-        read: false,
-      };
-      setNotifications((prev) => [newNotif, ...prev].slice(0, 10));
-
-      // 2. Trigger Azure-like Toaster popup
-      const newToast: ToastItem = {
-        id: notifId,
-        title: notifTitle,
-        message: notifMsg,
-        type: statusType,
-        time: "Just now",
-      };
-      setActiveToasts((prev) => [newToast, ...prev]);
-
-      // Auto dismiss toaster after 6 seconds
-      setTimeout(() => {
-        setActiveToasts((prev) => prev.filter((t) => t.id !== notifId));
-      }, 6000);
+      setNotifications((prev) => {
+        const exists = prev.some((n) => n.id === notifId);
+        if (exists) {
+          // [COMMENT]: Ghi đè thông báo có cùng transaction_id để tránh spam nhiều dòng
+          return prev.map((n) =>
+            n.id === notifId
+              ? {
+                  ...n,
+                  title: notifTitle,
+                  message: notifMsg,
+                  type: statusType,
+                  time: "Just now",
+                }
+              : n
+          );
+        }
+        // Thêm mới lên đầu danh sách nếu chưa có
+        const newNotif: NotificationItem = {
+          id: notifId,
+          title: notifTitle,
+          message: notifMsg,
+          type: statusType,
+          time: "Just now",
+          read: false,
+        };
+        return [newNotif, ...prev].slice(0, 10);
+      });
     });
 
-    return () => unsubscribe();
+    return () => {
+      window.removeEventListener("local-notification:add", handleLocalNotificationAdd);
+      window.removeEventListener("local-notification:update", handleLocalNotificationUpdate);
+      unsubscribe();
+    };
   }, [subscribeToEvent]);
 
   return (

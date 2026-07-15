@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -19,7 +19,8 @@ import RouteGuard from "@/components/route-guard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useBucketSizesSync } from "@/hooks/useBucketSizesSync";
 
 import { OverviewTab } from "./components/OverviewTab";
 import { CredentialsTab } from "./components/CredentialsTab";
@@ -28,9 +29,33 @@ import { ObjectsTab } from "./components/ObjectsTab";
 function ViewBucketContent() {
   const router = useRouter();
   const { id } = useParams() as { id: string };
-  const { checkPermission } = useUserSession();
+  const { checkPermission, profile } = useUserSession();
 
   const [activeTab, setActiveTab] = useState("Overview");
+
+  const queryClient = useQueryClient();
+  // [COMMENT]: Đăng ký lắng nghe sự kiện đồng bộ dung lượng từ Centrifugo WebSocket cho chi tiết bucket
+  useBucketSizesSync(
+    profile?.user_id,
+    useCallback((updatedSizes: Record<string, number>) => {
+      queryClient.setQueryData<BucketItem | null>(
+        ["bucket", id],
+        (prevBucket) => {
+          if (!prevBucket) return null;
+          if (updatedSizes[prevBucket.name] !== undefined) {
+            return {
+              ...prevBucket,
+              used_bytes: updatedSizes[prevBucket.name],
+            };
+          }
+          return prevBucket;
+        }
+      );
+      toast.success("Storage bucket capacity synced in real-time", {
+        id: "realtime-bucket-details-sizes-sync",
+      });
+    }, [queryClient, id])
+  );
 
   // [COMMENT]: Sử dụng useQuery từ TanStack Query để quản lý chi tiết bucket.
   // Tự động retry và cache dữ liệu, giảm thiểu gọi API dư thừa.
@@ -112,7 +137,7 @@ function ViewBucketContent() {
 
   return (
     <div className="flex flex-col gap-6 w-full relative pb-10 text-foreground min-h-[calc(100vh-110px)] items-stretch px-6">
-      
+
       {/* 1. Header Section with Back Arrow */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-border pb-5">
         <div className="flex items-center gap-4">

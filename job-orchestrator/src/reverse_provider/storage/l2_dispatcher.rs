@@ -76,7 +76,7 @@ pub async fn dispatch_storage_result(
             )
             .await
         }
-        "storage.object.presign" => {
+        "storage.object.sts" => {
             db::object::resolve_object_job(
                 pg_client,
                 job_uuid,
@@ -87,6 +87,7 @@ pub async fn dispatch_storage_result(
             )
             .await
         }
+
         _ => {
             Logger::sys_warn(
                 "storage.l2_dispatcher",

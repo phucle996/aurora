@@ -2,6 +2,7 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{Builder, Region};
 use aws_sdk_s3::Client as S3Client;
+use aws_sdk_sts::Client as StsClient;
 
 /// [COMMENT]: MinioClient bọc AWS S3 SDK Client phục vụ tương tác an toàn với cụm MinIO L2.
 #[derive(Clone)]
@@ -43,14 +44,6 @@ impl MinioClient {
         Self::build_from_endpoint(endpoint_url, "minio-private").await
     }
 
-    /// [COMMENT]: Khởi tạo MinIO Client kết nối qua Public Endpoint (Envoy-facing: MINIO_PUBLIC_ENDPOINT).
-    /// Sử dụng dành riêng cho luồng ký Presigned URL để URL được ký trùng Host header với browser gọi qua Envoy.
-    pub async fn from_env_public() -> Self {
-        let endpoint_url = std::env::var("MINIO_PUBLIC_ENDPOINT")
-            .unwrap_or_else(|_| "http://localhost:29000".to_string());
-        Self::build_from_endpoint(endpoint_url, "minio-signer").await
-    }
-
     /// Khởi tạo bucket vật lý trên MinIO sử dụng SDK (Tự động ký Signature V4)
     pub async fn create_bucket(&self, bucket_name: &str) -> Result<(), aws_sdk_s3::Error> {
         self.s3_client
@@ -74,5 +67,28 @@ impl MinioClient {
     /// Lấy tham chiếu đến S3 Client nội bộ
     pub fn s3(&self) -> &S3Client {
         &self.s3_client
+    }
+
+    /// [COMMENT]: Khởi tạo AWS STS Client kết nối qua Private Endpoint của MinIO.
+    pub async fn sts_client_from_env() -> StsClient {
+        let access_key =
+            std::env::var("MINIO_ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+        let secret_key =
+            std::env::var("MINIO_SECRET_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+
+        let credentials = Credentials::new(access_key, secret_key, None, None, "minio-sts");
+
+        let host = std::env::var("MINIO_HOST").unwrap_or_else(|_| "localhost".to_string());
+        let port = std::env::var("MINIO_PORT").unwrap_or_else(|_| "9000".to_string());
+        let endpoint_url = format!("http://{}:{}", host, port);
+
+        let sdk_config = aws_config::defaults(BehaviorVersion::latest())
+            .credentials_provider(credentials)
+            .endpoint_url(endpoint_url)
+            .region(Region::new("us-east-1"))
+            .load()
+            .await;
+
+        StsClient::new(&sdk_config)
     }
 }

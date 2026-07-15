@@ -33,10 +33,18 @@ message BucketDeleteSync {
   repeated string access_keys = 2; // Danh sách access keys cần thu hồi/xóa sạch
 }
 
-// Cấu hình yêu cầu ký/thao tác đối tượng (list/upload/download/delete)
-message ObjectPresignRequest {
+// Cấu hình yêu cầu cấp khóa tạm thời (STS) cho đối tượng
+message ObjectStsRequest {
   string bucket_name = 1;
-  string key = 2;
-  string action = 3;             // "list", "upload", "download", "delete"
-  string content_type = 4;
+  int64 duration_seconds = 2;
 }
+
+// Cấu hình phản hồi khóa tạm thời (STS) dạng nhị phân Protobuf
+message ObjectStsResponse {
+  string access_key = 1;
+  string secret_key = 2;
+  string session_token = 3;
+  string expiration = 4;
+  string endpoint = 5;
+}
+

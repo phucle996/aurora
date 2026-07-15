@@ -79,3 +79,14 @@ type DeleteTenantBucket struct {
 	ZoneID      uuid.UUID
 	UserID      uuid.UUID
 }
+
+// [COMMENT]: RequestBucketSts chứa các tham số dùng để gửi yêu cầu xin cấp STS token cho bucket.
+type RequestBucketSts struct {
+	BucketID        uuid.UUID
+	BucketName      string
+	DurationSeconds int64
+	UserID          uuid.UUID
+	WorkspaceID     uuid.UUID
+	ZoneID          uuid.UUID
+}
+

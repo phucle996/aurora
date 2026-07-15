@@ -27,4 +27,7 @@ type PersonalBucketService interface {
 
 	// [COMMENT]: Yêu cầu xóa Bucket cá nhân.
 	DeleteBucket(ctx context.Context, param *storageEntity.DeletePersonalBucket) error
+
+	// [COMMENT]: Yêu cầu cấp khóa tạm thời (STS) cho bucket cá nhân.
+	RequestSts(ctx context.Context, param *storageEntity.RequestBucketSts) (uuid.UUID, error)
 }

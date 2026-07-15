@@ -170,31 +170,28 @@ export async function listBucketNames(signal?: AbortSignal): Promise<string[]> {
   return res?.data || [];
 }
 
-// [COMMENT]: Đăng ký yêu cầu thực hiện thao tác Object (list/upload/download/delete) qua Presigned URL/Outbox thô
-export async function registerObjectPresignRequest(
+// [COMMENT]: Yêu cầu cấp khóa tạm thời (STS) cho bucket cá nhân.
+export async function requestBucketStsToken(
   bucketId: string,
-  bucketName: string,
-  action: "list" | "upload" | "download" | "delete",
-  key?: string,
-  contentType?: string,
+  durationSeconds: number,
   signal?: AbortSignal
 ): Promise<{ event_id: string }> {
   const res = await fetchJSON<{ data?: { event_id: string } }>(
-    `/api/v1/personal/storage/buckets/${bucketId}/objects/presigned-requests`,
+    `/api/v1/storage/buckets/${bucketId}/sts-token`,
     {
       method: "POST",
       body: {
-        action,
-        bucket_name: bucketName,
-        key,
-        content_type: contentType,
+        duration_seconds: durationSeconds,
       },
       signal,
     }
   );
   if (!res?.data) {
-    throw new Error(`Failed to register object presign request: ${action}`);
+    throw new Error(`Failed to request STS token for bucket: ${bucketId}`);
   }
   return res.data;
 }
+
+
+
 

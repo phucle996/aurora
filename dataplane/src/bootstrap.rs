@@ -47,6 +47,7 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
 
     // 3. Load config from Environment
     let cfg = Config::load();
+    Config::set_global(cfg.clone());
     Logger::sys_info(
         "system.bootstrap",
         &format!(

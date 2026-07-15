@@ -401,3 +401,51 @@ func (r *PersonalBucketRepoImpl) ListAccessKeys(ctx context.Context, bucketID uu
 	}
 	return keys, nil
 }
+
+// [COMMENT]: CreateSts kiểm tra quyền sở hữu bucket và insert Outbox Record cho tác vụ xin STS.
+func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEntity.RequestBucketSts, outbox *storageEntity.StorageOutboxRecord) error {
+	mo := storageModel.OutboxEntityToModel(outbox)
+
+	query := fmt.Sprintf(`
+		WITH check_bucket AS (
+			SELECT b.id FROM %s.personal_buckets b
+			JOIN %s.personal_workspaces w ON b.workspace_id = w.id
+			WHERE b.id = $1 AND b.workspace_id = $2 AND w.owner_id = $3
+		)
+		INSERT INTO %s.storage_outbox_records (
+			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message
+		)
+		SELECT $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+		FROM check_bucket
+	`, r.storage, r.hierarchy, r.storage)
+
+	res, err := r.db.Exec(ctx, query,
+		param.BucketID,
+		param.WorkspaceID,
+		param.UserID.String(),
+		mo.EventID,
+		mo.RoutingScope,
+		mo.JobTopic,
+		mo.Payload,
+		mo.UserID,
+		mo.Status,
+		mo.CompletedAt,
+		mo.JobVersion,
+		mo.ResourceID,
+		mo.PayloadSchemaVersion,
+		mo.TraceID,
+		mo.Idle,
+		mo.ErrorCode,
+		mo.ErrorMessage,
+	)
+	if err != nil {
+		return fmt.Errorf("storage repo: create bucket sts job failed: %w", err)
+	}
+
+	if res.RowsAffected() == 0 {
+		return storageTaxonomy.ErrNotFound
+	}
+	return nil
+}
+

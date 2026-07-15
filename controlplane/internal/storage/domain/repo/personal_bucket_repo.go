@@ -32,4 +32,7 @@ type PersonalBucketRepo interface {
 
 	// [COMMENT]: Lấy danh sách access keys của toàn bộ credentials liên kết với bucket này.
 	ListAccessKeys(ctx context.Context, bucketID uuid.UUID, userID uuid.UUID) ([]string, error)
+
+	// [COMMENT]: Khởi tạo job xin cấp STS token cho bucket thông qua Outbox Record có kiểm tra IDOR (chống chéo quyền sở hữu).
+	CreateSts(ctx context.Context, param *storageEntity.RequestBucketSts, outbox *storageEntity.StorageOutboxRecord) error
 }

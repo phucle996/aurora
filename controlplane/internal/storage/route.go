@@ -54,6 +54,12 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 			module.PersonalBucketHandler.Delete,
 		)
 
+		// [COMMENT]: Yêu cầu cấp khóa tạm thời (STS) cho bucket
+		personalGroup.POST("/storage/buckets/:id/sts-token",
+			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
+			module.PersonalBucketHandler.RequestSts,
+		)
+
 		// ========================================================================
 		// 🔑 PHÂN KHÚC CREDENTIALS: QUẢN LÝ ACCESS KEYS (PERSONAL)
 		// ========================================================================
@@ -80,11 +86,7 @@ func RegisterRoutes(router *gin.Engine, module *StorageModule) {
 		// 📦 PHÂN KHÚC OBJECTS: QUẢN LÝ ĐỐI TƯỢNG (PERSONAL)
 		// ========================================================================
 
-		// [COMMENT]: Đăng ký job thao tác đối tượng (List/Upload/Download/Delete) thông qua Presigned URL
-		personalGroup.POST("/storage/buckets/:id/objects/presigned-requests",
-			middleware.Authorize("storage:bucket:read", module.L1Registry, "*"),
-			module.PersonalObjectHandler.RegisterObjectPresign,
-		)
+
 	}
 
 	// ------------------------------------------------------------------------

@@ -319,3 +319,64 @@ func (h *PersonalBucketHandler) Delete(c *gin.Context) {
 
 	apires.RespondSuccess(c, nil, "bucket deletion initiated")
 }
+
+// [COMMENT]: RequestSts xử lý HTTP request yêu cầu cấp STS token cho bucket.
+func (h *PersonalBucketHandler) RequestSts(c *gin.Context) {
+	const op = "storage.personal_bucket.request_sts"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// 1. Trích xuất thông tin định danh trực tiếp từ context
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+
+	idStr := c.Param("id")
+	bucketID, err := uuid.Parse(idStr)
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid bucket id format")
+		return
+	}
+
+	var req storageDto.RequestBucketStsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apires.RespondBadRequest(c, "invalid body payload: "+err.Error())
+		return
+	}
+
+	// 2. Build entity riêng rồi gọi service
+	param := &storageEntity.RequestBucketSts{
+		BucketID:        bucketID,
+		DurationSeconds: req.DurationSeconds,
+		UserID:          userID,
+		WorkspaceID:     workspaceID,
+		ZoneID:          zoneID,
+	}
+
+	eventID, serviceErr := h.personalSvc.RequestSts(ctx, param)
+	if serviceErr != nil {
+		if errors.Is(serviceErr, storageTaxonomy.ErrNotFound) {
+			apires.RespondNotFound(c, "bucket not found")
+			return
+		}
+		logger.HandlerError(c, op, serviceErr)
+		apires.RespondInternalError(c, "internal_error")
+		return
+	}
+
+	apires.RespondAccepted(c, gin.H{
+		"event_id": eventID.String(),
+	}, "sts token generation initiated")
+}
+

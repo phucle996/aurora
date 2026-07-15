@@ -83,14 +83,30 @@ pub struct Config {
     /// Bỏ qua TLS certificate verification (CHỈ dùng cho môi trường dev/test)
     /// Trên production bắt buộc phải đặt là false để đảm bảo an toàn kết nối
     pub proxmox_tls_insecure: bool,
+    /// [COMMENT]: API Endpoint Public phục vụ gọi từ trình duyệt UI (bắt buộc cấu hình)
+    pub minio_public_endpoint: String,
 }
 
+use std::sync::OnceLock;
+
+static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
+
 impl Config {
+    /// Lấy tham chiếu đến cấu hình toàn cục đã được nạp
+    pub fn get_global() -> &'static Config {
+        GLOBAL_CONFIG.get().expect("Config has not been initialized yet")
+    }
+
+    /// Đăng ký cấu hình toàn cục khi khởi chạy hệ thống
+    pub fn set_global(config: Config) {
+        GLOBAL_CONFIG.set(config).ok();
+    }
+
     /// Khởi tạo và nạp toàn bộ cấu hình từ biến môi trường.
     ///
     /// # Luồng Hoạt động (Execution Flow):
     ///   1. Đọc từng khóa cấu hình bằng `std::env::var`.
-    ///   2. Nếu thiếu khóa, tự động áp dụng giá trị mặc định an toàn (safe fallback) phù hợp cho local dev.
+    ///   2. Nếu thiếu khóa thiết yếu, lập tức gọi abort tiến trình.
     ///   3. Trả về thực thể `Config` hoàn chỉnh.
     pub fn load() -> Self {
         Self {
@@ -103,6 +119,16 @@ impl Config {
                 crate::observability::logger::Logger::sys_error(
                     "system.bootstrap",
                     "CRITICAL: ZONE_ID environment variable is missing but required for stateless Dataplane!",
+                    &err.to_string(),
+                );
+                std::process::abort();
+            }),
+
+            // [COMMENT]: Nạp cấu hình Endpoint S3 Gateway phục vụ Direct S3 (Bắt buộc cấu hình, không fallback)
+            minio_public_endpoint: env::var("MINIO_PUBLIC_ENDPOINT").unwrap_or_else(|err| {
+                crate::observability::logger::Logger::sys_error(
+                    "system.bootstrap",
+                    "CRITICAL: MINIO_PUBLIC_ENDPOINT environment variable is missing but required for S3 Console Direct operations!",
                     &err.to_string(),
                 );
                 std::process::abort();

@@ -54,9 +54,9 @@ pub async fn dispatch_storage_job(
             exec.execute(payload).await
         }
 
-        // [COMMENT]: Định tuyến ký URL duyệt thư mục hoặc thao tác tệp tin
-        "object.presign" => {
-            let exec = super::ObjectPresignExecutor;
+        // [COMMENT]: Định tuyến lấy STS credentials
+        "object.sts" => {
+            let exec = super::ObjectStsExecutor;
             exec.execute(payload).await
         }
 

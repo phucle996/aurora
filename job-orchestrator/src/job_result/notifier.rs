@@ -36,8 +36,14 @@ impl JobNotifier {
             "status": notification_status,
             "title": match job_topic {
                 "mail.test_connection" => "SMTP Connection Test".to_string(),
-                _ => "Job Execution Result".to_string(),
+                "storage.bucket.create" => "Bucket Created".to_string(),
+                "storage.bucket.delete" => "Bucket Deleted".to_string(),
+                "storage.credential.create" => "Storage Credential Created".to_string(),
+                "storage.credential.delete" => "Storage Credential Deleted".to_string(),
+                _ => "Job Notification".to_string(),
             },
+            // [COMMENT]: operation = job_topic dùng làm signal cho client quyết định realtime behavior
+            "operation": job_topic,
             "message": message,
             "created_at": chrono::Utc::now().to_rfc3339(),
             "job_id": job_id,

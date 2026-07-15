@@ -281,31 +281,29 @@ func (x *BucketDeleteSync) GetAccessKeys() []string {
 	return nil
 }
 
-// Cấu hình yêu cầu ký/thao tác đối tượng (list/upload/download/delete)
-type ObjectPresignRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BucketName    string                 `protobuf:"bytes,1,opt,name=bucket_name,json=bucketName,proto3" json:"bucket_name,omitempty"`
-	Key           string                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
-	Action        string                 `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"` // "list", "upload", "download", "delete"
-	ContentType   string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+// Cấu hình yêu cầu cấp khóa tạm thời (STS) cho đối tượng
+type ObjectStsRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	BucketName      string                 `protobuf:"bytes,1,opt,name=bucket_name,json=bucketName,proto3" json:"bucket_name,omitempty"`
+	DurationSeconds int64                  `protobuf:"varint,2,opt,name=duration_seconds,json=durationSeconds,proto3" json:"duration_seconds,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
-func (x *ObjectPresignRequest) Reset() {
-	*x = ObjectPresignRequest{}
+func (x *ObjectStsRequest) Reset() {
+	*x = ObjectStsRequest{}
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ObjectPresignRequest) String() string {
+func (x *ObjectStsRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ObjectPresignRequest) ProtoMessage() {}
+func (*ObjectStsRequest) ProtoMessage() {}
 
-func (x *ObjectPresignRequest) ProtoReflect() protoreflect.Message {
+func (x *ObjectStsRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -317,35 +315,98 @@ func (x *ObjectPresignRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ObjectPresignRequest.ProtoReflect.Descriptor instead.
-func (*ObjectPresignRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ObjectStsRequest.ProtoReflect.Descriptor instead.
+func (*ObjectStsRequest) Descriptor() ([]byte, []int) {
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *ObjectPresignRequest) GetBucketName() string {
+func (x *ObjectStsRequest) GetBucketName() string {
 	if x != nil {
 		return x.BucketName
 	}
 	return ""
 }
 
-func (x *ObjectPresignRequest) GetKey() string {
+func (x *ObjectStsRequest) GetDurationSeconds() int64 {
 	if x != nil {
-		return x.Key
+		return x.DurationSeconds
+	}
+	return 0
+}
+
+// Cấu hình phản hồi khóa tạm thời (STS) dạng nhị phân Protobuf
+type ObjectStsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AccessKey     string                 `protobuf:"bytes,1,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
+	SecretKey     string                 `protobuf:"bytes,2,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"`
+	SessionToken  string                 `protobuf:"bytes,3,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"`
+	Expiration    string                 `protobuf:"bytes,4,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	Endpoint      string                 `protobuf:"bytes,5,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ObjectStsResponse) Reset() {
+	*x = ObjectStsResponse{}
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ObjectStsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ObjectStsResponse) ProtoMessage() {}
+
+func (x *ObjectStsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ObjectStsResponse.ProtoReflect.Descriptor instead.
+func (*ObjectStsResponse) Descriptor() ([]byte, []int) {
+	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ObjectStsResponse) GetAccessKey() string {
+	if x != nil {
+		return x.AccessKey
 	}
 	return ""
 }
 
-func (x *ObjectPresignRequest) GetAction() string {
+func (x *ObjectStsResponse) GetSecretKey() string {
 	if x != nil {
-		return x.Action
+		return x.SecretKey
 	}
 	return ""
 }
 
-func (x *ObjectPresignRequest) GetContentType() string {
+func (x *ObjectStsResponse) GetSessionToken() string {
 	if x != nil {
-		return x.ContentType
+		return x.SessionToken
+	}
+	return ""
+}
+
+func (x *ObjectStsResponse) GetExpiration() string {
+	if x != nil {
+		return x.Expiration
+	}
+	return ""
+}
+
+func (x *ObjectStsResponse) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
 	}
 	return ""
 }
@@ -378,13 +439,21 @@ const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"\x10BucketDeleteSync\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vaccess_keys\x18\x02 \x03(\tR\n" +
-	"accessKeys\"\x84\x01\n" +
-	"\x14ObjectPresignRequest\x12\x1f\n" +
+	"accessKeys\"^\n" +
+	"\x10ObjectStsRequest\x12\x1f\n" +
 	"\vbucket_name\x18\x01 \x01(\tR\n" +
-	"bucketName\x12\x10\n" +
-	"\x03key\x18\x02 \x01(\tR\x03key\x12\x16\n" +
-	"\x06action\x18\x03 \x01(\tR\x06action\x12!\n" +
-	"\fcontent_type\x18\x04 \x01(\tR\vcontentTypeB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
+	"bucketName\x12)\n" +
+	"\x10duration_seconds\x18\x02 \x01(\x03R\x0fdurationSeconds\"\xb2\x01\n" +
+	"\x11ObjectStsResponse\x12\x1d\n" +
+	"\n" +
+	"access_key\x18\x01 \x01(\tR\taccessKey\x12\x1d\n" +
+	"\n" +
+	"secret_key\x18\x02 \x01(\tR\tsecretKey\x12#\n" +
+	"\rsession_token\x18\x03 \x01(\tR\fsessionToken\x12\x1e\n" +
+	"\n" +
+	"expiration\x18\x04 \x01(\tR\n" +
+	"expiration\x12\x1a\n" +
+	"\bendpoint\x18\x05 \x01(\tR\bendpointB@Z>controlplane/internal/storage/transport/rpc/proto;storageprotob\x06proto3"
 
 var (
 	file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescOnce sync.Once
@@ -398,13 +467,14 @@ func file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP() [
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescData
 }
 
-var file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = []any{
-	(*BucketSync)(nil),           // 0: storage.BucketSync
-	(*CredentialSync)(nil),       // 1: storage.CredentialSync
-	(*BucketResizeSync)(nil),     // 2: storage.BucketResizeSync
-	(*BucketDeleteSync)(nil),     // 3: storage.BucketDeleteSync
-	(*ObjectPresignRequest)(nil), // 4: storage.ObjectPresignRequest
+	(*BucketSync)(nil),        // 0: storage.BucketSync
+	(*CredentialSync)(nil),    // 1: storage.CredentialSync
+	(*BucketResizeSync)(nil),  // 2: storage.BucketResizeSync
+	(*BucketDeleteSync)(nil),  // 3: storage.BucketDeleteSync
+	(*ObjectStsRequest)(nil),  // 4: storage.ObjectStsRequest
+	(*ObjectStsResponse)(nil), // 5: storage.ObjectStsResponse
 }
 var file_internal_storage_transport_rpc_proto_storage_job_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -425,7 +495,7 @@ func file_internal_storage_transport_rpc_proto_storage_job_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc), len(file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

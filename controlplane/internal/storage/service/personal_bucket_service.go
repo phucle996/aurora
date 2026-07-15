@@ -275,3 +275,62 @@ func (s *PersonalBucketSvcImpl) DeleteBucket(ctx context.Context, param *storage
 	}
 	return nil
 }
+
+// [COMMENT]: RequestSts thực thi nghiệp vụ yêu cầu cấp STS token cho bucket cá nhân, tạo Outbox Record.
+func (s *PersonalBucketSvcImpl) RequestSts(ctx context.Context, param *storageEntity.RequestBucketSts) (uuid.UUID, error) {
+	// 1. SELECT GetByID để lấy bucket_name vật lý và kiểm định nhanh sự tồn tại
+	bucket, err := s.repo.GetByID(ctx, param.BucketID, param.UserID)
+	if err != nil {
+		return uuid.Nil, apperr.Wrap(err, err, "get_failed")
+	}
+
+	// Cập nhật tên bucket vật lý vào param
+	param.BucketName = bucket.Name
+
+	// Trích xuất Trace ID phục vụ distributed tracing
+	var traceID []byte
+	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
+		tid := spanCtx.TraceID()
+		traceID = tid[:]
+	}
+
+	// 2. Tạo event ID dạng UUIDv7
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Nil, apperr.Wrap(err, err, "failed_to_generate_uuid_v7")
+	}
+
+	// 3. Marshal ObjectStsRequest protobuf
+	reqProto := &storageproto.ObjectStsRequest{
+		BucketName:      bucket.Name,
+		DurationSeconds: param.DurationSeconds,
+	}
+	payloadBytes, err := proto.Marshal(reqProto)
+	if err != nil {
+		return uuid.Nil, apperr.Wrap(err, err, "marshal_payload_failed")
+	}
+
+	// 4. Tạo Outbox Record với topic "storage.object.sts"
+	outbox := &storageEntity.StorageOutboxRecord{
+		EventID:              eventID,
+		RoutingScope:         "zone:" + param.ZoneID.String(),
+		JobTopic:             "storage.object.sts",
+		Payload:              payloadBytes,
+		UserID:               param.UserID.String(),
+		Status:               storageEntity.StorageOutboxStatusPending,
+		JobVersion:           1,
+		ResourceID:           param.BucketID.String(),
+		PayloadSchemaVersion: 1,
+		TraceID:              traceID,
+		Idle:                 30,
+	}
+
+	// 5. Lưu vào CSDL
+	err = s.repo.CreateSts(ctx, param, outbox)
+	if err != nil {
+		return uuid.Nil, apperr.Wrap(err, err, "create_sts_failed")
+	}
+
+	return eventID, nil
+}
+
