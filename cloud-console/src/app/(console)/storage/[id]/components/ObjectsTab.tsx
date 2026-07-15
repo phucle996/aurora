@@ -153,6 +153,8 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
             if (eventData.status === "SUCCESS") {
               try {
                 const creds = decodeObjectStsResponse(eventData.message);
+                // [COMMENT]: WIPE / Xóa sạch payload khóa trong message truyền dẫn để tránh rò rỉ qua console/memory F12
+                eventData.message = "";
                 resolve(creds);
               } catch (err) {
                 reject(new Error("Lỗi giải mã thông tin xác thực từ Gateway."));

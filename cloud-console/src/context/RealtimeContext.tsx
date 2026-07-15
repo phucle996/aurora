@@ -85,7 +85,12 @@ export const RealtimeProvider: React.FC<{
     // Client-side không được gọi `newSubscription` nữa để tránh trùng lặp và báo lỗi 'already subscribed'.
     // Thay vào đó, lắng nghe sự kiện `publication` trực tiếp trên client instance.
     client.on("publication", (ctx) => {
-      console.log("📥 Global Realtime publication received (Server-side sub):", ctx);
+      const isSensitive = ctx.data && ctx.data.event_type === "storage.object.sts";
+      if (!isSensitive) {
+        console.log("📥 Global Realtime publication received (Server-side sub):", ctx);
+      } else {
+        console.log("📥 Sensitive realtime publication received (STS token payload redacted)");
+      }
       
       if (ctx.data && ctx.data.event_type) {
         const eventType: string = ctx.data.event_type;
