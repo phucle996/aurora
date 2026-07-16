@@ -82,7 +82,7 @@ impl JobExecutionResult {
             Ok(Err(e)) => {
                 // Do chúng ta đã rút gọn ExecutorError chỉ còn variant ExecutionFailed để xóa dead code,
                 // phần match lỗi ở đây được đơn giản hóa để chỉ ánh xạ duy nhất lỗi này về Controlplane.
-                let (code, msg) = match e {
+                let (code, _msg) = match e {
                     crate::executor::ExecutorError::ExecutionFailed(m) => {
                         (Some("EXECUTION_FAILED".to_string()), m)
                     }
@@ -93,7 +93,7 @@ impl JobExecutionResult {
                     attempt,
                     result_status: "FAILED".to_string(),
                     error_code: code,
-                    message: msg,
+                    message: "".to_string(),
                     job_topic,
                     trace_id,
                 }
@@ -104,7 +104,7 @@ impl JobExecutionResult {
                 attempt,
                 result_status: "FAILED".to_string(),
                 error_code: Some("EXECUTION_TIMEOUT".to_string()),
-                message: "Workload execution exceeded maximum execution time limit".to_string(),
+                message: "".to_string(),
                 job_topic,
                 trace_id,
             },

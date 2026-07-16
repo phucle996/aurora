@@ -2,12 +2,15 @@ package storageSvcImpl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	storageEntity "controlplane/internal/storage/domain/entity"
 	storageRepoInterface "controlplane/internal/storage/domain/repo"
 	storageSvcInterface "controlplane/internal/storage/domain/service"
+	storageTaxonomy "controlplane/internal/storage/taxonomy"
 	storageproto "controlplane/internal/storage/transport/rpc/proto"
 	"controlplane/pkg/apperr"
 	"controlplane/pkg/crypto"
@@ -70,8 +73,15 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		return nil, apperr.Wrap(err, err, "gen_secret_key_failed")
 	}
 
-	// [COMMENT]: Sinh bucket policy giới hạn quyền chỉ vào đúng bucket này
-	policy := buildPersonalBucketPolicy(bucket.Name)
+	// [COMMENT]: Sử dụng custom bucket policy được truyền từ client
+	// Thay thế placeholder <BUCKET_NAME> bằng tên vật lý thực tế của bucket
+	policy := strings.ReplaceAll(param.Policy, "<BUCKET_NAME>", bucket.Name)
+
+	// [COMMENT]: Validate tính hợp lệ của JSON policy
+	var js map[string]interface{}
+	if err := json.Unmarshal([]byte(policy), &js); err != nil {
+		return nil, apperr.Wrap(storageTaxonomy.ErrInvalidPolicy, err, "invalid_policy_format")
+	}
 
 	// [COMMENT]: Tạo credential entity — gắn kèm vào bucket cá nhân với UUID v7
 	credID, err := uuid.NewV7()
@@ -333,4 +343,3 @@ func (s *PersonalBucketSvcImpl) RequestSts(ctx context.Context, param *storageEn
 
 	return eventID, nil
 }
-

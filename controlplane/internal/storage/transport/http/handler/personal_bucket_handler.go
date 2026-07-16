@@ -74,6 +74,7 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		ZoneID:             zoneID,
 		CapacityQuotaBytes: req.QuotaBytes,
 		UserID:             userID,
+		Policy:             req.Policy,
 	}
 	createResult, createErr := h.personalSvc.CreateBucketForPersonal(ctx, param)
 

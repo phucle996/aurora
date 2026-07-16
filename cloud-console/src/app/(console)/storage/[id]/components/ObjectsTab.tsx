@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Folder,
+  FolderPlus,
   File,
   Upload,
   Download,
@@ -20,6 +21,8 @@ import { type BucketItem, requestBucketStsToken } from "@/lib/api/storage";
 import { useRealtime } from "@/context/RealtimeContext";
 import { UploadModal } from "./UploadModal";
 import { DeleteConfirmModal } from "./DeleteConfirmModal";
+import { ObjectDetailPanel } from "./ObjectDetailPanel";
+import { CreateFolderModal } from "./CreateFolderModal";
 import {
   getCachedObjectList,
   setCachedObjectList,
@@ -33,6 +36,7 @@ import {
   DeleteObjectCommand,
   HeadObjectCommand,
   GetObjectTaggingCommand,
+  PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -40,7 +44,7 @@ interface ObjectsTabProps {
   bucket: BucketItem;
 }
 
-type FileItem = {
+export type FileItem = {
   name: string;      // Tên hiển thị (ví dụ: "logo.png" hoặc "assets")
   fullName: string;  // Tên full key (ví dụ: "assets/images/logo.png")
   type: "folder" | "file";
@@ -108,8 +112,9 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
   const [loading, setLoading] = useState(false);
   const [allObjects, setAllObjects] = useState<RawObject[]>([]);
   const [selectedItems, setSelectedItems] = useState<string[]>([]); // Lưu trữ fullName (full key)
-  
+
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -168,8 +173,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
 
       toast.dismiss(toastId);
 
-      const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
-      let endpoint = credentials.endpoint || `http://${host}:29000`;
+      let endpoint = credentials.endpoint;
       if (endpoint.includes("localhost") && typeof window !== "undefined") {
         endpoint = endpoint.replace("localhost", window.location.hostname);
       }
@@ -330,6 +334,29 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
     setUploadModalOpen(true);
   };
 
+  const handleCreateFolder = async (folderName: string) => {
+    const toastId = toast.loading("Đang tạo thư mục...");
+    try {
+      const client = await getS3Client();
+      const folderKey = currentPath.length > 0
+        ? currentPath.join("/") + "/" + folderName + "/"
+        : folderName + "/";
+
+      const putCommand = new PutObjectCommand({
+        Bucket: bucket.name,
+        Key: folderKey,
+        Body: "", // 0-byte object
+      });
+      await client.send(putCommand);
+      toast.success("Tạo thư mục thành công!", { id: toastId });
+      invalidateObjectListCache(bucket.id);
+      fetchListObjects();
+    } catch (err: any) {
+      toast.error(err.message || "Tạo thư mục thất bại", { id: toastId });
+      throw err;
+    }
+  };
+
   // [COMMENT]: Tải xuống: Ký link GET trực tiếp ở client-side và tải về
   const handleDownload = async () => {
     if (selectedItems.length === 0) return;
@@ -352,7 +379,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
         const presignedUrl = await getSignedUrl(client, command, { expiresIn: 900 });
 
         toast.dismiss(toastId);
-        
+
         const link = document.createElement("a");
         link.href = presignedUrl;
         link.target = "_blank";
@@ -403,7 +430,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
     setMetadataLoading(true);
     try {
       const client = await getS3Client();
-      
+
       // 1. Gọi HeadObject lấy System Metadata + Custom Metadata
       const headCommand = new HeadObjectCommand({
         Bucket: bucket.name,
@@ -457,342 +484,218 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
   };
 
   return (
-    <div className="space-y-4 text-xs py-4 select-none relative">
+    <div className="flex flex-col lg:flex-row gap-6 w-full relative items-stretch py-4 select-none">
 
-      {/* File Browser Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5">
+      {/* Left Column - Actions + Objects Browser */}
+      <div className={cn(
+        "space-y-4 transition-all duration-300 ease-in-out",
+        selectedFile ? "w-full lg:w-[67%]" : "w-full lg:w-full"
+      )}>
 
-        {/* Navigation Breadcrumb */}
-        <div className="flex items-center gap-1 text-[13px] font-semibold text-foreground overflow-x-auto py-1">
-          <button
-            onClick={() => handleBreadcrumbClick(-1)}
-            className="flex items-center gap-1 text-slate-500 hover:text-foreground cursor-pointer outline-none"
-          >
-            <HardDrive className="h-4 w-4" />
-            <span>{bucket.name}</span>
-          </button>
+        {/* File Browser Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5">
 
-          {currentPath.map((folder, index) => (
-            <React.Fragment key={index}>
-              <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
-              <button
-                onClick={() => handleBreadcrumbClick(index)}
-                className="hover:text-foreground cursor-pointer outline-none max-w-[120px] truncate"
-              >
-                {folder}
-              </button>
-            </React.Fragment>
-          ))}
-        </div>
-
-        {/* Action Controls */}
-        <div className="flex items-center gap-2">
-
-          {/* Refresh */}
-          <Button
-            variant="outline"
-            onClick={() => fetchListObjects(true)}
-            disabled={loading}
-            className="h-8.5 text-xs font-bold border-border text-foreground hover:bg-muted cursor-pointer transition-colors"
-          >
-            <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
-          </Button>
-
-          {/* Download & Delete Actions */}
-          {selectedItems.length > 0 && (
-            <>
-              <Button
-                variant="outline"
-                onClick={handleDownload}
-                className="h-8.5 text-xs font-bold border-border text-foreground hover:bg-muted cursor-pointer transition-colors flex items-center gap-1.5"
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span>Download ({selectedItems.length})</span>
-              </Button>
-
-              <Button
-                variant="outline"
-                onClick={() => setDeleteConfirmOpen(true)}
-                className="h-8.5 text-xs font-bold border-red-200 dark:border-red-950 text-red-655 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 cursor-pointer transition-colors flex items-center gap-1.5"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                <span>Delete</span>
-              </Button>
-            </>
-          )}
-
-          {/* Upload Button */}
-          <Button
-            onClick={handleUploadClick}
-            className="h-8.5 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-md flex items-center gap-1.5 cursor-pointer"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            <span>Upload File</span>
-          </Button>
-        </div>
-
-      </div>
-
-      {/* Object Catalog List */}
-      {loading ? (
-        <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
-          <Loader2 className="h-7 w-7 animate-spin text-blue-500 mb-2.5" />
-          <span className="text-[11px] font-semibold tracking-wider">Loading Files...</span>
-        </div>
-      ) : items.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground bg-muted/5 border border-border border-dashed rounded-xl">
-          <Folder className="h-10 w-10 text-muted-foreground/50 mb-2.5" />
-          <p className="font-bold text-sm">Empty Folder</p>
-          <p className="text-[11px] mt-1 max-w-xs text-muted-foreground">
-            This directory does not contain any objects. Upload files to get started.
-          </p>
-        </div>
-      ) : (
-        <div className="rounded-xl border border-border overflow-hidden">
-          <table className="w-full text-left border-collapse table-auto">
-            <thead>
-              <tr className="border-b border-border bg-muted/20 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground select-none">
-                <th className="w-12 px-6 py-3.5 text-center">
-                  <input
-                    type="checkbox"
-                    checked={selectedItems.length === items.filter(x => x.type === "file").length && items.filter(x => x.type === "file").length > 0}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedItems(items.filter(x => x.type === "file").map(x => x.fullName));
-                      } else {
-                        setSelectedItems([]);
-                      }
-                    }}
-                    className="h-3.5 w-3.5 rounded border-border text-blue-600 focus:ring-blue-500 cursor-pointer"
-                  />
-                </th>
-                <th className="px-4 py-3.5">Name</th>
-                <th className="px-6 py-3.5">Size</th>
-                <th className="px-6 py-3.5">Last Modified</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border text-[13px]">
-              {items.map((item) => {
-                const isSelected = selectedItems.includes(item.fullName);
-                const isFolder = item.type === "folder";
-                return (
-                  <tr
-                    key={item.fullName}
-                    className={cn(
-                      "hover:bg-muted/40 transition-colors select-none",
-                      isSelected && "bg-muted/80"
-                    )}
-                  >
-
-                    {/* Checkbox */}
-                    <td className="px-6 py-3.5 text-center">
-                      {!isFolder && (
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleSelect(item.fullName)}
-                          className="h-3.5 w-3.5 rounded border-border text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                      )}
-                    </td>
-
-                    {/* Name */}
-                    <td className="px-4 py-3.5">
-                      <div className="flex items-center gap-2.5">
-                        {getIcon(item)}
-                        {isFolder ? (
-                          <button
-                            onClick={() => handleFolderClick(item.name)}
-                            className="font-bold text-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:underline cursor-pointer outline-none"
-                          >
-                            {item.name}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleFileClick(item)}
-                            className="font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:underline cursor-pointer outline-none text-left"
-                          >
-                            {item.name}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Size */}
-                    <td className="px-6 py-3.5 text-slate-700 dark:text-slate-300 font-medium">
-                      {isFolder ? "—" : item.size}
-                    </td>
-
-                    {/* Last Modified */}
-                    <td className="px-6 py-3.5 text-slate-400 dark:text-slate-500">
-                      {item.lastModified}
-                    </td>
-
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Slide-over Detail Drawer */}
-      {selectedFile && (
-        <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200 ease-out select-text">
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800/80">
-            <div className="flex items-center gap-2">
-              <FileText className="h-4.5 w-4.5 text-blue-500" />
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate max-w-[280px]">
-                Chi tiết đối tượng
-              </h3>
-            </div>
+          {/* Navigation Breadcrumb */}
+          <div className="flex items-center gap-1 text-[13px] font-semibold text-foreground overflow-x-auto py-1">
             <button
-              onClick={() => {
-                setSelectedFile(null);
-                setFileDetails(null);
-              }}
-              className="p-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer outline-none"
+              onClick={() => handleBreadcrumbClick(-1)}
+              className="flex items-center gap-1 text-slate-500 hover:text-foreground cursor-pointer outline-none"
             >
-              <X className="h-4 w-4" />
+              <HardDrive className="h-4 w-4" />
+              <span>{bucket.name}</span>
             </button>
+
+            {currentPath.map((folder, index) => (
+              <React.Fragment key={index}>
+                <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                <button
+                  onClick={() => handleBreadcrumbClick(index)}
+                  className="hover:text-foreground cursor-pointer outline-none max-w-[120px] truncate"
+                >
+                  {folder}
+                </button>
+              </React.Fragment>
+            ))}
           </div>
 
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-6">
-            {/* Overview */}
-            <div className="bg-slate-50 dark:bg-slate-900/40 p-4 rounded-xl border border-slate-100 dark:border-slate-800/80 space-y-3">
-              <p className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate" title={selectedFile.fullName}>
-                Key: <span className="font-mono text-slate-500 font-medium">{selectedFile.fullName}</span>
-              </p>
-              <div className="grid grid-cols-2 gap-4 text-[11px] text-slate-500 font-medium">
-                <div>
-                  <span className="block text-[9px] uppercase tracking-wider text-slate-400">Dung lượng</span>
-                  <span className="text-slate-700 dark:text-slate-200 font-bold">{selectedFile.size}</span>
-                </div>
-                <div>
-                  <span className="block text-[9px] uppercase tracking-wider text-slate-400">Cập nhật lúc</span>
-                  <span className="text-slate-700 dark:text-slate-200 font-bold">{selectedFile.lastModified}</span>
-                </div>
-              </div>
-            </div>
+          {/* Action Controls */}
+          <div className="flex items-center gap-2">
 
-            {metadataLoading ? (
-              <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-                <Loader2 className="h-6 w-6 animate-spin text-blue-500 mb-2" />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Đang tải metadata...</span>
-              </div>
-            ) : fileDetails ? (
-              <>
-                {/* System Properties */}
-                <div className="space-y-2">
-                  <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                    Thuộc tính hệ thống
-                  </h4>
-                  <div className="border border-slate-100 dark:border-slate-800/80 rounded-lg overflow-hidden divide-y divide-slate-100 dark:divide-slate-800/80 text-[11px]">
-                    <div className="px-3.5 py-2 flex justify-between">
-                      <span className="text-slate-400">Content-Type</span>
-                      <span className="font-mono font-bold text-slate-700 dark:text-slate-200">{fileDetails.contentType || "binary/octet-stream"}</span>
-                    </div>
-                    <div className="px-3.5 py-2 flex justify-between">
-                      <span className="text-slate-400">ETag</span>
-                      <span className="font-mono font-bold text-slate-700 dark:text-slate-200 truncate max-w-[200px]" title={fileDetails.etag}>
-                        {fileDetails.etag || "—"}
-                      </span>
-                    </div>
-                    {fileDetails.versionId && (
-                      <div className="px-3.5 py-2 flex justify-between">
-                        <span className="text-slate-400">Version ID</span>
-                        <span className="font-mono font-bold text-slate-700 dark:text-slate-200 truncate max-w-[200px]">{fileDetails.versionId}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Custom Metadata */}
-                <div className="space-y-2">
-                  <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                    Custom Metadata (User-defined)
-                  </h4>
-                  {!fileDetails.customMetadata || Object.keys(fileDetails.customMetadata).length === 0 ? (
-                    <p className="text-[11px] text-slate-400 italic">Không có custom metadata</p>
-                  ) : (
-                    <div className="border border-slate-100 dark:border-slate-800/80 rounded-lg overflow-hidden divide-y divide-slate-100 dark:divide-slate-800/80 text-[11px]">
-                      {Object.entries(fileDetails.customMetadata).map(([key, value]) => (
-                        <div key={key} className="px-3.5 py-2 flex justify-between">
-                          <span className="text-slate-400 font-mono">{key}</span>
-                          <span className="font-semibold text-slate-700 dark:text-slate-200">{value}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Object Tags */}
-                <div className="space-y-2">
-                  <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
-                    Nhãn dữ liệu (Tags)
-                  </h4>
-                  {!fileDetails.tags || Object.keys(fileDetails.tags).length === 0 ? (
-                    <p className="text-[11px] text-slate-400 italic">Không có nhãn (tags) được gán</p>
-                  ) : (
-                    <div className="flex flex-wrap gap-1.5">
-                      {Object.entries(fileDetails.tags).map(([key, value]) => (
-                        <span key={key} className="inline-flex items-center px-2 py-1 rounded bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 font-medium text-[10px] border border-blue-100/60 dark:border-blue-900/40">
-                          {key}={value}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <p className="text-[11px] text-rose-500 text-center font-bold">Không thể tải thông tin tệp tin</p>
-            )}
-          </div>
-
-          {/* Footer Actions */}
-          <div className="p-4 border-t border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/30 flex items-center justify-between">
+            {/* Refresh */}
             <Button
               variant="outline"
-              onClick={async () => {
-                const client = await getS3Client();
-                const command = new GetObjectCommand({
-                  Bucket: bucket.name,
-                  Key: selectedFile.fullName,
-                });
-                const url = await getSignedUrl(client, command, { expiresIn: 900 });
-                const link = document.createElement("a");
-                link.href = url;
-                link.setAttribute("download", selectedFile.name);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-              }}
-              className="h-8.5 text-[11px] font-bold bg-white hover:bg-slate-50 border-slate-200 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer flex-1 mr-2"
+              onClick={() => fetchListObjects(true)}
+              disabled={loading}
+              className="h-8.5 text-xs font-bold border-border text-foreground hover:bg-muted cursor-pointer transition-colors"
             >
-              Tải xuống
+              <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
             </Button>
+
+            {/* Download & Delete Actions */}
+            {selectedItems.length > 0 && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={handleDownload}
+                  className="h-8.5 text-xs font-bold border-border text-foreground hover:bg-muted cursor-pointer transition-colors flex items-center gap-1.5"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>Download ({selectedItems.length})</span>
+                </Button>
+
+                <Button
+                  variant="outline"
+                  onClick={() => setDeleteConfirmOpen(true)}
+                  className="h-8.5 text-xs font-bold border-red-200 dark:border-red-950 text-red-655 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20 cursor-pointer transition-colors flex items-center gap-1.5"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete</span>
+                </Button>
+              </>
+            )}
+
+            {/* New Folder Button */}
             <Button
-              onClick={async () => {
-                const toastId = toast.loading("Đang xóa...");
-                try {
-                  await deleteSingleItem(selectedFile.fullName);
-                  toast.success("Đã xóa đối tượng thành công!", { id: toastId });
-                  setSelectedFile(null);
-                  setFileDetails(null);
-                  invalidateObjectListCache(bucket.id);
-                  fetchListObjects();
-                } catch (err: any) {
-                  toast.error(err.message || "Xóa thất bại", { id: toastId });
-                }
-              }}
-              className="h-8.5 text-[11px] font-bold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer flex-1 ml-2"
+              variant="outline"
+              onClick={() => setCreateFolderOpen(true)}
+              className="h-8.5 text-xs font-bold border-border text-foreground hover:bg-muted cursor-pointer transition-colors flex items-center gap-1.5 mr-1"
             >
-              Xóa bỏ
+              <FolderPlus className="h-3.5 w-3.5 text-blue-500" />
+              <span>New Folder</span>
+            </Button>
+
+            {/* Upload Button */}
+            <Button
+              onClick={handleUploadClick}
+              className="h-8.5 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-md flex items-center gap-1.5 cursor-pointer"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              <span>Upload File</span>
             </Button>
           </div>
+
         </div>
+
+        {/* Object Catalog List */}
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
+            <Loader2 className="h-7 w-7 animate-spin text-blue-500 mb-2.5" />
+            <span className="text-[11px] font-semibold tracking-wider">Loading Files...</span>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground bg-muted/5 border border-border border-dashed rounded-xl">
+            <Folder className="h-10 w-10 text-muted-foreground/50 mb-2.5" />
+            <p className="font-bold text-sm">Empty Folder</p>
+            <p className="text-[11px] mt-1 max-w-xs text-muted-foreground">
+              This directory does not contain any objects. Upload files to get started.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-left border-collapse table-auto">
+              <thead>
+                <tr className="border-b border-border bg-muted/20 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground select-none">
+                  <th className="w-12 px-6 py-3.5 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedItems.length === items.filter(x => x.type === "file").length && items.filter(x => x.type === "file").length > 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedItems(items.filter(x => x.type === "file").map(x => x.fullName));
+                        } else {
+                          setSelectedItems([]);
+                        }
+                      }}
+                      className="h-3.5 w-3.5 rounded border-border text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                  </th>
+                  <th className="px-4 py-3.5">Name</th>
+                  <th className="px-6 py-3.5">Size</th>
+                  <th className="px-6 py-3.5">Last Modified</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border text-[13px]">
+                {items.map((item) => {
+                  const isSelected = selectedItems.includes(item.fullName);
+                  const isFolder = item.type === "folder";
+                  return (
+                    <tr
+                      key={item.fullName}
+                      className={cn(
+                        "hover:bg-muted/40 transition-colors select-none",
+                        isSelected && "bg-muted/80"
+                      )}
+                    >
+
+                      {/* Checkbox */}
+                      <td className="px-6 py-3.5 text-center">
+                        {!isFolder && (
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(item.fullName)}
+                            className="h-3.5 w-3.5 rounded border-border text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          />
+                        )}
+                      </td>
+
+                      {/* Name */}
+                      <td className="px-4 py-3.5">
+                        <div className="flex items-center gap-2.5">
+                          {getIcon(item)}
+                          {isFolder ? (
+                            <button
+                              onClick={() => handleFolderClick(item.name)}
+                              className="font-bold text-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:underline cursor-pointer outline-none"
+                            >
+                              {item.name}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleFileClick(item)}
+                              className="font-semibold text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:underline cursor-pointer outline-none text-left"
+                            >
+                              {item.name}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Size */}
+                      <td className="px-6 py-3.5 text-slate-700 dark:text-slate-300 font-medium">
+                        {isFolder ? "—" : item.size}
+                      </td>
+
+                      {/* Last Modified */}
+                      <td className="px-6 py-3.5 text-slate-400 dark:text-slate-500">
+                        {item.lastModified}
+                      </td>
+
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Inline Detail Panel */}
+      {selectedFile && (
+        <ObjectDetailPanel
+          selectedFile={selectedFile}
+          onClose={() => {
+            setSelectedFile(null);
+            setFileDetails(null);
+          }}
+          metadataLoading={metadataLoading}
+          fileDetails={fileDetails}
+          bucket={bucket}
+          getS3Client={getS3Client}
+          deleteSingleItem={deleteSingleItem}
+          invalidateObjectListCache={invalidateObjectListCache}
+          fetchListObjects={fetchListObjects}
+        />
       )}
 
       {/* Upload Dialog Modal */}
@@ -804,6 +707,13 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
         subscribeToEvent={subscribeToEvent}
         fetchListObjects={fetchListObjects}
         getS3Client={getS3Client}
+      />
+
+      {/* Create Folder Modal */}
+      <CreateFolderModal
+        isOpen={createFolderOpen}
+        onClose={() => setCreateFolderOpen(false)}
+        onCreate={handleCreateFolder}
       />
 
       {/* Delete Confirmation Modal */}

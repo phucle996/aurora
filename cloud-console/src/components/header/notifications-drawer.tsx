@@ -88,7 +88,11 @@ export function NotificationsDrawer() {
 
     // [COMMENT]: Lắng nghe WebSocket kết quả của các Job không silent từ Centrifugo
     const unsubscribe = subscribeToEvent("job.notification", (payload: any) => {
-      console.log("🔔 Realtime notification received in drawer component:", payload);
+      if (payload && payload.operation !== "storage.object.sts") {
+        console.log("🔔 Realtime notification received in drawer component:", payload);
+      } else if (payload) {
+        console.log("🔔 Sensitive realtime notification received in drawer component (redacted)");
+      }
       if (!payload) return;
 
       if (payload.connect || payload.client || payload.subs || payload.ping) {

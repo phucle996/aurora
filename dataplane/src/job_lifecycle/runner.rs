@@ -113,7 +113,7 @@ impl JobRunner {
                     attempt: payload.attempt,
                     result_status: "PROCESSING".to_string(),
                     error_code: None,
-                    message: "Job execution started on dataplane worker".to_string(),
+                    message: "".to_string(),
                     job_topic: payload.job_topic.clone(),
                     trace_id: payload.trace_id.clone(),
                 };

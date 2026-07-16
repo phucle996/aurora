@@ -219,6 +219,43 @@ static_resources:
                             envoy.filters.http.ext_authz:
                               "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
                               disabled: true
+                    - name: cost_manager_vhost
+                      domains:
+                        - "cost-manager.aurora.local"
+                        - "cost-manager.aurora.local:443"
+                      typed_per_filter_config:
+                        envoy.filters.http.cors:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                          allow_origin_string_match:
+                            - safe_regex:
+                                google_re2: {}
+                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With"
+                          allow_credentials:
+                            value: true
+                          max_age: "86400"
+                        envoy.filters.http.ext_authz:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                          disabled: true
+                      routes:
+                        - match: { prefix: "/api/" }
+                          route:
+                            cluster: cost_manager_cluster
+                            timeout: 15s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 5s
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: cost_console_cluster
+                            timeout: 15s
+                            retry_policy:
+                              retry_on: "connect-failure,refused-stream,reset"
+                              num_retries: 1
+                              per_try_timeout: 5s
+
                     - name: localhost_fallback
                       domains:
                         - "localhost"
@@ -333,6 +370,34 @@ static_resources:
                     socket_address:
                       address: controlplane3
                       port_value: 8080
+
+    - name: cost_manager_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: cost_manager_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: cost-manager
+                      port_value: 8084
+
+    - name: cost_console_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      lb_policy: LEAST_REQUEST
+      load_assignment:
+        cluster_name: cost_console_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: cost-console-nginx
+                      port_value: 5173
 
     - name: admin_ui_cluster
       connect_timeout: 1s

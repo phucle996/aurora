@@ -180,14 +180,6 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
             </span>
           </div>
         </div>
-        <Button
-          onClick={() => setIsModalOpen(true)}
-          size="sm"
-          className="font-bold flex items-center gap-1.5 cursor-pointer bg-blue-600 hover:bg-blue-700 text-white rounded-md h-8"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Generate Key</span>
-        </Button>
       </div>
 
       {/* Main Table */}
@@ -203,93 +195,113 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
           <p className="text-[11px] mt-1 max-w-xs text-muted-foreground">
             Generate an access key credential pair to connect third party clients or applications.
           </p>
+          <Button
+            onClick={() => setIsModalOpen(true)}
+            size="sm"
+            className="mt-4 font-bold flex items-center gap-1.5 cursor-pointer bg-blue-600 hover:bg-blue-700 text-white rounded-md h-8 text-xs"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Generate Key</span>
+          </Button>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-border">
-          <table className="w-full text-left border-collapse table-auto">
-            <thead>
-              <tr className="border-b border-border bg-muted/20 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground select-none">
-                <th className="px-6 py-3.5">Access Key ID</th>
-                <th className="px-6 py-3.5">Access Policy</th>
-                <th className="px-6 py-3.5">Generated At</th>
-                <th className="px-6 py-3.5 text-right pr-6">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border text-[13px]">
-              {credentials.map((cred) => {
-                const isRW = cred.policy === READ_WRITE_POLICY;
-                const isRO = cred.policy === READ_ONLY_POLICY;
-                return (
-                  <tr key={cred.id} className="hover:bg-muted/40 transition-colors">
+        <div className="space-y-4">
+          <div className="overflow-x-auto rounded-xl border border-border bg-white dark:bg-slate-900">
+            <table className="w-full text-left border-collapse table-auto">
+              <thead>
+                <tr className="border-b border-border bg-muted/20 text-[10px] font-extrabold uppercase tracking-wider text-muted-foreground select-none">
+                  <th className="px-6 py-3.5">Access Key ID</th>
+                  <th className="px-6 py-3.5">Access Policy</th>
+                  <th className="px-6 py-3.5">Generated At</th>
+                  <th className="px-6 py-3.5 text-right pr-6">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border text-[13px]">
+                {credentials.map((cred) => {
+                  const isRW = cred.policy === READ_WRITE_POLICY;
+                  const isRO = cred.policy === READ_ONLY_POLICY;
+                  return (
+                    <tr key={cred.id} className="hover:bg-muted/40 transition-colors">
 
-                    {/* Access Key */}
-                    <td className="px-6 py-3.5">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-foreground text-xs select-all">
-                          {cred.access_key}
-                        </span>
-                        <button
-                          onClick={() => copyToClipboard(cred.access_key, cred.id)}
-                          className="text-muted-foreground/60 hover:text-foreground cursor-pointer outline-none shrink-0"
+                      {/* Access Key */}
+                      <td className="px-6 py-3.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-bold text-foreground text-xs select-all">
+                            {cred.access_key}
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(cred.access_key, cred.id)}
+                            className="text-muted-foreground/60 hover:text-foreground cursor-pointer outline-none shrink-0"
+                          >
+                            {copiedRowKey === cred.id ? (
+                              <Check className="h-3 w-3 text-emerald-500" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </button>
+                        </div>
+                      </td>
+
+                      {/* Policy Badge */}
+                      <td className="px-6 py-3.5">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "text-[9px] font-extrabold px-1.5 py-0.2 border capitalize",
+                              isRW
+                                ? "bg-blue-500/10 text-blue-600 border-blue-500/20"
+                                : isRO
+                                  ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                                  : "bg-amber-500/10 text-amber-600 border-amber-500/20"
+                            )}
+                          >
+                            {getPolicyName(cred.policy)}
+                          </Badge>
+                          <button
+                            onClick={() => setViewingPolicy(cred.policy)}
+                            className="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 font-semibold text-[11px] flex items-center gap-0.5 cursor-pointer outline-none"
+                          >
+                            <FileCode className="h-3 w-3" />
+                            <span>View Policy</span>
+                          </button>
+                        </div>
+                      </td>
+
+                      {/* Created Date */}
+                      <td className="px-6 py-3.5 text-slate-400 dark:text-slate-500">
+                        {new Date(cred.created_at).toLocaleString()}
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-6 py-3.5 text-right pr-6">
+                        <Button
+                          variant="ghost"
+                          onClick={() => setDeletingCred(cred)}
+                          disabled={deletingId === cred.id}
+                          className="flex items-center gap-1 hover:text-red-500 transition-colors disabled:opacity-50"
                         >
-                          {copiedRowKey === cred.id ? (
-                            <Check className="h-3 w-3 text-emerald-500" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </button>
-                      </div>
-                    </td>
+                          <X className="h-3.5 w-3.5" />
+                          <span>Delete</span>
+                        </Button>
+                      </td>
 
-                    {/* Policy Badge */}
-                    <td className="px-6 py-3.5">
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant="outline"
-                          className={cn(
-                            "text-[9px] font-extrabold px-1.5 py-0.2 border capitalize",
-                            isRW
-                              ? "bg-blue-500/10 text-blue-600 border-blue-500/20"
-                              : isRO
-                                ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
-                                : "bg-amber-500/10 text-amber-600 border-amber-500/20"
-                          )}
-                        >
-                          {getPolicyName(cred.policy)}
-                        </Badge>
-                        <button
-                          onClick={() => setViewingPolicy(cred.policy)}
-                          className="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 font-semibold text-[11px] flex items-center gap-0.5 cursor-pointer outline-none"
-                        >
-                          <FileCode className="h-3 w-3" />
-                          <span>View Policy</span>
-                        </button>
-                      </div>
-                    </td>
-
-                    {/* Created Date */}
-                    <td className="px-6 py-3.5 text-slate-400 dark:text-slate-500">
-                      {new Date(cred.created_at).toLocaleString()}
-                    </td>
-
-                    {/* Actions */}
-                    <td className="px-6 py-3.5 text-right pr-6">
-                      <Button
-                        variant="ghost"
-                        onClick={() => setDeletingCred(cred)}
-                        disabled={deletingId === cred.id}
-                        className="flex items-center gap-1 hover:text-red-500 transition-colors disabled:opacity-50"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                        <span>Delete</span>
-                      </Button>
-                    </td>
-
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex justify-end pr-2">
+            <Button
+              onClick={() => setIsModalOpen(true)}
+              size="sm"
+              className="font-bold flex items-center gap-1.5 cursor-pointer bg-blue-600 hover:bg-blue-700 text-white rounded-md h-8 text-xs"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Generate Key</span>
+            </Button>
+          </div>
         </div>
       )}
 

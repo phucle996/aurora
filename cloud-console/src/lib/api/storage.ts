@@ -50,6 +50,7 @@ export async function listBuckets(signal?: AbortSignal): Promise<BucketItem[]> {
 export async function createBucket(
   name: string,
   quotaBytes: number,
+  policy: string,
   signal?: AbortSignal
 ): Promise<CreatedBucketResult> {
   const res = await fetchJSON<{ data?: CreatedBucketResult }>("/api/v1/storage/buckets", {
@@ -57,6 +58,7 @@ export async function createBucket(
     body: {
       name,
       quota_bytes: quotaBytes,
+      policy,
     },
     signal,
   });

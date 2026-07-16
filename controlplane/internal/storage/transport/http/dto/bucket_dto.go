@@ -4,6 +4,7 @@ package storageDto
 type CreateBucketRequest struct {
 	Name       string `json:"name" binding:"required"`
 	QuotaBytes int64  `json:"quota_bytes"`
+	Policy     string `json:"policy" binding:"required"`
 }
 
 // [COMMENT]: UpdateQuotaRequest định nghĩa cấu trúc dữ liệu khi thay đổi hạn mức quota.

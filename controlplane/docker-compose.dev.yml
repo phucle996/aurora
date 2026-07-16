@@ -165,6 +165,8 @@ services:
     command: [ "envoy", "-c", "/etc/envoy/envoy.yaml", "-l", "info" ]
     volumes:
       - ./dev/envoy/envoy-storage.yaml:/etc/envoy/envoy.yaml:ro
+      - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
+      - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
     ports:
       - "29000:8080" # Cổng S3 Gateway proxy qua Envoy hướng đến MinIO
     depends_on:
@@ -420,6 +422,7 @@ services:
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
+      MINIO_PUBLIC_ENDPOINT: "https://localhost:29000"
     depends_on:
       controlplane1:
         condition: service_started
@@ -461,6 +464,7 @@ services:
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
+      MINIO_PUBLIC_ENDPOINT: "https://localhost:29000"
     depends_on:
       controlplane2:
         condition: service_started
@@ -494,6 +498,7 @@ services:
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
+      MINIO_PUBLIC_ENDPOINT: "https://localhost:29000"
     depends_on:
       controlplane3:
         condition: service_started
@@ -613,6 +618,15 @@ services:
     container_name: admin-ui-nginx
     ports:
       - "5175:5173"
+    restart: unless-stopped
+
+  cost-console-nginx:
+    build:
+      context: ../cost-console
+      dockerfile: Dockerfile.nginx
+    container_name: cost-console-nginx
+    ports:
+      - "5176:5173"
     restart: unless-stopped
 
   job-orchestrator:

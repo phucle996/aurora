@@ -13,14 +13,13 @@ RUN mkdir -p src \
     && echo "fn main() {}" > src/main.rs \
     && cargo build --release --bin aurora-dataplane \
     && rm -rf src \
-       target/release/aurora-dataplane \
-       target/release/aurora-dataplane.d \
-       target/release/deps/aurora_dataplane* \
-       target/release/.fingerprint/aurora-dataplane-*
+    target/release/aurora-dataplane \
+    target/release/aurora-dataplane.d \
+    target/release/deps/aurora_dataplane* \
+    target/release/.fingerprint/aurora-dataplane-*
 
-# 1b. Download mc binary (MinIO Client) để dùng trong runtime stage
-RUN curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
-    && chmod +x /usr/local/bin/mc
+# 1b. Get mc binary (MinIO Client) from the official minio/mc image to avoid network downloads
+COPY --from=minio/mc:latest /usr/bin/mc /usr/local/bin/mc
 
 # 2. Copy toàn bộ source thật (target/ host đã bị .dockerignore loại trừ).
 COPY . .

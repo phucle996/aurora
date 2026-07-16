@@ -39,6 +39,7 @@ type CreatePersonalBucket struct {
 	ZoneID             uuid.UUID
 	CapacityQuotaBytes int64
 	UserID             uuid.UUID
+	Policy             string
 }
 
 // [COMMENT]: CreateTenantBucket chứa các tham số dùng để khởi tạo Bucket doanh nghiệp.
