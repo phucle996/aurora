@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package core.rpc;
+
+option go_package = "cost-manager/api/transport/proto/zoneproto";
+
+message GetZoneListRequest {}
+
+message ZoneEntry {
+  string zone_id = 1;
+  string zone_code = 2;
+  string status = 3;
+  string name = 4;
+}
+
+message GetZoneListResponse {
+  repeated ZoneEntry zones = 1;
+}

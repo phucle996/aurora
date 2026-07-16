@@ -3,8 +3,8 @@ package grpc
 import (
 	"context"
 
-	"cost-manager/api/proto/billingproto"
-	"cost-manager/api/repository"
+	"cost-manager/api/internal/transport/proto/billingproto"
+	"cost-manager/api/internal/domain/repo"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -12,10 +12,10 @@ import (
 
 type BillingGrpcServer struct {
 	billingproto.UnimplementedBillingServiceServer
-	repo repository.WalletRepository
+	repo repo.WalletRepository
 }
 
-func NewBillingGrpcServer(repo repository.WalletRepository) *BillingGrpcServer {
+func NewBillingGrpcServer(repo repo.WalletRepository) *BillingGrpcServer {
 	return &BillingGrpcServer{repo: repo}
 }
 
