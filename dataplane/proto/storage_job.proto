@@ -4,11 +4,21 @@ package storage;
 option go_package = "controlplane/internal/storage/transport/rpc/proto;storageproto";
 
 // Cấu hình đồng bộ hóa Bucket vật lý từ Controlplane sang Dataplane
-message BucketSync {
+message BucketCreateSync {
   string name = 1;                // Tên vật lý của bucket
   string access_key = 2;          // Access Key sẽ được tạo trên MinIO
   string secret_key = 3;          // Secret Key (plaintext trong payload, transit qua internal infra)
   string policy = 4;              // JSON policy giới hạn quyền truy cập chỉ vào bucket này
+
+  // Advanced options:
+  bool encrypt_enabled = 5;
+  bool versioning_enabled = 6;
+  bool object_locking_enabled = 7;
+  bool replication_enabled = 8;
+  int64 retention_days = 9;
+  bool legal_hold_enabled = 10;
+  string tags = 11;               // JSON string of tags
+  int64 quota_bytes = 12;         // Capacity quota in bytes
 }
 
 // Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane
@@ -47,4 +57,5 @@ message ObjectStsResponse {
   string expiration = 4;
   string endpoint = 5;
 }
+
 

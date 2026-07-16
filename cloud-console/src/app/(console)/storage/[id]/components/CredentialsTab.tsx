@@ -180,6 +180,16 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
             </span>
           </div>
         </div>
+        {!loading && credentials.length > 0 && (
+          <Button
+            onClick={() => setIsModalOpen(true)}
+            size="sm"
+            className="font-bold flex items-center gap-1.5 cursor-pointer bg-blue-600 hover:bg-blue-700 text-white rounded-md h-8 text-xs shrink-0"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Generate Key</span>
+          </Button>
+        )}
       </div>
 
       {/* Main Table */}
@@ -276,10 +286,9 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
                       {/* Actions */}
                       <td className="px-6 py-3.5 text-right pr-6">
                         <Button
-                          variant="ghost"
                           onClick={() => setDeletingCred(cred)}
                           disabled={deletingId === cred.id}
-                          className="flex items-center gap-1 hover:text-red-500 transition-colors disabled:opacity-50"
+                          className="bg-red-600 hover:bg-red-700 text-white font-bold h-7 px-3 rounded-md flex items-center gap-1.5 ml-auto cursor-pointer disabled:opacity-50 transition-colors"
                         >
                           <X className="h-3.5 w-3.5" />
                           <span>Delete</span>
@@ -291,16 +300,6 @@ export function CredentialsTab({ bucket }: CredentialsTabProps) {
                 })}
               </tbody>
             </table>
-          </div>
-          <div className="flex justify-end pr-2">
-            <Button
-              onClick={() => setIsModalOpen(true)}
-              size="sm"
-              className="font-bold flex items-center gap-1.5 cursor-pointer bg-blue-600 hover:bg-blue-700 text-white rounded-md h-8 text-xs"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              <span>Generate Key</span>
-            </Button>
           </div>
         </div>
       )}

@@ -22,30 +22,39 @@ const (
 )
 
 // Cấu hình đồng bộ hóa Bucket vật lý từ Controlplane sang Dataplane
-type BucketSync struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                            // Tên vật lý của bucket
-	AccessKey     string                 `protobuf:"bytes,2,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"` // Access Key sẽ được tạo trên MinIO
-	SecretKey     string                 `protobuf:"bytes,3,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"` // Secret Key (plaintext trong payload, transit qua internal infra)
-	Policy        string                 `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`                        // JSON policy giới hạn quyền truy cập chỉ vào bucket này
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+type BucketCreateSync struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                            // Tên vật lý của bucket
+	AccessKey string                 `protobuf:"bytes,2,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"` // Access Key sẽ được tạo trên MinIO
+	SecretKey string                 `protobuf:"bytes,3,opt,name=secret_key,json=secretKey,proto3" json:"secret_key,omitempty"` // Secret Key (plaintext trong payload, transit qua internal infra)
+	Policy    string                 `protobuf:"bytes,4,opt,name=policy,proto3" json:"policy,omitempty"`                        // JSON policy giới hạn quyền truy cập chỉ vào bucket này
+	// Advanced options:
+	EncryptEnabled       bool   `protobuf:"varint,5,opt,name=encrypt_enabled,json=encryptEnabled,proto3" json:"encrypt_enabled,omitempty"`
+	VersioningEnabled    bool   `protobuf:"varint,6,opt,name=versioning_enabled,json=versioningEnabled,proto3" json:"versioning_enabled,omitempty"`
+	ObjectLockingEnabled bool   `protobuf:"varint,7,opt,name=object_locking_enabled,json=objectLockingEnabled,proto3" json:"object_locking_enabled,omitempty"`
+	ReplicationEnabled   bool   `protobuf:"varint,8,opt,name=replication_enabled,json=replicationEnabled,proto3" json:"replication_enabled,omitempty"`
+	RetentionDays        int64  `protobuf:"varint,9,opt,name=retention_days,json=retentionDays,proto3" json:"retention_days,omitempty"`
+	LegalHoldEnabled     bool   `protobuf:"varint,10,opt,name=legal_hold_enabled,json=legalHoldEnabled,proto3" json:"legal_hold_enabled,omitempty"`
+	Tags                 string `protobuf:"bytes,11,opt,name=tags,proto3" json:"tags,omitempty"`                                // JSON string of tags
+	QuotaBytes           int64  `protobuf:"varint,12,opt,name=quota_bytes,json=quotaBytes,proto3" json:"quota_bytes,omitempty"` // Capacity quota in bytes
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
-func (x *BucketSync) Reset() {
-	*x = BucketSync{}
+func (x *BucketCreateSync) Reset() {
+	*x = BucketCreateSync{}
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *BucketSync) String() string {
+func (x *BucketCreateSync) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*BucketSync) ProtoMessage() {}
+func (*BucketCreateSync) ProtoMessage() {}
 
-func (x *BucketSync) ProtoReflect() protoreflect.Message {
+func (x *BucketCreateSync) ProtoReflect() protoreflect.Message {
 	mi := &file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -57,37 +66,93 @@ func (x *BucketSync) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use BucketSync.ProtoReflect.Descriptor instead.
-func (*BucketSync) Descriptor() ([]byte, []int) {
+// Deprecated: Use BucketCreateSync.ProtoReflect.Descriptor instead.
+func (*BucketCreateSync) Descriptor() ([]byte, []int) {
 	return file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *BucketSync) GetName() string {
+func (x *BucketCreateSync) GetName() string {
 	if x != nil {
 		return x.Name
 	}
 	return ""
 }
 
-func (x *BucketSync) GetAccessKey() string {
+func (x *BucketCreateSync) GetAccessKey() string {
 	if x != nil {
 		return x.AccessKey
 	}
 	return ""
 }
 
-func (x *BucketSync) GetSecretKey() string {
+func (x *BucketCreateSync) GetSecretKey() string {
 	if x != nil {
 		return x.SecretKey
 	}
 	return ""
 }
 
-func (x *BucketSync) GetPolicy() string {
+func (x *BucketCreateSync) GetPolicy() string {
 	if x != nil {
 		return x.Policy
 	}
 	return ""
+}
+
+func (x *BucketCreateSync) GetEncryptEnabled() bool {
+	if x != nil {
+		return x.EncryptEnabled
+	}
+	return false
+}
+
+func (x *BucketCreateSync) GetVersioningEnabled() bool {
+	if x != nil {
+		return x.VersioningEnabled
+	}
+	return false
+}
+
+func (x *BucketCreateSync) GetObjectLockingEnabled() bool {
+	if x != nil {
+		return x.ObjectLockingEnabled
+	}
+	return false
+}
+
+func (x *BucketCreateSync) GetReplicationEnabled() bool {
+	if x != nil {
+		return x.ReplicationEnabled
+	}
+	return false
+}
+
+func (x *BucketCreateSync) GetRetentionDays() int64 {
+	if x != nil {
+		return x.RetentionDays
+	}
+	return 0
+}
+
+func (x *BucketCreateSync) GetLegalHoldEnabled() bool {
+	if x != nil {
+		return x.LegalHoldEnabled
+	}
+	return false
+}
+
+func (x *BucketCreateSync) GetTags() string {
+	if x != nil {
+		return x.Tags
+	}
+	return ""
+}
+
+func (x *BucketCreateSync) GetQuotaBytes() int64 {
+	if x != nil {
+		return x.QuotaBytes
+	}
+	return 0
 }
 
 // Cấu hình đồng bộ hóa Credential vật lý từ Controlplane sang Dataplane
@@ -415,15 +480,24 @@ var File_internal_storage_transport_rpc_proto_storage_job_proto protoreflect.Fil
 
 const file_internal_storage_transport_rpc_proto_storage_job_proto_rawDesc = "" +
 	"\n" +
-	"6internal/storage/transport/rpc/proto/storage_job.proto\x12\astorage\"v\n" +
-	"\n" +
-	"BucketSync\x12\x12\n" +
+	"6internal/storage/transport/rpc/proto/storage_job.proto\x12\astorage\"\xc5\x03\n" +
+	"\x10BucketCreateSync\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"access_key\x18\x02 \x01(\tR\taccessKey\x12\x1d\n" +
 	"\n" +
 	"secret_key\x18\x03 \x01(\tR\tsecretKey\x12\x16\n" +
-	"\x06policy\x18\x04 \x01(\tR\x06policy\"v\n" +
+	"\x06policy\x18\x04 \x01(\tR\x06policy\x12'\n" +
+	"\x0fencrypt_enabled\x18\x05 \x01(\bR\x0eencryptEnabled\x12-\n" +
+	"\x12versioning_enabled\x18\x06 \x01(\bR\x11versioningEnabled\x124\n" +
+	"\x16object_locking_enabled\x18\a \x01(\bR\x14objectLockingEnabled\x12/\n" +
+	"\x13replication_enabled\x18\b \x01(\bR\x12replicationEnabled\x12%\n" +
+	"\x0eretention_days\x18\t \x01(\x03R\rretentionDays\x12,\n" +
+	"\x12legal_hold_enabled\x18\n" +
+	" \x01(\bR\x10legalHoldEnabled\x12\x12\n" +
+	"\x04tags\x18\v \x01(\tR\x04tags\x12\x1f\n" +
+	"\vquota_bytes\x18\f \x01(\x03R\n" +
+	"quotaBytes\"v\n" +
 	"\x0eCredentialSync\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -469,7 +543,7 @@ func file_internal_storage_transport_rpc_proto_storage_job_proto_rawDescGZIP() [
 
 var file_internal_storage_transport_rpc_proto_storage_job_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_internal_storage_transport_rpc_proto_storage_job_proto_goTypes = []any{
-	(*BucketSync)(nil),        // 0: storage.BucketSync
+	(*BucketCreateSync)(nil),  // 0: storage.BucketCreateSync
 	(*CredentialSync)(nil),    // 1: storage.CredentialSync
 	(*BucketResizeSync)(nil),  // 2: storage.BucketResizeSync
 	(*BucketDeleteSync)(nil),  // 3: storage.BucketDeleteSync

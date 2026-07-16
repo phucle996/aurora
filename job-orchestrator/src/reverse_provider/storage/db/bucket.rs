@@ -7,7 +7,7 @@ pub mod storage_proto {
 }
 
 pub fn silence_unused_proto_structs() {
-    let _ = storage_proto::BucketSync::default();
+    let _ = storage_proto::BucketCreateSync::default();
     let _ = storage_proto::CredentialSync::default();
     let _ = storage_proto::BucketDeleteSync::default();
 }

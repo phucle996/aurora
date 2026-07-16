@@ -51,6 +51,15 @@ export async function createBucket(
   name: string,
   quotaBytes: number,
   policy: string,
+  advancedOptions: {
+    encrypt_enabled: boolean;
+    versioning_enabled: boolean;
+    object_locking_enabled: boolean;
+    replication_enabled: boolean;
+    retention_days: number;
+    legal_hold_enabled: boolean;
+    tags: Record<string, string>;
+  },
   signal?: AbortSignal
 ): Promise<CreatedBucketResult> {
   const res = await fetchJSON<{ data?: CreatedBucketResult }>("/api/v1/storage/buckets", {
@@ -59,6 +68,7 @@ export async function createBucket(
       name,
       quota_bytes: quotaBytes,
       policy,
+      ...advancedOptions,
     },
     signal,
   });

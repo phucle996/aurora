@@ -13,4 +13,9 @@ type BillingService interface {
 	GetTransactions(ctx context.Context, walletID uuid.UUID) ([]entity.Transaction, error)
 	ListPrices(ctx context.Context) ([]entity.Price, error)
 	CreateOrUpdatePrice(ctx context.Context, p *entity.Price) error
+
+	// ChargeUsage được Rust Engine gọi sau mỗi chu kỳ đo lường.
+	// Logic: kiểm tra subscription quota → nếu vượt thì tính overage → trừ ví
+	ChargeUsage(ctx context.Context, ownerID uuid.UUID, ownerType string, metricType string, usageAmount float64) error
 }
+

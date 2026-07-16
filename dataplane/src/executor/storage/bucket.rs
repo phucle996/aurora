@@ -22,12 +22,12 @@ impl Executor for BucketCreateExecutor {
     async fn execute(&self, payload: JobPayload) -> Result<ExecutionResult, ExecutorError> {
         let op = "storage.bucket.create";
 
-        // 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct BucketSync
-        let sync_data = match storage_proto::BucketSync::decode(&payload.payload[..]) {
+        // 1. Giải mã (Decode) payload nhị phân từ Protobuf sang struct BucketCreateSync
+        let sync_data = match storage_proto::BucketCreateSync::decode(&payload.payload[..]) {
             Ok(data) => data,
             Err(e) => {
                 return Err(ExecutorError::ExecutionFailed(format!(
-                    "Failed to decode BucketSync protobuf payload: {}",
+                    "Failed to decode BucketCreateSync protobuf payload: {}",
                     e
                 )));
             }
@@ -36,7 +36,7 @@ impl Executor for BucketCreateExecutor {
         // [COMMENT]: Validate credential fields — bắt buộc phải có đủ thông tin credential
         if sync_data.access_key.is_empty() || sync_data.secret_key.is_empty() {
             return Err(ExecutorError::ExecutionFailed(
-                "BucketSync payload missing credential fields (access_key / secret_key)"
+                "BucketCreateSync payload missing credential fields (access_key / secret_key)"
                     .to_string(),
             ));
         }
@@ -89,6 +89,37 @@ impl Executor for BucketCreateExecutor {
                     return Err(ExecutorError::ExecutionFailed(msg));
                 }
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // STEP 1.5: Thiết lập dung lượng quota cho bucket
+        // ─────────────────────────────────────────────────────────────────────
+        if sync_data.quota_bytes > 0 {
+            Logger::sys_info(
+                op,
+                &format!(
+                    "Step 1.5/3: Thiết lập quota {} bytes cho bucket '{}'...",
+                    sync_data.quota_bytes, sync_data.name
+                ),
+            );
+            if let Err(e) = admin_client
+                .set_bucket_quota(&sync_data.name, sync_data.quota_bytes)
+                .await
+            {
+                let msg = format!(
+                    "Step 1.5/3 FAIL: Không thể thiết lập quota cho bucket '{}': {}",
+                    sync_data.name, e
+                );
+                Logger::sys_error(op, &msg, "BUCKET_QUOTA_SET_FAILED");
+
+                // Rollback Step 1: Xóa bucket vừa tạo
+                let _ = minio_client.delete_bucket(&sync_data.name).await;
+                return Err(ExecutorError::ExecutionFailed(msg));
+            }
+            Logger::sys_info(
+                op,
+                &format!("Step 1.5/3 OK: Bucket '{}' quota được thiết lập.", sync_data.name),
+            );
         }
 
         // ─────────────────────────────────────────────────────────────────────

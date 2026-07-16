@@ -69,12 +69,19 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 
 	// [COMMENT]: Thực thi nghiệp vụ qua service cá nhân
 	param := &storageEntity.CreatePersonalBucket{
-		Name:               bucketName,
-		WorkspaceID:        workspaceID,
-		ZoneID:             zoneID,
-		CapacityQuotaBytes: req.QuotaBytes,
-		UserID:             userID,
-		Policy:             req.Policy,
+		Name:                 bucketName,
+		WorkspaceID:          workspaceID,
+		ZoneID:               zoneID,
+		CapacityQuotaBytes:   req.QuotaBytes,
+		UserID:               userID,
+		Policy:               req.Policy,
+		EncryptEnabled:       *req.EncryptEnabled,
+		VersioningEnabled:     *req.VersioningEnabled,
+		ObjectLockingEnabled: *req.ObjectLockingEnabled,
+		ReplicationEnabled:   *req.ReplicationEnabled,
+		RetentionDays:        req.RetentionDays,
+		LegalHoldEnabled:     *req.LegalHoldEnabled,
+		Tags:                 req.Tags,
 	}
 	createResult, createErr := h.personalSvc.CreateBucketForPersonal(ctx, param)
 

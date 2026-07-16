@@ -26,13 +26,18 @@ CREATE TABLE IF NOT EXISTS billing.transactions (
 
 -- 3. Bảng cấu hình đơn giá các dịch vụ (Pricing Table)
 CREATE TABLE IF NOT EXISTS billing.prices (
-    id UUID PRIMARY KEY,
-    service_type VARCHAR(32) NOT NULL,  -- 'STORAGE_GB_MONTH', 'TRAFFIC_EGRESS_GB', 'MAIL_SENT', 'VM_CORE_HOUR'
-    zone_code VARCHAR(32) NOT NULL DEFAULT 'global', -- Cấu hình giá cước theo vùng (e.g. vn-n1, vn-n2, global)
-    unit_price NUMERIC(16, 6) NOT NULL,  -- Đơn giá (VND)
-    currency VARCHAR(3) NOT NULL DEFAULT 'VND',
-    tier VARCHAR(32) NOT NULL DEFAULT 'STANDARD', -- Phân hạng (VD: STANDARD, ENTERPRISE)
-    effective_from TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    effective_to TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    id           UUID PRIMARY KEY,
+    service_type VARCHAR(32) NOT NULL,  -- 'STORAGE', 'VM', 'MAIL'
+    metric_type  VARCHAR(32) NOT NULL,  -- 'STORAGE_AT_REST' | 'EGRESS_INTERNET' | 'EGRESS_CROSS_ZONE' | 'REQUEST_WRITE' | 'REQUEST_READ'
+    zone_code    VARCHAR(32) NOT NULL DEFAULT 'global', -- vn-n1, vn-n2, global
+    unit         VARCHAR(32) NOT NULL DEFAULT 'GB_HOUR', -- 'GB_HOUR' | 'GB' | 'PER_1K_OPS'
+    unit_price   NUMERIC(16, 6) NOT NULL,  -- Đơn giá (VND)
+    currency     VARCHAR(3)  NOT NULL DEFAULT 'VND',
+    tier         VARCHAR(32) NOT NULL DEFAULT 'STANDARD', -- 'STANDARD' | 'COLD' | 'ARCHIVE'
+    free_quota   NUMERIC(18, 4) NOT NULL DEFAULT 0, -- Quota miễn phí (pay-as-you-go free tier)
+    effective_from TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    effective_to   TIMESTAMPTZ,
+    created_at     TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- Unique: 1 đơn giá cho mỗi tổ hợp (service_type, metric_type, zone_code, tier)
+    CONSTRAINT uq_price UNIQUE (service_type, metric_type, zone_code, tier)
 );

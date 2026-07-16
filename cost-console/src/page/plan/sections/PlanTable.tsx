@@ -1,12 +1,14 @@
 import { Search, Server, MapPin } from "lucide-react";
 import { cn } from "../../../lib/utils";
 
+import { type ZoneItem } from "../../../lib/api/billing";
+
 export interface PlanItem {
   id: string;
   name: string;
   code: string;
   resourceType: "storage" | "compute" | "database" | "network";
-  zone: "vn-n1" | "vn-n2" | "vn-n3" | "global";
+  zone: string;
   unit: string;
   priceVnd: number;
   status: "active" | "inactive";
@@ -16,6 +18,7 @@ export interface PlanItem {
 
 interface PlanTableProps {
   plans: PlanItem[];
+  zones: ZoneItem[];
   selectedPlan: PlanItem | null;
   onSelectPlan: (plan: PlanItem) => void;
   searchTerm: string;
@@ -28,6 +31,7 @@ interface PlanTableProps {
 
 export function PlanTable({
   plans,
+  zones,
   selectedPlan,
   onSelectPlan,
   searchTerm,
@@ -92,9 +96,11 @@ export function PlanTable({
             className="bg-transparent border-none outline-none text-slate-600 dark:text-slate-300 font-semibold cursor-pointer"
           >
             <option value="all">Tất cả Zone</option>
-            <option value="vn-n1">Zone vn-n1</option>
-            <option value="vn-n2">Zone vn-n2</option>
-            <option value="vn-n3">Zone vn-n3</option>
+            {zones.map((z) => (
+              <option key={z.id} value={z.code.toLowerCase()}>
+                Zone {z.name} ({z.code})
+              </option>
+            ))}
             <option value="global">Global</option>
           </select>
         </div>

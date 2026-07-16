@@ -100,12 +100,13 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Serialize BucketSync payload kèm thông tin credential để DP provisioning MinIO Service Account
-	syncEvent := &storageproto.BucketSync{
-		Name:      bucket.Name,
-		AccessKey: accessKey,
-		SecretKey: secretKey,
-		Policy:    policy,
+	// [COMMENT]: Serialize BucketCreateSync payload kèm thông tin credential để DP provisioning MinIO Service Account
+	syncEvent := &storageproto.BucketCreateSync{
+		Name:       bucket.Name,
+		AccessKey:  accessKey,
+		SecretKey:  secretKey,
+		Policy:     policy,
+		QuotaBytes: bucket.CapacityQuotaBytes,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {

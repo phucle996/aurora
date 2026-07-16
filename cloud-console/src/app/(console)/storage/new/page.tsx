@@ -60,6 +60,15 @@ function CreateBucketContent() {
   const [selectedPolicyTemplate, setSelectedPolicyTemplate] = useState<"readwrite" | "readonly" | "custom">("readwrite");
   const [customPolicyText, setCustomPolicyText] = useState("");
 
+  // Advanced configurations states
+  const [encryptEnabled, setEncryptEnabled] = useState(false);
+  const [versioningEnabled, setVersioningEnabled] = useState(false);
+  const [objectLockingEnabled, setObjectLockingEnabled] = useState(false);
+  const [replicationEnabled, setReplicationEnabled] = useState(false);
+  const [retentionDays, setRetentionDays] = useState<number>(0);
+  const [legalHoldEnabled, setLegalHoldEnabled] = useState(false);
+  const [tags, setTags] = useState<Record<string, string>>({});
+
   // Initialize custom policy text template
   React.useEffect(() => {
     setCustomPolicyText(getReadWritePolicy());
@@ -68,30 +77,23 @@ function CreateBucketContent() {
   // Result state
   const [result, setResult] = useState<CreatedBucketResult | null>(null);
 
-  // [COMMENT]: Query lấy danh sách tên bucket cá nhân (lightweight API).
-  // Chỉ kích hoạt tự động nếu trong cache của React Query chưa có sẵn danh sách đầy đủ.
-  // Nhờ đó, nếu đi từ trang List sang, cache đã có sẵn và hoàn toàn 0 tốn thêm request nào.
   const hasFullCache = !!queryClient.getQueryData(["buckets", activeWorkspaceID]);
 
   const { data: bucketNames, isLoading: isNamesLoading } = useQuery<string[]>({
     queryKey: ["bucket-names", activeWorkspaceID],
     queryFn: () => listBucketNames(),
     enabled: !hasFullCache && !!activeWorkspaceID,
-    // [COMMENT]: Chỉ cache nhẹ trong 1 phút, phục vụ check realtime trên page này
     staleTime: 60000,
   });
 
-  // [COMMENT]: Lấy danh sách kiểm tra trùng lặp từ nguồn tối ưu nhất (Cache đầy đủ hoặc rút gọn)
   const existingBucketsList = useMemo(() => {
     if (hasFullCache) {
       const fullBuckets = queryClient.getQueryData<any[]>(["buckets", activeWorkspaceID]);
-      // [COMMENT]: Đổi sang b.name theo thuộc tính lowercase của backend
       return fullBuckets?.map((b) => b.name) || [];
     }
     return bucketNames || [];
   }, [hasFullCache, bucketNames, activeWorkspaceID, queryClient]);
 
-  // [COMMENT]: Kiểm tra sự trùng lặp thời gian thực dựa theo tên vật lý (gồm prefix của workspace)
   const isDuplicateName = useMemo(() => {
     if (!name || !activeWorkspaceID) return false;
     const physicalPrefix = `ws-${activeWorkspaceID.slice(0, 8)}-`;
@@ -99,9 +101,27 @@ function CreateBucketContent() {
     return existingBucketsList.includes(targetPhysicalName);
   }, [name, activeWorkspaceID, existingBucketsList]);
 
-  // [COMMENT]: Mutation sử dụng TanStack Query gọi API tạo bucket
-  const createBucketMutation = useMutation<CreatedBucketResult, Error, { name: string; quotaBytes: number; policy: string }>({
-    mutationFn: ({ name, quotaBytes, policy }) => createBucket(name, quotaBytes, policy),
+  // [COMMENT]: Mutation sử dụng TanStack Query gọi API tạo bucket kèm tùy chọn nâng cao
+  const createBucketMutation = useMutation<
+    CreatedBucketResult,
+    Error,
+    {
+      name: string;
+      quotaBytes: number;
+      policy: string;
+      advancedOptions: {
+        encrypt_enabled: boolean;
+        versioning_enabled: boolean;
+        object_locking_enabled: boolean;
+        replication_enabled: boolean;
+        retention_days: number;
+        legal_hold_enabled: boolean;
+        tags: Record<string, string>;
+      };
+    }
+  >({
+    mutationFn: ({ name, quotaBytes, policy, advancedOptions }) =>
+      createBucket(name, quotaBytes, policy, advancedOptions),
     onSuccess: (res) => {
       setResult(res);
       setStep("result");
@@ -146,7 +166,20 @@ function CreateBucketContent() {
       }
     }
 
-    createBucketMutation.mutate({ name, quotaBytes, policy });
+    createBucketMutation.mutate({
+      name,
+      quotaBytes,
+      policy,
+      advancedOptions: {
+        encrypt_enabled: encryptEnabled,
+        versioning_enabled: versioningEnabled,
+        object_locking_enabled: objectLockingEnabled,
+        replication_enabled: replicationEnabled,
+        retention_days: retentionDays,
+        legal_hold_enabled: legalHoldEnabled,
+        tags,
+      },
+    });
   };
 
   const handleFinalize = () => {
@@ -200,6 +233,21 @@ function CreateBucketContent() {
               onCancel={() => router.push("/storage")}
               getReadWritePolicy={getReadWritePolicy}
               getReadOnlyPolicy={getReadOnlyPolicy}
+              
+              encryptEnabled={encryptEnabled}
+              setEncryptEnabled={setEncryptEnabled}
+              versioningEnabled={versioningEnabled}
+              setVersioningEnabled={setVersioningEnabled}
+              objectLockingEnabled={objectLockingEnabled}
+              setObjectLockingEnabled={setObjectLockingEnabled}
+              replicationEnabled={replicationEnabled}
+              setReplicationEnabled={setReplicationEnabled}
+              retentionDays={retentionDays}
+              setRetentionDays={setRetentionDays}
+              legalHoldEnabled={legalHoldEnabled}
+              setLegalHoldEnabled={setLegalHoldEnabled}
+              tags={tags}
+              setTags={setTags}
             />
           ) : (
             result && (

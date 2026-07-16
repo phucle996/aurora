@@ -1,4 +1,4 @@
-import { X, Calendar, Coins, ShieldAlert } from "lucide-react";
+import { X, Calendar, Coins, ShieldAlert, CheckCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { type PlanItem } from "./PlanTable";
 
@@ -7,9 +7,18 @@ interface PlanDetailProps {
   onClose: () => void;
   onEdit: (plan: PlanItem) => void;
   onToggleStatus: (plan: PlanItem) => void;
+  isSubscribed?: boolean;
+  onSubscribe?: (plan: PlanItem) => void;
 }
 
-export function PlanDetail({ plan, onClose, onEdit, onToggleStatus }: PlanDetailProps) {
+export function PlanDetail({
+  plan,
+  onClose,
+  onEdit,
+  onToggleStatus,
+  isSubscribed = false,
+  onSubscribe,
+}: PlanDetailProps) {
   const getResourceTypeLabel = (type: string) => {
     switch (type) {
       case "storage": return "Storage Bucket / S3 Storage";
@@ -39,7 +48,7 @@ export function PlanDetail({ plan, onClose, onEdit, onToggleStatus }: PlanDetail
       </div>
 
       {/* Content */}
-      <div className="space-y-5">
+      <div className="space-y-5 flex-1 overflow-y-auto">
         {/* Overview Row */}
         <div className="bg-slate-50 dark:bg-slate-900/40 p-4 rounded-lg border border-slate-100 dark:border-slate-800/50 space-y-3">
           <div>
@@ -51,6 +60,25 @@ export function PlanDetail({ plan, onClose, onEdit, onToggleStatus }: PlanDetail
             <span className="text-xs font-bold text-slate-900 dark:text-slate-100">{plan.name}</span>
           </div>
         </div>
+
+        {/* Action Button for Subscription */}
+        {plan.status === "active" && onSubscribe && (
+          <div className="p-1">
+            {isSubscribed ? (
+              <div className="w-full bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900/50 rounded-lg p-3 flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-semibold justify-center">
+                <CheckCircle size={16} />
+                <span>Đang sử dụng gói này</span>
+              </div>
+            ) : (
+              <button
+                onClick={() => onSubscribe(plan)}
+                className="w-full h-9 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer shadow-sm transition-colors flex items-center justify-center gap-1.5"
+              >
+                <span>Đăng ký sử dụng gói</span>
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Pricing Specification */}
         <div className="border-b border-slate-200 dark:border-slate-800/60 pb-4 space-y-3">

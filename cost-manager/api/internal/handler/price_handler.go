@@ -1,16 +1,19 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
 
 	"cost-manager/api/internal/domain/entity"
 	"cost-manager/api/internal/domain/service"
-	"cost-manager/api/pkg/apperr"
-	"cost-manager/api/pkg/apires"
-	"cost-manager/api/pkg/logger"
 	"cost-manager/api/internal/transport/dto"
+	"cost-manager/api/pkg/apires"
+	"cost-manager/api/pkg/apperr"
+	"cost-manager/api/pkg/logger"
+	"cost-manager/api/pkg/pkgcontext"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -25,29 +28,53 @@ func NewPriceHandler(billingSvc service.BillingService) *PriceHandler {
 
 func (h *PriceHandler) ListPrices(c *gin.Context) {
 	const op = "handler.price.list_prices"
-	list, err := h.billingSvc.ListPrices(c.Request.Context())
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	list, err := h.billingSvc.ListPrices(ctx)
 	if err != nil {
-		h.handleError(c, op, err)
+		logger.HandlerError(c, op, err)
+		appErr, ok := apperr.As(err)
+		if ok {
+			if errors.Is(appErr.Kind, apperr.ErrPriceNotFound) {
+				apires.RespondNotFound(c, appErr.Outcome)
+				return
+			}
+			if errors.Is(appErr.Kind, apperr.ErrBadRequest) {
+				apires.RespondBadRequest(c, appErr.Outcome)
+				return
+			}
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to list prices",
+		})
 		return
 	}
 
-	apires.RespondSuccess(c, dto.ToPriceListResponse(list), "ok")
-}
+	res := make([]gin.H, len(list))
+	for i, p := range list {
+		res[i] = gin.H{
+			"id":             p.ID,
+			"service_type":   p.ServiceType,
+			"metric_type":    p.MetricType,
+			"zone_code":      p.ZoneCode,
+			"unit":           p.Unit,
+			"unit_price":     p.UnitPrice,
+			"currency":       p.Currency,
+			"tier":           p.Tier,
+			"free_quota":     p.FreeQuota,
+			"effective_from": p.EffectiveFrom,
+			"effective_to":   p.EffectiveTo,
+			"created_at":     p.CreatedAt,
+		}
+	}
 
-type SavePriceRequest struct {
-	ID            string     `json:"id"`
-	ServiceType   string     `json:"service_type" binding:"required"`
-	ZoneCode      string     `json:"zone_code" binding:"required"`
-	UnitPrice     float64    `json:"unit_price" binding:"required,gte=0"`
-	Currency      string     `json:"currency" binding:"required"`
-	Tier          string     `json:"tier" binding:"required"`
-	EffectiveFrom time.Time  `json:"effective_from"`
-	EffectiveTo   *time.Time `json:"effective_to"`
+	apires.RespondSuccess(c, res, "ok")
 }
 
 func (h *PriceHandler) SavePrice(c *gin.Context) {
 	const op = "handler.price.save_price"
-	var req SavePriceRequest
+	var req dto.SavePriceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		apires.RespondBadRequest(c, err.Error())
 		return
@@ -70,42 +97,54 @@ func (h *PriceHandler) SavePrice(c *gin.Context) {
 
 	p := &entity.Price{
 		ID:            priceID,
-		ServiceType:   req.ServiceType,
+		ServiceType:   entity.ServiceType(req.ServiceType),
+		MetricType:    entity.MetricType(req.MetricType),
 		ZoneCode:      req.ZoneCode,
+		Unit:          entity.UnitType(req.Unit),
 		UnitPrice:     req.UnitPrice,
 		Currency:      req.Currency,
-		Tier:          req.Tier,
+		Tier:          entity.TierType(req.Tier),
+		FreeQuota:     req.FreeQuota,
 		EffectiveFrom: effFrom,
 		EffectiveTo:   req.EffectiveTo,
 	}
 
-	err := h.billingSvc.CreateOrUpdatePrice(c.Request.Context(), p)
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	err := h.billingSvc.CreateOrUpdatePrice(ctx, p)
 	if err != nil {
-		h.handleError(c, op, err)
+		logger.HandlerError(c, op, err)
+		appErr, ok := apperr.As(err)
+		if ok {
+			if errors.Is(appErr.Kind, apperr.ErrPriceNotFound) {
+				apires.RespondNotFound(c, appErr.Outcome)
+				return
+			}
+			if errors.Is(appErr.Kind, apperr.ErrBadRequest) {
+				apires.RespondBadRequest(c, appErr.Outcome)
+				return
+			}
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to save price",
+		})
 		return
 	}
 
 	logger.HandlerInfo(c, op, "Successfully saved price rate configuration")
-	apires.RespondCreated(c, dto.ToPriceResponse(*p), "price saved")
-}
-
-func (h *PriceHandler) handleError(c *gin.Context, op string, err error) {
-	logger.HandlerError(c, op, err)
-
-	appErr, ok := apperr.As(err)
-	if !ok {
-		apires.RespondInternalError(c, "internal_server_error")
-		return
-	}
-
-	if errors.Is(appErr.Kind, apperr.ErrPriceNotFound) {
-		apires.RespondNotFound(c, appErr.Outcome)
-	} else if errors.Is(appErr.Kind, apperr.ErrBadRequest) {
-		apires.RespondBadRequest(c, appErr.Outcome)
-	} else {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error":   appErr.Kind.Error(),
-			"outcome": appErr.Outcome,
-		})
-	}
+	apires.RespondCreated(c, gin.H{
+		"id":             p.ID,
+		"service_type":   p.ServiceType,
+		"metric_type":    p.MetricType,
+		"zone_code":      p.ZoneCode,
+		"unit":           p.Unit,
+		"unit_price":     p.UnitPrice,
+		"currency":       p.Currency,
+		"tier":           p.Tier,
+		"free_quota":     p.FreeQuota,
+		"effective_from": p.EffectiveFrom,
+		"effective_to":   p.EffectiveTo,
+		"created_at":     p.CreatedAt,
+	}, "price saved")
 }

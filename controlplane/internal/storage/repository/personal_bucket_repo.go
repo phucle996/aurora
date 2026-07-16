@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"encoding/json"
 )
 
 // [COMMENT]: PersonalBucketRepoImpl thực thi interface PersonalBucketRepo cho kết nối PostgreSQL.
@@ -50,9 +51,11 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		),
 		ins_bucket AS (
 			INSERT INTO %s.personal_buckets (
-				id, name, workspace_id, zone_id, capacity_quota_bytes, created_at, updated_at
+				id, name, workspace_id, zone_id, capacity_quota_bytes, created_at, updated_at,
+				encrypt_enabled, versioning_enabled, object_locking_enabled, replication_enabled,
+				retention_days, legal_hold_enabled, tags
 			)
-			SELECT $1, $2, $3, $4, $5, $6, $7
+			SELECT $1, $2, $3, $4, $5, $6, $7, $27, $28, $29, $30, $31, $32, $33
 			FROM check_workspace
 			RETURNING id
 		),
@@ -102,6 +105,17 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		mo.Idle,
 		mo.ErrorCode,
 		mo.ErrorMessage,
+		// [COMMENT]: $27-$33 — advanced configurations
+		bucket.EncryptEnabled,
+		bucket.VersioningEnabled,
+		bucket.ObjectLockingEnabled,
+		bucket.ReplicationEnabled,
+		bucket.RetentionDays,
+		bucket.LegalHoldEnabled,
+		func() []byte {
+			b, _ := json.Marshal(bucket.Tags)
+			return b
+		}(),
 	)
 	if err != nil {
 		// [COMMENT]: Bắt lỗi trùng lặp mã Key (Unique Constraint 23505) và ánh xạ sang lỗi domain ErrAlreadyExists

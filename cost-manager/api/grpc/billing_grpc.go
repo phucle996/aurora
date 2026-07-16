@@ -33,7 +33,7 @@ func (s *BillingGrpcServer) CheckWalletStatus(ctx context.Context, req *billingp
 
 	return &billingproto.WalletStatusResponse{
 		WalletId:       wallet.ID.String(),
-		Status:         wallet.Status,
+		Status:         string(wallet.Status),
 		Balance:        wallet.Balance,
 		OverdraftLimit: wallet.OverdraftLimit,
 	}, nil

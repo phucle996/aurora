@@ -6,7 +6,7 @@ import (
 	"cost-manager/api/internal/domain/service"
 	"cost-manager/api/pkg/apperr"
 	"cost-manager/api/pkg/apires"
-	"cost-manager/api/internal/transport/dto"
+	"cost-manager/api/pkg/pkgcontext"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,7 +20,8 @@ func NewZoneHandler(zoneSvc service.ZoneService) *ZoneHandler {
 
 func (h *ZoneHandler) ListZones(c *gin.Context) {
 	const op = "handler.zone.list_zones"
-	list, err := h.zoneSvc.ListZones(c.Request.Context())
+	ctx := pkgcontext.WithOperation(c.Request.Context(), op)
+	list, err := h.zoneSvc.ListZones(ctx)
 	if err != nil {
 		appErr, ok := apperr.As(err)
 		if ok && errors.Is(appErr.Kind, apperr.ErrBadRequest) {
@@ -31,5 +32,15 @@ func (h *ZoneHandler) ListZones(c *gin.Context) {
 		return
 	}
 
-	apires.RespondSuccess(c, dto.ToZoneListResponse(list), "ok")
+	res := make([]gin.H, len(list))
+	for i, z := range list {
+		res[i] = gin.H{
+			"id":     z.ID,
+			"code":   z.Code,
+			"name":   z.Name,
+			"status": z.Status,
+		}
+	}
+
+	apires.RespondSuccess(c, res, "ok")
 }

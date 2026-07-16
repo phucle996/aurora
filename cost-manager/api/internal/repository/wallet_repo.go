@@ -138,3 +138,56 @@ func (r *WalletRepositoryImpl) GetTransactions(ctx context.Context, walletID uui
 
 	return list, nil
 }
+
+// Debit trừ tiền từ ví theo walletID — dùng SELECT FOR UPDATE để chống race condition.
+// Nếu số dư + overdraft_limit < amount → trả lỗi ErrInsufficientFunds (không tạo transaction).
+func (r *WalletRepositoryImpl) Debit(ctx context.Context, walletID uuid.UUID, amount float64, txType, serviceType, desc string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return apperr.Wrap(apperr.ErrDatabaseFailed, err, "begin_transaction_failed")
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Lock row để tránh concurrent debit trên cùng wallet
+	var currentBalance, overdraftLimit float64
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT balance, overdraft_limit, status
+		FROM billing.wallets
+		WHERE id = $1
+		FOR UPDATE
+	`, walletID).Scan(&currentBalance, &overdraftLimit, &status)
+	if err != nil {
+		return apperr.Wrap(apperr.ErrWalletNotFound, err, "wallet_not_found")
+	}
+
+	// Kiểm tra số dư khả dụng (bao gồm overdraft_limit)
+	if currentBalance+overdraftLimit < amount {
+		return apperr.Wrap(apperr.ErrInsufficientFunds, nil, "insufficient_funds")
+	}
+
+	newBalance := currentBalance - amount
+	newStatus := status
+	// Tự động SUSPEND nếu balance âm vượt overdraft_limit
+	if newBalance < -overdraftLimit {
+		newStatus = "SUSPENDED"
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE billing.wallets SET balance = $1, status = $2, updated_at = NOW() WHERE id = $3
+	`, newBalance, newStatus, walletID)
+	if err != nil {
+		return apperr.Wrap(apperr.ErrDatabaseFailed, err, "update_wallet_failed")
+	}
+
+	txID, _ := uuid.NewV7()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO billing.transactions (id, wallet_id, amount, tx_type, service_type, description)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, txID, walletID, -amount, txType, serviceType, desc)
+	if err != nil {
+		return apperr.Wrap(apperr.ErrDatabaseFailed, err, "insert_transaction_failed")
+	}
+
+	return tx.Commit(ctx)
+}

@@ -56,11 +56,18 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 
 	// [COMMENT]: Bucket không còn status field — tồn tại trong DB là đủ để xác định là active
 	bucket := &storageEntity.PersonalBucket{
-		ID:                 bucketID,
-		Name:               physicalName,
-		CapacityQuotaBytes: param.CapacityQuotaBytes,
-		CreatedAt:          time.Now(),
-		UpdatedAt:          time.Now(),
+		ID:                   bucketID,
+		Name:                 physicalName,
+		CapacityQuotaBytes:   param.CapacityQuotaBytes,
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
+		EncryptEnabled:       param.EncryptEnabled,
+		VersioningEnabled:    param.VersioningEnabled,
+		ObjectLockingEnabled: param.ObjectLockingEnabled,
+		ReplicationEnabled:   param.ReplicationEnabled,
+		RetentionDays:        param.RetentionDays,
+		LegalHoldEnabled:     param.LegalHoldEnabled,
+		Tags:                 param.Tags,
 	}
 
 	// [COMMENT]: CP tự sinh Access Key và Secret Key ngẫu nhiên (chuẩn MinIO Service Account)
@@ -106,12 +113,21 @@ func (s *PersonalBucketSvcImpl) CreateBucketForPersonal(ctx context.Context, par
 		traceID = tid[:]
 	}
 
-	// [COMMENT]: Serialize BucketSync payload kèm credential để DP provisioning MinIO Service Account
-	syncEvent := &storageproto.BucketSync{
-		Name:      bucket.Name,
-		AccessKey: accessKey,
-		SecretKey: secretKey,
-		Policy:    policy,
+	// [COMMENT]: Serialize BucketCreateSync payload kèm credential để DP provisioning MinIO Service Account
+	tagsBytes, _ := json.Marshal(bucket.Tags)
+	syncEvent := &storageproto.BucketCreateSync{
+		Name:                 bucket.Name,
+		AccessKey:            accessKey,
+		SecretKey:            secretKey,
+		Policy:               policy,
+		EncryptEnabled:       bucket.EncryptEnabled,
+		VersioningEnabled:    bucket.VersioningEnabled,
+		ObjectLockingEnabled: bucket.ObjectLockingEnabled,
+		ReplicationEnabled:   bucket.ReplicationEnabled,
+		RetentionDays:        bucket.RetentionDays,
+		LegalHoldEnabled:     bucket.LegalHoldEnabled,
+		Tags:                 string(tagsBytes),
+		QuotaBytes:           bucket.CapacityQuotaBytes,
 	}
 	payloadBytes, err := proto.Marshal(syncEvent)
 	if err != nil {

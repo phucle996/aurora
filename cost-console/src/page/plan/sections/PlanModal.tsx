@@ -1,19 +1,21 @@
 import { useState, useEffect } from "react";
 import { X, Coins, Loader2 } from "lucide-react";
 import { type PlanItem } from "./PlanTable";
+import { type ZoneItem } from "../../../lib/api/billing";
 
 interface PlanModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (plan: Omit<PlanItem, "id" | "status" | "effectiveFrom"> & { id?: string }) => Promise<void>;
   editPlan: PlanItem | null;
+  zones: ZoneItem[];
 }
 
-export function PlanModal({ isOpen, onClose, onSave, editPlan }: PlanModalProps) {
+export function PlanModal({ isOpen, onClose, onSave, editPlan, zones }: PlanModalProps) {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [resourceType, setResourceType] = useState<"storage" | "compute" | "database" | "network">("storage");
-  const [zone, setZone] = useState<"vn-n1" | "vn-n2" | "vn-n3" | "global">("vn-n1");
+  const [zone, setZone] = useState("");
   const [unit, setUnit] = useState("GB/Month");
   const [priceVnd, setPriceVnd] = useState<number>(0);
   const [description, setDescription] = useState("");
@@ -32,12 +34,12 @@ export function PlanModal({ isOpen, onClose, onSave, editPlan }: PlanModalProps)
       setName("");
       setCode("");
       setResourceType("storage");
-      setZone("vn-n1");
+      setZone(zones[0]?.code.toLowerCase() || "vn-n1");
       setUnit("GB/Month");
       setPriceVnd(0);
       setDescription("");
     }
-  }, [editPlan, isOpen]);
+  }, [editPlan, isOpen, zones]);
 
   if (!isOpen) return null;
 
@@ -156,13 +158,15 @@ export function PlanModal({ isOpen, onClose, onSave, editPlan }: PlanModalProps)
               </label>
               <select
                 value={zone}
-                onChange={(e) => setZone(e.target.value as any)}
+                onChange={(e) => setZone(e.target.value)}
                 disabled={isSaving}
                 className="px-3 py-2 rounded border border-slate-200 dark:border-slate-800 bg-transparent text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 font-medium text-xs"
               >
-                <option value="vn-n1">Zone vn-n1</option>
-                <option value="vn-n2">Zone vn-n2</option>
-                <option value="vn-n3">Zone vn-n3</option>
+                {zones.map((z) => (
+                  <option key={z.id} value={z.code.toLowerCase()}>
+                    Zone {z.name} ({z.code})
+                  </option>
+                ))}
                 <option value="global">Global</option>
               </select>
             </div>
