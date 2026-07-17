@@ -10,10 +10,10 @@
 //   5. Trả về Set-Cookie HTTP response (Path=/admin)
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
+use crate::sre::claims::SreTokenManager;
 use crate::sre::session::release_sre_session;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
@@ -42,7 +42,7 @@ pub struct ErrorResponse {
 /// Intercept: POST /admin/auth/login
 pub async fn handle_admin_login(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
+    token_mgr: &Arc<SreTokenManager>,
     _redis_client: &redis::Client,
     config: &Config,
     _client_headers: &std::collections::HashMap<String, String>,

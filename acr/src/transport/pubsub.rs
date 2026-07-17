@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
+use crate::sre::claims::SreTokenManager;
 use futures_util::StreamExt;
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ pub struct NatsEventRouter {
     nats: Arc<Nats>,
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
+    sre_token_mgr: Arc<SreTokenManager>,
     config: Config,
 }
 
@@ -25,6 +27,7 @@ impl NatsEventRouter {
         nats: Arc<Nats>,
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
+        sre_token_mgr: Arc<SreTokenManager>,
         config: Config,
     ) -> Self {
         Self {
@@ -32,6 +35,7 @@ impl NatsEventRouter {
             nats,
             session_mgr,
             token_mgr,
+            sre_token_mgr,
             config,
         }
     }
@@ -133,7 +137,7 @@ impl NatsEventRouter {
         // 2. Subscribe: iam.auth.verify_admin_trinity
         let nc = self.nats_client.clone();
         let session_mgr = self.session_mgr.clone();
-        let token_mgr = self.token_mgr.clone();
+        let token_mgr = self.sre_token_mgr.clone();
         let config = self.config.clone();
         tokio::spawn(async move {
             let mut sub = match nc

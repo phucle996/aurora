@@ -2,11 +2,11 @@
 // 📂 sre/zone_catalog.rs — SRE Admin Zone Catalog Handler (GET /admin/core/zones/catalog)
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::infra::zone::get_all_zones;
 use crate::observability::logger::Logger;
+use crate::sre::claims::SreTokenManager;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
@@ -24,7 +24,7 @@ pub struct ZoneCatalogEntry {
 /// [COMMENT]: Intercept GET /admin/core/zones/catalog dành cho SRE Admin.
 pub async fn handle_admin_zone_catalog(
     _session_mgr: &Arc<SessionManager>,
-    _token_mgr: &Arc<TokenManager>,
+    _token_mgr: &Arc<SreTokenManager>,
     nats: &Nats,
     redis_client: &redis::Client,
     _client_headers: &HashMap<String, String>,

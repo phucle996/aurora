@@ -10,12 +10,11 @@ use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
-use crate::user::claims::Claims;
+use crate::sre::claims::{SreClaims, SreTokenManager};
 
 fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -38,7 +37,7 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
 }
 
 pub struct VerifySreEdgeSessionResult {
-    pub claims: Option<Claims>,
+    pub claims: Option<SreClaims>,
     pub access_key: String,
     pub denial_response: Option<Response<CheckResponse>>,
     pub cookies_to_set: Vec<String>,
@@ -48,7 +47,7 @@ pub struct VerifySreEdgeSessionResult {
 /// Tự động xử lý Cookie Extraction và Session Rotation (Sliding Session) nội bộ.
 pub async fn verify_sre_edge_session(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
+    token_mgr: &Arc<SreTokenManager>,
     config: &Config,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,

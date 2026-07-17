@@ -2,12 +2,12 @@
 // 📂 sre/zone_switcher.rs — SRE Zone Switch Handler (POST /admin/zone/go-to-zone)
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
+use crate::sre::claims::SreTokenManager;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
@@ -40,10 +40,7 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
     let err_resp = ErrorResponse {
         error_message: message.to_string(),
     };
-    let json_body = format!(
-        ")]}}',\n{}",
-        serde_json::to_string(&err_resp).unwrap_or_default()
-    );
+    let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
 
     let mut denied_builder = DeniedHttpResponseBuilder::new();
     denied_builder.set_http_status(status);
@@ -66,7 +63,7 @@ fn sha256_hash(secret: &str) -> String {
 /// [COMMENT]: Intercept POST /admin/zone/go-to-zone — dành riêng cho SRE Admin để chuyển vùng zone hoạt động.
 pub async fn handle_sre_zone_switch(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
+    token_mgr: &Arc<SreTokenManager>,
     nats: &Nats,
     redis_client: &redis::Client,
     config: &Config,
@@ -238,13 +235,13 @@ pub async fn handle_sre_zone_switch(
     builder.set_body(success_body);
 
     let access_cookie = format!(
-        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+        "access_token={}; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
         new_jwt, config.session_ttl_secs, domain_str
     );
     builder.add_header("set-cookie", &access_cookie, None, false);
 
     let zone_cookie = format!(
-        "{}={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",
+        "{}={}; Path=/admin; Secure; SameSite=Lax; Max-Age=31536000{}",
         COOKIE_ZONE_CODE, zone_code, domain_str
     );
     builder.add_header("set-cookie", &zone_cookie, None, false);
@@ -256,7 +253,7 @@ pub async fn handle_sre_zone_switch(
     response.set_http_response(builder);
 
     Logger::authz_log(
-        &claims.uid,
+        &claims.sub,
         method,
         path,
         "ALLOWED",

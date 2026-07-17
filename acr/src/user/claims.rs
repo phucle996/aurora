@@ -68,10 +68,5 @@ impl Claims {
         }
     }
 
-    /// [COMMENT]: Kiểm tra xem đây có phải là SRE Admin hay không.
-    /// Chỉ chấp nhận sub == "sre" — không có role_id kiểu admin string nào khác.
-    pub fn is_admin(&self) -> bool {
-        self.sub == "sre"
-    }
 }
 

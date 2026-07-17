@@ -177,7 +177,7 @@ impl SessionManager {
 /// [COMMENT]: Cấp phát Trinity Session cho SRE.
 pub async fn release_sre_session(
     session_mgr: &std::sync::Arc<SessionManager>,
-    token_mgr: &std::sync::Arc<crate::billing::claims::TokenManager>,
+    token_mgr: &std::sync::Arc<crate::sre::claims::SreTokenManager>,
     config: &crate::config::Config,
     device_public_key: &str,
 ) -> Result<ReleaseSreSessionResult, Status> {
@@ -192,12 +192,8 @@ pub async fn release_sre_session(
     let exp_unix = now_unix + config.session_ttl_secs as i64;
 
     // 2. Chuẩn bị Claims — SRE: sub="sre", zone_id="global", không có tenant
-    let claims = crate::user::claims::Claims {
+    let claims = crate::sre::claims::SreClaims {
         sub: "sre".to_string(),
-        uid: "sre".to_string(),
-        role_id: "".to_string(),
-        lvl: 0,
-        tenant_id: None,
         zone_id: Some("global".to_string()),
         access_key: access_key.clone(),
         jti: Uuid::new_v4().to_string(),

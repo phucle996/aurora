@@ -4,7 +4,7 @@
 
 use crate::infra::nats::Nats;
 use crate::observability::logger::Logger;
-use crate::user::claims::Claims;
+use crate::sre::claims::SreClaims;
 use crate::user::zone_resolution::{resolve_zone_context, ZoneResolutionError};
 use envoy_types::ext_authz::v3::CheckResponseExt;
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
@@ -15,7 +15,7 @@ use tonic::{Response, Status};
 pub async fn resolve_and_verify_zone_admin(
     nats: &Nats,
     redis_client: &redis::Client,
-    claims: Option<&mut Claims>,
+    claims: Option<&mut SreClaims>,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,
     method: &str,

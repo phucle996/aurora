@@ -147,8 +147,8 @@ impl Config {
                 ]
             });
 
-        // [COMMENT]: Nạp domain công khai từ biến môi trường APP_PUBLIC_DOMAIN
-        let app_public_domain = env::var("APP_PUBLIC_DOMAIN").unwrap_or_default();
+        // [COMMENT]: Enforce host-only cookies by keeping app_public_domain empty to prevent cookie sharing across subdomains
+        let app_public_domain = String::new();
 
         // [COMMENT]: Nạp danh sách các domain/origin được phép truy cập từ biến môi trường APP_ALLOWED_ORIGINS
         let allowed_origins = env::var("APP_ALLOWED_ORIGINS")

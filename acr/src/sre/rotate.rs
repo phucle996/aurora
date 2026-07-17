@@ -7,20 +7,19 @@
 //   - Trả về Vec<String> cookies mới để set qua Envoy response headers.
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
-use crate::user::claims::Claims;
+use crate::sre::claims::{SreClaims, SreTokenManager};
 use std::sync::Arc;
 
 /// [COMMENT]: Xử lý Sliding Session (Trinity Refresh) cho SRE nếu TTL còn thấp.
 /// Trả về danh sách Set-Cookie string để inject vào response headers.
 pub async fn handle_sre_session_rotation(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
+    token_mgr: &Arc<SreTokenManager>,
     config: &Config,
-    claims: &Claims,
+    claims: &SreClaims,
     access_key: &str,
 ) -> Vec<String> {
     let now = chrono::Utc::now().timestamp();
@@ -46,13 +45,8 @@ pub async fn handle_sre_session_rotation(
         let new_access_secret = uuid::Uuid::new_v4().to_string();
         let new_ash = sha256_hash(&new_access_secret);
 
-        let new_claims = Claims {
+        let new_claims = SreClaims {
             sub: claims.sub.clone(),
-            uid: claims.uid.clone(),
-            // [COMMENT]: Giữ nguyên role_id UUID khi rotation
-            role_id: claims.role_id.clone(),
-            lvl: claims.lvl,
-            tenant_id: claims.tenant_id.clone(),
             zone_id: claims.zone_id.clone(),
             access_key: new_access_key.clone(),
             jti: uuid::Uuid::new_v4().to_string(),

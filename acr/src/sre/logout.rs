@@ -10,17 +10,17 @@ use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
+use crate::sre::claims::SreTokenManager;
 
 /// [COMMENT]: Intercept POST /admin/auth/logout tại Edge.
 /// Thu hồi session SRE bằng cách giảm TTL về 5s (Grace Period) và dọn cookies.
 pub async fn handle_sre_logout(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
+    token_mgr: &Arc<SreTokenManager>,
     config: &Config,
     client_headers: &HashMap<String, String>,
     method: &str,
@@ -40,7 +40,7 @@ pub async fn handle_sre_logout(
 
     if let (Some(jwt), Some(key)) = (jwt_token, access_key) {
         if let Ok(claims) = token_mgr.verify_token(&jwt).await {
-            if claims.is_admin() {
+            if claims.sub == "sre" {
                 let _ = session_mgr.delete_sre_session(&key).await;
             }
         }
@@ -55,24 +55,11 @@ pub async fn handle_sre_logout(
     let mut denied_builder = DeniedHttpResponseBuilder::new();
     denied_builder.set_http_status(HttpStatusCode::NoContent);
 
-    // Xóa cookies với Path=/admin
-    let access_cookie = format!(
-        "access_token=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=0{}",
-        domain_str
-    );
-    denied_builder.add_header("set-cookie", &access_cookie, None, false);
-
-    let key_cookie = format!(
-        "access_key=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=0{}",
-        domain_str
-    );
-    denied_builder.add_header("set-cookie", &key_cookie, None, false);
-
-    let secret_cookie = format!(
-        "access_secret=; Path=/admin; HttpOnly; Secure; SameSite=Lax; Max-Age=0{}",
-        domain_str
-    );
-    denied_builder.add_header("set-cookie", &secret_cookie, None, false);
+    // [COMMENT]: Xóa sạch toàn bộ cookie ngoại trừ client_device_id trên cả path / và /admin
+    let clear_cookies = clear_all_cookies(&cookie_header, &domain_str, &["/", "/admin"]);
+    for cookie in clear_cookies {
+        denied_builder.add_header("set-cookie", &cookie, None, false);
+    }
 
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated("SRE logout completed successfully"));

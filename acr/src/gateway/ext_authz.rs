@@ -14,6 +14,7 @@ use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
+use crate::sre::claims::SreTokenManager;
 use crate::user::claims::Claims;
 use crate::user::revoke::handle_logout;
 use crate::user::tenant::{handle_tenant_switch, resolve_and_verify_tenant};
@@ -26,6 +27,7 @@ use envoy_types::pb::envoy::service::auth::v3::{
 pub struct ExtAuthzService {
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
+    sre_token_mgr: Arc<SreTokenManager>,
     config: Config,
     nats: Arc<Nats>,
     rate_limiter: Arc<RateLimiter>,
@@ -35,6 +37,7 @@ impl ExtAuthzService {
     pub fn new(
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
+        sre_token_mgr: Arc<SreTokenManager>,
         config: Config,
         nats: Arc<Nats>,
     ) -> Self {
@@ -42,6 +45,7 @@ impl ExtAuthzService {
         Self {
             session_mgr,
             token_mgr,
+            sre_token_mgr,
             config,
             nats,
             rate_limiter,
@@ -265,7 +269,7 @@ impl Authorization for ExtAuthzService {
         // 2c. SRE Logout: POST /admin/auth/logout
         if let Some(res) = crate::sre::logout::handle_sre_logout(
             &self.session_mgr,
-            &self.token_mgr,
+            &self.sre_token_mgr,
             &self.config,
             client_headers,
             method,
@@ -279,7 +283,7 @@ impl Authorization for ExtAuthzService {
         // 3. SRE Admin Login: POST /admin/auth/login
         if let Some(res) = crate::sre::login::handle_admin_login(
             &self.session_mgr,
-            &self.token_mgr,
+            &self.sre_token_mgr,
             redis_client.as_ref(),
             &self.config,
             client_headers,
@@ -313,7 +317,7 @@ impl Authorization for ExtAuthzService {
         // SRE Admin Zone Catalog
         if let Some(res) = crate::sre::zone_catalog::handle_admin_zone_catalog(
             &self.session_mgr,
-            &self.token_mgr,
+            &self.sre_token_mgr,
             &self.nats,
             redis_client.as_ref(),
             client_headers,
@@ -373,7 +377,7 @@ impl Authorization for ExtAuthzService {
         // 6b. SRE Zone Switch: POST /admin/zone/go-to-zone
         if let Some(res) = crate::sre::zone_switcher::handle_sre_zone_switch(
             &self.session_mgr,
-            &self.token_mgr,
+            &self.sre_token_mgr,
             &self.nats,
             redis_client.as_ref(),
             &self.config,
@@ -408,6 +412,7 @@ impl Authorization for ExtAuthzService {
         let is_sre = path.starts_with("/admin");
 
         let mut claims: Option<Claims> = None;
+        let mut sre_claims: Option<crate::sre::claims::SreClaims> = None;
         let mut billing_claims: Option<crate::billing::claims::BillingClaims> = None;
         let mut access_key = String::new();
         let mut cookies_to_set = Vec::new();
@@ -431,7 +436,7 @@ impl Authorization for ExtAuthzService {
             if is_sre {
                 let verify_res = crate::sre::verify::verify_sre_edge_session(
                     &self.session_mgr,
-                    &self.token_mgr,
+                    &self.sre_token_mgr,
                     &self.config,
                     &cookie_header,
                     client_headers,
@@ -442,7 +447,7 @@ impl Authorization for ExtAuthzService {
                 if let Some(denial) = verify_res.denial_response {
                     return Ok(denial);
                 }
-                claims = verify_res.claims;
+                sre_claims = verify_res.claims;
                 access_key = verify_res.access_key;
                 cookies_to_set.extend(verify_res.cookies_to_set);
             } else {
@@ -470,6 +475,7 @@ impl Authorization for ExtAuthzService {
         let user_id = claims
             .as_ref()
             .map(|c| c.uid.as_str())
+            .or_else(|| sre_claims.as_ref().map(|c| c.sub.as_str()))
             .or_else(|| billing_claims.as_ref().map(|c| c.uid.as_str()))
             .unwrap_or("anonymous");
 
@@ -484,7 +490,7 @@ impl Authorization for ExtAuthzService {
         }
 
         // CSRF Check
-        if (claims.is_some() || billing_claims.is_some())
+        if (claims.is_some() || sre_claims.is_some() || billing_claims.is_some())
             && !verify_csrf_protection(method, client_headers)
         {
             Logger::authz_log("system", method, path, "DENIED", "CSRF validation failed");
@@ -494,7 +500,7 @@ impl Authorization for ExtAuthzService {
         }
 
         // Zone Resolution & Boundaries
-        let is_admin = claims.as_ref().map(|c| c.is_admin()).unwrap_or(false);
+        let is_admin = sre_claims.is_some();
 
         let cookies_to_set_zone = if is_billing {
             if let Err(res) = crate::billing::zone_resolution::resolve_and_verify_zone_billing(
@@ -515,7 +521,7 @@ impl Authorization for ExtAuthzService {
             match crate::sre::zone_resolution::resolve_and_verify_zone_admin(
                 &self.nats,
                 redis_client.as_ref(),
-                claims.as_mut(),
+                sre_claims.as_mut(),
                 &cookie_header,
                 client_headers,
                 method,
@@ -715,11 +721,40 @@ impl Authorization for ExtAuthzService {
                     if let Some(bc) = billing_claims {
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, bc.uid.clone()),
+                            (HEADER_X_USER_NAME, bc.sub.clone()),
                             (HEADER_X_USER_ROLE_ID, bc.role_id.clone()),
                             (HEADER_X_USER_LEVEL, bc.lvl.to_string()),
                             (
                                 HEADER_X_ZONE_ID,
                                 bc.zone_id.clone().unwrap_or_else(|| "global".to_string()),
+                            ),
+                        ];
+
+                        for (key, val) in headers_to_set {
+                            let mut h = HeaderValueOption::default();
+                            h.header =
+                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                    key: key.to_string(),
+                                    value: val,
+                                });
+                            ok.headers.push(h);
+                        }
+                    }
+                } else if is_sre {
+                    if let Some(c) = sre_claims {
+                        let device_id =
+                            extract_cookie_value(&cookie_header, COOKIE_CLIENT_DEVICE_ID)
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+                        let headers_to_set = vec![
+                            (HEADER_X_USER_ID, "sre".to_string()),
+                            (HEADER_X_USER_NAME, "sre".to_string()),
+                            (HEADER_X_USER_ROLE_ID, "sre".to_string()),
+                            (HEADER_X_USER_LEVEL, "0".to_string()),
+                            (HEADER_X_CLIENT_DEVICE_ID, device_id),
+                            (
+                                HEADER_X_ZONE_ID,
+                                c.zone_id.unwrap_or_else(|| "global".to_string()),
                             ),
                         ];
 
@@ -745,6 +780,7 @@ impl Authorization for ExtAuthzService {
 
                         let headers_to_set = vec![
                             (HEADER_X_USER_ID, c.uid.clone()),
+                            (HEADER_X_USER_NAME, c.sub.clone()),
                             (HEADER_X_USER_ROLE_ID, roles_str),
                             (HEADER_X_USER_LEVEL, c.lvl.to_string()),
                             (

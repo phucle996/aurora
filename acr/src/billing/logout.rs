@@ -57,24 +57,11 @@ pub async fn handle_billing_logout(
     let mut denied_builder = DeniedHttpResponseBuilder::new();
     denied_builder.set_http_status(HttpStatusCode::NoContent);
 
-    // Xóa cookies bằng Max-Age=0
-    let access_cookie = format!(
-        "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0{}",
-        domain_str
-    );
-    denied_builder.add_header("set-cookie", &access_cookie, None, false);
-
-    let key_cookie = format!(
-        "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0{}",
-        domain_str
-    );
-    denied_builder.add_header("set-cookie", &key_cookie, None, false);
-
-    let secret_cookie = format!(
-        "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0{}",
-        domain_str
-    );
-    denied_builder.add_header("set-cookie", &secret_cookie, None, false);
+    // [COMMENT]: Xóa sạch toàn bộ cookie ngoại trừ client_device_id
+    let clear_cookies = clear_all_cookies(&cookie_header, &domain_str, &["/"]);
+    for cookie in clear_cookies {
+        denied_builder.add_header("set-cookie", &cookie, None, false);
+    }
 
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated(

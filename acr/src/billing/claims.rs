@@ -64,12 +64,10 @@ pub struct BillingClaims {
 const JWT_SIG_CACHE_MAX_CAPACITY: u64 = 50_000;
 
 /// [COMMENT]: TokenManager — ký và xác thực JWT qua Vault Transit Engine.
-/// Dùng chung cho cả User, SRE Admin, và Billing Auditor.
+/// Dùng chung cho cả User và Billing Auditor.
 /// L1 Cache (moka) cho JWT Signature Verification — chỉ cache token hợp lệ.
 pub struct TokenManager {
     pub(crate) vault_client: Arc<VaultClient>,
-    // [COMMENT]: Đường dẫn động đến Admin API Key trong Vault
-    pub(crate) admin_api_key_path: String,
     // [COMMENT]: L1 Cache cho JWT Signature Verification (moka concurrent cache).
     // Key: SHA-256 hex của toàn bộ JWT string.
     // Value: Claims đã được xác thực hợp lệ bởi Vault.
@@ -77,7 +75,7 @@ pub struct TokenManager {
 }
 
 impl TokenManager {
-    pub fn new(vault_client: Arc<VaultClient>, admin_api_key_path: String) -> Self {
+    pub fn new(vault_client: Arc<VaultClient>) -> Self {
         // [COMMENT]: Khởi tạo moka cache với max capacity và auto-eviction
         let jwt_sig_cache = moka::future::Cache::builder()
             .max_capacity(JWT_SIG_CACHE_MAX_CAPACITY)
@@ -85,7 +83,6 @@ impl TokenManager {
 
         Self {
             vault_client,
-            admin_api_key_path,
             jwt_sig_cache,
         }
     }
@@ -285,27 +282,6 @@ impl TokenManager {
         Err(AcrError::TokenError(
             "Billing token lacks Vault signature prefix".to_string(),
         ))
-    }
-
-    /// [COMMENT]: Đọc trực tiếp Admin API Key từ Vault và băm SHA-256 mà không qua cache RAM.
-    pub async fn get_admin_api_key_hash(&self) -> Result<String, AcrError> {
-        let secret = self
-            .vault_client
-            .read_secret(&self.admin_api_key_path)
-            .await?;
-        let api_key = secret["data"]["data"]["api_key"]
-            .as_str()
-            .ok_or_else(|| AcrError::Internal("api_key not found in Vault response".to_string()))?;
-
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(api_key.as_bytes());
-        Ok(format!("{:x}", hasher.finalize()))
-    }
-
-    /// [COMMENT]: Ủy thác xác thực OTP SRE cho Vault TOTP Secrets Engine.
-    pub async fn verify_admin_totp(&self, code: &str) -> Result<bool, AcrError> {
-        self.vault_client.verify_totp(code).await
     }
 }
 
