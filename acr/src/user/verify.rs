@@ -314,3 +314,116 @@ pub async fn verify_edge_session(
         cookies_to_set,
     }
 }
+
+/// [COMMENT]: Intercept GET /api/v1/me/session — trả về 200 OK với body {"data":{"authenticated":true/false}}
+pub async fn handle_user_session_check(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<TokenManager>,
+    nats: &Arc<Nats>,
+    config: &Config,
+    client_headers: &HashMap<String, String>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    // [COMMENT]: Chỉ bắt GET request đến đúng /api/v1/me/session
+    if !(method == "GET" && path == "/api/v1/me/session") {
+        return None;
+    }
+
+    Logger::sys_info(
+        "user.session.check",
+        "Intercepted user session status check request at edge",
+    );
+
+    let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+
+    // [COMMENT]: Gọi verify_edge_session dùng chung để tái sử dụng toàn bộ logic kiểm tra JWT, Redis Session, Recovery Sliding Window và Session Rotation
+    let verify_res = verify_edge_session(
+        session_mgr,
+        token_mgr,
+        nats,
+        config,
+        &cookie_header,
+        client_headers,
+        method,
+        path,
+    )
+    .await;
+
+    let mut denied_builder = DeniedHttpResponseBuilder::new();
+    denied_builder.set_http_status(HttpStatusCode::Ok);
+    denied_builder.add_header("content-type", "application/json", None, false);
+
+    // [COMMENT]: Nếu có claims, chứng tỏ session hợp lệ (hoặc vừa được rotate thành công)
+    if verify_res.claims.is_some() {
+        denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
+        // [COMMENT]: Set bất kỳ cookies nào được trả về (ví dụ như rotated access_token)
+        for cookie in verify_res.cookies_to_set {
+            denied_builder.add_header("set-cookie", &cookie, None, false);
+        }
+    } else {
+        // [COMMENT]: Nếu không có claims, kiểm tra xem có denial_response từ recovery trả về hay không
+        if let Some(resp) = verify_res.denial_response {
+            let inner = resp.into_inner();
+            // [COMMENT]: Phục hồi thành công nếu status của recovery response là OK/0
+            if inner.status.is_some() && inner.status.as_ref().unwrap().code == 0 {
+                denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
+
+                if let Some(http_resp) = inner.http_response {
+                    use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
+                    if let HttpResponse::DeniedResponse(denied) = http_resp {
+                        for header_opt in denied.headers {
+                            if let Some(header) = header_opt.header {
+                                if header.key.to_lowercase() == "set-cookie" {
+                                    denied_builder.add_header(
+                                        "set-cookie",
+                                        &header.value,
+                                        None,
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // [COMMENT]: Phục hồi thất bại, trả về authenticated: false kèm xóa cookies cũ (nếu có)
+                denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+                if let Some(http_resp) = inner.http_response {
+                    use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
+                    if let HttpResponse::DeniedResponse(denied) = http_resp {
+                        for header_opt in denied.headers {
+                            if let Some(header) = header_opt.header {
+                                if header.key.to_lowercase() == "set-cookie" {
+                                    denied_builder.add_header(
+                                        "set-cookie",
+                                        &header.value,
+                                        None,
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // [COMMENT]: Không có credentials và không thể recovery -> Trả về authenticated: false kèm dọn dẹp các cookie access_token cũ
+            denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+            let cookies_to_clear = vec![
+                "access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                "access_key=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+                "access_secret=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=-1; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+            ];
+            for cookie in cookies_to_clear {
+                denied_builder.add_header("set-cookie", cookie, None, false);
+            }
+        }
+    }
+
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated("User session check status"));
+    response.set_http_response(denied_builder);
+
+    Some(Ok(Response::new(response)))
+}

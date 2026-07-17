@@ -142,7 +142,6 @@ impl Config {
             })
             .unwrap_or_else(|_| {
                 vec![
-                    "/api/v1/auth/login".to_string(),
                     "/api/v1/health".to_string(),
                     "/api/v1/auth/register".to_string(),
                 ]

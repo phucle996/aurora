@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../lib/store/useAuthStore';
-import { User, Eye, EyeOff, ShieldAlert, Coins, ChevronLeft } from 'lucide-react';
+import { User, Eye, EyeOff, ShieldAlert, Coins } from 'lucide-react';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -50,16 +50,6 @@ export default function LoginPage() {
     <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 select-none bg-white dark:bg-[#0b1329]">
       {/* Cột trái: Form Đăng nhập TailAdmin style */}
       <div className="flex flex-col justify-between p-8 sm:p-12 md:p-16 lg:p-20 bg-white dark:bg-[#0b1329] text-slate-800 dark:text-slate-100">
-        {/* Top bar */}
-        <div>
-          <button
-            onClick={() => navigate('/')}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors"
-          >
-            <ChevronLeft size={16} />
-            Back to dashboard
-          </button>
-        </div>
 
         {/* Form area */}
         <div className="w-full max-w-md mx-auto my-auto py-10">

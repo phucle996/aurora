@@ -68,7 +68,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: async () => {
     set({ isLoading: true });
     try {
-      await request<void>('/auth/logout', {
+      await request<void>('/billing/auth/logout', {
         method: 'POST',
       });
     } catch {

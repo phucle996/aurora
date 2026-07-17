@@ -33,8 +33,9 @@ pub struct BillingClaims {
     #[serde(rename = "lvl", default)]
     pub lvl: i32,
 
-    // Zone ID (Optional — không bắt buộc)
-    #[serde(rename = "zid", default)]
+    // [COMMENT]: Mặc định trả về "global" cho zone_id nếu không được cung cấp trong token
+    // Zone ID (Mặc định về "global")
+    #[serde(rename = "zid", default = "default_global_zone")]
     pub zone_id: Option<String>,
 
     // Access Key binding JWT to Redis billing session
@@ -229,7 +230,7 @@ impl TokenManager {
     }
 
     /// [COMMENT]: Giải mã và xác thực tính hợp lệ của Billing JWT Token.
-    #[allow(dead_code)]
+
     pub async fn verify_billing_token(&self, token: &str) -> Result<BillingClaims, AcrError> {
         let token = token.trim();
         if token.is_empty() {
@@ -306,4 +307,9 @@ impl TokenManager {
     pub async fn verify_admin_totp(&self, code: &str) -> Result<bool, AcrError> {
         self.vault_client.verify_totp(code).await
     }
+}
+
+// [COMMENT]: Helper trả về giá trị mặc định cho trường zone_id của BillingClaims
+fn default_global_zone() -> Option<String> {
+    Some("global".to_string())
 }

@@ -4,8 +4,9 @@
 
 use crate::billing::claims::TokenManager;
 use crate::config::Config;
+use crate::error::AcrError;
 use crate::infra::nats::Nats;
-use crate::infra::redis::SessionManager;
+use crate::infra::redis::{RecoverySessionCache, SessionManager};
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
@@ -400,4 +401,111 @@ pub async fn try_handle_recovery_session(
         &resolved_zone_id,
         &resolved_zone_code,
     ))
+}
+
+// ─── SessionManager impl for Recovery Session Helpers ───────────────────────
+
+impl SessionManager {
+    /// [COMMENT]: Lấy dữ liệu phục hồi session đã được cache từ Redis L2
+    pub async fn get_recovery_cache(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<RecoverySessionCache>, AcrError> {
+        let mut conn = self.get_connection().await?;
+        let redis_key = format!("iam:recovery_cache:{}", token_hash);
+
+        let data: Option<String> = redis::cmd("GET")
+            .arg(&redis_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("GET recovery cache failed: {}", e)))?;
+
+        match data {
+            Some(json_str) => {
+                let cache = serde_json::from_str(&json_str).map_err(|e| {
+                    AcrError::Internal(format!("JSON deserialize recovery cache failed: {}", e))
+                })?;
+                Ok(Some(cache))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// [COMMENT]: SETNX Lock phục hồi session — TTL 5s để tự giải phóng khi crash
+    pub async fn try_lock_recovery(&self, token_hash: &str) -> Result<bool, AcrError> {
+        let mut conn = self.get_connection().await?;
+        let lock_key = format!("iam:lock:recovery:{}", token_hash);
+
+        let acquired: bool = redis::cmd("SET")
+            .arg(&lock_key)
+            .arg(1)
+            .arg("EX")
+            .arg(5)
+            .arg("NX")
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Recovery lock acquisition error: {}", e)))?;
+
+        Ok(acquired)
+    }
+
+    /// [COMMENT]: Lưu kết quả phục hồi vào Redis L2 và giải phóng lock (atomic)
+    pub async fn set_recovery_cache(
+        &self,
+        token_hash: &str,
+        cache: &RecoverySessionCache,
+    ) -> Result<(), AcrError> {
+        let mut conn = self.get_connection().await?;
+        let redis_key = format!("iam:recovery_cache:{}", token_hash);
+        let lock_key = format!("iam:lock:recovery:{}", token_hash);
+
+        let json_str = serde_json::to_string(cache).map_err(|e| {
+            AcrError::Internal(format!("JSON serialize recovery cache failed: {}", e))
+        })?;
+
+        // [COMMENT]: Cache TTL = 5s để phục vụ concurrent requests trong cùng recovery window
+        redis::pipe()
+            .atomic()
+            .cmd("SET")
+            .arg(&redis_key)
+            .arg(&json_str)
+            .cmd("EXPIRE")
+            .arg(&redis_key)
+            .arg(5)
+            .cmd("DEL")
+            .arg(&lock_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| {
+                AcrError::RedisError(format!("Set recovery cache in Redis failed: {}", e))
+            })?;
+
+        Ok(())
+    }
+
+    /// [COMMENT]: Kiểm tra xem Lock phục hồi còn tồn tại không
+    pub async fn is_recovery_locked(&self, token_hash: &str) -> Result<bool, AcrError> {
+        let mut conn = self.get_connection().await?;
+        let lock_key = format!("iam:lock:recovery:{}", token_hash);
+
+        let exists: isize = redis::cmd("EXISTS")
+            .arg(&lock_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("EXISTS lock check failed: {}", e)))?;
+
+        Ok(exists > 0)
+    }
+
+    /// [COMMENT]: Giải phóng recovery lock khỏi Redis
+    pub async fn release_recovery_lock(&self, token_hash: &str) -> Result<(), AcrError> {
+        let mut conn = self.get_connection().await?;
+        let lock_key = format!("iam:lock:recovery:{}", token_hash);
+        let _: () = redis::cmd("DEL")
+            .arg(&lock_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("DEL recovery lock failed: {}", e)))?;
+        Ok(())
+    }
 }

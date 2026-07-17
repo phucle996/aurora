@@ -219,6 +219,21 @@ impl Authorization for ExtAuthzService {
             return res;
         }
 
+        // 1b. User Session Check: GET /api/v1/me/session
+        if let Some(res) = crate::user::verify::handle_user_session_check(
+            &self.session_mgr,
+            &self.token_mgr,
+            &self.nats,
+            &self.config,
+            client_headers,
+            method,
+            path,
+        )
+        .await
+        {
+            return res;
+        }
+
         // 2. Logout: POST /api/v1/auth/logout, POST /admin/auth/logout
         if let Some(res) = handle_logout(
             &self.session_mgr,
@@ -591,6 +606,87 @@ impl Authorization for ExtAuthzService {
 
         cookies_to_set.extend(cookies_to_set_zone);
 
+        // [COMMENT]: Khởi tạo biến lưu trữ đường dẫn đã ghi đè (nếu có)
+        let mut rewritten_path_opt = None;
+
+        if !is_billing && !is_sre {
+            if let Some(ref c) = claims {
+                // [COMMENT]: Chỉ áp dụng rewrite đối với các endpoint nghiệp vụ chung /api/v1/...
+                // Loại trừ các endpoint thuộc cụm hệ thống, định danh hoặc billing
+                if path.starts_with("/api/v1/")
+                    && !path.starts_with("/api/v1/me/")
+                    && !path.starts_with("/api/v1/auth/")
+                    && !path.starts_with("/api/v1/tenant/")
+                    && !path.starts_with("/api/v1/personal/")
+                    && !path.starts_with("/api/v1/billing/")
+                {
+                    // [COMMENT]: Trích xuất tenant_id từ phía Client (cookie hoặc header)
+                    let client_tenant_id = extract_cookie_value(&cookie_header, COOKIE_TENANT_ID)
+                        .or_else(|| client_headers.get("x-tenant-id").cloned())
+                        .or_else(|| client_headers.get("X-Tenant-ID").cloned());
+
+                    let client_has_tenant = client_tenant_id
+                        .as_ref()
+                        .map_or(false, |t| !t.is_empty() && t != "platform");
+                    let session_has_tenant = c
+                        .tenant_id
+                        .as_ref()
+                        .map_or(false, |t| !t.is_empty() && t != "platform");
+
+                    // [COMMENT]: Cơ chế bảo mật CHẶN CHÉO - Ngăn cản sự sai lệch giữa ngữ cảnh Client yêu cầu và Session thực tế
+                    if client_has_tenant != session_has_tenant {
+                        Logger::authz_log(
+                            &c.sub,
+                            method,
+                            path,
+                            "DENIED",
+                            &format!(
+                                "Routing context mismatch: client_has_tenant={}, session_has_tenant={}. Platform fallback blocked.",
+                                client_has_tenant, session_has_tenant
+                            ),
+                        );
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied("Tenant context mismatch"),
+                        )));
+                    }
+
+                    // [COMMENT]: So khớp chính xác Tenant ID của client và session để tránh giả mạo
+                    if client_has_tenant {
+                        let c_tenant = client_tenant_id.as_deref().unwrap();
+                        let s_tenant = c.tenant_id.as_deref().unwrap();
+                        if c_tenant != s_tenant {
+                            Logger::authz_log(
+                                &c.sub,
+                                method,
+                                path,
+                                "DENIED",
+                                &format!(
+                                    "Tenant ID mismatch for routing: client='{}', session='{}'",
+                                    c_tenant, s_tenant
+                                ),
+                            );
+                            return Ok(Response::new(CheckResponse::with_status(
+                                Status::permission_denied("Tenant mismatch"),
+                            )));
+                        }
+                    }
+
+                    // [COMMENT]: Xác định tiền tố route group tương ứng: /api/v1/tenant hoặc /api/v1/personal
+                    let prefix = if client_has_tenant {
+                        "/api/v1/tenant"
+                    } else {
+                        "/api/v1/personal"
+                    };
+                    let new_path = format!("{}{}", prefix, &path[7..]);
+                    Logger::sys_debug(
+                        "ext_authz.path_rewrite",
+                        &format!("Rewriting path: {} -> {}", path, new_path),
+                    );
+                    rewritten_path_opt = Some(new_path);
+                }
+            }
+        }
+
         // Build OkHttpResponse for Envoy
         let sub = if is_billing {
             billing_claims
@@ -680,6 +776,25 @@ impl Authorization for ExtAuthzService {
                                     value: ws_id,
                                 });
                             ok.headers.push(h);
+                        }
+
+                        // [COMMENT]: Nạp các header rewrite đường dẫn chuyển tiếp cho Envoy
+                        if let Some(ref rewritten_path) = rewritten_path_opt {
+                            let mut h_orig = HeaderValueOption::default();
+                            h_orig.header =
+                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                    key: "x-original-path".to_string(),
+                                    value: path.to_string(),
+                                });
+                            ok.headers.push(h_orig);
+
+                            let mut h_path = HeaderValueOption::default();
+                            h_path.header =
+                                Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                                    key: ":path".to_string(),
+                                    value: rewritten_path.clone(),
+                                });
+                            ok.headers.push(h_path);
                         }
                     }
                 }

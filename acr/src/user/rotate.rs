@@ -4,10 +4,13 @@
 
 use crate::billing::claims::TokenManager;
 use crate::config::Config;
+use crate::error::AcrError;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::user::claims::Claims;
+use crate::user::session::UserAccessSession;
+use prost::Message;
 use std::sync::Arc;
 
 /// [COMMENT]: Xử lý Sliding Session (Trinity Refresh) cho User thường khi TTL còn thấp
@@ -91,4 +94,108 @@ fn sha256_hash(secret: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(secret.as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+// ─── SessionManager impl for User Session Rotation ──────────────────────────
+
+impl SessionManager {
+    /// [COMMENT]: Trinity Rotation User — SETNX Lock chống Race Condition, Grace Period 5s
+    pub async fn try_rotate_session(
+        &self,
+        zone_id: &str,
+        tenant_id: &str,
+        user_id: &str,
+        old_access_key: &str,
+        new_access_key: &str,
+        new_ash: &str,
+        device_id: &str,
+    ) -> Result<bool, AcrError> {
+        let mut conn = self.get_connection().await?;
+        let lock_key = format!("iam:lock:refresh:{}", old_access_key);
+
+        // [COMMENT]: 1. SETNX Lock — TTL 5s auto-release khi crash
+        let acquired: bool = redis::cmd("SET")
+            .arg(&lock_key)
+            .arg(1)
+            .arg("EX")
+            .arg(5)
+            .arg("NX")
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Lock acquisition error: {}", e)))?;
+
+        if !acquired {
+            // [COMMENT]: Lock bị chiếm — luồng khác đang rotate — tiếp tục với session cũ
+            return Ok(false);
+        }
+
+        let old_redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, old_access_key
+        );
+        let new_redis_key = format!(
+            "iam:user_session:{}:{}:{}:{}",
+            zone_id, tenant_id, user_id, new_access_key
+        );
+        let index_key = format!("iam:user_access_index:{}", user_id);
+        let dev_index_key = format!("iam:device_access_index:{}", device_id);
+
+        let now = chrono::Utc::now().timestamp();
+        let new_session = UserAccessSession {
+            ash: new_ash.to_string(),
+            tdid: device_id.to_string(),
+            lsa: now,
+        };
+
+        let mut buf = Vec::new();
+        new_session
+            .encode(&mut buf)
+            .map_err(|e| AcrError::Internal(e.to_string()))?;
+
+        // [COMMENT]: 2. Pipeline nguyên tử:
+        //   - SET session mới + EXPIRE đầy đủ TTL
+        //   - EXPIRE session cũ về 5s (Grace Period — tránh 401 cho requests bay lơ lửng)
+        //   - Cập nhật user index và device index
+        redis::pipe()
+            .atomic()
+            .cmd("SET")
+            .arg(&new_redis_key)
+            .arg(&buf)
+            .cmd("EXPIRE")
+            .arg(&new_redis_key)
+            .arg(self.config.session_ttl_secs)
+            .cmd("EXPIRE")
+            .arg(&old_redis_key)
+            .arg(5)
+            .cmd("SADD")
+            .arg(&index_key)
+            .arg(&new_redis_key)
+            .cmd("SREM")
+            .arg(&index_key)
+            .arg(&old_redis_key)
+            .cmd("EXPIRE")
+            .arg(&index_key)
+            .arg(self.config.session_ttl_secs * 3)
+            .cmd("SADD")
+            .arg(&dev_index_key)
+            .arg(&new_redis_key)
+            .cmd("SREM")
+            .arg(&dev_index_key)
+            .arg(&old_redis_key)
+            .cmd("EXPIRE")
+            .arg(&dev_index_key)
+            .arg(self.config.session_ttl_secs * 3)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Rotation pipeline failed: {}", e)))?;
+
+        // [COMMENT]: 3. Giải phóng lock sớm (không cần chờ 5s hết hạn)
+        let _: () = redis::cmd("DEL")
+            .arg(&lock_key)
+            .query_async(&mut conn)
+            .await
+            .unwrap_or(());
+
+        Ok(true)
+    }
 }
