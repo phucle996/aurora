@@ -1,3 +1,0 @@
-DROP TABLE IF EXISTS billing.transactions CASCADE;
-DROP TABLE IF EXISTS billing.prices CASCADE;
-DROP TABLE IF EXISTS billing.wallets CASCADE;

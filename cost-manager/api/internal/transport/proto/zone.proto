@@ -16,3 +16,12 @@ message ZoneEntry {
 message GetZoneListResponse {
   repeated ZoneEntry zones = 1;
 }
+
+// ZoneInvalidatedEvent đại diện cho sự kiện một Zone bị thay đổi hoặc xóa từ Controlplane.
+message ZoneInvalidatedEvent {
+  string zone_id = 1;
+  string zone_code = 2;
+  string status = 3;
+  string name = 4;
+  bool deleted = 5;
+}

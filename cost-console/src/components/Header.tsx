@@ -7,36 +7,48 @@ import {
   CreditCard,
   History
 } from "lucide-react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
 
+// Interface định nghĩa cho từng item trên thanh điều hướng Header
 export interface NavigationItem {
   id: string;
   name: string;
+  path: string; // Đường dẫn tương ứng với route của trang (ví dụ /plan, /)
   icon: React.ComponentType<{ size?: number; className?: string }>;
 }
 
 interface HeaderProps {
-  activeTab: string;
-  setActiveTab: (tab: string) => void;
   currency: string;
   setCurrency: (currency: string) => void;
 }
 
+// Danh sách các mục menu trên Navigation Header
 export const navigationItems: NavigationItem[] = [
-  { id: 'dashboard', name: 'Dashboard', icon: LayoutDashboard },
-  { id: 'plans', name: 'Gói Cước & Giá', icon: Coins },
-  { id: 'invoices', name: 'Hóa Đơn Kế Toán', icon: Receipt },
-  { id: 'gateways', name: 'Cổng Nạp Tiền', icon: CreditCard },
-  { id: 'history', name: 'Lịch Sử Giao Dịch', icon: History },
+  { id: 'dashboard', name: 'Dashboard', path: '/', icon: LayoutDashboard },
+  { id: 'plans', name: 'Gói Cước & Giá', path: '/plan', icon: Coins },
+  { id: 'invoices', name: 'Hóa Đơn Kế Toán', path: '/invoices', icon: Receipt },
+  { id: 'gateways', name: 'Cổng Nạp Tiền', path: '/gateways', icon: CreditCard },
+  { id: 'history', name: 'Lịch Sử Giao Dịch', path: '/history', icon: History },
 ];
 
-export function Header({ activeTab, setActiveTab, currency, setCurrency }: HeaderProps) {
+export function Header({ currency, setCurrency }: HeaderProps) {
+  // Sử dụng hook của react-router-dom để điều hướng đường dẫn URL
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Kiểm tra đường dẫn hiện tại để highlight tab tương ứng
+  const currentPath = location.pathname;
+
   return (
     <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between px-8 select-none shrink-0 w-full z-40 text-xs">
       {/* Left: Logo & Top Navigation */}
       <div className="flex items-center gap-8">
-        {/* Logo */}
-        <div className="flex items-center gap-2.5">
+        {/* Logo ứng dụng Aurora Cost */}
+        <div 
+          className="flex items-center gap-2.5 cursor-pointer"
+          onClick={() => navigate('/')} // Bấm vào logo chuyển về trang chủ /
+        >
           <div className="bg-blue-600 text-white p-1.5 rounded-[4px] shrink-0">
             <TrendingUp size={16} />
           </div>
@@ -46,15 +58,19 @@ export function Header({ activeTab, setActiveTab, currency, setCurrency }: Heade
           </div>
         </div>
 
-        {/* Top Navbar Menu (Landing/Sales page style) */}
+        {/* Top Navbar Menu điều hướng các Route */}
         <nav className="flex items-center gap-1">
           {navigationItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            // Xác định xem mục menu này có đang active dựa trên URL path hiện tại không
+            const isActive = item.path === '/' 
+              ? (currentPath === '/' || currentPath === '/dashboard') 
+              : currentPath.startsWith(item.path);
+
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => navigate(item.path)} // Điều hướng đến path được định nghĩa
                 className={cn(
                   "flex items-center px-3.5 py-2 rounded font-bold transition-colors cursor-pointer text-[12px]",
                   isActive

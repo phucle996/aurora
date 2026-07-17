@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom"; // Hook quản lý URL query search parameters
 import { Plus, Coins, Info, RefreshCw, MapPin } from "lucide-react";
 import { PlanTable, type PlanItem } from "./sections/PlanTable";
 import { PlanDetail } from "./sections/PlanDetail";
@@ -24,7 +25,20 @@ export default function PlanPage() {
   const [plans, setPlans] = useState<PlanItem[]>([]);
   const [zones, setZones] = useState<ZoneItem[]>([]);
   const [prices, setPrices] = useState<PriceItem[]>([]);
-  const [activeTab, setActiveTab] = useState<"plans" | "pricing" | "subscriptions">("plans");
+
+  // Sử dụng useSearchParams để đọc và ghi query parameter ?tab= trên URL
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Xác định tab hiện tại từ URL query param, nếu không có hoặc giá trị lạ thì mặc định là 'plans'
+  const tabParam = searchParams.get("tab");
+  const activeTab: "plans" | "pricing" | "subscriptions" =
+    tabParam === "pricing" || tabParam === "subscriptions" ? tabParam : "plans";
+
+  // Hàm xử lý chuyển tab và cập nhật URL query string ?tab=...
+  const handleTabChange = (newTab: "plans" | "pricing" | "subscriptions") => {
+    setSearchParams({ tab: newTab });
+  };
+
   const [loading, setLoading] = useState(true);
   const [selectedPlan, setSelectedPlan] = useState<PlanItem | null>(null);
   const [activeSub, setActiveSub] = useState<Subscription | null>(null);
@@ -224,8 +238,9 @@ export default function PlanPage() {
           </div>
 
           <div className="flex gap-2">
+            {/* Tab Gói Cước -> ?tab=plans */}
             <button
-              onClick={() => setActiveTab("plans")}
+              onClick={() => handleTabChange("plans")}
               className={cn(
                 "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
                 activeTab === "plans"
@@ -235,8 +250,9 @@ export default function PlanPage() {
             >
               Gói Cước (Plans)
             </button>
+            {/* Tab Biểu Giá -> ?tab=pricing */}
             <button
-              onClick={() => setActiveTab("pricing")}
+              onClick={() => handleTabChange("pricing")}
               className={cn(
                 "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
                 activeTab === "pricing"
@@ -246,8 +262,9 @@ export default function PlanPage() {
             >
               Biểu Giá (Rates)
             </button>
+            {/* Tab Gói Đăng Ký -> ?tab=subscriptions */}
             <button
-              onClick={() => setActiveTab("subscriptions")}
+              onClick={() => handleTabChange("subscriptions")}
               className={cn(
                 "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
                 activeTab === "subscriptions"

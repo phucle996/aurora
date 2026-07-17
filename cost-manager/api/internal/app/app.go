@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -10,11 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"cost-manager/api/grpc"
 	"cost-manager/api/infra"
 	"cost-manager/api/internal/config"
 	"cost-manager/api/pkg/logger"
-	"cost-manager/api/internal/transport/proto/billingproto"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -96,23 +93,7 @@ func (a *App) Start() {
 		}
 	}()
 
-	// 2. Start gRPC Server
-	grpcListener, err := net.Listen("tcp", ":9094")
-	if err != nil {
-		logger.SysFatal(op, "Failed to listen TCP port for gRPC: "+err.Error())
-	}
-	a.grpcServer = googlegrpc.NewServer()
-	billingGrpcServer := grpc.NewBillingGrpcServer(a.module.WalletRepo)
-	billingproto.RegisterBillingServiceServer(a.grpcServer, billingGrpcServer)
-
-	go func() {
-		logger.SysInfo(op, "gRPC Server is listening on port :9094")
-		if err := a.grpcServer.Serve(grpcListener); err != nil {
-			logger.SysFatal(op, "gRPC Server failure: "+err.Error())
-		}
-	}()
-
-	// 3. Start Rust Engine as child process
+	// 4. Start Rust Engine as child process
 	rustPath := "cost-manager-engine"
 	if _, err := exec.LookPath(rustPath); err != nil {
 		rustPath = "../engine/target/release/cost-manager-engine"
