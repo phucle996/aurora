@@ -46,6 +46,8 @@ pub struct Config {
     pub redis_ssl_client_cert: Option<String>,
     /// Đường dẫn tới file Client Private Key dùng cho mTLS Redis
     pub redis_ssl_client_key: Option<String>,
+    /// URL kết nối tới NATS (messaging)
+    pub nats_url: String,
 }
 
 impl Config {
@@ -62,6 +64,10 @@ impl Config {
         // Đọc Redis URL cho control plane
         let redis_url = env::var("REDIS_URL")
             .unwrap_or_else(|_| "redis://controlplane-acr-redis:6379".to_string());
+
+        // Đọc NATS URL cho control plane
+        let nats_url = env::var("NATS_URL")
+            .unwrap_or_else(|_| "nats://controlplane-nats:4222".to_string());
 
         // Cấu hình số kết nối tối đa tới Postgres, mặc định là 10
         let pg_max_connections = env::var("PG_MAX_CONNECTIONS")
@@ -136,6 +142,7 @@ impl Config {
             redis_ssl_root_cert,
             redis_ssl_client_cert,
             redis_ssl_client_key,
+            nats_url,
         }
     }
 }

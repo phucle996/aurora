@@ -76,7 +76,7 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		UserID:               userID,
 		Policy:               req.Policy,
 		EncryptEnabled:       *req.EncryptEnabled,
-		VersioningEnabled:     *req.VersioningEnabled,
+		VersioningEnabled:    *req.VersioningEnabled,
 		ObjectLockingEnabled: *req.ObjectLockingEnabled,
 		ReplicationEnabled:   *req.ReplicationEnabled,
 		RetentionDays:        req.RetentionDays,
@@ -387,4 +387,3 @@ func (h *PersonalBucketHandler) RequestSts(c *gin.Context) {
 		"event_id": eventID.String(),
 	}, "sts token generation initiated")
 }
-

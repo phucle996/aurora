@@ -42,9 +42,6 @@ function StorageDirectoryContent() {
           });
         }
       );
-      toast.success("Storage bucket capacities synced in real-time", {
-        id: "realtime-bucket-sizes-sync",
-      });
     }, [queryClient, activeWorkspaceID])
   );
 

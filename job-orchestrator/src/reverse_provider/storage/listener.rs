@@ -214,20 +214,38 @@ pub async fn run_bucket_sizes_listener(
                                 if is_changed {
                                     let db_url = config.database_url.clone();
                                     let name_clone = name.clone();
-
                                     let mut target_user_ids = Vec::new();
+
+                                    // Cache size in Redis Hash
+                                    let _: redis::RedisResult<()> = redis::cmd("HSET")
+                                        .arg("storage:bucket_sizes")
+                                        .arg(&name_clone)
+                                        .arg(size)
+                                        .query_async(&mut conn)
+                                        .await;
 
                                     if name.starts_with("ws-") {
                                         match db::update_personal_bucket_size(&db_url, &name_clone, size).await {
                                             Ok(Some(owner_id)) => {
-                                                target_user_ids.push(owner_id);
+                                                target_user_ids.push(owner_id.clone());
                                                 Logger::sys_info(
                                                     "storage_listener.db_write",
                                                     &format!(
                                                         "Đã cập nhật dung lượng bucket cá nhân '{}' lên: {} bytes (User: {})",
-                                                        name_clone, size, target_user_ids[0]
+                                                        name_clone, size, owner_id
                                                     ),
                                                 );
+
+                                                let billing_payload = serde_json::json!({
+                                                    "bucket_name": name_clone,
+                                                    "owner_id": owner_id,
+                                                    "owner_type": "personal",
+                                                    "used_bytes": size,
+                                                    "timestamp": chrono::Utc::now().timestamp_millis()
+                                                });
+                                                if let Ok(billing_bin) = serde_json::to_vec(&billing_payload) {
+                                                    let _ = nats_client.publish("billing.storage.bucket_used_bytes_update", billing_bin.into()).await;
+                                                }
                                             }
                                             Ok(None) => {
                                                 Logger::sys_warn(
@@ -245,6 +263,23 @@ pub async fn run_bucket_sizes_listener(
                                             }
                                         }
                                     } else if name.starts_with("tn-") {
+                                        // Lấy tenant_id phục vụ billing trước khi update
+                                        match db::get_tenant_bucket_owner_and_members(&db_url, &name_clone).await {
+                                            Ok((Some(tenant_id), _)) => {
+                                                let billing_payload = serde_json::json!({
+                                                    "bucket_name": name_clone,
+                                                    "owner_id": tenant_id,
+                                                    "owner_type": "tenant",
+                                                    "used_bytes": size,
+                                                    "timestamp": chrono::Utc::now().timestamp_millis()
+                                                });
+                                                if let Ok(billing_bin) = serde_json::to_vec(&billing_payload) {
+                                                    let _ = nats_client.publish("billing.storage.bucket_used_bytes_update", billing_bin.into()).await;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+
                                         match db::update_tenant_bucket_size(&db_url, &name_clone, size).await {
                                             Ok(user_ids) => {
                                                 if !user_ids.is_empty() {

@@ -51,9 +51,6 @@ function ViewBucketContent() {
           return prevBucket;
         }
       );
-      toast.success("Storage bucket capacity synced in real-time", {
-        id: "realtime-bucket-details-sizes-sync",
-      });
     }, [queryClient, id])
   );
 
@@ -78,8 +75,6 @@ function ViewBucketContent() {
     },
     enabled: !!id,
   });
-
-
 
   const tabs = useMemo(() => {
     const list = ["Overview"];

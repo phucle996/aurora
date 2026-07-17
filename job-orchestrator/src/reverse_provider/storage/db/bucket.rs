@@ -17,7 +17,7 @@ pub async fn update_personal_bucket_size(
     db_url: &str,
     name: &str,
     used_bytes: i64,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
     let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
 
     tokio::spawn(async move {
@@ -50,7 +50,7 @@ pub async fn update_tenant_bucket_size(
     db_url: &str,
     name: &str,
     used_bytes: i64,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
 
     tokio::spawn(async move {
@@ -330,4 +330,74 @@ pub async fn resolve_bucket_deletion(
     };
 
     Ok(row_opt)
+}
+
+#[allow(dead_code)]
+pub async fn get_personal_bucket_owner(
+    db_url: &str,
+    name: &str,
+) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            Logger::sys_error(
+                "storage_db.connection",
+                "Lỗi kết nối chạy ngầm của PostgreSQL khi lấy personal bucket owner",
+                &e.to_string(),
+            );
+        }
+    });
+
+    let row = pg_client
+        .query_opt(
+            "SELECT w.owner_id::text \
+             FROM storage.personal_buckets b \
+             JOIN hierarchy.personal_workspaces w ON b.workspace_id = w.id \
+             WHERE b.name = $1",
+            &[&name],
+        )
+        .await?;
+
+    Ok(row.map(|r| r.get::<_, String>(0)))
+}
+
+pub async fn get_tenant_bucket_owner_and_members(
+    db_url: &str,
+    name: &str,
+) -> Result<(Option<String>, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
+    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            Logger::sys_error(
+                "storage_db.connection",
+                "Lỗi kết nối chạy ngầm của PostgreSQL khi lấy tenant bucket owner",
+                &e.to_string(),
+            );
+        }
+    });
+
+    let row_tenant = pg_client
+        .query_opt(
+            "SELECT tenant_id::text FROM storage.tenant_buckets WHERE name = $1",
+            &[&name],
+        )
+        .await?;
+
+    let tenant_id = match row_tenant {
+        Some(r) => r.get::<_, String>(0),
+        None => return Ok((None, vec![])),
+    };
+
+    let rows_members = pg_client
+        .query(
+            "SELECT user_id::text FROM hierarchy.tenant_memberships WHERE tenant_id = $1::uuid AND status = 'active'",
+            &[&uuid::Uuid::parse_str(&tenant_id)?],
+        )
+        .await?;
+
+    let user_ids = rows_members.iter().map(|r| r.get::<_, String>(0)).collect();
+
+    Ok((Some(tenant_id), user_ids))
 }

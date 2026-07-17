@@ -81,3 +81,14 @@ SELECT
     LogAttributes['path'] AS path
 FROM otlp.otel_logs
 WHERE LogAttributes['log_type'] = 'envoy-storage-access';
+
+-- 6. Tạo bảng bucket_size_history lưu trữ lịch sử dung lượng sử dụng của các buckets
+CREATE TABLE IF NOT EXISTS storage.bucket_size_history (
+    timestamp DateTime64(3, 'UTC'),
+    bucket_name String,
+    owner_id String,
+    owner_type LowCardinality(String),
+    used_bytes UInt64
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (owner_id, bucket_name, timestamp);

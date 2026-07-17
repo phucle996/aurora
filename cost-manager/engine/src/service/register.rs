@@ -25,12 +25,30 @@ pub async fn run_services(
         )
     );
 
+    // [COMMENT]: Spawn job đồng bộ dung lượng lưu trữ từ NATS
+    let nats_url = config.nats_url.clone();
+    let size_syncer_ch_client = ch_client.clone();
+    let size_syncer_shutdown_rx = shutdown_rx.clone();
+    let storage_size_syncer_handle = tokio::spawn(
+        crate::service::storage::size_syncer::run_size_syncer(
+            nats_url,
+            size_syncer_ch_client,
+            size_syncer_shutdown_rx,
+        )
+    );
+
     // [COMMENT]: Theo dõi và quản lý vòng đời của các services dựa trên watch channel shutdown
     tokio::select! {
         res = storage_billing_handle => {
             match res {
                 Ok(_) => println!("Storage Billing Service đã dừng."),
                 Err(e) => eprintln!("Lỗi nghiêm trọng tại Storage Billing Service: {:?}", e),
+            }
+        }
+        res = storage_size_syncer_handle => {
+            match res {
+                Ok(_) => println!("Storage Size Syncer Service đã dừng."),
+                Err(e) => eprintln!("Lỗi nghiêm trọng tại Storage Size Syncer Service: {:?}", e),
             }
         }
         _ = shutdown_rx.changed() => {
