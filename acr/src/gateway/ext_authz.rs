@@ -805,7 +805,7 @@ impl Authorization for ExtAuthzService {
                         key: "set-cookie".to_string(),
                         value: cookie_str,
                     });
-                    ok.headers.push(h);
+                    ok.response_headers_to_add.push(h);
                 }
             }
         }

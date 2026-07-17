@@ -140,21 +140,6 @@ pub async fn resolve_code_to_id_and_status(
     None
 }
 
-/// [COMMENT]: Phân giải zone_id -> (zone_code, status)
-pub async fn resolve_id_to_code_and_status(
-    nats: &Nats,
-    redis_client: &redis::Client,
-    zone_id: &str,
-) -> Option<(String, String)> {
-    if let Some(res) = l1_lookup_id(zone_id).await {
-        return Some(res);
-    }
-
-    // Mis-cache -> NATS Core sync
-    sync_zones_from_nats(nats, redis_client).await;
-
-    l1_lookup_id(zone_id).await
-}
 
 /// [COMMENT]: Lấy danh sách toàn bộ zones từ Shared L1 Cache
 pub async fn get_all_zones(nats: &Nats, redis_client: &redis::Client) -> Vec<ZoneItem> {
@@ -243,22 +228,6 @@ async fn l1_lookup_code(code: &str) -> Option<(String, String)> {
     None
 }
 
-async fn l1_lookup_id(id: &str) -> Option<(String, String)> {
-    let cache = get_l1_cache();
-    let status_map = cache.id_to_status.read().await;
-    let name_map = cache.id_to_name.read().await;
-
-    if let (Some(s_entry), Some(n_entry)) = (status_map.get(id), name_map.get(id)) {
-        if !s_entry.is_expired() && !n_entry.is_expired() {
-            if let (CacheValue::Found(status), CacheValue::Found(code)) =
-                (&s_entry.value, &n_entry.value)
-            {
-                return Some((code.clone(), status.clone()));
-            }
-        }
-    }
-    None
-}
 
 async fn l1_set_zone(code: &str, id: &str, status: &str, name: &str) {
     let expiry = Instant::now() + Duration::from_secs(600);

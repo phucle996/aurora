@@ -3,7 +3,6 @@
 // ======================================================================================================
 
 use crate::infra::nats::Nats;
-use crate::infra::zone::resolve_id_to_code_and_status;
 use crate::observability::logger::Logger;
 use crate::user::claims::Claims;
 use crate::user::zone_resolution::{resolve_zone_context, ZoneResolutionError};
@@ -44,27 +43,17 @@ pub async fn resolve_and_verify_zone_admin(
             ))));
         }
         Err(ZoneResolutionError::Missing) => {
-            if let Some(ref c) = claims {
-                if let Some(ref claims_zone_id) = c.zone_id {
-                    if claims_zone_id == "global" {
-                        (
-                            Some("global".to_string()),
-                            Some("global".to_string()),
-                            Some("active".to_string()),
-                        )
-                    } else if let Some((code, status)) =
-                        resolve_id_to_code_and_status(nats, redis_client, claims_zone_id).await
-                    {
-                        (Some(claims_zone_id.clone()), Some(code), Some(status))
-                    } else {
-                        (None, None, None)
-                    }
-                } else {
-                    (None, None, None)
-                }
-            } else {
-                (None, None, None)
-            }
+            let sub = claims.as_ref().map(|c| c.sub.as_str()).unwrap_or("admin");
+            Logger::authz_log(
+                sub,
+                method,
+                path,
+                "DENIED",
+                "Missing zone_code context (no cookie/header)",
+            );
+            return Err(Ok(Response::new(CheckResponse::with_status(
+                Status::permission_denied("Zone unavailable"),
+            ))));
         }
     };
 
