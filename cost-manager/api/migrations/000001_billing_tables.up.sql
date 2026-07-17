@@ -8,8 +8,8 @@ CREATE TABLE IF NOT EXISTS billing.packs (
     name          VARCHAR(128) NOT NULL,
     code          VARCHAR(64)  NOT NULL UNIQUE, -- VD: 'STUDENT_PACK', 'FREE_TIER', 'ENTERPRISE_PACK'
     tier_target   VARCHAR(32)  NOT NULL DEFAULT 'FREE_TIER', -- 'STUDENT', 'FREE_TIER', 'ENTERPRISE'
-    monthly_price NUMERIC(16, 4) NOT NULL DEFAULT 0.0000, -- Phí trọn gói hàng tháng (VND)
-    currency      CHAR(3)      NOT NULL DEFAULT 'VND',
+    monthly_price BIGINT       NOT NULL DEFAULT 0, -- Phí trọn gói hàng tháng (USD Micro-units)
+    currency      CHAR(3)      NOT NULL DEFAULT 'USD',
     discount_rate NUMERIC(5, 2)  NOT NULL DEFAULT 0.00,  -- Tỷ lệ giảm giá (%)
     status        VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE' | 'DEPRECATED'
     description   TEXT,
@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS billing.plans (
     name          VARCHAR(128) NOT NULL,
     code          VARCHAR(64)  NOT NULL UNIQUE, -- VD: 'STORAGE_SKU_10GB', 'VM_SKU_2C4G'
     service_type  VARCHAR(32)  NOT NULL,        -- 'STORAGE' | 'VM' | 'MAIL'
-    zone_code     VARCHAR(32)  NOT NULL DEFAULT 'global',
-    monthly_price NUMERIC(16, 4) NOT NULL DEFAULT 0.0000, -- Đơn giá gốc lẻ SKU (VND)
-    currency      CHAR(3)      NOT NULL DEFAULT 'VND',
+    zone_id       UUID         NOT NULL,        -- Liên kết tới Zone UUID cụ thể
+    monthly_price BIGINT       NOT NULL DEFAULT 0, -- Đơn giá gốc lẻ SKU hàng tháng (USD Micro-units)
+    currency      CHAR(3)      NOT NULL DEFAULT 'USD',
     status        VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE' | 'DEPRECATED'
     description   TEXT,
     created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS billing.pack_plans (
     pack_id            UUID NOT NULL REFERENCES billing.packs(id) ON DELETE CASCADE,
     plan_id            UUID NOT NULL REFERENCES billing.plans(id) ON DELETE RESTRICT,
     included_quota     NUMERIC(18, 4) NOT NULL DEFAULT 0, -- Quota đi kèm trong gói
-    overage_unit_price NUMERIC(16, 6) NOT NULL DEFAULT 0, -- Đơn giá phụ trội khi dùng vượt mốc
+    overage_unit_price BIGINT         NOT NULL DEFAULT 0, -- Đơn giá phụ trội khi dùng vượt mốc (USD Micro-units)
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_pack_plan UNIQUE (pack_id, plan_id)
 );

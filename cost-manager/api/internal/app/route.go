@@ -7,8 +7,14 @@ import (
 )
 
 func RegisterRoutes(router *gin.Engine, m *Module) {
-	// Register middlewares
+	// Đăng ký các global middlewares
 	router.Use(middleware.AccessLog())
 	router.Use(middleware.CORS())
 
+	// Đăng ký các endpoints phiên bản v1
+	v1 := router.Group("/api/v1")
+	{
+		// Route lấy danh sách Plan (Resource SKU Plans)
+		v1.GET("/plans", m.PlanHandler.ListPlans)
+	}
 }

@@ -1,7 +1,6 @@
 package logger
 
 import (
-	"context"
 	"os"
 	"strings"
 	"time"
@@ -107,36 +106,6 @@ func HandlerError(c *gin.Context, op string, err error) {
 		"op":         op,
 	}
 	if err != nil {
-		L().WithFields(fields).Error(err.Error())
-	}
-}
-
-func HandlerInfoCtx(ctx context.Context, op, message string) {
-	fields := logrus.Fields{
-		"log_type": LogTypeHandler,
-		"op":       op,
-	}
-	L().WithFields(fields).Info(message)
-}
-
-func HandlerWarnCtx(ctx context.Context, op string, err error, message string) {
-	fields := logrus.Fields{
-		"log_type": LogTypeHandler,
-		"op":       op,
-	}
-	if err != nil {
-		fields["error"] = err.Error()
-	}
-	L().WithFields(fields).Warn(message)
-}
-
-func HandlerErrorCtx(ctx context.Context, op string, err error) {
-	fields := logrus.Fields{
-		"log_type": LogTypeHandler,
-		"op":       op,
-	}
-	if err != nil {
-		fields["error"] = err.Error()
 		L().WithFields(fields).Error(err.Error())
 	}
 }

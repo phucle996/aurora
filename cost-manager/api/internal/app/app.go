@@ -52,21 +52,23 @@ func (a *App) Init() error {
 	// 3. Connect to Redis Cache Infrastructure
 	redisClient, err := infra.ConnectRedis(a.Cfg.RedisURL)
 	if err != nil {
-		logger.SysWarn(op, "Failed to connect to Redis: "+err.Error())
-	} else {
-		a.redisClient = redisClient
+		return err
 	}
+	a.redisClient = redisClient
 
 	// 4. Connect to NATS Messaging Infrastructure
 	natsConn, err := infra.ConnectNats(a.Cfg.NatsURL)
 	if err != nil {
-		logger.SysWarn(op, "Failed to connect to NATS: "+err.Error())
-	} else {
-		a.natsConn = natsConn
+		return err
 	}
+	a.natsConn = natsConn
 
 	// 5. Initialize Modules
-	a.module = NewModule(a.dbPool, a.natsConn, a.redisClient)
+	module, err := NewModule(a.dbPool, a.natsConn, a.redisClient)
+	if err != nil {
+		return err
+	}
+	a.module = module
 
 	return nil
 }

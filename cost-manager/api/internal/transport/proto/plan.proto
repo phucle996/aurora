@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package planproto;
+
+option go_package = "cost-manager/api/internal/transport/proto/planproto";
+
+// Plan đại diện cho dữ liệu Plan trong Cache
+message Plan {
+  string id = 1;
+  string name = 2;
+  string code = 3;
+  string service_type = 4;
+  string zone_id = 5;
+  int64 monthly_price = 6; // USD Micro-units ($1 = 1,000,000)
+  string currency = 7;
+  string status = 8;
+  string description = 9;
+  int64 created_at = 10; // Unix timestamp (giây)
+  int64 updated_at = 11; // Unix timestamp (giây)
+}
+
+// PlanListCachePayload bao gói danh sách các Plan lưu trữ dưới dạng Proto Binary
+message PlanListCachePayload {
+  repeated Plan plans = 1;
+}
