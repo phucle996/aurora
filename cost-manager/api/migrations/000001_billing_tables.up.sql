@@ -59,3 +59,17 @@ CREATE TABLE IF NOT EXISTS billing.subscriptions (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_active_owner_sub UNIQUE (owner_id, owner_type)
 );
+
+-- 5. Bảng Users (Dành cho đội ngũ kiểm toán/kế toán nội bộ hệ thống)
+CREATE TABLE IF NOT EXISTS billing.users (
+    id              UUID PRIMARY KEY,
+    employee_code   VARCHAR(64)  NOT NULL UNIQUE, -- Mã nhân viên để đăng nhập (VD: ACC_CHIEF)
+    public_key      VARCHAR(256) NOT NULL,        -- Khóa công khai Ed25519 (Ed25519 Public Key Base64)
+    fullname        VARCHAR(128) NOT NULL,
+    email           VARCHAR(128) NOT NULL UNIQUE,
+    role_id         VARCHAR(64)  NOT NULL DEFAULT 'billing_auditor', -- Vai trò hệ thống
+    level           INT          NOT NULL DEFAULT 2,
+    status          VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE', -- 'ACTIVE' | 'DISABLED'
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);

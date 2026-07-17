@@ -1,5 +1,9 @@
-use crate::core::session::SessionManager;
-use crate::service::session::release_session::device_proto::{
+// ======================================================================================================
+// 📂 rpc/session.rs — Device RPC Handler (gRPC DeviceService implementation)
+// ======================================================================================================
+
+use crate::infra::redis::SessionManager;
+use crate::user::device::device_proto::{
     device_service_server::DeviceService, RevokeUserSessionsByDevicesRequest,
     RevokeUserSessionsByDevicesResponse,
 };
@@ -18,7 +22,6 @@ impl DeviceRpcHandler {
 
 #[tonic::async_trait]
 impl DeviceService for DeviceRpcHandler {
-    // [COMMENT]: Nhận RPC thu hồi session thuộc danh sách thiết bị, dispatch sang service/device/revoke_device.rs
     async fn revoke_user_sessions_by_devices(
         &self,
         request: Request<RevokeUserSessionsByDevicesRequest>,
@@ -29,7 +32,7 @@ impl DeviceService for DeviceRpcHandler {
         if req.encode(&mut payload).is_err() {
             return Err(Status::internal("Failed to encode request"));
         }
-        let reply_payload = crate::service::device::revoke::revoke_sessions_bytes(&self.session_mgr, &payload).await;
+        let reply_payload = crate::user::revoke::revoke_sessions_bytes(&self.session_mgr, &payload).await;
         let resp = RevokeUserSessionsByDevicesResponse::decode(reply_payload.as_slice())
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(resp))

@@ -8,6 +8,7 @@ import (
 	"cost-manager/api/internal/repository"
 	"cost-manager/api/internal/service"
 	"cost-manager/api/internal/transport/http/handler"
+	natsHandler "cost-manager/api/internal/transport/nats/handler"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -49,6 +50,24 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	planHandler := handler.NewPlanHandler(planService)
 	if planHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PlanHandler: instance is nil")
+	}
+
+	// Khởi tạo Auth Repository
+	authRepo := repository.NewAuthRepository(dbPool)
+	if authRepo == nil {
+		return nil, fmt.Errorf("failed to initialize AuthRepository: instance is nil")
+	}
+
+	// Khởi tạo Auth Service
+	authService := service.NewAuthService(authRepo)
+	if authService == nil {
+		return nil, fmt.Errorf("failed to initialize AuthService: instance is nil")
+	}
+
+	// Đăng ký NATS subscriber phục vụ xác thực người dùng cho cost console sử dụng Protobuf
+	_, err := natsHandler.SubscribeAuth(natsConn, authService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to register NATS auth subscriber: %w", err)
 	}
 
 	return &Module{

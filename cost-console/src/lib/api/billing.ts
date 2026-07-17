@@ -1,3 +1,5 @@
+import { request } from './fetcher';
+
 export interface PlanMetric {
   id: string;
   plan_id: string;
@@ -11,7 +13,7 @@ export interface PlanItem {
   name: string;
   code: string;
   service_type: string;
-  zone_code: string;
+  zone_id: string;
   monthly_price: number;
   currency: string;
   status: string;
@@ -42,7 +44,7 @@ export interface PriceItem {
   id: string;
   service_type: string;
   metric_type: string;
-  zone_code: string;
+  zone_id: string;
   unit: string;
   unit_price: number;
   currency: string;
@@ -52,8 +54,6 @@ export interface PriceItem {
   effective_to?: string;
   created_at: string;
 }
-
-const API_BASE = import.meta.env.VITE_BILLING_API_URL || 'http://localhost:8084/api/v1/billing';
 
 // Đảm bảo có owner_id duy nhất trong session để đối soát/subscribe thử nghiệm
 export function getDemoOwner(): { id: string; type: string } {
@@ -65,38 +65,13 @@ export function getDemoOwner(): { id: string; type: string } {
   return { id, type: 'personal' };
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const url = `${API_BASE}${path}`;
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers || {}),
-    },
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    let errorJson;
-    try {
-      errorJson = JSON.parse(errorText);
-    } catch {
-      // Ignored
-    }
-    throw new Error(errorJson?.message || errorJson?.error || `HTTP error ${response.status}`);
-  }
-
-  const resJson = await response.json();
-  return resJson.data as T;
-}
-
 export const billingApi = {
   // Get active subscription for current demo owner
   async getActiveSubscription(): Promise<Subscription | null> {
     const owner = getDemoOwner();
     try {
       return await request<Subscription | null>(
-        `/subscriptions/active?owner_id=${owner.id}&owner_type=${owner.type}`
+        `/billing/subscriptions/active?owner_id=${owner.id}&owner_type=${owner.type}`
       );
     } catch (e) {
       console.error('Failed to fetch active subscription:', e);
@@ -107,7 +82,7 @@ export const billingApi = {
   // Subscribe current demo owner to a plan
   async subscribe(planId: string): Promise<Subscription> {
     const owner = getDemoOwner();
-    return await request<Subscription>('/subscriptions', {
+    return await request<Subscription>('/billing/subscriptions', {
       method: 'POST',
       body: JSON.stringify({
         owner_id: owner.id,
@@ -120,19 +95,19 @@ export const billingApi = {
   // Cancel subscription for current demo owner
   async cancelSubscription(): Promise<void> {
     const owner = getDemoOwner();
-    await request<void>(`/subscriptions/active?owner_id=${owner.id}&owner_type=${owner.type}`, {
+    await request<void>(`/billing/subscriptions/active?owner_id=${owner.id}&owner_type=${owner.type}`, {
       method: 'DELETE',
     });
   },
 
   // List all available active plans
   async listPlans(): Promise<PlanItem[]> {
-    return await request<PlanItem[]>('/plans');
+    return await request<PlanItem[]>('/billing/plans');
   },
 
   // Create a new plan (Admin feature)
   async createPlan(plan: Omit<PlanItem, 'id' | 'status'>): Promise<PlanItem> {
-    return await request<PlanItem>('/plans', {
+    return await request<PlanItem>('/billing/plans', {
       method: 'POST',
       body: JSON.stringify(plan),
     });
@@ -140,7 +115,7 @@ export const billingApi = {
 
   // Update status of plan (Admin feature)
   async updatePlanStatus(planId: string, status: 'ACTIVE' | 'DEPRECATED'): Promise<void> {
-    await request<void>(`/plans/${planId}/status`, {
+    await request<void>(`/billing/plans/${planId}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     });
@@ -148,11 +123,11 @@ export const billingApi = {
 
   // List real zones
   async listZones(): Promise<ZoneItem[]> {
-    return await request<ZoneItem[]>('/zones');
+    return await request<ZoneItem[]>('/billing/zones');
   },
 
   // List all prices
   async listPrices(): Promise<PriceItem[]> {
-    return await request<PriceItem[]>('/prices');
+    return await request<PriceItem[]>('/billing/prices');
   }
 };

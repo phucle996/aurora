@@ -235,9 +235,6 @@ static_resources:
                           allow_credentials:
                             value: true
                           max_age: "86400"
-                        envoy.filters.http.ext_authz:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                          disabled: true
                       routes:
                         - match: { prefix: "/api/" }
                           route:
@@ -255,6 +252,10 @@ static_resources:
                               retry_on: "connect-failure,refused-stream,reset"
                               num_retries: 1
                               per_try_timeout: 5s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
 
                     - name: localhost_fallback
                       domains:

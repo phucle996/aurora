@@ -1,4 +1,3 @@
-use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
@@ -136,56 +135,8 @@ impl OtelTracer {
         );
     }
 
-    /// Giải phóng tài nguyên và Flush toàn bộ traces/metrics còn lại trong buffer trước khi dừng container.
-    pub fn stop() {
-        global::shutdown_tracer_provider();
-        if let Some(provider) = METER_PROVIDER.get() {
-            if let Err(e) = provider.shutdown() {
-                crate::observability::logger::Logger::sys_error(
-                    "metrics.stop",
-                    &format!("Failed to shutdown metrics provider: {:?}", e),
-                    "metrics_shutdown_error",
-                );
-            }
-        }
-        crate::observability::logger::Logger::sys_info(
-            "observability.stop",
-            "ACL OTel: Tracer and Meter providers shutdown and all data flushed.",
-        );
-    }
-
     /// Lấy trace ID hiện tại của async task phục vụ việc chèn vào logs.
     pub fn get_current_trace_id() -> Option<String> {
         CURRENT_TRACE_ID.try_with(|tid| tid.clone()).ok()
-    }
-
-    /// Phân tích cú pháp chuỗi trace_id thô hoặc traceparent chuẩn W3C thành SpanContext.
-    pub fn parse_traceparent(traceparent: &str) -> Option<SpanContext> {
-        let parts: Vec<&str> = traceparent.split('-').collect();
-        if parts.len() >= 4 && parts[0] == "00" {
-            // Chuẩn W3C: 00-traceid-spanid-flags
-            let trace_id = TraceId::from_hex(parts[1]).ok()?;
-            let span_id = SpanId::from_hex(parts[2]).ok()?;
-            Some(SpanContext::new(
-                trace_id,
-                span_id,
-                TraceFlags::SAMPLED,
-                true,
-                opentelemetry::trace::TraceState::default(),
-            ))
-        } else if traceparent.len() == 32 {
-            // Chuỗi trace_id 32 ký tự hex thô từ Controlplane
-            let trace_id = TraceId::from_hex(traceparent).ok()?;
-            let span_id = SpanId::from_hex("00f067aa0ba902b7").ok()?;
-            Some(SpanContext::new(
-                trace_id,
-                span_id,
-                TraceFlags::SAMPLED,
-                true,
-                opentelemetry::trace::TraceState::default(),
-            ))
-        } else {
-            None
-        }
     }
 }

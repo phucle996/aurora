@@ -12,6 +12,8 @@ var (
 	ErrPreconditionFailed = errors.New("billing: precondition failed")
 	ErrConflict           = errors.New("billing: concurrent conflict or duplicate entry")
 
+	ErrNotFound = errors.New("billing: not found")
+
 	// Lỗi liên quan đến Pack & Resource SKU Plan Catalog
 	ErrPackNotFound  = errors.New("billing: pack not found")
 	ErrPackNotActive = errors.New("billing: pack is deprecated or inactive")

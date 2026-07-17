@@ -18,3 +18,7 @@ INSERT INTO billing.pack_plans (id, pack_id, plan_id, included_quota, overage_un
 ('c0000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-000000000002', 'b0000000-0000-0000-0000-000000000001', 10.0000, 120000),
 ('c0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000003', 'b0000000-0000-0000-0000-000000000002', 1000.0000, 80000),
 ('c0000000-0000-0000-0000-000000000004', 'a0000000-0000-0000-0000-000000000003', 'b0000000-0000-0000-0000-000000000003', 720.0000, 100000);
+
+-- 4. Seed Accountant User (Mã nhân viên: accountant, Khóa công khai Ed25519)
+INSERT INTO billing.users (id, employee_code, public_key, fullname, email, role_id, level, status) VALUES
+('019f3d3e-9999-7894-9236-c5122634cb4f', 'accountant', 'F0NGwS2mpxxHf26mfnrjQsiMf65Zo/LQVhLL1B+rsI4=', 'Kế toán trưởng', 'finance@aurora.cloud', 'billing_admin', 2, 'ACTIVE');

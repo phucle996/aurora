@@ -13,7 +13,7 @@ const mapPlanResponseToItem = (p: any): PlanItem => ({
   name: p.name,
   code: p.code,
   resourceType: (p.service_type?.toLowerCase() || 'storage') as any,
-  zone: (p.zone_code?.toLowerCase() || 'global') as any,
+  zone: (p.zone_id?.toLowerCase() || 'global') as any,
   unit: p.metrics?.[0]?.unit || 'Month',
   priceVnd: p.monthly_price,
   status: p.status === 'ACTIVE' ? 'active' : 'inactive',
@@ -88,7 +88,7 @@ export default function PlanPage() {
           name: data.name,
           code: data.code,
           service_type: data.resourceType.toUpperCase(),
-          zone_code: data.zone,
+          zone_id: data.zone,
           monthly_price: data.priceVnd,
           currency: "VND",
           description: data.description,
@@ -199,7 +199,7 @@ export default function PlanPage() {
                     <td className="px-5 py-3.5 text-center">
                       <span className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[10px] font-bold text-slate-600 dark:text-slate-400 capitalize">
                         <MapPin size={10} />
-                        {p.zone_code}
+                        {p.zone_id}
                       </span>
                     </td>
                     <td className="px-5 py-3.5 font-semibold text-slate-600 dark:text-slate-400">

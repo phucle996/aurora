@@ -76,16 +76,6 @@ impl Logger {
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
     }
 
-    /// Khởi tạo định dạng logger thô (JSON Formatter).
-    pub fn init() {
-        let level = Self::get_level();
-        let timestamp = Self::get_timestamp();
-        let tz = std::env::var("TZ").unwrap_or_else(|_| "UTC".to_string());
-        println!(
-            "{{\"time\":\"{}\",\"log_type\":\"system\",\"op\":\"logger.init\",\"level\":\"info\",\"message\":\"ACL Logger: JSON structured logging pipeline initialized. Level={:?}, TZ={}\"}}",
-            timestamp, level, tz
-        );
-    }
 
     /// Ghi nhận nhật ký gỡ lỗi hệ thống cấp thấp (System Debug Logs).
     pub fn sys_debug(op: &str, message: &str) {
