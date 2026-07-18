@@ -5,6 +5,7 @@ import { PlanTable, type PlanItem } from "./sections/PlanTable";
 import { PlanDetail } from "./sections/PlanDetail";
 import { PlanModal } from "./sections/PlanModal";
 import { SubscriptionPanel } from "./sections/SubscriptionPanel";
+import { TierTable } from "./sections/TierTable"; // [COMMENT]: Import thêm component bảng cước lũy tiến Tiers mới
 import { billingApi, type Subscription, type ZoneItem, type PriceItem } from "../../lib/api/billing";
 import { cn } from "../../lib/utils";
 
@@ -30,12 +31,13 @@ export default function PlanPage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Xác định tab hiện tại từ URL query param, nếu không có hoặc giá trị lạ thì mặc định là 'plans'
+  // [COMMENT]: Đổi cấu hình tab từ 'pricing' (Biểu giá cũ) thành 'tiers' (Biểu giá lũy tiến mới)
   const tabParam = searchParams.get("tab");
-  const activeTab: "plans" | "pricing" | "subscriptions" =
-    tabParam === "pricing" || tabParam === "subscriptions" ? tabParam : "plans";
+  const activeTab: "plans" | "tiers" | "subscriptions" =
+    tabParam === "tiers" || tabParam === "subscriptions" ? tabParam : "plans";
 
   // Hàm xử lý chuyển tab và cập nhật URL query string ?tab=...
-  const handleTabChange = (newTab: "plans" | "pricing" | "subscriptions") => {
+  const handleTabChange = (newTab: "plans" | "tiers" | "subscriptions") => {
     setSearchParams({ tab: newTab });
   };
 
@@ -250,17 +252,17 @@ export default function PlanPage() {
             >
               Gói Cước (Plans)
             </button>
-            {/* Tab Biểu Giá -> ?tab=pricing */}
+            {/* [COMMENT]: Đổi tab Biểu Giá cũ thành Biểu Giá Gốc (Tiers) tương ứng với cấu trúc mới */}
             <button
-              onClick={() => handleTabChange("pricing")}
+              onClick={() => handleTabChange("tiers")}
               className={cn(
                 "px-3 py-1.5 font-bold text-xs rounded-md transition-colors cursor-pointer outline-none",
-                activeTab === "pricing"
+                activeTab === "tiers"
                   ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                   : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-300"
               )}
             >
-              Biểu Giá (Rates)
+              Biểu Giá Gốc (Tiers)
             </button>
             {/* Tab Gói Đăng Ký -> ?tab=subscriptions */}
             <button
@@ -347,7 +349,8 @@ export default function PlanPage() {
         </div>
       )}
 
-      {activeTab === "pricing" && renderPricingTab()}
+      {/* [COMMENT]: Render bảng Tiers mới khi activeTab là 'tiers' */}
+      {activeTab === "tiers" && <TierTable />}
 
       {activeTab === "subscriptions" && (
         <div className="space-y-4">

@@ -140,7 +140,6 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
       return s3ClientRef.current;
     }
 
-    const toastId = toast.loading("Đang kết nối cổng lưu trữ bảo mật (STS)...");
     try {
       const { event_id } = await requestBucketStsToken(bucket.id, 1800);
 
@@ -162,21 +161,26 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
                 eventData.message = "";
                 resolve(creds);
               } catch (err) {
-                reject(new Error("Lỗi giải mã thông tin xác thực từ Gateway."));
+                reject(new Error("Không thể thiết lập kết nối an toàn."));
               }
             } else {
-              reject(new Error(eventData.message || "Gateway từ chối cấp khóa truy cập."));
+              reject(new Error(eventData.message || "Yêu cầu kết nối bị từ chối."));
             }
           }
         });
       });
 
-      toast.dismiss(toastId);
-
       let endpoint = credentials.endpoint;
-      if (endpoint.includes("localhost") && typeof window !== "undefined") {
-        endpoint = endpoint.replace("localhost", window.location.hostname);
+      if (typeof window !== "undefined") {
+        try {
+          const url = new URL(endpoint);
+          url.hostname = window.location.hostname;
+          endpoint = url.toString();
+        } catch (e) {
+          // Fallback nếu credentials.endpoint không parse được thành URL
+        }
       }
+
 
       const newClient = new S3Client({
         endpoint,
@@ -195,10 +199,11 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
 
       return newClient;
     } catch (err: any) {
-      toast.error(err.message || "Không thể khởi tạo kết nối S3.", { id: toastId });
+      toast.error(err.message || "Không thể khởi tạo kết nối S3.");
       throw err;
     }
   };
+
 
   // [COMMENT]: Khởi chạy truy vấn S3 list và nạp danh sách tệp tin
   const fetchListObjects = async (force = false) => {

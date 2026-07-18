@@ -20,6 +20,11 @@ type Module struct {
 	PlanRepo    billingRepoInterface.PlanRepository
 	PlanService billingSvcInterface.PlanService
 	PlanHandler *handler.PlanHandler
+
+	// [COMMENT]: Đăng ký thêm các trường cho thực thể cước lũy tiến (Tier)
+	TierRepo    billingRepoInterface.TierRepository
+	TierService billingSvcInterface.TierService
+	TierHandler *handler.TierHandler
 }
 
 // NewModule khởi tạo Module và thực hiện Dependency Injection
@@ -40,16 +45,34 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize PlanRepository: instance is nil")
 	}
 
+	// [COMMENT]: Khởi tạo TierRepository kết nối PostgreSQL
+	tierRepo := repository.NewTierRepository(dbPool)
+	if tierRepo == nil {
+		return nil, fmt.Errorf("failed to initialize TierRepository: instance is nil")
+	}
+
 	// Khởi tạo service chứa business logic và tích hợp caching
 	planService := service.NewPlanService(planRepo, redisClient)
 	if planService == nil {
 		return nil, fmt.Errorf("failed to initialize PlanService: instance is nil")
 	}
 
+	// [COMMENT]: Khởi tạo TierService chứa nghiệp vụ Tiers
+	tierService := service.NewTierService(tierRepo)
+	if tierService == nil {
+		return nil, fmt.Errorf("failed to initialize TierService: instance is nil")
+	}
+
 	// Khởi tạo handler xử lý HTTP request/response
 	planHandler := handler.NewPlanHandler(planService)
 	if planHandler == nil {
 		return nil, fmt.Errorf("failed to initialize PlanHandler: instance is nil")
+	}
+
+	// [COMMENT]: Khởi tạo TierHandler xử lý request cước lũy tiến
+	tierHandler := handler.NewTierHandler(tierService)
+	if tierHandler == nil {
+		return nil, fmt.Errorf("failed to initialize TierHandler: instance is nil")
 	}
 
 	// Khởi tạo Auth Repository
@@ -74,5 +97,10 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		PlanRepo:    planRepo,
 		PlanService: planService,
 		PlanHandler: planHandler,
+
+		// [COMMENT]: Gán các dependencies đã khởi tạo của Tier vào Module
+		TierRepo:    tierRepo,
+		TierService: tierService,
+		TierHandler: tierHandler,
 	}, nil
 }

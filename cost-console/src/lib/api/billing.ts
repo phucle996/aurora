@@ -129,5 +129,46 @@ export const billingApi = {
   // List all prices
   async listPrices(): Promise<PriceItem[]> {
     return await request<PriceItem[]>('/billing/prices');
+  },
+
+  // [COMMENT]: Gọi API lấy danh sách biểu giá cước lũy tiến (Tiers) có phân trang và bộ lọc
+  async listTiers(
+    page: number = 1,
+    limit: number = 10,
+    serviceType?: string,
+    search?: string
+  ): Promise<TiersResponse> {
+    let url = `/billing/tiers?page=${page}&limit=${limit}`;
+    if (serviceType && serviceType !== 'all') {
+      url += `&service_type=${serviceType}`;
+    }
+    if (search) {
+      url += `&search=${encodeURIComponent(search)}`;
+    }
+    return await request<TiersResponse>(url);
   }
 };
+
+// [COMMENT]: Interface đại diện cho dòng biểu giá cước lũy tiến chi tiết dạng phẳng (Flat Tier)
+export interface TierItem {
+  id: string;              // ID của nấc cước chi tiết (Range ID)
+  tier_id: string;         // ID của biểu giá gốc (Tier ID)
+  name: string;            // Tên biểu giá gốc (VD: Standard Storage Base Tier)
+  code: string;            // Mã biểu giá gốc (VD: STORAGE_STD_BASE)
+  service_type: string;    // Loại dịch vụ (STORAGE | NETWORK_IN | NETWORK_OUT)
+  range_start: number;     // Mốc bắt đầu (Megabytes - MB)
+  range_end: number;       // Mốc kết thúc (MB), 0 biểu thị không giới hạn (vô cực)
+  base_unit_price: number; // Giá gốc (USD Micro-units/MB/Hour)
+  created_at: string;
+  updated_at: string;
+}
+
+// [COMMENT]: Cấu trúc Response phân trang từ API GET /tiers
+export interface TiersResponse {
+  tiers: TierItem[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+  };
+}

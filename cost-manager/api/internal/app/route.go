@@ -16,5 +16,8 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 	{
 		// Route lấy danh sách Plan (Resource SKU Plans)
 		v1.GET("/plans", m.PlanHandler.ListPlans)
+
+		// [COMMENT]: Đăng ký thêm route lấy danh sách biểu giá cước lũy tiến (Tiers)
+		v1.GET("/tiers", m.TierHandler.ListTiers)
 	}
 }
