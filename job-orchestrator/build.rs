@@ -1,5 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // [COMMENT]: Biên dịch toàn bộ proto files — storage_job, resource_lifecycle và job lifecycle
+    // [COMMENT]: Biên dịch toàn bộ proto files, gồm Billing resource ownership contract.
     prost_build::compile_protos(
         &[
             "proto/job_event.proto",
@@ -7,8 +7,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/job_result.proto",
             "proto/zone_report.proto",
             "proto/storage_job.proto",
-            // [COMMENT]: ResourceLifecycleEventV1 — contract duy nhất cho billing domain events
-            "proto/resource_lifecycle.proto",
+            // [COMMENT]: ResourceOwnershipChangedV1 — contract ownership phía Billing.
+            "proto/resource_ownership.proto",
         ],
         &["proto/"],
     )?;

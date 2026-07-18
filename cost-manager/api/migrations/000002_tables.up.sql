@@ -322,10 +322,10 @@ CREATE TABLE IF NOT EXISTS billing.ownership_event_inbox (
 );
 
 -- 20. Resource lifecycle head table để xử lý out-of-order delivery giữa các JetStream events
-CREATE TABLE IF NOT EXISTS billing.resource_lifecycle_head (
+CREATE TABLE IF NOT EXISTS billing.resource_ownership_head (
     resource_id         UUID PRIMARY KEY,                  -- UUID của tài nguyên (bucket)
     last_source_version BIGINT NOT NULL,                   -- Version ownership mới nhất đã ghi nhận
-    lifecycle_state     VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', -- Trạng thái sinh tồn: ACTIVE | DELETED
+    resource_state      VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', -- Resource state phục vụ ownership projection
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),-- Thời điểm cập nhật head gần nhất
-    CONSTRAINT ck_lifecycle_state CHECK (lifecycle_state IN ('ACTIVE', 'DELETED'))
+    CONSTRAINT ck_resource_ownership_state CHECK (resource_state IN ('ACTIVE', 'DELETED'))
 );

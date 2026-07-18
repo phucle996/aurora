@@ -2,6 +2,7 @@ package iamSvcImpl
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +17,20 @@ import (
 
 	"github.com/google/uuid"
 )
+
+func (s *OneTimeTokenService) Validate(ctx context.Context, purpose string, userID uuid.UUID, plainToken string) (bool, error) {
+	purpose = strings.TrimSpace(purpose)
+	plainToken = strings.TrimSpace(plainToken)
+	if purpose == "" || userID == uuid.Nil || plainToken == "" {
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, nil, "invalid_or_expired")
+	}
+	storedHash, err := s.cacheEngine.L2.Client().Get(ctx, oneTimeTokenKey(purpose, userID)).Result()
+	if err != nil {
+		return false, apperr.Wrap(iamTaxonomy.ErrTokenExpired, err, "invalid_or_expired")
+	}
+	expectedHash := security.HashTokenSHA256(plainToken)
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(expectedHash)) == 1, nil
+}
 
 type OneTimeTokenService struct {
 	cfg         *config.Config

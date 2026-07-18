@@ -1,0 +1,13 @@
+syntax = "proto3";
+package billing.wallet.v1;
+option go_package = "cost-manager/api/internal/genproto/billing/wallet/v1;walletv1";
+
+// [COMMENT]: Command tích hợp rõ nghĩa: Billing phải đảm bảo ví PERSONAL/USD cho owner này.
+message PersonalWalletProvisionRequestedV1 {
+  bytes event_id = 1;
+  int32 schema_version = 2;
+  bytes owner_id = 3;
+  string owner_type = 4;
+  string currency = 5;
+  string occurred_at = 6;
+}

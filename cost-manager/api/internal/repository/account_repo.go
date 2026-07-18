@@ -214,3 +214,50 @@ func (r *accountRepository) EnsurePersonalWallet(ctx context.Context, ownerID uu
 
 	return finalWalletID, nil
 }
+
+// [COMMENT]: Inbox và wallet cùng transaction; ACK chỉ được phép sau khi hàm này commit.
+func (r *accountRepository) ApplyPersonalWalletProvision(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("account repo: begin verified event tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var inserted bool
+	err = tx.QueryRow(ctx, `
+		INSERT INTO billing.wallet_provision_inbox
+			(event_id, schema_version, owner_id, payload_hash)
+		VALUES ($1, 1, $2, $3)
+		ON CONFLICT (event_id) DO NOTHING
+		RETURNING TRUE
+	`, eventID, ownerID, payloadHash).Scan(&inserted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var storedHash string
+		if err := tx.QueryRow(ctx, `SELECT payload_hash FROM billing.wallet_provision_inbox WHERE event_id=$1`, eventID).Scan(&storedHash); err != nil {
+			return err
+		}
+		if storedHash != payloadHash {
+			return fmt.Errorf("account repo: event_id %s reused with different payload", eventID)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("account repo: insert account inbox: %w", err)
+	}
+
+	// [COMMENT]: Unique owner tuple là lớp idempotency thứ hai khi các event khác nhau cùng chỉ một user.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO billing.wallets
+			(id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
+		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'ACTIVE')
+		ON CONFLICT (owner_id, owner_type, currency) DO NOTHING
+	`, uuid.New(), ownerID)
+	if err != nil {
+		return fmt.Errorf("account repo: ensure verified personal wallet: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE billing.wallet_provision_inbox SET status='APPLIED', processed_at=NOW() WHERE event_id=$1`, eventID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}

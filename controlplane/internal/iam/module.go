@@ -35,15 +35,16 @@ type IAMModule struct {
 	MfaHandler            *iamHandler.MfaHandler            // [COMMENT]: Handler phục vụ tra cứu thông tin MFA platform audit
 
 	// Core Services & Sync Engines
-	RbacPlatformRepository   iamRepoInterface.RbacPlatformRepository   // [COMMENT]: Repo quản lý platform role
-	RbacTenantRepository     iamRepoInterface.RbacTenantRepository     // [COMMENT]: Repo quản lý tenant role
-	DeviceSelfRepository     iamRepoInterface.DeviceSelfRepository     // [COMMENT]: Repo quản lý thiết bị cá nhân
-	DevicePlatformRepository iamRepoInterface.DevicePlatformRepository // [COMMENT]: Repo quản lý thiết bị platform
-	AuthService              iamSvcInterface.AuthService
-	UserService              iamSvcInterface.UserService
-	SessionRefreshService    iamSvcInterface.SessionRefreshService
-	deviceSelfSvcImpl        iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
-	devicePlatformSvcImpl    iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
+	RbacPlatformRepository       iamRepoInterface.RbacPlatformRepository   // [COMMENT]: Repo quản lý platform role
+	RbacTenantRepository         iamRepoInterface.RbacTenantRepository     // [COMMENT]: Repo quản lý tenant role
+	DeviceSelfRepository         iamRepoInterface.DeviceSelfRepository     // [COMMENT]: Repo quản lý thiết bị cá nhân
+	DevicePlatformRepository     iamRepoInterface.DevicePlatformRepository // [COMMENT]: Repo quản lý thiết bị platform
+	AuthService                  iamSvcInterface.AuthService
+	UserService                  iamSvcInterface.UserService
+	SessionRefreshService        iamSvcInterface.SessionRefreshService
+	deviceSelfSvcImpl            iamSvcInterface.DeviceSelfService     // giữ interface type để tránh type assertion
+	devicePlatformSvcImpl        iamSvcInterface.DevicePlatformService // giữ interface type để tránh type assertion
+	personalWalletProvisionRelay *iamSvcImpl.PersonalWalletProvisionRelay
 }
 
 // NewModule khởi tạo phân hệ IAM. Thiết lập cơ chế Fail-Fast chặt chẽ ở cấp độ biên khởi chạy.
@@ -169,6 +170,14 @@ func NewModule(
 	if iamOutboxRepo == nil {
 		return nil, errors.New("iam module: failed to construct IAM outbox repository")
 	}
+	if natsConn == nil {
+		return nil, errors.New("iam module: nats connection is required for account domain events")
+	}
+	walletProvisionRepo := iamRepoImpl.NewPersonalWalletProvisionOutboxRepository(db, cfg)
+	walletProvisionRelay, err := iamSvcImpl.NewPersonalWalletProvisionRelay(walletProvisionRepo, natsConn)
+	if err != nil {
+		return nil, err
+	}
 
 	authSvc := iamSvcImpl.NewAuthService(
 		cfg, authRepo, refreshSvc, deviceSelfSvc,
@@ -227,27 +236,28 @@ func NewModule(
 	// Trả về container chứa toàn bộ các dependency hoàn toàn hợp lệ, an toàn và sẵn sàng hoạt động.
 
 	return &IAMModule{
-		cfg:                      cfg,
-		db:                       db,
-		rds:                      rds,
-		L1Registry:               cacheEngine,
-		natsConn:                 natsConn,
-		otel:                     otel,
-		AuthService:              authSvc,
-		AuthHandler:              authHandler,
-		UserService:              userService,
-		UserHandler:              userHandler,
-		DeviceSelfHandler:        deviceSelfHandler,
-		DevicePlatformHandler:    devicePlatformHandler,
-		RbacPlatformHandler:      rbacPlatformHandler,
-		RbacTenantHandler:        rbacTenantHandler,
-		MfaHandler:               mfaHandler,
-		RbacPlatformRepository:   rbacPlatformRepo,
-		RbacTenantRepository:     rbacTenantRepo,
-		DeviceSelfRepository:     deviceSelfRepo,
-		DevicePlatformRepository: devicePlatformRepo,
-		deviceSelfSvcImpl:        deviceSelfSvc,
-		devicePlatformSvcImpl:    devicePlatformSvc,
-		SessionRefreshService:    refreshSvc,
+		cfg:                          cfg,
+		db:                           db,
+		rds:                          rds,
+		L1Registry:                   cacheEngine,
+		natsConn:                     natsConn,
+		otel:                         otel,
+		AuthService:                  authSvc,
+		personalWalletProvisionRelay: walletProvisionRelay,
+		AuthHandler:                  authHandler,
+		UserService:                  userService,
+		UserHandler:                  userHandler,
+		DeviceSelfHandler:            deviceSelfHandler,
+		DevicePlatformHandler:        devicePlatformHandler,
+		RbacPlatformHandler:          rbacPlatformHandler,
+		RbacTenantHandler:            rbacTenantHandler,
+		MfaHandler:                   mfaHandler,
+		RbacPlatformRepository:       rbacPlatformRepo,
+		RbacTenantRepository:         rbacTenantRepo,
+		DeviceSelfRepository:         deviceSelfRepo,
+		DevicePlatformRepository:     devicePlatformRepo,
+		deviceSelfSvcImpl:            deviceSelfSvc,
+		devicePlatformSvcImpl:        devicePlatformSvc,
+		SessionRefreshService:        refreshSvc,
 	}, nil
 }

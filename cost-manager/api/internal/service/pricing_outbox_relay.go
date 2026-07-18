@@ -17,7 +17,7 @@ import (
 	"time"
 
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
-	pb "cost-manager/api/internal/transport/proto"
+	pricingv1 "cost-manager/api/internal/genproto/billing/pricing/v1"
 
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
@@ -66,7 +66,7 @@ func (r *PricingOutboxRelay) Run(ctx context.Context) {
 			// 3. Duyệt danh sách bản ghi, marshal Protobuf và publish sang NATS
 			var publishErr error
 			for _, row := range batch {
-				payload, marshalErr := proto.Marshal(&pb.TierVersionPublished{
+				payload, marshalErr := proto.Marshal(&pricingv1.TierVersionPublished{
 					EventId:             row.ID.String(),
 					TierId:              row.TierID.String(),
 					TierVersionId:       row.TierVersionID.String(),

@@ -109,7 +109,7 @@ flowchart TD
 > [!WARNING]
 > Bucket **không có `status` column** kể từ migration `000003_drop_bucket_status`. Bảng `personal_buckets` và `tenant_buckets` không có vòng đời trạng thái nữa.
 > Bucket tồn tại trong DB = đang active. Khi create job FAILED, Job Orchestrator DELETE record khỏi DB (clean rollback cho retry).
-> Tham chiếu lifecycle event pipeline tại [`resource_lifecycle_god_view.md`](../billing/resource_lifecycle_god_view.md).
+> Tham chiếu ownership event pipeline tại [`resource_ownership_god_view.md`](../billing/resource_ownership_god_view.md).
 
 ---
 
@@ -536,7 +536,7 @@ Hệ thống sử dụng OpenTelemetry Tracing kết hợp W3C Context Propagati
 | **Drop Status** | [`000003_drop_bucket_status.up.sql`](../../controlplane/internal/storage/migrations/000003_drop_bucket_status.up.sql) | Xóa bucket status column (deprecated) |
 | **Lifecycle Outbox** | [`000004_lifecycle_outbox.up.sql`](../../controlplane/internal/storage/migrations/000004_lifecycle_outbox.up.sql) | Bảng lifecycle event outbox phục vụ JetStream relay |
 | **Retention Index** | [`000005_outbox_retention_index.up.sql`](../../controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql) | Index phục vụ cleanup job 30 ngày |
-| **Proto Contract** | [`proto/resource_lifecycle.proto`](../../job-orchestrator/proto/resource_lifecycle.proto) | Contract Protobuf ResourceLifecycleEventV1 |
+| **Proto Contract** | [`proto/resource_ownership.proto`](../../job-orchestrator/proto/resource_ownership.proto) | Contract Protobuf ResourceOwnershipChangedV1 |
 | **Lifecycle DB** | [`db/lifecycle.rs`](../../job-orchestrator/src/reverse_provider/storage/db/lifecycle.rs) | Hàm insert_resource_created/deleted |
 | **Bucket Resolve** | [`db/bucket.rs`](../../job-orchestrator/src/reverse_provider/storage/db/bucket.rs) | resolve_bucket_creation/deletion + lifecycle insert |
 | **Lifecycle Relay** | [`lifecycle_relay/relay.rs`](../../job-orchestrator/src/lifecycle_relay/relay.rs) | Claim lease → JetStream publish → PubAck → UPDATE |
@@ -548,6 +548,6 @@ Hệ thống sử dụng OpenTelemetry Tracing kết hợp W3C Context Propagati
 | **JO Result Sync** | [`ResultConsumer`](../../job-orchestrator/src/job_result/consumer.rs#L27) | Cập nhật DB outbox và phát lifecycle event |
 | **Billing Inbox** | [`000007_ownership_inbox.up.sql`](../../cost-manager/api/migrations/000007_ownership_inbox.up.sql) | Inbox idempotency + projection head table |
 | **Billing Consumer** | [`lifecycle_consumer.go`](../../cost-manager/api/internal/service/lifecycle_consumer.go) | JetStream consumer → ownership projection |
-| **God View Pipeline** | [`resource_lifecycle_god_view.md`](../billing/resource_lifecycle_god_view.md) | SoT cho toàn bộ lifecycle event pipeline |
+| **God View Pipeline** | [`resource_ownership_god_view.md`](../billing/resource_ownership_god_view.md) | SoT cho ownership event pipeline |
 | **NS Bridge Listener** | [`NatsListener`](../../notification-service/src/listener.rs) | Lắng nghe NATS, dispatch qua service tương ứng |
 | **NS Storage Service** | [`job/notification.rs`](../../notification-service/src/service/job/notification.rs) | Push real-time event sang Centrifugo WebSocket |

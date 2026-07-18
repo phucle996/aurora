@@ -9,6 +9,14 @@
 
 ## 🗺️ 1. Giới Thiệu
 
+### Account verified → personal wallet
+
+Khi xác minh tài khoản thành công, IAM commit nguyên tử việc kích hoạt user, gán role và ghi
+`PersonalWalletProvisionRequestedV1` vào `billing_wallet_provision_outbox`. Relay HA claim theo
+lease, publish Protobuf lên JetStream subject `billing.wallet.personal.provision.requested.v1`,
+rồi chỉ đánh dấu `PUBLISHED` sau PubAck. Cost Manager dùng durable consumer và inbox hash để tạo idempotent wallet
+`(user_id, PERSONAL, USD)` với số dư 0. Không publish NATS trước khi IAM transaction commit.
+
 ### 👥 Tài Liệu Này Dành Cho Ai?
 
 Tài liệu dành cho đội ngũ kỹ sư phát triển backend (IAM Service), kỹ sư phát triển hạ tầng dữ liệu và SRE đảm bảo tính sẵn sàng cao (HA) và hiệu năng tối ưu khi xử lý lượng đăng ký lớn.

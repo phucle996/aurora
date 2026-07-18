@@ -41,13 +41,13 @@ owner is `personal_workspaces.owner_id`; for tenant buckets it is `tenant_bucket
 - Projection rows use `[effective_from,effective_to)` and old ownership is never overwritten.
 - Static credentials are reconciled into `billing.credential_bindings`; STS usage can still resolve by
   bucket ownership when the temporary access key is not retained in Controlplane.
-- **Ownership events cược deliver qua JetStream** (stream `CONTROLPLANE_DOMAIN_EVENTS`, subject `controlplane.storage.resource.lifecycle.v1`).
+- **Ownership events được deliver qua JetStream** (stream `CONTROLPLANE_DOMAIN_EVENTS`, subject `billing.ownership.resource.changed.v1`).
 - Consumer `cost-ownership-v1` dùng **Explicit ACK** — at-least-once, idempotent qua `billing.ownership_event_inbox`.
 - ACK chỉ được gửi sau khi transaction commit thành công trong Billing DB.
 - Billing resolves ownership at the metering hour. Unknown ownership is persisted in `unrated_usage` and
   does not silently disappear when the billing checkpoint advances.
 - Bucket name is a lookup attribute only. Ledger lineage stores immutable `resource_id` and owner snapshot.
-- Out-of-order events được xử lý qua `billing.resource_lifecycle_head` — delete với `source_version` cao hơn
+- Out-of-order events được xử lý qua `billing.resource_ownership_head` — delete với `source_version` cao hơn
   sẽ chuyển state thành DELETED và chặn create cũ hơn khỏi resurrect resource.
 
 ## 4. Metering security
@@ -71,4 +71,4 @@ private so a caller cannot bypass the trusted ingress and metering path.
 | Storage ingress metering identity | `controlplane/dev/envoy/envoy-storage.yaml` |
 | Hourly usage schema | `controlplane/dev/clickhouse/init.sql` |
 | Owner resolution and debit | `cost-manager/engine/src/service/storage/egress_billing.rs` |
-| Pipeline God View | `god_view/billing/resource_lifecycle_god_view.md` |
+| Pipeline God View | `god_view/billing/resource_ownership_god_view.md` |

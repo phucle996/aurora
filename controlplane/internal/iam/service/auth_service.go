@@ -182,17 +182,37 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 // [COMMENT]: VerifyAccount kiểm tra tính hợp lệ của mã kích hoạt (OTT) thông qua OneTimeTokenService,
 // sau đó tiến hành kích hoạt tài khoản và gán role mặc định 'platform_user' cho người dùng.
 func (s *AuthService) VerifyAccount(ctx context.Context, userID uuid.UUID, token string) error {
-	// [COMMENT]: 1. Tiêu thụ token OTT. Sử dụng cơ chế Consume của OneTimeTokenService để tránh double-verify
-	consumed, err := s.ott.Consume(ctx, "account_verify", userID, token)
+	// [COMMENT]: Validate trước nhưng chỉ consume sau DB commit; DB lỗi không được làm mất token retry.
+	valid, err := s.ott.Validate(ctx, "account_verify", userID, token)
 	if err != nil {
 		return err
 	}
-	if !consumed {
+	if !valid {
 		return iamTaxonomy.ErrTokenExpired
 	}
 
-	// [COMMENT]: 2. Kích hoạt tài khoản và gán role mặc định 'platform_user' ở scope platform trong DB
-	if err := s.repo.ActivateUser(ctx, userID, "platform_user"); err != nil {
+	// [COMMENT]: Event ID deterministic theo user giúp HTTP retry không sinh logical event thứ hai.
+	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("billing.wallet.personal.provision:"+userID.String()))
+	event := &iamproto.PersonalWalletProvisionRequestedV1{
+		EventId:       eventID[:],
+		SchemaVersion: 1,
+		OwnerId:       userID[:],
+		OwnerType:     "PERSONAL",
+		Currency:      "USD",
+		OccurredAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	payload, err := proto.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("iam service: marshal account verified event: %w", err)
+	}
+
+	// [COMMENT]: Repository commit activation + role + domain event trong một PostgreSQL transaction.
+	if err := s.repo.ActivateUser(ctx, userID, "platform_user", eventID, payload); err != nil {
+		return err
+	}
+	// [COMMENT]: Concurrent verify có cùng deterministic event; chỉ một request xóa token, cả hai đều idempotent.
+	_, err = s.ott.Consume(ctx, "account_verify", userID, token)
+	if err != nil && !errors.Is(err, iamTaxonomy.ErrTokenExpired) {
 		return err
 	}
 

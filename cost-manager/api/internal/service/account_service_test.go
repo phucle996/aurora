@@ -22,6 +22,10 @@ func (stub *accountRepoStub) ActivateFreeTier(_ context.Context, command entity.
 	return stub.result, stub.err
 }
 
+func (stub *accountRepoStub) ApplyPersonalWalletProvision(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ string) error {
+	return stub.err
+}
+
 func TestActivatePersonalFreeTierNormalizesTrustedHeaders(t *testing.T) {
 	ownerID := uuid.New()
 	repo := &accountRepoStub{result: &entity.FreeTierAccount{OwnerID: ownerID}}

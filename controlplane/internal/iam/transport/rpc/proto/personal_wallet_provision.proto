@@ -1,0 +1,12 @@
+syntax = "proto3";
+package iamproto;
+option go_package = "controlplane/internal/iam/transport/rpc/proto;iamproto";
+
+message PersonalWalletProvisionRequestedV1 {
+  bytes event_id = 1;
+  int32 schema_version = 2;
+  bytes owner_id = 3;
+  string owner_type = 4;
+  string currency = 5;
+  string occurred_at = 6;
+}

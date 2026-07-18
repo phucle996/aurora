@@ -29,9 +29,10 @@ import (
 
 // [COMMENT]: Module quản lý tất cả các repository, service và handler của ứng dụng.
 type Module struct {
-	AccountRepo    billingRepoInterface.AccountRepository
-	AccountService billingSvcInterface.AccountService
-	AccountHandler *handler.AccountHandler
+	AccountRepo                       billingRepoInterface.AccountRepository
+	AccountService                    billingSvcInterface.AccountService
+	AccountHandler                    *handler.AccountHandler
+	PersonalWalletProvisionSubscriber *natsHandler.PersonalWalletProvisionSubscriber
 
 	PlanRepo    billingRepoInterface.PlanRepository
 	PlanService billingSvcInterface.PlanService
@@ -45,9 +46,9 @@ type Module struct {
 	ReconcilerService service.ReconcilerService
 	ReconcilerWorker  *rpc.StorageOwnershipReconcilerWorker
 
-	LifecycleRepo           billingRepoInterface.LifecycleRepository
-	LifecycleService        service.LifecycleService
-	LifecycleNatsSubscriber *natsHandler.LifecycleNatsSubscriber
+	ResourceOwnershipRepo       billingRepoInterface.ResourceOwnershipRepository
+	ResourceOwnershipService    service.ResourceOwnershipService
+	ResourceOwnershipSubscriber *natsHandler.ResourceOwnershipSubscriber
 
 	PricingOutboxRepo  billingRepoInterface.PricingOutboxRepository
 	PricingOutboxRelay *service.PricingOutboxRelay
@@ -79,6 +80,10 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	accountHandler := handler.NewAccountHandler(accountService)
 	if accountHandler == nil {
 		return nil, fmt.Errorf("failed to initialize AccountHandler: instance is nil")
+	}
+	personalWalletProvisionSubscriber, err := natsHandler.NewPersonalWalletProvisionSubscriber(natsConn, accountService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize PersonalWalletProvisionSubscriber: %w", err)
 	}
 
 	// 2. Plan Domain DI
@@ -144,20 +149,20 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize ReconcilerWorker: instance is nil")
 	}
 
-	// 6. Lifecycle Event Subscriber DI (NATS JetStream)
-	lifecycleRepo := repository.NewLifecycleRepository(dbPool)
-	if lifecycleRepo == nil {
-		return nil, fmt.Errorf("failed to initialize LifecycleRepository: instance is nil")
+	// 6. Resource ownership subscriber DI (NATS JetStream)
+	ownershipRepo := repository.NewResourceOwnershipRepository(dbPool)
+	if ownershipRepo == nil {
+		return nil, fmt.Errorf("failed to initialize ResourceOwnershipRepository: instance is nil")
 	}
 
-	lifecycleService := service.NewLifecycleService(lifecycleRepo)
-	if lifecycleService == nil {
-		return nil, fmt.Errorf("failed to initialize LifecycleService: instance is nil")
+	ownershipService := service.NewResourceOwnershipService(ownershipRepo)
+	if ownershipService == nil {
+		return nil, fmt.Errorf("failed to initialize ResourceOwnershipService: instance is nil")
 	}
 
-	lifecycleSubscriber, err := natsHandler.NewLifecycleNatsSubscriber(natsConn, lifecycleService)
-	if err != nil || lifecycleSubscriber == nil {
-		return nil, fmt.Errorf("failed to initialize LifecycleNatsSubscriber: %w", err)
+	ownershipSubscriber, err := natsHandler.NewResourceOwnershipSubscriber(natsConn, ownershipService)
+	if err != nil || ownershipSubscriber == nil {
+		return nil, fmt.Errorf("failed to initialize ResourceOwnershipSubscriber: %w", err)
 	}
 
 	// 7. Pricing Outbox Relay DI
@@ -172,22 +177,23 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	}
 
 	return &Module{
-		AccountRepo:             accountRepo,
-		AccountService:          accountService,
-		AccountHandler:          accountHandler,
-		PlanRepo:                planRepo,
-		PlanService:             planService,
-		PlanHandler:             planHandler,
-		TierRepo:                tierRepo,
-		TierService:             tierService,
-		TierHandler:             tierHandler,
-		ReconcilerRepo:          reconcilerRepo,
-		ReconcilerService:       reconcilerService,
-		ReconcilerWorker:        reconcilerWorker,
-		LifecycleRepo:           lifecycleRepo,
-		LifecycleService:        lifecycleService,
-		LifecycleNatsSubscriber: lifecycleSubscriber,
-		PricingOutboxRepo:       pricingOutboxRepo,
-		PricingOutboxRelay:      pricingOutboxRelay,
+		AccountRepo:                       accountRepo,
+		AccountService:                    accountService,
+		AccountHandler:                    accountHandler,
+		PersonalWalletProvisionSubscriber: personalWalletProvisionSubscriber,
+		PlanRepo:                          planRepo,
+		PlanService:                       planService,
+		PlanHandler:                       planHandler,
+		TierRepo:                          tierRepo,
+		TierService:                       tierService,
+		TierHandler:                       tierHandler,
+		ReconcilerRepo:                    reconcilerRepo,
+		ReconcilerService:                 reconcilerService,
+		ReconcilerWorker:                  reconcilerWorker,
+		ResourceOwnershipRepo:             ownershipRepo,
+		ResourceOwnershipService:          ownershipService,
+		ResourceOwnershipSubscriber:       ownershipSubscriber,
+		PricingOutboxRepo:                 pricingOutboxRepo,
+		PricingOutboxRelay:                pricingOutboxRelay,
 	}, nil
 }

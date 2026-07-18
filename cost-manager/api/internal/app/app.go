@@ -14,7 +14,6 @@ import (
 	"cost-manager/api/internal/config"
 	"cost-manager/api/pkg/logger"
 
-
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -100,11 +99,16 @@ func (a *App) Start() {
 		close(a.outboxDone)
 	}
 
+	// 2. Start Billing JetStream consumers.
+	if a.module != nil && a.module.PersonalWalletProvisionSubscriber != nil {
+		if err := a.module.PersonalWalletProvisionSubscriber.Start(); err != nil {
+			logger.SysWarn(op, "Start PersonalWalletProvisionSubscriber failed: "+err.Error())
+		}
+	}
 
-	// 2. Start NATS JetStream Lifecycle Consumer
-	if a.module != nil && a.module.LifecycleNatsSubscriber != nil {
-		if err := a.module.LifecycleNatsSubscriber.Start(context.Background()); err != nil {
-			logger.SysWarn(op, "Start LifecycleNatsSubscriber failed: "+err.Error())
+	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
+		if err := a.module.ResourceOwnershipSubscriber.Start(context.Background()); err != nil {
+			logger.SysWarn(op, "Start ResourceOwnershipSubscriber failed: "+err.Error())
 		}
 	}
 
@@ -175,8 +179,11 @@ func (a *App) Stop() {
 		}
 	}
 
-	if a.module != nil && a.module.LifecycleNatsSubscriber != nil {
-		a.module.LifecycleNatsSubscriber.Stop()
+	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
+		a.module.ResourceOwnershipSubscriber.Stop()
+	}
+	if a.module != nil && a.module.PersonalWalletProvisionSubscriber != nil {
+		a.module.PersonalWalletProvisionSubscriber.Stop()
 	}
 
 	if a.module != nil && a.module.ReconcilerWorker != nil {

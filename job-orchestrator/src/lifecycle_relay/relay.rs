@@ -54,7 +54,7 @@ async fn process_unpublished_batch(
 
     // [COMMENT]: Đảm bảo Stream CONTROLPLANE_DOMAIN_EVENTS tồn tại trên NATS Server
     let stream_name = "CONTROLPLANE_DOMAIN_EVENTS";
-    let subject = "controlplane.storage.resource.lifecycle.v1";
+    let subject = "billing.ownership.resource.changed.v1";
 
     let _stream = js
         .get_or_create_stream(jetstream::stream::Config {

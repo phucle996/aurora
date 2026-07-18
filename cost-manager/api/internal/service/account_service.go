@@ -34,3 +34,10 @@ func (s *accountService) ActivatePersonalFreeTier(ctx context.Context, rawOwnerI
 		OwnerID: ownerID, OwnerType: entity.OwnerTypePersonal, IdempotencyKey: idempotencyKey,
 	})
 }
+
+func (s *accountService) ProvisionPersonalWallet(ctx context.Context, eventID uuid.UUID, ownerID uuid.UUID, payloadHash string) error {
+	if eventID == uuid.Nil || ownerID == uuid.Nil || payloadHash == "" {
+		return billingTaxonomy.ErrInvalidArgument
+	}
+	return s.repo.ApplyPersonalWalletProvision(ctx, eventID, ownerID, payloadHash)
+}

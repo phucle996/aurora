@@ -1,9 +1,9 @@
 use prost::Message;
 use uuid::Uuid;
 
-// [COMMENT]: Import generated Protobuf structs từ resource_lifecycle.proto
-pub mod lifecycle_proto {
-    include!(concat!(env!("OUT_DIR"), "/resource_lifecycle.rs"));
+// [COMMENT]: Import generated Billing ownership contract.
+pub mod ownership_proto {
+    include!(concat!(env!("OUT_DIR"), "/billing_ownership.rs"));
 }
 
 // [COMMENT]: Namespace UUID dùng để sinh deterministic event_id theo RFC 4122 UUIDv5.
@@ -49,7 +49,7 @@ pub async fn insert_resource_created(
     let row_id = Uuid::new_v4();
 
     // [COMMENT]: Build Protobuf payload — tuyệt đối không có secret key hay policy JSON
-    let proto_event = lifecycle_proto::ResourceLifecycleEventV1 {
+    let proto_event = ownership_proto::ResourceOwnershipChangedV1 {
         event_id: event_id.as_bytes().to_vec(),
         event_type: event_type.to_string(),
         schema_version: 1,
@@ -115,7 +115,7 @@ pub async fn insert_resource_deleted(
     let row_id = Uuid::new_v4();
 
     // [COMMENT]: Build Protobuf payload — tuyệt đối không có secret key hay policy JSON
-    let proto_event = lifecycle_proto::ResourceLifecycleEventV1 {
+    let proto_event = ownership_proto::ResourceOwnershipChangedV1 {
         event_id: event_id.as_bytes().to_vec(),
         event_type: event_type.to_string(),
         schema_version: 1,

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package billing.ownership.v1;
+option go_package = "cost-manager/api/internal/genproto/billing/ownership/v1;ownershipv1";
+
+// [COMMENT]: Contract nhị phân dùng chung với job-orchestrator. Payer luôn là
+// owner_id/owner_type là payer; actor_user_id không đi vào Billing ownership event.
+message ResourceOwnershipChangedV1 {
+  bytes event_id = 1;
+  string event_type = 2;
+  int32 schema_version = 3;
+  bytes resource_id = 4;
+  string resource_type = 5;
+  string resource_name = 6;
+  bytes owner_id = 7;
+  string owner_type = 8;
+  bytes zone_id = 9;
+  int64 source_version = 10;
+  string effective_at = 11;
+  bytes source_job_id = 12;
+  string traceparent = 13;
+}

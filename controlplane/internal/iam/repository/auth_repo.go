@@ -240,7 +240,7 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 
 // [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
 // và gán vai trò tương ứng cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.
-func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string) error {
+func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, roleCode string, eventID uuid.UUID, eventPayload []byte) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("iam repo: begin activate tx: %w", err)
@@ -264,7 +264,7 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 		if errors.Is(err, pgx.ErrNoRows) {
 			// [COMMENT]: Idempotent check: Kiểm tra nếu user đã active từ trước
 			var currentStatus string
-			errCheck := r.db.QueryRow(ctx, fmt.Sprintf("SELECT status FROM %s.users WHERE id = $1", r.schema), userID).Scan(&currentStatus)
+			errCheck := tx.QueryRow(ctx, fmt.Sprintf("SELECT status FROM %s.users WHERE id = $1 FOR UPDATE", r.schema), userID).Scan(&currentStatus)
 			if errCheck != nil {
 				if errors.Is(errCheck, pgx.ErrNoRows) {
 					return iamTaxonomy.ErrUserNotFound
@@ -272,7 +272,17 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 				return errCheck
 			}
 			if currentStatus == "active" {
-				return nil
+				// [COMMENT]: Self-heal cho retry sau sự cố cũ: active user vẫn phải có durable event.
+				_, insertErr := tx.Exec(ctx, fmt.Sprintf(`
+						INSERT INTO %s.billing_wallet_provision_outbox
+							(event_id, owner_id, schema_version, payload)
+						VALUES ($1, $2, 1, $3)
+						ON CONFLICT (event_id) DO NOTHING
+					`, r.schema), eventID, userID, eventPayload)
+				if insertErr != nil {
+					return fmt.Errorf("iam repo: insert verified event for active user: %w", insertErr)
+				}
+				return tx.Commit(ctx)
 			}
 			return fmt.Errorf("user status is %s, cannot activate", currentStatus)
 		}
@@ -354,11 +364,20 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 		return fmt.Errorf("iam repo: insert user role assignment: %w", err)
 	}
 
+	// [COMMENT]: Activation, role và event cùng commit; không tồn tại cửa sổ DB commit nhưng event bị mất.
+	_, err = tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s.billing_wallet_provision_outbox
+			(event_id, owner_id, schema_version, payload)
+		VALUES ($1, $2, 1, $3)
+		ON CONFLICT (event_id) DO NOTHING
+	`, r.schema), eventID, userID, eventPayload)
+	if err != nil {
+		return fmt.Errorf("iam repo: insert account verified outbox: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("iam repo: commit activate tx: %w", err)
 	}
 
 	return nil
 }
-
-
