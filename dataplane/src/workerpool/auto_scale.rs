@@ -17,7 +17,10 @@ pub struct AutoScaleEngine {
 impl AutoScaleEngine {
     /// Khởi tạo bộ máy autoscaler với giới hạn sàn và trần cấu hình.
     pub fn new(min_workers: usize, max_workers: usize) -> Self {
-        Self { min_workers, max_workers }
+        Self {
+            min_workers,
+            max_workers,
+        }
     }
 
     /// Đánh giá tải thực tế dựa theo chỉ số đo đạc để đưa ra số lượng worker mục tiêu (Target Worker Scale).
@@ -47,17 +50,18 @@ impl AutoScaleEngine {
             return current_workers;
         }
 
-        // 2. Co giãn luồng xử lý dựa trên Lag và Latency
         if lag > 100 || latency_ms > 500.0 {
             // Tải cao hoặc xử lý chậm -> Tăng thêm luồng xử lý (mỗi lần tăng 2 worker)
             let target = (current_workers + 2).min(self.max_workers);
-            crate::observability::logger::Logger::sys_info(
-                "worker.scaler",
-                &format!(
-                    "Autoscaler: High load detected (lag={}, latency={:.2}ms). Scaling up target: {} workers (cap={})",
-                    lag, latency_ms, target, self.max_workers
-                ),
-            );
+            if target != current_workers {
+                crate::observability::logger::Logger::sys_info(
+                    "worker.scaler",
+                    &format!(
+                        "Autoscaler: High load detected (lag={}, latency={:.2}ms). Scaling up target: {} workers (cap={})",
+                        lag, latency_ms, target, self.max_workers
+                    ),
+                );
+            }
             target
         } else if lag == 0 {
             // Hàng đợi rỗng hoàn toàn -> Tiết kiệm tài nguyên, giữ tối thiểu min_workers thay vì tắt hết về 0.

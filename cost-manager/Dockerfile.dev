@@ -1,7 +1,12 @@
-# Stage 1: Biên dịch Rust Engine sử dụng bản Rust mới nhất để tương thích với các crates hiện đại
 FROM rust:latest AS rust-builder
 WORKDIR /app/engine
+
+# Cài đặt protobuf-compiler phục vụ biên dịch Protobuf schema
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
 COPY engine/Cargo.toml engine/Cargo.lock* ./
+COPY engine/build.rs* ./
+COPY engine/proto* ./proto/
 # Tạo src giả lập để cargo compile cached dependencies trước
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release
 # Copy code thực tế và build

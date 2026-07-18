@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,21 +50,26 @@ func (a *App) Init() error {
 	}
 	a.dbPool = dbPool
 
-	// 3. Connect to Redis Cache Infrastructure
+	// 3. Chạy embedded SQL migrations cho billing schema (idempotent, advisory lock safe)
+	if err := runBillingMigrations(context.Background(), dbPool); err != nil {
+		return fmt.Errorf("app.init: billing migration failed: %w", err)
+	}
+
+	// 4. Connect to Redis Cache Infrastructure
 	redisClient, err := infra.ConnectRedis(a.Cfg.RedisURL)
 	if err != nil {
 		return err
 	}
 	a.redisClient = redisClient
 
-	// 4. Connect to NATS Messaging Infrastructure
+	// 5. Connect to NATS Messaging Infrastructure
 	natsConn, err := infra.ConnectNats(a.Cfg.NatsURL)
 	if err != nil {
 		return err
 	}
 	a.natsConn = natsConn
 
-	// 5. Initialize Modules
+	// 6. Initialize Modules
 	module, err := NewModule(a.dbPool, a.natsConn, a.redisClient)
 	if err != nil {
 		return err

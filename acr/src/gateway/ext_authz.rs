@@ -266,6 +266,19 @@ impl Authorization for ExtAuthzService {
             return res;
         }
 
+        // 2d. Billing Session Check: GET /api/v1/billing/auth/session
+        if let Some(res) = crate::billing::verify::handle_billing_session_check(
+            &self.session_mgr,
+            &self.token_mgr,
+            client_headers,
+            method,
+            path,
+        )
+        .await
+        {
+            return res;
+        }
+
         // 2c. SRE Logout: POST /admin/auth/logout
         if let Some(res) = crate::sre::logout::handle_sre_logout(
             &self.session_mgr,

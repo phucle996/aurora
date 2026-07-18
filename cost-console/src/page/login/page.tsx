@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../../lib/store/useAuthStore';
-import { User, Eye, EyeOff, ShieldAlert, Coins } from 'lucide-react';
+import { User, Eye, EyeOff, Coins, Terminal, CheckCircle2, Layers, Globe, BarChart3, ShieldCheck, ArrowDown } from 'lucide-react';
+import { toast } from 'sonner';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -10,177 +11,263 @@ export default function LoginPage() {
   const [employeeCode, setEmployeeCode] = useState('');
   const [secretKey, setSecretKey] = useState('');
   const [showSecretKey, setShowSecretKey] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
-  const [validationError, setValidationError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
 
-  // Nếu người dùng đã đăng nhập trước đó, chuyển hướng trực tiếp vào Dashboard
   useEffect(() => {
-    if (isAuthenticated) {
-      navigate('/', { replace: true });
-    }
+    // Kích hoạt fade-in animation khi component mount
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) navigate('/', { replace: true });
   }, [isAuthenticated, navigate]);
 
-  // Xóa lỗi cũ khi người dùng thay đổi input
   useEffect(() => {
-    if (error) clearError();
-    if (validationError) setValidationError(null);
-  }, [employeeCode, secretKey]);
+    if (error) {
+      toast.error(error);
+      clearError();
+    }
+  }, [error, clearError]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    // Client-side validation
-    const trimmedEmployeeCode = employeeCode.trim();
-    if (!trimmedEmployeeCode) {
-      setValidationError('Vui lòng nhập mã nhân viên');
-      return;
-    }
-    if (!secretKey) {
-      setValidationError('Vui lòng nhập khóa bí mật');
-      return;
-    }
-
-    const success = await login(trimmedEmployeeCode, secretKey);
-    if (success) {
-      navigate('/', { replace: true });
-    }
+    const trimmedCode = employeeCode.trim();
+    if (!trimmedCode) { toast.warning('Vui lòng nhập mã nhân viên.'); return; }
+    if (!secretKey) { toast.warning('Vui lòng nhập khóa bí mật.'); return; }
+    const success = await login(trimmedCode, secretKey);
+    if (success) navigate('/', { replace: true });
   };
 
   return (
-    <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 select-none bg-white dark:bg-[#0b1329]">
-      {/* Cột trái: Form Đăng nhập TailAdmin style */}
-      <div className="flex flex-col justify-between p-8 sm:p-12 md:p-16 lg:p-20 bg-white dark:bg-[#0b1329] text-slate-800 dark:text-slate-100">
+    <div className="min-h-screen bg-[#080d14] text-[#e6edf3] flex items-center justify-center select-none overflow-hidden relative">
 
-        {/* Form area */}
-        <div className="w-full max-w-md mx-auto my-auto py-10">
-          <div className="mb-8">
-            <h1 className="text-3xl font-bold text-slate-900 dark:text-white tracking-tight">
-              Sign In
-            </h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-2 font-normal">
-              Enter your employee code and secret key to sign in!
-            </p>
-          </div>
+      {/* ── Radial glow ──────────────────────────────────────────── */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: 'radial-gradient(ellipse 80% 60% at 50% 50%, rgba(30,58,138,0.08) 0%, transparent 70%)',
+        }}
+      />
 
-          {/* Thông báo lỗi nếu có */}
-          {(error || validationError) && (
-            <div className="mb-6 p-4 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 flex items-start space-x-3 text-red-600 dark:text-red-400">
-              <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5" />
-              <span className="text-sm leading-relaxed font-medium">
-                {validationError || error}
+      {/* ── Grid dot pattern ────────────────────────────────────── */}
+      <div
+        className="absolute inset-0 pointer-events-none opacity-[0.03]"
+        style={{
+          backgroundImage:
+            'linear-gradient(#58a6ff 1px, transparent 1px), linear-gradient(90deg, #58a6ff 1px, transparent 1px)',
+          backgroundSize: '40px 40px',
+        }}
+      />
+
+      {/* ── Content ─────────────────────────────────────────────── */}
+      <div
+        className="relative z-10 w-full max-w-5xl px-8 flex flex-col lg:flex-row items-stretch gap-0"
+        style={{ opacity: mounted ? 1 : 0, transition: 'opacity 240ms ease' }}
+      >
+
+          {/* ── LEFT: Login Form ──────────────────────────────────────── */}
+          <div className="w-full lg:w-[400px] flex-shrink-0 pr-0 lg:pr-14 flex flex-col justify-center">
+
+            {/* Sub-label */}
+            <div className="flex items-center gap-2 mb-4">
+              <Terminal size={12} className="text-slate-600" />
+              <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-[0.12em]">
+                Xác thực phiên làm việc
               </span>
             </div>
-          )}
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Field: Mã nhân viên */}
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Mã nhân viên <span className="text-red-500">*</span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={employeeCode}
-                  onChange={(e) => setEmployeeCode(e.target.value)}
-                  placeholder="Nhập mã nhân viên"
-                  disabled={isLoading}
-                  className="w-full px-4 py-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#131d38] text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-[#131d38] transition-all disabled:opacity-50"
-                />
-                <User className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400 pointer-events-none" />
+            {/* Title */}
+            <h1 className="text-[32px] font-bold text-[#e6edf3] leading-tight tracking-tight mb-2">
+              Đăng nhập<br />hệ thống
+            </h1>
+            <p className="text-[13px] text-slate-500 leading-relaxed mb-8">
+              Nhập mã nhân viên và khóa bí mật để truy cập<br />Aurora Cost Console.
+            </p>
+
+            {/* ── Hairline divider ── */}
+            <div className="border-t border-[#1c2333] mb-7" />
+
+            {/* Form */}
+            <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
+
+              {/* Mã nhân viên */}
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="login-employee-code" className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.1em]">
+                  Mã nhân viên
+                </label>
+                <div className="relative group">
+                  <input
+                    id="login-employee-code"
+                    type="text"
+                    value={employeeCode}
+                    onChange={(e) => setEmployeeCode(e.target.value)}
+                    placeholder="VD: EMP-00123"
+                    disabled={isLoading}
+                    autoComplete="username"
+                    autoFocus
+                    className="
+                      w-full h-9 px-3 pr-9 rounded-[5px]
+                      border border-[#21262d]
+                      bg-[#0d1117]
+                      text-[13px] text-[#e6edf3] placeholder:text-[#3d444d]
+                      shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)]
+                      hover:border-[#30363d]
+                      focus:outline-none focus:border-[#388bfd] focus:ring-1 focus:ring-[#388bfd]/30
+                      disabled:opacity-40 disabled:cursor-not-allowed
+                      transition-all duration-150
+                    "
+                  />
+                  <User size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#3d444d] pointer-events-none" />
+                </div>
               </div>
-            </div>
 
-            {/* Field: Khóa bí mật */}
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Khóa bí mật <span className="text-red-500">*</span>
-              </label>
-              <div className="relative">
-                <input
-                  type={showSecretKey ? 'text' : 'password'}
-                  value={secretKey}
-                  onChange={(e) => setSecretKey(e.target.value)}
-                  placeholder="Nhập khóa bí mật"
-                  disabled={isLoading}
-                  className="w-full px-4 py-3.5 pr-12 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#131d38] text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:bg-white dark:focus:bg-[#131d38] transition-all disabled:opacity-50"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSecretKey(!showSecretKey)}
-                  disabled={isLoading}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
-                >
-                  {showSecretKey ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                </button>
+              {/* Khóa bí mật */}
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="login-secret-key" className="text-[11px] font-semibold text-slate-500 uppercase tracking-[0.1em]">
+                  Khóa bí mật
+                </label>
+                <div className="relative">
+                  <input
+                    id="login-secret-key"
+                    type={showSecretKey ? 'text' : 'password'}
+                    value={secretKey}
+                    onChange={(e) => setSecretKey(e.target.value)}
+                    placeholder="••••••••••••••••"
+                    disabled={isLoading}
+                    autoComplete="current-password"
+                    className="
+                      w-full h-9 px-3 pr-9 rounded-[5px]
+                      border border-[#21262d]
+                      bg-[#0d1117]
+                      text-[13px] text-[#e6edf3] placeholder:text-[#3d444d]
+                      shadow-[inset_0_1px_2px_rgba(0,0,0,0.3)]
+                      hover:border-[#30363d]
+                      focus:outline-none focus:border-[#388bfd] focus:ring-1 focus:ring-[#388bfd]/30
+                      disabled:opacity-40 disabled:cursor-not-allowed
+                      transition-all duration-150
+                    "
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    onClick={() => setShowSecretKey(!showSecretKey)}
+                    disabled={isLoading}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#3d444d] hover:text-slate-400 transition-colors duration-150 disabled:opacity-40"
+                    aria-label={showSecretKey ? 'Ẩn khóa bí mật' : 'Hiện khóa bí mật'}
+                  >
+                    {showSecretKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {/* Row: Remember me */}
-            <div className="flex items-center justify-between pt-1">
-              <label className="flex items-center gap-2.5 cursor-pointer text-sm text-slate-600 dark:text-slate-400 font-medium">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                />
-                <span>Keep me logged in</span>
-              </label>
-            </div>
-
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-md hover:shadow-lg active:scale-[0.99] transition-all flex items-center justify-center space-x-2 disabled:opacity-60 disabled:pointer-events-none"
-            >
-              {isLoading ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-3 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  <span>Đang đăng nhập...</span>
-                </>
-              ) : (
-                <span>Sign in</span>
-              )}
-            </button>
-          </form>
-        </div>
-
-        {/* Footer info */}
-        <div className="text-xs text-slate-400 dark:text-slate-600 text-center sm:text-left">
-          &copy; {new Date().getFullYear()} Aurora Cloud. Enterprise Auditing Console.
-        </div>
-      </div>
-
-      {/* Cột phải: Brand Hero Panel (Deep Indigo / Navy Blue background) */}
-      <div className="hidden lg:flex flex-col items-center justify-center p-12 bg-[#1c2434] relative overflow-hidden">
-        {/* Background ambient pattern / grid lines */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff0a_1px,transparent_1px),linear-gradient(to_bottom,#ffffff0a_1px,transparent_1px)] bg-[size:24px_24px]"></div>
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px] pointer-events-none"></div>
-
-        {/* Hero Content Box */}
-        <div className="relative z-10 text-center max-w-md">
-          <div className="inline-flex items-center justify-center gap-3 px-6 py-4 rounded-2xl bg-blue-600/20 border border-blue-500/30 backdrop-blur-md mb-6 shadow-xl">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-lg">
-              <Coins size={22} />
-            </div>
-            <span className="text-3xl font-black text-white tracking-tight">
-              Cost Console
-            </span>
+              {/* Button */}
+              <button
+                id="login-submit-btn"
+                type="submit"
+                disabled={isLoading}
+                className="
+                  mt-1 h-9 w-full rounded-[5px]
+                  bg-blue-600 hover:brightness-110
+                  text-[13px] font-semibold text-white
+                  flex items-center justify-center gap-2
+                  shadow-sm hover:shadow-blue-900/30
+                  disabled:opacity-40 disabled:cursor-not-allowed
+                  active:scale-[0.99] active:shadow-none
+                  transition-all duration-[140ms]
+                  focus:outline-none focus:ring-2 focus:ring-[#388bfd]/50
+                "
+              >
+                {isLoading ? (
+                  <>
+                    <svg className="animate-spin h-3.5 w-3.5 text-white/70" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    <span>Đang xác thực...</span>
+                  </>
+                ) : (
+                  <span>Đăng nhập</span>
+                )}
+              </button>
+            </form>
           </div>
 
-          <h3 className="text-xl font-bold text-slate-100 mb-2">
-            Enterprise Auditing & Cost Management
-          </h3>
-          <p className="text-sm text-slate-400 leading-relaxed font-normal">
-            Hệ thống kiểm toán chi phí thương mại và theo dõi định mức tài nguyên giải pháp Cloud Native.
-          </p>
+          {/* ── Vertical divider (lg+) ────────────────────────────────── */}
+          <div className="hidden lg:flex flex-col items-center mx-0 px-0">
+            <div className="w-px flex-1" style={{
+              background: 'linear-gradient(to bottom, transparent 0%, #21262d 20%, #21262d 80%, transparent 100%)',
+            }} />
+          </div>
+
+          {/* ── RIGHT: Info Panel ─────────────────────────────────────── */}
+          <div className="flex-1 pl-0 lg:pl-14 flex flex-col justify-center py-2">
+
+            {/* Product header */}
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-lg bg-[#0d1117] border border-[#21262d] flex items-center justify-center shadow-sm">
+                <Coins size={18} className="text-blue-400" />
+              </div>
+              <div>
+                <div className="text-[14px] font-semibold text-[#e6edf3]">Aurora Cost Console</div>
+                <div className="text-[11px] text-slate-600 font-mono">Enterprise Auditing &amp; Cost Management</div>
+              </div>
+            </div>
+
+            <h2 className="text-[22px] font-bold text-[#e6edf3] leading-snug mb-1.5">
+              Kiểm toán chi phí &<br />quản lý tài nguyên Cloud
+            </h2>
+            <p className="text-[13px] text-slate-500 leading-relaxed mb-6">
+              Hệ thống theo dõi định mức, kiểm toán giao dịch và quản lý gói cước cho hạ tầng Cloud Native đa vùng.
+            </p>
+
+            {/* ── Hairline ── */}
+            <div className="border-t border-[#1c2333] mb-5" />
+
+            {/* Capabilities */}
+            <div className="text-[10px] font-semibold text-slate-600 uppercase tracking-[0.12em] mb-3">Capabilities</div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 mb-6">
+              {[
+                { icon: BarChart3, label: 'Realtime Metering', sub: 'Per-resource usage' },
+                { icon: Globe, label: 'Multi-Zone HA', sub: 'Zone-aware aggregation' },
+                { icon: ShieldCheck, label: 'Audit Trail', sub: 'Immutable via ClickHouse' },
+                { icon: Layers, label: 'Quota Enforcement', sub: 'Plan-based limits' },
+                { icon: CheckCircle2, label: 'Billing Engine', sub: 'Automated invoicing' },
+                { icon: Terminal, label: 'Internal API', sub: 'gRPC + REST' },
+              ].map(({ icon: Icon, label, sub }) => (
+                <div key={label} className="flex items-start gap-2.5">
+                  <Icon size={13} className="text-blue-500 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <div className="text-[12px] font-medium text-[#c9d1d9]">{label}</div>
+                    <div className="text-[10px] text-slate-600 font-mono">{sub}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* ── Hairline ── */}
+            <div className="border-t border-[#1c2333] mb-5" />
+
+            {/* Architecture flow */}
+            <div className="text-[10px] font-semibold text-slate-600 uppercase tracking-[0.12em] mb-4">Architecture</div>
+            <div className="flex flex-col gap-0">
+              {[
+                { label: 'Control Plane', color: 'text-slate-400' },
+                { label: 'Metering Engine', color: 'text-blue-400' },
+                { label: 'Billing Engine', color: 'text-blue-400' },
+                { label: 'Invoice &amp; Report', color: 'text-blue-400' },
+              ].map((item, idx, arr) => (
+                <div key={item.label} className="flex flex-col items-start">
+                  <div className={`text-[11px] font-medium ${item.color} font-mono`} dangerouslySetInnerHTML={{ __html: item.label }} />
+                  {idx < arr.length - 1 && (
+                    <div className="flex items-center ml-1.5 my-0.5 text-slate-700">
+                      <ArrowDown size={10} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
-    </div>
   );
 }

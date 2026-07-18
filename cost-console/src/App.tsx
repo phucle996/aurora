@@ -7,6 +7,7 @@ import DashboardPage from './page/dashboard/page';
 import LoginPage from './page/login/page';
 import { useAuthStore } from './lib/store/useAuthStore';
 import { Coins } from 'lucide-react';
+import { Toaster } from 'sonner';
 import './App.css';
 
 // Khởi tạo React Query client cho toàn bộ ứng dụng
@@ -107,12 +108,14 @@ function AppContent() {
   );
 }
 
+
 // Export App component chính bọc QueryClientProvider và BrowserRouter
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AppContent />
+        <Toaster position="top-right" richColors />
       </BrowserRouter>
     </QueryClientProvider>
   );

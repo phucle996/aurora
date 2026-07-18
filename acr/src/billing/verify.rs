@@ -224,3 +224,55 @@ pub async fn verify_billing_edge_session(
         cookies_to_set: Vec::new(),
     }
 }
+
+/// [COMMENT]: Intercept GET /api/v1/billing/auth/session — trả về 200 OK với body {"data":{"authenticated":true/false}}
+pub async fn handle_billing_session_check(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<TokenManager>,
+    client_headers: &HashMap<String, String>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    // [COMMENT]: Chỉ bắt GET request đến đúng /api/v1/billing/auth/session
+    if !(method == "GET" && path == "/api/v1/billing/auth/session") {
+        return None;
+    }
+
+    Logger::sys_info(
+        "billing.session.check",
+        "Intercepted billing session status check request at edge",
+    );
+
+    let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+
+    // [COMMENT]: Gọi verify_billing_edge_session dùng chung để tái sử dụng toàn bộ logic kiểm tra JWT, Redis Session, v.v.
+    let verify_res = verify_billing_edge_session(
+        session_mgr,
+        token_mgr,
+        &cookie_header,
+        client_headers,
+        method,
+        path,
+    )
+    .await;
+
+    let mut denied_builder = DeniedHttpResponseBuilder::new();
+    denied_builder.set_http_status(HttpStatusCode::Ok);
+    denied_builder.add_header("content-type", "application/json", None, false);
+
+    // [COMMENT]: Nếu có claims, chứng tỏ session hợp lệ
+    if let Some(claims) = verify_res.claims {
+        denied_builder.set_body(format!(
+            r#"{{"data":{{"authenticated":true,"user":{{"username":"{}","fullname":"Kế toán trưởng","email":"finance@aurora.cloud"}}}}}}"#,
+            claims.sub
+        ));
+    } else {
+        denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+    }
+
+    let mut response = CheckResponse::new();
+    response.set_status(Status::unauthenticated("Billing session check status"));
+    response.set_http_response(denied_builder);
+
+    Some(Ok(Response::new(response)))
+}

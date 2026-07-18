@@ -323,12 +323,50 @@ pub async fn query_stream_lag(client: &redis::Client, stream_key: &str) -> Resul
         .get_multiplexed_async_connection()
         .await
         .map_err(|e| e.to_string())?;
-    let len: u64 = redis::cmd("XLEN")
+
+    let res: redis::Value = redis::cmd("XINFO")
+        .arg("GROUPS")
         .arg(stream_key)
         .query_async(&mut conn)
         .await
-        .unwrap_or(0);
-    Ok(len)
+        .map_err(|e| e.to_string())?;
+
+    if let redis::Value::Bulk(groups) = res {
+        for group in groups {
+            if let redis::Value::Bulk(fields) = group {
+                let mut name_matches = false;
+                let mut lag_val = None;
+
+                for chunk in fields.chunks(2) {
+                    if chunk.len() == 2 {
+                        if let (redis::Value::Data(k), v) = (&chunk[0], &chunk[1]) {
+                            let key = std::str::from_utf8(k).unwrap_or("");
+                            if key == "name" {
+                                if let redis::Value::Data(name_bytes) = v {
+                                    let name = std::str::from_utf8(name_bytes).unwrap_or("");
+                                    if name == "dataplane-group" {
+                                        name_matches = true;
+                                    }
+                                }
+                            } else if key == "lag" {
+                                if let redis::Value::Int(l) = v {
+                                    lag_val = Some(*l as u64);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if name_matches {
+                    if let Some(lag) = lag_val {
+                        return Ok(lag);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(0)
 }
 
 /// Đo đạc độ trễ xử lý hàng đợi (Queue Latency) tính bằng mili giây.

@@ -40,16 +40,15 @@ export const useAuthStore = create<AuthState>((set) => ({
         }),
       });
 
-      // 2. Lấy profile chi tiết từ API /me/iam/profile/read qua fetcher
-      const profile = await request<UserProfile>('/me/iam/profile/read', {
-        method: 'GET',
-      });
-
-      // 3. Đánh dấu đăng nhập thành công vào store và localStorage làm flag phụ
+      // [COMMENT]: Chỉ đánh dấu đăng nhập thành công vào store và localStorage, profile sẽ hiển thị fallback hoặc load qua session check sau.
       localStorage.setItem('cost_console_logged_in', 'true');
       set({
         isAuthenticated: true,
-        user: profile,
+        user: {
+          username: employeeCode,
+          fullname: 'Kế toán trưởng',
+          email: 'finance@aurora.cloud',
+        },
         isLoading: false,
         error: null,
       });
@@ -91,14 +90,23 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
     set({ isLoading: true });
     try {
-      const profile = await request<UserProfile>('/me/iam/profile/read', {
+      // [COMMENT]: Gọi /billing/auth/session để biết trạng thái đăng nhập thay vì truy vấn profile bên IAM
+      const res = await request<{ authenticated: boolean; user?: UserProfile }>('/billing/auth/session', {
         method: 'GET',
       });
-      set({
-        isAuthenticated: true,
-        user: profile,
-        isLoading: false,
-      });
+      if (res.authenticated) {
+        set({
+          isAuthenticated: true,
+          user: res.user || {
+            username: 'accountant',
+            fullname: 'Kế toán trưởng',
+            email: 'finance@aurora.cloud',
+          },
+          isLoading: false,
+        });
+      } else {
+        throw new Error('Unauthenticated');
+      }
     } catch {
       // Offline hoặc lỗi mạng/hết hạn, làm sạch local state
       localStorage.removeItem('cost_console_logged_in');
