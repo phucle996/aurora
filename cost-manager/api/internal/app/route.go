@@ -16,6 +16,9 @@ func RegisterRoutes(router *gin.Engine, m *Module) {
 	{
 		v1.GET("/plans", m.PlanHandler.ListPlans)
 		v1.GET("/tiers", m.TierHandler.ListTiers)
-		v1.PUT("/tiers", m.TierHandler.UpdateTier)
+		v1.GET("/tiers/:service_type/:code", m.TierHandler.GetTierDetail)
+		v1.PATCH("/tiers/:service_type/:code/metadata", m.TierHandler.UpdateTierMetadata)
+		v1.POST("/tiers/:service_type/:code/versions", m.TierHandler.CreateTierVersion)
+		v1.POST("/subscriptions/free-tier/personal", m.AccountHandler.ActivatePersonalFreeTier)
 	}
 }

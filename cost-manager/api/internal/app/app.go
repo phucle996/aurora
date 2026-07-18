@@ -12,6 +12,7 @@ import (
 
 	"cost-manager/api/infra"
 	"cost-manager/api/internal/config"
+	"cost-manager/api/internal/service"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/gin-gonic/gin"
@@ -22,15 +23,20 @@ import (
 )
 
 type App struct {
-	Cfg         *config.Config
-	dbPool      *pgxpool.Pool
-	redisClient *redis.Client
-	natsConn    *nats.Conn
-	module      *Module
+	Cfg                *config.Config
+	dbPool             *pgxpool.Pool
+	controlplaneDBPool *pgxpool.Pool
+	redisClient        *redis.Client
+	natsConn           *nats.Conn
+	module             *Module
 
-	httpServer *http.Server
-	grpcServer *googlegrpc.Server
-	rustCmd    *exec.Cmd
+	httpServer      *http.Server
+	grpcServer      *googlegrpc.Server
+	rustCmd         *exec.Cmd
+	outboxCancel    context.CancelFunc
+	outboxDone      chan struct{}
+	ownershipCancel context.CancelFunc
+	ownershipDone   chan struct{}
 }
 
 func NewApp() *App {
@@ -49,6 +55,13 @@ func (a *App) Init() error {
 		return err
 	}
 	a.dbPool = dbPool
+
+	// Controlplane connection is used only by the ownership reconciler, never inside per-usage billing transactions.
+	controlplaneDBPool, err := infra.ConnectPostgres(a.Cfg.ControlplaneDBURL)
+	if err != nil {
+		return fmt.Errorf("app.init: connect controlplane ownership source: %w", err)
+	}
+	a.controlplaneDBPool = controlplaneDBPool
 
 	// 3. Chạy embedded SQL migrations cho billing schema (idempotent, advisory lock safe)
 	if err := runBillingMigrations(context.Background(), dbPool); err != nil {
@@ -81,6 +94,23 @@ func (a *App) Init() error {
 
 func (a *App) Start() {
 	const op = "app.start"
+
+	// Outbox relay chạy trên mọi API replica; PostgreSQL SKIP LOCKED phân phối batch an toàn theo HA.
+	outboxCtx, outboxCancel := context.WithCancel(context.Background())
+	a.outboxCancel = outboxCancel
+	a.outboxDone = make(chan struct{})
+	go func() {
+		defer close(a.outboxDone)
+		service.NewPricingOutboxRelay(a.dbPool, a.natsConn).Run(outboxCtx)
+	}()
+
+	ownershipCtx, ownershipCancel := context.WithCancel(context.Background())
+	a.ownershipCancel = ownershipCancel
+	a.ownershipDone = make(chan struct{})
+	go func() {
+		defer close(a.ownershipDone)
+		service.NewOwnershipProjector(a.controlplaneDBPool, a.dbPool).Run(ownershipCtx)
+	}()
 
 	// 1. Start HTTP REST Server
 	gin.SetMode(gin.ReleaseMode)
@@ -132,7 +162,29 @@ func (a *App) Stop() {
 	const op = "app.stop"
 	logger.SysInfo(op, "Shutting down Cost Manager API gracefully...")
 
-	// 1. Terminate Rust Engine child process
+	// 1. Dừng outbox relay trước khi đóng NATS/PostgreSQL để không publish trên connection đang teardown.
+	if a.outboxCancel != nil {
+		a.outboxCancel()
+	}
+	if a.outboxDone != nil {
+		select {
+		case <-a.outboxDone:
+		case <-time.After(3 * time.Second):
+			logger.SysWarn(op, "Timed out waiting for pricing outbox relay")
+		}
+	}
+	if a.ownershipCancel != nil {
+		a.ownershipCancel()
+	}
+	if a.ownershipDone != nil {
+		select {
+		case <-a.ownershipDone:
+		case <-time.After(3 * time.Second):
+			logger.SysWarn(op, "Timed out waiting for ownership projector")
+		}
+	}
+
+	// 2. Terminate Rust Engine child process
 	if a.rustCmd != nil && a.rustCmd.Process != nil {
 		logger.SysInfo(op, "Terminating Rust Engine child process...")
 		_ = a.rustCmd.Process.Signal(syscall.SIGTERM)
@@ -140,7 +192,7 @@ func (a *App) Stop() {
 		logger.SysInfo(op, "Rust Engine terminated.")
 	}
 
-	// 2. Shutdown HTTP Server
+	// 3. Shutdown HTTP Server
 	if a.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -149,22 +201,25 @@ func (a *App) Stop() {
 		}
 	}
 
-	// 3. Stop gRPC Server
+	// 4. Stop gRPC Server
 	if a.grpcServer != nil {
 		a.grpcServer.GracefulStop()
 	}
 
-	// 4. Close database connections
+	// 5. Close database connections
 	if a.dbPool != nil {
 		a.dbPool.Close()
 	}
+	if a.controlplaneDBPool != nil {
+		a.controlplaneDBPool.Close()
+	}
 
-	// 5. Close Redis connection
+	// 6. Close Redis connection
 	if a.redisClient != nil {
 		_ = a.redisClient.Close()
 	}
 
-	// 6. Close NATS connection
+	// 7. Close NATS connection
 	if a.natsConn != nil {
 		a.natsConn.Close()
 	}

@@ -8,7 +8,11 @@ import (
 // [COMMENT]: TierService định nghĩa luồng xử lý nghiệp vụ liên quan tới Tiers.
 type TierService interface {
 	// GetTiersList điều hướng gọi repository để trả về danh sách cước phân trang.
-	GetTiersList(ctx context.Context, page, limit int, serviceType, search string) ([]*entity.Tier, int64, error)
-	// UpdateTier validate invariant của aggregate rồi thực hiện mutation nguyên tử.
-	UpdateTier(ctx context.Context, update entity.TierUpdate) (*entity.TierAggregate, error)
+	GetTiersList(ctx context.Context, page, limit int, serviceType entity.ServiceType, search string) ([]*entity.Tier, int64, error)
+	// GetTierDetail trả full latest aggregate, không phụ thuộc flat pagination.
+	GetTierDetail(ctx context.Context, code string, serviceType entity.ServiceType) (*entity.TierDetail, error)
+	// UpdateTierMetadata sửa display name mà không tác động pricing version.
+	UpdateTierMetadata(ctx context.Context, update entity.TierMetadataUpdate) (*entity.TierMetadata, error)
+	// CreateTierVersion validate và publish immutable pricing snapshot.
+	CreateTierVersion(ctx context.Context, create entity.TierVersionCreate) (*entity.TierVersion, error)
 }

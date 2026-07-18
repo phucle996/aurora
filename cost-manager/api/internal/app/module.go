@@ -17,6 +17,10 @@ import (
 
 // Module quản lý tất cả các repository, service và handler của ứng dụng
 type Module struct {
+	AccountRepo    billingRepoInterface.AccountRepository
+	AccountService billingSvcInterface.AccountService
+	AccountHandler *handler.AccountHandler
+
 	PlanRepo    billingRepoInterface.PlanRepository
 	PlanService billingSvcInterface.PlanService
 	PlanHandler *handler.PlanHandler
@@ -40,6 +44,10 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	}
 
 	// Khởi tạo repository kết nối DB
+	accountRepo := repository.NewAccountRepository(dbPool)
+	accountService := service.NewAccountService(accountRepo)
+	accountHandler := handler.NewAccountHandler(accountService)
+
 	planRepo := repository.NewPlanRepository(dbPool)
 	if planRepo == nil {
 		return nil, fmt.Errorf("failed to initialize PlanRepository: instance is nil")
@@ -94,6 +102,8 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	}
 
 	return &Module{
+		AccountRepo: accountRepo, AccountService: accountService, AccountHandler: accountHandler,
+
 		PlanRepo:    planRepo,
 		PlanService: planService,
 		PlanHandler: planHandler,

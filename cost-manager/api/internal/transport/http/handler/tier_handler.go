@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strings"
 	"time"
 
 	"cost-manager/api/internal/domain/entity"
@@ -17,75 +19,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// [COMMENT]: validCodeRegex đại diện cho canonical Regex format của Tier Code: bắt đầu bằng chữ hoa, tiếp theo là chữ hoa, số hoặc dấu gạch dưới, độ dài tối đa 64 ký tự.
+var validCodeRegex = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+
 // [COMMENT]: TierHandler tiếp nhận và xử lý các HTTP request liên quan tới Tier.
 type TierHandler struct {
 	tierService billingSvcInterface.TierService
-}
-
-// UpdateTier nhận full-state aggregate từ màn Edit và trả snapshot sau commit.
-func (h *TierHandler) UpdateTier(c *gin.Context) {
-	op := "handler.tier.update"
-	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
-	defer cancel()
-
-	var req dto.UpdateTierRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.HandlerWarn(c, op, err, "Invalid tier update payload")
-		apires.RespondBadRequest(c, "Invalid tier update payload")
-		return
-	}
-
-	// Parse optional range IDs tại transport boundary; uuid.Nil được giữ cho range mới.
-	ranges := make([]entity.TierRangeInput, len(req.Ranges))
-	for i, input := range req.Ranges {
-		var rangeID uuid.UUID
-		var err error
-		if input.ID != "" {
-			rangeID, err = uuid.Parse(input.ID)
-			if err != nil {
-				apires.RespondBadRequest(c, "Invalid tier range id")
-				return
-			}
-		}
-		ranges[i] = entity.TierRangeInput{
-			ID: rangeID, RangeStart: input.RangeStart, RangeEnd: input.RangeEnd, BaseUnitPrice: input.BaseUnitPrice,
-		}
-	}
-
-	updated, err := h.tierService.UpdateTier(ctx, entity.TierUpdate{
-		Code: req.Code, ServiceType: req.ServiceType, Version: req.Version, Name: req.Name, Ranges: ranges,
-	})
-	if err != nil {
-		h.respondTierUpdateError(c, op, err)
-		return
-	}
-
-	responseRanges := make([]gin.H, len(updated.Ranges))
-	for i, tierRange := range updated.Ranges {
-		responseRanges[i] = gin.H{
-			"id": tierRange.ID.String(), "range_start": tierRange.RangeStart,
-			"range_end": tierRange.RangeEnd, "base_unit_price": tierRange.BaseUnitPrice,
-		}
-	}
-	apires.RespondSuccess(c, gin.H{
-		"id": updated.ID.String(), "code": updated.Code, "service_type": updated.ServiceType,
-		"version": updated.Version, "name": updated.Name, "ranges": responseRanges, "updated_at": updated.UpdatedAt,
-	}, "Successfully updated tier")
-}
-
-// respondTierUpdateError giữ taxonomy mapping ổn định và không làm lộ lỗi database ra client.
-func (h *TierHandler) respondTierUpdateError(c *gin.Context, op string, err error) {
-	switch {
-	case errors.Is(err, billingTaxonomy.ErrTierNotFound):
-		apires.RespondNotFound(c, "Tier not found")
-	case errors.Is(err, billingTaxonomy.ErrTierVersionConflict):
-		apires.RespondConflict(c, "Tier was modified by another request")
-	case errors.Is(err, billingTaxonomy.ErrInvalidArgument), errors.Is(err, billingTaxonomy.ErrInvalidTierRanges):
-		apires.RespondBadRequest(c, "Invalid tier or range configuration")
-	default:
-		logger.HandlerError(c, op, err)
-		apires.RespondInternalError(c, "Failed to update tier")
-	}
 }
 
 // [COMMENT]: NewTierHandler khởi tạo đối tượng TierHandler.
@@ -95,8 +34,253 @@ func NewTierHandler(tierService billingSvcInterface.TierService) *TierHandler {
 	}
 }
 
+// GetTierDetail trả full latest snapshot để Edit không dựa trên flat pagination.
+func (h *TierHandler) GetTierDetail(c *gin.Context) {
+	op := "handler.tier.get_detail"
+
+	// 1. Parse service_type từ path param trực tiếp
+	stRaw := strings.TrimSpace(c.Param("service_type"))
+	var parsedServiceType entity.ServiceType
+	switch entity.ServiceType(stRaw) {
+	case entity.ServiceTypeStorage, entity.ServiceTypeNetworkIn, entity.ServiceTypeNetworkOut, entity.ServiceTypeVM:
+		parsedServiceType = entity.ServiceType(stRaw)
+	default:
+		logger.HandlerWarn(c, op, nil, "Invalid service_type path parameter: "+stRaw)
+		apires.RespondBadRequest(c, "INVALID_SERVICE_TYPE")
+		return
+	}
+
+	// 2. Trim & validate code từ path param
+	code := strings.TrimSpace(c.Param("code"))
+	if !validCodeRegex.MatchString(code) {
+		logger.HandlerWarn(c, op, nil, "Invalid tier code path parameter format: "+code)
+		apires.RespondBadRequest(c, "INVALID_TIER_CODE")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	detail, err := h.tierService.GetTierDetail(ctx, code, parsedServiceType)
+	if err != nil {
+		// [COMMENT]: Xử lý lỗi trả về cho client
+		switch {
+		case errors.Is(err, billingTaxonomy.ErrTierNotFound):
+			apires.RespondNotFound(c, "TIER_NOT_FOUND")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "Failed to retrieve tier")
+		}
+		return
+	}
+
+	// [COMMENT]: Viết inline response chuyển đổi từ struct entity.TierVersion sang gin.H
+	latestVersionRanges := make([]gin.H, len(detail.LatestVersion.Ranges))
+	for i, tierRange := range detail.LatestVersion.Ranges {
+		latestVersionRanges[i] = gin.H{
+			"id":              tierRange.ID.String(),
+			"range_start":     tierRange.RangeStart,
+			"range_end":       tierRange.RangeEnd,
+			"base_unit_price": tierRange.BaseUnitPrice,
+		}
+	}
+	latestVersionObj := gin.H{
+		"id":             detail.LatestVersion.ID.String(),
+		"tier_id":        detail.LatestVersion.TierID.String(),
+		"version_number": detail.LatestVersion.VersionNumber,
+		"status":         detail.LatestVersion.Status,
+		"effective_from": detail.LatestVersion.EffectiveFrom,
+		"effective_to":   detail.LatestVersion.EffectiveTo,
+		"checksum":       detail.LatestVersion.Checksum,
+		"ranges":         latestVersionRanges,
+	}
+
+	apires.RespondSuccess(c, gin.H{
+		"id":               detail.ID.String(),
+		"code":             detail.Code,
+		"service_type":     detail.ServiceType,
+		"name":             detail.Name,
+		"metadata_version": detail.MetadataVersion,
+		"latest_version":   latestVersionObj,
+	}, "Successfully retrieved tier detail")
+}
+
+// UpdateTierMetadata chỉ sửa display name và không phát pricing event.
+func (h *TierHandler) UpdateTierMetadata(c *gin.Context) {
+	op := "handler.tier.update_metadata"
+
+	// 1. Parse service_type từ path param trực tiếp
+	stRaw := strings.TrimSpace(c.Param("service_type"))
+	var parsedServiceType entity.ServiceType
+	switch entity.ServiceType(stRaw) {
+	case entity.ServiceTypeStorage, entity.ServiceTypeNetworkIn, entity.ServiceTypeNetworkOut, entity.ServiceTypeVM:
+		parsedServiceType = entity.ServiceType(stRaw)
+	default:
+		logger.HandlerWarn(c, op, nil, "Invalid service_type path parameter: "+stRaw)
+		apires.RespondBadRequest(c, "INVALID_SERVICE_TYPE")
+		return
+	}
+
+	// 2. Trim & validate code từ path param
+	code := strings.TrimSpace(c.Param("code"))
+	if !validCodeRegex.MatchString(code) {
+		logger.HandlerWarn(c, op, nil, "Invalid tier code path parameter format: "+code)
+		apires.RespondBadRequest(c, "INVALID_TIER_CODE")
+		return
+	}
+
+	// 3. Check billing_admin đối với mutation
+	if _, ok := requireBillingAdmin(c); !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// 4. Bind JSON body
+	var req dto.UpdateTierMetadataRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.HandlerWarn(c, op, err, "Invalid tier metadata payload")
+		apires.RespondBadRequest(c, "Invalid tier metadata payload")
+		return
+	}
+
+	// 5. Gọi service/repository
+	updated, err := h.tierService.UpdateTierMetadata(ctx, entity.TierMetadataUpdate{
+		Code: code, ServiceType: parsedServiceType, MetadataVersion: req.MetadataVersion, Name: req.Name,
+	})
+	if err != nil {
+		// [COMMENT]: Viết inline logic xử lý lỗi mutation
+		switch {
+		case errors.Is(err, billingTaxonomy.ErrTierNotFound):
+			apires.RespondNotFound(c, "TIER_NOT_FOUND")
+		case errors.Is(err, billingTaxonomy.ErrTierMetadataConflict):
+			apires.RespondConflict(c, "TIER_VERSION_CONFLICT")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "Failed to mutate tier")
+		}
+		return
+	}
+	apires.RespondSuccess(c, gin.H{
+		"id": updated.ID.String(), "code": updated.Code, "service_type": updated.ServiceType,
+		"metadata_version": updated.MetadataVersion, "name": updated.Name, "updated_at": updated.UpdatedAt,
+	}, "Successfully updated tier metadata")
+}
+
+// CreateTierVersion append immutable pricing snapshot và transactional outbox.
+func (h *TierHandler) CreateTierVersion(c *gin.Context) {
+	op := "handler.tier.create_version"
+
+	// 1. Parse service_type từ path param trực tiếp
+	stRaw := strings.TrimSpace(c.Param("service_type"))
+	var parsedServiceType entity.ServiceType
+	switch entity.ServiceType(stRaw) {
+	case entity.ServiceTypeStorage, entity.ServiceTypeNetworkIn, entity.ServiceTypeNetworkOut, entity.ServiceTypeVM:
+		parsedServiceType = entity.ServiceType(stRaw)
+	default:
+		logger.HandlerWarn(c, op, nil, "Invalid service_type path parameter: "+stRaw)
+		apires.RespondBadRequest(c, "INVALID_SERVICE_TYPE")
+		return
+	}
+
+	// 2. Trim & validate code từ path param
+	code := strings.TrimSpace(c.Param("code"))
+	if !validCodeRegex.MatchString(code) {
+		logger.HandlerWarn(c, op, nil, "Invalid tier code path parameter format: "+code)
+		apires.RespondBadRequest(c, "INVALID_TIER_CODE")
+		return
+	}
+
+	// 3. Check billing_admin đối với mutation
+	actorID, ok := requireBillingAdmin(c)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	// 4. Bind JSON body
+	var req dto.CreateTierVersionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.HandlerWarn(c, op, err, "Invalid tier pricing version payload")
+		apires.RespondBadRequest(c, "Invalid tier pricing version payload")
+		return
+	}
+	ranges := make([]entity.TierRangeInput, len(req.Ranges))
+	for i, input := range req.Ranges {
+		ranges[i] = entity.TierRangeInput{
+			RangeStart: input.RangeStart, RangeEnd: input.RangeEnd, BaseUnitPrice: input.BaseUnitPrice,
+		}
+	}
+
+	// 5. Gọi service/repository
+	created, err := h.tierService.CreateTierVersion(ctx, entity.TierVersionCreate{
+		Code: code, ServiceType: parsedServiceType, ExpectedLatestVersion: req.ExpectedLatestVersion,
+		EffectiveFrom: req.EffectiveFrom, ChangeReason: req.ChangeReason, CreatedBy: actorID, Ranges: ranges,
+	})
+	if err != nil {
+		// [COMMENT]: Viết inline logic xử lý lỗi mutation
+		switch {
+		case errors.Is(err, billingTaxonomy.ErrTierNotFound):
+			apires.RespondNotFound(c, "TIER_NOT_FOUND")
+		case errors.Is(err, billingTaxonomy.ErrTierVersionConflict):
+			apires.RespondConflict(c, "TIER_VERSION_CONFLICT")
+		case errors.Is(err, billingTaxonomy.ErrTierEffectiveConflict):
+			apires.RespondConflict(c, "Tier effective time conflicts with pricing history")
+		case errors.Is(err, billingTaxonomy.ErrInvalidArgument), errors.Is(err, billingTaxonomy.ErrInvalidTierRanges):
+			apires.RespondBadRequest(c, "Invalid tier or range configuration")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "Failed to mutate tier")
+		}
+		return
+	}
+
+	// [COMMENT]: Viết inline response chuyển đổi từ struct entity.TierVersion sang gin.H
+	createdRanges := make([]gin.H, len(created.Ranges))
+	for i, tierRange := range created.Ranges {
+		createdRanges[i] = gin.H{
+			"id":              tierRange.ID.String(),
+			"range_start":     tierRange.RangeStart,
+			"range_end":       tierRange.RangeEnd,
+			"base_unit_price": tierRange.BaseUnitPrice,
+		}
+	}
+	createdVersionObj := gin.H{
+		"id":             created.ID.String(),
+		"tier_id":        created.TierID.String(),
+		"version_number": created.VersionNumber,
+		"status":         created.Status,
+		"effective_from": created.EffectiveFrom,
+		"effective_to":   created.EffectiveTo,
+		"checksum":       created.Checksum,
+		"ranges":         createdRanges,
+	}
+
+	apires.RespondCreated(c, createdVersionObj, "Successfully published tier pricing version")
+}
+
+// requireBillingAdmin fail-closed cho mutation nếu ACR không inject identity hợp lệ.
+func requireBillingAdmin(c *gin.Context) (uuid.UUID, bool) {
+	roles := strings.Split(c.GetHeader("x-user-role-id"), ",")
+	isAdmin := false
+	for _, role := range roles {
+		if strings.TrimSpace(role) == "billing_admin" {
+			isAdmin = true
+			break
+		}
+	}
+	actorID, err := uuid.Parse(c.GetHeader("x-user-id"))
+	if !isAdmin || err != nil {
+		apires.RespondForbidden(c, "Billing administrator identity is required")
+		return uuid.Nil, false
+	}
+	return actorID, true
+}
+
 // [COMMENT]: ListTiers tiếp nhận kết quả Flat Entity từ service, map trực tiếp sang gin.H phẳng để trả về cho client.
-// Loại bỏ hoàn toàn logic gom nhóm lồng nhau phức tạp ở handler để đảm bảo API phản ánh trung thực cấu trúc dữ liệu phẳng tối ưu.
 func (h *TierHandler) ListTiers(c *gin.Context) {
 	op := "handler.tier.list"
 
@@ -121,8 +305,22 @@ func (h *TierHandler) ListTiers(c *gin.Context) {
 		req.Page = 1
 	}
 
+	// Parse service_type từ query string trực tiếp
+	var parsedServiceType entity.ServiceType
+	if req.ServiceType != "" {
+		stRaw := strings.TrimSpace(req.ServiceType)
+		switch entity.ServiceType(stRaw) {
+		case entity.ServiceTypeStorage, entity.ServiceTypeNetworkIn, entity.ServiceTypeNetworkOut, entity.ServiceTypeVM:
+			parsedServiceType = entity.ServiceType(stRaw)
+		default:
+			logger.HandlerWarn(c, op, nil, "Invalid service_type filter: "+req.ServiceType)
+			apires.RespondBadRequest(c, "INVALID_SERVICE_TYPE")
+			return
+		}
+	}
+
 	// Lấy danh sách flat tiers từ service
-	flatTiers, total, err := h.tierService.GetTiersList(ctx, req.Page, req.Limit, req.ServiceType, req.Search)
+	flatTiers, total, err := h.tierService.GetTiersList(ctx, req.Page, req.Limit, parsedServiceType, req.Search)
 	if err != nil {
 		logger.HandlerError(c, op, err)
 		apires.RespondInternalError(c, "Failed to retrieve tiers")
@@ -133,17 +331,18 @@ func (h *TierHandler) ListTiers(c *gin.Context) {
 	tiersData := make([]gin.H, len(flatTiers))
 	for i, ft := range flatTiers {
 		tiersData[i] = gin.H{
-			"id":              ft.ID.String(),     // Range ID
-			"tier_id":         ft.TierID.String(), // Tier ID gốc
-			"name":            ft.Name,
-			"code":            ft.Code,
-			"service_type":    ft.ServiceType,
-			"version":         ft.Version,
-			"range_start":     ft.RangeStart,
-			"range_end":       ft.RangeEnd,
-			"base_unit_price": ft.BaseUnitPrice,
-			"created_at":      ft.CreatedAt,
-			"updated_at":      ft.UpdatedAt,
+			"id":               ft.ID.String(),     // Range ID
+			"tier_id":          ft.TierID.String(), // Tier ID gốc
+			"name":             ft.Name,
+			"code":             ft.Code,
+			"service_type":     string(ft.ServiceType),
+			"metadata_version": ft.MetadataVersion,
+			"pricing_version":  ft.PricingVersion,
+			"range_start":      ft.RangeStart,
+			"range_end":        ft.RangeEnd,
+			"base_unit_price":  ft.BaseUnitPrice,
+			"created_at":       ft.CreatedAt,
+			"updated_at":       ft.UpdatedAt,
 		}
 	}
 

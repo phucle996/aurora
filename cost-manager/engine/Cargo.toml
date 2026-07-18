@@ -17,6 +17,10 @@ prost = "0.12"
 async-nats = "0.33"
 futures-util = "0.3"
 time = { version = "0.3", features = ["serde"] }
+# [COMMENT]: Moka giữ immutable historical versions; ArcSwap đổi active catalog theo COW tại safe point.
+moka = { version = "0.12", features = ["future"] }
+arc-swap = "1.7"
+sha2 = "0.10"
 
 [build-dependencies]
 prost-build = "0.12"

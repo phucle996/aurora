@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"cost-manager/api/internal/domain/entity"
 	billingTaxonomy "cost-manager/api/internal/taxonomy"
@@ -11,21 +12,28 @@ import (
 	"github.com/google/uuid"
 )
 
-// tierRepositoryStub giữ unit test tập trung vào domain validation, không cần PostgreSQL thật.
 type tierRepositoryStub struct {
-	updateFn func(context.Context, entity.TierUpdate) (*entity.TierAggregate, error)
+	metadataFn func(context.Context, entity.TierMetadataUpdate) (*entity.TierMetadata, error)
+	versionFn  func(context.Context, entity.TierVersionCreate) (*entity.TierVersion, error)
 }
 
-func (s *tierRepositoryStub) ListTiers(context.Context, int, int, string, string) ([]*entity.Tier, int64, error) {
+func (s *tierRepositoryStub) ListTiers(ctx context.Context, page, limit int, serviceType entity.ServiceType, search string) ([]*entity.Tier, int64, error) {
 	return nil, 0, nil
 }
 
-func (s *tierRepositoryStub) UpdateTier(ctx context.Context, update entity.TierUpdate) (*entity.TierAggregate, error) {
-	return s.updateFn(ctx, update)
+func (s *tierRepositoryStub) GetTierDetail(ctx context.Context, code string, serviceType entity.ServiceType) (*entity.TierDetail, error) {
+	return nil, billingTaxonomy.ErrTierNotFound
 }
 
-func TestTierServiceUpdateTierRejectsInvalidRanges(t *testing.T) {
-	sharedID := uuid.New()
+func (s *tierRepositoryStub) UpdateTierMetadata(ctx context.Context, update entity.TierMetadataUpdate) (*entity.TierMetadata, error) {
+	return s.metadataFn(ctx, update)
+}
+
+func (s *tierRepositoryStub) CreateTierVersion(ctx context.Context, create entity.TierVersionCreate) (*entity.TierVersion, error) {
+	return s.versionFn(ctx, create)
+}
+
+func TestTierServiceCreateVersionRejectsInvalidRanges(t *testing.T) {
 	tests := []struct {
 		name   string
 		ranges []entity.TierRangeInput
@@ -36,21 +44,19 @@ func TestTierServiceUpdateTierRejectsInvalidRanges(t *testing.T) {
 		{name: "infinity is not last", ranges: []entity.TierRangeInput{{RangeStart: 0, RangeEnd: 0}, {RangeStart: 10, RangeEnd: 0}}},
 		{name: "last range is finite", ranges: []entity.TierRangeInput{{RangeStart: 0, RangeEnd: 10}}},
 		{name: "negative price", ranges: []entity.TierRangeInput{{RangeStart: 0, RangeEnd: 0, BaseUnitPrice: -1}}},
-		{name: "duplicate existing id", ranges: []entity.TierRangeInput{{ID: sharedID, RangeStart: 0, RangeEnd: 10}, {ID: sharedID, RangeStart: 10, RangeEnd: 0}}},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			// Repository không được gọi khi aggregate đã sai ở domain layer.
-			repo := &tierRepositoryStub{updateFn: func(context.Context, entity.TierUpdate) (*entity.TierAggregate, error) {
-				t.Fatal("repository was called for invalid ranges")
-				return nil, nil
-			}}
+			repo := &tierRepositoryStub{
+				metadataFn: func(context.Context, entity.TierMetadataUpdate) (*entity.TierMetadata, error) { return nil, nil },
+				versionFn: func(context.Context, entity.TierVersionCreate) (*entity.TierVersion, error) {
+					t.Fatal("repository was called for invalid ranges")
+					return nil, nil
+				},
+			}
 			svc := NewTierService(repo)
-
-			_, err := svc.UpdateTier(context.Background(), entity.TierUpdate{
-				Code: "STORAGE_STD_BASE", ServiceType: "STORAGE", Version: 1, Name: "Storage", Ranges: test.ranges,
-			})
+			_, err := svc.CreateTierVersion(context.Background(), validCreate(test.ranges))
 			if !errors.Is(err, billingTaxonomy.ErrInvalidTierRanges) {
 				t.Fatalf("expected ErrInvalidTierRanges, got %v", err)
 			}
@@ -58,24 +64,72 @@ func TestTierServiceUpdateTierRejectsInvalidRanges(t *testing.T) {
 	}
 }
 
-func TestTierServiceUpdateTierSortsAndDelegatesValidAggregate(t *testing.T) {
-	repo := &tierRepositoryStub{updateFn: func(_ context.Context, update entity.TierUpdate) (*entity.TierAggregate, error) {
-		// Service phải canonicalize ranges theo boundary trước khi repository reconcile.
-		if update.Ranges[0].RangeStart != 0 || update.Ranges[1].RangeStart != 10 {
-			t.Fatalf("ranges were not sorted: %+v", update.Ranges)
-		}
-		return &entity.TierAggregate{Code: update.Code, Version: update.Version + 1}, nil
-	}}
-	svc := NewTierService(repo)
-
-	result, err := svc.UpdateTier(context.Background(), entity.TierUpdate{
-		Code: " STORAGE_STD_BASE ", ServiceType: " STORAGE ", Version: 2, Name: " Storage ",
-		Ranges: []entity.TierRangeInput{{RangeStart: 10, RangeEnd: 0, BaseUnitPrice: 12}, {RangeStart: 0, RangeEnd: 10, BaseUnitPrice: 15}},
-	})
-	if err != nil {
-		t.Fatalf("UpdateTier returned error: %v", err)
+// [COMMENT]: TestTierServiceCreateVersionSortsAndComputesChecksum xác nhận logic gom nhóm và sort hoạt động đúng đắn.
+func TestTierServiceCreateVersionSortsAndComputesChecksum(t *testing.T) {
+	repo := &tierRepositoryStub{
+		metadataFn: func(context.Context, entity.TierMetadataUpdate) (*entity.TierMetadata, error) { return nil, nil },
+		versionFn: func(_ context.Context, create entity.TierVersionCreate) (*entity.TierVersion, error) {
+			if create.Ranges[0].RangeStart != 0 || create.Ranges[1].RangeStart != 10 {
+				t.Fatalf("ranges were not sorted: %+v", create.Ranges)
+			}
+			if len(create.Checksum) != 64 {
+				t.Fatalf("expected SHA-256 checksum, got %q", create.Checksum)
+			}
+			return &entity.TierVersion{VersionNumber: create.ExpectedLatestVersion + 1, Checksum: create.Checksum}, nil
+		},
 	}
-	if result.Version != 3 || result.Code != "STORAGE_STD_BASE" {
-		t.Fatalf("unexpected aggregate: %+v", result)
+	svc := NewTierService(repo)
+	create := validCreate([]entity.TierRangeInput{
+		{RangeStart: 10, RangeEnd: 0, BaseUnitPrice: 12},
+		{RangeStart: 0, RangeEnd: 10, BaseUnitPrice: 15},
+	})
+	result, err := svc.CreateTierVersion(context.Background(), create)
+	if err != nil {
+		t.Fatalf("CreateTierVersion returned error: %v", err)
+	}
+	if result.VersionNumber != 2 {
+		t.Fatalf("unexpected version: %+v", result)
+	}
+}
+
+func TestTierServiceMetadataUpdateDoesNotCreatePricingVersion(t *testing.T) {
+	versionCalled := false
+	repo := &tierRepositoryStub{
+		metadataFn: func(_ context.Context, update entity.TierMetadataUpdate) (*entity.TierMetadata, error) {
+			return &entity.TierMetadata{Name: update.Name, MetadataVersion: update.MetadataVersion + 1}, nil
+		},
+		versionFn: func(context.Context, entity.TierVersionCreate) (*entity.TierVersion, error) {
+			versionCalled = true
+			return nil, nil
+		},
+	}
+	svc := NewTierService(repo)
+	result, err := svc.UpdateTierMetadata(context.Background(), entity.TierMetadataUpdate{
+		Code: "STORAGE_STD_BASE", ServiceType: entity.ServiceTypeStorage, MetadataVersion: 1, Name: "Renamed Storage",
+	})
+	if err != nil || result.MetadataVersion != 2 || versionCalled {
+		t.Fatalf("metadata update leaked into pricing path: result=%+v err=%v versionCalled=%v", result, err, versionCalled)
+	}
+}
+
+func TestTierVersionChecksumMatchesCrossLanguageContract(t *testing.T) {
+	checksum := tierVersionChecksum(entity.TierVersionCreate{
+		Code: "CODE", ServiceType: entity.ServiceTypeStorage,
+		Ranges: []entity.TierRangeInput{
+			{RangeStart: 0, RangeEnd: 10, BaseUnitPrice: 15},
+			{RangeStart: 10, RangeEnd: 0, BaseUnitPrice: 12},
+		},
+	})
+	const expected = "7159ff73182d252b26bdeae4757467a99d2776a229f5a154de029c5cb0c47099"
+	if checksum != expected {
+		t.Fatalf("checksum contract drifted: got %s", checksum)
+	}
+}
+
+func validCreate(ranges []entity.TierRangeInput) entity.TierVersionCreate {
+	return entity.TierVersionCreate{
+		Code: "STORAGE_STD_BASE", ServiceType: entity.ServiceTypeStorage, ExpectedLatestVersion: 1,
+		EffectiveFrom: time.Now().UTC().Add(time.Hour), ChangeReason: "scheduled test update",
+		CreatedBy: uuid.New(), Ranges: ranges,
 	}
 }

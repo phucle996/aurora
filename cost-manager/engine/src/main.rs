@@ -1,9 +1,10 @@
-use std::time::Duration;
 use clickhouse::Client as ClickhouseClient;
+use std::time::Duration;
 use tokio::signal;
 
 // [COMMENT]: Khai báo các module của hệ thống
 mod config;
+mod engine;
 mod infra;
 mod service;
 
@@ -17,6 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [COMMENT]: 2. Khởi tạo kết nối PostgreSQL (billing-psql) pool qua infra
     let pg_pool = infra::psql::init_pg_pool(&app_config).await?;
     println!("Kết nối thành công tới Postgres (billing-psql)!");
+
+    // [COMMENT]: Bootstrap pricing fail-closed trước khi bất kỳ billing worker nào được phép chạy.
+    let pricing_runtime = engine::PricingRuntime::bootstrap(pg_pool.clone()).await?;
+    println!("Đã bootstrap immutable Tier pricing catalog vào L1!");
 
     // [COMMENT]: 3. Khởi tạo kết nối ClickHouse client.
     // TLS/mTLS cho ClickHouse được xử lý ở tầng hạ tầng (service mesh / proxy) nên
@@ -38,13 +43,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let services_pg_pool = pg_pool.clone();
     let services_ch_client = ch_client.clone();
     let services_redis_conn = redis_conn.clone();
-    
+    let services_pricing_runtime = pricing_runtime.clone();
+
     let services_handle = tokio::spawn(async move {
         service::register::run_services(
             services_config,
             services_pg_pool,
             services_ch_client,
             services_redis_conn,
+            services_pricing_runtime,
             shutdown_rx,
         )
         .await;

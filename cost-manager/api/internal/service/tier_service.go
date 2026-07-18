@@ -6,8 +6,14 @@ import (
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	billingSvcInterface "cost-manager/api/internal/domain/service"
 	billingTaxonomy "cost-manager/api/internal/taxonomy"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 type tierService struct {
@@ -21,31 +27,65 @@ func NewTierService(tierRepo billingRepoInterface.TierRepository) billingSvcInte
 
 // [COMMENT]: GetTiersList điều hướng gọi repository để lấy danh sách biểu giá.
 // Không validate lại dữ liệu phân trang do việc làm sạch/validate đã được xử lý tập trung tại handler.
-func (s *tierService) GetTiersList(ctx context.Context, page, limit int, serviceType, search string) ([]*entity.Tier, int64, error) {
+func (s *tierService) GetTiersList(ctx context.Context, page, limit int, serviceType entity.ServiceType, search string) ([]*entity.Tier, int64, error) {
 	return s.tierRepo.ListTiers(ctx, page, limit, serviceType, search)
 }
 
-// UpdateTier chuẩn hóa input và bảo vệ invariant của cả tập ranges trước khi mở transaction ghi.
-func (s *tierService) UpdateTier(ctx context.Context, update entity.TierUpdate) (*entity.TierAggregate, error) {
-	// Identity phải được client gửi chính xác; repository chỉ lookup và không mutate hai field này.
-	update.Code = strings.TrimSpace(update.Code)
-	update.ServiceType = strings.TrimSpace(update.ServiceType)
-	update.Name = strings.TrimSpace(update.Name)
-	if update.Code == "" || update.ServiceType == "" || update.Name == "" || update.Version < 1 {
+// GetTierDetail chuẩn hóa composite identity rồi lấy full aggregate cho màn Edit.
+func (s *tierService) GetTierDetail(ctx context.Context, code string, serviceType entity.ServiceType) (*entity.TierDetail, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
 		return nil, billingTaxonomy.ErrInvalidArgument
+	}
+	return s.tierRepo.GetTierDetail(ctx, code, serviceType)
+}
+
+// UpdateTierMetadata sửa display metadata độc lập để không tạo pricing version ngoài ý muốn.
+func (s *tierService) UpdateTierMetadata(ctx context.Context, update entity.TierMetadataUpdate) (*entity.TierMetadata, error) {
+	update.Code = strings.TrimSpace(update.Code)
+	update.Name = strings.TrimSpace(update.Name)
+	if update.Code == "" || update.Name == "" || len(update.Name) > 128 || update.MetadataVersion < 1 {
+		return nil, billingTaxonomy.ErrInvalidArgument
+	}
+	return s.tierRepo.UpdateTierMetadata(ctx, update)
+}
+
+// CreateTierVersion chuẩn hóa full snapshot, validate invariant và tính checksum trước transaction.
+func (s *tierService) CreateTierVersion(ctx context.Context, create entity.TierVersionCreate) (*entity.TierVersion, error) {
+	create.Code = strings.TrimSpace(create.Code)
+	create.ChangeReason = strings.TrimSpace(create.ChangeReason)
+	if create.Code == "" || create.ChangeReason == "" ||
+		len(create.ChangeReason) > 2_000 || create.ExpectedLatestVersion < 1 || create.CreatedBy == uuid.Nil ||
+		create.EffectiveFrom.IsZero() || len(create.Ranges) > 1_000 {
+		return nil, billingTaxonomy.ErrInvalidArgument
+	}
+	// Không cho publish ngược thời gian; clock skew nhỏ được dung sai một phút.
+	if create.EffectiveFrom.Before(time.Now().UTC().Add(-time.Minute)) {
+		return nil, billingTaxonomy.ErrTierEffectiveConflict
 	}
 
 	// Copy trước khi sort để service không làm thay đổi slice thuộc caller.
-	update.Ranges = append([]entity.TierRangeInput(nil), update.Ranges...)
-	sort.Slice(update.Ranges, func(i, j int) bool {
-		return update.Ranges[i].RangeStart < update.Ranges[j].RangeStart
+	create.Ranges = append([]entity.TierRangeInput(nil), create.Ranges...)
+	sort.Slice(create.Ranges, func(i, j int) bool {
+		return create.Ranges[i].RangeStart < create.Ranges[j].RangeStart
 	})
 
 	// Một pricing schedule hợp lệ phải phủ liên tục từ zero đến đúng một infinity.
-	if err := validateTierRanges(update.Ranges); err != nil {
+	if err := validateTierRanges(create.Ranges); err != nil {
 		return nil, err
 	}
-	return s.tierRepo.UpdateTier(ctx, update)
+	create.Checksum = tierVersionChecksum(create)
+	return s.tierRepo.CreateTierVersion(ctx, create)
+}
+
+// tierVersionChecksum tạo content fingerprint ổn định để Engine kiểm tra snapshot đã load đầy đủ.
+func tierVersionChecksum(create entity.TierVersionCreate) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00", create.Code, string(create.ServiceType))
+	for _, tierRange := range create.Ranges {
+		_, _ = fmt.Fprintf(h, "%d:%d:%d;", tierRange.RangeStart, tierRange.RangeEnd, tierRange.BaseUnitPrice)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // validateTierRanges áp dụng boundary contract [start,end), với end=0 biểu thị infinity.
@@ -64,7 +104,7 @@ func validateTierRanges(ranges []entity.TierRangeInput) error {
 		}
 
 		// UUID nil dành cho insert; UUID hiện hữu không được lặp trong cùng payload.
-		if current.ID.String() != "00000000-0000-0000-0000-000000000000" {
+		if current.ID != uuid.Nil {
 			key := current.ID.String()
 			if _, exists := seenIDs[key]; exists {
 				return billingTaxonomy.ErrInvalidTierRanges

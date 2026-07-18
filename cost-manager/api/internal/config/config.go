@@ -3,10 +3,11 @@ package config
 import "os"
 
 type Config struct {
-	Port     string
-	DBURL    string
-	RedisURL string
-	NatsURL  string
+	Port              string
+	DBURL             string
+	ControlplaneDBURL string
+	RedisURL          string
+	NatsURL           string
 }
 
 func LoadConfig() *Config {
@@ -18,6 +19,10 @@ func LoadConfig() *Config {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable"
+	}
+	controlplaneDBURL := os.Getenv("CONTROLPLANE_DATABASE_URL")
+	if controlplaneDBURL == "" {
+		controlplaneDBURL = "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
 	}
 
 	redisURL := os.Getenv("REDIS_URL")
@@ -31,9 +36,7 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		Port:     port,
-		DBURL:    dbURL,
-		RedisURL: redisURL,
-		NatsURL:  natsURL,
+		Port: port, DBURL: dbURL, ControlplaneDBURL: controlplaneDBURL,
+		RedisURL: redisURL, NatsURL: natsURL,
 	}
 }

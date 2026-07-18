@@ -6,25 +6,34 @@ import (
 	"github.com/google/uuid"
 )
 
-// [COMMENT]: Tier đại diện cho một nấc cước biểu giá chi tiết (Flat Entity).
-// Đã nhập 2 bảng tiers và tier_ranges làm 1 thực thể phẳng duy nhất, không chứa slice hay con trỏ lồng nhau.
+// [COMMENT]: ServiceType định nghĩa kiểu dữ liệu enum cho loại tài nguyên/dịch vụ tính cước.
+type ServiceType string
+
+const (
+	ServiceTypeStorage    ServiceType = "STORAGE"     // Dịch vụ lưu trữ dữ liệu (MB)
+	ServiceTypeNetworkIn  ServiceType = "NETWORK_IN"  // Băng thông mạng inbound truyền vào (MB)
+	ServiceTypeNetworkOut ServiceType = "NETWORK_OUT" // Băng thông mạng outbound truyền ra (MB)
+	ServiceTypeVM         ServiceType = "VM"          // Dịch vụ máy chủ ảo tính theo giờ
+)
+
+// [COMMENT]: Tier là flat read row từ parent metadata + pricing version có hiệu lực + immutable range.
 // Domain Entity hoàn toàn độc lập, không dính bất kỳ tag JSON nào, các ID đều dạng uuid.UUID.
 type Tier struct {
-	ID            uuid.UUID // ID của nấc cước cụ thể (Range ID)
-	TierID        uuid.UUID // ID của biểu giá gốc (Tier ID)
-	Name          string    // Tên biểu giá (VD: Standard Storage Base Tier)
-	Code          string    // Mã biểu giá (VD: STORAGE_STD_BASE)
-	ServiceType   string    // Loại dịch vụ (VD: STORAGE | NETWORK_IN | NETWORK_OUT)
-	Version       int       // OCC token của parent Tier
-	RangeStart    int64     // Mốc bắt đầu tính bằng Megabytes (MB)
-	RangeEnd      int64     // Mốc kết thúc (MB), 0 = không giới hạn
-	BaseUnitPrice int64     // Giá gốc (USD Micro-units/MB/Hour)
-	CreatedAt     time.Time // Thời điểm tạo của nấc cước
-	UpdatedAt     time.Time // Thời điểm cập nhật biểu giá gốc
+	ID              uuid.UUID   // ID của nấc cước cụ thể (Range ID)
+	TierID          uuid.UUID   // ID của biểu giá gốc (Tier ID)
+	Name            string      // Tên biểu giá (VD: Standard Storage Base Tier)
+	Code            string      // Mã biểu giá (VD: STORAGE_STD_BASE)
+	ServiceType     ServiceType // Loại dịch vụ (VD: STORAGE | NETWORK_IN | NETWORK_OUT)
+	MetadataVersion int         // OCC token dành riêng cho display metadata
+	PricingVersion  int         // Immutable pricing version đang hiển thị
+	RangeStart      int64       // Mốc bắt đầu tính bằng Megabytes (MB)
+	RangeEnd        int64       // Mốc kết thúc (MB), 0 = không giới hạn
+	BaseUnitPrice   int64       // Giá gốc (USD Micro-units/MB/Hour)
+	CreatedAt       time.Time   // Thời điểm tạo của nấc cước
+	UpdatedAt       time.Time   // Thời điểm cập nhật biểu giá gốc
 }
 
-// TierRangeInput là trạng thái mong muốn của một range trong aggregate update.
-// ID bằng uuid.Nil biểu thị range mới và sẽ được repository cấp UUID.
+// TierRangeInput là một range thuộc immutable pricing snapshot mới.
 type TierRangeInput struct {
 	ID            uuid.UUID
 	RangeStart    int64
@@ -32,22 +41,54 @@ type TierRangeInput struct {
 	BaseUnitPrice int64
 }
 
-// TierUpdate chứa toàn bộ dữ liệu mutable của một Tier cùng khóa lookup bất biến.
-type TierUpdate struct {
-	Code        string
-	ServiceType string
-	Version     int
-	Name        string
-	Ranges      []TierRangeInput
+// TierMetadataUpdate chỉ thay display name; không tạo pricing version hay outbox.
+type TierMetadataUpdate struct {
+	Code            string
+	ServiceType     ServiceType
+	MetadataVersion int
+	Name            string
 }
 
-// TierAggregate là snapshot trả về sau khi transaction update commit thành công.
-type TierAggregate struct {
-	ID          uuid.UUID
-	Code        string
-	ServiceType string
-	Version     int
-	Name        string
-	Ranges      []TierRangeInput
-	UpdatedAt   time.Time
+// TierVersionCreate chứa full-state ranges cho một append-only pricing version.
+type TierVersionCreate struct {
+	Code                  string
+	ServiceType           ServiceType
+	ExpectedLatestVersion int
+	EffectiveFrom         time.Time
+	ChangeReason          string
+	CreatedBy             uuid.UUID
+	Checksum              string
+	Ranges                []TierRangeInput
+}
+
+// TierMetadata là snapshot metadata trả về sau update.
+type TierMetadata struct {
+	ID              uuid.UUID
+	Code            string
+	ServiceType     ServiceType
+	MetadataVersion int
+	Name            string
+	UpdatedAt       time.Time
+}
+
+// TierVersion là immutable pricing snapshot trả về sau khi publish.
+type TierVersion struct {
+	ID            uuid.UUID
+	TierID        uuid.UUID
+	VersionNumber int
+	Status        string
+	EffectiveFrom time.Time
+	EffectiveTo   *time.Time
+	Checksum      string
+	Ranges        []TierRangeInput
+}
+
+// TierDetail là aggregate đầy đủ để UI Edit không suy diễn từ flat paginated rows.
+type TierDetail struct {
+	ID              uuid.UUID
+	Code            string
+	ServiceType     ServiceType
+	Name            string
+	MetadataVersion int
+	LatestVersion   TierVersion
 }

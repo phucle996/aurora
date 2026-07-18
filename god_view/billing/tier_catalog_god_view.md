@@ -8,19 +8,19 @@
 | Thuộc tính | Giá trị AS-IS |
 |---|---|
 | Domain | Billing Catalog / Tier Catalog |
-| Canonical endpoint | `GET /api/v1/billing/tiers` |
+| Canonical endpoints | `GET /api/v1/billing/tiers`, `PATCH /tiers/metadata`, `POST /tiers/versions` dưới billing v1 group |
 | Public host | `https://cost-manager.aurora.local` |
 | UI consumer | Cost Console — Tier table |
 | Edge | Envoy + ACR `ext_authz` |
 | API owner | Cost Manager API |
-| Durable SoT | PostgreSQL: `billing.tiers`, `billing.tier_ranges` |
-| Read model | Một row phẳng cho mỗi `tier_range`, kèm metadata của parent `tier` |
-| Write model | Chưa có HTTP mutation endpoint; hiện thay đổi qua migration/DB operation |
-| Cache | Không có cache Tier ở UI, Envoy, API hoặc repository |
+| Durable SoT | PostgreSQL: `billing.tiers`, `billing.tier_versions`, `billing.tier_version_ranges` |
+| Read model | Một row phẳng cho mỗi range của pricing version có hiệu lực |
+| Write model | Metadata mutable riêng; pricing append-only immutable version + outbox |
+| Cache | Engine: Moka cache theo version ID + `ArcSwap<CatalogSnapshot>`; API/UI không cache Tier |
 | API timeout | Handler/DB context `5s` |
 | Edge timeout | Envoy route `15s`; ACR `ext_authz` `2s`; connect `1s` |
 | Pagination | Offset pagination, mặc định `page=1`, `limit=10`, trần `limit=100` |
-| Tình trạng Cost Engine | **Chưa dùng Tier để tính tiền**; engine vẫn query `billing.prices` |
+| Tình trạng Cost Engine | Storage egress pin `NETWORK_OUT` Tier version theo durable billing run; không còn fallback `billing.prices` |
 | Mức bảo mật hiện tại | **P0: billing auth có nhánh fail-open khi thiếu/sai JWT** |
 | Verified against | Commit `16b3baf4840c28ec931b03838ca02b6b25814be2`, 2026-07-18 |
 
@@ -28,7 +28,8 @@
 
 | Sự thật | Hệ quả |
 |---|---|
-| Tier hiện là **catalog read/display**, không phải pricing execution engine | Sửa `billing.tier_ranges` làm UI đổi, nhưng **không bảo đảm hóa đơn/charge đổi** |
+| Pricing đã publish là immutable aggregate | Thay range/price luôn tạo version mới; sửa `name` không tạo pricing version |
+| Engine không activate L1 giữa billing run | Event được preload pending; COW active snapshot chỉ sau durable run completion |
 | ACR giữ nguyên `/api/v1/billing/*`; nó không tự thêm `/billing` | Cost Manager bắt buộc đăng ký chính xác `/api/v1/billing/tiers`; thiếu route sẽ `404` |
 
 ### 0.2 Severity gate
@@ -52,7 +53,7 @@
 | Search, filter, pagination của Tier table | CRUD plan/subscription |
 | Envoy routing và ACR authorization | Deployment topology chi tiết |
 | Cost Manager handler → service → repository | Billing settlement/ledger hoàn chỉnh |
-| Schema `tiers` và `tier_ranges` | Mọi bảng chi phí khác ngoài điểm nối cần thiết |
+| Schema `tiers`, immutable versions/ranges, outbox, billing runs | Mọi bảng chi phí khác ngoài điểm nối ledger cần thiết |
 | Race condition, logic, security, HA, data integrity | Thiết kế UI ngoài Tier table |
 
 ### 1.2 Domain flow hiện tại
@@ -67,14 +68,16 @@ flowchart LR
     A -->|allow and preserve path| E
     E --> API[Cost Manager API]
     API --> REPO[Tier Repository]
-    REPO --> DB[(PostgreSQL<br/>billing.tiers<br/>billing.tier_ranges)]
+    REPO --> DB[(PostgreSQL<br/>tiers + immutable versions<br/>version ranges + outbox)]
     DB --> REPO --> API --> E --> UI
 
-    DB -. no current pricing read .-> ENG[Cost Engine]
-    ENG -->|currently queries billing.prices| P[(billing.prices)]
+    DB --> ENG[Cost Engine bootstrap/version load]
+    DB --> RELAY[Outbox relay]
+    RELAY -->|Prost event| ENG
+    ENG --> L1[Moka + ArcSwap L1]
 
     classDef critical fill:#5b1620,stroke:#ff5c6c,color:#fff;
-    class P critical;
+    class ENG critical;
 ```
 
 ### 1.3 Trách nhiệm theo component
@@ -85,25 +88,25 @@ flowchart LR
 | Envoy | TLS, host route, timeout/retry, gọi ACR | Không thêm `/billing` vào path |
 | ACR | Session verification, rate limit, zone resolution, identity headers | Không sở hữu Tier data |
 | Cost Manager handler | Bind/normalize input, timeout, response envelope | Không sở hữu durability rule |
-| Tier service | Domain delegation hiện tại | Không cache/validate thêm ở AS-IS |
+| Tier service | Validate metadata/pricing request, canonical ranges, checksum | Không mutate version đã publish |
 | Tier repository | COUNT + SELECT, filter, ordering, mapping | Không bảo đảm snapshot nhất quán giữa hai query |
-| PostgreSQL | Durable catalog và FK | Hiện chưa bảo đảm range không overlap/gap |
-| Cost Engine | Usage charging | Hiện chưa consume Tier catalog |
+| PostgreSQL | Durable versions, effective windows, outbox, billing-run pin | Gap/overlap full-set vẫn cần domain validation ngoài CHECK đơn giản |
+| Cost Engine | Bootstrap/cache/pin version, progressive charge, ledger lineage | Không activate pending catalog giữa run |
 
 ### 1.4 Causal reach — dữ liệu Tier tác động tới đâu
 
 ```mermaid
 flowchart TD
     M[Migration or direct DB change] --> T[(billing.tiers)]
-    M --> TR[(billing.tier_ranges)]
+    M --> TR[(billing.tier_versions + tier_version_ranges)]
     T --> J[Flat JOIN read model]
     TR --> J
     J --> API[GET billing tiers]
     API --> TABLE[Cost Console Tier table]
     T --> PLAN[(billing.plans.tier_id FK)]
 
-    TR -. not wired .-> CE[Cost Engine charge calculation]
-    CE --> BP[Query billing.prices]
+    TR --> CE[Cost Engine pinned charge calculation]
+    CE --> BR[(billing_runs + ledger version lineage)]
 
     classDef warn fill:#4c3a00,stroke:#f5c542,color:#fff;
     class CE,BP warn;
@@ -111,10 +114,10 @@ flowchart TD
 
 | Change | UI Tier table | Plan relation | Actual charge AS-IS |
 |---|---:|---:|---:|
-| Đổi tên/code Tier | Có | Có thể ảnh hưởng lookup/report | Không |
-| Đổi `base_unit_price` | Có | Không trực tiếp | **Không** |
-| Đổi range boundary | Có | Không trực tiếp | **Không** |
-| Xóa Tier | Có | Bị ràng buộc bởi FK từ plans; range bị cascade | Không trực tiếp |
+| Đổi `name` | Có | Không | Không; chỉ tăng metadata version |
+| Đổi `code/service_type` | Không được phép | Identity ổn định | Không |
+| Publish `base_unit_price`/boundary mới | Khi version tới effective window | Không trực tiếp | Billing run kế tiếp sau safe activation |
+| Xóa Tier/version đã publish | Không được phép | FK `RESTRICT` | Lịch sử charge được giữ nguyên |
 
 ---
 
@@ -128,6 +131,9 @@ flowchart TD
 | Envoy vhost | Host `cost-manager.aurora.local`, prefix `/api/` | Không đổi | Forward `cost_manager_cluster` |
 | ACR classifier | `starts_with("/api/v1/billing")` | Không đổi | Billing auth + billing rate group |
 | Cost Manager | Group `/api/v1/billing`, GET `/tiers` | Handler `ListTiers` | Canonical route |
+| Cost Manager | GET `/tiers/:code?service_type=...` | Handler `GetTierDetail` | Full aggregate cho Edit |
+| Cost Manager | PATCH `/tiers/metadata` | Handler `UpdateTierMetadata` | Name-only OCC |
+| Cost Manager | POST `/tiers/versions` | Handler `CreateTierVersion` | Append immutable pricing snapshot |
 
 > `/api/v1/tiers` **không phải public compatibility route trong code hiện tại**. Client phải dùng `/api/v1/billing/tiers`.
 
@@ -153,7 +159,8 @@ flowchart TD
         "name": "Standard Storage Base Tier",
         "code": "STORAGE_STD_BASE",
         "service_type": "STORAGE",
-        "version": 1,
+        "metadata_version": 1,
+        "pricing_version": 1,
         "range_start": 0,
         "range_end": 51200,
         "base_unit_price": 15000,
@@ -174,23 +181,27 @@ flowchart TD
 
 | API field | DB source | Meaning | UI behavior | Integrity note |
 |---|---|---|---|---|
-| `id` | `tier_ranges.id` | Range identity | React row key | Stable UUID |
-| `tier_id` | `tier_ranges.tier_id` | Parent Tier | Không hiển thị | FK cascade to range |
+| `id` | `tier_version_ranges.id` | Version-range identity | React row key | Immutable UUID |
+| `tier_id` | `tiers.id` | Parent Tier | Không hiển thị | Stable business aggregate |
 | `name` | `tiers.name` | Tên biểu giá | Hiển thị | Không unique |
 | `code` | `tiers.code` | Business code | Hiển thị | Unique ở DB |
 | `service_type` | `tiers.service_type` | Loại dịch vụ | Badge/filter | Chưa có CHECK enum |
-| `version` | `tiers.version` | OCC token của parent Tier | Gửi lại khi Update | Tăng sau mỗi mutation thành công |
-| `range_start` | `tier_ranges.range_start` | Boundary bắt đầu, MB | Chia `1024` để hiện GB | Chưa có CHECK không âm |
-| `range_end` | `tier_ranges.range_end` | Boundary kết thúc; `0` = vô hạn | `0` render `> start` | Sentinel chưa được constraint |
-| `base_unit_price` | `tier_ranges.base_unit_price` | Micro-units/MB/hour theo contract UI | Chỉ format số | Chưa có CHECK không âm |
-| `created_at` | `tier_ranges.created_at` | Ngày tạo range | Hiển thị vi-VN | Không phải ngày tạo parent Tier |
-| `updated_at` | `tiers.updated_at` | Ngày update parent Tier | Chưa hiển thị | Range không có `updated_at`; sửa price có thể không đổi field này |
+| `metadata_version` | `tiers.metadata_version` | Name-only OCC token | Gửi khi PATCH metadata | Không đổi pricing version |
+| `pricing_version` | `tier_versions.version_number` | Immutable snapshot version | Expected latest khi publish | Monotonic theo Tier |
+| `range_start` | `tier_version_ranges.range_start` | Boundary bắt đầu, MB | Chia `1024` để hiện GB | DB CHECK + aggregate validation |
+| `range_end` | `tier_version_ranges.range_end` | Boundary kết thúc; `0` = vô hạn | `0` render `> start` | Một infinity/version |
+| `base_unit_price` | `tier_version_ranges.base_unit_price` | Micro-units/MB/hour | Format số và Edit modal | DB CHECK không âm |
+| `created_at` | `tier_version_ranges.created_at` | Ngày tạo version range | Hiển thị vi-VN | Không bị rewrite |
+| `updated_at` | `tiers.updated_at` | Ngày update metadata | Chưa hiển thị | Pricing publish không đổi name metadata |
 
 ### 2.5 Entity relationship
 
 ```mermaid
 erDiagram
-    TIERS ||--o{ TIER_RANGES : owns
+    TIERS ||--o{ TIER_VERSIONS : versions
+    TIER_VERSIONS ||--o{ TIER_VERSION_RANGES : owns
+    TIER_VERSIONS ||--o{ PRICING_OUTBOX : publishes
+    TIER_VERSIONS ||--o{ BILLING_RUNS : pinned_by
     TIERS ||--o{ PLANS : referenced_by
 
     TIERS {
@@ -198,13 +209,23 @@ erDiagram
       varchar name
       varchar code UK
       varchar service_type
+      int metadata_version
       timestamptz created_at
       timestamptz updated_at
     }
 
-    TIER_RANGES {
+    TIER_VERSIONS {
       uuid id PK
       uuid tier_id FK
+      int version_number
+      timestamptz effective_from
+      timestamptz effective_to
+      varchar checksum
+    }
+
+    TIER_VERSION_RANGES {
+      uuid id PK
+      uuid tier_version_id FK
       bigint range_start
       bigint range_end
       bigint base_unit_price
@@ -222,17 +243,18 @@ erDiagram
 | Invariant mong muốn | Enforced AS-IS? | Failure effect | Gate đề xuất |
 |---|---:|---|---|
 | `tiers.code` unique | Có | Tránh hai Tier cùng business code | Giữ unique index |
-| Range thuộc Tier tồn tại | Có | Không có orphan range | FK `ON DELETE CASCADE` |
-| `range_start >= 0` | Không | UI và pricing semantics vô nghĩa | DB CHECK + migration preflight |
-| `range_end = 0 OR range_end > range_start` | Không | Range đảo/ngắn rỗng | DB CHECK |
-| `base_unit_price >= 0` | Không | Giá âm | DB CHECK |
-| Chỉ một unlimited range/Tier | Không | Nhiều range vô hạn cùng áp dụng | Partial unique index/control transaction |
-| Không overlap | Không | Một usage match nhiều mức giá | Exclusion/transaction validation |
-| Không gap | Không | Usage không match mức giá | Domain validation trong một transaction |
-| Boundary inclusive/exclusive thống nhất | Không | Sai giá tại đúng điểm biên | Contract bắt buộc trước khi engine consume |
+| `tiers.service_type` unique | Có | Không có hai Tier/range schedule cạnh tranh | Unique index |
+| Range thuộc immutable version | Có | Không orphan/rewrite pricing history | FK `ON DELETE RESTRICT` |
+| `range_start >= 0` | Có | UI và pricing semantics vô nghĩa | DB CHECK + service validation |
+| `range_end = 0 OR range_end > range_start` | Có | Range đảo/ngắn rỗng | DB CHECK + service validation |
+| `base_unit_price >= 0` | Có | Giá âm | DB CHECK + service validation |
+| Chỉ một unlimited range/version | Có | Nhiều range vô hạn cùng áp dụng | Partial unique index |
+| Không overlap | Có qua API | Một usage match nhiều mức giá | Canonical sort + adjacent boundary validation |
+| Không gap | Có qua API | Usage không match mức giá | Full aggregate validation trong transaction boundary |
+| Boundary inclusive/exclusive thống nhất | Có | Sai giá tại đúng điểm biên | `[start,end)` progressive executable tests |
 | `service_type` thuộc allowlist | Không | Catalog rác hoặc filter khó đoán | CHECK/enum + API validation |
 
-> **Boundary contract chưa được định nghĩa bởi engine.** UI đang hiển thị range hữu hạn dạng `start - end`, range vô hạn dạng `> start`. Không được lấy cách render này làm công thức charge cho tới khi xác nhận rõ `[start,end)`, `(start,end]` hay cơ chế progressive aggregation.
+> Boundary contract là `[start,end)` và progressive aggregation theo từng metering row. Monthly cumulative semantics chưa nằm trong workflow này.
 
 ### 2.7 Seed baseline
 
@@ -314,7 +336,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     IN[page limit service_type search] --> N[offset = page-1 times limit<br/>pattern = percent search percent]
-    N --> C[COUNT tier_ranges JOIN tiers<br/>same filters]
+    N --> C[COUNT effective tier_version_ranges JOIN tiers<br/>same filters]
     C --> Z{total equals 0?}
     Z -->|yes| EMPTY[Return empty list and total 0]
     Z -->|no| L[SELECT flat rows<br/>ORDER tier.created_at DESC<br/>range_start ASC<br/>LIMIT OFFSET]
@@ -548,7 +570,7 @@ sequenceDiagram
 | Parent/range timestamp mismatch | P2 | Range created + parent updated | Audit/change detection wrong | Range `updated_at` + catalog version |
 | Large OFFSET | P2 | Page has no max | Increasing DB work | Cursor pagination / max page |
 | Search scan | P2 | Leading `%` ILIKE | Sequential scans/load amplification | Trigram index or prefix policy |
-| Missing `tier_ranges(tier_id)` index | P2 | Only PK observed | Join/cascade degrades at scale | FK index |
+| Version/range lookup index | Implemented | `(tier_id,effective_from)` và `(tier_version_id,range_start)` | Theo dõi query plan khi catalog lớn |
 
 ### 7.3 Safe future mutation transaction
 
@@ -566,28 +588,62 @@ flowchart TD
 
 > Không thêm mutation endpoint đơn lẻ kiểu “update một range” trước khi có transaction boundary cho toàn bộ Tier. Một Tier hợp lệ là invariant của **cả tập ranges**, không phải từng row độc lập.
 
-### 7.4 Tier aggregate update contract
+### 7.4 Immutable pricing version contract
 
 | Concern | Contract |
 |---|---|
-| Endpoint | `PUT /api/v1/billing/tiers` |
+| Metadata endpoint | `PATCH /api/v1/billing/tiers/metadata` chỉ sửa `name`, tăng `metadata_version` |
+| Pricing endpoint | `POST /api/v1/billing/tiers/versions` append một immutable pricing snapshot |
 | Lookup identity | Client gửi `code + service_type`; repository lookup bằng cả hai field |
-| Immutable fields | `code`, `service_type` chỉ dùng lookup, tuyệt đối không nằm trong `SET` |
-| Mutable fields | `name` và toàn bộ tập `ranges` |
+| Immutable identity | `code`, `service_type` tuyệt đối không nằm trong `SET` |
 | Missing parent | Repository trả taxonomy `ErrTierNotFound`; HTTP trả `404` |
-| Concurrency | Client gửi `version`; parent row được `FOR UPDATE`; version lệch trả `409` |
-| Range semantics | Full reconciliation: có ID thì update, thiếu ID thì insert, row cũ vắng mặt thì delete |
-| Atomicity | Parent và mọi child range cùng một PostgreSQL transaction |
+| Pricing OCC | Client gửi `expected_latest_version`; lệch trả `409` |
+| Metadata OCC | Client gửi `metadata_version`; sửa name không tạo pricing version/outbox |
+| Range semantics | Version mới chứa toàn bộ ranges mới; không update/delete ranges đã publish |
+| Atomicity | Version, ranges và outbox cùng một PostgreSQL transaction |
 | Boundary | Chuẩn `[range_start, range_end)`; `range_end = 0` là infinity |
 
-Create và Update là hai use case độc lập. Update không được tự tạo Tier khi lookup không thấy;
-Create không nằm trong phạm vi workflow này và khi bổ sung sau vẫn phải nhận cả aggregate thay vì
-để UI tạo parent/ranges bằng hai transaction rời.
+Mỗi `service_type` chỉ có một Tier. Database giữ `UNIQUE(service_type)`. Mỗi pricing version phải
+chứa chuỗi range liên tục bắt đầu tại `0`, không gap/overlap, đúng một infinity ở cuối và price không âm.
 
-Mỗi `service_type` chỉ có một Tier. Database phải giữ `UNIQUE(service_type)`; nhờ đó không thể có
-hai Tier cùng service type với các khoảng cạnh tranh nhau. Trong Tier duy nhất đó, request Update
-phải chứa một chuỗi range liên tục: bắt đầu tại `0`, không gap, không overlap, đúng một range infinity
-ở cuối và mọi price không âm.
+### 7.5 Outbox, Engine L1 và safe activation
+
+```mermaid
+sequenceDiagram
+    participant API as Cost Manager API
+    participant PG as PostgreSQL
+    participant RELAY as Outbox relay / CDC
+    participant ENG as Engine listener
+    participant L1 as Moka + ArcSwap
+    participant JOB as Billing run
+
+    API->>PG: INSERT immutable version + ranges + outbox (one tx)
+    PG-->>RELAY: committed outbox row
+    RELAY-->>ENG: Prost TierVersionPublished (at-least-once)
+    ENG->>PG: Load full version by tier_version_id
+    ENG->>L1: Validate + preload pending snapshot
+    JOB->>L1: Pin active Arc<V3>
+    Note over JOB,L1: V4 không được activate khi billing run đang chạy
+    JOB->>PG: Commit ledger + durable checkpoint/run completion
+    ENG->>L1: Atomic COW active V3 -> V4 at safe point
+```
+
+PostgreSQL là durable pricing SoT; event chỉ là notification. Engine bootstrap lại active/scheduled/
+historical versions từ DB khi L1 trống hoặc process restart. Prost chỉ dùng cho transport; runtime
+calculation dùng immutable Rust structs. Moka cache theo `tier_version_id`, không cache từng range;
+`ArcSwap<CatalogSnapshot>` là active pointer.
+
+Billing run pin `tier_version_id` bền vững trong `billing.billing_runs`. Listener được preload version
+mới trong lúc job chạy nhưng chỉ activate sau khi ledger và checkpoint của run đã hoàn tất. Crash/failover
+phải resume đúng pinned version. Không có pricing snapshot hợp lệ thì fail-closed, không dùng fallback price.
+Version cho run mới được chọn tại billing-run boundary (`window_end`) trong active catalog; run retry/replay
+không resolve lại theo clock mà dùng đúng pinned ID. Đây là policy “giá mới áp dụng từ lần tính kế tiếp” đã chốt.
+
+Engine áp dụng progressive formula trên từng metering quantity theo MB: với mỗi range `[start,end)`,
+`billable_units = max(0, min(quantity,end)-start)` (infinity dùng chính quantity), sau đó cộng
+`billable_units * base_unit_price`. Micro-units chỉ đổi sang currency unit sau khi cộng toàn bộ ranges;
+không dùng `f64`. Billing-period aggregation khác từng metering row phải được bổ sung thành workflow
+riêng nếu product chuyển semantics quota/range sang monthly cumulative usage.
 
 ---
 
@@ -606,7 +662,7 @@ phải chứa một chuỗi range liên tục: bắt đầu tại `0`, không ga
 | Search | Leading wildcard | Trigram index or constrained search contract | P2 |
 | Pagination | OFFSET | Deterministic cursor for large/mutable datasets | P2 |
 | Migration | Embedded migration + advisory lock | Giữ serialized migration; tách migration job khi rollout scale lớn | P1 |
-| Price rollout | No catalog version | Immutable version/effective time + audit log | P0 before engine wiring |
+| Price rollout | Immutable version/effective time/outbox đã có | Bổ sung operator audit UI và retention policy | P1 |
 
 ### 8.2 Dependency blast radius
 
@@ -630,7 +686,8 @@ flowchart TD
 | Operation | Safe to retry? | Condition |
 |---|---:|---|
 | `GET /billing/tiers` | Có | Read-only; retry only transient connect/reset, bounded |
-| Future Tier mutation | Chưa xác định | Phải có idempotency key/version precondition |
+| Metadata mutation | Có | `metadata_version` OCC; retry chỉ với cùng expected version |
+| Pricing publish | Có điều kiện | `expected_latest_version`, append-only transaction và duplicate-safe outbox consumer |
 | DB transaction mutation | Có thể | Retry serialization/deadlock với bounded attempts, không publish trước commit |
 
 ---
@@ -725,11 +782,11 @@ flowchart TD
 |---|---|---|
 | G0 — Contract | Canonical route + response test | Route hiện có; dedicated test cần xác nhận |
 | G1 — Security | Anonymous/invalid JWT denied | **FAIL — P0** |
-| G2 — Integrity | Range invariants enforced | **FAIL — trước khi engine consume** |
+| G2 — Integrity | Range invariants enforced | **PARTIAL — API + CHECK pass; direct-DB no-gap enforcement chưa có** |
 | G3 — Determinism | Stable order + consistent count/page | **FAIL** |
 | G4 — HA | >=2 healthy API/ACR endpoints, dependency SLO | Chưa chứng minh |
 | G5 — UX | Cancel/debounce/error state | **FAIL** |
-| G6 — Pricing reconciliation | API catalog == charge source | **FAIL — disconnected** |
+| G6 — Pricing reconciliation | API catalog == charge source | **PARTIAL — wired; cần PostgreSQL/NATS/ledger integration reconciliation test** |
 
 ### 10.3 Definition of Done khi Tier trở thành pricing SoT
 
@@ -805,9 +862,14 @@ Không được đánh dấu “Tier drives billing” cho tới khi tất cả 
 | Tier service | `cost-manager/api/internal/service/tier_service.go` |
 | Tier repository/SQL | `cost-manager/api/internal/repository/tier_repo.go` |
 | Flat Tier entity | `cost-manager/api/internal/domain/entity/tier.go` |
-| Billing schema | `cost-manager/api/migrations/000001_billing_tables.up.sql` |
-| Tier seed | `cost-manager/api/migrations/000002_billing_seeds.up.sql` |
-| Actual storage charge price query | `cost-manager/engine/src/service/storage/billing.rs` |
+| Immutable pricing/outbox/run schema | `cost-manager/api/migrations/000002_tables.up.sql` |
+| Tier seed | `cost-manager/api/migrations/000006_seeds.up.sql` |
+| Outbox relay + Prost publish | `cost-manager/api/internal/service/pricing_outbox_relay.go`, `pricing_event.proto` |
+| Engine bootstrap/Moka/ArcSwap | `cost-manager/engine/src/engine/runtime.rs`, `snapshot.rs` |
+| Storage egress pinned charge | `cost-manager/engine/src/service/storage/egress_billing.rs` |
+| Storage owner resolution | `god_view/billing/storage_usage_billing_god_view.md` |
+| Wallet and ledger | `god_view/billing/wallet_ledger_god_view.md` |
+| Free Tier credit/entitlement | `god_view/billing/free_tier_entitlement_god_view.md` |
 
 ---
 
@@ -816,7 +878,7 @@ Không được đánh dấu “Tier drives billing” cho tới khi tất cả 
 | Priority | Finding | Why it matters | Exit condition |
 |---:|---|---|---|
 | 1 | Billing missing/invalid JWT can fail-open | Catalog protection is accidental, not enforced | Explicit deny tests pass |
-| 2 | Tier catalog is disconnected from Cost Engine | Displayed price may not be charged price | Same versioned SoT + reconciliation |
+| 2 | Runtime reconciliation chưa có integration proof | Deployment/config drift có thể làm Engine chưa nhận version | E2E outbox, bootstrap, ledger reconciliation |
 | 3 | Range integrity is not constrained | Future engine can overcharge/undercharge | DB + transactional invariants |
 | 4 | UI requests race | User can see stale rows for current filter | Cancel/sequence guard |
 | 5 | COUNT and SELECT are separate snapshots | Pagination metadata can contradict rows | Single snapshot/version |
@@ -824,4 +886,4 @@ Không được đánh dấu “Tier drives billing” cho tới khi tất cả 
 | 7 | Single logical Cost Manager endpoint and several hard dependencies | Wider outage blast radius | Replicas, health routing, dependency HA |
 | 8 | Errors are hidden in UI | Operators/users misdiagnose failures as empty data | Explicit error state + request correlation |
 
-**Current authoritative conclusion:** `GET /api/v1/billing/tiers` is a read-only flat catalog workflow whose durable source is PostgreSQL. Route forwarding is now path-consistent in source, but runtime activation requires process restart/redeploy. The workflow is not yet safe to declare the authoritative pricing engine because auth fail-open, missing range invariants, pagination races and the disconnected Cost Engine remain unresolved.
+**Current authoritative conclusion:** Tier pricing source đã chuyển sang immutable PostgreSQL versions. Cost Manager tách metadata update khỏi pricing publish và ghi transactional outbox; Engine bootstrap/cache bằng Moka, pin version trong durable billing run và chỉ COW `ArcSwap` sau completion. Source compile/unit tests đã pass nhưng production gate vẫn cần integration reconciliation với PostgreSQL, NATS, ClickHouse và ledger; GET auth fail-open/pagination races vẫn là rủi ro độc lập cần xử lý.

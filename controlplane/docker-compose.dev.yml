@@ -238,11 +238,14 @@ services:
       - "9094:9094" # gRPC port
     environment:
       - DATABASE_URL=postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable
+      - CONTROLPLANE_DATABASE_URL=postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable
       - CLICKHOUSE_URL=http://clickhouse-server:8123
       - REDIS_URL=redis://controlplane-acr-redis:6379
     volumes:
       - ../cost-manager/api:/app/api
     depends_on:
+      psql:
+        condition: service_healthy
       billing-psql:
         condition: service_healthy
       clickhouse:

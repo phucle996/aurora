@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -94,6 +96,17 @@ func setBillingSearchPath(ctx context.Context, conn *pgxpool.Conn, searchPath st
 
 // applyBillingMigrations đọc và thực thi các file *.up.sql theo thứ tự alphabetical.
 func applyBillingMigrations(ctx context.Context, conn *pgxpool.Conn, files fs.FS) error {
+	// [COMMENT]: Baseline greenfield vẫn track checksum để các release sau không rewrite lịch sử đã deploy.
+	if _, err := conn.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS billing.schema_migrations (
+			version VARCHAR(255) PRIMARY KEY,
+			checksum CHAR(64) NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`); err != nil {
+		return fmt.Errorf("billing migration: create migration ledger: %w", err)
+	}
+
 	entries, err := fs.ReadDir(files, ".")
 	if err != nil {
 		return fmt.Errorf("billing migration: read embedded migrations: %w", err)
@@ -123,8 +136,24 @@ func applyBillingMigrations(ctx context.Context, conn *pgxpool.Conn, files fs.FS
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
+		digest := sha256.Sum256(queryBytes)
+		checksum := hex.EncodeToString(digest[:])
+		var appliedChecksum string
+		err = conn.QueryRow(ctx, `SELECT checksum FROM billing.schema_migrations WHERE version = $1`, name).Scan(&appliedChecksum)
+		if err == nil {
+			if appliedChecksum != checksum {
+				return fmt.Errorf("billing migration: checksum mismatch for already applied %s", name)
+			}
+			continue
+		}
+		if err != pgx.ErrNoRows {
+			return fmt.Errorf("billing migration: read ledger for %s: %w", name, err)
+		}
 		if _, err := conn.Exec(ctx, query, pgx.QueryExecModeSimpleProtocol); err != nil {
 			return fmt.Errorf("billing migration: apply %s: %w", name, err)
+		}
+		if _, err := conn.Exec(ctx, `INSERT INTO billing.schema_migrations(version, checksum) VALUES ($1, $2)`, name, checksum); err != nil {
+			return fmt.Errorf("billing migration: record %s: %w", name, err)
 		}
 	}
 

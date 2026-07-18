@@ -57,11 +57,13 @@ func (h *PlanHandler) ListPlans(c *gin.Context) {
 
 	// Thực hiện validate dữ liệu đầu vào theo yêu cầu ở handler
 	if req.ServiceType != "" {
-		if req.ServiceType != entity.ServiceTypeStorage &&
-			req.ServiceType != entity.ServiceTypeVM &&
-			req.ServiceType != entity.ServiceTypeMail {
+		stRaw := strings.TrimSpace(req.ServiceType)
+		switch entity.ServiceType(stRaw) {
+		case entity.ServiceTypeStorage, entity.ServiceTypeNetworkIn, entity.ServiceTypeNetworkOut, entity.ServiceTypeVM:
+			req.ServiceType = stRaw
+		default:
 			logger.HandlerWarn(c, op, nil, "Invalid service_type parameter: "+req.ServiceType)
-			apires.RespondBadRequest(c, "Invalid service_type. Supported: STORAGE, VM, MAIL")
+			apires.RespondBadRequest(c, "Invalid service_type. Supported: STORAGE, NETWORK_IN, NETWORK_OUT, VM")
 			return
 		}
 	}
@@ -121,7 +123,7 @@ func (h *PlanHandler) ListPlans(c *gin.Context) {
 
 	// Sử dụng entity.Plan làm điều kiện lọc
 	filter := entity.Plan{
-		ServiceType: req.ServiceType,
+		ServiceType: entity.ServiceType(req.ServiceType),
 		ZoneID:      filterZoneID,
 		Status:      req.Status,
 	}

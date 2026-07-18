@@ -1,0 +1,1 @@
+-- Migration 000004: Functions và Triggers (chưa áp dụng)

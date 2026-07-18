@@ -129,13 +129,12 @@ processors:
           - set(severity_text, "DEBUG") where attributes["redis_level"] == "."
           - set(severity_text, "VERBOSE") where attributes["redis_level"] == "-"
 
-  # transform/metering: Trích xuất các thuộc tính access_key và bucket_name từ log Envoy Storage
+  # transform/metering: Envoy đã trích access_key mà không log raw Authorization; collector chỉ parse bucket.
   transform/metering:
     error_mode: ignore
     log_statements:
       - context: log
         statements:
-          - merge_maps(attributes, ExtractPatterns(attributes["authorization"], "Credential=(?P<access_key>[^/\\s]+)"), "upsert") where attributes["authorization"] != nil
           - merge_maps(attributes, ExtractPatterns(attributes["path"], "^/(?P<bucket_name>[^/]+)"), "upsert") where attributes["path"] != nil
 
   # filter/only_storage_envoy: Chỉ cho phép logs chứa dữ liệu băng thông của Envoy Storage đi qua

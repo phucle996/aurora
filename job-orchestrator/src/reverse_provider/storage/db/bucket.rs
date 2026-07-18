@@ -332,7 +332,6 @@ pub async fn resolve_bucket_deletion(
     Ok(row_opt)
 }
 
-#[allow(dead_code)]
 pub async fn get_personal_bucket_owner(
     db_url: &str,
     name: &str,

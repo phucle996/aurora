@@ -38,7 +38,7 @@ func (r *planRepository) List(ctx context.Context, filter entity.Plan, cursorTim
 	// Thêm điều kiện lọc service_type nếu được truyền vào
 	if filter.ServiceType != "" {
 		query += fmt.Sprintf(" AND service_type = $%d", placeholderIdx)
-		args = append(args, filter.ServiceType)
+		args = append(args, string(filter.ServiceType))
 		placeholderIdx++
 	}
 
@@ -85,11 +85,12 @@ func (r *planRepository) List(ctx context.Context, filter entity.Plan, cursorTim
 	// Lặp qua từng bản ghi kết quả và scan vào entity struct
 	for rows.Next() {
 		var plan entity.Plan
+		var rawServiceType string
 		err := rows.Scan(
 			&plan.ID,
 			&plan.Name,
 			&plan.Code,
-			&plan.ServiceType,
+			&rawServiceType,
 			&plan.ZoneID,
 			&plan.MonthlyPrice,
 			&plan.Currency,
@@ -101,6 +102,7 @@ func (r *planRepository) List(ctx context.Context, filter entity.Plan, cursorTim
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan plan row: %w", err)
 		}
+		plan.ServiceType = entity.ServiceType(rawServiceType)
 		plans = append(plans, plan)
 	}
 

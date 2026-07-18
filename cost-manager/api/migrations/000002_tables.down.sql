@@ -1,0 +1,19 @@
+-- Migration 000002 Down: Xóa tất cả các bảng
+DROP TABLE IF EXISTS billing.unrated_usage;
+DROP TABLE IF EXISTS billing.wallet_ledger_entries;
+DROP TABLE IF EXISTS billing.resource_plan_assignments;
+DROP TABLE IF EXISTS billing.credit_grants;
+DROP TABLE IF EXISTS billing.promotion_campaigns;
+DROP TABLE IF EXISTS billing.wallets;
+DROP TABLE IF EXISTS billing.credential_bindings;
+DROP TABLE IF EXISTS billing.resource_ownership_projection;
+DROP TABLE IF EXISTS billing.billing_runs;
+DROP TABLE IF EXISTS billing.pricing_outbox;
+DROP TABLE IF EXISTS billing.tier_version_ranges;
+DROP TABLE IF EXISTS billing.tier_versions;
+DROP TABLE IF EXISTS billing.users;
+DROP TABLE IF EXISTS billing.subscriptions;
+DROP TABLE IF EXISTS billing.pack_plans;
+DROP TABLE IF EXISTS billing.plans;
+DROP TABLE IF EXISTS billing.tiers;
+DROP TABLE IF EXISTS billing.packs;

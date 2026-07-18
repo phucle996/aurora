@@ -23,9 +23,8 @@ func NewTierRepository(db *pgxpool.Pool) billingRepoInterface.TierRepository {
 	return &tierRepository{db: db}
 }
 
-// [COMMENT]: ListTiers thực hiện duy nhất 1 câu query SQL JOIN phân trang trực tiếp trên cấu trúc Flat Entity.
-// Tránh lỗi N+1, loại bỏ hoàn toàn JSON parsing và map tạm, đảm bảo hiệu năng tối đa.
-func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, serviceType, search string) ([]*entity.Tier, int64, error) {
+// [COMMENT]: ListTiers đọc version có hiệu lực thành flat rows, tránh N+1 và không chạm legacy mutable ranges.
+func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, serviceType entity.ServiceType, search string) ([]*entity.Tier, int64, error) {
 	offset := (page - 1) * limit
 	searchPattern := ""
 	if search != "" {
@@ -34,14 +33,24 @@ func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, service
 
 	// 1. Tính tổng số dòng cước chi tiết khớp bộ lọc phục vụ phân trang ở Client
 	countQuery := `
-		SELECT count(*) 
-		FROM billing.tier_ranges r
-		JOIN billing.tiers t ON r.tier_id = t.id
-		WHERE ($1 = '' OR t.service_type = $1)
+		SELECT count(*)
+		FROM billing.tiers t
+		JOIN LATERAL (
+			SELECT v.id
+			FROM billing.tier_versions v
+			WHERE v.tier_id = t.id
+			  AND v.status <> 'CANCELLED'
+			  AND v.effective_from <= NOW()
+			  AND (v.effective_to IS NULL OR NOW() < v.effective_to)
+			ORDER BY v.version_number DESC
+			LIMIT 1
+		) v ON TRUE
+		JOIN billing.tier_version_ranges r ON r.tier_version_id = v.id
+		WHERE ($1 = '' OR t.service_type = $1::billing.service_type)
 		  AND ($2 = '' OR t.name ILIKE $3 OR t.code ILIKE $3)
 	`
 	var total int64
-	err := r.db.QueryRow(ctx, countQuery, serviceType, search, searchPattern).Scan(&total)
+	err := r.db.QueryRow(ctx, countQuery, string(serviceType), search, searchPattern).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("tier repo: count flat tiers: %w", err)
 	}
@@ -54,24 +63,35 @@ func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, service
 	flatQuery := `
 		SELECT 
 			r.id, 
-			r.tier_id, 
+			t.id,
 			t.name, 
 			t.code, 
 			t.service_type, 
-			t.version,
+			t.metadata_version,
+			v.version_number,
 			r.range_start, 
 			r.range_end, 
 			r.base_unit_price, 
 			r.created_at, 
 			t.updated_at
-		FROM billing.tier_ranges r
-		JOIN billing.tiers t ON r.tier_id = t.id
-		WHERE ($1 = '' OR t.service_type = $1)
+		FROM billing.tiers t
+		JOIN LATERAL (
+			SELECT candidate.id, candidate.version_number
+			FROM billing.tier_versions candidate
+			WHERE candidate.tier_id = t.id
+			  AND candidate.status <> 'CANCELLED'
+			  AND candidate.effective_from <= NOW()
+			  AND (candidate.effective_to IS NULL OR NOW() < candidate.effective_to)
+			ORDER BY candidate.version_number DESC
+			LIMIT 1
+		) v ON TRUE
+		JOIN billing.tier_version_ranges r ON r.tier_version_id = v.id
+		WHERE ($1 = '' OR t.service_type = $1::billing.service_type)
 		  AND ($2 = '' OR t.name ILIKE $3 OR t.code ILIKE $3)
 		ORDER BY t.created_at DESC, r.range_start ASC
 		LIMIT $4 OFFSET $5
 	`
-	rows, err := r.db.Query(ctx, flatQuery, serviceType, search, searchPattern, limit, offset)
+	rows, err := r.db.Query(ctx, flatQuery, string(serviceType), search, searchPattern, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("tier repo: query flat tiers: %w", err)
 	}
@@ -80,14 +100,16 @@ func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, service
 	tiers := make([]*entity.Tier, 0)
 	for rows.Next() {
 		var t entity.Tier
+		var rawServiceType string
 		// Scan trực tiếp dữ liệu dạng native từ các cột DB
 		err := rows.Scan(
 			&t.ID,
 			&t.TierID,
 			&t.Name,
 			&t.Code,
-			&t.ServiceType,
-			&t.Version,
+			&rawServiceType,
+			&t.MetadataVersion,
+			&t.PricingVersion,
 			&t.RangeStart,
 			&t.RangeEnd,
 			&t.BaseUnitPrice,
@@ -97,6 +119,7 @@ func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, service
 		if err != nil {
 			return nil, 0, fmt.Errorf("tier repo: scan flat tier: %w", err)
 		}
+		t.ServiceType = entity.ServiceType(rawServiceType)
 		tiers = append(tiers, &t)
 	}
 
@@ -107,102 +130,221 @@ func (r *tierRepository) ListTiers(ctx context.Context, page, limit int, service
 	return tiers, total, nil
 }
 
-// UpdateTier khóa parent, kiểm tra OCC rồi reconcile ranges trong cùng một transaction PostgreSQL.
-func (r *tierRepository) UpdateTier(ctx context.Context, update entity.TierUpdate) (*entity.TierAggregate, error) {
+// GetTierDetail dùng latest version CTE để UI luôn nhận đủ ranges từ cùng một immutable snapshot.
+func (r *tierRepository) GetTierDetail(ctx context.Context, code string, serviceType entity.ServiceType) (*entity.TierDetail, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH selected_tier AS (
+			SELECT id, name, code, service_type, metadata_version
+			FROM billing.tiers
+			WHERE code = $1 AND service_type = $2::billing.service_type
+		), latest_version AS (
+			SELECT v.*
+			FROM billing.tier_versions v
+			JOIN selected_tier t ON t.id = v.tier_id
+			WHERE v.status <> 'CANCELLED'
+			ORDER BY v.version_number DESC
+			LIMIT 1
+		)
+		SELECT t.id, t.name, t.code, t.service_type, t.metadata_version,
+		       v.id, v.version_number, v.status, v.effective_from, v.effective_to, v.checksum,
+		       r.id, r.range_start, r.range_end, r.base_unit_price
+		FROM selected_tier t
+		JOIN latest_version v ON v.tier_id = t.id
+		JOIN billing.tier_version_ranges r ON r.tier_version_id = v.id
+		ORDER BY r.range_start
+	`, code, string(serviceType))
+	if err != nil {
+		return nil, fmt.Errorf("tier repo: query tier detail: %w", err)
+	}
+	defer rows.Close()
+
+	var detail *entity.TierDetail
+	for rows.Next() {
+		var tierID, versionID uuid.UUID
+		var name, rowCode, rowServiceType, status, checksum string
+		var metadataVersion, versionNumber int
+		var effectiveFrom time.Time
+		var effectiveTo *time.Time
+		var tierRange entity.TierRangeInput
+		if err = rows.Scan(
+			&tierID, &name, &rowCode, &rowServiceType, &metadataVersion,
+			&versionID, &versionNumber, &status, &effectiveFrom, &effectiveTo, &checksum,
+			&tierRange.ID, &tierRange.RangeStart, &tierRange.RangeEnd, &tierRange.BaseUnitPrice,
+		); err != nil {
+			return nil, fmt.Errorf("tier repo: scan tier detail row: %w", err)
+		}
+		if detail == nil {
+			detail = &entity.TierDetail{
+				ID: tierID, Name: name, Code: rowCode, ServiceType: entity.ServiceType(rowServiceType), MetadataVersion: metadataVersion,
+				LatestVersion: entity.TierVersion{
+					ID: versionID, TierID: tierID, VersionNumber: versionNumber, Status: status,
+					EffectiveFrom: effectiveFrom, EffectiveTo: effectiveTo, Checksum: checksum,
+				},
+			}
+		}
+		detail.LatestVersion.Ranges = append(detail.LatestVersion.Ranges, tierRange)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("tier repo: iterate tier detail: %w", err)
+	}
+	if detail == nil {
+		return nil, billingTaxonomy.ErrTierNotFound
+	}
+	return detail, nil
+}
+
+// UpdateTierMetadata khóa identity row và chỉ thay name/metadata_version.
+func (r *tierRepository) UpdateTierMetadata(ctx context.Context, update entity.TierMetadataUpdate) (*entity.TierMetadata, error) {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("tier repo: begin update transaction: %w", err)
+		return nil, fmt.Errorf("tier repo: begin metadata transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var tierID uuid.UUID
-	var currentVersion int
-	// code + service_type là composite business lookup; FOR UPDATE serialize mọi mutation của service Tier duy nhất.
+	var currentMetadataVersion int
 	err = tx.QueryRow(ctx, `
-		SELECT id, version
+		SELECT id, metadata_version
 		FROM billing.tiers
-		WHERE code = $1 AND service_type = $2
+		WHERE code = $1 AND service_type = $2::billing.service_type
 		FOR UPDATE
-	`, update.Code, update.ServiceType).Scan(&tierID, &currentVersion)
+	`, update.Code, string(update.ServiceType)).Scan(&tierID, &currentMetadataVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, billingTaxonomy.ErrTierNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("tier repo: lock tier: %w", err)
 	}
-	if currentVersion != update.Version {
-		return nil, billingTaxonomy.ErrTierVersionConflict
+	if currentMetadataVersion != update.MetadataVersion {
+		return nil, billingTaxonomy.ErrTierMetadataConflict
 	}
 
-	var nextVersion int
+	var nextMetadataVersion int
 	var updatedAt time.Time
-	// Chỉ name và version được mutate; code/service_type không xuất hiện trong SET.
 	err = tx.QueryRow(ctx, `
 		UPDATE billing.tiers
-		SET name = $1, version = version + 1, updated_at = NOW()
+		SET name = $1, metadata_version = metadata_version + 1, updated_at = NOW()
 		WHERE id = $2
-		RETURNING version, updated_at
-	`, update.Name, tierID).Scan(&nextVersion, &updatedAt)
+		RETURNING metadata_version, updated_at
+	`, update.Name, tierID).Scan(&nextMetadataVersion, &updatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("tier repo: update parent tier: %w", err)
+		return nil, fmt.Errorf("tier repo: update tier metadata: %w", err)
 	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("tier repo: commit metadata transaction: %w", err)
+	}
+	return &entity.TierMetadata{
+		ID: tierID, Code: update.Code, ServiceType: update.ServiceType,
+		MetadataVersion: nextMetadataVersion, Name: update.Name, UpdatedAt: updatedAt,
+	}, nil
+}
 
-	// Đọc ownership và created_at trước khi replace để giữ stable ID/audit timestamp cho range hiện hữu.
-	existingCreatedAt := make(map[uuid.UUID]time.Time)
-	rows, err := tx.Query(ctx, `SELECT id, created_at FROM billing.tier_ranges WHERE tier_id = $1`, tierID)
+// CreateTierVersion append immutable version/ranges và outbox trong một commit duy nhất.
+func (r *tierRepository) CreateTierVersion(ctx context.Context, create entity.TierVersionCreate) (*entity.TierVersion, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("tier repo: list existing ranges: %w", err)
+		return nil, fmt.Errorf("tier repo: begin pricing version transaction: %w", err)
 	}
-	for rows.Next() {
-		var id uuid.UUID
-		var createdAt time.Time
-		if err = rows.Scan(&id, &createdAt); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("tier repo: scan existing range: %w", err)
-		}
-		existingCreatedAt[id] = createdAt
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("tier repo: iterate existing ranges: %w", err)
-	}
-	rows.Close()
+	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	for _, rangeInput := range update.Ranges {
-		if rangeInput.ID != uuid.Nil {
-			if _, owned := existingCreatedAt[rangeInput.ID]; !owned {
-				return nil, billingTaxonomy.ErrInvalidTierRanges
-			}
-		}
+	var tierID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM billing.tiers
+		WHERE code = $1 AND service_type = $2::billing.service_type
+		FOR UPDATE
+	`, create.Code, string(create.ServiceType)).Scan(&tierID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, billingTaxonomy.ErrTierNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tier repo: lock tier for pricing version: %w", err)
 	}
 
-	// Delete rồi insert full-state tránh vi phạm tạm thời constraint one-infinity khi đổi boundary giữa hai rows.
-	if _, err = tx.Exec(ctx, `DELETE FROM billing.tier_ranges WHERE tier_id = $1`, tierID); err != nil {
-		return nil, fmt.Errorf("tier repo: clear ranges for reconciliation: %w", err)
+	var latestVersion int
+	var latestEffectiveFrom time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT version_number, effective_from
+		FROM billing.tier_versions
+		WHERE tier_id = $1 AND status <> 'CANCELLED'
+		ORDER BY version_number DESC
+		LIMIT 1
+	`, tierID).Scan(&latestVersion, &latestEffectiveFrom)
+	if errors.Is(err, pgx.ErrNoRows) {
+		latestVersion = 0
+	} else if err != nil {
+		return nil, fmt.Errorf("tier repo: read latest pricing version: %w", err)
 	}
-	for i := range update.Ranges {
-		rangeInput := &update.Ranges[i]
-		createdAt := time.Now().UTC()
-		if rangeInput.ID == uuid.Nil {
-			rangeInput.ID = uuid.New()
-		} else {
-			createdAt = existingCreatedAt[rangeInput.ID]
+	if latestVersion != create.ExpectedLatestVersion {
+		return nil, billingTaxonomy.ErrTierVersionConflict
+	}
+	if !create.EffectiveFrom.After(latestEffectiveFrom) {
+		return nil, billingTaxonomy.ErrTierEffectiveConflict
+	}
+
+	// Khép effective window cũ; pricing content của version cũ vẫn bất biến.
+	if _, err = tx.Exec(ctx, `
+		UPDATE billing.tier_versions
+		SET effective_to = $1
+		WHERE tier_id = $2 AND version_number = $3 AND effective_to IS NULL
+	`, create.EffectiveFrom, tierID, latestVersion); err != nil {
+		return nil, fmt.Errorf("tier repo: close previous effective window: %w", err)
+	}
+
+	versionID := uuid.New()
+	nextVersion := latestVersion + 1
+	status := "SCHEDULED"
+	if !create.EffectiveFrom.After(time.Now().UTC()) {
+		status = "ACTIVE"
+		if _, err = tx.Exec(ctx, `
+			UPDATE billing.tier_versions SET status = 'SUPERSEDED'
+			WHERE tier_id = $1 AND version_number = $2 AND status = 'ACTIVE'
+		`, tierID, latestVersion); err != nil {
+			return nil, fmt.Errorf("tier repo: supersede previous pricing version: %w", err)
 		}
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO billing.tier_versions
+			(id, tier_id, version_number, status, effective_from, checksum, change_reason, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, versionID, tierID, nextVersion, status, create.EffectiveFrom, create.Checksum, create.ChangeReason, create.CreatedBy)
+	if err != nil {
+		return nil, fmt.Errorf("tier repo: insert pricing version: %w", err)
+	}
+
+	for i := range create.Ranges {
+		create.Ranges[i].ID = uuid.New()
+		tierRange := create.Ranges[i]
 		_, err = tx.Exec(ctx, `
-			INSERT INTO billing.tier_ranges
-				(id, tier_id, range_start, range_end, base_unit_price, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		`, rangeInput.ID, tierID, rangeInput.RangeStart, rangeInput.RangeEnd, rangeInput.BaseUnitPrice, createdAt)
+			INSERT INTO billing.tier_version_ranges
+				(id, tier_version_id, range_start, range_end, base_unit_price)
+			VALUES ($1, $2, $3, $4, $5)
+		`, tierRange.ID, versionID, tierRange.RangeStart, tierRange.RangeEnd, tierRange.BaseUnitPrice)
 		if err != nil {
-			return nil, fmt.Errorf("tier repo: insert reconciled range %s: %w", rangeInput.ID, err)
+			return nil, fmt.Errorf("tier repo: insert pricing version range: %w", err)
 		}
+	}
+
+	// Outbox row commit cùng aggregate để không có version đã publish nhưng mất notification.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO billing.pricing_outbox
+			(id, event_type, tier_id, tier_version_id, version_number, service_type, effective_from, checksum)
+		VALUES ($1, 'TIER_VERSION_PUBLISHED', $2, $3, $4, $5::billing.service_type, $6, $7)
+	`, uuid.New(), tierID, versionID, nextVersion, string(create.ServiceType), create.EffectiveFrom, create.Checksum)
+	if err != nil {
+		return nil, fmt.Errorf("tier repo: insert pricing outbox: %w", err)
 	}
 
 	if err = tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("tier repo: commit update transaction: %w", err)
+		return nil, fmt.Errorf("tier repo: commit pricing version transaction: %w", err)
 	}
-	return &entity.TierAggregate{
-		ID: tierID, Code: update.Code, ServiceType: update.ServiceType,
-		Version: nextVersion, Name: update.Name, Ranges: update.Ranges, UpdatedAt: updatedAt,
+	return &entity.TierVersion{
+		ID:            versionID,
+		TierID:        tierID,
+		VersionNumber: nextVersion,
+		Status:        status,
+		EffectiveFrom: create.EffectiveFrom,
+		Checksum:      create.Checksum,
+		Ranges:        create.Ranges,
 	}, nil
 }
