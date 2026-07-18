@@ -1,348 +1,365 @@
-<!-- markdownlint-disable MD033 -->
-# End-User Registration & Account Activation - Workflow God View
+# End-User Registration — God View (Master SoT)
 
-> [!NOTE]
-> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng Đăng ký và Kích hoạt tài khoản của End-User.
-> Mọi thay đổi về code liên quan đến đăng ký và email outbox phải tuân thủ nghiêm ngặt đặc tả này.
+> **SINGLE SOURCE OF TRUTH**
+> Tài liệu này chỉ sở hữu workflow tạo tài khoản `pending-active`, phát activation challenge và chuyển mail intent sang Dataplane. Activation, role và Billing wallet thuộc [`account_verification_god_view_workflow.md`](account_verification_god_view_workflow.md).
 
----
+## 0. Control header
 
-## 🗺️ 1. Giới Thiệu
+| Thuộc tính | Contract |
+|---|---|
+| Domain | IAM / End-User Registration |
+| Endpoint | `POST /api/v1/auth/register` |
+| Resend entry | Pending account đăng nhập lại bằng password đúng |
+| UI | Cloud Console Sign Up / Sign In |
+| Identity SoT | PostgreSQL `iam.users`, `iam.user_profiles` |
+| OTT | Redis HA, key `iam:ott:account_verify:<user_id>:<event_id>` |
+| Mail intent | PostgreSQL `iam.iam_outbox_records` |
+| Mail execution | JO IAM dispatcher → Redis Stream → Dataplane → LMTP |
+| Retention | Kubernetes CronJob `k8s/outbox-retention-cronjob.yaml`, 30 ngày |
+| Output state | User `pending-active` + durable mail intent |
+| Downstream handoff | `user_id + event_id + plaintext OTT` trong activation URL fragment |
 
-### Account verified → personal wallet
+## 1. Boundary và invariant
 
-Khi xác minh tài khoản thành công, IAM commit nguyên tử việc kích hoạt user, gán role và ghi
-`PersonalWalletProvisionRequestedV1` vào `billing_wallet_provision_outbox`. Relay HA claim theo
-lease, publish Protobuf lên JetStream subject `billing.wallet.personal.provision.requested.v1`,
-rồi chỉ đánh dấu `PUBLISHED` sau PubAck. Cost Manager dùng durable consumer và inbox hash để tạo idempotent wallet
-`(user_id, PERSONAL, USD)` với số dư 0. Không publish NATS trước khi IAM transaction commit.
+### 1.1 In scope
 
-### 👥 Tài Liệu Này Dành Cho Ai?
+- Client validation và Sign Up state.
+- Exact public route, CORS và pre-auth abuse limiter.
+- Canonical username/email và password hashing.
+- Redis OTT issue, TTL và replica durability gate.
+- Atomic transaction `user + profile + IAM mail outbox`.
+- IAM outbox dispatch/reconciliation và mail delivery result.
+- Pending-login resend đã xác thực password.
+- Retry, idempotency, retention và failure recovery trước activation.
 
-Tài liệu dành cho đội ngũ kỹ sư phát triển backend (IAM Service), kỹ sư phát triển hạ tầng dữ liệu và SRE đảm bảo tính sẵn sàng cao (HA) và hiệu năng tối ưu khi xử lý lượng đăng ký lớn.
+### 1.2 Out of scope
 
-### ❓ Nghiệp vụ Đăng ký & Kích hoạt tài khoản là gì?
+- OTT validation/consume.
+- Chuyển account sang `active`.
+- Gán `platform_user`.
+- Billing outbox, JetStream, inbox và wallet.
+- Zone/Workspace provisioning.
 
-Luồng cho phép người dùng đăng ký tài khoản mới kèm theo các chốt chặn và tối ưu hóa hệ thống đặc thù:
+### 1.3 Non-negotiable invariants
 
-1. **Presence Bitmap Acceleration (Redis L2)**: Gia tốc kiểm tra tính duy nhất của `username` và `email` trước khi truy vấn xuống DB PostgreSQL, tránh thắt nút cổ chai I/O DB dưới tải lớn.
-2. **Transactional Outbox Pattern**: Nhóm việc tạo tài khoản và ghi nhận nhiệm vụ gửi mail kích hoạt tài khoản trong cùng một Database Transaction, giải quyết triệt để lỗi mất mát email (dual-write).
-3. **One-Time Token (OTT) Activation**: Phát hành mã kích hoạt ngắn hạn gửi qua Mail Service để chuyển trạng thái tài khoản từ `pending-active` sang `active`.
+| Invariant | Hệ quả |
+|---|---|
+| PostgreSQL unique index là uniqueness arbiter | Không dùng Redis bitmap/cache để từ chối identity |
+| Password là opaque secret | Không trim, log, trace hoặc đưa vào outbox |
+| OTT đạt Redis replica ACK trước DB transaction | Replica gate fail thì không được tạo user |
+| `users + user_profiles + iam_outbox_records` cùng transaction | HTTP `201` không tồn tại khi thiếu mail intent |
+| `201` chỉ chứng minh intent durable | Không khẳng định LMTP/provider đã deliver |
+| Mỗi mail có `event_id` và Redis key riêng | Mail đến đảo thứ tự không invalidate link còn TTL |
+| Resend yêu cầu password đúng | Không có unauthenticated resend oracle; không cấp session cho pending user |
+| JO route result bằng `source_domain` | Topic `mail.*` không được dùng để suy diễn source table |
+| Registration không ghi Hierarchy/Billing | Failure ngoài IAM mail không rollback identity creation |
 
-### 📍 Các Biên Công Nghệ Hoạt Động
+## 2. Public API contract
 
-- **Frontend Cloud UI (Browser)**: `register` page & [auth.ts](file:///home/phucle/Desktop/New/cloud-ui/src/lib/api/auth.ts).
-- **Controlplane HTTP Handler**: `Register` handler in [auth_handler.go](file:///home/phucle/Desktop/New/controlplane/internal/iam/transport/http/handler/auth_handler.go).
-- **IAM Core Service**: `RegisterAccount` method in [auth_service.go](file:///home/phucle/Desktop/New/controlplane/internal/iam/service/auth_service.go).
-- **Outbox System**: `Create` record in [outbox_repo.go](file:///home/phucle/Desktop/New/controlplane/internal/iam/repository/outbox_repo.go) và Agent CDC chạy nền.
-- **Database**: PostgreSQL (Bảng `iam.users`, `iam.user_profiles`, `iam.iam_outbox_records`).
-- **Cache Engine**: Redis Cluster L2 (Bitmaps `iam:register:bitmap:username` & `iam:register:bitmap:email`).
+### 2.1 Edge contract
 
----
-
-## 🏛️ 2. Sơ Đồ Hệ Thống & Ranh Giới Phase
-
-```mermaid
-graph TD
-    UI["💻 Browser Cloud UI"]
-    CP["⚙️ Controlplane IAM (HA)"]
-    Redis[("⚡ Redis L2 (Presence Bitmaps)")]
-    DB[("🗄️ PostgreSQL SoT (Users, Profiles & Outbox)")]
-    CDC["🗂️ CDC Outbox Publisher"]
-    Mail["✉️ SMTP / Mail Service"]
-
-    UI -- "POST /api/v1/auth/register" --> CP
-    CP -- "1. GetBit check (HMAC-SHA256)" --> Redis
-    CP -- "2. SQL Transaction (Insert user + outbox)" --> DB
-    CP -- "3. SetBit = 1 (Best-effort)" --> Redis
-    CDC -- "4. Poll & Publish PENDING records" --> DB
-    CDC -- "5. Deliver transactional email" --> Mail
+```text
+POST /api/v1/auth/register
+Content-Type: application/json
+Public route = exact(method, normalized path)
+             + allowed-origin policy
+             + AuthPublic IP/device limiter
+             + body buffer limit
+             + no session/tenant/zone requirement
 ```
 
-### 🚧 Biên Và Ràng Buộc (Boundaries & Constraints)
+Prefix hoặc method khác không được public. Public decision chỉ chạy sau CORS và pre-auth limiter.
 
-- **Đầu Vào (Inputs)**: JSON Payload (`username`, `email`, `password`, `re_password`, `fullname`).
-- **Đầu Outer (Outputs)**: HTTP `200 OK` (thành công) hoặc HTTP `400 Bad Request` / `503 Service Unavailable`.
-- **Ràng Buộc Trạng Thế (Constraints)**: Tài khoản mới đăng ký luôn ở trạng thái mặc định là `pending-active`.
-
----
-
-## 🔍 3. Chi Tiết Thực Thi Nghiệp Vụ & Ánh Xạ
-
-### 🛡️ Chuỗi Middleware Áp Dụng
-
-1. **`gin.Recovery()`**: Chống panic làm sập node xử lý.
-2. **`middleware.RequestID()`**: Gắn correlation ID để debug chéo.
-3. **`middleware.OTelTraceContext()`**: Đồng bộ hóa OpenTelemetry span trace.
-4. **`Envoy Local Rate Limit & Connection Limit`**: Chặn tấn công spam đăng ký (Rate limit 10 req/min/IP) từ tầng gateway.
-
-### 🔄 Trực Quan Luồng Sequence Diagram
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Cloud UI
-    participant Handler as HTTP Handler
-    participant Service as IAM Service
-    participant Repo as PostgreSQL Repo
-    participant RDS as Redis L2 Presence
-    participant DB as PostgreSQL Database
-
-    UI->>Handler: POST /api/v1/auth/register<br/>Payload: {username, email, password, fullname}
-    
-    Handler->>Handler: Validate JSON format & length
-    Handler->>Handler: Chuẩn hóa Lowercase & Trim space (username, email)
-    Handler->>Service: RegisterAccount(ctx, registrationDto)
-    
-    Service->>Service: Sinh digest HMAC-SHA256 của username & email
-    
-    Service->>RDS: GetBit "iam:register:bitmap:username" (Index: SHA-digest)
-    RDS-->>Service: Trả về Bit value (0 hoặc 1)
-    
-    Service->>RDS: GetBit "iam:register:bitmap:email" (Index: SHA-digest)
-    RDS-->>Service: Trả về Bit value (0 hoặc 1)
-    
-    alt Có ít nhất một Bit = 1 (Nghi ngờ trùng lặp)
-        Service->>Repo: CheckUserExists(ctx, username, email)
-        Repo->>DB: SELECT COUNT(*) FROM iam.users WHERE username = ? OR email = ?
-        DB-->>Repo: Returns count
-        Repo-->>Service: Returns bool (true/false)
-        alt Trùng thật sự (Confirmed)
-            Service-->>Handler: Return ErrUserAlreadyExists
-            Handler-->>UI: Trả lỗi HTTP 400 (UserAlreadyExist)
-        end
-    else Cả hai Bit = 0 (Chắc chắn không trùng)
-        Note over Service: Bỏ qua DB Read check hoàn toàn (Tiết kiệm I/O)
-    end
-    
-    Service->>Service: Hashing password (Argon2 / PBKDF2)
-    Service->>Service: Sinh UUIDv7 User ID
-    Service->>Service: Khởi tạo domain entity userEntity (iamEntity.User)
-    
-    Service->>Repo: CreateRegisteredUser(ctx, userEntity)
-    Note over Repo: Thực hiện mapping sang DB Model:<br/>dbModel = UserEntityToModel(userEntity)
-    
-    Repo->>DB: Bắt đầu Transaction (Atomic DB Write)
-    Repo->>DB: INSERT INTO iam.users (dbModel values)
-    Repo->>DB: INSERT INTO iam.iam_outbox_records (outbox values)
-    DB-->>Repo: Transaction commit success
-    
-    Note over Repo: Chuyển DB Model đã ghi lại thành Domain Entity:<br/>createdUserEntity = UserModelToEntity(dbModel)
-    Repo-->>Service: Return createdUserEntity (iamEntity.User)
-    
-    Service->>RDS: Pipeline SetBit = 1 cho cả hai digest (Best-effort update)
-    Service-->>Handler: Return success (User ID, status)
-    Handler-->>UI: Trả HTTP 200 OK (Registration Successful)
-```
-
----
-
-## 📋 4. Đặc Tả Hợp Đồng & Cơ Sở Dữ Liệu
-
-### 1. JSON Data Contracts
-
-##### Request DTO: `requestdto.RegisterRequest`
+### 2.2 Request
 
 ```json
 {
   "username": "phucle996",
   "email": "phucle@aurora.local",
   "password": "SuperSecurePassword123!",
-  "re_password": "SuperSecurePassword123!",
-  "fullname": "Phuc Le"
+  "fullname": "Phuc Le",
+  "phone": "+84901234567",
+  "location": "VN",
+  "timezone": "Asia/Ho_Chi_Minh"
 }
 ```
 
-### 2. Service Domain Entities (`iamEntity`)
+| Field | Normalize/validate | Durable target | Remaining concern |
+|---|---|---|---|
+| `username` | Trim, lowercase, `^[a-z0-9][a-z0-9_-]{5,63}$` | `users.username` | UI/backend phải giữ regex parity |
+| `email` | Trim, lowercase, email validator | `users.email` | Nên thêm max 255 explicit |
+| `password` | Không trim; min 8, lower/upper/digit/special | Argon2id hash | Nên thêm field max explicit |
+| `fullname` | Trim, required | `user_profiles.fullname` | Nên validate max 120 sau trim |
+| `phone` | Optional E.164 | `users.phone` | Không unique |
+| `location` | Optional; GeoIP có thể ghi đè | `user_profiles.locale` | Semantics location/locale cần chuẩn hóa |
+| `timezone` | Trim, optional | `user_profiles.timezone` | Cần IANA validation |
 
-Các Entity hoạt động tại tầng Service để biểu diễn nghiệp vụ logic độc lập với cơ chế lưu trữ:
+### 2.3 Response taxonomy
 
-```go
-type UserStatus string
+| Condition | HTTP | Meaning/retry |
+|---|---:|---|
+| Invalid body/canonical/password | `400` | Sửa input |
+| Username/email unique conflict | `409` | Không retry cùng identity |
+| Redis issue/replica gate unavailable | `500` dependency failure | Không có user; retry sau recovery |
+| PostgreSQL failure | `500` | Transaction rollback; retry có kiểm soát |
+| OTT durable + DB transaction commit | `201` | Pending account và mail intent durable |
 
-const (
-    UserStatusPendingActive UserStatus = "pending-active"
-    UserStatusActive        UserStatus = "active"
-    UserStatusSuspended     UserStatus = "suspended"
-    UserStatusDisabled      UserStatus = "disabled"
-)
+Success body:
 
-type User struct {
-    ID           uuid.UUID
-    Username     string
-    Email        string
-    Phone        *string
-    PasswordHash string
-    Status       UserStatus
-    CreatedAt    time.Time
-    UpdatedAt    time.Time
-}
+```json
+{"message":"account created"}
 ```
 
-### 3. Repository DB Models (`iamModel`)
+Response không trả plaintext OTT, password hash hoặc internal outbox state.
 
-Mô hình ánh xạ trực tiếp với bảng dữ liệu của hệ quản trị cơ sở dữ liệu (PostgreSQL/GORM):
+## 3. Data contract
 
-```go
-type User struct {
-    ID           uuid.UUID `db:"id"`
-    Username     string    `db:"username"`
-    Email        string    `db:"email"`
-    Phone        *string   `db:"phone"`
-    PasswordHash string    `db:"password_hash"`
-    Status       string    `db:"status"`
-    CreatedAt    time.Time `db:"created_at"`
-    UpdatedAt    time.Time `db:"updated_at"`
-}
+### 3.1 Identity transaction
+
+```mermaid
+flowchart LR
+    INPUT[Canonical input] --> HASH[Argon2id + UUIDv7]
+    HASH --> OTT[Redis SET hash TTL]
+    OTT --> WAIT[WAIT replica ACK<br/>same connection]
+    WAIT --> TX[PostgreSQL BEGIN]
+    TX --> U[INSERT users pending-active]
+    U --> P[INSERT user_profiles]
+    P --> O[INSERT iam_outbox_records]
+    O --> COMMIT[COMMIT]
+    COMMIT --> HTTP[HTTP 201]
 ```
 
-### 4. Converter & Mapping Layer (Service $\leftrightarrow$ Repository)
+DB transaction rollback có thể để orphan Redis key. Orphan vô hại vì key chứa random `event_id`, không có user/outbox để phát mail và tự hết TTL.
 
-Tại ranh giới giữa Service và Repository, ta thực hiện ánh xạ từ Domain Entity sang DB Model trước khi thực hiện ghi xuống DB:
+### 3.2 IAM outbox row
 
-```go
-// Chuyển từ domain entity sang repo model để chuẩn bị lưu xuống DB
-func UserEntityToModel(input iamEntity.User) User {
-    return User{
-        ID:           input.ID,
-        Username:     input.Username,
-        Email:        input.Email,
-        Phone:        input.Phone,
-        PasswordHash: input.PasswordHash,
-        Status:       string(input.Status),
-        CreatedAt:    input.CreatedAt,
-        UpdatedAt:    input.UpdatedAt,
-    }
-}
+| Field | Contract |
+|---|---|
+| `event_id` | UUIDv7 mới cho từng mail |
+| `routing_scope` | `platform` |
+| `job_topic` | `mail.verify_account` |
+| `owner_id` | Personal user UUID |
+| `owner_type` | `PERSONAL` |
+| `actor_user_id` | Personal user UUID |
+| `payload` | Protobuf `SendMailConfig` |
+| `status` | `PENDING` |
+| `job_version` | `1` |
+| `resource_id` | `verify_account` |
+| `payload_schema_version` | `1` |
+| `trace_id` | 16 bytes nếu span hợp lệ |
+| `idle` | `60` giây |
 
-// Chuyển ngược từ DB Model sang Domain Entity khi đọc từ Repository lên
-func UserModelToEntity(input User) iamEntity.User {
-    return iamEntity.User{
-        ID:           input.ID,
-        Username:     input.Username,
-        Email:        input.Email,
-        Phone:        input.Phone,
-        PasswordHash: input.PasswordHash,
-        Status:       iamEntity.UserStatus(input.Status),
-        CreatedAt:    input.CreatedAt,
-        UpdatedAt:    input.UpdatedAt,
-    }
-}
+### 3.3 Mail payload
+
+| Template variable | Source | Security |
+|---|---|---|
+| `template_id` | `platform/verify_account` | Constant allowlisted template |
+| `to` | Canonical email | PII; không log payload |
+| `fullname` | Username hiện tại | Không phải profile fullname |
+| `user_id` | User UUID | Public identifier |
+| `event_id` | Outbox event UUID | Challenge identity |
+| `verify_token` | OTT plaintext | Bearer secret, chỉ tồn tại trong mail payload |
+| `from` | `noreply@aurora.system` | Constant sender |
+
+Canonical link:
+
+```text
+https://cloud.aurora.local/activate#user_id=<uuid>&event_id=<uuid>&token=<ott>
 ```
 
-### 5. Protobuf Payload: `mailproto.SendMailConfig`
+Fragment không được gửi tới Envoy/ACR. Consumer contract nằm trong Account Verification God View.
 
-Lưu tại cột `payload` của bảng outbox dưới dạng byte nhị phân để bảo toàn cấu trúc khi CDC quét:
+## 4. End-to-end sequence
 
-```protobuf
-syntax = "proto3";
-package mailproto;
+### 4.1 Phase 1: Registration and Account Creation (Sync HTTP and Durable Intent)
 
-message SendMailConfig {
-    string to = 1;
-    string subject = 2;
-    string body_html = 3;
-    map<string, string> template_variables = 4;
-}
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant UI as Cloud Console
+    participant Edge as Envoy and ACR
+    participant IAM as IAM Handler/Service
+    participant Redis as Redis HA
+    participant DB as PostgreSQL IAM
+
+    User->>UI: Submit Sign Up
+    UI->>Edge: POST /api/v1/auth/register
+    Edge->>Edge: CORS, AuthPublic limiter and exact route
+    Edge->>IAM: Forward body
+    IAM->>IAM: Canonicalize, Argon2id and UUIDv7
+    IAM->>Redis: SET event-scoped OTT hash and TTL
+    IAM->>Redis: WAIT configured replicas on same connection
+    Redis-->>IAM: ACK gate passed
+    IAM->>DB: BEGIN, INSERT user, profile and IAM outbox, COMMIT
+    DB-->>IAM: Durable commit
+    IAM-->>UI: 201 account created
 ```
 
-### 6. PostgreSQL Table Schemas
+### 4.2 Phase 2: Async Mail Delivery and Outbox Terminal Update (JO and Dataplane)
 
-##### Bảng Người Dùng `iam.users`
+```mermaid
+sequenceDiagram
+    autonumber
+    participant JO as JO IAM Dispatcher
+    participant DB as PostgreSQL IAM
+    participant Jobs as Redis jobs:platform
+    participant DP as Dataplane Mail
+    participant LMTP as Stalwart LMTP
+    participant Results as Redis Result Stream
+
+    JO->>DB: Claim batch SKIP LOCKED with lease
+    JO->>Jobs: Atomic XADD and event marker
+    JO->>DB: Mark PUBLISHED
+    Jobs-->>DP: Consumer-group delivery
+    DP->>LMTP: Render and send activation mail
+    DP->>Results: Result with source_domain=IAM
+    Results-->>JO: Consume result
+    JO->>DB: Update iam.iam_outbox_records terminal state
+```
+
+
+## 5. State machines
+
+### 5.1 Account before handoff
+
+```mermaid
+stateDiagram-v2
+    [*] --> absent
+    absent --> pending_active: registration transaction commit
+    pending_active --> pending_active: authenticated resend queues new mail
+    pending_active --> handoff: user opens activation landing
+```
+
+Registration không sở hữu transition `pending_active → active`.
+
+### 5.2 OTT
+
+```mermaid
+stateDiagram-v2
+    [*] --> issued: SET hash + TTL + replica ACK
+    issued --> issued: resend creates independent event key
+    issued --> handed_off: mail contains fragment link
+    issued --> expired: TTL or eviction
+```
+
+### 5.3 IAM mail outbox
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: registration/resend insert
+    PENDING --> PUBLISHING: JO lease claim
+    PUBLISHING --> PENDING: Redis failure + backoff
+    PUBLISHING --> PUBLISHED: atomic XADD marker success
+    PUBLISHED --> PROCESSING: Dataplane result
+    PROCESSING --> SUCCEEDED: LMTP accepted
+    PROCESSING --> FAILED: terminal executor failure
+    SUCCEEDED --> retained: audit 30 days
+    FAILED --> retained: audit 30 days
+```
+
+Kubernetes CronJob `outbox-retention` xóa tối đa 200 terminal row/bảng/phút sau 30 ngày. JO không chạy retention cleaner.
+
+## 6. Resend contract
+
+Resend không có endpoint anonymous riêng và không gọi lại Register:
+
+1. UI xóa password sau registration và chỉ nhớ pending username.
+2. User chuyển sang Sign In và nhập lại password.
+3. IAM lookup user và verify Argon2id trước mọi mail side effect.
+4. Nếu status `pending-active`, Redis `SETNX` cooldown theo user trong 60 giây.
+5. Winner issue OTT/event mới và insert IAM outbox.
+6. ACR trả typed `412 ACCOUNT_VERIFICATION_REQUIRED`, không tạo session/cookie.
+7. Password sai không queue mail và không tiết lộ pending state.
+
+Hai request đồng thời chỉ một request thắng cooldown. Mỗi resend thành công vẫn có key per-event độc lập, nên email cũ còn valid tới TTL.
+
+## 7. Race và failure matrix
+
+| Scenario | Durable result | Recovery/control |
+|---|---|---|
+| Hai registration cùng identity | Một commit, một unique conflict | PostgreSQL unique index quyết định |
+| Redis SET fail | Không user/outbox | Retry sau Redis recovery |
+| Redis ACK thiếu | Key cleanup best-effort, không DB tx | Fail closed |
+| Redis success, DB conflict/fail | Orphan key tới TTL | Không có mail row nên không usable |
+| DB commit, HTTP response mất | Pending user + mail row | Client retry có thể `409`; resend qua login |
+| JO crash trước claim | Row vẫn PENDING | Polling reconciler claim lại |
+| JO crash sau XADD trước DB mark | Redis marker giữ stream entry ID | Lease retry không XADD lần hai trong 30 ngày |
+| LMTP success, result mất | Có thể redelivery mail | Dataplane cần durable side-effect inbox |
+| Result sai/missing domain | Không fallback theo topic | Alert contract error; không update nhầm table |
+| Một outbox table cleanup lỗi | Hai bảng khác vẫn được CronJob thử | Transaction độc lập/batch nhỏ |
+
+## 8. HA và security posture
+
+| Component | HA/control |
+|---|---|
+| ACR limiter | Distributed Redis counters theo route/IP/device |
+| Argon2id | Load-test theo pod CPU/memory; body cap trước handler |
+| Redis OTT | AOF, `noeviction`, TLS/ACL, replica ACK và replication-lag alert |
+| PostgreSQL | Unique indexes, atomic tx, connection pool/TLS |
+| JO dispatcher | Multi-pod SKIP LOCKED, 30s lease, bounded batch; drain nhanh khi có backlog, khi rỗng chỉ reconciliation 30–39s có jitter, không poll DB mỗi 500ms |
+| Redis job stream | Consumer group, retention/trim và pending alert |
+| Dataplane | At-least-once; cần durable mail side-effect dedupe |
+| Cleanup | Kubernetes CronJob `Forbid`, batch 200, lock/statement timeout |
+
+Plaintext password/OTT/email không được dùng làm metric label. Edge/app log không được ghi body hoặc activation secret.
+
+## 9. Runbook
+
+Identity và profile:
 
 ```sql
-CREATE TABLE IF NOT EXISTS iam.users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    username VARCHAR(64) NOT NULL,
-    email VARCHAR(255) NOT NULL,
-    phone VARCHAR(32) NULL,
-    password_hash TEXT NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'pending-active',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON iam.users (LOWER(username));
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON iam.users (LOWER(email));
+SELECT u.id, u.username, u.email, u.status, u.created_at,
+       p.fullname, p.locale, p.timezone
+FROM iam.users u
+JOIN iam.user_profiles p ON p.user_id = u.id
+WHERE lower(u.email) = lower($1);
 ```
 
-##### Bảng Outbox `iam.iam_outbox_records`
+Mail jobs:
 
 ```sql
-CREATE TABLE IF NOT EXISTS iam.iam_outbox_records (
-    id BIGSERIAL PRIMARY KEY,
-    event_id UUID UNIQUE NOT NULL,
-    zone_id UUID NOT NULL,
-    job_topic VARCHAR(100) NOT NULL,
-    payload BYTEA NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
-    completed_at TIMESTAMPTZ,
-    job_version INT NOT NULL DEFAULT 1,
-    resource_id VARCHAR(64),
-    payload_schema_version INT NOT NULL DEFAULT 1,
-    trace_id BYTEA,
-    idle INT,
-    error_code VARCHAR(100),
-    error_message TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_iam_outbox_pending ON iam.iam_outbox_records (status, id ASC) WHERE status = 'PENDING';
+SELECT id, event_id, owner_id, owner_type, actor_user_id,
+       job_topic, status, attempts, available_at, lease_until,
+       completed_at, error_code, error_message
+FROM iam.iam_outbox_records
+WHERE owner_id = $1 AND owner_type = 'PERSONAL'
+ORDER BY id DESC;
 ```
 
----
+Không sửa trực tiếp user/outbox status trong incident. Repair phải idempotent, có operator/reason/timestamp và giữ nguyên `event_id` khi replay cùng logical mail job.
 
-## 🛡️ 5. Xử Lý Concurrency & Race Condition
+## 10. Acceptance gates
 
-### 1. Phân Tích Redis Bitmap Collision (Khắc Phục Va Chạm Bit)
+- [ ] Exact `POST /register` public route; route con/method khác bị deny.
+- [ ] Limiter chạy trước Argon2id.
+- [ ] Password không trim/log/persist raw.
+- [ ] Redis SET và WAIT dùng cùng connection.
+- [ ] Replica gate fail không tạo user.
+- [ ] User/profile/mail intent cùng commit hoặc cùng rollback.
+- [ ] Concurrent duplicate chỉ tạo một identity.
+- [ ] Pending-login password sai không queue mail.
+- [ ] Resend cooldown không tạo session.
+- [ ] JO crash/replay không tạo duplicate stream entry trong marker window.
+- [ ] Result `source_domain=IAM` update đúng IAM row.
+- [ ] CronJob cleanup không overlap và không full-table scan.
+- [ ] Browser/E2E không thấy password hoặc OTT trong logs/storage ngoài activation fragment.
 
-- **Rủi Ro**: Do cơ chế băm HMAC-SHA256 ánh xạ chuỗi ký tự thành số nguyên làm chỉ mục (index) bit trong tập dữ liệu $2^{32}$ bits, có tỷ lệ va chạm rất nhỏ làm bit của username mới trùng với bit của username cũ đã đăng ký trước đó.
-- **Giải Pháp**:
-  - Khi `GetBit` trả về `1`, hệ thống **không** từ chối request ngay lập tức.
-  - Nó chỉ chuyển hướng nghi ngờ (Short-circuit disabled) và rơi vào nhánh kiểm tra SoT (`CheckUserExist` qua PostgreSQL). Nếu DB xác nhận không tồn tại $\rightarrow$ Cho phép ghi tiếp. Giải pháp này loại bỏ hoàn toàn khả năng chặn nhầm người dùng hợp lệ.
+## 11. Source map
 
-### 2. Transactional Outbox (Đảm Bảo Gửi Thư Kích Hoạt)
-
-- **Rủi Ro**: Hệ thống lưu thông tin User thành công nhưng sập mạng lúc gọi dịch vụ Mail, dẫn tới tài khoản bị treo vĩnh viễn ở trạng thái `pending-active`.
-- **Giải Pháp**:
-  - Bắt buộc lưu bản ghi gửi email dạng nhị phân Protobuf vào bảng `iam_outbox_records` chung một Database Transaction với lệnh tạo User.
-  - Worker CDC định kỳ quét các hàng `PENDING` có sắp xếp thứ tự và thực thi gửi tin cậy. Tránh race condition khi scale worker bằng cách cập nhật trạng thái UPDATE khoá dòng (`FOR UPDATE SKIP LOCKED`).
-
----
-
-## 📊 6. Giám Sát Và Truy Vết - Grafana Runbook
-
-### 1. Prometheus Metrics Cảnh Báo
-
-- **Service Outcomes**: `iam_service_calls_total{op="iam.auth.register", outcome}`
-- **Outbox Write Latency**: `iam_downstream_call_duration_seconds{op="iam.auth.register", kind="repo", destination="CreateRegisteredUser"}`
-
-#### 📈 PromQL Cần Thiết
-
-##### A. Tốc độ đăng ký tài khoản mới theo thời gian
-
-```promql
-sum(rate(iam_service_calls_total{op="iam.auth.register"}[5m]))
-```
-
-##### B. Tỷ lệ đăng ký thất bại do trùng lặp (Precondition Failed)
-
-```promql
-sum(rate(iam_service_calls_total{op="iam.auth.register", outcome="precondition_failed"}[5m])) / sum(rate(iam_service_calls_total{op="iam.auth.register"}[5m])) * 100
-```
-
-### 2. LogsQL (VictoriaLogs) Giám Sát
-
-##### Tìm kiếm lỗi Transaction ghi dữ liệu đăng ký
-
-```logsql
-"CreateRegisteredUser" level="error" | select(request_id, error_message, user_id)
-```
-
-##### Kiểm tra tiến trình CDC Outbox gửi mail kích hoạt thất bại
-
-```logsql
-job_topic="mail.system.verify_account" status="FAILED"
-```
-
----
-*Tài liệu kết thúc.*
-<!-- markdownlint-enable MD033 -->
+| Concern | Canonical source |
+|---|---|
+| Sign Up/resend UI | `cloud-console/src/app/signin/signup-form.tsx`, `signin-form.tsx` |
+| Cloud Console API | `cloud-console/src/lib/api/auth.ts` |
+| ACR public route/limiter | `acr/src/config.rs`, `gateway/ext_authz.rs`, `gateway/ratelimit.rs` |
+| IAM DTO/handler | `controlplane/internal/iam/transport/http/dto/req/auth_request.go`, `handler/auth_handler.go` |
+| Registration/resend orchestration | `controlplane/internal/iam/service/auth_service.go` |
+| OTT | `controlplane/internal/iam/service/one_time_token_service.go` |
+| Atomic registration repository | `controlplane/internal/iam/repository/auth_repo.go` |
+| IAM outbox schema/index | `controlplane/internal/iam/migrations/000002_iam_tables.up.sql`, `000003_iam_indexes.up.sql` |
+| IAM dispatcher/reconciler | `job-orchestrator/src/reverse_provider/iam/outbox_dispatcher.rs` |
+| Result source routing | `job-orchestrator/src/job_result/l1_dispatcher.rs` |
+| Dataplane mail | `dataplane/src/executor/mail/send.rs`, `verify_account.rs` |
+| Mail template | `controlplane/internal/mail/migrations/000005_seed_verify_account_template.up.sql` |
+| Retention scheduler | `k8s/outbox-retention-cronjob.yaml` |
+| Downstream activation | `god_view/iam/account_verification_god_view_workflow.md` |

@@ -50,9 +50,4 @@ BEFORE UPDATE ON oauth_clients
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
 
--- 2) Auto seed workspace trigger
-DROP TRIGGER IF EXISTS trg_auto_seed_workspace_on_user_active ON users;
-CREATE TRIGGER trg_auto_seed_workspace_on_user_active
-AFTER INSERT OR UPDATE ON users
-FOR EACH ROW
-EXECUTE FUNCTION auto_seed_workspace_on_user_active();
+-- [COMMENT]: Account activation không tạo workspace/zone trong trigger; hierarchy được provision qua workflow explicit sau login.

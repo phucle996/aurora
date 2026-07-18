@@ -13,11 +13,14 @@ type AuthService interface {
 
 	// [COMMENT]: VerifyAccount thực hiện kiểm tra token kích hoạt tài khoản
 	// và tiến hành active trạng thái của user kèm theo gán role mặc định.
-	VerifyAccount(ctx context.Context, userID uuid.UUID, token string) error
+	VerifyAccount(ctx context.Context, userID, eventID uuid.UUID, token string) error
 
 	// Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng qua gRPC
 	VerifyUserCredentials(ctx context.Context, req iamEntity.LoginRequest) (*iamEntity.VerifyUserCredentialsResult, error)
+}
 
-	// Stop dọn dẹp tài nguyên và đợi các tác vụ bất đồng bộ nền hoàn tất (Graceful Shutdown)
-	Stop()
+// BillingOutboxNotifier chỉ là tín hiệu đánh thức best-effort sau commit;
+// durability vẫn thuộc PostgreSQL outbox và reconciliation fallback của relay.
+type BillingOutboxNotifier interface {
+	Notify()
 }

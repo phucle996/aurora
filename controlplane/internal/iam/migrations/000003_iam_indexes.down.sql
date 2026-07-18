@@ -1,4 +1,5 @@
 DROP INDEX IF EXISTS idx_iam_outbox_pending;
+DROP INDEX IF EXISTS idx_iam_outbox_terminal_cleanup;
 
 
 -- [COMMENT]: Bỏ drop index admin do bảng đã xóa

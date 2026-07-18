@@ -184,8 +184,13 @@ impl CdcStreamer {
                                                     )
                                                     .await?;
                                                 } else if tag == b'I' {
-                                                    self.process_insert(&fields, &mut redis_conn)
-                                                        .await?;
+                                                    // [COMMENT]: Source schema là CDC metadata; không suy diễn owner domain từ job_topic.
+                                                    self.process_insert(
+                                                        &fields,
+                                                        &rel.schema_name,
+                                                        &mut redis_conn,
+                                                    )
+                                                    .await?;
                                                 }
                                             }
                                             Err(err) => {
@@ -233,8 +238,13 @@ impl CdcStreamer {
     async fn process_insert(
         &self,
         fields: &HashMap<String, String>,
+        source_domain: &str,
         redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if source_domain.eq_ignore_ascii_case("iam") {
+            // [COMMENT]: IAM mail do lease dispatcher DB-poll sở hữu; bỏ direct XADD để một source có đúng một publisher.
+            return Ok(());
+        }
         let event_id = fields.get("event_id").cloned().unwrap_or_default();
         let routing_scope = fields.get("routing_scope").cloned().unwrap_or_default();
         let job_topic = fields.get("job_topic").cloned().unwrap_or_default();
@@ -252,8 +262,13 @@ impl CdcStreamer {
             .map(|b| format!("{:02x}", b))
             .collect::<String>();
         let idle_str = fields.get("idle").cloned().unwrap_or_default();
+        let source_domain = source_domain.trim().to_ascii_uppercase();
 
-        if event_id.is_empty() || routing_scope.is_empty() || job_topic.is_empty() {
+        if event_id.is_empty()
+            || routing_scope.is_empty()
+            || job_topic.is_empty()
+            || source_domain.is_empty()
+        {
             Logger::sys_warn(
                 "cdc.insert",
                 "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng",
@@ -281,6 +296,7 @@ impl CdcStreamer {
         let resource_id_clone = resource_id.clone();
         let payload_schema_version_str_clone = payload_schema_version_str.clone();
         let idle_str_clone = idle_str.clone();
+        let source_domain_clone = source_domain.clone();
 
         crate::observability::otel::CURRENT_TRACE_ID
             .scope(trace_id_hex_clone, async move {
@@ -345,6 +361,8 @@ impl CdcStreamer {
                 cmd.arg("job_version").arg(job_version.to_string());
                 cmd.arg("attempt").arg("0");
                 cmd.arg("job_topic").arg(&job_topic_clone);
+                // [COMMENT]: Dataplane echo field này trong mọi result để JO update đúng outbox nguồn.
+                cmd.arg("source_domain").arg(&source_domain_clone);
                 cmd.arg("resource_id").arg(&resource_id_clone);
                 cmd.arg("payload_schema_version")
                     .arg(payload_schema_version.to_string());

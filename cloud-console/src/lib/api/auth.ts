@@ -22,6 +22,12 @@ export type RegisterRequest = {
   timezone?: string;
 };
 
+export type VerifyAccountRequest = {
+	user_id: string;
+	event_id: string;
+	token: string;
+};
+
 export async function login(
   payload: LoginRequest,
   options: { signal?: AbortSignal } = {},
@@ -46,6 +52,18 @@ export async function register(
   });
 }
 
+export async function verifyAccount(
+	payload: VerifyAccountRequest,
+	options: { signal?: AbortSignal } = {},
+): Promise<void> {
+	await fetchJSON<void>("/api/v1/auth/verify", {
+		method: "POST",
+		body: payload,
+		credentials: "same-origin",
+		signal: options.signal,
+	});
+}
+
 // [COMMENT]: Gọi logout endpoint để xoá runtime session trong Redis + revoke refresh token trong DB.
 // Best-effort: nếu thất bại (network error, 401) vẫn tiếp tục clear client state.
 export async function logout(
@@ -66,5 +84,6 @@ export async function logout(
 export const authAPI = {
   login,
   register,
+	verifyAccount,
   logout,
 };

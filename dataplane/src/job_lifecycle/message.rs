@@ -39,6 +39,9 @@ pub struct JobPayload {
     /// Ví dụ: "vps.create", "vps.resize", "mail.send".
     pub job_topic: String,
 
+    /// Domain sở hữu outbox nguồn: IAM | MAIL | STORAGE.
+    pub source_domain: String,
+
     /// Mã tài nguyên hạ tầng chịu tác động trực tiếp của Job này.
     /// Ví dụ: "vps-uuid-12345".
     pub resource_id: String,

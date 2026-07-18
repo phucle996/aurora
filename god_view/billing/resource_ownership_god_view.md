@@ -299,7 +299,7 @@ jetstream {
 |---|---|
 | Provisioning job outbox schema | `controlplane/internal/storage/migrations/000002_storage_outbox.up.sql` |
 | Resource lifecycle outbox schema | `controlplane/internal/storage/migrations/000004_lifecycle_outbox.up.sql` |
-| Cleanup index (terminal jobs) | `controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql` |
+| Cleanup index + scheduler (terminal jobs) | `controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql`, `k8s/outbox-retention-cronjob.yaml`; CronJob batch 200/phút, JO không chạy cleaner |
 | Proto contract | `job-orchestrator/proto/resource_ownership.proto` |
 | Lifecycle event insert (Rust) | `job-orchestrator/src/reverse_provider/storage/db/lifecycle.rs` |
 | Resolve create/delete + insert event | `job-orchestrator/src/reverse_provider/storage/db/bucket.rs` |

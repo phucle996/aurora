@@ -98,6 +98,7 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                             let mut job_version = 1;
                                             let mut attempt = 0;
                                             let mut job_topic = String::new();
+                                            let mut source_domain = String::new();
                                             let mut resource_id = String::new();
                                             let mut payload_schema_version = 1;
                                             let mut payload = Vec::new();
@@ -140,6 +141,14 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                                             if let redis::Value::Data(d) = &chunk[1]
                                                             {
                                                                 job_topic =
+                                                                    String::from_utf8_lossy(d)
+                                                                        .into_owned();
+                                                            }
+                                                        }
+                                                        "source_domain" => {
+                                                            if let redis::Value::Data(d) = &chunk[1]
+                                                            {
+                                                                source_domain =
                                                                     String::from_utf8_lossy(d)
                                                                         .into_owned();
                                                             }
@@ -189,7 +198,7 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                                 }
                                             }
 
-                                            if job_id.is_empty() {
+                                            if job_id.is_empty() || source_domain.is_empty() {
                                                 return None;
                                             }
 
@@ -198,6 +207,7 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                                 job_version,
                                                 attempt,
                                                 job_topic,
+                                                source_domain,
                                                 resource_id,
                                                 payload_schema_version,
                                                 payload,

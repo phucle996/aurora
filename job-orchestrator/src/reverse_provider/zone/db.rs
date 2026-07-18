@@ -265,8 +265,10 @@ pub async fn update_zone_service_metrics(
 /// Return: HashMap<zone_id, HashMap<service_type, desired_state>>
 pub async fn query_all_zone_services_enabled(
     db_url: &str,
-) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, bool>>, Box<dyn std::error::Error + Send + Sync>>
-{
+) -> Result<
+    std::collections::HashMap<String, std::collections::HashMap<String, bool>>,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
 
     tokio::spawn(async move {
@@ -289,10 +291,8 @@ pub async fn query_all_zone_services_enabled(
         .await?;
 
     // [COMMENT]: Nhóm theo zone_id → {service_type: desired_state}
-    let mut snapshot: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, bool>,
-    > = std::collections::HashMap::new();
+    let mut snapshot: std::collections::HashMap<String, std::collections::HashMap<String, bool>> =
+        std::collections::HashMap::new();
 
     for row in rows {
         let zone_id: String = row.get(0);
@@ -352,4 +352,3 @@ pub async fn query_zone_services_enabled(
 
     Ok(services)
 }
-

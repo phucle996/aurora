@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -66,7 +67,7 @@ func (a *App) Init() error {
 	a.redisClient = redisClient
 
 	// 5. Connect to NATS Messaging Infrastructure
-	natsConn, err := infra.ConnectNats(a.Cfg.NATS.Addr)
+	natsConn, err := infra.ConnectNats(&a.Cfg.NATS)
 	if err != nil {
 		return err
 	}
@@ -83,8 +84,20 @@ func (a *App) Init() error {
 	return nil
 }
 
-func (a *App) Start() {
+func (a *App) Start() error {
 	const op = "app.start"
+
+	// [COMMENT]: Consumer bắt buộc start thành công trước HTTP readiness; không chạy degraded rồi làm mất backlog SLO.
+	if a.module != nil && a.module.PersonalWalletProvisionSubscriber != nil {
+		if err := a.module.PersonalWalletProvisionSubscriber.Start(); err != nil {
+			return fmt.Errorf("start personal wallet provision subscriber: %w", err)
+		}
+	}
+	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
+		if err := a.module.ResourceOwnershipSubscriber.Start(context.Background()); err != nil {
+			return fmt.Errorf("start resource ownership subscriber: %w", err)
+		}
+	}
 
 	// 1. Outbox relay cho Pricing updates
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
@@ -97,19 +110,6 @@ func (a *App) Start() {
 		}()
 	} else {
 		close(a.outboxDone)
-	}
-
-	// 2. Start Billing JetStream consumers.
-	if a.module != nil && a.module.PersonalWalletProvisionSubscriber != nil {
-		if err := a.module.PersonalWalletProvisionSubscriber.Start(); err != nil {
-			logger.SysWarn(op, "Start PersonalWalletProvisionSubscriber failed: "+err.Error())
-		}
-	}
-
-	if a.module != nil && a.module.ResourceOwnershipSubscriber != nil {
-		if err := a.module.ResourceOwnershipSubscriber.Start(context.Background()); err != nil {
-			logger.SysWarn(op, "Start ResourceOwnershipSubscriber failed: "+err.Error())
-		}
 	}
 
 	// 3. Start gRPC Reconciler Worker
@@ -156,6 +156,7 @@ func (a *App) Start() {
 	} else {
 		logger.SysInfo(op, "Rust Engine child process successfully started")
 	}
+	return nil
 }
 
 func (a *App) Wait() {

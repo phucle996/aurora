@@ -151,7 +151,7 @@ func (r *AuthRepository) LoginUserTenant(
 	return loginUser, nil
 }
 
-func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
+func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, verificationMail *iamEntity.IamOutboxRecord) error {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("iam repo: begin register tx: %w", err)
@@ -231,11 +231,43 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 		return fmt.Errorf("iam repo: insert user profile: %w", err)
 	}
 
+	if verificationMail == nil {
+		return fmt.Errorf("iam repo: verification mail outbox is required")
+	}
+	// [COMMENT]: User, profile và mail intent cùng commit; HTTP 201 không thể tồn tại nếu thiếu durable outbox row.
+	outboxQuery := fmt.Sprintf(`
+		INSERT INTO %s.iam_outbox_records (
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, actor_user_id, status,
+			job_version, resource_id, payload_schema_version, trace_id, idle
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, r.schema)
+	if _, err := tx.Exec(ctx, outboxQuery,
+		verificationMail.EventID, verificationMail.RoutingScope, verificationMail.JobTopic,
+		verificationMail.Payload, verificationMail.OwnerID, verificationMail.OwnerType,
+		verificationMail.ActorUserID, verificationMail.Status, verificationMail.JobVersion,
+		verificationMail.ResourceID, verificationMail.PayloadSchemaVersion,
+		verificationMail.TraceID, verificationMail.Idle,
+	); err != nil {
+		return fmt.Errorf("iam repo: insert verification outbox: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("iam repo: commit register tx: %w", err)
 	}
 
 	return nil
+}
+
+func (r *AuthRepository) IsUserActive(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var active bool
+	query := fmt.Sprintf(`SELECT status = 'active' FROM %s.users WHERE id = $1`, r.schema)
+	if err := r.db.QueryRow(ctx, query, userID).Scan(&active); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, iamTaxonomy.ErrUserNotFound
+		}
+		return false, fmt.Errorf("iam repo: read user activation state: %w", err)
+	}
+	return active, nil
 }
 
 // [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
@@ -249,47 +281,30 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 		_ = tx.Rollback(ctx)
 	}()
 
-	// [COMMENT]: 1. Cập nhật status của user thành active, đồng thời SELECT ra username để build key 5 cấp
+	// [COMMENT]: Khóa user row trước để concurrent verify nối đuôi nhau; cả pending và active retry
+	// đều đi qua cùng invariant role + Billing event thay vì nhánh active chỉ repair một nửa.
 	var username string
 	var status string
-	queryUpdate := fmt.Sprintf(`
-		UPDATE %s.users 
-		SET status = 'active', updated_at = NOW() 
-		WHERE id = $1 AND status = 'pending-active'
-		RETURNING username, status
-	`, r.schema)
-
-	err = tx.QueryRow(ctx, queryUpdate, userID).Scan(&username, &status)
-	if err != nil {
+	lockUserQuery := fmt.Sprintf(`SELECT username, status FROM %s.users WHERE id = $1 FOR UPDATE`, r.schema)
+	if err = tx.QueryRow(ctx, lockUserQuery, userID).Scan(&username, &status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// [COMMENT]: Idempotent check: Kiểm tra nếu user đã active từ trước
-			var currentStatus string
-			errCheck := tx.QueryRow(ctx, fmt.Sprintf("SELECT status FROM %s.users WHERE id = $1 FOR UPDATE", r.schema), userID).Scan(&currentStatus)
-			if errCheck != nil {
-				if errors.Is(errCheck, pgx.ErrNoRows) {
-					return iamTaxonomy.ErrUserNotFound
-				}
-				return errCheck
-			}
-			if currentStatus == "active" {
-				// [COMMENT]: Self-heal cho retry sau sự cố cũ: active user vẫn phải có durable event.
-				_, insertErr := tx.Exec(ctx, fmt.Sprintf(`
-						INSERT INTO %s.billing_wallet_provision_outbox
-							(event_id, owner_id, schema_version, payload)
-						VALUES ($1, $2, 1, $3)
-						ON CONFLICT (event_id) DO NOTHING
-					`, r.schema), eventID, userID, eventPayload)
-				if insertErr != nil {
-					return fmt.Errorf("iam repo: insert verified event for active user: %w", insertErr)
-				}
-				return tx.Commit(ctx)
-			}
-			return fmt.Errorf("user status is %s, cannot activate", currentStatus)
+			return iamTaxonomy.ErrUserNotFound
 		}
-		return err
+		return fmt.Errorf("iam repo: lock user for activation: %w", err)
+	}
+	if status != "pending-active" && status != "active" {
+		return fmt.Errorf("user status is %s, cannot activate", status)
+	}
+	if status == "pending-active" {
+		if _, err = tx.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s.users SET status = 'active', updated_at = NOW()
+			WHERE id = $1 AND status = 'pending-active'
+		`, r.schema), userID); err != nil {
+			return fmt.Errorf("iam repo: activate user: %w", err)
+		}
 	}
 
-	// [COMMENT]: 2. Truy vấn danh sách permissions tĩnh (3 cấp) của role tương ứng từ DB dựa trên roleCode
+	// [COMMENT]: Retry của active user cũng tải role chuẩn và INSERT ON CONFLICT để self-heal dữ liệu legacy thiếu role.
 	queryRolePerms := fmt.Sprintf(`
 		SELECT r.id, r.name, r.role_level, COALESCE(p.module, ''), COALESCE(p.object, ''), COALESCE(p.behavior, '')
 		FROM %s.roles r
@@ -366,9 +381,11 @@ func (r *AuthRepository) ActivateUser(ctx context.Context, userID uuid.UUID, rol
 
 	// [COMMENT]: Activation, role và event cùng commit; không tồn tại cửa sổ DB commit nhưng event bị mất.
 	_, err = tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.billing_wallet_provision_outbox
-			(event_id, owner_id, schema_version, payload)
-		VALUES ($1, $2, 1, $3)
+		INSERT INTO %s.billing_outbox_records
+			(event_id, event_type, schema_version, aggregate_type, aggregate_id, aggregate_version,
+			 owner_id, owner_type, actor_user_id, payload, occurred_at)
+		VALUES ($1, 'billing.wallet.personal.provision.requested.v1', 1, 'IAM_USER', $2, 1,
+		        $2, 'PERSONAL', $2, $3, NOW())
 		ON CONFLICT (event_id) DO NOTHING
 	`, r.schema), eventID, userID, eventPayload)
 	if err != nil {

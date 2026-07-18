@@ -45,6 +45,10 @@ pub struct LoginPayload {
 #[derive(Serialize)]
 pub struct ErrorResponse {
     pub error_message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_email_queued: Option<bool>,
 }
 
 /// [COMMENT]: Kết quả cấp phát Trinity Session cho User
@@ -288,10 +292,8 @@ pub async fn handle_login(
 
     Logger::sys_info(
         "user.login",
-        &format!(
-            "Forwarding verification NATS request to Controlplane for user: {}",
-            cp_req.username
-        ),
+        // [COMMENT]: Username là identity data; correlation dùng trace/request metadata thay vì raw username.
+        "Forwarding credentials verification request to Controlplane",
     );
 
     let mut payload_bytes = Vec::new();
@@ -363,6 +365,9 @@ pub async fn handle_login(
             &format!("Authentication rejected: {}", err_msg),
             "",
         );
+        if err_msg == "ACCOUNT_VERIFICATION_REQUIRED" {
+            return Some(Ok(Response::new(build_verification_required_json())));
+        }
         return Some(Ok(Response::new(build_denied_json(
             HttpStatusCode::Unauthorized,
             &err_msg,
@@ -460,6 +465,8 @@ pub async fn handle_login(
 fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
     let err_resp = ErrorResponse {
         error_message: message.to_string(),
+        error_code: None,
+        verification_email_queued: None,
     };
     let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
 
@@ -470,6 +477,24 @@ fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
 
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated(message));
+    response.set_http_response(denied_builder);
+    response
+}
+
+fn build_verification_required_json() -> CheckResponse {
+    // [COMMENT]: 412 biểu diễn credentials đúng nhưng account chưa thỏa activation precondition; tuyệt đối không cấp cookie/session.
+    let err_resp = ErrorResponse {
+		error_message: "Account verification required. A verification email has been queued if cooldown allows.".to_string(),
+		error_code: Some("ACCOUNT_VERIFICATION_REQUIRED".to_string()),
+		verification_email_queued: Some(true),
+	};
+    let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
+    let mut denied_builder = DeniedHttpResponseBuilder::new();
+    denied_builder.set_http_status(HttpStatusCode::PreconditionFailed);
+    denied_builder.add_header("content-type", "application/json", None, false);
+    denied_builder.set_body(json_body);
+    let mut response = CheckResponse::new();
+    response.set_status(Status::failed_precondition("ACCOUNT_VERIFICATION_REQUIRED"));
     response.set_http_response(denied_builder);
     response
 }

@@ -16,7 +16,9 @@ func main() {
 		logger.SysFatal(op, "Application initialization failed: "+err.Error())
 	}
 
-	application.Start()
+	if err := application.Start(); err != nil {
+		logger.SysFatal(op, "Application startup failed: "+err.Error())
+	}
 
 	application.Wait()
 

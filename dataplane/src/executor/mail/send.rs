@@ -57,7 +57,10 @@ impl Executor for MailSendExecutor {
             .or_else(|| mail_config.template_variables.get("sender"))
             .map(|s| s.as_str())
             .ok_or_else(|| {
-                ExecutorError::ExecutionFailed("Thiếu tham số bắt buộc 'from' hoặc 'sender' trong template_variables".to_string())
+                ExecutorError::ExecutionFailed(
+                    "Thiếu tham số bắt buộc 'from' hoặc 'sender' trong template_variables"
+                        .to_string(),
+                )
             })?;
 
         // Lấy địa chỉ người nhận (recipient) từ template_variables (yêu cầu bắt buộc)
@@ -66,15 +69,15 @@ impl Executor for MailSendExecutor {
             .get("to")
             .map(|s| s.as_str())
             .ok_or_else(|| {
-                ExecutorError::ExecutionFailed("Thiếu tham số bắt buộc 'to' trong template_variables".to_string())
+                ExecutorError::ExecutionFailed(
+                    "Thiếu tham số bắt buộc 'to' trong template_variables".to_string(),
+                )
             })?;
 
         Logger::sys_info(
             "executor.mail.send",
-            &format!(
-                "Bắt đầu gửi email thông qua Stalwart LMTP Connection Pool (đang gửi tới {})...",
-                recipient
-            ),
+            // [COMMENT]: Recipient là PII; correlation dùng job_id ở lifecycle log thay vì địa chỉ email.
+            "Bắt đầu gửi email thông qua Stalwart LMTP Connection Pool...",
         );
 
         // Lấy tiêu đề email (subject) từ template_variables (yêu cầu bắt buộc)
@@ -83,7 +86,9 @@ impl Executor for MailSendExecutor {
             .get("subject")
             .map(|s| s.as_str())
             .ok_or_else(|| {
-                ExecutorError::ExecutionFailed("Thiếu tham số bắt buộc 'subject' trong template_variables".to_string())
+                ExecutorError::ExecutionFailed(
+                    "Thiếu tham số bắt buộc 'subject' trong template_variables".to_string(),
+                )
             })?;
 
         // Lấy nội dung email (body) từ template_variables (yêu cầu bắt buộc)
@@ -93,7 +98,10 @@ impl Executor for MailSendExecutor {
             .or_else(|| mail_config.template_variables.get("body_html"))
             .map(|s| s.as_str())
             .ok_or_else(|| {
-                ExecutorError::ExecutionFailed("Thiếu tham số bắt buộc 'body' hoặc 'body_html' trong template_variables".to_string())
+                ExecutorError::ExecutionFailed(
+                    "Thiếu tham số bắt buộc 'body' hoặc 'body_html' trong template_variables"
+                        .to_string(),
+                )
             })?;
 
         // 2. Gọi hàm send_raw_email từ core module để chuyển tiếp

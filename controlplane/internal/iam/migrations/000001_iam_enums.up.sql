@@ -15,6 +15,20 @@ BEGIN
     END IF;
 END
 $$;
+
+-- [COMMENT]: Billing owner là contract liên-domain; enum chặn producer ghi sai loại ví ngay tại PostgreSQL.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_type t
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'billing_owner_type' AND n.nspname = current_schema()
+    ) THEN
+        CREATE TYPE billing_owner_type AS ENUM ('PERSONAL', 'TENANT');
+    END IF;
+END
+$$;
 DO $$
 BEGIN
     EXECUTE format('ALTER TYPE %I.user_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'pending-active');
@@ -144,6 +158,5 @@ BEGIN
     EXECUTE format('ALTER TYPE %I.oauth_client_status ADD VALUE IF NOT EXISTS %L', current_schema(), 'revoked');
 END
 $$;
-
 
 

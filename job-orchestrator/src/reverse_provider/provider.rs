@@ -1,6 +1,6 @@
+use super::{mail, storage, zone};
 use crate::config::Config;
 use crate::observability::logger::Logger;
-use super::{mail, zone, storage};
 
 /// [COMMENT]: ReverseProvider chịu trách nhiệm lắng nghe và phản hồi các yêu cầu truy vấn ngược tài nguyên từ Dataplane.
 pub struct ReverseProvider {

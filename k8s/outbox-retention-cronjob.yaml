@@ -1,0 +1,183 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: outbox-retention
+  namespace: controlplane
+  labels:
+    app.kubernetes.io/name: outbox-retention
+    app.kubernetes.io/component: database-maintenance
+    app.kubernetes.io/part-of: aurora-controlplane
+spec:
+  # [COMMENT]: Chạy thường xuyên nhưng mỗi lần chỉ xóa batch nhỏ để WAL, replica lag và autovacuum ổn định.
+  schedule: "*/1 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 45
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 55
+      ttlSecondsAfterFinished: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: outbox-retention
+            app.kubernetes.io/component: database-maintenance
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 10
+          securityContext:
+            runAsNonRoot: true
+            # [COMMENT]: postgres:alpine dùng UID/GID 70; numeric ID để kubelet xác minh non-root trước khi start.
+            runAsUser: 70
+            runAsGroup: 70
+            fsGroup: 70
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: cleanup
+              # [COMMENT]: Production nên pin image theo digest trong bước promotion của registry nội bộ.
+              image: postgres:17-alpine
+              imagePullPolicy: IfNotPresent
+              env:
+                # [COMMENT]: Secret dùng DB role riêng, chỉ có CONNECT/USAGE/SELECT/DELETE trên bốn outbox table.
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: outbox-retention-postgres
+                      key: database-url
+                - name: PGAPPNAME
+                  value: aurora-outbox-retention
+                - name: HOME
+                  value: /tmp
+              command:
+                - /bin/sh
+                - -ec
+              args:
+                - |
+                  failures=0
+
+                  # [COMMENT]: Mỗi psql call là một transaction độc lập; một bảng lỗi không chặn các bảng còn lại được dọn.
+                  psql "$DATABASE_URL" -X --set=ON_ERROR_STOP=1 <<'SQL' || failures=1
+                  BEGIN;
+                  SET LOCAL lock_timeout = '250ms';
+                  SET LOCAL statement_timeout = '5s';
+                  SET LOCAL idle_in_transaction_session_timeout = '5s';
+                  WITH candidates AS (
+                      SELECT id
+                      FROM storage.storage_outbox_records
+                      WHERE status IN ('SUCCEEDED', 'FAILED')
+                        AND completed_at IS NOT NULL
+                        AND completed_at < NOW() - INTERVAL '30 days'
+                      ORDER BY completed_at, id
+                      FOR UPDATE SKIP LOCKED
+                      LIMIT 200
+                  ), deleted AS (
+                      DELETE FROM storage.storage_outbox_records AS target
+                      USING candidates
+                      WHERE target.id = candidates.id
+                      RETURNING target.id
+                  )
+                  SELECT 'storage.storage_outbox_records' AS table_name, COUNT(*) AS deleted_rows
+                  FROM deleted;
+                  COMMIT;
+                  SQL
+
+                  psql "$DATABASE_URL" -X --set=ON_ERROR_STOP=1 <<'SQL' || failures=1
+                  BEGIN;
+                  SET LOCAL lock_timeout = '250ms';
+                  SET LOCAL statement_timeout = '5s';
+                  SET LOCAL idle_in_transaction_session_timeout = '5s';
+                  WITH candidates AS (
+                      SELECT id
+                      FROM iam.iam_outbox_records
+                      WHERE status IN ('SUCCEEDED', 'FAILED')
+                        AND completed_at IS NOT NULL
+                        AND completed_at < NOW() - INTERVAL '30 days'
+                      ORDER BY completed_at, id
+                      FOR UPDATE SKIP LOCKED
+                      LIMIT 200
+                  ), deleted AS (
+                      DELETE FROM iam.iam_outbox_records AS target
+                      USING candidates
+                      WHERE target.id = candidates.id
+                      RETURNING target.id
+                  )
+                  SELECT 'iam.iam_outbox_records' AS table_name, COUNT(*) AS deleted_rows
+                  FROM deleted;
+                  COMMIT;
+                  SQL
+
+                  psql "$DATABASE_URL" -X --set=ON_ERROR_STOP=1 <<'SQL' || failures=1
+                  BEGIN;
+                  SET LOCAL lock_timeout = '250ms';
+                  SET LOCAL statement_timeout = '5s';
+                  SET LOCAL idle_in_transaction_session_timeout = '5s';
+                  WITH candidates AS (
+                      SELECT id
+                      FROM mail.mail_outbox_records
+                      WHERE status IN ('SUCCEEDED', 'FAILED')
+                        AND completed_at IS NOT NULL
+                        AND completed_at < NOW() - INTERVAL '30 days'
+                      ORDER BY completed_at, id
+                      FOR UPDATE SKIP LOCKED
+                      LIMIT 200
+                  ), deleted AS (
+                      DELETE FROM mail.mail_outbox_records AS target
+                      USING candidates
+                      WHERE target.id = candidates.id
+                      RETURNING target.id
+                  )
+                  SELECT 'mail.mail_outbox_records' AS table_name, COUNT(*) AS deleted_rows
+                  FROM deleted;
+                  COMMIT;
+                  SQL
+
+                  psql "$DATABASE_URL" -X --set=ON_ERROR_STOP=1 <<'SQL' || failures=1
+                  BEGIN;
+                  SET LOCAL lock_timeout = '250ms';
+                  SET LOCAL statement_timeout = '5s';
+                  SET LOCAL idle_in_transaction_session_timeout = '5s';
+                  WITH candidates AS (
+                      SELECT id
+                      FROM iam.billing_outbox_records
+                      WHERE status = 'PUBLISHED'
+                        AND published_at IS NOT NULL
+                        AND published_at < NOW() - INTERVAL '30 days'
+                      ORDER BY published_at, id
+                      FOR UPDATE SKIP LOCKED
+                      LIMIT 200
+                  ), deleted AS (
+                      DELETE FROM iam.billing_outbox_records AS target
+                      USING candidates
+                      WHERE target.id = candidates.id
+                      RETURNING target.id
+                  )
+                  SELECT 'iam.billing_outbox_records' AS table_name, COUNT(*) AS deleted_rows
+                  FROM deleted;
+                  COMMIT;
+                  SQL
+
+                  exit "$failures"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 96Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi

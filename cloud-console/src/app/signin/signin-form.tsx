@@ -73,6 +73,16 @@ export default function SignInForm({
   const [password, setPassword] = useState("");
   const [trustDevice, setTrustDevice] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+	const [pendingVerification, setPendingVerification] = useState(false);
+
+	useEffect(() => {
+		// [COMMENT]: Prefill account pending verification; password luôn phải nhập lại để authorize resend.
+		const pendingUsername = window.sessionStorage.getItem("iam.pending_verification_username");
+		if (pendingUsername) {
+			setUsername(pendingUsername);
+			setPendingVerification(true);
+		}
+	}, []);
 
   // [COMMENT]: Parse username@tenant_domain real-time:
   // nếu username chứa '@', tách thành rawUsername và tenantDomain để hiển thị badge và gửi lên API.
@@ -100,7 +110,7 @@ export default function SignInForm({
       toast.error(t.auth.passwordLen);
       return;
     }
-    if (!selectedZoneCode) {
+	if (!selectedZoneCode && !pendingVerification) {
       toast.error(t.auth.zoneReq);
       return;
     }
@@ -127,11 +137,14 @@ export default function SignInForm({
         password,
         device_public_key: devicePublicKey,
         trust_device: trustDevice,
-        zone_code: selectedZoneCode,
+		// [COMMENT]: Pending login chỉ authorize resend nên không cần placement zone; account active vẫn giữ zone requirement.
+		zone_code: selectedZoneCode || "global",
         tenant_domain: tenantDomain || undefined,
       };
 
       await authAPI.login(payload);
+      window.sessionStorage.removeItem("iam.pending_verification_username");
+	  setPendingVerification(false);
       // [COMMENT]: Sau khi login thành công → gọi refreshSession để trigger đầy đủ luồng resolve:
       // session → context → profile (song song). Không dùng setAuthenticatedSession vì nó
       // chỉ set state local, không fetch context/profile → gây bug phải F5 lại mới load được.
@@ -140,11 +153,16 @@ export default function SignInForm({
     } catch (err: unknown) {
       const apiError = err as { status?: number; message?: string };
       const msg = apiError?.message || "An unexpected error occurred. Please try again.";
+	  if (apiError?.status === 412) {
+		// [COMMENT]: 412 nghĩa là password đúng, backend đã queue mail nếu cooldown cho phép và không cấp session.
+		setPassword("");
+		setPendingVerification(true);
+	  }
       toast.error(msg);
     } finally {
       setIsLoading(false);
     }
-  }, [username, password, trustDevice, selectedZoneCode, t, router, refreshSession]);
+	}, [username, password, trustDevice, selectedZoneCode, pendingVerification, t, router, refreshSession]);
 
   return (
     <div className="space-y-5">

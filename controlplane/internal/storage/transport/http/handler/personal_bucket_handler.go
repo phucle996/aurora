@@ -84,7 +84,6 @@ func (h *PersonalBucketHandler) Create(c *gin.Context) {
 		Tags:                 req.Tags,
 	}
 	createResult, createErr := h.personalSvc.CreateBucketForPersonal(ctx, param)
-
 	if createErr != nil {
 		switch {
 		case errors.Is(createErr, storageTaxonomy.ErrAlreadyExists):

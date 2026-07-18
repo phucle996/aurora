@@ -102,7 +102,10 @@ pub async fn process_report(
                     Err(e) => {
                         Logger::sys_error(
                             "backpressure_listener.fallback_db_error",
-                            &format!("Không thể fallback đọc zone_services từ DB cho zone {}", zone_id),
+                            &format!(
+                                "Không thể fallback đọc zone_services từ DB cho zone {}",
+                                zone_id
+                            ),
                             &e.to_string(),
                         );
                         // [COMMENT]: Nếu DB lỗi, mặc định coi tất cả disabled để tránh false draining trigger
@@ -157,13 +160,10 @@ pub async fn process_report(
     // [COMMENT]: 5. Thực hiện cập nhật trực tiếp Postgres DB nếu zone_status thay đổi.
     // Chuyển Error sang String để vượt ranh giới async Send trait của Rust.
     if target_status != current_status {
-        let update_result = super::super::db::update_zone_status(
-            &config.database_url,
-            &zone_id,
-            &target_status,
-        )
-        .await
-        .map_err(|e| e.to_string());
+        let update_result =
+            super::super::db::update_zone_status(&config.database_url, &zone_id, &target_status)
+                .await
+                .map_err(|e| e.to_string());
 
         match update_result {
             Ok(true) => {
@@ -173,24 +173,25 @@ pub async fn process_report(
             Ok(false) => {
                 // [COMMENT]: DB Guard từ chối do vi phạm chuyển dịch trạng thái.
                 // Lập tức query lại DB để sửa sai cache RAM (Self-Correcting Cache).
-                let corrected = super::super::db::query_zone_services_enabled(
-                    &config.database_url,
-                    &zone_id,
-                )
-                .await;
+                let corrected =
+                    super::super::db::query_zone_services_enabled(&config.database_url, &zone_id)
+                        .await;
 
                 if let Ok(services) = corrected {
-                    current_mail_enabled = services.get("mail").copied().unwrap_or(current_mail_enabled);
-                    current_storage_enabled = services.get("storage").copied().unwrap_or(current_storage_enabled);
+                    current_mail_enabled = services
+                        .get("mail")
+                        .copied()
+                        .unwrap_or(current_mail_enabled);
+                    current_storage_enabled = services
+                        .get("storage")
+                        .copied()
+                        .unwrap_or(current_storage_enabled);
                 }
 
                 // [COMMENT]: Reload zone status từ DB
-                if let Ok((db_status, _)) = super::super::db::query_current_state(
-                    &config.database_url,
-                    &zone_id,
-                    "mail",
-                )
-                .await
+                if let Ok((db_status, _)) =
+                    super::super::db::query_current_state(&config.database_url, &zone_id, "mail")
+                        .await
                 {
                     current_status = db_status;
                 }
@@ -327,7 +328,6 @@ pub async fn process_report(
         node_heartbeats.insert((zone_id.clone(), node_code.clone()), Instant::now());
     }
 }
-
 
 /// [COMMENT]: Kiểm tra xem có cần ghi metrics xuống DB không (Throttle Guard).
 /// Chỉ ghi khi: status đổi, capacity chênh lệch >10 đơn vị, hoặc quá 120s kể từ lần ghi cuối.

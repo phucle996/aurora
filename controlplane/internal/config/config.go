@@ -71,9 +71,11 @@ type AppCfg struct {
 
 // SecurityCfg lưu trữ các tham số bảo mật, thời hạn TTL của các loại Token và Session.
 type SecurityCfg struct {
-	RuntimeMasterKey string
-	OneTimeTokenTTL  time.Duration
-	RefreshTokenTTL  time.Duration
+	RuntimeMasterKey        string
+	OneTimeTokenTTL         time.Duration
+	OneTimeTokenReplicaAcks int
+	OneTimeTokenReplicaWait time.Duration
+	RefreshTokenTTL         time.Duration
 }
 
 // PsqlCfg chứa các thông số kết nối cơ sở dữ liệu PostgreSQL và connection pool.
@@ -181,8 +183,11 @@ func LoadConfig() *Config {
 
 		Security: SecurityCfg{
 			RuntimeMasterKey: getEnv("SECURITY_MASTER_KEY", "aurora-storage-master-secret-key-32bytes"),
-			OneTimeTokenTTL:  15 * time.Minute,
-			RefreshTokenTTL:  30 * 24 * time.Hour,
+			OneTimeTokenTTL:  getEnvAsDuration("IAM_OTT_TTL", 15*time.Minute),
+			// [COMMENT]: Production mặc định đòi ít nhất một replica ACK; dev đơn node phải override về 0 rõ ràng.
+			OneTimeTokenReplicaAcks: getEnvAsInt("IAM_OTT_REPLICA_ACKS", 1),
+			OneTimeTokenReplicaWait: getEnvAsDuration("IAM_OTT_REPLICA_WAIT", time.Second),
+			RefreshTokenTTL:         30 * 24 * time.Hour,
 		},
 		Psql: PsqlCfg{
 			Host:          getEnv("PSQL_HOST", "localhost"),

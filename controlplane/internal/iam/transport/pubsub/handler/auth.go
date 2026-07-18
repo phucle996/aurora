@@ -128,14 +128,19 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error)
 		// [COMMENT]: Gọi AuthService xử lý kiểm tra credentials & đăng ký thiết bị dưới DB
 		res, err := h.authService.VerifyUserCredentials(ctx, loginReq)
 		if err != nil {
+			if errors.Is(err, iamTaxonomy.ErrVerificationRequired) {
+				// [COMMENT]: Password đã đúng và mail đã queue/cooldown; ACR dùng code ổn định này để không cấp session.
+				respondError("ACCOUNT_VERIFICATION_REQUIRED")
+				return
+			}
 			if errors.Is(err, iamTaxonomy.ErrRoleRequired) {
-				logger.SysWarn("NATS.VerifyUserCredentials", fmt.Sprintf("Login attempt blocked: user '%s' has no active role assigned in target scope", req.Username))
+				logger.SysWarn("NATS.VerifyUserCredentials", "Login attempt blocked: no active role assigned in target scope")
 				respondError(iamTaxonomy.ErrInvalidCredentials.Error())
 				return
 			}
 
 			if errors.Is(err, iamTaxonomy.ErrUserNotFound) || errors.Is(err, iamTaxonomy.ErrInvalidCredentials) {
-				logger.SysWarn("NATS.VerifyUserCredentials", fmt.Sprintf("Login attempt failed: invalid credentials for user '%s'", req.Username))
+				logger.SysWarn("NATS.VerifyUserCredentials", "Login attempt failed: invalid credentials")
 				respondError(iamTaxonomy.ErrInvalidCredentials.Error())
 				return
 			}

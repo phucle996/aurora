@@ -15,7 +15,9 @@ type IamOutboxRecord struct {
 	RoutingScope         string     `db:"routing_scope"`
 	JobTopic             string     `db:"job_topic"`
 	Payload              []byte     `db:"payload"` // Dữ liệu nhị phân serialized Protobuf
-	UserID               string     `db:"user_id"`
+	OwnerID              uuid.UUID  `db:"owner_id"`
+	OwnerType            string     `db:"owner_type"`
+	ActorUserID          uuid.UUID  `db:"actor_user_id"`
 	Status               string     `db:"status"`
 	CompletedAt          *time.Time `db:"completed_at"`
 	JobVersion           uint32     `db:"job_version"`
@@ -35,7 +37,9 @@ func IamOutboxEntityToModel(e iamEntity.IamOutboxRecord) IamOutboxRecord {
 		RoutingScope:         e.RoutingScope,
 		JobTopic:             e.JobTopic,
 		Payload:              e.Payload,
-		UserID:               e.UserID,
+		OwnerID:              e.OwnerID,
+		OwnerType:            e.OwnerType,
+		ActorUserID:          e.ActorUserID,
 		Status:               string(e.Status),
 		CompletedAt:          e.CompletedAt,
 		JobVersion:           e.JobVersion,
@@ -56,7 +60,9 @@ func IamOutboxModelToEntity(m IamOutboxRecord) iamEntity.IamOutboxRecord {
 		RoutingScope:         m.RoutingScope,
 		JobTopic:             m.JobTopic,
 		Payload:              m.Payload,
-		UserID:               m.UserID,
+		OwnerID:              m.OwnerID,
+		OwnerType:            m.OwnerType,
+		ActorUserID:          m.ActorUserID,
 		Status:               iamEntity.IamOutboxStatus(m.Status),
 		CompletedAt:          m.CompletedAt,
 		JobVersion:           m.JobVersion,

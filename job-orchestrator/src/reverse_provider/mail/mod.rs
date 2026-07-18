@@ -1,4 +1,4 @@
-pub mod template;
+pub mod db;
 pub mod dispatcher;
 pub mod listener;
-pub mod db;
+pub mod template;

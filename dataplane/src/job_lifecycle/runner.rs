@@ -64,6 +64,7 @@ impl JobRunner {
         let job_version = payload.job_version;
         let attempt = payload.attempt;
         let job_topic_for_registry = payload.job_topic.clone();
+        let source_domain_for_registry = payload.source_domain.clone();
         let trace_id_for_registry = payload.trace_id.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -115,6 +116,7 @@ impl JobRunner {
                     error_code: None,
                     message: "".to_string(),
                     job_topic: payload.job_topic.clone(),
+					source_domain: payload.source_domain.clone(),
                     trace_id: payload.trace_id.clone(),
                 };
                 let _ = JobResultReporter::report_outcome(
@@ -148,6 +150,7 @@ impl JobRunner {
                     payload.job_version,
                     payload.attempt,
                     payload.job_topic.clone(),
+					payload.source_domain.clone(),
                     payload.trace_id.clone(),
                     exec_res,
                 );
@@ -219,6 +222,7 @@ impl JobRunner {
             job_version,
             attempt,
             job_topic_for_registry,
+            source_domain_for_registry,
             trace_id_for_registry,
         );
 

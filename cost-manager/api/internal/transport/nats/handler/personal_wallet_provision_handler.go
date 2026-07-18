@@ -35,7 +35,7 @@ func NewPersonalWalletProvisionSubscriber(nc *nats.Conn, service billingSvcInter
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name: "BILLING_WALLET_PROVISION", Subjects: []string{personalWalletProvisionSubject},
+		Name: "BILLING_DOMAIN_EVENTS", Subjects: []string{personalWalletProvisionSubject},
 		Storage: jetstream.FileStorage, Retention: jetstream.LimitsPolicy, MaxAge: 30 * 24 * time.Hour,
 	})
 	if err != nil {

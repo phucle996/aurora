@@ -1,8 +1,8 @@
+use crate::infra::redis::RedisClientManager;
+use crate::observability::logger::Logger;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::time::{sleep, Duration, Instant};
-use crate::infra::redis::RedisClientManager;
-use crate::observability::logger::Logger;
 // Import từ module job_lifecycle mới đổi tên để báo cáo kết quả và quản lý cấu trúc báo cáo.
 use crate::job_lifecycle::result::{JobExecutionResult, JobResultReporter};
 
@@ -27,6 +27,7 @@ pub struct ActiveLockInfo {
     pub job_version: u32,
     pub attempt: u32,
     pub job_topic: String,
+    pub source_domain: String,
     pub trace_id: String,
 }
 
@@ -54,6 +55,7 @@ impl ActiveLockRegistry {
         job_version: u32,
         attempt: u32,
         job_topic: String,
+        source_domain: String,
         trace_id: String,
     ) {
         if let Ok(mut w) = self.locks.write() {
@@ -67,6 +69,7 @@ impl ActiveLockRegistry {
                     job_version,
                     attempt,
                     job_topic,
+                    source_domain,
                     trace_id,
                 },
             );
@@ -93,7 +96,20 @@ impl ActiveLockRegistry {
     }
 
     /// Lấy bản sao danh sách để kiểm tra và gia hạn hàng loạt
-    pub fn get_all_active_locks(&self) -> Vec<(String, Instant, Duration, tokio::task::AbortHandle, String, u32, u32, String, String)> {
+    pub fn get_all_active_locks(
+        &self,
+    ) -> Vec<(
+        String,
+        Instant,
+        Duration,
+        tokio::task::AbortHandle,
+        String,
+        u32,
+        u32,
+        String,
+        String,
+        String,
+    )> {
         if let Ok(r) = self.locks.read() {
             r.iter()
                 .map(|(k, v)| {
@@ -106,6 +122,7 @@ impl ActiveLockRegistry {
                         v.job_version,
                         v.attempt,
                         v.job_topic.clone(),
+                        v.source_domain.clone(),
                         v.trace_id.clone(),
                     )
                 })
@@ -125,7 +142,7 @@ pub async fn start_watchdog_loop(
 ) {
     Logger::sys_info(
         "lock.watchdog",
-        "Watchdog & Lock Lease Auto-Renewal background loop has been started"
+        "Watchdog & Lock Lease Auto-Renewal background loop has been started",
     );
 
     loop {
@@ -140,7 +157,19 @@ pub async fn start_watchdog_loop(
         let mut keys_to_renew = Vec::new();
         let now = Instant::now();
 
-        for (lock_key, started_at, max_limit, abort_handle, job_id, job_version, attempt, job_topic, trace_id) in active_locks {
+        for (
+            lock_key,
+            started_at,
+            max_limit,
+            abort_handle,
+            job_id,
+            job_version,
+            attempt,
+            job_topic,
+            source_domain,
+            trace_id,
+        ) in active_locks
+        {
             let elapsed = now.duration_since(started_at);
             if elapsed >= max_limit {
                 // Tác vụ đã vượt quá hạn mức tối đa cho phép chạy (TIMEOUT)
@@ -170,6 +199,7 @@ pub async fn start_watchdog_loop(
                         error_code: Some("EXECUTION_TIMEOUT".to_string()),
                         message: "Job execution aborted by watchdog due to timeout".to_string(),
                         job_topic,
+                        source_domain,
                         trace_id,
                     };
                     let _ = JobResultReporter::report_outcome(&client_clone, &timeout_report).await;
@@ -182,11 +212,20 @@ pub async fn start_watchdog_loop(
 
         // Thực hiện gia hạn hàng loạt các lock hợp lệ bằng Redis Pipeline
         if !keys_to_renew.is_empty() {
-            match crate::infra::redis::query::bulk_expire_locks(redis_client.client(), &keys_to_renew, ttl_secs).await {
+            match crate::infra::redis::query::bulk_expire_locks(
+                redis_client.client(),
+                &keys_to_renew,
+                ttl_secs,
+            )
+            .await
+            {
                 Ok(_) => {
                     Logger::sys_info(
                         "lock.watchdog",
-                        &format!("Successfully renewed {} active lease locks via Redis pipeline", keys_to_renew.len())
+                        &format!(
+                            "Successfully renewed {} active lease locks via Redis pipeline",
+                            keys_to_renew.len()
+                        ),
                     );
                 }
                 Err(e) => {
@@ -209,13 +248,16 @@ mod tests {
     #[tokio::test]
     async fn test_watchdog_timeout_abort() {
         let registry = Arc::new(ActiveLockRegistry::new());
-        let redis_mgr = Arc::new(RedisClientManager::new(
-            "redis://127.0.0.1:6379",
-            RedisTlsMode::Disable,
-            &None,
-            &None,
-            &None,
-        ).unwrap());
+        let redis_mgr = Arc::new(
+            RedisClientManager::new(
+                "redis://127.0.0.1:6379",
+                RedisTlsMode::Disable,
+                &None,
+                &None,
+                &None,
+            )
+            .unwrap(),
+        );
 
         // Spawn a dummy long running task that sleeps for 10 seconds
         let task_handle = tokio::spawn(async {
@@ -233,18 +275,14 @@ mod tests {
             1,
             0,
             "test_topic".to_string(),
+            "TEST".to_string(),
             "test_trace_id".to_string(),
         );
 
         // Start watchdog loop in background with a fast interval (100ms)
         let registry_clone = registry.clone();
         let watchdog_handle = tokio::spawn(async move {
-            start_watchdog_loop(
-                registry_clone,
-                redis_mgr,
-                30,
-                Duration::from_millis(100),
-            ).await;
+            start_watchdog_loop(registry_clone, redis_mgr, 30, Duration::from_millis(100)).await;
         });
 
         // Wait for the task to be aborted
@@ -259,4 +297,3 @@ mod tests {
         watchdog_handle.abort();
     }
 }
-

@@ -27,10 +27,10 @@ func NewIamOutboxRepository(db *pgxpool.Pool, cfg *config.Config) iamRepoInterfa
 		schema: schema,
 		saveQuery: fmt.Sprintf(`
 			INSERT INTO %s.iam_outbox_records (
-				event_id, routing_scope, job_topic, payload, user_id, status,
+				event_id, routing_scope, job_topic, payload, owner_id, owner_type, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 			RETURNING id
 		`, schema),
 	}
@@ -46,7 +46,9 @@ func (r *IamOutboxRepoImpl) Create(ctx context.Context, record *iamEntity.IamOut
 		model.RoutingScope,
 		model.JobTopic,
 		model.Payload,
-		model.UserID,
+		model.OwnerID,
+		model.OwnerType,
+		model.ActorUserID,
 		model.Status,
 		model.JobVersion,
 		model.ResourceID,
@@ -60,4 +62,3 @@ func (r *IamOutboxRepoImpl) Create(ctx context.Context, record *iamEntity.IamOut
 	}
 	return err
 }
-

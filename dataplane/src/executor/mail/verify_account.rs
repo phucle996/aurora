@@ -98,10 +98,8 @@ impl Executor for MailVerifyAccountExecutor {
 
         Logger::sys_info(
             "executor.mail.verify",
-            &format!(
-                "Bắt đầu gửi verify email thông qua Stalwart LMTP Connection Pool (tới {})...",
-                recipient
-            ),
+            // [COMMENT]: Không log recipient để email không đi vào centralized operational logs.
+            "Bắt đầu gửi verify email thông qua Stalwart LMTP Connection Pool...",
         );
 
         // 4. Gửi email đã render qua core::send::send_raw_email

@@ -23,7 +23,10 @@ pub async fn run_bucket_sizes_listener(
 
     Logger::sys_info(
         "storage_listener.run",
-        &format!("Storage Bucket Sizes Listener: Khởi tạo Consumer Group '{}' trên Stream '{}'...", GROUP_NAME, STREAM_KEY),
+        &format!(
+            "Storage Bucket Sizes Listener: Khởi tạo Consumer Group '{}' trên Stream '{}'...",
+            GROUP_NAME, STREAM_KEY
+        ),
     );
 
     // [COMMENT]: Khởi tạo kết nối Redis L1 multiplexed
@@ -202,7 +205,8 @@ pub async fn run_bucket_sizes_listener(
                             };
 
                             // Map gom đổi dung lượng theo user_id: user_id -> HashMap<bucket_name, size>
-                            let mut user_changed_buckets: HashMap<String, HashMap<String, i64>> = HashMap::new();
+                            let mut user_changed_buckets: HashMap<String, HashMap<String, i64>> =
+                                HashMap::new();
 
                             // [COMMENT]: 3. So sánh, cập nhật DB và gom thông tin thay đổi theo User ID
                             for (name, size) in current_msg.sizes {
@@ -225,7 +229,13 @@ pub async fn run_bucket_sizes_listener(
                                         .await;
 
                                     if name.starts_with("ws-") {
-                                        match db::update_personal_bucket_size(&db_url, &name_clone, size).await {
+                                        match db::update_personal_bucket_size(
+                                            &db_url,
+                                            &name_clone,
+                                            size,
+                                        )
+                                        .await
+                                        {
                                             Ok(Some(owner_id)) => {
                                                 target_user_ids.push(owner_id.clone());
                                                 Logger::sys_info(
@@ -243,7 +253,9 @@ pub async fn run_bucket_sizes_listener(
                                                     "used_bytes": size,
                                                     "timestamp": chrono::Utc::now().timestamp_millis()
                                                 });
-                                                if let Ok(billing_bin) = serde_json::to_vec(&billing_payload) {
+                                                if let Ok(billing_bin) =
+                                                    serde_json::to_vec(&billing_payload)
+                                                {
                                                     let _ = nats_client.publish("billing.storage.bucket_used_bytes_update", billing_bin.into()).await;
                                                 }
                                             }
@@ -257,13 +269,22 @@ pub async fn run_bucket_sizes_listener(
                                             Err(e) => {
                                                 Logger::sys_error(
                                                     "storage_listener.db_write_error",
-                                                    &format!("Lỗi ghi nhận CSDL cho bucket cá nhân '{}'", name_clone),
+                                                    &format!(
+                                                        "Lỗi ghi nhận CSDL cho bucket cá nhân '{}'",
+                                                        name_clone
+                                                    ),
                                                     &e.to_string(),
                                                 );
                                             }
                                         }
                                     } else if name.starts_with("tn-") {
-                                        match db::update_tenant_bucket_size(&db_url, &name_clone, size).await {
+                                        match db::update_tenant_bucket_size(
+                                            &db_url,
+                                            &name_clone,
+                                            size,
+                                        )
+                                        .await
+                                        {
                                             Ok(user_ids) => {
                                                 if !user_ids.is_empty() {
                                                     Logger::sys_info(
@@ -293,9 +314,10 @@ pub async fn run_bucket_sizes_listener(
                                     }
 
                                     // [COMMENT]: Kiểm tra nếu chênh lệch dung lượng >= 1MB hoặc là bucket mới thì chuẩn bị bắn lên NATS
-                                    let should_publish_nats = old_size.map_or(size >= 1_048_576, |old| {
-                                        (size - old).abs() >= 1_048_576
-                                    });
+                                    let should_publish_nats = old_size
+                                        .map_or(size >= 1_048_576, |old| {
+                                            (size - old).abs() >= 1_048_576
+                                        });
                                     if should_publish_nats {
                                         for user_id in target_user_ids {
                                             user_changed_buckets

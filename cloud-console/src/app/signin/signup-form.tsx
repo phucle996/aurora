@@ -112,10 +112,9 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
       toast.error(t.auth.usernameLen);
       return;
     }
-    // [COMMENT]: Chặn username chứa '@' — ký tự này được hệ thống dùng làm separator
-    // để phân biệt login global (username) và login tenant (username@tenant_domain).
-    if (username.includes("@")) {
-      toast.error("Username must not contain '@'. Please enter your email in the Email field.");
+	// [COMMENT]: Đồng bộ canonical allowlist backend để không tạo identity không dùng được ở các domain khác.
+	if (!/^[a-z0-9][a-z0-9_-]{5,63}$/.test(username.trim().toLowerCase())) {
+	  toast.error("Username must use 6-64 lowercase letters, numbers, '_' or '-'.");
       return;
     }
     if (!email.trim()) {
@@ -190,6 +189,11 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
       });
 
       // [COMMENT]: Chuyển sang bước xác thực email sau khi đăng ký thành công
+	  if (typeof window !== "undefined") {
+		// [COMMENT]: Chỉ giữ username để prefill login; password bị xóa và không persist ở browser storage.
+		window.sessionStorage.setItem("iam.pending_verification_username", username.trim().toLowerCase());
+	  }
+	  setPassword("");
       setSignupStep("verify-email");
       setTimeLeft(59);
     } catch (err: unknown) {
@@ -201,42 +205,12 @@ export default function SignUpForm({ onSwitchToSignIn }: SignUpFormProps) {
     }
   }, [username, fullname, email, phone, password, isPasswordValid, t]);
 
-  // [COMMENT]: Gửi lại email xác thực — chỉ được phép khi countdown đã hết
+  // [COMMENT]: Resend đi qua login để backend xác minh password trước khi queue email mới.
   const handleResendEmail = useCallback(async () => {
     if (timeLeft > 0) return;
-    setIsLoading(true);
-
-    // [COMMENT]: Định dạng số điện thoại sang chuẩn E.164 khi gửi lại email đăng ký
-    let formattedPhone: string | undefined = undefined;
-    if (phone.trim()) {
-      formattedPhone = formatPhoneToE164(phone.trim());
-    }
-
-    try {
-      const detectedLocation = getDetectedLocation();
-      const detectedTimezone = typeof Intl !== "undefined"
-        ? Intl.DateTimeFormat().resolvedOptions().timeZone
-        : "UTC";
-
-      await authAPI.register({
-        username,
-        fullname,
-        email,
-        password,
-        phone: formattedPhone,
-        location: detectedLocation,
-        timezone: detectedTimezone,
-      });
-      toast.success("Verification email resent!");
-      setTimeLeft(59);
-    } catch (err: unknown) {
-      const apiError = err as { status?: number; message?: string };
-      const msg = apiError?.message || "Resend failed. Please try again.";
-      toast.error(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [username, fullname, email, phone, password, timeLeft]);
+	toast.info("Sign in again to verify your password and resend the activation email.");
+	onSwitchToSignIn();
+  }, [timeLeft, onSwitchToSignIn]);
 
   // =====================================================
   // STAGE 1: FORM ĐĂNG KÝ

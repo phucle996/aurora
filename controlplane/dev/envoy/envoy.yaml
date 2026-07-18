@@ -62,7 +62,8 @@ static_resources:
                           ts: "%START_TIME%"
                           method: "%REQ(:METHOD)%"
                           host: "%REQ(:AUTHORITY)%"
-                          path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+						  # [COMMENT]: Không ghi query string để OTT/secret không đi vào centralized access logs.
+						  path: "%REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)%"
                           protocol: "%PROTOCOL%"
                           status: "%RESPONSE_CODE%"
                           flags: "%RESPONSE_FLAGS%"

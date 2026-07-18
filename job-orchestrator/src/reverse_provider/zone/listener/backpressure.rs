@@ -53,13 +53,10 @@ pub async fn run_backpressure_listener(
 
                 // [COMMENT]: Lấy zone_status từ DB để khởi tạo đầy đủ heartbeat entry.
                 // Nếu lỗi → mặc định "active" để tránh Dead Man's Switch kích hoạt nhầm ngay lúc boot.
-                let (zone_status, _) = super::super::db::query_current_state(
-                    &config.database_url,
-                    zone_id,
-                    "mail",
-                )
-                .await
-                .unwrap_or_else(|_| ("active".to_string(), false));
+                let (zone_status, _) =
+                    super::super::db::query_current_state(&config.database_url, zone_id, "mail")
+                        .await
+                        .unwrap_or_else(|_| ("active".to_string(), false));
 
                 zone_heartbeats.insert(
                     zone_id.clone(),
@@ -90,7 +87,6 @@ pub async fn run_backpressure_listener(
         "backpressure_listener.run",
         "BackpressureListener: Đang lắng nghe stream 'zone:backpressure:reports'...",
     );
-
 
     loop {
         // [COMMENT]: Thực hiện XREADGROUP chặn 2s (Blocking read 2s to reduce CPU spin)

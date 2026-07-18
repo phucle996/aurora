@@ -156,6 +156,8 @@ fn build_success_response(
 fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
     let err_resp = crate::user::login::ErrorResponse {
         error_message: message.to_string(),
+        error_code: None,
+        verification_email_queued: None,
     };
     let json_body = serde_json::to_string(&err_resp).unwrap_or_default();
 

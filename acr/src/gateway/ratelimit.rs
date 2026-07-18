@@ -15,6 +15,7 @@ pub enum RouteGroup {
     UserMe,
     UserTenant,
     Billing,
+    AuthPublic,
     General,
 }
 
@@ -27,6 +28,7 @@ impl RouteGroup {
             RouteGroup::UserMe => "user_me",
             RouteGroup::UserTenant => "user_tenant",
             RouteGroup::Billing => "billing",
+            RouteGroup::AuthPublic => "auth_public",
             RouteGroup::General => "general",
         }
     }
@@ -38,6 +40,8 @@ pub fn detect_route_group(path: &str) -> RouteGroup {
         RouteGroup::SreCritical
     } else if path.starts_with("/admin") {
         RouteGroup::SreGeneral
+    } else if path.starts_with("/api/v1/auth/") {
+        RouteGroup::AuthPublic
     } else if path.starts_with("/api/v1/billing") {
         RouteGroup::Billing
     } else if path.contains("/personal") {
@@ -93,6 +97,8 @@ impl RateLimiter {
             RouteGroup::SreCritical => (50, 1, 5, 1),
             RouteGroup::SreGeneral => (200, 1, 15, 1),
             RouteGroup::Billing => (300, 1, 30, 1),
+            // [COMMENT]: Argon2/register/login là CPU-expensive; limit thấp theo IP và device trước khi vào handler.
+            RouteGroup::AuthPublic => (30, 60, 8, 60),
             RouteGroup::UserPersonal => (300, 1, 20, 1),
             RouteGroup::UserMe => (500, 1, 30, 1),
             RouteGroup::UserTenant => (200, 1, 15, 1),
@@ -107,6 +113,7 @@ impl RateLimiter {
             RouteGroup::SreCritical => (10, 1, 10, 1),
             RouteGroup::SreGeneral => (30, 1, 30, 1),
             RouteGroup::Billing => (80, 1, 80, 1),
+            RouteGroup::AuthPublic => (20, 60, 20, 60),
             RouteGroup::UserPersonal => (60, 1, 60, 1),
             RouteGroup::UserMe => (100, 1, 100, 1),
             RouteGroup::UserTenant => (40, 1, 40, 1),

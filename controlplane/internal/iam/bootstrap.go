@@ -17,8 +17,8 @@ import (
 // - Bootstrap chỉ orchestration, không chứa persistence logic.
 func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	// [COMMENT]: Relay sở hữu runtime context riêng; bootstrap timeout không được dừng worker sau 20 giây.
-	if m.personalWalletProvisionRelay != nil {
-		m.personalWalletProvisionRelay.Start()
+	if m.billingOutboxRelay != nil {
+		m.billingOutboxRelay.Start()
 	}
 	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply) và bulk presence updates
 	if m.natsConn != nil {
@@ -53,12 +53,8 @@ func (m *IAMModule) Stop() {
 		}
 	}
 	m.natsSubs = nil
-	if m.personalWalletProvisionRelay != nil {
-		m.personalWalletProvisionRelay.Stop()
+	if m.billingOutboxRelay != nil {
+		m.billingOutboxRelay.Stop()
 	}
 
-	// [COMMENT]: Dừng các tác vụ nền bất đồng bộ của Auth Service và đợi hoàn thành (Graceful Shutdown)
-	if m.AuthService != nil {
-		m.AuthService.Stop()
-	}
 }

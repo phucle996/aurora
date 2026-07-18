@@ -68,8 +68,8 @@ pub async fn dispatch_result(
 
             let job_uuid = uuid::Uuid::from_slice(&result.job_id).unwrap_or_default();
 
-            // [COMMENT]: Định tuyến cập nhật DB outbox động sang phân hệ tương ứng (L1 routing)
-            let row_opt = if result.job_topic.starts_with("mail.") {
+			// [COMMENT]: Route theo source domain do CDC gắn từ schema; topic chỉ mô tả executor.
+			let row_opt = if result.source_domain == "MAIL" {
                 reverse_provider::mail::db::update_outbox_record(
                     pg_client,
                     job_uuid,
@@ -79,7 +79,7 @@ pub async fn dispatch_result(
                     error_message,
                 )
                 .await?
-            } else if result.job_topic.starts_with("iam.") {
+			} else if result.source_domain == "IAM" {
                 reverse_provider::iam::db::update_outbox_record(
                     pg_client,
                     job_uuid,
@@ -89,7 +89,7 @@ pub async fn dispatch_result(
                     error_message,
                 )
                 .await?
-            } else if result.job_topic.starts_with("storage.") {
+			} else if result.source_domain == "STORAGE" {
                 // [COMMENT]: Định tuyến xuống Storage L2 Dispatcher.
                 // L2 dispatcher trả về Box<dyn Error> vì bucket create/delete cần bắt đầu transaction
                 // để đảm bảo atomic: UPDATE outbox + INSERT lifecycle event.
@@ -106,18 +106,9 @@ pub async fn dispatch_result(
                     Box::<dyn std::error::Error>::from(e.to_string())
                 })?
 
-            } else {
-                // Fallback to mail outbox record if unknown
-                reverse_provider::mail::db::update_outbox_record(
-                    pg_client,
-                    job_uuid,
-                    &result.job_topic,
-                    &status,
-                    error_code,
-                    error_message,
-                )
-                .await?
-            };
+			} else {
+				return Err(format!("unsupported source_domain '{}'", result.source_domain).into());
+			};
 
             if let Some(row) = row_opt {
                 Logger::job_log(

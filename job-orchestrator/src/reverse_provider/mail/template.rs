@@ -9,9 +9,8 @@ pub async fn fetch_template(
     use tokio_postgres::NoTls;
 
     // Thiết lập kết nối không TLS đến PostgreSQL
-    let (pg_client, connection) =
-        tokio_postgres::connect(&config.database_url, NoTls).await?;
-    
+    let (pg_client, connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
+
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             Logger::sys_error(

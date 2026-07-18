@@ -51,6 +51,9 @@ pub struct JobExecutionResult {
     /// Tên topic sự kiện (e.g. "mail.test_connection")
     pub job_topic: String,
 
+    /// Domain sở hữu outbox nguồn; được echo nguyên vẹn từ JobPayload.
+    pub source_domain: String,
+
     /// OpenTelemetry trace id (32 ký tự hex)
     pub trace_id: String,
 }
@@ -62,6 +65,7 @@ impl JobExecutionResult {
         job_version: u32,
         attempt: u32,
         job_topic: String,
+        source_domain: String,
         trace_id: String,
         outcome: Result<
             Result<crate::executor::ExecutionResult, crate::executor::ExecutorError>,
@@ -77,6 +81,7 @@ impl JobExecutionResult {
                 error_code: None,
                 message: res.message,
                 job_topic,
+                source_domain,
                 trace_id,
             },
             Ok(Err(e)) => {
@@ -95,6 +100,7 @@ impl JobExecutionResult {
                     error_code: code,
                     message: "".to_string(),
                     job_topic,
+                    source_domain,
                     trace_id,
                 }
             }
@@ -106,6 +112,7 @@ impl JobExecutionResult {
                 error_code: Some("EXECUTION_TIMEOUT".to_string()),
                 message: "".to_string(),
                 job_topic,
+                source_domain,
                 trace_id,
             },
         }
@@ -169,10 +176,12 @@ impl JobResultReporter {
             trace_id: trace_id_bytes,
             error_code: result.error_code.clone(),
             message: result.message.clone(),
+            source_domain: result.source_domain.clone(),
         };
 
         let mut buf = Vec::new();
-        proto_msg.encode(&mut buf)
+        proto_msg
+            .encode(&mut buf)
             .map_err(|e| format!("Failed to serialize job result to Protobuf: {}", e))?;
 
         // Đẩy vào Redis Stream bằng XADD (durable, persistent trên disk)

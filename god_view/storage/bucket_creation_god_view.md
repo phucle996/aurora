@@ -535,7 +535,7 @@ Hệ thống sử dụng OpenTelemetry Tracing kết hợp W3C Context Propagati
 | **Outbox Schema** | [`000002_storage_outbox.up.sql`](../../controlplane/internal/storage/migrations/000002_storage_outbox.up.sql) | Bảng outbox trung gian phục vụ CDC |
 | **Drop Status** | [`000003_drop_bucket_status.up.sql`](../../controlplane/internal/storage/migrations/000003_drop_bucket_status.up.sql) | Xóa bucket status column (deprecated) |
 | **Lifecycle Outbox** | [`000004_lifecycle_outbox.up.sql`](../../controlplane/internal/storage/migrations/000004_lifecycle_outbox.up.sql) | Bảng lifecycle event outbox phục vụ JetStream relay |
-| **Retention Index** | [`000005_outbox_retention_index.up.sql`](../../controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql) | Index phục vụ cleanup job 30 ngày |
+| **Retention Index + scheduler** | [`000005_outbox_retention_index.up.sql`](../../controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql), [`outbox-retention-cronjob.yaml`](../../k8s/outbox-retention-cronjob.yaml) | Kubernetes CronJob xóa tối đa 200 terminal row/bảng/phút sau 30 ngày; JO không chạy cleaner |
 | **Proto Contract** | [`proto/resource_ownership.proto`](../../job-orchestrator/proto/resource_ownership.proto) | Contract Protobuf ResourceOwnershipChangedV1 |
 | **Lifecycle DB** | [`db/lifecycle.rs`](../../job-orchestrator/src/reverse_provider/storage/db/lifecycle.rs) | Hàm insert_resource_created/deleted |
 | **Bucket Resolve** | [`db/bucket.rs`](../../job-orchestrator/src/reverse_provider/storage/db/bucket.rs) | resolve_bucket_creation/deletion + lifecycle insert |

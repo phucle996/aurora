@@ -56,7 +56,9 @@ impl JobNotifier {
 
         // [COMMENT]: Bắn sự kiện lên NATS Core theo chủ đề định hướng người dùng cụ thể
         let subject = format!("jobs.notifications.{}", user_id);
-        nats_client.publish(subject.clone(), payload_bin.into()).await?;
+        nats_client
+            .publish(subject.clone(), payload_bin.into())
+            .await?;
 
         // Tăng chỉ số metrics số thông báo realtime đã gửi thành công
         crate::observability::metrics::MetricsManager::inc_notifications_sent();
@@ -66,7 +68,10 @@ impl JobNotifier {
             user_id,
             attempt,
             "job_result.notify_sent",
-            &format!("Đã đẩy thành công sự kiện thông báo vào NATS Core chủ đề: {}", subject),
+            &format!(
+                "Đã đẩy thành công sự kiện thông báo vào NATS Core chủ đề: {}",
+                subject
+            ),
         );
 
         Ok(())

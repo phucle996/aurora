@@ -1,5 +1,4 @@
 mod cdc;
-mod cleanup;
 mod config;
 mod job_result;
 mod lifecycle_relay;
@@ -100,12 +99,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
-        _ = lifecycle_relay::relay::run_relay_loop(db_url.clone(), nats_url) => {
+        _ = lifecycle_relay::relay::run_relay_loop(db_url, nats_url) => {
             Logger::sys_error("main.run", "Resource Lifecycle Relay Worker dừng đột ngột", "");
             std::process::exit(1);
         }
-        _ = cleanup::outbox_cleaner::run_outbox_cleanup_loop(db_url) => {
-            Logger::sys_error("main.run", "Outbox Retention Cleaner Worker dừng đột ngột", "");
+        _ = reverse_provider::iam::outbox_dispatcher::run_iam_outbox_dispatch_loop(
+            config.database_url.clone(), redis_client.clone()
+        ) => {
+            Logger::sys_error("main.run", "IAM Outbox Dispatcher dừng đột ngột", "");
             std::process::exit(1);
         }
     }

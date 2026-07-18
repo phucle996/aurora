@@ -468,9 +468,17 @@ CREATE TABLE IF NOT EXISTS iam_outbox_records (
     routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
     job_topic VARCHAR(100) NOT NULL, -- Tên topic/tác vụ (e.g. mail.system.verify_account)
     payload BYTEA NOT NULL, -- Dữ liệu nhị phân serialized dạng Protobuf
-    user_id VARCHAR(64) NOT NULL, -- ID người dùng kích hoạt hành động này
-    status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
-    completed_at TIMESTAMP WITH TIME ZONE, -- Thời gian hoàn tất tác vụ
+    -- [COMMENT]: Tách payer khỏi actor để Billing và notification không suy diễn owner từ người thao tác.
+    owner_id UUID NOT NULL,
+    owner_type billing_owner_type NOT NULL,
+    actor_user_id UUID NOT NULL,
+	status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
+	completed_at TIMESTAMP WITH TIME ZONE, -- Thời gian hoàn tất tác vụ
+	attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+	available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	lease_until TIMESTAMPTZ,
+	last_dispatch_error TEXT,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- CÁC CỘT ĐỒNG BỘ CONTRACT:
     job_version INT NOT NULL DEFAULT 1,

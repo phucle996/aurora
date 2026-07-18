@@ -142,8 +142,11 @@ impl Config {
             })
             .unwrap_or_else(|_| {
                 vec![
-                    "/api/v1/health".to_string(),
-                    "/api/v1/auth/register".to_string(),
+                    "GET /api/v1/health/liveness".to_string(),
+                    "GET /api/v1/health/readiness".to_string(),
+                    "GET /api/v1/health/startup".to_string(),
+                    "POST /api/v1/auth/register".to_string(),
+                    "POST /api/v1/auth/verify".to_string(),
                 ]
             });
 

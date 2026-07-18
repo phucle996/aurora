@@ -150,21 +150,7 @@ impl Authorization for ExtAuthzService {
 
         let redis_client = self.session_mgr.redis_client_arc();
 
-        // 1. Bypass Endpoint Check (e.g. /api/v1/health)
-        if self
-            .config
-            .bypass_endpoints
-            .iter()
-            .any(|ep| path.starts_with(ep))
-        {
-            let mut response = CheckResponse::with_status(Status::ok("bypassed"));
-            response.set_http_response(
-                envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
-            );
-            return Ok(Response::new(response));
-        }
-
-        // 2. CORS Allowed Origin Check
+        // 1. CORS Allowed Origin Check chạy cả với public route.
         if let Some(origin) = client_headers.get("origin") {
             if !self.config.allowed_origins.is_empty()
                 && !self
@@ -202,6 +188,38 @@ impl Authorization for ExtAuthzService {
             return Ok(Response::new(CheckResponse::with_status(
                 Status::resource_exhausted("Rate limit exceeded (Pre-Auth)"),
             )));
+        }
+
+        // [COMMENT]: Public bypass chỉ exact method + path và chỉ sau CORS/rate limit; prefix không thể mở nhầm route con.
+        let path_without_query = path.split('?').next().unwrap_or(path);
+        let is_public_route = self.config.bypass_endpoints.iter().any(|entry| {
+            if let Some((configured_method, configured_path)) = entry.split_once(' ') {
+                configured_method.eq_ignore_ascii_case(method)
+                    && configured_path == path_without_query
+            } else {
+                // Legacy env được giữ fail-closed theo các method công khai đã review.
+                (entry == "/api/v1/health"
+                    && method == "GET"
+                    && matches!(
+                        path_without_query,
+                        "/api/v1/health/liveness"
+                            | "/api/v1/health/readiness"
+                            | "/api/v1/health/startup"
+                    ))
+                    || (entry == "/api/v1/auth/register"
+                        && method == "POST"
+                        && path_without_query == entry)
+                    || (entry == "/api/v1/auth/verify"
+                        && method == "POST"
+                        && path_without_query == entry)
+            }
+        });
+        if is_public_route {
+            let mut response = CheckResponse::with_status(Status::ok("public route authorized"));
+            response.set_http_response(
+                envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
+            );
+            return Ok(Response::new(response));
         }
 
         // ─── Local Interceptors ───────────────────────────────────────────────

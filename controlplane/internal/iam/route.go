@@ -23,7 +23,7 @@ func RegisterRoutes(router *gin.Engine, module *IAMModule) {
 	)
 
 	// [COMMENT]: 1.1) Kích hoạt tài khoản mới đăng ký qua link email
-	router.GET("/api/v1/auth/verify",
+	router.POST("/api/v1/auth/verify",
 		module.AuthHandler.VerifyAccount,
 	)
 

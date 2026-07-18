@@ -27,3 +27,8 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
 CREATE INDEX IF NOT EXISTS idx_mail_outbox_pending 
 ON mail_outbox_records (status, id ASC) 
 WHERE status = 'PENDING';
+
+-- [COMMENT]: Hỗ trợ cleanup theo batch sau retention 30 ngày mà không scan toàn bảng.
+CREATE INDEX IF NOT EXISTS idx_mail_outbox_terminal_cleanup
+ON mail_outbox_records (completed_at, id)
+WHERE status IN ('SUCCEEDED', 'FAILED') AND completed_at IS NOT NULL;

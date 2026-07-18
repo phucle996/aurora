@@ -93,6 +93,8 @@ flowchart LR
 | PostgreSQL | Durable versions, effective windows, outbox, billing-run pin | Gap/overlap full-set vẫn cần domain validation ngoài CHECK đơn giản |
 | Cost Engine | Bootstrap/cache/pin version, progressive charge, ledger lineage | Không activate pending catalog giữa run |
 
+Pricing outbox không poll PostgreSQL theo nhịp 500 ms. Sau khi transaction tạo version và outbox commit, Tier service gửi non-blocking local wake cho relay; wake được coalesce và relay drain theo batch đến khi rỗng. Startup và reconciliation 30–39 giây có jitter là safety net cho trường hợp process crash giữa commit và wake, đồng thời cập nhật trạng thái version theo effective window mà không tạo synchronized polling giữa các replica.
+
 ### 1.4 Causal reach — dữ liệu Tier tác động tới đâu
 
 ```mermaid
@@ -298,9 +300,9 @@ sequenceDiagram
     A->>R: GET billing:session:<access_key>
     R-->>A: Session + secret hash
     A->>A: Match access_key + SHA-256(access_secret)
-    A-->>E: ALLOW + identity headers; path unchanged
+    A-->>E: ALLOW + identity headers, path unchanged
     E->>H: GET /api/v1/billing/tiers
-    H->>H: Bind + normalize; context 5s
+    H->>H: Bind + normalize, context 5s
     H->>S: GetTiersList(...)
     S->>Q: ListTiers(...)
     Q->>DB: COUNT filtered rows
@@ -470,7 +472,7 @@ stateDiagram-v2
     Loading --> SilentError: request rejects
     Loaded --> Loading: filter or page changes
     SilentError --> Loading: next state change
-    SilentError --> EmptyOrStale: only console.error; no user error state
+    SilentError --> EmptyOrStale: only console.error, no user error state
     EmptyOrStale --> Loading: user retries indirectly
 ```
 

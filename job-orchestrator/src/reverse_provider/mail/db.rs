@@ -12,7 +12,10 @@ pub async fn update_outbox_record(
 ) -> Result<Option<tokio_postgres::Row>, tokio_postgres::Error> {
     Logger::sys_info(
         "mail_db.update_outbox",
-        &format!("Cập nhật trạng thái Outbox cho Mail Job: {} -> {}", job_uuid, status),
+        &format!(
+            "Cập nhật trạng thái Outbox cho Mail Job: {} -> {}",
+            job_uuid, status
+        ),
     );
 
     let row_opt = if status == "SUCCEEDED" {

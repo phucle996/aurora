@@ -17,12 +17,17 @@ import (
 )
 
 type tierService struct {
-	tierRepo billingRepoInterface.TierRepository
+	tierRepo            billingRepoInterface.TierRepository
+	notifyPricingOutbox func()
 }
 
 // [COMMENT]: NewTierService khởi tạo instance của tierService.
-func NewTierService(tierRepo billingRepoInterface.TierRepository) billingSvcInterface.TierService {
-	return &tierService{tierRepo: tierRepo}
+func NewTierService(tierRepo billingRepoInterface.TierRepository, notifier ...func()) billingSvcInterface.TierService {
+	var notify func()
+	if len(notifier) > 0 {
+		notify = notifier[0]
+	}
+	return &tierService{tierRepo: tierRepo, notifyPricingOutbox: notify}
 }
 
 // [COMMENT]: GetTiersList điều hướng gọi repository để lấy danh sách biểu giá.
@@ -75,7 +80,15 @@ func (s *tierService) CreateTierVersion(ctx context.Context, create entity.TierV
 		return nil, err
 	}
 	create.Checksum = tierVersionChecksum(create)
-	return s.tierRepo.CreateTierVersion(ctx, create)
+	version, err := s.tierRepo.CreateTierVersion(ctx, create)
+	if err != nil {
+		return nil, err
+	}
+	// [COMMENT]: Repo đã commit version + outbox trước khi wake; mất wake vẫn được reconciliation thu hồi.
+	if s.notifyPricingOutbox != nil {
+		s.notifyPricingOutbox()
+	}
+	return version, nil
 }
 
 // tierVersionChecksum tạo content fingerprint ổn định để Engine kiểm tra snapshot đã load đầy đủ.

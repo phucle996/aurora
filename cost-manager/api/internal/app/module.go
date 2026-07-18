@@ -102,13 +102,24 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize PlanHandler: instance is nil")
 	}
 
-	// 3. Tier Domain DI
+	// 3. Pricing relay được tạo trước Tier service để producer có thể wake relay ngay sau commit.
+	pricingOutboxRepo := repository.NewPricingOutboxRepository(dbPool)
+	if pricingOutboxRepo == nil {
+		return nil, fmt.Errorf("failed to initialize PricingOutboxRepository: instance is nil")
+	}
+
+	pricingOutboxRelay := service.NewPricingOutboxRelay(pricingOutboxRepo, natsConn)
+	if pricingOutboxRelay == nil {
+		return nil, fmt.Errorf("failed to initialize PricingOutboxRelay: instance is nil")
+	}
+
+	// 4. Tier Domain DI
 	tierRepo := repository.NewTierRepository(dbPool)
 	if tierRepo == nil {
 		return nil, fmt.Errorf("failed to initialize TierRepository: instance is nil")
 	}
 
-	tierService := service.NewTierService(tierRepo)
+	tierService := service.NewTierService(tierRepo, pricingOutboxRelay.Notify)
 	if tierService == nil {
 		return nil, fmt.Errorf("failed to initialize TierService: instance is nil")
 	}
@@ -118,7 +129,7 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize TierHandler: instance is nil")
 	}
 
-	// 4. Auth Domain DI & NATS Subscription
+	// 5. Auth Domain DI & NATS Subscription
 	authRepo := repository.NewAuthRepository(dbPool)
 	if authRepo == nil {
 		return nil, fmt.Errorf("failed to initialize AuthRepository: instance is nil")
@@ -133,7 +144,7 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to register NATS auth subscriber: %w", err)
 	}
 
-	// 5. Reconciler Worker DI (gRPC)
+	// 6. Reconciler Worker DI (gRPC)
 	reconcilerRepo := repository.NewReconcilerRepository(dbPool)
 	if reconcilerRepo == nil {
 		return nil, fmt.Errorf("failed to initialize ReconcilerRepository: instance is nil")
@@ -149,7 +160,7 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize ReconcilerWorker: instance is nil")
 	}
 
-	// 6. Resource ownership subscriber DI (NATS JetStream)
+	// 7. Resource ownership subscriber DI (NATS JetStream)
 	ownershipRepo := repository.NewResourceOwnershipRepository(dbPool)
 	if ownershipRepo == nil {
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipRepository: instance is nil")
@@ -163,17 +174,6 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	ownershipSubscriber, err := natsHandler.NewResourceOwnershipSubscriber(natsConn, ownershipService)
 	if err != nil || ownershipSubscriber == nil {
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipSubscriber: %w", err)
-	}
-
-	// 7. Pricing Outbox Relay DI
-	pricingOutboxRepo := repository.NewPricingOutboxRepository(dbPool)
-	if pricingOutboxRepo == nil {
-		return nil, fmt.Errorf("failed to initialize PricingOutboxRepository: instance is nil")
-	}
-
-	pricingOutboxRelay := service.NewPricingOutboxRelay(pricingOutboxRepo, natsConn)
-	if pricingOutboxRelay == nil {
-		return nil, fmt.Errorf("failed to initialize PricingOutboxRelay: instance is nil")
 	}
 
 	return &Module{
