@@ -263,23 +263,6 @@ pub async fn run_bucket_sizes_listener(
                                             }
                                         }
                                     } else if name.starts_with("tn-") {
-                                        // Lấy tenant_id phục vụ billing trước khi update
-                                        match db::get_tenant_bucket_owner_and_members(&db_url, &name_clone).await {
-                                            Ok((Some(tenant_id), _)) => {
-                                                let billing_payload = serde_json::json!({
-                                                    "bucket_name": name_clone,
-                                                    "owner_id": tenant_id,
-                                                    "owner_type": "tenant",
-                                                    "used_bytes": size,
-                                                    "timestamp": chrono::Utc::now().timestamp_millis()
-                                                });
-                                                if let Ok(billing_bin) = serde_json::to_vec(&billing_payload) {
-                                                    let _ = nats_client.publish("billing.storage.bucket_used_bytes_update", billing_bin.into()).await;
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-
                                         match db::update_tenant_bucket_size(&db_url, &name_clone, size).await {
                                             Ok(user_ids) => {
                                                 if !user_ids.is_empty() {

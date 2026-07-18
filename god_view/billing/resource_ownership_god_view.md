@@ -25,7 +25,7 @@
 - Billing không truy cập trực tiếp DB Controlplane (zero cross-DB query ở hot path).
 - Mọi bucket create/delete thành công đều phát **durable ownership event** vào JetStream.
 - Resource tạo rồi xóa sau 10 phút vẫn phải giữ đủ hai event và lịch sử ledger.
-- Owner phải derive từ DB: personal qua `personal_workspaces.owner_id`, tenant qua `tenant_buckets.tenant_id`. Không dùng `outbox.user_id` làm payer.
+- Owner lấy từ immutable outbox snapshot `owner_id/owner_type`; resource name decode từ job payload và zone lấy từ `routing_scope`. Job Orchestrator không query ngược resource tables.
 - Tuyệt đối không có secret key/policy trong lifecycle payload.
 
 ---

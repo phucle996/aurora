@@ -9,9 +9,13 @@ pub mod storage_proto {
 }
 
 pub fn silence_unused_proto_structs() {
+    // [COMMENT]: Job Orchestrator biên dịch chung storage contract; hai message STS được
+    // Controlplane và Dataplane sử dụng nên giữ chúng trong proto dù service này không xử lý.
     let _ = storage_proto::BucketCreateSync::default();
     let _ = storage_proto::CredentialSync::default();
     let _ = storage_proto::BucketDeleteSync::default();
+    let _ = storage_proto::ObjectStsRequest::default();
+    let _ = storage_proto::ObjectStsResponse::default();
 }
 
 // [COMMENT]: Cập nhật dung lượng used_bytes cho bucket cá nhân trực tiếp vào DB và trả về owner_id (User ID)
@@ -87,7 +91,7 @@ pub async fn update_tenant_bucket_size(
 }
 
 // [COMMENT]: Resolve bucket creation trong một transaction.
-// SUCCEEDED: UPDATE outbox thành SUCCEEDED (không DELETE), derive owner từ DB, INSERT RESOURCE_CREATED lifecycle event.
+// SUCCEEDED: UPDATE outbox thành SUCCEEDED và dùng immutable outbox snapshot để phát ownership event.
 // PROCESSING: UPDATE outbox thành PROCESSING.
 // FAILED: UPDATE outbox thành FAILED + DELETE bucket record (clean rollback cho retry với cùng tên).
 //
@@ -119,50 +123,43 @@ pub async fn resolve_bucket_creation_tx(
                      completed_at = NOW(), \
                      updated_at = NOW() \
                  WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id, owner_id, owner_type",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id, owner_id, owner_type, payload, routing_scope",
                 &[&job_uuid, &job_topic],
             )
             .await?;
 
-        // [COMMENT]: Outbox là contract payer, còn resource tables là nguồn kiểm chứng.
-        // Sai lệch giữa hai nguồn phải rollback cả transaction thay vì phát event tính nhầm ví.
+        // [COMMENT]: Owner là snapshot được Controlplane ghi nguyên tử cùng resource/outbox.
+        // Name nằm trong binary job payload; zone nằm trong routing_scope nên không query resource tables lần hai.
         if let Some(ref row) = row_opt {
             let resource_id_str: String = row.get(3);
             let resource_id = uuid::Uuid::parse_str(&resource_id_str)?;
             let owner_id: uuid::Uuid = row.get(4);
             let owner_type: String = row.get(5);
-
-            // Derive resource_name & zone_id từ DB cho event payload
-            let owner_info = derive_bucket_owner(tx, resource_id).await?;
-            if let Some((derived_owner_id, derived_owner_type, resource_name, zone_id)) = owner_info
-            {
-                if derived_owner_id != owner_id || derived_owner_type != owner_type {
-                    return Err(format!(
-                        "outbox payer mismatch for resource {}: outbox={}/{}, db={}/{}",
-                        resource_id, owner_type, owner_id, derived_owner_type, derived_owner_id
-                    )
-                    .into());
-                }
-                let params = LifecycleEventParams {
-                    source_job_id: job_uuid,
-                    resource_id,
-                    resource_type: "STORAGE_BUCKET",
-                    resource_name: &resource_name,
-                    owner_id,
-                    owner_type: &owner_type,
-                    zone_id,
-                    source_version: 1,
-                    effective_at: chrono::Utc::now(),
-                    traceparent: None,
-                };
-                insert_resource_created(tx, params).await?;
-            } else {
-                return Err(format!(
-                    "bucket {} disappeared before lifecycle projection",
-                    resource_id
-                )
-                .into());
+            let payload: Vec<u8> = row.get(6);
+            let routing_scope: String = row.get(7);
+            let sync_data = storage_proto::BucketCreateSync::decode(payload.as_slice())?;
+            if sync_data.name.trim().is_empty() {
+                return Err("bucket create outbox payload has an empty name".into());
             }
+            // [COMMENT]: routing_scope là snapshot bắt buộc `zone:<uuid>` từ Controlplane.
+            let zone_id = uuid::Uuid::parse_str(
+                routing_scope
+                    .strip_prefix("zone:")
+                    .ok_or_else(|| format!("invalid storage routing_scope: {routing_scope}"))?,
+            )?;
+            let params = LifecycleEventParams {
+                source_job_id: job_uuid,
+                resource_id,
+                resource_type: "STORAGE_BUCKET",
+                resource_name: &sync_data.name,
+                owner_id,
+                owner_type: &owner_type,
+                zone_id,
+                source_version: 1,
+                effective_at: chrono::Utc::now(),
+                traceparent: None,
+            };
+            insert_resource_created(tx, params).await?;
         }
 
         row_opt
@@ -346,7 +343,7 @@ pub async fn resolve_bucket_deletion_tx(
         // có thể consume outbox nhưng không xóa được resource, làm mất lifecycle event.
         let outbox = tx
             .query_opt(
-                "SELECT resource_id, owner_id, owner_type \
+                "SELECT resource_id, owner_id, owner_type, payload, routing_scope \
                  FROM storage.storage_outbox_records \
                  WHERE event_id = $1::uuid AND job_topic = $2 \
                    AND status IN ('PENDING', 'PROCESSING') \
@@ -361,21 +358,18 @@ pub async fn resolve_bucket_deletion_tx(
         let resource_id = uuid::Uuid::parse_str(outbox.get::<_, String>(0).as_str())?;
         let owner_id: uuid::Uuid = outbox.get(1);
         let owner_type: String = outbox.get(2);
-
-        let Some((derived_owner_id, derived_owner_type, resource_name, zone_id)) =
-            derive_bucket_owner(tx, resource_id).await?
-        else {
-            return Err(
-                format!("bucket {} not found while completing deletion", resource_id).into(),
-            );
-        };
-        if owner_id != derived_owner_id || owner_type != derived_owner_type {
-            return Err(format!(
-                "outbox payer mismatch while deleting bucket {}",
-                resource_id
-            )
-            .into());
+        let payload: Vec<u8> = outbox.get(3);
+        let routing_scope: String = outbox.get(4);
+        let sync_data = storage_proto::BucketDeleteSync::decode(payload.as_slice())?;
+        if sync_data.name.trim().is_empty() {
+            return Err("bucket delete outbox payload has an empty name".into());
         }
+        // [COMMENT]: Parse inline để contract `zone:<uuid>` minh bạch ngay tại delete flow.
+        let zone_id = uuid::Uuid::parse_str(
+            routing_scope
+                .strip_prefix("zone:")
+                .ok_or_else(|| format!("invalid storage routing_scope: {routing_scope}"))?,
+        )?;
 
         // [COMMENT]: Capture xong mới xóa; transaction rollback sẽ phục hồi resource nếu event insert lỗi.
         match owner_type.as_str() {
@@ -412,7 +406,7 @@ pub async fn resolve_bucket_deletion_tx(
                 source_job_id: job_uuid,
                 resource_id,
                 resource_type: "STORAGE_BUCKET",
-                resource_name: &resource_name,
+                resource_name: &sync_data.name,
                 owner_id,
                 owner_type: &owner_type,
                 zone_id,
@@ -462,89 +456,4 @@ pub async fn resolve_bucket_deletion_tx(
     };
 
     Ok(row_opt)
-}
-
-/// [COMMENT]: Derive ownership info từ DB theo resource_id của bucket.
-/// Thử personal trước (join personal_workspaces để lấy owner_id), sau đó tenant (tenant_id là payer).
-/// Return: Option<(owner_id, owner_type, resource_name, zone_id)>
-async fn derive_bucket_owner(
-    tx: &tokio_postgres::Transaction<'_>,
-    resource_id: uuid::Uuid,
-) -> Result<Option<(uuid::Uuid, String, String, uuid::Uuid)>, tokio_postgres::Error> {
-    // [COMMENT]: Thử personal bucket — join với personal_workspaces để lấy owner_id
-    let personal = tx
-        .query_opt(
-            "SELECT w.owner_id, b.name, b.zone_id \
-             FROM storage.personal_buckets b \
-             JOIN hierarchy.personal_workspaces w ON w.id = b.workspace_id \
-             WHERE b.id = $1",
-            &[&resource_id],
-        )
-        .await?;
-
-    if let Some(row) = personal {
-        let owner_id: uuid::Uuid = row.get(0);
-        let name: String = row.get(1);
-        let zone_id: uuid::Uuid = row.get(2);
-        return Ok(Some((owner_id, "PERSONAL".to_string(), name, zone_id)));
-    }
-
-    // [COMMENT]: Thử tenant bucket — tenant_id là payer
-    let tenant = tx
-        .query_opt(
-            "SELECT b.tenant_id, b.name, b.zone_id \
-             FROM storage.tenant_buckets b \
-             WHERE b.id = $1",
-            &[&resource_id],
-        )
-        .await?;
-
-    if let Some(row) = tenant {
-        let owner_id: uuid::Uuid = row.get(0);
-        let name: String = row.get(1);
-        let zone_id: uuid::Uuid = row.get(2);
-        return Ok(Some((owner_id, "TENANT".to_string(), name, zone_id)));
-    }
-
-    Ok(None)
-}
-
-pub async fn get_tenant_bucket_owner_and_members(
-    db_url: &str,
-    name: &str,
-) -> Result<(Option<String>, Vec<String>), Box<dyn std::error::Error + Send + Sync>> {
-    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            Logger::sys_error(
-                "storage_db.connection",
-                "Lỗi kết nối chạy ngầm của PostgreSQL khi lấy tenant bucket owner",
-                &e.to_string(),
-            );
-        }
-    });
-
-    let row_tenant = pg_client
-        .query_opt(
-            "SELECT tenant_id::text FROM storage.tenant_buckets WHERE name = $1",
-            &[&name],
-        )
-        .await?;
-
-    let tenant_id = match row_tenant {
-        Some(r) => r.get::<_, String>(0),
-        None => return Ok((None, vec![])),
-    };
-
-    let rows_members = pg_client
-        .query(
-            "SELECT user_id::text FROM hierarchy.tenant_memberships WHERE tenant_id = $1::uuid AND status = 'active'",
-            &[&uuid::Uuid::parse_str(&tenant_id)?],
-        )
-        .await?;
-
-    let user_ids = rows_members.iter().map(|r| r.get::<_, String>(0)).collect();
-
-    Ok((Some(tenant_id), user_ids))
 }
