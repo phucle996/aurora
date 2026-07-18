@@ -5,7 +5,6 @@ pub mod auth {
     tonic::include_proto!("iam.rpc");
 }
 
-
 // [COMMENT]: Sinh mã Rust từ protobuf definitions của trinity.proto
 #[allow(dead_code)]
 #[allow(unused_imports)]
@@ -61,5 +60,4 @@ impl Nats {
     pub fn client(&self) -> &async_nats::Client {
         &self.nats_client
     }
-
 }

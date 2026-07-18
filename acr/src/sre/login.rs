@@ -196,11 +196,7 @@ pub async fn handle_admin_login(
     let res_val = match release_sre_session(session_mgr, token_mgr, config, device_pubkey).await {
         Ok(r) => r,
         Err(e) => {
-            Logger::sys_error(
-                "sre.login",
-                "Release SRE session failed",
-                &e.to_string(),
-            );
+            Logger::sys_error("sre.login", "Release SRE session failed", &e.to_string());
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::InternalServerError,
                 e.message(),

@@ -140,7 +140,6 @@ pub async fn resolve_code_to_id_and_status(
     None
 }
 
-
 /// [COMMENT]: Lấy danh sách toàn bộ zones từ Shared L1 Cache
 pub async fn get_all_zones(nats: &Nats, redis_client: &redis::Client) -> Vec<ZoneItem> {
     sync_zones_from_nats(nats, redis_client).await;
@@ -227,7 +226,6 @@ async fn l1_lookup_code(code: &str) -> Option<(String, String)> {
     }
     None
 }
-
 
 async fn l1_set_zone(code: &str, id: &str, status: &str, name: &str) {
     let expiry = Instant::now() + Duration::from_secs(600);

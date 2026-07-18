@@ -50,8 +50,9 @@ impl SessionManager {
 
         match data {
             Some(bytes) => {
-                let session = SreAccessSession::decode(bytes.as_slice())
-                    .map_err(|e| AcrError::Internal(format!("Protobuf decode SreAccessSession failed: {}", e)))?;
+                let session = SreAccessSession::decode(bytes.as_slice()).map_err(|e| {
+                    AcrError::Internal(format!("Protobuf decode SreAccessSession failed: {}", e))
+                })?;
                 Ok(Some(session))
             }
             None => Ok(None),
@@ -80,8 +81,12 @@ impl SessionManager {
 
         redis::pipe()
             .atomic()
-            .cmd("SET").arg(&redis_key).arg(&buf)
-            .cmd("EXPIRE").arg(&redis_key).arg(self.config.session_ttl_secs)
+            .cmd("SET")
+            .arg(&redis_key)
+            .arg(&buf)
+            .cmd("EXPIRE")
+            .arg(&redis_key)
+            .arg(self.config.session_ttl_secs)
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|e| {
@@ -103,8 +108,10 @@ impl SessionManager {
 
         // [COMMENT]: 1. Cố gắng giành Lock bằng SET NX — TTL 5s để tự giải phóng khi crash
         let acquired: bool = redis::cmd("SET")
-            .arg(&lock_key).arg(1)
-            .arg("EX").arg(5)
+            .arg(&lock_key)
+            .arg(1)
+            .arg("EX")
+            .arg(5)
             .arg("NX")
             .query_async(&mut conn)
             .await
@@ -130,16 +137,24 @@ impl SessionManager {
         };
 
         let mut buf = Vec::new();
-        new_session.encode(&mut buf).map_err(|e| AcrError::Internal(e.to_string()))?;
+        new_session
+            .encode(&mut buf)
+            .map_err(|e| AcrError::Internal(e.to_string()))?;
 
         // [COMMENT]: 3. Pipeline nguyên tử:
         //   - Tạo session mới đầy đủ TTL
         //   - Giảm TTL session cũ về 5s (Grace Period) — tránh 401 cho requests song song
         redis::pipe()
             .atomic()
-            .cmd("SET").arg(&new_redis_key).arg(&buf)
-            .cmd("EXPIRE").arg(&new_redis_key).arg(self.config.session_ttl_secs)
-            .cmd("EXPIRE").arg(&old_redis_key).arg(5) // grace period
+            .cmd("SET")
+            .arg(&new_redis_key)
+            .arg(&buf)
+            .cmd("EXPIRE")
+            .arg(&new_redis_key)
+            .arg(self.config.session_ttl_secs)
+            .cmd("EXPIRE")
+            .arg(&old_redis_key)
+            .arg(5) // grace period
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|e| AcrError::RedisError(format!("SRE rotation pipeline failed: {}", e)))?;

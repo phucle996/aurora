@@ -32,7 +32,8 @@ impl DeviceService for DeviceRpcHandler {
         if req.encode(&mut payload).is_err() {
             return Err(Status::internal("Failed to encode request"));
         }
-        let reply_payload = crate::user::revoke::revoke_sessions_bytes(&self.session_mgr, &payload).await;
+        let reply_payload =
+            crate::user::revoke::revoke_sessions_bytes(&self.session_mgr, &payload).await;
         let resp = RevokeUserSessionsByDevicesResponse::decode(reply_payload.as_slice())
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(resp))

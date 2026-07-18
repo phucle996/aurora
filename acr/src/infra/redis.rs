@@ -22,7 +22,10 @@ pub struct SessionManager {
 impl SessionManager {
     /// [COMMENT]: Khởi tạo SessionManager với Redis client và config.
     pub fn new(redis_client: Arc<redis::Client>, config: Config) -> Self {
-        Self { redis_client, config }
+        Self {
+            redis_client,
+            config,
+        }
     }
 
     /// [COMMENT]: Lấy kết nối async từ Redis pool (tokio connection).

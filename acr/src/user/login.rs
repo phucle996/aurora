@@ -39,6 +39,8 @@ pub struct LoginPayload {
     pub signature: Option<String>,
     pub trust_device: Option<bool>,
     pub zone_code: Option<String>,
+    // [COMMENT]: Wire contract canonical luôn tách tenant domain khỏi username; UI có thể giữ cú pháp nhập user@domain.
+    pub tenant_domain: Option<String>,
 }
 
 /// [COMMENT]: Response JSON lỗi chung
@@ -58,6 +60,25 @@ pub struct ReleaseUserSessionResult {
     pub access_secret: String,
     pub client_device_id: String,
     pub tenant_id_val: String,
+}
+
+// [COMMENT]: Chuẩn hóa identity tại biên và loại bỏ hoàn toàn contract legacy username@tenant_domain trên wire.
+fn canonicalize_login_identity(
+    username: Option<&str>,
+    tenant_domain: Option<&str>,
+) -> Result<(String, String), &'static str> {
+    let username = username.map(str::trim).filter(|value| !value.is_empty());
+    let username = match username {
+        Some(value) if !value.contains('@') => value.to_lowercase(),
+        Some(_) => return Err("Username must not contain tenant domain"),
+        None => return Err("Username is required"),
+    };
+    let tenant_domain = tenant_domain
+        .map(str::trim)
+        .filter(|domain| !domain.is_empty())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    Ok((username, tenant_domain))
 }
 
 /// [COMMENT]: Khởi tạo Trinity Session riêng cho User (dùng cho cả HTTP Login và gRPC Release)
@@ -238,12 +259,15 @@ pub async fn handle_login(
         }
     };
 
-    let username = match payload.username {
-        Some(ref u) if !u.trim().is_empty() => u.clone(),
-        _ => {
+    let (username, tenant_domain) = match canonicalize_login_identity(
+        payload.username.as_deref(),
+        payload.tenant_domain.as_deref(),
+    ) {
+        Ok(identity) => identity,
+        Err(message) => {
             return Some(Ok(Response::new(build_denied_json(
                 HttpStatusCode::BadRequest,
-                "Username is required",
+                message,
             ))));
         }
     };
@@ -270,12 +294,6 @@ pub async fn handle_login(
         .cloned()
         .or_else(|| _client_headers.get("User-Agent").cloned())
         .unwrap_or_default();
-    let tenant_domain = if let Some(idx) = username.find('@') {
-        username[idx + 1..].to_string()
-    } else {
-        String::new()
-    };
-
     let cp_req = VerifyUserCredentialsRequest {
         username: username.clone(),
         password,
@@ -497,6 +515,28 @@ fn build_verification_required_json() -> CheckResponse {
     response.set_status(Status::failed_precondition("ACCOUNT_VERIFICATION_REQUIRED"));
     response.set_http_response(denied_builder);
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonicalize_login_identity;
+
+    #[test]
+    fn canonical_tenant_login_uses_separate_fields() {
+        let identity = canonicalize_login_identity(Some(" Alice "), Some(" ACME.Example "));
+        assert_eq!(
+            identity,
+            Ok(("alice".to_string(), "acme.example".to_string()))
+        );
+    }
+
+    #[test]
+    fn legacy_combined_username_is_rejected() {
+        assert_eq!(
+            canonicalize_login_identity(Some("alice@acme.example"), None),
+            Err("Username must not contain tenant domain")
+        );
+    }
 }
 
 fn sha256_hash(secret: &str) -> String {

@@ -56,16 +56,15 @@ pub async fn verify_sre_edge_session(
 ) -> VerifySreEdgeSessionResult {
     use crate::gateway::ext_authz::extract_cookie_value;
 
-    let jwt_token = extract_cookie_value(cookie_header, COOKIE_ACCESS_TOKEN)
-        .or_else(|| {
-            client_headers.get("authorization").and_then(|h| {
-                if h.to_lowercase().starts_with("bearer ") {
-                    Some(h[7..].trim().to_string())
-                } else {
-                    None
-                }
-            })
-        });
+    let jwt_token = extract_cookie_value(cookie_header, COOKIE_ACCESS_TOKEN).or_else(|| {
+        client_headers.get("authorization").and_then(|h| {
+            if h.to_lowercase().starts_with("bearer ") {
+                Some(h[7..].trim().to_string())
+            } else {
+                None
+            }
+        })
+    });
 
     let jwt_token = match jwt_token {
         Some(t) => t,
@@ -82,7 +81,10 @@ pub async fn verify_sre_edge_session(
     let mut claims = match token_mgr.verify_token(&jwt_token).await {
         Ok(c) => c,
         Err(e) => {
-            Logger::sys_debug("sre.verify", &format!("SRE token verification failed for path {}: {}", path, e));
+            Logger::sys_debug(
+                "sre.verify",
+                &format!("SRE token verification failed for path {}: {}", path, e),
+            );
             return VerifySreEdgeSessionResult {
                 claims: None,
                 access_key: String::new(),
@@ -95,7 +97,13 @@ pub async fn verify_sre_edge_session(
     let access_key = match extract_cookie_value(cookie_header, COOKIE_ACCESS_KEY) {
         Some(k) => k,
         None => {
-            Logger::authz_log(&claims.sub, method, path, "DENIED", "Missing access_key cookie for SRE");
+            Logger::authz_log(
+                &claims.sub,
+                method,
+                path,
+                "DENIED",
+                "Missing access_key cookie for SRE",
+            );
             return VerifySreEdgeSessionResult {
                 claims: None,
                 access_key: String::new(),
@@ -109,7 +117,16 @@ pub async fn verify_sre_edge_session(
     };
 
     if claims.access_key != access_key {
-        Logger::authz_log(&claims.sub, method, path, "DENIED", &format!("SRE access key mismatch: claim={}, cookie={}", claims.access_key, access_key));
+        Logger::authz_log(
+            &claims.sub,
+            method,
+            path,
+            "DENIED",
+            &format!(
+                "SRE access key mismatch: claim={}, cookie={}",
+                claims.access_key, access_key
+            ),
+        );
         return VerifySreEdgeSessionResult {
             claims: None,
             access_key: String::new(),
@@ -124,7 +141,13 @@ pub async fn verify_sre_edge_session(
     let sre_session = match session_mgr.get_sre_session(&access_key).await {
         Ok(Some(s)) => s,
         Ok(None) => {
-            Logger::authz_log(&claims.sub, method, path, "DENIED", "SRE session expired or revoked in Redis L2");
+            Logger::authz_log(
+                &claims.sub,
+                method,
+                path,
+                "DENIED",
+                "SRE session expired or revoked in Redis L2",
+            );
             return VerifySreEdgeSessionResult {
                 claims: None,
                 access_key: access_key.clone(),
@@ -136,7 +159,11 @@ pub async fn verify_sre_edge_session(
             };
         }
         Err(e) => {
-            Logger::sys_error("sre.verify", "Redis error fetching SRE session", &e.to_string());
+            Logger::sys_error(
+                "sre.verify",
+                "Redis error fetching SRE session",
+                &e.to_string(),
+            );
             return VerifySreEdgeSessionResult {
                 claims: None,
                 access_key: access_key.clone(),
@@ -152,7 +179,13 @@ pub async fn verify_sre_edge_session(
     let access_secret = match extract_cookie_value(cookie_header, COOKIE_ACCESS_SECRET) {
         Some(s) => s,
         None => {
-            Logger::authz_log(&claims.sub, method, path, "DENIED", "Missing access_secret cookie for SRE");
+            Logger::authz_log(
+                &claims.sub,
+                method,
+                path,
+                "DENIED",
+                "Missing access_secret cookie for SRE",
+            );
             return VerifySreEdgeSessionResult {
                 claims: None,
                 access_key: access_key.clone(),
@@ -167,7 +200,13 @@ pub async fn verify_sre_edge_session(
 
     let incoming_hash = sha256_hash(&access_secret);
     if sre_session.access_secret_hash != incoming_hash {
-        Logger::authz_log(&claims.sub, method, path, "DENIED", "SRE access secret mismatch");
+        Logger::authz_log(
+            &claims.sub,
+            method,
+            path,
+            "DENIED",
+            "SRE access secret mismatch",
+        );
         return VerifySreEdgeSessionResult {
             claims: None,
             access_key: access_key.clone(),

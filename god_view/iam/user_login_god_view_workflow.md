@@ -85,7 +85,8 @@ sequenceDiagram
     Envoy->>acr: CheckRequest (HTTP Context, Headers & Body)
     Note over acr: handle_login() intercepts
     acr->>acr: Parse JSON payload
-    acr->>acr: Tách username thành: raw_username + tenant_domain (nếu có dạng name@domain)
+    UI->>UI: Tách input username@domain thành hai JSON field
+    acr->>acr: Validate username không chứa @; canonicalize username + tenant_domain
     acr->>acr: Extract client_device_id from cookies, client_ip, user_agent
     acr->>CP: VerifyUserCredentials(raw_username, password, client_device_id, etc)
 ```
@@ -95,8 +96,8 @@ sequenceDiagram
 - **Chặn bắt tại Biên (Gateway Interception)**: Envoy Ingress chuyển tiếp toàn bộ request chứa thông tin đăng nhập đến Ext-Authz middleware (Rust acr).
 - **Phân tách và chuẩn bị dữ liệu**: 
   - Rust acr bóc tách JSON payload gửi lên, đồng thời thu thập siêu dữ liệu gồm IP khách (Client IP), User-Agent từ Header của request và `client_device_id` từ HTTP Cookies hiện có (nếu có).
-  - **Tách lọc Tenant Domain**: Nếu tham số `username` được nhập dưới dạng email/định dạng chứa ký tự `@` (ví dụ `alice@acme.platform.io`), Rust acr sẽ tự động tách lọc thành `raw_username` (`alice`) và `tenant_domain` (`acme.platform.io`) để gửi gRPC và phân giải ngữ cảnh.
-- **Giao tiếp gRPC**: Rust acr đóng gói các tham số nhận được và gửi yêu cầu xác thực thô đến Go Controlplane thông qua gRPC method `VerifyUserCredentials`.
+  - **Tenant wire contract duy nhất**: UI có thể nhận cú pháp `alice@acme.platform.io`, nhưng request luôn gửi hai field `username="alice"` và `tenant_domain="acme.platform.io"`. ACR từ chối `username` còn chứa `@`; không tự suy diễn domain theo cách thứ hai.
+- **Giao tiếp NATS request/reply**: Rust acr đóng gói Protobuf và gửi yêu cầu xác thực đến Go Controlplane qua subject `iam.auth.verify_credentials`.
 
 #### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
 

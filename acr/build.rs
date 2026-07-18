@@ -3,7 +3,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // [COMMENT]: Biên dịch các file proto: device.proto (DeviceService), auth.proto, zone.proto
     // Lưu ý: session.proto đã được đổi tên thành device.proto
     tonic_build::configure().compile(
-        &["proto/device.proto", "proto/auth.proto", "proto/zone.proto", "proto/trinity.proto", "proto/device_presence.proto", "proto/billing_auth.proto"],
+        &[
+            "proto/device.proto",
+            "proto/auth.proto",
+            "proto/zone.proto",
+            "proto/trinity.proto",
+            "proto/device_presence.proto",
+            "proto/billing_auth.proto",
+        ],
         &["proto"],
     )?;
     Ok(())

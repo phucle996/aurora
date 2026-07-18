@@ -75,10 +75,7 @@ pub async fn handle_sre_session_rotation(
                         "access_secret={}; Path=/admin; HttpOnly; Secure; SameSite=Lax",
                         new_access_secret
                     ));
-                    Logger::sys_info(
-                        "sre.rotate",
-                        "SRE session rotated successfully",
-                    );
+                    Logger::sys_info("sre.rotate", "SRE session rotated successfully");
                 }
                 Ok(false) => {
                     // [COMMENT]: Lock bị chiếm — request khác đang rotate — bỏ qua
@@ -88,11 +85,7 @@ pub async fn handle_sre_session_rotation(
                     );
                 }
                 Err(e) => {
-                    Logger::sys_error(
-                        "sre.rotate",
-                        "Failed to rotate SRE session",
-                        &e.to_string(),
-                    );
+                    Logger::sys_error("sre.rotate", "Failed to rotate SRE session", &e.to_string());
                 }
             }
         }

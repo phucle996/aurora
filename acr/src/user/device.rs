@@ -36,7 +36,11 @@ pub async fn start_presence_flush_worker(
             let mut conn = match redis_client.get_multiplexed_tokio_connection().await {
                 Ok(c) => c,
                 Err(e) => {
-                    Logger::sys_error("device.presence", "Failed to get Redis conn", &e.to_string());
+                    Logger::sys_error(
+                        "device.presence",
+                        "Failed to get Redis conn",
+                        &e.to_string(),
+                    );
                     continue;
                 }
             };
@@ -49,7 +53,11 @@ pub async fn start_presence_flush_worker(
 
             if let Err(e) = renamed {
                 if !e.to_string().contains("no such key") {
-                    Logger::sys_error("device.presence", "Failed to RENAME heartbeat key", &e.to_string());
+                    Logger::sys_error(
+                        "device.presence",
+                        "Failed to RENAME heartbeat key",
+                        &e.to_string(),
+                    );
                 }
                 continue;
             }
@@ -57,7 +65,11 @@ pub async fn start_presence_flush_worker(
             let raw: Vec<(String, String)> = match conn.hgetall(HEARTBEAT_TEMP_KEY).await {
                 Ok(v) => v,
                 Err(e) => {
-                    Logger::sys_error("device.presence", "Failed to HGETALL temp key", &e.to_string());
+                    Logger::sys_error(
+                        "device.presence",
+                        "Failed to HGETALL temp key",
+                        &e.to_string(),
+                    );
                     continue;
                 }
             };
@@ -78,12 +90,14 @@ pub async fn start_presence_flush_worker(
                     let last_seen_at: i64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
                     let last_seen_ip = parts.get(1).unwrap_or(&"").to_string();
                     let last_seen_user_agent = parts.get(2).unwrap_or(&"").to_string();
-                    Some(crate::infra::nats::auth::bulk_touch_devices_request::DeviceUpdate {
-                        device_id,
-                        last_seen_at,
-                        last_seen_ip,
-                        last_seen_user_agent,
-                    })
+                    Some(
+                        crate::infra::nats::auth::bulk_touch_devices_request::DeviceUpdate {
+                            device_id,
+                            last_seen_at,
+                            last_seen_ip,
+                            last_seen_user_agent,
+                        },
+                    )
                 })
                 .collect();
 
@@ -91,16 +105,30 @@ pub async fn start_presence_flush_worker(
             let req = BulkTouchDevicesRequest { updates };
             let mut buf = Vec::with_capacity(req.encoded_len());
             if let Err(e) = req.encode(&mut buf) {
-                Logger::sys_error("device.presence", "Failed to encode BulkTouchDevicesRequest", &e.to_string());
+                Logger::sys_error(
+                    "device.presence",
+                    "Failed to encode BulkTouchDevicesRequest",
+                    &e.to_string(),
+                );
                 continue;
             }
 
-            match nats_client.publish(NATS_SUBJECT.to_string(), buf.into()).await {
+            match nats_client
+                .publish(NATS_SUBJECT.to_string(), buf.into())
+                .await
+            {
                 Ok(_) => {
-                    Logger::sys_info("device.presence", &format!("Published {} device heartbeats to NATS", update_count));
+                    Logger::sys_info(
+                        "device.presence",
+                        &format!("Published {} device heartbeats to NATS", update_count),
+                    );
                 }
                 Err(e) => {
-                    Logger::sys_error("device.presence", "Failed to publish heartbeats to NATS", &e.to_string());
+                    Logger::sys_error(
+                        "device.presence",
+                        "Failed to publish heartbeats to NATS",
+                        &e.to_string(),
+                    );
                 }
             }
         }
@@ -108,7 +136,10 @@ pub async fn start_presence_flush_worker(
 }
 
 /// [COMMENT]: Lấy danh sách các thiết bị đang active của user từ Redis L2 (cho gRPC / NATS)
-pub async fn get_active_devices_bytes(session_mgr: &Arc<SessionManager>, payload: &[u8]) -> Vec<u8> {
+pub async fn get_active_devices_bytes(
+    session_mgr: &Arc<SessionManager>,
+    payload: &[u8],
+) -> Vec<u8> {
     use crate::infra::nats::auth::{
         ActiveDeviceEntry, GetActiveDevicesRequest, GetActiveDevicesResponse,
     };
@@ -116,7 +147,11 @@ pub async fn get_active_devices_bytes(session_mgr: &Arc<SessionManager>, payload
     let req = match GetActiveDevicesRequest::decode(payload) {
         Ok(r) => r,
         Err(e) => {
-            Logger::sys_error("device.active", "Failed to decode GetActiveDevicesRequest", &e.to_string());
+            Logger::sys_error(
+                "device.active",
+                "Failed to decode GetActiveDevicesRequest",
+                &e.to_string(),
+            );
             return vec![];
         }
     };
@@ -124,7 +159,11 @@ pub async fn get_active_devices_bytes(session_mgr: &Arc<SessionManager>, payload
     let active_sessions = match session_mgr.get_active_sessions(&req.user_id).await {
         Ok(sessions) => sessions,
         Err(e) => {
-            Logger::sys_error("device.active", "Failed to get active sessions", &e.to_string());
+            Logger::sys_error(
+                "device.active",
+                "Failed to get active sessions",
+                &e.to_string(),
+            );
             return vec![];
         }
     };

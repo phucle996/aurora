@@ -110,6 +110,11 @@ export default function SignInForm({
       toast.error(t.auth.passwordLen);
       return;
     }
+    if (username.includes("@") && (!rawUsername.trim() || !tenantDomain.trim())) {
+      // [COMMENT]: Wire contract không gửi username@domain; cú pháp UI phải tách được đủ cả hai thành phần.
+      toast.error("Tenant login must use username@tenant_domain");
+      return;
+    }
 	if (!selectedZoneCode && !pendingVerification) {
       toast.error(t.auth.zoneReq);
       return;
@@ -133,13 +138,13 @@ export default function SignInForm({
       const payload: LoginRequest = {
         // [COMMENT]: Gửi raw username (không có @domain) và tenant_domain riêng biệt.
         // Nếu không có @domain, tenantDomain là chuỗi rỗng — CP sẽ xử lý global login.
-        username: rawUsername,
+        username: rawUsername.trim().toLowerCase(),
         password,
         device_public_key: devicePublicKey,
         trust_device: trustDevice,
 		// [COMMENT]: Pending login chỉ authorize resend nên không cần placement zone; account active vẫn giữ zone requirement.
 		zone_code: selectedZoneCode || "global",
-        tenant_domain: tenantDomain || undefined,
+        tenant_domain: tenantDomain.trim().toLowerCase() || undefined,
       };
 
       await authAPI.login(payload);

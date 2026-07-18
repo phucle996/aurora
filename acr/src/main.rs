@@ -70,9 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let session_mgr = Arc::new(SessionManager::new(redis_client.clone(), config.clone()));
-    let token_mgr = Arc::new(TokenManager::new(
-        vault_client.clone(),
-    ));
+    let token_mgr = Arc::new(TokenManager::new(vault_client.clone()));
     let sre_token_mgr = Arc::new(crate::sre::claims::SreTokenManager::new(
         vault_client.clone(),
         config.vault.admin_api_key_path.clone(),

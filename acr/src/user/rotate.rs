@@ -33,11 +33,15 @@ pub async fn handle_user_session_rotation(
     if remaining_ttl <= config.refresh_threshold_secs {
         Logger::sys_info(
             "user.rotate",
-            &format!("TTL low ({}s) for user sub={}. Initiating transparent refresh.", remaining_ttl, claims.sub),
+            &format!(
+                "TTL low ({}s) for user sub={}. Initiating transparent refresh.",
+                remaining_ttl, claims.sub
+            ),
         );
 
-        let device_id = crate::gateway::ext_authz::extract_cookie_value(cookie_header, COOKIE_CLIENT_DEVICE_ID)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let device_id =
+            crate::gateway::ext_authz::extract_cookie_value(cookie_header, COOKIE_CLIENT_DEVICE_ID)
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let new_access_key = uuid::Uuid::now_v7().to_string();
         let new_access_secret = uuid::Uuid::new_v4().to_string();
@@ -71,16 +75,32 @@ pub async fn handle_user_session_rotation(
                 .await
             {
                 Ok(true) => {
-                    cookies_to_set.push(format!("access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax", new_jwt));
-                    cookies_to_set.push(format!("access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax", new_access_key));
-                    cookies_to_set.push(format!("access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax", new_access_secret));
+                    cookies_to_set.push(format!(
+                        "access_token={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                        new_jwt
+                    ));
+                    cookies_to_set.push(format!(
+                        "access_key={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                        new_access_key
+                    ));
+                    cookies_to_set.push(format!(
+                        "access_secret={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+                        new_access_secret
+                    ));
                     Logger::sys_info("user.rotate", "User session rotated successfully");
                 }
                 Ok(false) => {
-                    Logger::sys_debug("user.rotate", "User session rotation already in progress, bypassing");
+                    Logger::sys_debug(
+                        "user.rotate",
+                        "User session rotation already in progress, bypassing",
+                    );
                 }
                 Err(e) => {
-                    Logger::sys_error("user.rotate", "Failed to rotate user session", &e.to_string());
+                    Logger::sys_error(
+                        "user.rotate",
+                        "Failed to rotate user session",
+                        &e.to_string(),
+                    );
                 }
             }
         }

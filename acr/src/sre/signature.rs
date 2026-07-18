@@ -70,7 +70,10 @@ pub async fn verify_sre_signature(
     body_hasher.update(raw_body);
     let body_hash_hex = format!("{:x}", body_hasher.finalize());
 
-    let message = format!("{}|{}|{}|{}|{}", method, path, timestamp_str, nonce, body_hash_hex);
+    let message = format!(
+        "{}|{}|{}|{}|{}",
+        method, path, timestamp_str, nonce, body_hash_hex
+    );
 
     // 4. Ed25519 Signature Verification
     let pubkey_bytes = BASE64
@@ -105,7 +108,11 @@ pub async fn verify_sre_signature(
     verifying_key
         .verify_strict(message.as_bytes(), &signature)
         .map_err(|e| {
-            Logger::sys_warn("sre.signature", &format!("Ed25519 verification failed: {}", e), "");
+            Logger::sys_warn(
+                "sre.signature",
+                &format!("Ed25519 verification failed: {}", e),
+                "",
+            );
             "Ed25519 signature verification failed".to_string()
         })?;
 

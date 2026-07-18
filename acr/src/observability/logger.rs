@@ -76,7 +76,6 @@ impl Logger {
         chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
     }
 
-
     /// Ghi nhận nhật ký gỡ lỗi hệ thống cấp thấp (System Debug Logs).
     pub fn sys_debug(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Debug {

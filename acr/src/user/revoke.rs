@@ -134,10 +134,7 @@ pub async fn handle_logout(
         return None;
     }
 
-    Logger::sys_info(
-        "user.revoke",
-        "Intercepted user logout request at edge",
-    );
+    Logger::sys_info("user.revoke", "Intercepted user logout request at edge");
 
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
     let jwt_token =

@@ -394,7 +394,10 @@ impl VaultClient {
     /// Giúp bảo vệ an toàn tối đa cho 2FA Secret Key (không bao giờ rời khỏi Vault)
     pub async fn verify_totp(&self, code: &str) -> Result<bool, AcrError> {
         // [COMMENT]: 1. Xây dựng URL tới Vault TOTP verify endpoint sử dụng cấu hình động
-        let url = format!("{}/v1/{}/code/{}", self.addr, self.totp_mount_path, self.totp_key_name);
+        let url = format!(
+            "{}/v1/{}/code/{}",
+            self.addr, self.totp_mount_path, self.totp_key_name
+        );
 
         // [COMMENT]: 2. Chuẩn bị request body chứa OTP code từ client
         let body = serde_json::json!({

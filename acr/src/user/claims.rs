@@ -67,6 +67,4 @@ impl Claims {
             vec![self.role_id.clone()]
         }
     }
-
 }
-

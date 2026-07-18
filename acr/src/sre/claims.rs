@@ -33,8 +33,6 @@ pub struct SreClaims {
     pub iat: i64,
 }
 
-
-
 pub struct SreTokenManager {
     vault_client: Arc<VaultClient>,
     admin_api_key_path: String,
@@ -43,9 +41,7 @@ pub struct SreTokenManager {
 
 impl SreTokenManager {
     pub fn new(vault_client: Arc<VaultClient>, admin_api_key_path: String) -> Self {
-        let jwt_sig_cache = moka::future::Cache::builder()
-            .max_capacity(50000)
-            .build();
+        let jwt_sig_cache = moka::future::Cache::builder().max_capacity(50000).build();
         Self {
             vault_client,
             admin_api_key_path,
@@ -76,15 +72,17 @@ impl SreTokenManager {
 
         let parts: Vec<&str> = token.split('.').collect();
         if parts.len() != 3 {
-            return Err(AcrError::TokenError("Malformed SRE JWT structure".to_string()));
+            return Err(AcrError::TokenError(
+                "Malformed SRE JWT structure".to_string(),
+            ));
         }
 
         use base64::Engine;
         let url_engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-        let payload_bytes = url_engine
-            .decode(parts[1])
-            .map_err(|e| AcrError::TokenError(format!("Failed to decode SRE JWT payload: {}", e)))?;
+        let payload_bytes = url_engine.decode(parts[1]).map_err(|e| {
+            AcrError::TokenError(format!("Failed to decode SRE JWT payload: {}", e))
+        })?;
 
         let claims: SreClaims = serde_json::from_slice(&payload_bytes)
             .map_err(|e| AcrError::TokenError(format!("Failed to parse SRE JWT claims: {}", e)))?;

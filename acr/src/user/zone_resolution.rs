@@ -43,7 +43,9 @@ pub async fn resolve_zone_context(
                 "global".to_string(),
                 "active".to_string(),
             ))
-        } else if let Some((id, status)) = resolve_code_to_id_and_status(nats, redis_client, code).await {
+        } else if let Some((id, status)) =
+            resolve_code_to_id_and_status(nats, redis_client, code).await
+        {
             Ok((id, code.clone(), status))
         } else {
             Err(ZoneResolutionError::InvalidCode(code.clone()))
@@ -86,7 +88,10 @@ pub async fn resolve_and_verify_zone_user(
             ))));
         }
         Err(ZoneResolutionError::Missing) => {
-            let sub = claims.as_ref().map(|c| c.sub.as_str()).unwrap_or("anonymous");
+            let sub = claims
+                .as_ref()
+                .map(|c| c.sub.as_str())
+                .unwrap_or("anonymous");
             Logger::authz_log(
                 sub,
                 method,
