@@ -25,7 +25,7 @@ pub async fn resolve_credential_deletion(
                 "WITH deleted_outbox AS ( \
                      DELETE FROM storage.storage_outbox_records \
                      WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                     RETURNING user_id, job_topic, trace_id, resource_id \
+                     RETURNING actor_user_id::text, job_topic, trace_id, resource_id \
                  ), \
                  deleted_personal AS ( \
                      DELETE FROM storage.personal_credentials \
@@ -50,7 +50,7 @@ pub async fn resolve_credential_deletion(
                      error_code = NULL, \
                      error_message = NULL \
                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&status, &job_uuid, &job_topic],
             )
             .await?
@@ -65,7 +65,7 @@ pub async fn resolve_credential_deletion(
                      error_code = $2, \
                      error_message = $3 \
                  WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&status, &error_code, &error_message, &job_uuid, &job_topic],
             )
             .await?
@@ -101,7 +101,7 @@ pub async fn resolve_credential_creation(
             .query_opt(
                 "DELETE FROM storage.storage_outbox_records \
                  WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&job_uuid, &job_topic],
             )
             .await?
@@ -114,7 +114,7 @@ pub async fn resolve_credential_creation(
                      error_code = NULL, \
                      error_message = NULL \
                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&status, &job_uuid, &job_topic],
             )
             .await?
@@ -131,7 +131,7 @@ pub async fn resolve_credential_creation(
                          error_code = $2, \
                          error_message = $3 \
                      WHERE event_id = $4::uuid AND job_topic = $5 AND status IN ('PENDING', 'PROCESSING') \
-                     RETURNING user_id, job_topic, trace_id, resource_id \
+                     RETURNING actor_user_id::text, job_topic, trace_id, resource_id \
                  ), \
                  deleted_personal AS ( \
                      DELETE FROM storage.personal_credentials \

@@ -2,18 +2,18 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"cost-manager/api/infra"
 	"cost-manager/api/internal/config"
-	"cost-manager/api/internal/service"
 	"cost-manager/api/pkg/logger"
+
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,20 +23,17 @@ import (
 )
 
 type App struct {
-	Cfg                *config.Config
-	dbPool             *pgxpool.Pool
-	controlplaneDBPool *pgxpool.Pool
-	redisClient        *redis.Client
-	natsConn           *nats.Conn
-	module             *Module
+	Cfg         *config.Config
+	dbPool      *pgxpool.Pool
+	redisClient *redis.Client
+	natsConn    *nats.Conn
+	module      *Module
 
-	httpServer      *http.Server
-	grpcServer      *googlegrpc.Server
-	rustCmd         *exec.Cmd
-	outboxCancel    context.CancelFunc
-	outboxDone      chan struct{}
-	ownershipCancel context.CancelFunc
-	ownershipDone   chan struct{}
+	httpServer   *http.Server
+	grpcServer   *googlegrpc.Server
+	rustCmd      *exec.Cmd
+	outboxCancel context.CancelFunc
+	outboxDone   chan struct{}
 }
 
 func NewApp() *App {
@@ -49,34 +46,28 @@ func (a *App) Init() error {
 	// 1. Load config
 	a.Cfg = config.LoadConfig()
 
-	// 2. Connect to Database Infrastructure
-	dbPool, err := infra.ConnectPostgres(a.Cfg.DBURL)
+	// 2. Connect to Billing Database Infrastructure
+	dbPool, err := infra.ConnectPostgres(&a.Cfg.Psql)
+
 	if err != nil {
 		return err
 	}
 	a.dbPool = dbPool
 
-	// Controlplane connection is used only by the ownership reconciler, never inside per-usage billing transactions.
-	controlplaneDBPool, err := infra.ConnectPostgres(a.Cfg.ControlplaneDBURL)
-	if err != nil {
-		return fmt.Errorf("app.init: connect controlplane ownership source: %w", err)
-	}
-	a.controlplaneDBPool = controlplaneDBPool
-
 	// 3. Chạy embedded SQL migrations cho billing schema (idempotent, advisory lock safe)
 	if err := runBillingMigrations(context.Background(), dbPool); err != nil {
-		return fmt.Errorf("app.init: billing migration failed: %w", err)
+		return err
 	}
 
 	// 4. Connect to Redis Cache Infrastructure
-	redisClient, err := infra.ConnectRedis(a.Cfg.RedisURL)
+	redisClient, err := infra.ConnectRedis(a.Cfg.Redis.Addr)
 	if err != nil {
 		return err
 	}
 	a.redisClient = redisClient
 
 	// 5. Connect to NATS Messaging Infrastructure
-	natsConn, err := infra.ConnectNats(a.Cfg.NatsURL)
+	natsConn, err := infra.ConnectNats(a.Cfg.NATS.Addr)
 	if err != nil {
 		return err
 	}
@@ -89,49 +80,60 @@ func (a *App) Init() error {
 	}
 	a.module = module
 
+	logger.SysInfo(op, "Cost Manager API initialized successfully without Controlplane DB connection (Fully Decoupled).")
 	return nil
 }
 
 func (a *App) Start() {
 	const op = "app.start"
 
-	// Outbox relay chạy trên mọi API replica; PostgreSQL SKIP LOCKED phân phối batch an toàn theo HA.
+	// 1. Outbox relay cho Pricing updates
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	a.outboxCancel = outboxCancel
 	a.outboxDone = make(chan struct{})
-	go func() {
-		defer close(a.outboxDone)
-		service.NewPricingOutboxRelay(a.dbPool, a.natsConn).Run(outboxCtx)
-	}()
+	if a.module != nil && a.module.PricingOutboxRelay != nil {
+		go func() {
+			defer close(a.outboxDone)
+			a.module.PricingOutboxRelay.Run(outboxCtx)
+		}()
+	} else {
+		close(a.outboxDone)
+	}
 
-	ownershipCtx, ownershipCancel := context.WithCancel(context.Background())
-	a.ownershipCancel = ownershipCancel
-	a.ownershipDone = make(chan struct{})
-	go func() {
-		defer close(a.ownershipDone)
-		service.NewOwnershipProjector(a.controlplaneDBPool, a.dbPool).Run(ownershipCtx)
-	}()
 
-	// 1. Start HTTP REST Server
+	// 2. Start NATS JetStream Lifecycle Consumer
+	if a.module != nil && a.module.LifecycleNatsSubscriber != nil {
+		if err := a.module.LifecycleNatsSubscriber.Start(context.Background()); err != nil {
+			logger.SysWarn(op, "Start LifecycleNatsSubscriber failed: "+err.Error())
+		}
+	}
+
+	// 3. Start gRPC Reconciler Worker
+	if a.module != nil && a.module.ReconcilerWorker != nil {
+		a.module.ReconcilerWorker.Start(context.Background())
+	}
+
+	// 2. Start REST HTTP Server
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
 
 	RegisterRoutes(router, a.module)
 
+	portStr := strconv.Itoa(a.Cfg.App.HTTPPort)
 	a.httpServer = &http.Server{
-		Addr:    ":" + a.Cfg.Port,
+		Addr:    ":" + portStr,
 		Handler: router,
 	}
 
 	go func() {
-		logger.SysInfo(op, "HTTP REST Server is listening on port :"+a.Cfg.Port)
+		logger.SysInfo(op, "HTTP REST Server is listening on port :"+portStr)
 		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.SysFatal(op, "HTTP REST Server failure: "+err.Error())
 		}
 	}()
 
-	// 4. Start Rust Engine as child process
+	// 3. Start Rust Engine child process
 	rustPath := "cost-manager-engine"
 	if _, err := exec.LookPath(rustPath); err != nil {
 		rustPath = "../engine/target/release/cost-manager-engine"
@@ -162,7 +164,6 @@ func (a *App) Stop() {
 	const op = "app.stop"
 	logger.SysInfo(op, "Shutting down Cost Manager API gracefully...")
 
-	// 1. Dừng outbox relay trước khi đóng NATS/PostgreSQL để không publish trên connection đang teardown.
 	if a.outboxCancel != nil {
 		a.outboxCancel()
 	}
@@ -173,18 +174,16 @@ func (a *App) Stop() {
 			logger.SysWarn(op, "Timed out waiting for pricing outbox relay")
 		}
 	}
-	if a.ownershipCancel != nil {
-		a.ownershipCancel()
-	}
-	if a.ownershipDone != nil {
-		select {
-		case <-a.ownershipDone:
-		case <-time.After(3 * time.Second):
-			logger.SysWarn(op, "Timed out waiting for ownership projector")
-		}
+
+	if a.module != nil && a.module.LifecycleNatsSubscriber != nil {
+		a.module.LifecycleNatsSubscriber.Stop()
 	}
 
-	// 2. Terminate Rust Engine child process
+	if a.module != nil && a.module.ReconcilerWorker != nil {
+		a.module.ReconcilerWorker.Stop()
+	}
+
+	// Terminate Rust Engine child process
 	if a.rustCmd != nil && a.rustCmd.Process != nil {
 		logger.SysInfo(op, "Terminating Rust Engine child process...")
 		_ = a.rustCmd.Process.Signal(syscall.SIGTERM)
@@ -192,7 +191,7 @@ func (a *App) Stop() {
 		logger.SysInfo(op, "Rust Engine terminated.")
 	}
 
-	// 3. Shutdown HTTP Server
+	// Shutdown HTTP Server
 	if a.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -201,25 +200,18 @@ func (a *App) Stop() {
 		}
 	}
 
-	// 4. Stop gRPC Server
 	if a.grpcServer != nil {
 		a.grpcServer.GracefulStop()
 	}
 
-	// 5. Close database connections
 	if a.dbPool != nil {
 		a.dbPool.Close()
 	}
-	if a.controlplaneDBPool != nil {
-		a.controlplaneDBPool.Close()
-	}
 
-	// 6. Close Redis connection
 	if a.redisClient != nil {
 		_ = a.redisClient.Close()
 	}
 
-	// 7. Close NATS connection
 	if a.natsConn != nil {
 		a.natsConn.Close()
 	}

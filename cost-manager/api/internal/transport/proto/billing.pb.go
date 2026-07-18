@@ -4,7 +4,8 @@
 // 	protoc        v6.30.2
 // source: proto/billing.proto
 
-package billingproto
+package proto
+
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"

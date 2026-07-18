@@ -1,15 +1,17 @@
-mod config;
 mod cdc;
+mod cleanup;
+mod config;
 mod job_result;
+mod lifecycle_relay;
 mod observability;
 mod reverse_provider;
 
-use config::Config;
 use cdc::CdcStreamer;
+use config::Config;
 use job_result::JobResultConsumer;
 use observability::logger::Logger;
-use observability::otel::OtelTracer;
 use observability::metrics::MetricsManager;
+use observability::otel::OtelTracer;
 use reverse_provider::ReverseProvider;
 
 #[tokio::main]
@@ -34,7 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::init();
     OtelTracer::init(&config);
     MetricsManager::init();
-    Logger::sys_info("main.init", "Khởi động aurora-job-orchestrator (Mô hình 2 chiều)...");
+    Logger::sys_info(
+        "main.init",
+        "Khởi động aurora-job-orchestrator (Mô hình 2 chiều)...",
+    );
 
     Logger::sys_info(
         "main.init",
@@ -52,16 +57,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info("main.init", "Đã khởi tạo Redis Client thành công.");
 
     let nats_client = async_nats::connect(&config.env_nats_url).await?;
-    Logger::sys_info("main.init", &format!("Đã kết nối thành công tới NATS Core tại: {}", config.env_nats_url));
+    Logger::sys_info(
+        "main.init",
+        &format!(
+            "Đã kết nối thành công tới NATS Core tại: {}",
+            config.env_nats_url
+        ),
+    );
 
     // 3. Khởi tạo các cấu phần proxy 2 chiều
     // [COMMENT]: CdcStreamer::new là async — bootstrap desired_state_cache từ DB trước khi run.
     // map_err để chuyển Box<dyn Error + Send + Sync> → Box<dyn Error> cho ? operator của main().
     let streamer = CdcStreamer::new(config.clone(), redis_client.clone())
         .await
-        .map_err(|e| -> Box<dyn std::error::Error> { format!("CDC bootstrap thất bại: {}", e).into() })?;
-    let consumer = JobResultConsumer::new(config.clone(), redis_client.clone(), nats_client.clone());
+        .map_err(|e| -> Box<dyn std::error::Error> {
+            format!("CDC bootstrap thất bại: {}", e).into()
+        })?;
+    let consumer =
+        JobResultConsumer::new(config.clone(), redis_client.clone(), nats_client.clone());
     let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone(), nats_client);
+
+    let db_url = config.database_url.clone();
+    let nats_url = config.env_nats_url.clone();
 
     // 4. Chạy song song các luồng nền độc lập (HA)
     tokio::select! {
@@ -83,8 +100,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
+        _ = lifecycle_relay::relay::run_relay_loop(db_url.clone(), nats_url) => {
+            Logger::sys_error("main.run", "Resource Lifecycle Relay Worker dừng đột ngột", "");
+            std::process::exit(1);
+        }
+        _ = cleanup::outbox_cleaner::run_outbox_cleanup_loop(db_url) => {
+            Logger::sys_error("main.run", "Outbox Retention Cleaner Worker dừng đột ngột", "");
+            std::process::exit(1);
+        }
     }
 
     Ok(())
 }
-

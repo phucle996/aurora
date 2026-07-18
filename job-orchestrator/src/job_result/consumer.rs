@@ -1,8 +1,7 @@
+use super::l1_dispatcher;
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use tokio_postgres::NoTls;
-use super::l1_dispatcher;
-
 
 // [COMMENT]: JobResultConsumer tiêu thụ kết quả công việc từ Redis Stream, giải mã và định tuyến DB update.
 pub struct JobResultConsumer {
@@ -31,8 +30,9 @@ impl JobResultConsumer {
             "job_result.run",
             "JobResultConsumer: Bắt đầu kết nối tới PostgreSQL...",
         );
-        let (client, connection) =
+        let (mut client, connection) =
             tokio_postgres::connect(&self.config.database_url, NoTls).await?;
+
         tokio::spawn(async move {
             if let Err(e) = connection.await {
                 Logger::sys_error(
@@ -123,7 +123,13 @@ impl JobResultConsumer {
                                             }
 
                                             if let Some(payload) = payload_bytes {
-                                                match l1_dispatcher::dispatch_result(&payload, &client, &self.nats_client).await {
+                                                match l1_dispatcher::dispatch_result(
+                                                    &payload,
+                                                    &mut client,
+                                                    &self.nats_client,
+                                                )
+                                                .await
+                                                {
                                                     Ok(_) => {
                                                         let _: redis::RedisResult<i32> =
                                                             redis::cmd("XACK")
@@ -153,4 +159,3 @@ impl JobResultConsumer {
         }
     }
 }
-

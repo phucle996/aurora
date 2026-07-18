@@ -193,3 +193,24 @@ func (r *accountRepository) ActivateFreeTier(ctx context.Context, command entity
 		Created:             true,
 	}, nil
 }
+
+// [COMMENT]: EnsurePersonalWallet khởi tạo ví PERSONAL với số dư 0 USD khi tài khoản được verified.
+// Thao tác này là idempotent, sử dụng ON CONFLICT DO NOTHING để chống đụng độ trong môi trường HA/Concurrent requests.
+func (r *accountRepository) EnsurePersonalWallet(ctx context.Context, ownerID uuid.UUID) (uuid.UUID, error) {
+	walletID := uuid.New()
+	var finalWalletID uuid.UUID
+
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO billing.wallets (id, owner_id, owner_type, currency, cash_balance, promotional_balance, status)
+		VALUES ($1, $2, 'PERSONAL', 'USD', 0, 0, 'ACTIVE')
+		ON CONFLICT (owner_id, owner_type, currency) DO UPDATE
+		SET updated_at = NOW()
+		RETURNING id
+	`, walletID, ownerID).Scan(&finalWalletID)
+
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("account repo: ensure personal wallet: %w", err)
+	}
+
+	return finalWalletID, nil
+}

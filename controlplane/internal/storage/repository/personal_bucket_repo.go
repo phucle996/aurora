@@ -12,11 +12,12 @@ import (
 	storageModel "controlplane/internal/storage/model"
 	storageTaxonomy "controlplane/internal/storage/taxonomy"
 
+	"encoding/json"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"encoding/json"
 )
 
 // [COMMENT]: PersonalBucketRepoImpl thực thi interface PersonalBucketRepo cho kết nối PostgreSQL.
@@ -67,11 +68,11 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 			FROM ins_bucket
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
+			error_code, error_message, actor_user_id
 		)
-		SELECT $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+		SELECT $13, $14, $15, $16, $17, $34, $18, $19, $20, $21, $22, $23, $24, $25, $26, $35
 		FROM ins_bucket
 	`, r.hierarchy, r.storage, r.storage, r.storage)
 
@@ -95,8 +96,9 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 		mo.RoutingScope,
 		mo.JobTopic,
 		mo.Payload,
-		mo.UserID,
+		mo.OwnerID,
 		mo.Status,
+
 		mo.CompletedAt,
 		mo.JobVersion,
 		mo.ResourceID,
@@ -116,7 +118,11 @@ func (r *PersonalBucketRepoImpl) Create(ctx context.Context, bucket *storageEnti
 			b, _ := json.Marshal(bucket.Tags)
 			return b
 		}(),
+		// [COMMENT]: $34 — owner_type ("PERSONAL")
+		mo.OwnerType,
+		mo.ActorUserID,
 	)
+
 	if err != nil {
 		// [COMMENT]: Bắt lỗi trùng lặp mã Key (Unique Constraint 23505) và ánh xạ sang lỗi domain ErrAlreadyExists
 		var pgErr *pgconn.PgError
@@ -255,7 +261,7 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 	}
 
 	// [COMMENT]: 2. Kiểm tra nghiệp vụ: Hạn mức quota mới phải trống ít nhất 1GB (1_073_741_824 bytes) so với used_bytes hiện tại
-	if quotaBytes - usedBytes < 1073741824 {
+	if quotaBytes-usedBytes < 1073741824 {
 		return storageTaxonomy.ErrResizeLimitTooLow
 	}
 
@@ -275,10 +281,10 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 	mo := storageModel.OutboxEntityToModel(outbox)
 	insertOutboxQuery := fmt.Sprintf(`
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			error_code, error_message, actor_user_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	`, r.storage)
 
 	_, err = tx.Exec(ctx, insertOutboxQuery,
@@ -286,8 +292,10 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 		mo.RoutingScope,
 		mo.JobTopic,
 		mo.Payload,
-		mo.UserID,
+		mo.OwnerID,
+		mo.OwnerType,
 		mo.Status,
+
 		mo.CompletedAt,
 		mo.JobVersion,
 		mo.ResourceID,
@@ -296,6 +304,7 @@ func (r *PersonalBucketRepoImpl) UpdateQuota(ctx context.Context, id uuid.UUID, 
 		mo.Idle,
 		mo.ErrorCode,
 		mo.ErrorMessage,
+		mo.ActorUserID,
 	)
 	if err != nil {
 		return fmt.Errorf("storage repo: insert resize outbox failed: %w", err)
@@ -323,11 +332,11 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 			FOR UPDATE
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
+			error_code, error_message, actor_user_id
 		)
-		SELECT $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		SELECT $3, $4, $5, $6, $7, $17, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18
 		FROM locked_bucket
 	`, r.storage, r.hierarchy, r.storage)
 
@@ -338,7 +347,7 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 		mo.RoutingScope,
 		mo.JobTopic,
 		mo.Payload,
-		mo.UserID,
+		mo.OwnerID,
 		mo.Status,
 		mo.CompletedAt,
 		mo.JobVersion,
@@ -348,7 +357,10 @@ func (r *PersonalBucketRepoImpl) Delete(ctx context.Context, id uuid.UUID, userI
 		mo.Idle,
 		mo.ErrorCode,
 		mo.ErrorMessage,
+		mo.OwnerType,
+		mo.ActorUserID,
 	)
+
 	if err != nil {
 		return fmt.Errorf("storage repo: atomic delete bucket outbox failed: %w", err)
 	}
@@ -427,10 +439,10 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 			WHERE b.id = $1 AND b.workspace_id = $2 AND w.owner_id = $3
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
-			job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
+			job_version, resource_id, payload_schema_version, trace_id, idle, error_code, error_message, actor_user_id
 		)
-		SELECT $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+		SELECT $4, $5, $6, $7, $8, $18, $9, $10, $11, $12, $13, $14, $15, $16, $17, $19
 		FROM check_bucket
 	`, r.storage, r.hierarchy, r.storage)
 
@@ -442,7 +454,7 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 		mo.RoutingScope,
 		mo.JobTopic,
 		mo.Payload,
-		mo.UserID,
+		mo.OwnerID,
 		mo.Status,
 		mo.CompletedAt,
 		mo.JobVersion,
@@ -452,7 +464,10 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 		mo.Idle,
 		mo.ErrorCode,
 		mo.ErrorMessage,
+		mo.OwnerType,
+		mo.ActorUserID,
 	)
+
 	if err != nil {
 		return fmt.Errorf("storage repo: create bucket sts job failed: %w", err)
 	}
@@ -462,4 +477,3 @@ func (r *PersonalBucketRepoImpl) CreateSts(ctx context.Context, param *storageEn
 	}
 	return nil
 }
-

@@ -98,12 +98,15 @@ func (s *TenantCredentialSvcImpl) CreateCredential(ctx context.Context, param *s
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              uuid.New(),
-		RoutingScope:         "zone:" + bucket.ZoneID.String(),
-		JobTopic:             "storage.credential.create",
-		Payload:              payloadBytes,
-		UserID:               param.UserID.String(),
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      uuid.New(),
+		RoutingScope: "zone:" + bucket.ZoneID.String(),
+		JobTopic:     "storage.credential.create",
+		Payload:      payloadBytes,
+		OwnerID:      bucket.TenantID,
+		OwnerType:    storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:  &param.UserID,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           cred.ID.String(),
 		PayloadSchemaVersion: 1,
@@ -128,6 +131,12 @@ func (s *TenantCredentialSvcImpl) ListCredentials(ctx context.Context, bucketID 
 }
 
 func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *storageEntity.DeleteTenantCredential) error {
+	// [COMMENT]: Lấy thông tin bucket để trích xuất TenantID làm OwnerID cho Outbox record
+	bucket, err := s.bucketRepo.GetByID(ctx, param.BucketID)
+	if err != nil {
+		return apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
 	// [COMMENT]: Trích xuất Trace ID phục vụ distributed tracing
 	var traceID []byte
 	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
@@ -150,12 +159,15 @@ func (s *TenantCredentialSvcImpl) DeleteCredential(ctx context.Context, param *s
 
 	// [COMMENT]: RoutingScope được resolve trực tiếp từ zone_id trong context — không cần JOIN DB hay để trống.
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              uuid.New(),
-		RoutingScope:         "zone:" + param.ZoneID.String(),
-		JobTopic:             "storage.credential.delete",
-		Payload:              payloadBytes,
-		UserID:               param.UserID.String(),
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      uuid.New(),
+		RoutingScope: "zone:" + param.ZoneID.String(),
+		JobTopic:     "storage.credential.delete",
+		Payload:      payloadBytes,
+		OwnerID:      bucket.TenantID,
+		OwnerType:    storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:  &param.UserID,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           param.CredentialID.String(),
 		PayloadSchemaVersion: 1,

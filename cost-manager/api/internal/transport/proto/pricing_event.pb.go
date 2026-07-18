@@ -4,7 +4,8 @@
 // 	protoc        v6.30.2
 // source: internal/transport/proto/pricing_event.proto
 
-package pricingproto
+package proto
+
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"

@@ -1,5 +1,8 @@
 -- Migration 000002 Down: Xóa tất cả các bảng
+DROP TABLE IF EXISTS billing.resource_lifecycle_head;
+DROP TABLE IF EXISTS billing.ownership_event_inbox;
 DROP TABLE IF EXISTS billing.unrated_usage;
+
 DROP TABLE IF EXISTS billing.wallet_ledger_entries;
 DROP TABLE IF EXISTS billing.resource_plan_assignments;
 DROP TABLE IF EXISTS billing.credit_grants;

@@ -4,10 +4,11 @@
 // - protoc             v6.30.2
 // source: proto/billing.proto
 
-package billingproto
+package proto
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"

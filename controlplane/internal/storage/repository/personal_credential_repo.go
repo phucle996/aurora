@@ -54,11 +54,11 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 			RETURNING id
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
+			error_code, error_message, actor_user_id
 		)
-		SELECT $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
+		SELECT $9, $10, $11, $12, $13, $23, $14, $15, $16, $17, $18, $19, $20, $21, $22, $24
 		FROM ins_cred
 		RETURNING (SELECT id FROM verified_bucket)
 	`, r.storage, r.hierarchy, r.storage, r.storage)
@@ -78,7 +78,7 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		mo.RoutingScope,         // $10
 		mo.JobTopic,             // $11
 		mo.Payload,              // $12
-		mo.UserID,               // $13
+		mo.OwnerID,              // $13
 		mo.Status,               // $14
 		mo.CompletedAt,          // $15
 		mo.JobVersion,           // $16
@@ -88,6 +88,8 @@ func (r *PersonalCredentialRepoImpl) Create(ctx context.Context, param *storageE
 		mo.Idle,                 // $20
 		mo.ErrorCode,            // $21
 		mo.ErrorMessage,         // $22
+		mo.OwnerType,            // $23
+		mo.ActorUserID,          // $24
 	).Scan(&bucketID)
 
 	if err != nil {
@@ -155,11 +157,11 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
+			error_code, error_message, actor_user_id
 		)
-		SELECT $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
@@ -173,7 +175,7 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 		mo.RoutingScope,         // $6
 		mo.JobTopic,             // $7
 		mo.Payload,              // $8
-		mo.UserID,               // $9
+		mo.OwnerID,              // $9
 		mo.Status,               // $10
 		mo.CompletedAt,          // $11
 		mo.JobVersion,           // $12
@@ -183,7 +185,10 @@ func (r *PersonalCredentialRepoImpl) Delete(ctx context.Context, param *storageE
 		mo.Idle,                 // $16
 		mo.ErrorCode,            // $17
 		mo.ErrorMessage,         // $18
+		mo.OwnerType,            // $19
+		mo.ActorUserID,          // $20
 	)
+
 	if err != nil {
 		return err
 	}

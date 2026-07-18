@@ -120,12 +120,15 @@ func (s *TenantBucketSvcImpl) CreateBucketForTenant(ctx context.Context, param *
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              eventID,
-		RoutingScope:         "zone:" + bucket.ZoneID.String(),
-		JobTopic:             "storage.bucket.create",
-		Payload:              payloadBytes,
-		UserID:               param.UserID.String(),
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      eventID,
+		RoutingScope: "zone:" + bucket.ZoneID.String(),
+		JobTopic:     "storage.bucket.create",
+		Payload:      payloadBytes,
+		OwnerID:      bucket.TenantID,
+		OwnerType:    storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:  &param.UserID,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
 		PayloadSchemaVersion: 1,
@@ -198,12 +201,14 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              eventID,
-		RoutingScope:         "zone:" + bucket.ZoneID.String(),
-		JobTopic:             "storage.bucket.resize",
-		Payload:              payloadBytes,
-		UserID:               "", // Tenant operations don't track user_id strictly in outbox sync
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      eventID,
+		RoutingScope: "zone:" + bucket.ZoneID.String(),
+		JobTopic:     "storage.bucket.resize",
+		Payload:      payloadBytes,
+		OwnerID:      bucket.TenantID,
+		OwnerType:    storageEntity.StorageOwnerTypeTenant,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           bucket.ID.String(),
 		PayloadSchemaVersion: 1,
@@ -219,9 +224,13 @@ func (s *TenantBucketSvcImpl) UpdateBucketQuota(ctx context.Context, bucketID uu
 	return nil
 }
 
-
-
 func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEntity.DeleteTenantBucket) error {
+	// [COMMENT]: Lấy thông tin bucket để trích xuất TenantID làm OwnerID cho Billing Outbox
+	bucket, err := s.repo.GetByID(ctx, param.BucketID)
+	if err != nil {
+		return apperr.Wrap(err, err, "get_bucket_failed")
+	}
+
 	// [COMMENT]: 1. Lấy danh sách access keys của toàn bộ credentials liên kết với tenant bucket này
 	accessKeys, err := s.repo.ListAccessKeys(ctx, param.BucketID)
 	if err != nil {
@@ -252,12 +261,15 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 
 	// [COMMENT]: 3. Cấu hình outbox record cho tenant với zone_id từ param input
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              eventID,
-		RoutingScope:         "zone:" + param.ZoneID.String(),
-		JobTopic:             "storage.bucket.delete",
-		Payload:              payloadBytes,
-		UserID:               "", // Tenant operations don't track user_id strictly in outbox sync
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      eventID,
+		RoutingScope: "zone:" + param.ZoneID.String(),
+		JobTopic:     "storage.bucket.delete",
+		Payload:      payloadBytes,
+		OwnerID:      bucket.TenantID,
+		OwnerType:    storageEntity.StorageOwnerTypeTenant,
+		ActorUserID:  &param.UserID,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           param.BucketID.String(),
 		PayloadSchemaVersion: 1,
@@ -272,5 +284,3 @@ func (s *TenantBucketSvcImpl) DeleteBucket(ctx context.Context, param *storageEn
 	}
 	return nil
 }
-
-

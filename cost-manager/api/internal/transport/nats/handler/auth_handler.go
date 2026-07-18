@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	billingSvcInterface "cost-manager/api/internal/domain/service"
-	"cost-manager/api/internal/transport/proto/billingauthproto"
+	pb "cost-manager/api/internal/transport/proto"
 	"cost-manager/api/pkg/logger"
 
 	"github.com/nats-io/nats.go"
@@ -20,10 +20,10 @@ func SubscribeAuth(nc *nats.Conn, authSvc billingSvcInterface.AuthService) (*nat
 	}
 
 	sub, err := nc.QueueSubscribe("billing.auth.verify_credentials", "billing_auth_group", func(msg *nats.Msg) {
-		var req billingauthproto.VerifyBillingCredentialsRequest
+		var req pb.VerifyBillingCredentialsRequest
 		if err := proto.Unmarshal(msg.Data, &req); err != nil {
 			logger.SysError(op, "unmarshal request payload failed: "+err.Error())
-			resp := &billingauthproto.VerifyBillingCredentialsResponse{
+			resp := &pb.VerifyBillingCredentialsResponse{
 				Valid:        false,
 				ErrorMessage: "Invalid request payload format",
 			}
@@ -35,16 +35,16 @@ func SubscribeAuth(nc *nats.Conn, authSvc billingSvcInterface.AuthService) (*nat
 
 		// Dispatch authentication request to domain service layer
 		user, err := authSvc.VerifyCredentials(context.Background(), req.GetEmployeeCode(), req.GetSecretKey())
-		
-		var resp *billingauthproto.VerifyBillingCredentialsResponse
+
+		var resp *pb.VerifyBillingCredentialsResponse
 		if err != nil {
 			logger.SysWarn(op, "verify credentials failed: "+err.Error())
-			resp = &billingauthproto.VerifyBillingCredentialsResponse{
+			resp = &pb.VerifyBillingCredentialsResponse{
 				Valid:        false,
 				ErrorMessage: "Invalid employee code or secret key",
 			}
 		} else {
-			resp = &billingauthproto.VerifyBillingCredentialsResponse{
+			resp = &pb.VerifyBillingCredentialsResponse{
 				Valid:        true,
 				UserId:       user.ID.String(),
 				EmployeeCode: user.EmployeeCode,

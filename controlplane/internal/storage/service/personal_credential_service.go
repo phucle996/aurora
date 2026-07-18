@@ -89,12 +89,15 @@ func (s *PersonalCredentialSvcImpl) CreateCredential(ctx context.Context, param 
 	}
 
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              uuid.New(),
-		RoutingScope:         "zone:" + param.ZoneID.String(),
-		JobTopic:             "storage.credential.create",
-		Payload:              payloadBytes,
-		UserID:               param.UserID.String(),
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      uuid.New(),
+		RoutingScope: "zone:" + param.ZoneID.String(),
+		JobTopic:     "storage.credential.create",
+		Payload:      payloadBytes,
+		OwnerID:      param.UserID,
+		OwnerType:    storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:  &param.UserID,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           param.ID.String(),
 		PayloadSchemaVersion: 1,
@@ -152,12 +155,15 @@ func (s *PersonalCredentialSvcImpl) DeleteCredential(ctx context.Context, param 
 
 	// [COMMENT]: RoutingScope được resolve trực tiếp từ zone_id trong context — không cần JOIN DB hay để trống.
 	outbox := &storageEntity.StorageOutboxRecord{
-		EventID:              uuid.New(),
-		RoutingScope:         "zone:" + param.ZoneID.String(),
-		JobTopic:             "storage.credential.delete",
-		Payload:              payloadBytes,
-		UserID:               param.UserID.String(),
-		Status:               storageEntity.StorageOutboxStatusPending,
+		EventID:      uuid.New(),
+		RoutingScope: "zone:" + param.ZoneID.String(),
+		JobTopic:     "storage.credential.delete",
+		Payload:      payloadBytes,
+		OwnerID:      param.UserID,
+		OwnerType:    storageEntity.StorageOwnerTypePersonal,
+		ActorUserID:  &param.UserID,
+		Status:       storageEntity.StorageOutboxStatusPending,
+
 		JobVersion:           1,
 		ResourceID:           param.CredentialID.String(),
 		PayloadSchemaVersion: 1,

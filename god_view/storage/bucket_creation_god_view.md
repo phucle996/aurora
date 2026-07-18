@@ -36,39 +36,47 @@ flowchart TD
     classDef queue fill:#7c2d12,stroke:#ea580c,color:#ffffff,stroke-width:2px;
     classDef dp fill:#064e3b,stroke:#10b981,color:#ffffff,stroke-width:2px;
     classDef ns fill:#831843,stroke:#ec4899,color:#ffffff,stroke-width:2px;
+    classDef billing fill:#1c4f1c,stroke:#22c55e,color:#ffffff,stroke-width:2px;
 
     UI["💻 Console UI (React)"]:::ui
     Envoy["🛡️ Envoy Gateway"]:::ui
     ACR["🔐 acr (Edge Authz)"]:::ui
     CP["🚀 Controlplane API (Go)"]:::cp
-    PG_WAL["💾 PostgreSQL WAL (Write-Ahead Log)"]:::db
+    PG_WAL["💾 PostgreSQL WAL"]:::db
     JO_CDC["⚙️ Job Orchestrator (CdcStreamer)"]:::cp
     Redis_Job["⚡ Redis Job Stream (jobs:zone_id)"]:::queue
     DP_Consumer["💻 Dataplane (Job Consumer)"]:::dp
-    MinIO["💾 MinIO Cluster (S3 / Admin API)"]:::dp
+    MinIO["💾 MinIO Cluster"]:::dp
     Redis_Res["⚡ Redis Job Stream (job_results)"]:::queue
     JO_Res["⚙️ Job Orchestrator (ResultConsumer)"]:::cp
-    PG_DB["💾 PostgreSQL SoT (Outbox Status Update)"]:::db
-    NATS["🧲 NATS Core (Message Broker)"]:::queue
-    NS_Listener["📡 Notification Service (NatsListener)"]:::ns
-    Centri["📡 Centrifugo (WebSocket Gateway)"]:::ns
+    PG_DB["💾 Controlplane DB (Outbox + Lifecycle Event)"]:::db
+    JO_Relay["⚙️ Job Orchestrator (LifecycleRelay)"]:::cp
+    JS["🚀 NATS JetStream"]:::queue
+    CM_Consumer["💰 Cost Manager (LifecycleConsumer)"]:::billing
+    Billing_DB["💾 Billing DB (Ownership Projection)"]:::billing
+    NATS["🧲 NATS Core (User Notification)"]:::queue
+    NS_Listener["📡 Notification Service"]:::ns
+    Centri["📡 Centrifugo (WebSocket)"]:::ns
 
     UI -->|1. HTTP POST /api/v1/storage/buckets| Envoy
     Envoy -->|2. gRPC CheckRequest| ACR
     ACR -->|3. gRPC CheckResponse OK| Envoy
-    Envoy -->|4. Forward Request with Headers| CP
-    CP -->|5. SQL Transaction 3-way CTE| PG_WAL
-    PG_WAL -->|6. WAL Logical Replication Stream| JO_CDC
-    JO_CDC -->|7. Push Job: jobs:zone_id| Redis_Job
-    Redis_Job -->|8. XREADGROUP Consumer Group| DP_Consumer
-    DP_Consumer -->|9. Provisioning Bucket / User / Policy| MinIO
-    DP_Consumer -->|10. Push Result: job_results| Redis_Res
+    Envoy -->|4. Forward with Headers| CP
+    CP -->|5. Transactional CTE (bucket + outbox)| PG_WAL
+    PG_WAL -->|6. WAL Logical Replication| JO_CDC
+    JO_CDC -->|7. Push Job| Redis_Job
+    Redis_Job -->|8. XREADGROUP| DP_Consumer
+    DP_Consumer -->|9. Provision Bucket/User/Policy| MinIO
+    DP_Consumer -->|10. Push Result| Redis_Res
     Redis_Res -->|11. XREADGROUP| JO_Res
-    JO_Res -->|12. UPDATE outbox status to SUCCEEDED| PG_DB
-    JO_Res -->|13. Publish JSON event| NATS
-    NATS -->|14. Consume jobs.notifications.*| NS_Listener
-    NS_Listener -->|15. Forward via HTTP API /publish| Centri
-    Centri -->|16. Real-time WebSocket push| UI
+    JO_Res -->|12. TX: UPDATE outbox SUCCEEDED + INSERT lifecycle event UNPUBLISHED| PG_DB
+    JO_Relay -->|13. Poll UNPUBLISHED → Publish Protobuf| JS
+    JS -->|14. Deliver lifecycle event| CM_Consumer
+    CM_Consumer -->|15. TX: inbox + ownership projection + credential binding| Billing_DB
+    JO_Res -->|16. Publish JSON notification| NATS
+    NATS -->|17. Consume| NS_Listener
+    NS_Listener -->|18. POST /publish| Centri
+    Centri -->|19. WebSocket push| UI
 ```
 
 ---
@@ -96,25 +104,42 @@ flowchart TD
 
 ---
 
-## 3. Bucket Status State Machine
+## 3. Bucket Status — DEPRECATED
 
-Vòng đời trạng thái của một Storage Bucket:
+> [!WARNING]
+> Bucket **không có `status` column** kể từ migration `000003_drop_bucket_status`. Bảng `personal_buckets` và `tenant_buckets` không có vòng đời trạng thái nữa.
+> Bucket tồn tại trong DB = đang active. Khi create job FAILED, Job Orchestrator DELETE record khỏi DB (clean rollback cho retry).
+> Tham chiếu lifecycle event pipeline tại [`resource_lifecycle_god_view.md`](../billing/resource_lifecycle_god_view.md).
 
-```mermaid
-stateDiagram-v2
-    [*] --> creating : API Create (status mặc định)
-    creating --> active : Job hoàn tất
-    active --> suspended : User Suspend (Ngưng hoạt động)
-    suspended --> active : User Resume
-    active --> deleted : User hard Delete
-    suspended --> deleted : User Delete
-    deleted --> [*]
+---
+
+## 3.1 Provisioning Job Outbox State Machine
+
+```
+PENDING
+  │
+  ▼ (Dataplane nhận job)
+PROCESSING
+  │
+  ├──[Thành công]──► SUCCEEDED  (completed_at được set; record giữ 30 ngày)
+  │                              ↳ Trong cùng TX: INSERT lifecycle event UNPUBLISHED
+  │
+  └──[Thất bại]───► FAILED      (completed_at + error_code + error_message được set)
+                                 ↳ Create FAILED: DELETE bucket record (allow retry với cùng tên)
+                                 ↳ Delete/Resize FAILED: giữ nguyên resource
 ```
 
-* **`creating`**: Trạng thái khởi tạo. Bucket đã được ghi nhận trên cơ sở dữ liệu Controlplane nhưng chưa được provisioning vật lý trên cụm MinIO.
-* **`active`**: Bucket đã được MinIO tạo thành công kèm tài khoản truy cập tương ứng. Sẵn sàng phục vụ đọc/ghi S3.
-* **`suspended`**: Tạm ngưng hoạt động. Block quyền đọc/ghi bằng cách sửa/vô hiệu hóa Policy của user truy cập.
-* **`deleted`**: Đánh dấu đã xóa và trigger outbox thực thi xóa vật lý bucket trên MinIO.
+> [!IMPORTANT]
+> Outbox record **không bao giờ bị DELETE** khi job SUCCEEDED. Record được UPDATE thành SUCCEEDED và giữ lại 30 ngày để audit và recovery.
+> Retry SUCCEEDED là no-op — guard bởi `WHERE status IN ('PENDING', 'PROCESSING')`.
+
+Provisioning outbox không overload một identity cho hai mục đích:
+
+- `owner_id UUID` + `owner_type PERSONAL|TENANT`: payer được lifecycle event chuyển sang Billing.
+- `actor_user_id UUID NULL`: user thực hiện request, chỉ dùng notification và audit.
+
+Repository phải derive/verify owner từ bucket/workspace trong DB. Mọi result handler giữ contract
+resolution ổn định `(actor_user_id, job_topic, trace_id, resource_id)`; payer không nằm trong contract notification này.
 
 ---
 
@@ -299,7 +324,7 @@ sequenceDiagram
     
     Note over Redis_Job,DP_Con: Consumer Group chia tải trong Zone
     DP_Con->>Redis_Job: XREADGROUP GROUP job-consumer-group
-    Redis_Job-->>DP_Con: Trả về Job payload
+    Redis_Res-->>DP_Con: Trả về Job payload
     DP_Con->>Executor: Gọi execute(JobPayload)
     
     Note over Executor,MinIO: Provisioning tuần tự (Idempotent Steps)
@@ -508,11 +533,21 @@ Hệ thống sử dụng OpenTelemetry Tracing kết hợp W3C Context Propagati
 |:---|:---|:---|
 | **SQL Migrations** | [`000001_storage_tables.up.sql`](../../controlplane/internal/storage/migrations/000001_storage_tables.up.sql) | Schema lưu trữ Bucket và Credentials |
 | **Outbox Schema** | [`000002_storage_outbox.up.sql`](../../controlplane/internal/storage/migrations/000002_storage_outbox.up.sql) | Bảng outbox trung gian phục vụ CDC |
+| **Drop Status** | [`000003_drop_bucket_status.up.sql`](../../controlplane/internal/storage/migrations/000003_drop_bucket_status.up.sql) | Xóa bucket status column (deprecated) |
+| **Lifecycle Outbox** | [`000004_lifecycle_outbox.up.sql`](../../controlplane/internal/storage/migrations/000004_lifecycle_outbox.up.sql) | Bảng lifecycle event outbox phục vụ JetStream relay |
+| **Retention Index** | [`000005_outbox_retention_index.up.sql`](../../controlplane/internal/storage/migrations/000005_outbox_retention_index.up.sql) | Index phục vụ cleanup job 30 ngày |
+| **Proto Contract** | [`proto/resource_lifecycle.proto`](../../job-orchestrator/proto/resource_lifecycle.proto) | Contract Protobuf ResourceLifecycleEventV1 |
+| **Lifecycle DB** | [`db/lifecycle.rs`](../../job-orchestrator/src/reverse_provider/storage/db/lifecycle.rs) | Hàm insert_resource_created/deleted |
+| **Bucket Resolve** | [`db/bucket.rs`](../../job-orchestrator/src/reverse_provider/storage/db/bucket.rs) | resolve_bucket_creation/deletion + lifecycle insert |
+| **Lifecycle Relay** | [`lifecycle_relay/relay.rs`](../../job-orchestrator/src/lifecycle_relay/relay.rs) | Claim lease → JetStream publish → PubAck → UPDATE |
 | **Go Controller** | [`personal_bucket_handler.go`](../../controlplane/internal/storage/transport/http/handler/personal_bucket_handler.go#L36) | Endpoint tiếp nhận request tạo Bucket |
 | **Go Service** | [`personal_bucket_service.go`](../../controlplane/internal/storage/service/personal_bucket_service.go#L44) | Tạo credentials và lưu Outbox Transaction |
 | **Go Repository** | [`personal_bucket_repo.go`](../../controlplane/internal/storage/repository/personal_bucket_repo.go#L43) | Thực thi 3-way CTE insert nguyên tử |
 | **JO CDC Engine** | [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs#L250) | Đọc WAL event outbox và phân phối vào Redis |
 | **DP Executor** | [`BucketCreateExecutor`](../../dataplane/src/executor/storage/bucket.rs#L20) | Provisioning vật lý MinIO (Bucket, User, Policy) |
-| **JO Result Sync** | [`ResultConsumer`](../../job-orchestrator/src/result_consumer/consumer.rs#L27) | Cập nhật DB outbox và bắn tín hiệu sang NATS |
+| **JO Result Sync** | [`ResultConsumer`](../../job-orchestrator/src/job_result/consumer.rs#L27) | Cập nhật DB outbox và phát lifecycle event |
+| **Billing Inbox** | [`000007_ownership_inbox.up.sql`](../../cost-manager/api/migrations/000007_ownership_inbox.up.sql) | Inbox idempotency + projection head table |
+| **Billing Consumer** | [`lifecycle_consumer.go`](../../cost-manager/api/internal/service/lifecycle_consumer.go) | JetStream consumer → ownership projection |
+| **God View Pipeline** | [`resource_lifecycle_god_view.md`](../billing/resource_lifecycle_god_view.md) | SoT cho toàn bộ lifecycle event pipeline |
 | **NS Bridge Listener** | [`NatsListener`](../../notification-service/src/listener.rs) | Lắng nghe NATS, dispatch qua service tương ứng |
 | **NS Storage Service** | [`job/notification.rs`](../../notification-service/src/service/job/notification.rs) | Push real-time event sang Centrifugo WebSocket |

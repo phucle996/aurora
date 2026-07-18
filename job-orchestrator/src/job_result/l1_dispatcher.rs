@@ -1,6 +1,6 @@
+use super::notifier::JobNotifier;
 use crate::observability::logger::Logger;
 use crate::reverse_provider;
-use super::notifier::JobNotifier;
 
 pub mod job_proto {
     include!(concat!(env!("OUT_DIR"), "/job_lifecycle.rs"));
@@ -9,7 +9,7 @@ pub mod job_proto {
 // [COMMENT]: L1 Dispatcher giải mã kết quả Protobuf từ Dataplane, định tuyến cập nhật DB qua phân hệ L2, và thực hiện push notify real-time qua NATS.
 pub async fn dispatch_result(
     payload_bytes: &[u8],
-    pg_client: &tokio_postgres::Client,
+    pg_client: &mut tokio_postgres::Client,
     nats_client: &async_nats::Client,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use prost::Message;
@@ -90,7 +90,9 @@ pub async fn dispatch_result(
                 )
                 .await?
             } else if result.job_topic.starts_with("storage.") {
-                // [COMMENT]: Định tuyến xuống Storage L2 Dispatcher
+                // [COMMENT]: Định tuyến xuống Storage L2 Dispatcher.
+                // L2 dispatcher trả về Box<dyn Error> vì bucket create/delete cần bắt đầu transaction
+                // để đảm bảo atomic: UPDATE outbox + INSERT lifecycle event.
                 reverse_provider::storage::l2_dispatcher::dispatch_storage_result(
                     pg_client,
                     job_uuid,
@@ -99,7 +101,11 @@ pub async fn dispatch_result(
                     error_code,
                     error_message,
                 )
-                .await?
+                .await
+                .map_err(|e| {
+                    Box::<dyn std::error::Error>::from(e.to_string())
+                })?
+
             } else {
                 // Fallback to mail outbox record if unknown
                 reverse_provider::mail::db::update_outbox_record(
@@ -122,7 +128,9 @@ pub async fn dispatch_result(
                     &format!("Cập nhật thành công DB -> Trạng thái {}", status),
                 );
 
-                let user_id: String = row.get(0);
+                // [COMMENT]: actor_user_id chỉ dùng để gửi notification; payer của billing
+                // được truyền riêng bằng owner_id/owner_type trong lifecycle event.
+                let actor_user_id: Option<String> = row.get(0);
                 let job_topic: String = row.get(1);
                 let trace_id_bytes = row.get::<_, Option<Vec<u8>>>(2).unwrap_or_default();
                 let trace_id = if trace_id_bytes.is_empty() {
@@ -136,7 +144,8 @@ pub async fn dispatch_result(
 
                 let result_job_id = job_id.clone();
                 let result_message = result.message.clone();
-                let user_id_clone = user_id.clone();
+                let actor_user_id = actor_user_id.unwrap_or_default();
+                let user_id_clone = actor_user_id.clone();
                 let status_clone = status.clone();
                 let job_topic_clone = job_topic.clone();
 

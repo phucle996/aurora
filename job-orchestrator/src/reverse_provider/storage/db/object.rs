@@ -23,7 +23,7 @@ pub async fn resolve_object_job(
             .query_opt(
                 "DELETE FROM storage.storage_outbox_records \
                  WHERE event_id = $1::uuid AND job_topic = $2 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&job_uuid, &job_topic],
             )
             .await?
@@ -36,7 +36,7 @@ pub async fn resolve_object_job(
                      error_code = NULL, \
                      error_message = NULL \
                  WHERE event_id = $2::uuid AND job_topic = $3 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&status, &job_uuid, &job_topic],
             )
             .await?
@@ -49,7 +49,7 @@ pub async fn resolve_object_job(
                      error_code = $1, \
                      error_message = $2 \
                  WHERE event_id = $3::uuid AND job_topic = $4 AND status IN ('PENDING', 'PROCESSING') \
-                 RETURNING user_id, job_topic, trace_id, resource_id",
+                 RETURNING actor_user_id::text, job_topic, trace_id, resource_id",
                 &[&error_code, &error_message, &job_uuid, &job_topic],
             )
             .await?

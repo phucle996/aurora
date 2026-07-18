@@ -16,15 +16,26 @@ const (
 	StorageOutboxStatusFailed     StorageOutboxStatus = "FAILED"
 )
 
+// [COMMENT]: StorageOwnerType định nghĩa kiểu dữ liệu an toàn (type safe) cho loại chủ sở hữu tài nguyên.
+type StorageOwnerType string
+
+const (
+	StorageOwnerTypePersonal StorageOwnerType = "PERSONAL"
+	StorageOwnerTypeTenant   StorageOwnerType = "TENANT"
+)
+
 // [COMMENT]: StorageOutboxRecord đại diện cho thực thể Transactional Outbox lưu lịch sử tác vụ bất đồng bộ.
 type StorageOutboxRecord struct {
-	ID                   int64
-	EventID              uuid.UUID
-	RoutingScope         string
-	JobTopic             string
-	Payload              []byte
-	UserID               string
-	Status               StorageOutboxStatus
+	ID           int64
+	EventID      uuid.UUID
+	RoutingScope string
+	JobTopic     string
+	Payload      []byte
+	OwnerID      uuid.UUID
+	OwnerType    StorageOwnerType
+	ActorUserID  *uuid.UUID
+	Status       StorageOutboxStatus
+
 	CompletedAt          *time.Time
 	JobVersion           uint32
 	ResourceID           string

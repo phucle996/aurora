@@ -42,10 +42,10 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 			) VALUES ($1, $2, $3, $4, $5, $6)
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
-		) VALUES ($7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+			error_code, error_message, actor_user_id
+		) VALUES ($7, $8, $9, $10, $11, $21, $12, $13, $14, $15, $16, $17, $18, $19, $20, $22)
 	`, r.storage, r.storage)
 
 	_, err := r.db.Exec(ctx, query,
@@ -59,7 +59,7 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 		mo.RoutingScope,
 		mo.JobTopic,
 		mo.Payload,
-		mo.UserID,
+		mo.OwnerID,
 		mo.Status,
 		mo.CompletedAt,
 		mo.JobVersion,
@@ -69,7 +69,10 @@ func (r *TenantCredentialRepoImpl) Create(ctx context.Context, cred *storageEnti
 		mo.Idle,
 		mo.ErrorCode,
 		mo.ErrorMessage,
+		mo.OwnerType,
+		mo.ActorUserID,
 	)
+
 	if err != nil {
 		return err
 	}
@@ -132,11 +135,11 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 			WHERE id = $1 AND bucket_id = (SELECT id FROM verified_bucket)
 		)
 		INSERT INTO %s.storage_outbox_records (
-			event_id, routing_scope, job_topic, payload, user_id, status, completed_at,
+			event_id, routing_scope, job_topic, payload, owner_id, owner_type, status, completed_at,
 			job_version, resource_id, payload_schema_version, trace_id, idle,
-			error_code, error_message
+			error_code, error_message, actor_user_id
 		)
-		SELECT $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+		SELECT $5, $6, $7, $8, $9, $19, $10, $11, $12, $13, $14, $15, $16, $17, $18, $20
 		FROM verified_cred
 	`, r.storage, r.hierarchy, r.storage, r.storage)
 
@@ -150,7 +153,7 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 		mo.RoutingScope,         // $6  ('zone:' + zoneID từ context)
 		mo.JobTopic,             // $7
 		mo.Payload,              // $8
-		mo.UserID,               // $9
+		mo.OwnerID,              // $9
 		mo.Status,               // $10
 		mo.CompletedAt,          // $11
 		mo.JobVersion,           // $12
@@ -160,7 +163,10 @@ func (r *TenantCredentialRepoImpl) Delete(ctx context.Context, param *storageEnt
 		mo.Idle,                 // $16
 		mo.ErrorCode,            // $17
 		mo.ErrorMessage,         // $18
+		mo.OwnerType,            // $19
+		mo.ActorUserID,          // $20
 	)
+
 	if err != nil {
 		return err
 	}

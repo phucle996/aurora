@@ -7,9 +7,14 @@ CREATE TABLE IF NOT EXISTS storage_outbox_records (
     routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến (e.g. zone:vn)
     job_topic VARCHAR(100) NOT NULL,
     payload BYTEA NOT NULL,
-    user_id VARCHAR(64) NOT NULL,
+    -- CÁC CỘT ĐỊNH DANH SỞ HỮU BILLING (SoT):
+    owner_id UUID NOT NULL,          -- Payer: personal_workspaces.owner_id hoặc tenant_id
+    owner_type VARCHAR(16) NOT NULL, -- 'PERSONAL' | 'TENANT' (Bắt buộc truyền giá trị rõ ràng, không fallback default)
+    actor_user_id UUID,              -- User thực hiện request; chỉ dùng notification/audit, không dùng chọn wallet
+
     status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSING', 'SUCCEEDED', 'FAILED')),
     completed_at TIMESTAMP WITH TIME ZONE,
+
 
     -- CÁC CỘT ĐỒNG BỘ CONTRACT VỚI DATAPLANE:
     job_version INT NOT NULL DEFAULT 1,
@@ -22,7 +27,8 @@ CREATE TABLE IF NOT EXISTS storage_outbox_records (
     error_code VARCHAR(100),
     error_message TEXT,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    CONSTRAINT ck_storage_outbox_owner_type CHECK (owner_type IN ('PERSONAL', 'TENANT'))
 );
 
 -- Index for high-performance outbox polling

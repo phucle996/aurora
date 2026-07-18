@@ -305,3 +305,27 @@ CREATE TABLE IF NOT EXISTS billing.unrated_usage (
     CONSTRAINT ck_unrated_retry_non_negative CHECK (retry_count >= 0),
     CONSTRAINT ck_unrated_status CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'DEAD'))
 );
+
+-- 19. Inbox idempotency cho ownership lifecycle events nhận từ JetStream (chống trùng lặp event)
+CREATE TABLE IF NOT EXISTS billing.ownership_event_inbox (
+    event_id        UUID PRIMARY KEY,                      -- UUID duy nhất của event (deterministic từ source job)
+    event_type      VARCHAR(32) NOT NULL,                  -- 'RESOURCE_CREATED' hoặc 'RESOURCE_DELETED'
+    schema_version  INT NOT NULL DEFAULT 1,                -- Phiên bản schema protobuf
+    payload_hash    VARCHAR(64) NOT NULL,                  -- SHA-256 hex kiểm tra tính toàn vẹn payload
+    resource_id     UUID NOT NULL,                         -- UUID của tài nguyên (bucket)
+    source_version  BIGINT NOT NULL DEFAULT 1,             -- Version ownership từ Controlplane
+    status          VARCHAR(16) NOT NULL DEFAULT 'RECEIVED',-- Trạng thái inbox: RECEIVED | APPLIED | DEAD
+    error_message   TEXT,                                  -- Thông tin lỗi chi tiết nếu xử lý thất bại
+    received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),    -- Thời điểm nhận tin nhắn từ JetStream
+    processed_at    TIMESTAMPTZ,                           -- Thời điểm hoàn tất xử lý event
+    CONSTRAINT ck_inbox_status CHECK (status IN ('RECEIVED', 'APPLIED', 'DEAD'))
+);
+
+-- 20. Resource lifecycle head table để xử lý out-of-order delivery giữa các JetStream events
+CREATE TABLE IF NOT EXISTS billing.resource_lifecycle_head (
+    resource_id         UUID PRIMARY KEY,                  -- UUID của tài nguyên (bucket)
+    last_source_version BIGINT NOT NULL,                   -- Version ownership mới nhất đã ghi nhận
+    lifecycle_state     VARCHAR(16) NOT NULL DEFAULT 'ACTIVE', -- Trạng thái sinh tồn: ACTIVE | DELETED
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),-- Thời điểm cập nhật head gần nhất
+    CONSTRAINT ck_lifecycle_state CHECK (lifecycle_state IN ('ACTIVE', 'DELETED'))
+);

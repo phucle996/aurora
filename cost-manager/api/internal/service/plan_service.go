@@ -10,7 +10,8 @@ import (
 	"cost-manager/api/internal/domain/entity"
 	billingRepoInterface "cost-manager/api/internal/domain/repo"
 	billingSvcInterface "cost-manager/api/internal/domain/service"
-	planproto "cost-manager/api/internal/transport/proto/planproto"
+	pb "cost-manager/api/internal/transport/proto"
+
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -79,7 +80,7 @@ func (s *planService) ListPlans(ctx context.Context, filter entity.Plan, cursorT
 	// 3. Nếu L1 miss, kiểm tra L2 (Redis) dùng Protobuf Binary
 	binaryData, err := s.redisClient.Get(ctx, cacheKey).Bytes()
 	if err == nil {
-		var payload planproto.PlanListCachePayload
+		var payload pb.PlanListCachePayload
 		if err := proto.Unmarshal(binaryData, &payload); err == nil {
 			// Convert proto list sang entity.Plan list
 			plans := make([]entity.Plan, len(payload.Plans))
@@ -135,7 +136,7 @@ func (s *planService) ListPlans(ctx context.Context, filter entity.Plan, cursorT
 			time.Sleep(100 * time.Millisecond)
 			binaryData, err := s.redisClient.Get(ctx, cacheKey).Bytes()
 			if err == nil {
-				var payload planproto.PlanListCachePayload
+				var payload pb.PlanListCachePayload
 				if err := proto.Unmarshal(binaryData, &payload); err == nil {
 					plans := make([]entity.Plan, len(payload.Plans))
 					for i, p := range payload.Plans {
@@ -171,9 +172,9 @@ func (s *planService) ListPlans(ctx context.Context, filter entity.Plan, cursorT
 		}
 
 		// Nạp dữ liệu vào L2 Redis bằng định dạng binary protobuf để tối ưu hóa truyền tải qua mạng
-		protoPlans := make([]*planproto.Plan, len(dbPlans))
+		protoPlans := make([]*pb.Plan, len(dbPlans))
 		for i, p := range dbPlans {
-			protoPlans[i] = &planproto.Plan{
+			protoPlans[i] = &pb.Plan{
 				Id:           p.ID.String(),
 				Name:         p.Name,
 				Code:         p.Code,
@@ -187,7 +188,7 @@ func (s *planService) ListPlans(ctx context.Context, filter entity.Plan, cursorT
 				UpdatedAt:    p.UpdatedAt.Unix(),
 			}
 		}
-		payload := &planproto.PlanListCachePayload{Plans: protoPlans}
+		payload := &pb.PlanListCachePayload{Plans: protoPlans}
 		binaryData, err := proto.Marshal(payload)
 		if err == nil {
 			_ = s.redisClient.Set(ctx, cacheKey, binaryData, 15*time.Minute).Err()

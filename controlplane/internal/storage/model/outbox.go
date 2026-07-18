@@ -3,8 +3,9 @@ package storageModel
 import (
 	"time"
 
-	"github.com/google/uuid"
 	storageEntity "controlplane/internal/storage/domain/entity"
+
+	"github.com/google/uuid"
 )
 
 // [COMMENT]: StorageOutboxRecord đại diện cho mô hình dữ liệu ánh xạ trực tiếp bảng storage_outbox_records.
@@ -14,7 +15,9 @@ type StorageOutboxRecord struct {
 	RoutingScope         string     `db:"routing_scope"`
 	JobTopic             string     `db:"job_topic"`
 	Payload              []byte     `db:"payload"`
-	UserID               string     `db:"user_id"`
+	OwnerID              uuid.UUID  `db:"owner_id"`
+	OwnerType            string     `db:"owner_type"`
+	ActorUserID          *uuid.UUID `db:"actor_user_id"`
 	Status               string     `db:"status"`
 	CompletedAt          *time.Time `db:"completed_at"`
 	JobVersion           uint32     `db:"job_version"`
@@ -37,7 +40,9 @@ func OutboxEntityToModel(e *storageEntity.StorageOutboxRecord) *StorageOutboxRec
 		RoutingScope:         e.RoutingScope,
 		JobTopic:             e.JobTopic,
 		Payload:              e.Payload,
-		UserID:               e.UserID,
+		OwnerID:              e.OwnerID,
+		OwnerType:            string(e.OwnerType),
+		ActorUserID:          e.ActorUserID,
 		Status:               string(e.Status),
 		CompletedAt:          e.CompletedAt,
 		JobVersion:           e.JobVersion,
@@ -47,29 +52,5 @@ func OutboxEntityToModel(e *storageEntity.StorageOutboxRecord) *StorageOutboxRec
 		Idle:                 e.Idle,
 		ErrorCode:            e.ErrorCode,
 		ErrorMessage:         e.ErrorMessage,
-	}
-}
-
-// [COMMENT]: OutboxModelToEntity chuyển đổi db model sang domain outbox entity.
-func OutboxModelToEntity(m *StorageOutboxRecord) *storageEntity.StorageOutboxRecord {
-	if m == nil {
-		return nil
-	}
-	return &storageEntity.StorageOutboxRecord{
-		ID:                   m.ID,
-		EventID:              m.EventID,
-		RoutingScope:         m.RoutingScope,
-		JobTopic:             m.JobTopic,
-		Payload:              m.Payload,
-		UserID:               m.UserID,
-		Status:               storageEntity.StorageOutboxStatus(m.Status),
-		CompletedAt:          m.CompletedAt,
-		JobVersion:           m.JobVersion,
-		ResourceID:           m.ResourceID,
-		PayloadSchemaVersion: m.PayloadSchemaVersion,
-		TraceID:              m.TraceID,
-		Idle:                 m.Idle,
-		ErrorCode:            m.ErrorCode,
-		ErrorMessage:         m.ErrorMessage,
 	}
 }
