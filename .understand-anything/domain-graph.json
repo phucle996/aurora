@@ -1,0 +1,781 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "Aurora Cloud Platform",
+    "languages": [
+      "Go",
+      "Rust",
+      "TypeScript"
+    ],
+    "frameworks": [
+      "Gin",
+      "Axum",
+      "React",
+      "Vite"
+    ],
+    "description": "Cloud platform monorepo whose billing surface authenticates cost-console users and exposes plan and tier pricing catalogs through the Cost Manager API.",
+    "analyzedAt": "2026-07-18T19:00:00+07:00",
+    "gitCommitHash": "16b3baf4840c28ec931b03838ca02b6b25814be2"
+  },
+  "nodes": [
+    {
+      "id": "domain:billing-console",
+      "type": "domain",
+      "name": "Billing Console",
+      "summary": "Presents billing plans and their tiered prices to authenticated users. It owns the browser-side loading, pagination state, error handling, and table rendering for the pricing view.",
+      "tags": [
+        "billing",
+        "cost-console",
+        "frontend"
+      ],
+      "complexity": "moderate",
+      "domainMeta": {
+        "entities": [
+          "Billing Session State",
+          "Plan View",
+          "Tier View",
+          "Pagination State"
+        ],
+        "businessRules": [
+          "Pricing data is requested through the shared billing API client rather than embedded in the UI.",
+          "The tier view must preserve page and limit as explicit request inputs.",
+          "Protected billing content depends on a successful session check after browser reload."
+        ],
+        "crossDomainInteractions": [
+          "Uses Billing Access and Session to establish authenticated browser state.",
+          "Consumes plan and tier data from Billing Catalog."
+        ]
+      }
+    },
+    {
+      "id": "domain:billing-access-and-session",
+      "type": "domain",
+      "name": "Billing Access and Session",
+      "summary": "Handles the billing edge session check and restores authentication state after a browser reload. It validates supplied billing sessions and preserves the requested billing path, but the current missing-or-invalid-token branch does not emit a denial and can continue anonymously toward Cost Manager.",
+      "tags": [
+        "billing",
+        "acr",
+        "authentication",
+        "authorization"
+      ],
+      "complexity": "complex",
+      "domainMeta": {
+        "entities": [
+          "Billing Session",
+          "Authentication Decision",
+          "Authorization Context",
+          "Session Cookie"
+        ],
+        "businessRules": [
+          "The session contract reports authenticated as a boolean and does not expose a user object.",
+          "A browser reload must re-check the server-side billing session.",
+          "A billing request retains its original /api/v1/billing path for the downstream service.",
+          "The current missing-or-invalid-token branch is fail-open because it returns neither claims nor an explicit denial."
+        ],
+        "crossDomainInteractions": [
+          "Supplies authentication state to Billing Console.",
+          "Allows authenticated catalog requests to reach Billing Catalog."
+        ]
+      }
+    },
+    {
+      "id": "domain:billing-catalog",
+      "type": "domain",
+      "name": "Billing Catalog",
+      "summary": "Owns read access to resource plans and flattened tier price ranges in Cost Manager. It exposes billing-prefixed routes, normalizes list inputs, delegates through domain services, and reads durable pricing data from PostgreSQL repositories.",
+      "tags": [
+        "billing",
+        "pricing",
+        "plans",
+        "tiers"
+      ],
+      "complexity": "complex",
+      "domainMeta": {
+        "entities": [
+          "Plan",
+          "Tier",
+          "Tier Range",
+          "Service Type",
+          "Cursor",
+          "Pagination Metadata"
+        ],
+        "businessRules": [
+          "Tier and tier-range records are exposed as one flat Tier domain entity.",
+          "Tier listing accepts page and limit plus service-type and search filters.",
+          "The canonical and currently registered tier endpoint is GET /api/v1/billing/tiers.",
+          "Tier listing runs a COUNT query followed by a separate paginated SQL JOIN and returns the count with the page data.",
+          "Plan status is either ACTIVE or DEPRECATED, and supported service types include STORAGE, VM, and MAIL."
+        ],
+        "crossDomainInteractions": [
+          "Receives billing-path requests through Billing Access and Session; current edge behavior may also pass an anonymous request.",
+          "Returns pricing data consumed by Billing Console."
+        ]
+      }
+    },
+    {
+      "id": "flow:open-billing-pricing-view",
+      "type": "flow",
+      "name": "Open Billing Pricing View",
+      "summary": "Loads the Cost Console plan page, obtains plan and tier data through the shared billing client, and presents the tier table with list controls.",
+      "tags": [
+        "cost-console",
+        "pricing",
+        "tiers"
+      ],
+      "complexity": "moderate",
+      "domainMeta": {
+        "entryPoint": "Open the Cost Console plan page",
+        "entryType": "manual"
+      }
+    },
+    {
+      "id": "flow:restore-billing-session",
+      "type": "flow",
+      "name": "Restore Billing Session",
+      "summary": "Re-establishes the browser authentication decision after application startup or F5 by calling the ACR billing session endpoint and storing only the resulting boolean state.",
+      "tags": [
+        "session",
+        "acr",
+        "browser-reload"
+      ],
+      "complexity": "moderate",
+      "domainMeta": {
+        "entryPoint": "GET /api/v1/billing/auth/session",
+        "entryType": "http"
+      }
+    },
+    {
+      "id": "flow:authorize-billing-catalog-request",
+      "type": "flow",
+      "name": "Authorize Billing Catalog Request",
+      "summary": "Evaluates a billing API request in ACR and preserves the original billing catalog path. Valid sessions receive identity headers; the current missing-or-invalid-token branch can continue without claims because no denial is produced.",
+      "tags": [
+        "authorization",
+        "acr",
+        "gateway"
+      ],
+      "complexity": "complex",
+      "domainMeta": {
+        "entryPoint": "GET /api/v1/billing/tiers",
+        "entryType": "http"
+      }
+    },
+    {
+      "id": "flow:list-billing-tiers",
+      "type": "flow",
+      "name": "List Billing Tiers",
+      "summary": "Returns a filtered, page-based list of flattened tier price ranges and the matching total through the billing-prefixed Cost Manager endpoint.",
+      "tags": [
+        "tiers",
+        "pagination",
+        "pricing",
+        "postgresql"
+      ],
+      "complexity": "complex",
+      "domainMeta": {
+        "entryPoint": "GET /api/v1/billing/tiers?page=1&limit=10",
+        "entryType": "http"
+      }
+    },
+    {
+      "id": "flow:list-billing-plans",
+      "type": "flow",
+      "name": "List Billing Plans",
+      "summary": "Returns plans filtered by catalog attributes using cursor pagination, cache coordination, and a PostgreSQL fallback.",
+      "tags": [
+        "plans",
+        "cursor-pagination",
+        "cache",
+        "pricing"
+      ],
+      "complexity": "complex",
+      "domainMeta": {
+        "entryPoint": "GET /api/v1/billing/plans",
+        "entryType": "http"
+      }
+    },
+    {
+      "id": "step:open-billing-pricing-view:mount-plan-page",
+      "type": "step",
+      "name": "Mount Plan Page",
+      "summary": "Starts the pricing-view workflow when the user opens the Cost Console plan page.",
+      "tags": [
+        "frontend",
+        "trigger"
+      ],
+      "complexity": "simple",
+      "filePath": "cost-console/src/page/plan/page.tsx"
+    },
+    {
+      "id": "step:open-billing-pricing-view:request-catalog-data",
+      "type": "step",
+      "name": "Request Catalog Data",
+      "summary": "Uses the shared billing API module and fetcher to request plan and tier data from the protected API surface.",
+      "tags": [
+        "api-client",
+        "billing"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-console/src/lib/api/billing.ts"
+    },
+    {
+      "id": "step:open-billing-pricing-view:render-plan-details",
+      "type": "step",
+      "name": "Render Plan Details",
+      "summary": "Presents the selected plan and its related pricing context in the plan detail area.",
+      "tags": [
+        "plans",
+        "presentation"
+      ],
+      "complexity": "simple",
+      "filePath": "cost-console/src/page/plan/sections/PlanDetail.tsx"
+    },
+    {
+      "id": "step:open-billing-pricing-view:render-tier-table",
+      "type": "step",
+      "name": "Render Tier Table",
+      "summary": "Displays the returned flattened tier rows and the controls used to navigate the tier list.",
+      "tags": [
+        "tiers",
+        "table",
+        "pagination"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-console/src/page/plan/sections/TierTable.tsx"
+    },
+    {
+      "id": "step:restore-billing-session:initialize-auth-store",
+      "type": "step",
+      "name": "Initialize Auth Store",
+      "summary": "Initializes the Cost Console authentication state during application startup.",
+      "tags": [
+        "auth-store",
+        "startup"
+      ],
+      "complexity": "simple",
+      "filePath": "cost-console/src/lib/store/useAuthStore.ts",
+      "lineRange": [
+        1,
+        118
+      ]
+    },
+    {
+      "id": "step:restore-billing-session:call-session-endpoint",
+      "type": "step",
+      "name": "Call Session Endpoint",
+      "summary": "Sends the same-origin billing session request so the browser cookie can be evaluated by ACR.",
+      "tags": [
+        "session-api",
+        "cookie"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-console/src/lib/store/useAuthStore.ts",
+      "lineRange": [
+        1,
+        118
+      ]
+    },
+    {
+      "id": "step:restore-billing-session:resolve-billing-session",
+      "type": "step",
+      "name": "Resolve Billing Session",
+      "summary": "Handles the billing session request in ACR and verifies the server-side session material.",
+      "tags": [
+        "acr",
+        "session-validation"
+      ],
+      "complexity": "complex",
+      "filePath": "acr/src/billing/session.rs"
+    },
+    {
+      "id": "step:restore-billing-session:return-authenticated-boolean",
+      "type": "step",
+      "name": "Return Authenticated Boolean",
+      "summary": "Returns only the authenticated true-or-false decision and updates the browser-side auth state without returning user profile data.",
+      "tags": [
+        "privacy",
+        "boolean-contract"
+      ],
+      "complexity": "simple",
+      "filePath": "acr/src/billing/verify.rs"
+    },
+    {
+      "id": "step:authorize-billing-catalog-request:receive-ext-authz-check",
+      "type": "step",
+      "name": "Receive External Authorization Check",
+      "summary": "Receives the gateway authorization check for the requested billing catalog path.",
+      "tags": [
+        "ext-authz",
+        "gateway"
+      ],
+      "complexity": "moderate",
+      "filePath": "acr/src/gateway/ext_authz.rs"
+    },
+    {
+      "id": "step:authorize-billing-catalog-request:classify-billing-path",
+      "type": "step",
+      "name": "Classify Billing Path",
+      "summary": "Recognizes the request as a billing flow so billing-specific verification rules apply.",
+      "tags": [
+        "routing",
+        "billing"
+      ],
+      "complexity": "moderate",
+      "filePath": "acr/src/billing/verify.rs"
+    },
+    {
+      "id": "step:authorize-billing-catalog-request:verify-session-context",
+      "type": "step",
+      "name": "Verify Session Context",
+      "summary": "Validates the billing session and constructs the authorization decision for the protected request.",
+      "tags": [
+        "session",
+        "authorization"
+      ],
+      "complexity": "complex",
+      "filePath": "acr/src/billing/verify.rs"
+    },
+    {
+      "id": "step:authorize-billing-catalog-request:preserve-original-path",
+      "type": "step",
+      "name": "Preserve Original Path",
+      "summary": "Allows the /api/v1/billing/tiers path to continue unchanged so Cost Manager can match its billing route group.",
+      "tags": [
+        "forwarding",
+        "route-contract"
+      ],
+      "complexity": "moderate",
+      "filePath": "acr/src/gateway/ext_authz.rs"
+    },
+    {
+      "id": "step:list-billing-tiers:match-billing-route",
+      "type": "step",
+      "name": "Match Billing Tier Route",
+      "summary": "Matches GET /api/v1/billing/tiers to TierHandler; the direct GET /api/v1/tiers route is not registered.",
+      "tags": [
+        "gin",
+        "route",
+        "canonical-path"
+      ],
+      "complexity": "simple",
+      "filePath": "cost-manager/api/internal/app/route.go",
+      "lineRange": [
+        1,
+        28
+      ]
+    },
+    {
+      "id": "step:list-billing-tiers:parse-list-inputs",
+      "type": "step",
+      "name": "Parse Tier List Inputs",
+      "summary": "Reads page, limit, service-type, and search inputs and rejects invalid list parameters before repository access.",
+      "tags": [
+        "validation",
+        "pagination",
+        "filtering"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/transport/http/handler/tier_handler.go",
+      "lineRange": [
+        1,
+        88
+      ]
+    },
+    {
+      "id": "step:list-billing-tiers:apply-request-timeout",
+      "type": "step",
+      "name": "Apply Request Timeout",
+      "summary": "Creates a bounded context for the tier list operation so slow downstream work does not run without a deadline.",
+      "tags": [
+        "timeout",
+        "resilience"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/transport/http/handler/tier_handler.go",
+      "lineRange": [
+        1,
+        88
+      ]
+    },
+    {
+      "id": "step:list-billing-tiers:delegate-to-tier-service",
+      "type": "step",
+      "name": "Delegate to Tier Service",
+      "summary": "Passes normalized pagination and filter inputs through the TierService boundary.",
+      "tags": [
+        "domain-service",
+        "separation-of-concerns"
+      ],
+      "complexity": "simple",
+      "filePath": "cost-manager/api/internal/service/tier_service.go",
+      "lineRange": [
+        1,
+        23
+      ]
+    },
+    {
+      "id": "step:list-billing-tiers:query-flat-tier-ranges",
+      "type": "step",
+      "name": "Query Flat Tier Ranges",
+      "summary": "Executes a COUNT query and then a separate paginated SQL JOIN to fetch matching tier-range rows.",
+      "tags": [
+        "postgresql",
+        "sql-join",
+        "total-count"
+      ],
+      "complexity": "complex",
+      "filePath": "cost-manager/api/internal/repository/tier_repo.go",
+      "lineRange": [
+        1,
+        101
+      ]
+    },
+    {
+      "id": "step:list-billing-tiers:materialize-flat-tier-entities",
+      "type": "step",
+      "name": "Materialize Flat Tier Entities",
+      "summary": "Represents each joined price range as one flat Tier entity with both the range identifier and parent tier identifier.",
+      "tags": [
+        "domain-entity",
+        "tier-range",
+        "flattening"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/domain/entity/tier.go",
+      "lineRange": [
+        1,
+        23
+      ]
+    },
+    {
+      "id": "step:list-billing-tiers:return-page-and-total",
+      "type": "step",
+      "name": "Return Tier Page and Total",
+      "summary": "Maps domain rows to the HTTP response contract and returns the requested page together with pagination metadata and the matching total.",
+      "tags": [
+        "http-response",
+        "pagination-metadata"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/transport/http/handler/tier_handler.go",
+      "lineRange": [
+        1,
+        88
+      ]
+    },
+    {
+      "id": "step:list-billing-plans:match-billing-plan-route",
+      "type": "step",
+      "name": "Match Billing Plan Route",
+      "summary": "Matches the billing-prefixed plans endpoint; the direct v1 route is not registered.",
+      "tags": [
+        "gin",
+        "route",
+        "plans"
+      ],
+      "complexity": "simple",
+      "filePath": "cost-manager/api/internal/app/route.go",
+      "lineRange": [
+        1,
+        28
+      ]
+    },
+    {
+      "id": "step:list-billing-plans:parse-plan-filters-and-cursor",
+      "type": "step",
+      "name": "Parse Plan Filters and Cursor",
+      "summary": "Reads catalog filters, decodes the cursor, and prepares a bounded plan list request.",
+      "tags": [
+        "filters",
+        "cursor",
+        "validation"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/transport/http/handler/plan_handler.go",
+      "lineRange": [
+        1,
+        162
+      ]
+    },
+    {
+      "id": "step:list-billing-plans:coordinate-plan-cache",
+      "type": "step",
+      "name": "Coordinate Plan Cache",
+      "summary": "Checks local and Redis-backed cached plan data and uses singleflight coordination to suppress duplicate cache-miss work.",
+      "tags": [
+        "l1-cache",
+        "redis",
+        "singleflight"
+      ],
+      "complexity": "complex",
+      "filePath": "cost-manager/api/internal/service/plan_service.go",
+      "lineRange": [
+        1,
+        229
+      ]
+    },
+    {
+      "id": "step:list-billing-plans:query-plan-repository",
+      "type": "step",
+      "name": "Query Plan Repository",
+      "summary": "Loads the filtered cursor page from PostgreSQL when durable data is required.",
+      "tags": [
+        "postgresql",
+        "repository"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/repository/plan_repo.go",
+      "lineRange": [
+        1,
+        113
+      ]
+    },
+    {
+      "id": "step:list-billing-plans:return-plans-and-next-cursor",
+      "type": "step",
+      "name": "Return Plans and Next Cursor",
+      "summary": "Maps the selected plans to the API response and returns the next cursor for continued catalog navigation.",
+      "tags": [
+        "http-response",
+        "cursor-pagination"
+      ],
+      "complexity": "moderate",
+      "filePath": "cost-manager/api/internal/transport/http/handler/plan_handler.go",
+      "lineRange": [
+        1,
+        162
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "source": "domain:billing-console",
+      "target": "flow:open-billing-pricing-view",
+      "type": "contains_flow",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "domain:billing-access-and-session",
+      "target": "flow:restore-billing-session",
+      "type": "contains_flow",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "domain:billing-access-and-session",
+      "target": "flow:authorize-billing-catalog-request",
+      "type": "contains_flow",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "domain:billing-catalog",
+      "target": "flow:list-billing-tiers",
+      "type": "contains_flow",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "domain:billing-catalog",
+      "target": "flow:list-billing-plans",
+      "type": "contains_flow",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:open-billing-pricing-view",
+      "target": "step:open-billing-pricing-view:mount-plan-page",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.3
+    },
+    {
+      "source": "flow:open-billing-pricing-view",
+      "target": "step:open-billing-pricing-view:request-catalog-data",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "flow:open-billing-pricing-view",
+      "target": "step:open-billing-pricing-view:render-plan-details",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "flow:open-billing-pricing-view",
+      "target": "step:open-billing-pricing-view:render-tier-table",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:restore-billing-session",
+      "target": "step:restore-billing-session:initialize-auth-store",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.3
+    },
+    {
+      "source": "flow:restore-billing-session",
+      "target": "step:restore-billing-session:call-session-endpoint",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "flow:restore-billing-session",
+      "target": "step:restore-billing-session:resolve-billing-session",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "flow:restore-billing-session",
+      "target": "step:restore-billing-session:return-authenticated-boolean",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:authorize-billing-catalog-request",
+      "target": "step:authorize-billing-catalog-request:receive-ext-authz-check",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.3
+    },
+    {
+      "source": "flow:authorize-billing-catalog-request",
+      "target": "step:authorize-billing-catalog-request:classify-billing-path",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.5
+    },
+    {
+      "source": "flow:authorize-billing-catalog-request",
+      "target": "step:authorize-billing-catalog-request:verify-session-context",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "flow:authorize-billing-catalog-request",
+      "target": "step:authorize-billing-catalog-request:preserve-original-path",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:match-billing-route",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.1
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:parse-list-inputs",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.3
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:apply-request-timeout",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.4
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:delegate-to-tier-service",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:query-flat-tier-ranges",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.7
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:materialize-flat-tier-entities",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.9
+    },
+    {
+      "source": "flow:list-billing-tiers",
+      "target": "step:list-billing-tiers:return-page-and-total",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "flow:list-billing-plans",
+      "target": "step:list-billing-plans:match-billing-plan-route",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.2
+    },
+    {
+      "source": "flow:list-billing-plans",
+      "target": "step:list-billing-plans:parse-plan-filters-and-cursor",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.4
+    },
+    {
+      "source": "flow:list-billing-plans",
+      "target": "step:list-billing-plans:coordinate-plan-cache",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.6
+    },
+    {
+      "source": "flow:list-billing-plans",
+      "target": "step:list-billing-plans:query-plan-repository",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 0.8
+    },
+    {
+      "source": "flow:list-billing-plans",
+      "target": "step:list-billing-plans:return-plans-and-next-cursor",
+      "type": "flow_step",
+      "direction": "forward",
+      "weight": 1.0
+    },
+    {
+      "source": "domain:billing-console",
+      "target": "domain:billing-access-and-session",
+      "type": "cross_domain",
+      "direction": "forward",
+      "description": "Cost Console restores and relies on the ACR billing session before presenting protected pricing data.",
+      "weight": 0.8
+    },
+    {
+      "source": "domain:billing-console",
+      "target": "domain:billing-catalog",
+      "type": "cross_domain",
+      "direction": "forward",
+      "description": "Cost Console requests plan and tier pages from the Cost Manager billing catalog.",
+      "weight": 0.9
+    },
+    {
+      "source": "domain:billing-access-and-session",
+      "target": "domain:billing-catalog",
+      "type": "cross_domain",
+      "direction": "forward",
+      "description": "ACR authorizes the billing request and preserves its /api/v1/billing path so Cost Manager can route it to the catalog handler.",
+      "weight": 1.0
+    }
+  ],
+  "layers": [],
+  "tour": []
+}

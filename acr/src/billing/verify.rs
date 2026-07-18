@@ -260,12 +260,9 @@ pub async fn handle_billing_session_check(
     denied_builder.set_http_status(HttpStatusCode::Ok);
     denied_builder.add_header("content-type", "application/json", None, false);
 
-    // [COMMENT]: Nếu có claims, chứng tỏ session hợp lệ
-    if let Some(claims) = verify_res.claims {
-        denied_builder.set_body(format!(
-            r#"{{"data":{{"authenticated":true,"user":{{"username":"{}","fullname":"Kế toán trưởng","email":"finance@aurora.cloud"}}}}}}"#,
-            claims.sub
-        ));
+    // [COMMENT]: Session endpoint chỉ công bố trạng thái xác thực, không làm lộ thông tin người dùng.
+    if verify_res.claims.is_some() {
+        denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
     } else {
         denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
     }

@@ -15,10 +15,13 @@ var (
 	ErrNotFound = errors.New("billing: not found")
 
 	// Lỗi liên quan đến Pack & Resource SKU Plan Catalog
-	ErrPackNotFound  = errors.New("billing: pack not found")
-	ErrPackNotActive = errors.New("billing: pack is deprecated or inactive")
-	ErrPlanNotFound  = errors.New("billing: resource plan not found")
-	ErrPlanNotActive = errors.New("billing: resource plan is inactive")
+	ErrPackNotFound        = errors.New("billing: pack not found")
+	ErrPackNotActive       = errors.New("billing: pack is deprecated or inactive")
+	ErrPlanNotFound        = errors.New("billing: resource plan not found")
+	ErrPlanNotActive       = errors.New("billing: resource plan is inactive")
+	ErrTierNotFound        = errors.New("billing: tier not found")
+	ErrTierVersionConflict = errors.New("billing: tier version conflict")
+	ErrInvalidTierRanges   = errors.New("billing: invalid tier ranges")
 
 	// Lỗi liên quan đến Thuê bao Subscription
 	ErrSubscriptionNotFound = errors.New("billing: active subscription not found")

@@ -110,6 +110,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
   const { subscribeToEvent } = useRealtime();
   const [currentPath, setCurrentPath] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null); // [COMMENT]: State quản lý lỗi kết nối/S3 để hiển thị inline
   const [allObjects, setAllObjects] = useState<RawObject[]>([]);
   const [selectedItems, setSelectedItems] = useState<string[]>([]); // Lưu trữ fullName (full key)
 
@@ -199,7 +200,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
 
       return newClient;
     } catch (err: any) {
-      toast.error(err.message || "Không thể khởi tạo kết nối S3.");
+      // [COMMENT]: Không bắn toast lỗi nữa để tránh gây phiền nhiễu cho trải nghiệm UI, chỉ ném lỗi để hàm gọi catch xử lý
       throw err;
     }
   };
@@ -212,6 +213,7 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
     }
 
     setLoading(true);
+    setError(null); // Reset lại state lỗi trước mỗi chu kỳ tải mới
     try {
       const cached = force ? null : getCachedObjectList(bucket.id);
       if (cached) {
@@ -248,6 +250,8 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
       setCachedObjectList(bucket.id, mapped);
     } catch (err: any) {
       console.error("List objects failed:", err);
+      // [COMMENT]: Gán lỗi kết nối vào state để render giao diện lỗi inline thay thế cho Empty Folder
+      setError(err.message || "Connection refused");
     } finally {
       setLoading(false);
     }
@@ -586,6 +590,15 @@ export function ObjectsTab({ bucket }: ObjectsTabProps) {
           <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
             <Loader2 className="h-7 w-7 animate-spin text-blue-500 mb-2.5" />
             <span className="text-[11px] font-semibold tracking-wider">Loading Files...</span>
+          </div>
+        ) : error ? (
+          // [COMMENT]: Render khung báo lỗi inline màu đỏ thay thế cho Empty Folder khi bị từ chối kết nối
+          <div className="flex flex-col items-center justify-center py-16 text-center text-red-500 bg-red-500/5 border border-red-500/20 border-dashed rounded-xl select-none">
+            <HardDrive className="h-10 w-10 text-red-500/50 mb-2.5 animate-pulse" />
+            <p className="font-bold text-sm">Connection Refused</p>
+            <p className="text-[11px] mt-1 max-w-xs text-red-400">
+              {error}. Please try again.
+            </p>
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground bg-muted/5 border border-border border-dashed rounded-xl">

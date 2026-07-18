@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom"; // Hook quản lý URL query search parameters
-import { Plus, Coins, Info, RefreshCw, MapPin } from "lucide-react";
+import { Plus, Coins, Info, RefreshCw } from "lucide-react";
 import { PlanTable, type PlanItem } from "./sections/PlanTable";
 import { PlanDetail } from "./sections/PlanDetail";
 import { PlanModal } from "./sections/PlanModal";
 import { SubscriptionPanel } from "./sections/SubscriptionPanel";
 import { TierTable } from "./sections/TierTable"; // [COMMENT]: Import thêm component bảng cước lũy tiến Tiers mới
-import { billingApi, type Subscription, type ZoneItem, type PriceItem } from "../../lib/api/billing";
+import { billingApi, type Subscription, type ZoneItem } from "../../lib/api/billing";
 import { cn } from "../../lib/utils";
 
 const mapPlanResponseToItem = (p: any): PlanItem => ({
@@ -25,7 +25,6 @@ const mapPlanResponseToItem = (p: any): PlanItem => ({
 export default function PlanPage() {
   const [plans, setPlans] = useState<PlanItem[]>([]);
   const [zones, setZones] = useState<ZoneItem[]>([]);
-  const [prices, setPrices] = useState<PriceItem[]>([]);
 
   // Sử dụng useSearchParams để đọc và ghi query parameter ?tab= trên URL
   const [searchParams, setSearchParams] = useSearchParams();
@@ -65,8 +64,6 @@ export default function PlanPage() {
       setActiveSub(sub);
       const zoneList = await billingApi.listZones();
       setZones(zoneList);
-      const priceList = await billingApi.listPrices();
-      setPrices(priceList);
     } catch (err) {
       console.error("Failed to load billing page data:", err);
     } finally {
@@ -157,73 +154,7 @@ export default function PlanPage() {
     setModalOpen(true);
   };
 
-  const renderPricingTab = () => {
-    return (
-      <div className="space-y-4">
-        <div className="p-3 bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-lg flex items-start gap-2.5">
-          <Info className="h-4 w-4 text-blue-500 shrink-0 mt-0.5" />
-          <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-            Biểu giá dịch vụ Pay-as-you-go được áp dụng khi tài nguyên tiêu thụ vượt hạn mức của gói thuê bao đăng ký, hoặc khi khách hàng không đăng ký gói cước nào. Giá tính theo giờ tích lũy thực tế.
-          </div>
-        </div>
 
-        <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider select-none">
-                <th className="px-5 py-3.5">Dịch vụ</th>
-                <th className="px-5 py-3.5">Metric & Chiều đo</th>
-                <th className="px-5 py-3.5 text-center">Zone</th>
-                <th className="px-5 py-3.5">Hạn mức miễn phí</th>
-                <th className="px-5 py-3.5">Tier lưu trữ</th>
-                <th className="px-5 py-3.5 text-right">Đơn giá VND</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {prices.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-5 py-12 text-center text-slate-400 font-medium">
-                    Không tìm thấy cấu hình giá dịch vụ nào.
-                  </td>
-                </tr>
-              ) : (
-                prices.map((p) => (
-                  <tr key={p.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/20 transition-colors">
-                    <td className="px-5 py-3.5 font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide">
-                      {p.service_type}
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-slate-700 dark:text-slate-300">{p.metric_type}</span>
-                        <span className="text-[10px] text-slate-400 mt-0.5">Đơn vị tính: {p.unit}</span>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-center">
-                      <span className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[10px] font-bold text-slate-600 dark:text-slate-400 capitalize">
-                        <MapPin size={10} />
-                        {p.zone_id}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5 font-semibold text-slate-600 dark:text-slate-400">
-                      {p.free_quota > 0 ? `${p.free_quota} ${p.unit.replace("_HOUR", "")}` : "Không có"}
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span className="inline-flex items-center bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider">
-                        {p.tier}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5 text-right font-mono font-bold text-blue-600 dark:text-blue-400 text-sm">
-                      {p.unit_price.toLocaleString("vi-VN")} ₫ <span className="text-[10px] text-slate-400 font-sans font-normal">/{p.unit.toLowerCase()}</span>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="space-y-6 select-none">

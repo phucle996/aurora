@@ -84,20 +84,19 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   checkSession: async () => {
-    // Chỉ check khi có flag trong localStorage để tránh spam request 401 lúc chưa đăng nhập
-    if (localStorage.getItem('cost_console_logged_in') !== 'true') {
-      return;
-    }
     set({ isLoading: true });
     try {
       // [COMMENT]: Gọi /billing/auth/session để biết trạng thái đăng nhập thay vì truy vấn profile bên IAM
-      const res = await request<{ authenticated: boolean; user?: UserProfile }>('/billing/auth/session', {
+      const res = await request<{ authenticated: boolean }>('/billing/auth/session', {
         method: 'GET',
       });
       if (res.authenticated) {
+        // [COMMENT]: Đồng bộ lại cost_console_logged_in vào localStorage khi khôi phục phiên thành công từ cookie
+        localStorage.setItem('cost_console_logged_in', 'true');
         set({
           isAuthenticated: true,
-          user: res.user || {
+          // [COMMENT]: Session API chỉ trả boolean; profile hiển thị hiện dùng dữ liệu cục bộ như sau login.
+          user: {
             username: 'accountant',
             fullname: 'Kế toán trưởng',
             email: 'finance@aurora.cloud',
