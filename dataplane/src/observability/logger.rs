@@ -94,8 +94,6 @@ impl Logger {
         }
     }
 
-
-
     /// Ghi nhận nhật ký hệ thống cấp thấp (System Info Logs).
     pub fn sys_info(op: &str, message: &str) {
         if Self::get_level() <= LogLevel::Info {

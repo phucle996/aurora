@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   HardDrive,
+  Mail,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -121,6 +122,15 @@ export default function SidebarConsole({
         path: "/storage",
         matchKey: "storage:bucket",
         // [COMMENT]: Chỉ render khi user có quyền read trên storage:bucket
+        requiredAction: "read"
+      },
+      {
+        id: "mail",
+        name: "Mail Service",
+        icon: Mail,
+        path: "/mail",
+        matchKey: "mail:mail",
+        // [COMMENT]: Chỉ render khi user có quyền read trên mail:mail
         requiredAction: "read"
       }
     ];

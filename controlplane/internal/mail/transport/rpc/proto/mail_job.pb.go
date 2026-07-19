@@ -21,118 +21,24 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Cấu hình kiểm tra kết nối SMTP gửi từ Controlplane sang Dataplane
-type SmtpTestConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
-	Port          int32                  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
-	Username      string                 `protobuf:"bytes,3,opt,name=username,proto3" json:"username,omitempty"`
-	Password      string                 `protobuf:"bytes,4,opt,name=password,proto3" json:"password,omitempty"`
-	TlsMode       string                 `protobuf:"bytes,5,opt,name=tls_mode,json=tlsMode,proto3" json:"tls_mode,omitempty"`
-	CaCertPem     *string                `protobuf:"bytes,6,opt,name=ca_cert_pem,json=caCertPem,proto3,oneof" json:"ca_cert_pem,omitempty"`
-	ClientCertPem *string                `protobuf:"bytes,7,opt,name=client_cert_pem,json=clientCertPem,proto3,oneof" json:"client_cert_pem,omitempty"`
-	ClientKeyPem  *string                `protobuf:"bytes,8,opt,name=client_key_pem,json=clientKeyPem,proto3,oneof" json:"client_key_pem,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SmtpTestConfig) Reset() {
-	*x = SmtpTestConfig{}
-	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SmtpTestConfig) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SmtpTestConfig) ProtoMessage() {}
-
-func (x *SmtpTestConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SmtpTestConfig.ProtoReflect.Descriptor instead.
-func (*SmtpTestConfig) Descriptor() ([]byte, []int) {
-	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *SmtpTestConfig) GetHost() string {
-	if x != nil {
-		return x.Host
-	}
-	return ""
-}
-
-func (x *SmtpTestConfig) GetPort() int32 {
-	if x != nil {
-		return x.Port
-	}
-	return 0
-}
-
-func (x *SmtpTestConfig) GetUsername() string {
-	if x != nil {
-		return x.Username
-	}
-	return ""
-}
-
-func (x *SmtpTestConfig) GetPassword() string {
-	if x != nil {
-		return x.Password
-	}
-	return ""
-}
-
-func (x *SmtpTestConfig) GetTlsMode() string {
-	if x != nil {
-		return x.TlsMode
-	}
-	return ""
-}
-
-func (x *SmtpTestConfig) GetCaCertPem() string {
-	if x != nil && x.CaCertPem != nil {
-		return *x.CaCertPem
-	}
-	return ""
-}
-
-func (x *SmtpTestConfig) GetClientCertPem() string {
-	if x != nil && x.ClientCertPem != nil {
-		return *x.ClientCertPem
-	}
-	return ""
-}
-
-func (x *SmtpTestConfig) GetClientKeyPem() string {
-	if x != nil && x.ClientKeyPem != nil {
-		return *x.ClientKeyPem
-	}
-	return ""
-}
-
 // Cấu hình gửi email giao dịch/hệ thống dùng chung (generic mail job)
 type SendMailConfig struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	TemplateVariables map[string]string      `protobuf:"bytes,1,rep,name=template_variables,json=templateVariables,proto3" json:"template_variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Các tham số động truyền vào template
+	TemplateVariables map[string]string      `protobuf:"bytes,1,rep,name=template_variables,json=templateVariables,proto3" json:"template_variables,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	SenderProfileId   string                 `protobuf:"bytes,2,opt,name=sender_profile_id,json=senderProfileId,proto3" json:"sender_profile_id,omitempty"`
+	SenderVersion     uint32                 `protobuf:"varint,3,opt,name=sender_version,json=senderVersion,proto3" json:"sender_version,omitempty"`
+	Recipient         string                 `protobuf:"bytes,4,opt,name=recipient,proto3" json:"recipient,omitempty"`
+	TemplateId        string                 `protobuf:"bytes,5,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
+	Subject           string                 `protobuf:"bytes,6,opt,name=subject,proto3" json:"subject,omitempty"`
+	TextBody          string                 `protobuf:"bytes,7,opt,name=text_body,json=textBody,proto3" json:"text_body,omitempty"`
+	HtmlBody          string                 `protobuf:"bytes,8,opt,name=html_body,json=htmlBody,proto3" json:"html_body,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
 
 func (x *SendMailConfig) Reset() {
 	*x = SendMailConfig{}
-	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[1]
+	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -144,7 +50,7 @@ func (x *SendMailConfig) String() string {
 func (*SendMailConfig) ProtoMessage() {}
 
 func (x *SendMailConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[1]
+	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -157,7 +63,7 @@ func (x *SendMailConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendMailConfig.ProtoReflect.Descriptor instead.
 func (*SendMailConfig) Descriptor() ([]byte, []int) {
-	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{1}
+	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SendMailConfig) GetTemplateVariables() map[string]string {
@@ -167,224 +73,73 @@ func (x *SendMailConfig) GetTemplateVariables() map[string]string {
 	return nil
 }
 
-// Cấu hình đồng bộ hóa SMTP Endpoint vật lý từ Controlplane sang Dataplane (Phase 1)
-type SmtpEndpointSync struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                                     // ID endpoint dạng UUID v7 string
-	ZoneId         string                 `protobuf:"bytes,2,opt,name=zone_id,json=zoneId,proto3" json:"zone_id,omitempty"`                               // ID zone sở hữu endpoint
-	Name           string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`                                                 // Tên hiển thị của endpoint
-	Host           string                 `protobuf:"bytes,4,opt,name=host,proto3" json:"host,omitempty"`                                                 // Địa chỉ SMTP host
-	Port           int32                  `protobuf:"varint,5,opt,name=port,proto3" json:"port,omitempty"`                                                // Cổng SMTP
-	Username       string                 `protobuf:"bytes,6,opt,name=username,proto3" json:"username,omitempty"`                                         // SMTP username
-	Password       string                 `protobuf:"bytes,7,opt,name=password,proto3" json:"password,omitempty"`                                         // SMTP password (thô / plain text)
-	TlsMode        string                 `protobuf:"bytes,8,opt,name=tls_mode,json=tlsMode,proto3" json:"tls_mode,omitempty"`                            // Chế độ TLS (none, starttls, tls, mtls)
-	Status         string                 `protobuf:"bytes,9,opt,name=status,proto3" json:"status,omitempty"`                                             // Lifecycle status (planned, initializing, active, disabled)
-	MaxConnections int32                  `protobuf:"varint,10,opt,name=max_connections,json=maxConnections,proto3" json:"max_connections,omitempty"`     // Kết nối song song tối đa
-	Priority       int32                  `protobuf:"varint,11,opt,name=priority,proto3" json:"priority,omitempty"`                                       // Độ ưu tiên định tuyến
-	Weight         int32                  `protobuf:"varint,12,opt,name=weight,proto3" json:"weight,omitempty"`                                           // Trọng số định tuyến
-	CaCertPem      *string                `protobuf:"bytes,13,opt,name=ca_cert_pem,json=caCertPem,proto3,oneof" json:"ca_cert_pem,omitempty"`             // Chứng chỉ CA root dạng PEM
-	ClientCertPem  *string                `protobuf:"bytes,14,opt,name=client_cert_pem,json=clientCertPem,proto3,oneof" json:"client_cert_pem,omitempty"` // Chứng chỉ Client dạng PEM
-	ClientKeyPem   *string                `protobuf:"bytes,15,opt,name=client_key_pem,json=clientKeyPem,proto3,oneof" json:"client_key_pem,omitempty"`    // Khóa Client private key dạng PEM (thô / plain text)
-	IsActive       bool                   `protobuf:"varint,16,opt,name=is_active,json=isActive,proto3" json:"is_active,omitempty"`                       // Trạng thái hoạt động
-	UpdatedAt      int64                  `protobuf:"varint,17,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`                    // Thời điểm cập nhật cuối (Epoch Milliseconds) phục vụ LWW
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *SmtpEndpointSync) Reset() {
-	*x = SmtpEndpointSync{}
-	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SmtpEndpointSync) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SmtpEndpointSync) ProtoMessage() {}
-
-func (x *SmtpEndpointSync) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[2]
+func (x *SendMailConfig) GetSenderProfileId() string {
 	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SmtpEndpointSync.ProtoReflect.Descriptor instead.
-func (*SmtpEndpointSync) Descriptor() ([]byte, []int) {
-	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *SmtpEndpointSync) GetId() string {
-	if x != nil {
-		return x.Id
+		return x.SenderProfileId
 	}
 	return ""
 }
 
-func (x *SmtpEndpointSync) GetZoneId() string {
+func (x *SendMailConfig) GetSenderVersion() uint32 {
 	if x != nil {
-		return x.ZoneId
-	}
-	return ""
-}
-
-func (x *SmtpEndpointSync) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *SmtpEndpointSync) GetHost() string {
-	if x != nil {
-		return x.Host
-	}
-	return ""
-}
-
-func (x *SmtpEndpointSync) GetPort() int32 {
-	if x != nil {
-		return x.Port
+		return x.SenderVersion
 	}
 	return 0
 }
 
-func (x *SmtpEndpointSync) GetUsername() string {
+func (x *SendMailConfig) GetRecipient() string {
 	if x != nil {
-		return x.Username
+		return x.Recipient
 	}
 	return ""
 }
 
-func (x *SmtpEndpointSync) GetPassword() string {
+func (x *SendMailConfig) GetTemplateId() string {
 	if x != nil {
-		return x.Password
+		return x.TemplateId
 	}
 	return ""
 }
 
-func (x *SmtpEndpointSync) GetTlsMode() string {
+func (x *SendMailConfig) GetSubject() string {
 	if x != nil {
-		return x.TlsMode
+		return x.Subject
 	}
 	return ""
 }
 
-func (x *SmtpEndpointSync) GetStatus() string {
+func (x *SendMailConfig) GetTextBody() string {
 	if x != nil {
-		return x.Status
+		return x.TextBody
 	}
 	return ""
 }
 
-func (x *SmtpEndpointSync) GetMaxConnections() int32 {
+func (x *SendMailConfig) GetHtmlBody() string {
 	if x != nil {
-		return x.MaxConnections
-	}
-	return 0
-}
-
-func (x *SmtpEndpointSync) GetPriority() int32 {
-	if x != nil {
-		return x.Priority
-	}
-	return 0
-}
-
-func (x *SmtpEndpointSync) GetWeight() int32 {
-	if x != nil {
-		return x.Weight
-	}
-	return 0
-}
-
-func (x *SmtpEndpointSync) GetCaCertPem() string {
-	if x != nil && x.CaCertPem != nil {
-		return *x.CaCertPem
+		return x.HtmlBody
 	}
 	return ""
-}
-
-func (x *SmtpEndpointSync) GetClientCertPem() string {
-	if x != nil && x.ClientCertPem != nil {
-		return *x.ClientCertPem
-	}
-	return ""
-}
-
-func (x *SmtpEndpointSync) GetClientKeyPem() string {
-	if x != nil && x.ClientKeyPem != nil {
-		return *x.ClientKeyPem
-	}
-	return ""
-}
-
-func (x *SmtpEndpointSync) GetIsActive() bool {
-	if x != nil {
-		return x.IsActive
-	}
-	return false
-}
-
-func (x *SmtpEndpointSync) GetUpdatedAt() int64 {
-	if x != nil {
-		return x.UpdatedAt
-	}
-	return 0
 }
 
 var File_internal_mail_transport_rpc_proto_mail_job_proto protoreflect.FileDescriptor
 
 const file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc = "" +
 	"\n" +
-	"0internal/mail/transport/rpc/proto/mail_job.proto\x12\x04mail\"\xbf\x02\n" +
-	"\x0eSmtpTestConfig\x12\x12\n" +
-	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\busername\x18\x03 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\x04 \x01(\tR\bpassword\x12\x19\n" +
-	"\btls_mode\x18\x05 \x01(\tR\atlsMode\x12#\n" +
-	"\vca_cert_pem\x18\x06 \x01(\tH\x00R\tcaCertPem\x88\x01\x01\x12+\n" +
-	"\x0fclient_cert_pem\x18\a \x01(\tH\x01R\rclientCertPem\x88\x01\x01\x12)\n" +
-	"\x0eclient_key_pem\x18\b \x01(\tH\x02R\fclientKeyPem\x88\x01\x01B\x0e\n" +
-	"\f_ca_cert_pemB\x12\n" +
-	"\x10_client_cert_pemB\x11\n" +
-	"\x0f_client_key_pem\"\xb2\x01\n" +
+	"0internal/mail/transport/rpc/proto/mail_job.proto\x12\x04mail\"\x98\x03\n" +
 	"\x0eSendMailConfig\x12Z\n" +
-	"\x12template_variables\x18\x01 \x03(\v2+.mail.SendMailConfig.TemplateVariablesEntryR\x11templateVariables\x1aD\n" +
+	"\x12template_variables\x18\x01 \x03(\v2+.mail.SendMailConfig.TemplateVariablesEntryR\x11templateVariables\x12*\n" +
+	"\x11sender_profile_id\x18\x02 \x01(\tR\x0fsenderProfileId\x12%\n" +
+	"\x0esender_version\x18\x03 \x01(\rR\rsenderVersion\x12\x1c\n" +
+	"\trecipient\x18\x04 \x01(\tR\trecipient\x12\x1f\n" +
+	"\vtemplate_id\x18\x05 \x01(\tR\n" +
+	"templateId\x12\x18\n" +
+	"\asubject\x18\x06 \x01(\tR\asubject\x12\x1b\n" +
+	"\ttext_body\x18\a \x01(\tR\btextBody\x12\x1b\n" +
+	"\thtml_body\x18\b \x01(\tR\bhtmlBody\x1aD\n" +
 	"\x16TemplateVariablesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xaf\x04\n" +
-	"\x10SmtpEndpointSync\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
-	"\azone_id\x18\x02 \x01(\tR\x06zoneId\x12\x12\n" +
-	"\x04name\x18\x03 \x01(\tR\x04name\x12\x12\n" +
-	"\x04host\x18\x04 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x05 \x01(\x05R\x04port\x12\x1a\n" +
-	"\busername\x18\x06 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\a \x01(\tR\bpassword\x12\x19\n" +
-	"\btls_mode\x18\b \x01(\tR\atlsMode\x12\x16\n" +
-	"\x06status\x18\t \x01(\tR\x06status\x12'\n" +
-	"\x0fmax_connections\x18\n" +
-	" \x01(\x05R\x0emaxConnections\x12\x1a\n" +
-	"\bpriority\x18\v \x01(\x05R\bpriority\x12\x16\n" +
-	"\x06weight\x18\f \x01(\x05R\x06weight\x12#\n" +
-	"\vca_cert_pem\x18\r \x01(\tH\x00R\tcaCertPem\x88\x01\x01\x12+\n" +
-	"\x0fclient_cert_pem\x18\x0e \x01(\tH\x01R\rclientCertPem\x88\x01\x01\x12)\n" +
-	"\x0eclient_key_pem\x18\x0f \x01(\tH\x02R\fclientKeyPem\x88\x01\x01\x12\x1b\n" +
-	"\tis_active\x18\x10 \x01(\bR\bisActive\x12\x1d\n" +
-	"\n" +
-	"updated_at\x18\x11 \x01(\x03R\tupdatedAtB\x0e\n" +
-	"\f_ca_cert_pemB\x12\n" +
-	"\x10_client_cert_pemB\x11\n" +
-	"\x0f_client_key_pemB:Z8controlplane/internal/mail/transport/rpc/proto;mailprotob\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B:Z8controlplane/internal/mail/transport/rpc/proto;mailprotob\x06proto3"
 
 var (
 	file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescOnce sync.Once
@@ -398,15 +153,13 @@ func file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescGZIP() []byte 
 	return file_internal_mail_transport_rpc_proto_mail_job_proto_rawDescData
 }
 
-var file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_internal_mail_transport_rpc_proto_mail_job_proto_goTypes = []any{
-	(*SmtpTestConfig)(nil),   // 0: mail.SmtpTestConfig
-	(*SendMailConfig)(nil),   // 1: mail.SendMailConfig
-	(*SmtpEndpointSync)(nil), // 2: mail.SmtpEndpointSync
-	nil,                      // 3: mail.SendMailConfig.TemplateVariablesEntry
+	(*SendMailConfig)(nil), // 0: mail.SendMailConfig
+	nil,                    // 1: mail.SendMailConfig.TemplateVariablesEntry
 }
 var file_internal_mail_transport_rpc_proto_mail_job_proto_depIdxs = []int32{
-	3, // 0: mail.SendMailConfig.template_variables:type_name -> mail.SendMailConfig.TemplateVariablesEntry
+	1, // 0: mail.SendMailConfig.template_variables:type_name -> mail.SendMailConfig.TemplateVariablesEntry
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -419,15 +172,13 @@ func file_internal_mail_transport_rpc_proto_mail_job_proto_init() {
 	if File_internal_mail_transport_rpc_proto_mail_job_proto != nil {
 		return
 	}
-	file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[0].OneofWrappers = []any{}
-	file_internal_mail_transport_rpc_proto_mail_job_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

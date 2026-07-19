@@ -1,6 +1,6 @@
-use std::time::Duration;
 use crate::config::Config;
 use crate::observability::logger::Logger;
+use std::time::Duration;
 
 /// Cấu trúc node trả về từ Proxmox API `GET /api2/json/nodes`
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -45,8 +45,7 @@ pub struct ProxmoxClient {
 impl ProxmoxClient {
     /// Khởi tạo client kết nối với cấu hình TLS thích hợp
     pub fn new(config: &Config) -> Self {
-        let mut builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5)); // Timeout cứng 5 giây để tránh treo vòng lặp
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(5)); // Timeout cứng 5 giây để tránh treo vòng lặp
 
         // Chỉ cho phép skip TLS verify trên dev/test — production bắt buộc tắt
         if config.proxmox_tls_insecure {
@@ -73,7 +72,8 @@ impl ProxmoxClient {
     pub async fn fetch_nodes(&self) -> Result<Vec<ProxmoxNodeRaw>, String> {
         let url = format!("{}/api2/json/nodes", self.api_url.trim_end_matches('/'));
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             // [COMMENT]: Proxmox yêu cầu Authorization header dạng: PVEAPIToken=user@realm!id=secret
             .header("Authorization", &self.api_token)

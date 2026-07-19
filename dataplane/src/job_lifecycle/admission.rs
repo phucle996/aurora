@@ -46,11 +46,7 @@ impl AdmissionController {
         let r = active_ratio.max(cpu_usage).max(ram_usage);
 
         // 1. Tính toán Trọng số kéo tin (Pull Weight W) tuyến tính
-        let w = if r < 0.8 {
-            1.0 - (r / 0.8)
-        } else {
-            0.0
-        };
+        let w = if r < 0.8 { 1.0 - (r / 0.8) } else { 0.0 };
 
         // 2. Tính toán nhịp trễ kéo giãn (Pacing Delay)
         let pacing_delay_ms = (self.base_delay_ms * (1.0 - w)) as u64;

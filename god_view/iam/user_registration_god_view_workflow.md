@@ -14,7 +14,7 @@
 | Identity SoT | PostgreSQL `iam.users`, `iam.user_profiles` |
 | OTT | Redis HA, key `iam:ott:account_verify:<user_id>:<event_id>` |
 | Mail intent | PostgreSQL `iam.iam_outbox_records` |
-| Mail execution | JO IAM dispatcher → Redis Stream → Dataplane → LMTP |
+| Mail execution | JO IAM dispatcher → Redis Stream → Dataplane micro-batch → Stalwart JMAP |
 | Retention | Kubernetes CronJob `k8s/outbox-retention-cronjob.yaml`, 30 ngày |
 | Output state | User `pending-active` + durable mail intent |
 | Downstream handoff | `user_id + event_id + plaintext OTT` trong activation URL fragment |
@@ -48,7 +48,7 @@
 | Password là opaque secret | Không trim, log, trace hoặc đưa vào outbox |
 | OTT đạt Redis replica ACK trước DB transaction | Replica gate fail thì không được tạo user |
 | `users + user_profiles + iam_outbox_records` cùng transaction | HTTP `201` không tồn tại khi thiếu mail intent |
-| `201` chỉ chứng minh intent durable | Không khẳng định LMTP/provider đã deliver |
+| `201` chỉ chứng minh intent durable | Không khẳng định Stalwart hoặc recipient đã nhận mail |
 | Mỗi mail có `event_id` và Redis key riêng | Mail đến đảo thứ tự không invalidate link còn TTL |
 | Resend yêu cầu password đúng | Không có unauthenticated resend oracle; không cấp session cho pending user |
 | JO route result bằng `source_domain` | Topic `mail.*` không được dùng để suy diễn source table |
@@ -205,14 +205,14 @@ sequenceDiagram
     participant DB as PostgreSQL IAM
     participant Jobs as Redis jobs:platform
     participant DP as Dataplane Mail
-    participant LMTP as Stalwart LMTP
+    participant JMAP as Stalwart JMAP
     participant Results as Redis Result Stream
 
     JO->>DB: Claim batch SKIP LOCKED with lease
     JO->>Jobs: Atomic XADD and event marker
     JO->>DB: Mark PUBLISHED
     Jobs-->>DP: Consumer-group delivery
-    DP->>LMTP: Render and send activation mail
+    DP->>JMAP: Render, enqueue, batch <=50/1000ms and submit
     DP->>Results: Result with source_domain=IAM
     Results-->>JO: Consume result
     JO->>DB: Update iam.iam_outbox_records terminal state
@@ -252,7 +252,7 @@ stateDiagram-v2
     PUBLISHING --> PENDING: Redis failure + backoff
     PUBLISHING --> PUBLISHED: atomic XADD marker success
     PUBLISHED --> PROCESSING: Dataplane result
-    PROCESSING --> SUCCEEDED: LMTP accepted
+    PROCESSING --> SUCCEEDED: JMAP EmailSubmission accepted
     PROCESSING --> FAILED: terminal executor failure
     SUCCEEDED --> retained: audit 30 days
     FAILED --> retained: audit 30 days
@@ -285,7 +285,7 @@ Hai request đồng thời chỉ một request thắng cooldown. Mỗi resend th
 | DB commit, HTTP response mất | Pending user + mail row | Client retry có thể `409`; resend qua login |
 | JO crash trước claim | Row vẫn PENDING | Polling reconciler claim lại |
 | JO crash sau XADD trước DB mark | Redis marker giữ stream entry ID | Lease retry không XADD lần hai trong 30 ngày |
-| LMTP success, result mất | Có thể redelivery mail | Dataplane cần durable side-effect inbox |
+| JMAP accepted, result mất | Có thể redelivery/duplicate mail theo best-effort semantics | Theo dõi ambiguous retry bằng job_id; không tuyên bố exactly-once |
 | Result sai/missing domain | Không fallback theo topic | Alert contract error; không update nhầm table |
 | Một outbox table cleanup lỗi | Hai bảng khác vẫn được CronJob thử | Transaction độc lập/batch nhỏ |
 

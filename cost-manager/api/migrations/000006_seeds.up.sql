@@ -50,3 +50,23 @@ INSERT INTO billing.promotion_campaigns
 VALUES
     ('019f3d3e-998f-7894-9236-c5122634cb04', 'FREE_TIER_100_USD', 'Free Tier USD 100 promotional credit', 100000000, 'USD', '2026-01-01 00:00:00+00', 'ACTIVE')
 ON CONFLICT (id) DO NOTHING;
+
+-- 8. [COMMENT]: Seed tài khoản nhân viên kiểm toán / quản trị hệ thống Billing mặc định (Root Admin)
+-- CREDENTIALS CHO MÔI TRƯỜNG DEV/LOCAL:
+-- User ID: 00000000-0000-0000-0000-000000000001
+-- Username / Employee Code: ADMIN001
+-- Ed25519 Public Key:  iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=
+-- Ed25519 Private Key (Dev Seed): AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+INSERT INTO billing.users
+    (id, employee_code, public_key, fullname, email, role_id, level, status)
+VALUES
+    ('00000000-0000-0000-0000-000000000001', 'ADMIN001', 'iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=', 'Root Admin', 'root@aurora.internal', 'billing_admin', 1, 'ACTIVE')
+ON CONFLICT (id) DO NOTHING;
+
+-- 9. [COMMENT]: Seed ví Personal Wallet mặc định cho Root User phục vụ môi trường dev/local baseline
+INSERT INTO billing.wallets
+    (id, owner_id, owner_type, currency, cash_balance, promotional_balance, overdraft_limit, status, version)
+VALUES
+    ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'PERSONAL', 'USD', 0, 0, 0, 'ACTIVE', 1)
+ON CONFLICT (owner_id, owner_type, currency) DO NOTHING;
+

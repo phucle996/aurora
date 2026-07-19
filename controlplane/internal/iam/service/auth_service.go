@@ -209,14 +209,15 @@ func (s *AuthService) buildVerifyAccountOutboxJob(ctx context.Context, userID uu
 
 	// [COMMENT]: Đóng gói thông tin email thành Protobuf cấu hình gửi mail với đầy đủ tham số định danh, người nhận và template_id
 	mailConfig := &mailproto.SendMailConfig{
+		SenderProfileId: "platform-default",
+		SenderVersion:   1,
+		Recipient:       email,
+		TemplateId:      "platform/verify_account",
 		TemplateVariables: map[string]string{
-			"template_id":  "platform/verify_account",
-			"to":           email,
 			"fullname":     username,
 			"user_id":      userID.String(),
 			"event_id":     eventID.String(),
 			"verify_token": verificationToken,
-			"from":         "noreply@aurora.system",
 		},
 	}
 

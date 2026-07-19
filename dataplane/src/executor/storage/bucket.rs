@@ -118,7 +118,10 @@ impl Executor for BucketCreateExecutor {
             }
             Logger::sys_info(
                 op,
-                &format!("Step 1.5/3 OK: Bucket '{}' quota được thiết lập.", sync_data.name),
+                &format!(
+                    "Step 1.5/3 OK: Bucket '{}' quota được thiết lập.",
+                    sync_data.name
+                ),
             );
         }
 

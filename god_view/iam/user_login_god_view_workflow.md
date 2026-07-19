@@ -15,7 +15,8 @@
 | Inter-service transport | NATS Core request/reply, subject `iam.auth.verify_credentials` |
 | Durable SoT | PostgreSQL: users, roles, memberships, devices, refresh tokens, IAM outbox |
 | Runtime SoT | Redis L2 user session encoded bằng Prost |
-| Crypto | Argon2 password verification; Ed25519 login proof; signed access token |
+| Crypto | Argon2 password verification; Ed25519 login proof; JWT HS256 qua Vault Transit HMAC-SHA256 |
+| JWT key custody | HashiCorp Vault Transit; ACR không đọc hoặc giữ raw signing key |
 | Login challenge TTL | 120 giây |
 | Pending resend cooldown | Redis `SET NX`, 60 giây |
 | Success response | HTTP `204 No Content` với cookies |
@@ -33,6 +34,7 @@
 | Pending account không được cấp session | Password đúng chỉ kích hoạt resend có cooldown và trả HTTP 412 |
 | IAM trả canonical public key cho ACR | Redis session dùng key đã persist, không dùng lại trực tiếp input chưa tin cậy |
 | IAM là issuer và durable owner của refresh token; ACR là HTTP cookie writer | Khi `trust_device=true`, IAM persist hash + trả raw token/expiry đúng một lần; ACR phát HttpOnly cookie theo expiry đó |
+| User access JWT được Vault Transit ký | ACR dựng header/payload nhưng gửi signing input sang Vault; Vault key version nằm trong signature để hỗ trợ rotation |
 
 ### 0.2 Severity gate
 
@@ -71,6 +73,7 @@
 | Controlplane IAM | User lookup, password/state/role/device/refresh-token business rules | Không phát HTTP cookies |
 | PostgreSQL | Durable identity, device, role, membership, refresh token, resend outbox | Không giữ runtime access session |
 | Redis HA | One-time challenges, resend cooldown, binary runtime session và indexes | Không thay thế durable identity SoT |
+| HashiCorp Vault Transit | Giữ HMAC key, ký và verify JWT bằng SHA2-256 | Không sở hữu user/session business state |
 
 ### 1.3 End-to-end topology
 
@@ -83,7 +86,7 @@ flowchart LR
     N -->|queue group iam_auth_service| IAM[Controlplane IAM]
     IAM --> DB[(PostgreSQL)]
     IAM -->|Protobuf response| N --> A
-    A -->|sign access token| K[Token signer]
+    A -->|Transit HMAC SHA2-256| V[HashiCorp Vault HA]
     A -->|HTTP 204 + Set-Cookie| E --> UI
 ```
 
@@ -197,7 +200,7 @@ sequenceDiagram
     participant NATS
     participant IAM as Controlplane IAM
     participant DB as PostgreSQL
-    participant Signer as Token Signer
+    participant Vault as Vault Transit HA
 
     UI->>ACR: POST /api/v1/auth/login/challenge
     ACR->>Redis: SET challenge nonce EX 120
@@ -228,7 +231,8 @@ sequenceDiagram
             IAM->>DB: Persist hashed refresh token
         end
         IAM-->>ACR: Identity + role + device + proof key + raw refresh/expiry
-        ACR->>Signer: Sign access claims
+        ACR->>Vault: HMAC-SHA2-256(header.payload)
+        Vault-->>ACR: vault key version + HMAC signature
         ACR->>Redis: Register Prost UserAccessSession + indexes
         ACR-->>UI: HTTP 204 + Trinity/context cookies
     end
@@ -278,13 +282,21 @@ State decision:
 5. Khi `trust_device=true`, IAM tạo opaque refresh token và persist hash gắn với user, tracked device và optional tenant.
 6. IAM response trả `client_proof_public_key` từ tracked device đã persist; nếu remember-me được chọn thì trả raw refresh token và Unix expiry đúng một lần cho ACR.
 
-### 3.5 Phase E — ACR session issuance
+### 3.5 Phase E — Vault JWT signing và ACR session issuance
 
 ACR sinh:
 
 - `access_key`: UUIDv7.
 - `access_secret`: UUIDv4; Redis chỉ giữ SHA-256 hash `ash`.
 - Access token claims: user ID, username, role ID, level, tenant ID, zone ID, access key, JTI, issuer, issued/expiry time.
+
+JWT signing AS-IS:
+
+1. ACR serialize header `{"alg":"HS256","typ":"JWT"}` và user claims, rồi Base64URL encode thành `header.payload`.
+2. ACR gọi Vault Transit HMAC endpoint với algorithm `sha2-256`; raw signing key không rời Vault.
+3. Vault trả `vault:vN:<base64-signature>`. ACR chuyển signature sang JWT-safe Base64URL và giữ key version trong dạng `vN_<signature>`.
+4. Verify token kiểm tra structure/expiry trước. Moka L1 cache hit trả claims đã verify; cache miss gọi Vault Transit verify với đúng key version từ signature.
+5. Login không có signing fallback local: Vault timeout, sealed, unauthorized hoặc response invalid đều fail-closed trước Redis session write và trước `Set-Cookie`.
 
 Redis key:
 
@@ -383,8 +395,9 @@ erDiagram
 | Outbox insert lỗi sau cooldown winner | Best-effort DEL cooldown 500ms | Cho phép retry sớm; không cấp session |
 | NATS request timeout/unavailable | ACR trả authentication unavailable | Không cấp session |
 | IAM replica concurrency register device | Durable constraints/repository quyết định | Không được tạo identity session nếu device persistence fail |
-| Token signer fail | ACR fail trước Redis session write | Không có runtime session |
-| Redis session write fail sau token signing | ACR trả 500, không set cookies | Signed token không tới client |
+| Vault Transit sign timeout/5xx/sealed | ACR fail trước Redis session write | Không có runtime session và không phát cookies |
+| Vault trả signature empty/malformed | Parser fail-closed | Không tạo JWT |
+| Redis session write fail sau Vault signing | ACR trả 500, không set cookies | Signed token không tới client; JWT không có matching Redis session |
 | ACR chết sau Redis write trước response | Client thấy failure nhưng session orphan có TTL/index cleanup | Retry tạo session mới; cần metric orphan pressure |
 | Eviction notification publish fail | Best-effort notification | Redis eviction vẫn có hiệu lực; CP cleanup có thể trễ |
 
@@ -394,6 +407,10 @@ erDiagram
 - IAM NATS subscribers dùng queue group `iam_auth_service` để chia tải giữa replicas.
 - NATS login request/reply không phải outbox; request có thể retry từ client bằng challenge mới.
 - PostgreSQL là durability boundary cho device/refresh token/outbox.
+- Vault phải chạy HA, initialized và unsealed; ACR startup authenticate bằng AppRole trong production, static token chỉ dành cho dev/test.
+- ACR Vault client có request timeout và startup retry hữu hạn. Hết retry thì process gọi `exit(1)`, nên pod không trở thành auth replica thiếu Vault.
+- Vault key rotation được nhận diện qua version nằm trong JWT signature; không xóa key version cũ trước khi mọi JWT tương ứng hết TTL.
+- Moka JWT verification cache giảm tải Vault cho request sau login, nhưng cache là per-pod và không giúp thao tác ký token mới.
 - Clock của UI/ACR cần đồng bộ; login proof chỉ chấp nhận sai lệch trong TTL 120 giây.
 
 ---
@@ -409,6 +426,9 @@ erDiagram
 5. Challenge expired/replayed/missing và Redis failure đều fail-closed.
 6. Backend critical không tự đọc client proof header; chỉ tin marker ACR overwrite theo God View critical.
 7. IndexedDB non-extractable key giảm export risk nhưng không bảo vệ khỏi XSS đang chạy trong cùng origin; CSP và dependency integrity vẫn là bắt buộc.
+8. ACR không được có local JWT signing secret hoặc fail-open khi Vault unavailable.
+9. Vault AppRole SecretID/static token không được log, đưa vào image hoặc expose cho Cloud Console/downstream API.
+10. ACR luôn thực thi Vault HMAC SHA2-256; cryptographic operation không bao giờ được chọn động từ giá trị `alg` do token cung cấp.
 
 ### 6.2 Open risks AS-IS
 
@@ -420,6 +440,7 @@ erDiagram
 | **P2** | ACR tạo candidate `client_device_id` mới mỗi login rồi IAM resolve theo public key | Cookie device ID cũ không quyết định identity; cần đảm bảo đây là contract mong muốn cho analytics/device UX |
 | **P2** | Eviction NATS notification best-effort | Durable cleanup phía Controlplane có thể trễ khi publish lỗi |
 | **P2** | UI/ACR canonical message được implement ở hai ngôn ngữ | Cần contract vector test cross-language trong CI để tránh drift field/order/encoding |
+| **P2** | JWT verification cache Moka chưa đặt TTL riêng theo remaining token lifetime; code kiểm tra `exp` khi cache hit nhưng entry có thể nằm tới eviction | Không bypass expiry, nhưng expired entries có thể chiếm capacity; nên cấu hình expiry-aware eviction |
 
 ---
 
@@ -436,6 +457,9 @@ erDiagram
 | Password verification latency | outcome | CPU pressure/Argon2 regression |
 | Device register latency/error | repo operation | PostgreSQL contention |
 | Session register latency/error | Redis operation | Runtime session health |
+| Vault sign latency/error | operation, HTTP class, timeout, key name không gắn user | Login availability và Vault saturation |
+| Vault verify latency/cache hit ratio | operation, outcome | Capacity planning và phát hiện cache regression |
+| Vault auth/health/sealed state | pod, attempt, outcome | ACR readiness và Vault incident |
 | Pending resend winner/loser/outbox error | cooldown outcome | Mail abuse và delivery trigger health |
 
 Không dùng username/email/public key làm metric label vì cardinality và privacy.
@@ -449,7 +473,9 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 - [ ] Global login và tenant login đều trả đúng role/scope.
 - [ ] Pending login password sai không queue resend; password đúng trả 412 và không có cookies.
 - [ ] Suspended/disabled không lộ trạng thái cụ thể.
-- [ ] Redis/NATS/signer/PostgreSQL failure đều không tạo client-visible authenticated session.
+- [ ] Redis/NATS/Vault/PostgreSQL failure đều không tạo client-visible authenticated session.
+- [ ] Vault AppRole, Transit policy và key path cấp least privilege: ACR chỉ được HMAC/verify key JWT cần thiết.
+- [ ] Vault key rotation test xác minh được JWT version cũ cho tới hết session TTL.
 - [ ] Redis Prost payload chứa canonical `client_proof_public_key`.
 - [ ] Cookie flags được integration-test qua Envoy với configured public domain.
 - [ ] Critical call sau login verify được session proof theo God View riêng.
@@ -468,6 +494,9 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | ACR login/challenge/session issue | [`acr/src/user/login.rs`](../../acr/src/user/login.rs) |
 | ACR proof primitives | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs) |
 | ACR Redis session binary | [`acr/src/user/session.rs`](../../acr/src/user/session.rs) |
+| JWT construction, Vault sign/verify và Moka cache | [`acr/src/billing/claims.rs`](../../acr/src/billing/claims.rs) |
+| Vault AppRole, health, Transit HTTP client | [`acr/src/infra/vault.rs`](../../acr/src/infra/vault.rs) |
+| ACR Vault/TokenManager bootstrap | [`acr/src/main.rs`](../../acr/src/main.rs) |
 | NATS Protobuf contract | [`controlplane/internal/iam/transport/rpc/proto/auth.proto`](../../controlplane/internal/iam/transport/rpc/proto/auth.proto), [`acr/proto/auth.proto`](../../acr/proto/auth.proto) |
 | IAM NATS request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
 | IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |

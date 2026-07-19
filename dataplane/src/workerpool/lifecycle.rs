@@ -47,8 +47,8 @@ pub struct WorkerLifecycleManager {
     /// Bộ theo dõi và đếm số lượng tác vụ đang hoạt động phục vụ cho việc graceful shutdown.
     tracker: Arc<TaskTracker>,
 
-    /// Pool kết nối LMTP dùng chung cho các worker để gửi email qua Stalwart Cluster
-    pub lmtp_pool: Arc<crate::executor::mail::core::send::LmtpConnectionPool>,
+    /// [COMMENT]: Một JMAP mail runtime dùng chung toàn pod để micro-batch job từ mọi worker.
+    pub mail_runtime: Arc<crate::executor::mail::MailRuntime>,
 }
 
 /// Các loại tín hiệu điều phối vòng đời của worker
@@ -60,24 +60,29 @@ pub enum WorkerSignal {
 }
 
 impl WorkerLifecycleManager {
-    /// Khởi tạo bộ máy quản lý vòng đời, nhận thêm cấu hình Stalwart và khởi tạo Connection Pool
-    pub fn new(lmtp_host: String, lmtp_port: u16) -> (Self, mpsc::Receiver<WorkerSignal>) {
+    pub fn new(
+        mail_runtime: Arc<crate::executor::mail::MailRuntime>,
+    ) -> (Self, mpsc::Receiver<WorkerSignal>) {
         let (tx, rx) = mpsc::channel(100);
-        let pool = Arc::new(crate::executor::mail::core::send::LmtpConnectionPool::new(lmtp_host, lmtp_port));
         let manager = Self {
             cancel_token: CancellationToken::new(),
             signal_sender: tx,
             active_workers: Mutex::new(HashMap::new()),
             tracker: Arc::new(TaskTracker::new()),
-            lmtp_pool: pool,
+            mail_runtime,
         };
         (manager, rx)
     }
 
-
     /// Lấy bản sao của global cancel token
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
+    }
+
+    /// [COMMENT]: JobRunner chạy detached khỏi worker receive-loop nhưng vẫn phải nằm trong cùng
+    /// shutdown barrier; nếu không pod có thể đóng MailRuntime khi job đang chuẩn bị enqueue mail.
+    pub fn track_task(&self) -> TaskGuard {
+        self.tracker.track()
     }
 
     /// Cấp phát và khởi chạy một Worker (Luồng Worker xử lý Job từ channel) song song thực sự.
@@ -88,7 +93,11 @@ impl WorkerLifecycleManager {
         redis_job: Arc<crate::infra::redis::RedisClientManager>,
         redis_internal_zone: Arc<crate::infra::redis::RedisClientManager>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
-        rx: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<crate::job_lifecycle::message::JobPayload>>>,
+        rx: Arc<
+            tokio::sync::Mutex<
+                tokio::sync::mpsc::Receiver<crate::job_lifecycle::message::JobPayload>,
+            >,
+        >,
         active_jobs: Arc<std::sync::atomic::AtomicUsize>,
     ) {
         let child_token = self.cancel_token.child_token();
@@ -102,7 +111,7 @@ impl WorkerLifecycleManager {
         let worker_token = child_token.clone();
         let self_clone = self.clone();
         let guard = self.tracker.track();
-        
+
         let rx = rx.clone();
         let active_jobs = active_jobs.clone();
         let stream_key = format!("jobs:{}", config.zone_id);
@@ -187,7 +196,10 @@ impl WorkerLifecycleManager {
             "worker.lifecycle",
             "Worker Pool: Global cancellation token triggered. Waiting for all workers & tasks to gracefully complete...",
         );
+        // [COMMENT]: Cancel intake trước, đợi mọi detached JobRunner submit/nhận kết quả xong rồi mới đóng batcher;
+        // worker receive-loop cũng được track nên không thể phát sinh job mới sau khi barrier hoàn tất.
         self.tracker.wait().await;
+        self.mail_runtime.shutdown().await;
         crate::observability::logger::Logger::sys_info(
             "worker.lifecycle",
             "Worker Pool: All workers and execution tasks have gracefully terminated.",
@@ -222,8 +234,14 @@ impl TaskTracker {
 
     /// Đợi bất đồng bộ cho tới khi toàn bộ các tác vụ đang được theo dõi kết thúc (counter về 0).
     pub async fn wait(&self) {
-        while self.counter.load(Ordering::SeqCst) > 0 {
-            self.notify.notified().await;
+        loop {
+            // [COMMENT]: Đăng ký waiter trước khi đọc counter để không mất notify ở khe race
+            // giữa lần đọc cuối cùng và lúc bắt đầu await.
+            let notified = self.notify.notified();
+            if self.counter.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            notified.await;
         }
     }
 }

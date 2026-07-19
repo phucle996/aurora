@@ -6,4 +6,5 @@ DELETE FROM billing.plans;
 DELETE FROM billing.tier_version_ranges;
 DELETE FROM billing.tier_versions;
 DELETE FROM billing.tiers;
+DELETE FROM billing.wallets;
 DELETE FROM billing.users;

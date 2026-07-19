@@ -773,7 +773,7 @@ services:
     ports:
       - "8085:8080" # Admin HTTP API & Web UI (Dành cho dev cấu hình)
     environment:
-      - STALWART_RECOVERY_ADMIN=admin:27102004
+      - STALWART_RECOVERY_ADMIN=admin:27012004
     volumes:
       - controlplane_stalwart_etc:/etc/stalwart
       - controlplane_stalwart_data:/var/lib/stalwart

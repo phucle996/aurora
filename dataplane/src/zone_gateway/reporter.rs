@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
+use super::reconciler;
+use super::zone_proto;
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
 use crate::observability::logger::Logger;
-use super::zone_proto;
-use super::reconciler;
 
 /// [COMMENT]: Khởi chạy task tổng hợp tài nguyên của cả cụm Dataplane và đẩy lên Platform Redis L1 (HA & Self-Healing Sync)
 pub fn start_zone_gateway(
@@ -96,12 +96,7 @@ pub fn start_zone_gateway(
                         .await
                         .unwrap_or_default();
 
-                    if let (
-                        Some(updated_at_str),
-                        Some(cpu_str),
-                        Some(ram_str),
-                        Some(workers_str),
-                    ) = (
+                    if let (Some(updated_at_str), Some(cpu_str), Some(ram_str), Some(workers_str)) = (
                         data.get("updated_at"),
                         data.get("cpu"),
                         data.get("ram"),
@@ -134,12 +129,11 @@ pub fn start_zone_gateway(
                 };
 
                 // [COMMENT]: 2. Đọc trạng thái mail workload từ Redis L2 (infra:mail)
-                let mail_data: std::collections::HashMap<String, String> =
-                    redis::cmd("HGETALL")
-                        .arg("infra:mail")
-                        .query_async(&mut conn_l2)
-                        .await
-                        .unwrap_or_default();
+                let mail_data: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+                    .arg("infra:mail")
+                    .query_async(&mut conn_l2)
+                    .await
+                    .unwrap_or_default();
 
                 let mail_status = mail_data
                     .get("status")
@@ -151,12 +145,11 @@ pub fn start_zone_gateway(
                     .unwrap_or(0);
 
                 // [COMMENT]: 2b. Đọc trạng thái storage workload từ Redis L2 (infra:storage)
-                let storage_data: std::collections::HashMap<String, String> =
-                    redis::cmd("HGETALL")
-                        .arg("infra:storage")
-                        .query_async(&mut conn_l2)
-                        .await
-                        .unwrap_or_default();
+                let storage_data: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+                    .arg("infra:storage")
+                    .query_async(&mut conn_l2)
+                    .await
+                    .unwrap_or_default();
 
                 let storage_status = storage_data
                     .get("status")
@@ -255,7 +248,7 @@ pub fn start_zone_gateway(
                         .arg("zone_id")
                         .arg(&config.zone_id)
                         .arg("payload")
-                        .arg(&payload_bytes[..])  // binary payload
+                        .arg(&payload_bytes[..]) // binary payload
                         .query_async::<_, ()>(&mut conn_l1),
                 )
                 .await;

@@ -69,7 +69,11 @@ impl JobRunner {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // [COMMENT]: Job task không thuộc worker receive-loop; guard riêng giữ nó trong graceful-shutdown barrier.
+        let task_guard = worker_pool.track_task();
+
         let handle = tokio::spawn(async move {
+            let _task_guard = task_guard;
             // Chờ tín hiệu đăng ký hoàn tất vào Watchdog Registry để tránh race condition deregister trước register
             let _ = rx.await;
 

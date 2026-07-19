@@ -1,7 +1,7 @@
 /// ============================================================================
 /// 📂 MODULE: infra/redis/mod.rs - Khởi Tạo & Quản Lý Kết Nối Redis Tập Trung
 /// ============================================================================
-/// 
+///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Độc lập quản trị và thiết lập kết nối (Client) tập trung đến cụm Redis Server.
 ///   - Khai báo phân hệ con `query` chứa toàn bộ các thao tác nghiệp vụ và giám sát động.

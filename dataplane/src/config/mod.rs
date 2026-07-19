@@ -22,7 +22,8 @@ impl FromStr for RedisTlsMode {
     }
 }
 
-#[derive(Clone, Debug)]
+// [COMMENT]: Config chứa JMAP credential; không derive Debug để tránh vô tình ghi secret vào log/panic.
+#[derive(Clone)]
 pub struct Config {
     /// Định danh phân vùng địa lý (Zone ID) mà Dataplane này được cấp phát để phục vụ.
     /// Ví dụ: "zone-asia-southeast". Dataplane chỉ consume stream tương ứng `jobs:<zone_id>`.
@@ -61,10 +62,27 @@ pub struct Config {
     // Được nạp tĩnh qua biến môi trường để tối ưu hóa hiệu năng, loại bỏ overengineering của PolicyEngine.
     pub max_workers: usize,
 
-    /// Địa chỉ Stalwart host LMTP để gửi mail nội bộ
-    pub stalwart_lmtp_host: String,
-    /// Cổng kết nối Stalwart LMTP (thường là 24)
-    pub stalwart_lmtp_port: u16,
+    /// [COMMENT]: Direct JMAP endpoint và service-account binding dùng cho shared bulk-mail client.
+    pub stalwart_jmap_url: String,
+    pub stalwart_jmap_account_id: String,
+    pub stalwart_jmap_identity_id: String,
+    pub stalwart_jmap_mailbox_id: String,
+    pub stalwart_jmap_bearer_token: String,
+    pub stalwart_jmap_username: String,
+    pub stalwart_jmap_password: String,
+    /// [COMMENT]: Sender tĩnh phase Dataplane; Controlplane sender projection sẽ thay registry này ở phase sau.
+    pub mail_sender_profile_id: String,
+    pub mail_sender_version: u32,
+    pub mail_sender_address: String,
+    pub mail_batch_max_items: usize,
+    pub mail_batch_max_wait_ms: u64,
+    pub mail_batch_max_bytes: usize,
+    pub mail_batch_queue_capacity: usize,
+    pub mail_batch_enqueue_timeout_ms: u64,
+    pub mail_jmap_max_inflight_per_pod: usize,
+    pub mail_jmap_request_timeout_ms: u64,
+    pub mail_jmap_max_retries: usize,
+    pub mail_max_message_bytes: usize,
 
     /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
     pub minio_host: Option<String>,
@@ -94,7 +112,9 @@ static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
 impl Config {
     /// Lấy tham chiếu đến cấu hình toàn cục đã được nạp
     pub fn get_global() -> &'static Config {
-        GLOBAL_CONFIG.get().expect("Config has not been initialized yet")
+        GLOBAL_CONFIG
+            .get()
+            .expect("Config has not been initialized yet")
     }
 
     /// Đăng ký cấu hình toàn cục khi khởi chạy hệ thống
@@ -169,13 +189,42 @@ impl Config {
                 .parse::<usize>()
                 .unwrap_or(100),
 
-            // Nạp thông tin cấu hình gửi nhận email Stalwart LMTP
-            stalwart_lmtp_host: env::var("STALWART_LMTP_HOST")
-                .unwrap_or_else(|_| "stalwart-mail".to_string()),
-            stalwart_lmtp_port: env::var("STALWART_LMTP_PORT")
-                .ok()
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(24),
+            // [COMMENT]: JMAP batch transport; secrets có thể được inject từ Kubernetes Secret/Vault Agent.
+            stalwart_jmap_url: env::var("STALWART_JMAP_URL")
+                .unwrap_or_else(|_| "http://stalwart-mail:8080/jmap".to_string()),
+            // [COMMENT]: Đây là opaque IDs do Stalwart cấp, không đoán từ username/mailbox name.
+            stalwart_jmap_account_id: env::var("STALWART_JMAP_ACCOUNT_ID").unwrap_or_default(),
+            stalwart_jmap_identity_id: env::var("STALWART_JMAP_IDENTITY_ID").unwrap_or_default(),
+            stalwart_jmap_mailbox_id: env::var("STALWART_JMAP_MAILBOX_ID").unwrap_or_default(),
+            stalwart_jmap_bearer_token: env::var("STALWART_JMAP_BEARER_TOKEN")
+                .unwrap_or_default(),
+            stalwart_jmap_username: env::var("STALWART_JMAP_USERNAME")
+                .unwrap_or_default(),
+            stalwart_jmap_password: env::var("STALWART_JMAP_PASSWORD")
+                .unwrap_or_default(),
+            mail_sender_profile_id: env::var("MAIL_SENDER_PROFILE_ID")
+                .unwrap_or_else(|_| "platform-default".to_string()),
+            mail_sender_version: parse_env("MAIL_SENDER_VERSION", 1_u32),
+            mail_sender_address: env::var("MAIL_SENDER_ADDRESS")
+                .unwrap_or_else(|_| "noreply@aurora.system".to_string()),
+            mail_batch_max_items: parse_env("MAIL_BATCH_MAX_ITEMS", 50_usize),
+            mail_batch_max_wait_ms: parse_env("MAIL_BATCH_MAX_WAIT_MS", 1000_u64),
+            mail_batch_max_bytes: parse_env("MAIL_BATCH_MAX_BYTES", 4_194_304_usize),
+            mail_batch_queue_capacity: parse_env("MAIL_BATCH_QUEUE_CAPACITY", 5_000_usize),
+            mail_batch_enqueue_timeout_ms: parse_env(
+                "MAIL_BATCH_ENQUEUE_TIMEOUT_MS",
+                1_000_u64,
+            ),
+            mail_jmap_max_inflight_per_pod: parse_env(
+                "MAIL_JMAP_MAX_INFLIGHT_PER_POD",
+                4_usize,
+            ),
+            mail_jmap_request_timeout_ms: parse_env(
+                "MAIL_JMAP_REQUEST_TIMEOUT_MS",
+                10_000_u64,
+            ),
+            mail_jmap_max_retries: parse_env("MAIL_JMAP_MAX_RETRIES", 2_usize),
+            mail_max_message_bytes: parse_env("MAIL_MAX_MESSAGE_BYTES", 1_048_576_usize),
 
             // [COMMENT]: Nạp cấu hình MinIO (không có fallback mặc định để hỗ trợ báo trạng thái unknown khi thiếu config)
             minio_host: env::var("MINIO_HOST").ok(),
@@ -196,6 +245,16 @@ impl Config {
                 .unwrap_or(false),
         }
     }
+}
+
+fn parse_env<T>(name: &str, default: T) -> T
+where
+    T: FromStr,
+{
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<T>().ok())
+        .unwrap_or(default)
 }
 
 /// Trích xuất Hostname tự động tại Bootstrap, fallback sang UUID v4 ngẫu nhiên

@@ -58,9 +58,10 @@ impl AppContainer {
         crate::workerpool::metrics::WorkerMetricsManager::init_registry();
 
         // Khởi động Mail Workload Watchdog giám sát Stalwart L2 (HA & Decoupled)
-        crate::executor::mail::core::monitor::MailWorkloadMonitor::start(
+        crate::executor::mail::monitor::MailWorkloadMonitor::start(
             self.config.clone(),
             self.redis_internal_zone.clone(),
+            self.worker_pool.mail_runtime.clone(),
         );
 
         // [COMMENT]: Khởi động Storage Workload Watchdog giám sát MinIO L2 (HA & Decoupled)

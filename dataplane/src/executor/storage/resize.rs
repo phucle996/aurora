@@ -29,7 +29,8 @@ impl Executor for BucketResizeExecutor {
         // [COMMENT]: Validate dữ liệu bắt buộc
         if sync_data.name.is_empty() || sync_data.requested_quota_bytes <= 0 {
             return Err(ExecutorError::ExecutionFailed(
-                "BucketResizeSync payload missing required fields (name / requested_quota_bytes)".to_string(),
+                "BucketResizeSync payload missing required fields (name / requested_quota_bytes)"
+                    .to_string(),
             ));
         }
 
@@ -37,7 +38,10 @@ impl Executor for BucketResizeExecutor {
             op,
             &format!(
                 "Resize bucket '{}' (ID: {}): {} -> {} bytes",
-                sync_data.name, sync_data.bucket_id, sync_data.current_quota_bytes, sync_data.requested_quota_bytes
+                sync_data.name,
+                sync_data.bucket_id,
+                sync_data.current_quota_bytes,
+                sync_data.requested_quota_bytes
             ),
         );
 
@@ -56,7 +60,10 @@ impl Executor for BucketResizeExecutor {
 
         Logger::sys_info(
             op,
-            &format!("BucketResizeExecutor OK: Bucket '{}' resized successfully.", sync_data.name),
+            &format!(
+                "BucketResizeExecutor OK: Bucket '{}' resized successfully.",
+                sync_data.name
+            ),
         );
 
         Ok(ExecutionResult {

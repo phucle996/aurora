@@ -101,8 +101,10 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // Đã loại bỏ hoàn toàn phần đọc file policy.yaml và khởi tạo PolicyEngine ở đây.
     // max_workers sẽ được quản lý tĩnh qua biến môi trường nạp từ Config.
 
-    // 8. Khởi tạo Worker Pool Lifecycle Manager kèm cấu hình Stalwart Host/Port từ env để dùng cho Connection Pool
-    let (worker_pool, worker_signal_rx) = WorkerLifecycleManager::new(cfg.stalwart_lmtp_host.clone(), cfg.stalwart_lmtp_port);
+    // [COMMENT]: JMAP client + batcher được tạo đúng một lần cho toàn pod; cấu hình/auth sai làm bootstrap fail-fast.
+    let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg)
+        .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
+    let (worker_pool, worker_signal_rx) = WorkerLifecycleManager::new(mail_runtime);
     let worker_pool = Arc::new(worker_pool);
 
     Ok(BootstrapResult {

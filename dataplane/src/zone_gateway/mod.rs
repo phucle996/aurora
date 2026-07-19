@@ -1,10 +1,10 @@
-pub mod reporter;
 pub mod listener;
 pub mod reconciler;
+pub mod reporter;
 
-use std::sync::Arc;
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
+use std::sync::Arc;
 
 /// [COMMENT]: Protobuf auto-generated struct import
 pub mod zone_proto {

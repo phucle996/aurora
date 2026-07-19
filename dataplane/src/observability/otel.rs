@@ -2,9 +2,9 @@ use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
+    metrics::{PeriodicReader, SdkMeterProvider},
     propagation::TraceContextPropagator,
     trace::{self, Sampler},
-    metrics::{PeriodicReader, SdkMeterProvider},
     Resource,
 };
 use tokio::task_local;
@@ -105,8 +105,7 @@ impl OtelTracer {
             .build_metrics_exporter(
                 Box::new(opentelemetry_sdk::metrics::reader::DefaultAggregationSelector::new()),
                 Box::new(opentelemetry_sdk::metrics::reader::DefaultTemporalitySelector::new()),
-            )
-        {
+            ) {
             Ok(exp) => exp,
             Err(e) => {
                 crate::observability::logger::Logger::sys_error(

@@ -103,7 +103,7 @@ Danh sách dịch vụ kích hoạt hoặc vô hiệu hóa theo cấu hình mong
 
 | Dịch vụ | Tên DB Enum | Ý nghĩa | Code / Reference thay đổi desired_state |
 |:---|:---|:---|:---|
-| **Mail** | `mail` | Dịch vụ Stalwart Mail Server (LMTP/SMTP) | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) / [`zone_repo.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L401) |
+| **Mail** | `mail` | Stalwart JMAP bulk-submission service | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) / [`zone_repo.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L401) |
 | **Hypervisor** | `hypervisor` | Quản lý hạ tầng ảo hóa Proxmox VE Cluster | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
 | **Kubernetes** | `kubernetes` | Cung cấp cụm K8s Cluster | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
 | **AI Workload** | `ai` | Xử lý workloads AI/GPU | [`zone_service.go#UpdateZoneService()`](../../controlplane/internal/hierarchy/service/zone_service.go#L196) |
@@ -119,10 +119,10 @@ Trạng thái đo đạc và phản ánh sức khỏe thực tế (actual_state)
 | Trạng thái | Ý nghĩa | Điều kiện chuyển dịch / Telemetry Source | Code / Reference cập nhật vào DB SoT |
 |:---|:---|:---|:---|
 | **`unknown`** | Chưa nhận được báo cáo tài nguyên | Giá trị mặc định khi khởi tạo hoặc chưa có report push về. | [`zone_repo.go#CreateZone()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219) |
-| **`healthy`** | Hoạt động bình thường, ổn định | TCP LMTP connect OK, queue size an toàn tại [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L115). | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
+| **`healthy`** | Hoạt động bình thường, ổn định | JMAP Core/echo thành công và local batch queue còn capacity tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs). | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
 | **`degraded`** | Gặp sự cố hiệu năng hoặc nghẽn | Queue SMTP quá tải hoặc lỗi đọc HTTP metrics Stalwart tại [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L138). | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
 | **`unhealthy`** | Lỗi logic / tài nguyên cạn kiệt | Lỗi vận hành hoặc quá tải nghiêm trọng kéo dài. | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
-| **`down`** | Offline hoàn toàn | TCP LMTP connect thất bại tại [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L153) hoặc kích hoạt bởi Dead Man's Switch. | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L393) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
+| **`down`** | Offline hoàn toàn | JMAP health/auth thất bại tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs) hoặc kích hoạt bởi Dead Man's Switch. | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L393) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
 
 ---
 
@@ -291,6 +291,7 @@ sequenceDiagram
     participant Consumer as 💻 consumer.rs (JobConsumer)
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
     participant L2 as ⚡ Redis L2
+    participant SW as 📧 Stalwart JMAP
 
     App->>App: read config.zone_id
     App->>Consumer: start_ingestion()
@@ -305,7 +306,7 @@ sequenceDiagram
     loop Every monitor cycle
         Monitor->>L2: HGETALL infra:zone:metadata
         L2-->>Monitor: metadata (status: "planned")
-        Monitor->>Monitor: TCP handshake check only (LMTP check)
+        Monitor->>SW: JMAP Core/echo health check
         Monitor->>L2: HSET infra:mail status "healthy/down" capacity 100/0
     end
 ```
@@ -313,7 +314,7 @@ sequenceDiagram
 1. **Khởi chạy container**: Tiến trình Dataplane bootstrap tại [`app.rs#AppContainer::start()`](../../dataplane/src/app.rs#L55).
 2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs#L56) kiểm tra trạng thái Zone từ Redis L2 (`infra:zone:metadata`). Vì trạng thái là `planned` (chưa active), consumer sẽ ngắt kéo Job mới từ Platform L1, sleep 1s loop và ghi nhận log tạm dừng.
 3. **Workload Health Check**:
-   * Monitor hoạt động của service tại [`monitor.rs#start()`](../../dataplane/src/executor/mail/core/monitor.rs#L119) nhận diện Zone ở trạng thái `planned` nên chỉ chạy kiểm tra TCP LMTP handshake cơ bản để báo cáo health, bỏ qua việc đọc SMTP queue nặng nề.
+   * Monitor tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs) dùng JMAP health cùng local pending/in-flight batch pressure để báo cáo capacity; không còn LMTP socket probe.
    * Node Resource Monitor báo cáo năng lực phần cứng Dataplane node lên Redis L2 tại key `dataplane:node:{node_id}`.
 
 ---
@@ -840,46 +841,38 @@ Cụm Dataplane định kỳ quét sức khỏe của phần cứng và các wor
 
 ### 11.1 Workload Monitor (Mail / Stalwart)
 
-Báo cáo trạng thái của Mail server. Triển khai tại [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L20).
+Báo cáo trạng thái Mail JMAP và local batch pressure. Triển khai tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs).
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant DP as 💻 DP (MailWorkloadMonitor)
     participant L2 as ⚡ Redis L2
-    participant SW as 📧 Stalwart Server (LMTP & HTTP)
+    participant SW as 📧 Stalwart JMAP HTTP
 
-    Note over DP: Định kỳ 5s / 2s
+    Note over DP: Định kỳ 5s
     DP->>L2: HGETALL infra:zone:metadata
     L2-->>DP: {status, service:mail}
 
     alt status == 'disabled' OR service:mail == 'disabled'
         DP->>L2: HSET infra:mail status='down', capacity=0
-    else status & service active
-        DP->>SW: TCP handshake check (lmtp_port)
-        alt TCP connection failed
+    else service enabled
+        DP->>SW: JMAP Core/echo
+        alt JMAP health/auth failed
             DP->>L2: HSET infra:mail status='down', capacity=0
-        else TCP connection successful
-            alt status == 'planned'
-                DP->>L2: HSET infra:mail status='healthy', capacity=100
-            else status != 'planned'
-                DP->>SW: HTTP GET /metrics
-                alt HTTP request failed
-                    DP->>L2: HSET infra:mail status='degraded', capacity=50
-                else HTTP request successful
-                    DP->>DP: Parse stalwart_smtp_queue_size
-                    alt queue capacity < 10% (degraded)
-                        DP->>L2: HSET infra:mail status='degraded', capacity=cap
-                    else queue capacity >= 10% (healthy)
-                        DP->>L2: HSET infra:mail status='healthy', capacity=cap
-                    end
-                end
+        else JMAP healthy
+            DP->>DP: Read pending_items / queue_capacity
+            DP->>DP: capacity=(1-queue_ratio)*100
+            alt capacity < 10
+                DP->>L2: HSET infra:mail status='degraded', capacity=cap
+            else capacity >= 10
+                DP->>L2: HSET infra:mail status='healthy', capacity=cap
             end
         end
     end
 ```
 
-* **Khi chưa setup Stalwart**: Kết nối TCP LMTP sẽ thất bại -> Ghi nhận trạng thái là `down`, `capacity = 0` vào Redis L2.
+* **Khi chưa setup Stalwart hoặc auth sai**: JMAP health thất bại → ghi `down`, `capacity = 0` vào Redis L2.
 
 ---
 

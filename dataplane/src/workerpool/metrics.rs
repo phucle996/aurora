@@ -1,6 +1,6 @@
-use std::sync::OnceLock;
-use opentelemetry::{global, KeyValue};
 use opentelemetry::metrics::{Counter, Gauge, Histogram};
+use opentelemetry::{global, KeyValue};
+use std::sync::OnceLock;
 
 /// ============================================================================
 /// 📂 MODULE: workerpool/metrics.rs - Quản Lý Chỉ Số Hiệu Năng Worker (OTel Push)
