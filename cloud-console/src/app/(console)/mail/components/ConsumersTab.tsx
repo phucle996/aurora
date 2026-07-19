@@ -15,10 +15,10 @@ import { type APIError } from "@/lib/api/fetcher";
 import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, listMailConsumers, type ConsumerWrite, type MailConsumer, updateMailConsumer } from "@/lib/api/mail";
 
 type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
-type ConsumerForm = ConsumerWrite & { variables: string };
+type ConsumerForm = ConsumerWrite & { code: string; variables: string };
 
 const emptyForm: ConsumerForm = {
-  name: "", source_type: "kafka", broker_resource_id: "", topic: "", consumer_group: "",
+  code: "", name: "", source_type: "kafka", broker_resource_id: "", topic: "", consumer_group: "",
   mapping: { recipient_json_path: "$.recipient", external_message_id_json_path: "", variable_json_paths: {} },
   variables: "{}", template_id: "", template_version: 1, sender_profile_id: "", sender_version: 1, parallelism: 1,
 };
@@ -36,7 +36,6 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<MailConsumer | null>(null);
   const [form, setForm] = useState<ConsumerForm>(emptyForm);
-  const [createKey, setCreateKey] = useState("");
 
   const consumers = useQuery({
     queryKey,
@@ -54,19 +53,20 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
       let variablePaths: Record<string, string>;
       try { variablePaths = JSON.parse(form.variables) as Record<string, string>; } catch { throw new Error("Variable mappings must be a JSON object."); }
       const input: ConsumerWrite = {
-        ...form,
+		source_type: form.source_type,
         name: form.name.trim(), broker_resource_id: form.broker_resource_id.trim(), topic: form.topic.trim(),
         consumer_group: form.consumer_group.trim(), template_id: form.template_id.trim(), sender_profile_id: form.sender_profile_id.trim(),
+		template_version: form.template_version, sender_version: form.sender_version, parallelism: form.parallelism,
         mapping: {
           recipient_json_path: form.mapping.recipient_json_path.trim(),
           external_message_id_json_path: form.mapping.external_message_id_json_path.trim(),
           variable_json_paths: variablePaths,
         },
       };
-      // [COMMENT]: Retry create giữ cùng browser-generated key; edit luôn mang CAS version vừa đọc.
+      // [COMMENT]: Code là Console identity bất biến; UUID vẫn là runtime identity do backend sinh.
       return editing
         ? updateMailConsumer(editing.id, { ...input, desired_state: editing.desired_state, expected_config_version: editing.config_version })
-        : createMailConsumer({ ...input, idempotency_key: createKey });
+        : createMailConsumer({ ...input, code: form.code });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey });
@@ -88,13 +88,12 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   });
 
   function openCreate() {
-    // [COMMENT]: Một lần mở form là một logical operation; mọi retry giữ nguyên idempotency key.
-    setCreateKey(crypto.randomUUID()); setEditing(null); setForm(emptyForm); setFormOpen(true);
+    setEditing(null); setForm(emptyForm); setFormOpen(true);
   }
   function openEdit(consumer: MailConsumer) {
     setEditing(consumer);
     setForm({
-      name: consumer.name, source_type: "kafka", broker_resource_id: consumer.broker_resource_id,
+      code: consumer.code, name: consumer.name, source_type: "kafka", broker_resource_id: consumer.broker_resource_id,
       topic: consumer.topic, consumer_group: consumer.consumer_group, mapping: consumer.mapping,
       variables: JSON.stringify(consumer.mapping.variable_json_paths ?? {}, null, 2), template_id: consumer.template_id,
       template_version: consumer.template_version, sender_profile_id: consumer.sender_profile_id,
@@ -104,7 +103,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   }
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!form.name.trim() || !form.broker_resource_id.trim() || !form.topic.trim() || !form.consumer_group.trim() ||
+    if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(form.code) || !form.name.trim() || !form.broker_resource_id.trim() || !form.topic.trim() || !form.consumer_group.trim() ||
       !form.mapping.recipient_json_path.trim().startsWith("$") || !form.template_id.trim() || !form.sender_profile_id.trim()) {
       toast.error("Complete all required fields and use a valid recipient JSONPath."); return;
     }
@@ -125,7 +124,8 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         <form onSubmit={submit} className="space-y-5 rounded-xl border bg-card p-5">
           <div className="flex items-center justify-between"><div><h2 className="font-semibold">{editing ? "Edit consumer" : "Create consumer"}</h2><p className="text-xs text-muted-foreground">New consumers start paused. Credentials remain in Vault.</p></div><Button type="button" variant="ghost" size="icon" onClick={() => setFormOpen(false)}><X /></Button></div>
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            <div><Label htmlFor="consumer-name">Name</Label><Input id="consumer-name" value={form.name} maxLength={255} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+            <div><Label htmlFor="consumer-name">Name</Label><Input id="consumer-name" value={form.name} maxLength={255} onChange={(e) => { const name = e.target.value; setForm({ ...form, name, code: editing ? form.code : name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63) }); }} required /></div>
+            <div><Label htmlFor="consumer-code">Code</Label><Input id="consumer-code" value={form.code} maxLength={63} disabled={Boolean(editing)} onChange={(e) => setForm({ ...form, code: e.target.value.toLowerCase() })} required /><p className="mt-1 text-xs text-muted-foreground">Immutable; reusable after deletion.</p></div>
             <div><Label htmlFor="broker-id">Broker resource ID</Label><Input id="broker-id" value={form.broker_resource_id} onChange={(e) => setForm({ ...form, broker_resource_id: e.target.value })} required /></div>
             <div><Label htmlFor="topic">Kafka topic</Label><Input id="topic" value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} required /></div>
             <div><Label htmlFor="group">Consumer group</Label><Input id="group" value={form.consumer_group} onChange={(e) => setForm({ ...form, consumer_group: e.target.value })} required /></div>

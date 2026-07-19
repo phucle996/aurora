@@ -38,8 +38,8 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 		return nil, fmt.Errorf("mail personal consumer service: marshal mapping: %w", err)
 	}
 
-	// [COMMENT]: Secret locator chỉ được derive từ trusted Zone/Workspace/Broker scope, không lấy từ HTTP body.
-	consumerID := uuid.NewSHA1(personalMailConsumerEventNamespace, []byte("create:"+command.WorkspaceID.String()+":"+command.IdempotencyKey))
+	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; code có thể được dùng lại sau soft-delete mà không va PK cũ.
+	consumerID := uuid.New()
 	now := time.Now().UTC()
 	actor := command.ActorUserID
 
@@ -48,6 +48,7 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 		ZoneID:           command.ZoneID,
 		ID:               consumerID,
 		WorkspaceID:      command.WorkspaceID,
+		Code:             command.Code,
 		Name:             command.Name,
 		SourceType:       command.SourceType,
 		BrokerResourceID: command.BrokerResourceID,
@@ -62,7 +63,6 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 		DesiredState:     mailEntity.ConsumerPaused,
 		Parallelism:      command.Parallelism,
 		ConfigVersion:    1,
-		IdempotencyKey:   command.IdempotencyKey,
 		CreatedBy:        &actor,
 		UpdatedBy:        &actor,
 		CreatedAt:        now,
@@ -99,19 +99,6 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 	configHash := sha256.Sum256(canonicalConfig)
 	consumer.ConfigSHA256 = append([]byte(nil), configHash[:]...)
 
-	requestCanonical, err := json.Marshal(struct {
-		Name   string `json:"name"`
-		Config []byte `json:"config"`
-	}{
-		Name:   consumer.Name,
-		Config: canonicalConfig,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("mail personal consumer service: marshal idempotency request: %w", err)
-	}
-
-	requestHash := sha256.Sum256(requestCanonical)
-	consumer.CreateRequestSHA256 = append([]byte(nil), requestHash[:]...)
 	upsert.ConfigSha256 = consumer.ConfigSHA256
 
 	eventID := uuid.NewSHA1(personalMailConsumerEventNamespace, []byte("consumer:"+consumer.ID.String()+":1:upsert:"+command.ZoneID.String()))
@@ -148,7 +135,7 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Repository commit consumer và chính outbox record này trong một data-modifying CTE.
+	// [COMMENT]: Repository commit consumer và outbox trong cùng một PostgreSQL transaction.
 	if err = s.repo.Create(ctx, consumer, outbox); err != nil {
 		return nil, err
 	}

@@ -11,5 +11,5 @@ type TenantTemplateService interface {
 	ListTemplates(context.Context, *mailEntity.TenantTemplate) ([]*mailEntity.TenantTemplate, error)
 	ListTemplateVersions(context.Context, *mailEntity.TenantTemplate) ([]*mailEntity.TenantTemplate, error)
 	PublishTemplateVersion(context.Context, *mailEntity.TenantTemplate) (*mailEntity.TenantTemplate, error)
-	ArchiveTemplate(context.Context, *mailEntity.TenantTemplate) error
+	DeleteTemplate(context.Context, *mailEntity.TenantTemplate) error
 }

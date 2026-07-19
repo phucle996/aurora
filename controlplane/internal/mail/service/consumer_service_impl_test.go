@@ -1,7 +1,6 @@
 package mailSvcImpl
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"testing"
@@ -39,7 +38,7 @@ func (r *personalConsumerRepoCapture) Delete(_ context.Context, _ *mailEntity.Pe
 
 func validPersonalConsumer() *mailEntity.PersonalConsumer {
 	// [COMMENT]: Fixture mô phỏng entity đã được HTTP handler normalize và validate.
-	return &mailEntity.PersonalConsumer{ActorUserID: uuid.New(), WorkspaceID: uuid.New(), ZoneID: uuid.New(), IdempotencyKey: "request-0001", Name: "orders", SourceType: mailEntity.Kafka, BrokerResourceID: uuid.New(), Topic: "orders.created", ConsumerGroup: "mail-orders", Mapping: mailEntity.MessageMapping{RecipientJSONPath: "$.recipient", VariableJSONPaths: map[string]string{"name": "$.data.name"}}, TemplateID: "template-1", TemplateVersion: 2, SenderProfileID: "sender-1", SenderVersion: 1, Parallelism: 3}
+	return &mailEntity.PersonalConsumer{ActorUserID: uuid.New(), WorkspaceID: uuid.New(), ZoneID: uuid.New(), Code: "orders", Name: "orders", SourceType: mailEntity.Kafka, BrokerResourceID: uuid.New(), Topic: "orders.created", ConsumerGroup: "mail-orders", Mapping: mailEntity.MessageMapping{RecipientJSONPath: "$.recipient", VariableJSONPaths: map[string]string{"name": "$.data.name"}}, TemplateID: "template-1", TemplateVersion: 2, SenderProfileID: "sender-1", SenderVersion: 1, Parallelism: 3}
 }
 
 func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
@@ -60,7 +59,7 @@ func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 	}
 }
 
-func TestPersonalCreateConvergesByBodyIdempotencyKey(t *testing.T) {
+func TestPersonalCreateUsesFreshRuntimeIdentity(t *testing.T) {
 	command := validPersonalConsumer()
 	firstRepo := &personalConsumerRepoCapture{}
 	first, err := NewPersonalConsumerService(firstRepo).CreateConsumer(context.Background(), command)
@@ -73,7 +72,7 @@ func TestPersonalCreateConvergesByBodyIdempotencyKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ID != second.ID || !bytes.Equal(first.CreateRequestSHA256, second.CreateRequestSHA256) {
-		t.Fatal("retry did not converge")
+	if first.ID == second.ID {
+		t.Fatal("recreated consumer reused a tombstoned runtime identity")
 	}
 }

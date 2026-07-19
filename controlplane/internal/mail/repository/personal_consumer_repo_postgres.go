@@ -1,7 +1,6 @@
 package mailRepoImpl
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,141 +22,125 @@ type personalConsumerRepoPostgres struct {
 	hierarchySchema string
 }
 
+// NewPersonalConsumerRepository khoi tao repository quan ly Personal Mail Consumer
 func NewPersonalConsumerRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterface.PersonalConsumerRepository {
-	return &personalConsumerRepoPostgres{db: db, mailSchema: cfg.SchemaSQL.Mail, hierarchySchema: cfg.SchemaSQL.Hierarchy}
+	return &personalConsumerRepoPostgres{
+		db:              db,
+		mailSchema:      cfg.SchemaSQL.Mail,
+		hierarchySchema: cfg.SchemaSQL.Hierarchy,
+	}
 }
 
 func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
-	// [COMMENT]: Aggregate insert và outbox insert là hai data-modifying CTE trong đúng một PostgreSQL statement.
-	// Nếu process chết ở bất kỳ điểm nào, PostgreSQL commit cả hai hoặc không commit gì.
-	var authorized, templateAvailable bool
-	var insertedID, existingID string
-	var existingRequestHash []byte
-	var outboxID sql.NullInt64
-	err := r.db.QueryRow(ctx, fmt.Sprintf(`
-		WITH authorized AS (
-			SELECT 1 FROM %s.personal_workspaces
-			WHERE id = $2 AND zone_id = $3 AND owner_id = $4
-		), template_available AS (
-			SELECT 1
-			FROM %s.personal_mail_templates AS t
-			JOIN %s.personal_mail_template_versions AS v ON v.template_id = t.id AND v.version = $11
-			WHERE t.id = $10 AND t.status = 'active'
-			  AND t.workspace_id = $2
-		), inserted AS (
-			INSERT INTO %s.mail_consumers (
-				id, workspace_id, name, source_type, broker_resource_id, source_config_ref,
-				topic, consumer_group, mapping_json, template_id, template_version,
-				sender_profile_id, sender_version, desired_state, parallelism,
-				config_version, config_sha256, create_idempotency_key, create_request_sha256,
-				created_by, updated_by, created_at, updated_at
-			)
-			SELECT $1,$2,$5,$6,$7,$8,$9,$12,$13,$10,$11,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
-			WHERE EXISTS (SELECT 1 FROM authorized) AND EXISTS (SELECT 1 FROM template_available)
-			ON CONFLICT (workspace_id, create_idempotency_key) DO NOTHING
-			RETURNING id
-		), existing AS (
-			SELECT id, create_request_sha256 FROM %s.mail_consumers
-			WHERE workspace_id = $2 AND create_idempotency_key = $20
-			  AND EXISTS(SELECT 1 FROM authorized)
-		), outbox_inserted AS (
-			INSERT INTO %s.mail_outbox_records (
-				event_id, routing_scope, job_topic, payload, actor_user_id, status,
-				job_version, resource_id, payload_schema_version, trace_id, idle
-			)
-			SELECT $26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36 FROM inserted
-			RETURNING id
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("mail personal consumer repo: begin create: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// [COMMENT]: KEY SHARE serialize create với hard-delete template; delete không thể vượt qua rồi để lại consumer trỏ vào ghost template.
+	var lockedTemplateID string
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT t.id FROM %s.personal_mail_templates t JOIN %s.personal_mail_template_versions v ON v.template_id=t.id AND v.version=$2 JOIN %s.personal_workspaces w ON w.id=t.workspace_id WHERE t.id=$1 AND t.workspace_id=$3 AND w.zone_id=$4 AND w.owner_id=$5 FOR KEY SHARE OF t`, r.mailSchema, r.mailSchema, r.hierarchySchema), consumer.TemplateID, consumer.TemplateVersion, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID).Scan(&lockedTemplateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailTaxonomy.ErrTemplateNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mail personal consumer repo: lock template: %w", err)
+	}
+
+	// [COMMENT]: Guarded INSERT vừa kiểm tra trusted workspace ownership vừa kiểm tra template version tồn tại.
+	tag, err := tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s.mail_consumers (
+			id, workspace_id, code, name, source_type, broker_resource_id, source_config_ref, topic,
+			consumer_group, mapping_json, template_id, template_version, sender_profile_id, sender_version,
+			desired_state, parallelism, config_version, config_sha256, created_by, updated_by, created_at, updated_at
 		)
-		SELECT
-			EXISTS (SELECT 1 FROM authorized),
-			EXISTS (SELECT 1 FROM template_available),
-			COALESCE((SELECT id::text FROM inserted), ''),
-			COALESCE((SELECT id::text FROM existing), ''),
-			COALESCE((SELECT create_request_sha256 FROM existing), ''::bytea),
-			(SELECT id FROM outbox_inserted)
-	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID,
-		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigRef,
-		consumer.Topic, consumer.TemplateID, consumer.TemplateVersion, consumer.ConsumerGroup,
-		consumer.MappingJSON, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState,
-		consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256,
-		consumer.IdempotencyKey, consumer.CreateRequestSHA256, consumer.CreatedBy,
-		consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt,
-		outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
-		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion,
-		outbox.TraceID, outbox.Idle,
-	).Scan(&authorized, &templateAvailable, &insertedID, &existingID, &existingRequestHash, &outboxID)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+		WHERE EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id=$2 AND zone_id=$23 AND owner_id=$19)
+		  AND EXISTS (SELECT 1 FROM %s.personal_mail_templates t JOIN %s.personal_mail_template_versions v ON v.template_id=t.id AND v.version=$12 WHERE t.id=$11 AND t.workspace_id=$2)
+	`, r.mailSchema, r.hierarchySchema, r.mailSchema, r.mailSchema),
+		consumer.ID, consumer.WorkspaceID, consumer.Code, consumer.Name, consumer.SourceType, consumer.BrokerResourceID,
+		consumer.SourceConfigRef, consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
+		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState, consumer.Parallelism,
+		consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedBy, consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return mailTaxonomy.ErrAlreadyExists
 		}
-		return fmt.Errorf("mail personal consumer repo: atomic create: %w", err)
+		return fmt.Errorf("mail personal consumer repo: insert consumer: %w", err)
 	}
-	if !authorized {
-		return mailTaxonomy.ErrWorkspaceNotFound
-	}
-	if !templateAvailable {
+	if tag.RowsAffected() == 0 {
+		var authorized bool
+		if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id=$1 AND zone_id=$2 AND owner_id=$3)`, r.hierarchySchema), consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID).Scan(&authorized); err != nil {
+			return fmt.Errorf("mail personal consumer repo: classify create: %w", err)
+		}
+		if !authorized {
+			return mailTaxonomy.ErrWorkspaceNotFound
+		}
 		return mailTaxonomy.ErrTemplateNotFound
 	}
-	if insertedID == "" {
-		if existingID == "" {
-			// [COMMENT]: ON CONFLICT có thể thấy concurrent committed row nhưng statement snapshot cũ chưa thấy nó.
-			// Read-only lookup mới sau khi conflict wait kết thúc phân loại retry mà không phát outbox lần hai.
-			err = r.db.QueryRow(ctx, fmt.Sprintf(`
-				SELECT c.id::text,c.create_request_sha256
-				FROM %s.mail_consumers AS c
-				JOIN %s.personal_workspaces AS w ON w.id=c.workspace_id
-				WHERE c.workspace_id=$1 AND c.create_idempotency_key=$2
-				  AND w.zone_id=$3 AND w.owner_id=$4
-			`, r.mailSchema, r.hierarchySchema), consumer.WorkspaceID, consumer.IdempotencyKey, consumer.ZoneID, consumer.ActorUserID).Scan(&existingID, &existingRequestHash)
-			if err != nil {
-				return fmt.Errorf("mail personal consumer repo: resolve concurrent idempotency row: %w", err)
-			}
-		}
-		if existingID == "" || !bytes.Equal(existingRequestHash, consumer.CreateRequestSHA256) {
-			return mailTaxonomy.ErrIdempotencyConflict
-		}
-		// [COMMENT]: Cùng key + cùng canonical request là retry thành công; outbox của lần commit đầu đã bền vững.
-		consumer.ID = uuid.MustParse(existingID)
-		return nil
+
+	// [COMMENT]: Outbox được insert trên cùng connection/transaction; commit là ranh giới bền vững duy nhất.
+	err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,routing_scope,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID)
+	if err != nil {
+		return fmt.Errorf("mail personal consumer repo: insert outbox: %w", err)
 	}
-	if !outboxID.Valid {
-		return fmt.Errorf("mail personal consumer repo: create outbox CTE returned no row: %w", mailTaxonomy.ErrInternal)
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("mail personal consumer repo: commit create: %w", err)
 	}
-	outbox.ID = outboxID.Int64
 	return nil
 }
 
 func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
 	consumer := &mailEntity.PersonalConsumer{}
+
 	// [COMMENT]: Inline scan kết quả QueryRow trực tiếp vào các trường dữ liệu của struct Consumer
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT c.id,c.workspace_id,c.name,c.source_type,c.broker_resource_id,c.source_config_ref,
-		       c.topic,c.consumer_group,c.mapping_json,c.template_id,c.template_version,
-		       c.sender_profile_id,c.sender_version,c.desired_state,c.parallelism,c.config_version,
-		       c.config_sha256,c.create_idempotency_key,c.create_request_sha256,c.deleted_at,
-		       c.created_by,c.updated_by,c.created_at,c.updated_at
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_ref,
+		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
+		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
+		       c.config_sha256, c.deleted_at,
+		       c.created_by, c.updated_by, c.created_at, c.updated_at
 		FROM %s.mail_consumers AS c
 		JOIN %s.personal_workspaces AS w ON w.id = c.workspace_id
 		WHERE c.id = $1 AND c.workspace_id = $2 AND c.deleted_at IS NULL
 		  AND w.zone_id = $3 AND w.owner_id = $4
-	`, r.mailSchema, r.hierarchySchema), query.ID, query.WorkspaceID, query.ZoneID, query.ActorUserID).Scan(
-		&consumer.ID, &consumer.WorkspaceID, &consumer.Name, &consumer.SourceType,
-		&consumer.BrokerResourceID, &consumer.SourceConfigRef, &consumer.Topic,
-		&consumer.ConsumerGroup, &consumer.MappingJSON, &consumer.TemplateID,
-		&consumer.TemplateVersion, &consumer.SenderProfileID, &consumer.SenderVersion,
-		&consumer.DesiredState, &consumer.Parallelism, &consumer.ConfigVersion,
-		&consumer.ConfigSHA256, &consumer.IdempotencyKey, &consumer.CreateRequestSHA256,
-		&consumer.DeletedAt, &consumer.CreatedBy, &consumer.UpdatedBy,
-		&consumer.CreatedAt, &consumer.UpdatedAt,
+	`, r.mailSchema, r.hierarchySchema),
+		query.ID, query.WorkspaceID, query.ZoneID, query.ActorUserID,
+	).Scan(
+		&consumer.ID,
+		&consumer.WorkspaceID,
+		&consumer.Code,
+		&consumer.Name,
+		&consumer.SourceType,
+		&consumer.BrokerResourceID,
+		&consumer.SourceConfigRef,
+		&consumer.Topic,
+		&consumer.ConsumerGroup,
+		&consumer.MappingJSON,
+		&consumer.TemplateID,
+		&consumer.TemplateVersion,
+		&consumer.SenderProfileID,
+		&consumer.SenderVersion,
+		&consumer.DesiredState,
+		&consumer.Parallelism,
+		&consumer.ConfigVersion,
+		&consumer.ConfigSHA256,
+		&consumer.DeletedAt,
+		&consumer.CreatedBy,
+		&consumer.UpdatedBy,
+		&consumer.CreatedAt,
+		&consumer.UpdatedAt,
 	)
+
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, mailTaxonomy.ErrConsumerNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("mail personal consumer repo: get: %w", err)
 	}
+
 	return consumer, nil
 }
 
@@ -170,42 +152,63 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 	if query.DesiredState != "" {
 		stateFilter = string(query.DesiredState)
 	}
+
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
-		SELECT c.id,c.workspace_id,c.name,c.source_type,c.broker_resource_id,c.source_config_ref,
-		       c.topic,c.consumer_group,c.mapping_json,c.template_id,c.template_version,
-		       c.sender_profile_id,c.sender_version,c.desired_state,c.parallelism,c.config_version,
-		       c.config_sha256,c.create_idempotency_key,c.create_request_sha256,c.deleted_at,
-		       c.created_by,c.updated_by,c.created_at,c.updated_at
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_ref,
+		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
+		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
+		       c.config_sha256, c.deleted_at,
+		       c.created_by, c.updated_by, c.created_at, c.updated_at
 		FROM %s.mail_consumers AS c
 		JOIN %s.personal_workspaces AS w ON w.id = c.workspace_id
-		WHERE c.workspace_id = $1 AND c.deleted_at IS NULL AND w.zone_id = $2 AND w.owner_id = $3
+		WHERE c.workspace_id = $1 AND c.deleted_at IS NULL
+		  AND w.zone_id = $2 AND w.owner_id = $3
 		  AND ($4::text IS NULL OR c.source_type::text = $4::text)
 		  AND ($5::text IS NULL OR c.desired_state::text = $5::text)
 		  AND ($6::uuid IS NULL OR c.id > $6::uuid)
 		ORDER BY c.id ASC LIMIT $7
-	`, r.mailSchema, r.hierarchySchema), query.WorkspaceID, query.ZoneID, query.ActorUserID, sourceFilter, stateFilter, query.AfterID, query.Limit)
+	`, r.mailSchema, r.hierarchySchema),
+		query.WorkspaceID, query.ZoneID, query.ActorUserID, sourceFilter, stateFilter, query.AfterID, query.Limit,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("mail personal consumer repo: list: %w", err)
 	}
 	defer rows.Close()
+
 	consumers := make([]*mailEntity.PersonalConsumer, 0, query.Limit)
 	for rows.Next() {
 		consumer := &mailEntity.PersonalConsumer{}
 		// [COMMENT]: Inline scan từng cột dữ liệu trong kết quả rows.Next() vào struct Consumer
 		if err = rows.Scan(
-			&consumer.ID, &consumer.WorkspaceID, &consumer.Name, &consumer.SourceType,
-			&consumer.BrokerResourceID, &consumer.SourceConfigRef, &consumer.Topic,
-			&consumer.ConsumerGroup, &consumer.MappingJSON, &consumer.TemplateID,
-			&consumer.TemplateVersion, &consumer.SenderProfileID, &consumer.SenderVersion,
-			&consumer.DesiredState, &consumer.Parallelism, &consumer.ConfigVersion,
-			&consumer.ConfigSHA256, &consumer.IdempotencyKey, &consumer.CreateRequestSHA256,
-			&consumer.DeletedAt, &consumer.CreatedBy, &consumer.UpdatedBy,
-			&consumer.CreatedAt, &consumer.UpdatedAt,
+			&consumer.ID,
+			&consumer.WorkspaceID,
+			&consumer.Code,
+			&consumer.Name,
+			&consumer.SourceType,
+			&consumer.BrokerResourceID,
+			&consumer.SourceConfigRef,
+			&consumer.Topic,
+			&consumer.ConsumerGroup,
+			&consumer.MappingJSON,
+			&consumer.TemplateID,
+			&consumer.TemplateVersion,
+			&consumer.SenderProfileID,
+			&consumer.SenderVersion,
+			&consumer.DesiredState,
+			&consumer.Parallelism,
+			&consumer.ConfigVersion,
+			&consumer.ConfigSHA256,
+			&consumer.DeletedAt,
+			&consumer.CreatedBy,
+			&consumer.UpdatedBy,
+			&consumer.CreatedAt,
+			&consumer.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("mail personal consumer repo: scan list: %w", err)
 		}
 		consumers = append(consumers, consumer)
 	}
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("mail personal consumer repo: iterate list: %w", err)
 	}
@@ -216,36 +219,63 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 	var authorized, templateAvailable, updated bool
 	var currentVersion uint64
 	var outboxID sql.NullInt64
+
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		WITH authorized AS (
-			SELECT 1 FROM %s.personal_workspaces WHERE id = $19 AND zone_id = $20 AND owner_id = $16
+			SELECT 1
+			FROM %s.personal_workspaces
+			WHERE id = $19 AND zone_id = $20 AND owner_id = $16
 		), template_available AS (
-			SELECT 1 FROM %s.personal_mail_templates AS t
-			JOIN %s.personal_mail_template_versions AS v ON v.template_id = t.id AND v.version = $9
-			WHERE t.id = $8 AND t.status = 'active'
+			SELECT 1
+			FROM %s.personal_mail_templates AS t
+			JOIN %s.personal_mail_template_versions AS v
+			  ON v.template_id = t.id AND v.version = $9
+			WHERE t.id = $8
 			  AND t.workspace_id = $19
+			FOR KEY SHARE OF t
 		), target AS (
-			SELECT config_version FROM %s.mail_consumers WHERE id = $18 AND workspace_id = $19 AND deleted_at IS NULL
-			  AND EXISTS(SELECT 1 FROM authorized)
+			SELECT config_version
+			FROM %s.mail_consumers
+			WHERE id = $18 AND workspace_id = $19 AND deleted_at IS NULL
+			  AND EXISTS (SELECT 1 FROM authorized)
 		), updated AS (
 			UPDATE %s.mail_consumers
-			SET name=$1,source_type=$2,broker_resource_id=$3,source_config_ref=$4,topic=$5,
-			    consumer_group=$6,mapping_json=$7,template_id=$8,template_version=$9,
-			    sender_profile_id=$10,sender_version=$11,desired_state=$12,parallelism=$13,
-			    config_version=$14,config_sha256=$15,updated_by=$16,updated_at=$17
-			WHERE id=$18 AND workspace_id=$19 AND config_version=$21 AND deleted_at IS NULL
-			  AND EXISTS (SELECT 1 FROM authorized) AND EXISTS (SELECT 1 FROM template_available)
+			SET name = $1,
+			    source_type = $2,
+			    broker_resource_id = $3,
+			    source_config_ref = $4,
+			    topic = $5,
+			    consumer_group = $6,
+			    mapping_json = $7,
+			    template_id = $8,
+			    template_version = $9,
+			    sender_profile_id = $10,
+			    sender_version = $11,
+			    desired_state = $12,
+			    parallelism = $13,
+			    config_version = $14,
+			    config_sha256 = $15,
+			    updated_by = $16,
+			    updated_at = $17
+			WHERE id = $18 AND workspace_id = $19 AND config_version = $21 AND deleted_at IS NULL
+			  AND EXISTS (SELECT 1 FROM authorized)
+			  AND EXISTS (SELECT 1 FROM template_available)
 			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
-				event_id,routing_scope,job_topic,payload,actor_user_id,status,
-				job_version,resource_id,payload_schema_version,trace_id,idle
+				event_id, routing_scope, job_topic, payload, actor_user_id, status,
+				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			SELECT $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32 FROM updated RETURNING id
+			SELECT $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+			FROM updated
+			RETURNING id
 		)
-		SELECT EXISTS(SELECT 1 FROM authorized),EXISTS(SELECT 1 FROM template_available),
-		       COALESCE((SELECT config_version FROM target),0),EXISTS(SELECT 1 FROM updated),
-		       (SELECT id FROM outbox_inserted)
+		SELECT
+			EXISTS (SELECT 1 FROM authorized),
+			EXISTS (SELECT 1 FROM template_available),
+			COALESCE((SELECT config_version FROM target), 0),
+			EXISTS (SELECT 1 FROM updated),
+			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
 		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigRef,
 		consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
@@ -254,7 +284,14 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 		consumer.ActorUserID, consumer.UpdatedAt, consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ExpectedConfigVersion,
 		outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
-	).Scan(&authorized, &templateAvailable, &currentVersion, &updated, &outboxID)
+	).Scan(
+		&authorized,
+		&templateAvailable,
+		&currentVersion,
+		&updated,
+		&outboxID,
+	)
+
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -262,6 +299,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 		}
 		return fmt.Errorf("mail personal consumer repo: atomic update: %w", err)
 	}
+
 	if !authorized || currentVersion == 0 {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
@@ -274,6 +312,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 	if !outboxID.Valid {
 		return fmt.Errorf("mail personal consumer repo: update outbox CTE returned no row: %w", mailTaxonomy.ErrInternal)
 	}
+
 	outbox.ID = outboxID.Int64
 	return nil
 }
@@ -282,34 +321,55 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 	var authorized, updated bool
 	var currentVersion uint64
 	var outboxID sql.NullInt64
+
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		WITH authorized AS (
-			SELECT 1 FROM %s.personal_workspaces WHERE id=$1 AND zone_id=$2 AND owner_id=$3
+			SELECT 1
+			FROM %s.personal_workspaces
+			WHERE id = $1 AND zone_id = $2 AND owner_id = $3
 		), target AS (
-			SELECT config_version FROM %s.mail_consumers WHERE id=$4 AND workspace_id=$1 AND deleted_at IS NULL
-			  AND EXISTS(SELECT 1 FROM authorized)
+			SELECT config_version
+			FROM %s.mail_consumers
+			WHERE id = $4 AND workspace_id = $1 AND deleted_at IS NULL
+			  AND EXISTS (SELECT 1 FROM authorized)
 		), updated AS (
 			UPDATE %s.mail_consumers
-			SET desired_state='deleting',config_version=config_version+1,updated_by=$3,updated_at=$6
-			WHERE id=$4 AND workspace_id=$1 AND config_version=$5 AND deleted_at IS NULL
-			  AND EXISTS (SELECT 1 FROM authorized) RETURNING id
+			SET desired_state = 'deleting',
+			    config_version = config_version + 1,
+			    updated_by = $3,
+			    updated_at = $6
+			WHERE id = $4 AND workspace_id = $1 AND config_version = $5 AND deleted_at IS NULL
+			  AND EXISTS (SELECT 1 FROM authorized)
+			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
-				event_id,routing_scope,job_topic,payload,actor_user_id,status,
-				job_version,resource_id,payload_schema_version,trace_id,idle
+				event_id, routing_scope, job_topic, payload, actor_user_id, status,
+				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			SELECT $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17 FROM updated RETURNING id
+			SELECT $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			FROM updated
+			RETURNING id
 		)
-		SELECT EXISTS(SELECT 1 FROM authorized),COALESCE((SELECT config_version FROM target),0),
-		       EXISTS(SELECT 1 FROM updated),(SELECT id FROM outbox_inserted)
+		SELECT
+			EXISTS (SELECT 1 FROM authorized),
+			COALESCE((SELECT config_version FROM target), 0),
+			EXISTS (SELECT 1 FROM updated),
+			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema),
 		consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.ID, consumer.ExpectedConfigVersion, consumer.UpdatedAt,
 		outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
-	).Scan(&authorized, &currentVersion, &updated, &outboxID)
+	).Scan(
+		&authorized,
+		&currentVersion,
+		&updated,
+		&outboxID,
+	)
+
 	if err != nil {
 		return fmt.Errorf("mail personal consumer repo: atomic delete: %w", err)
 	}
+
 	if !authorized || currentVersion == 0 {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
@@ -319,6 +379,7 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 	if !outboxID.Valid {
 		return fmt.Errorf("mail personal consumer repo: delete outbox CTE returned no row: %w", mailTaxonomy.ErrInternal)
 	}
+
 	outbox.ID = outboxID.Int64
 	return nil
 }

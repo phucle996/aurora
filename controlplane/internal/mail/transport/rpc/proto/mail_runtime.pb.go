@@ -764,7 +764,7 @@ type MailTemplateVersionPublishedV1 struct {
 	Metadata *MailEventMetadataV1   `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	// [COMMENT]: Globally unique identity; scope/workspace đã được CP xử lý trước projection.
 	TemplateId string `protobuf:"bytes,2,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
-	// [COMMENT]: Monotonic lifecycle revision dùng chống event publish/archive đến sai thứ tự.
+	// [COMMENT]: Monotonic revision dùng chống event publish/delete đến sai thứ tự.
 	TemplateRevision uint64 `protobuf:"varint,3,opt,name=template_revision,json=templateRevision,proto3" json:"template_revision,omitempty"`
 	// [COMMENT]: Immutable content version được consumer pin; luôn lớn hơn 0.
 	TemplateVersion uint64 `protobuf:"varint,4,opt,name=template_version,json=templateVersion,proto3" json:"template_version,omitempty"`
@@ -855,32 +855,32 @@ func (x *MailTemplateVersionPublishedV1) GetContentSha256() []byte {
 	return nil
 }
 
-type MailTemplateArchivedV1 struct {
+type MailTemplateDeletedV1 struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Metadata   *MailEventMetadataV1   `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	TemplateId string                 `protobuf:"bytes,2,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`
 	// [COMMENT]: Revision tombstone lớn hơn mọi lifecycle revision trước đó.
 	TemplateRevision uint64 `protobuf:"varint,3,opt,name=template_revision,json=templateRevision,proto3" json:"template_revision,omitempty"`
-	// [COMMENT]: Version snapshots vẫn được giữ để drain consumer đã pin; archive không hard delete content.
+	// [COMMENT]: Runtime xóa cache sau hard-delete đã được Controlplane kiểm tra không còn consumer active tham chiếu.
 	LastPublishedVersion uint64 `protobuf:"varint,4,opt,name=last_published_version,json=lastPublishedVersion,proto3" json:"last_published_version,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
-func (x *MailTemplateArchivedV1) Reset() {
-	*x = MailTemplateArchivedV1{}
+func (x *MailTemplateDeletedV1) Reset() {
+	*x = MailTemplateDeletedV1{}
 	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *MailTemplateArchivedV1) String() string {
+func (x *MailTemplateDeletedV1) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*MailTemplateArchivedV1) ProtoMessage() {}
+func (*MailTemplateDeletedV1) ProtoMessage() {}
 
-func (x *MailTemplateArchivedV1) ProtoReflect() protoreflect.Message {
+func (x *MailTemplateDeletedV1) ProtoReflect() protoreflect.Message {
 	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -892,33 +892,33 @@ func (x *MailTemplateArchivedV1) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use MailTemplateArchivedV1.ProtoReflect.Descriptor instead.
-func (*MailTemplateArchivedV1) Descriptor() ([]byte, []int) {
+// Deprecated: Use MailTemplateDeletedV1.ProtoReflect.Descriptor instead.
+func (*MailTemplateDeletedV1) Descriptor() ([]byte, []int) {
 	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *MailTemplateArchivedV1) GetMetadata() *MailEventMetadataV1 {
+func (x *MailTemplateDeletedV1) GetMetadata() *MailEventMetadataV1 {
 	if x != nil {
 		return x.Metadata
 	}
 	return nil
 }
 
-func (x *MailTemplateArchivedV1) GetTemplateId() string {
+func (x *MailTemplateDeletedV1) GetTemplateId() string {
 	if x != nil {
 		return x.TemplateId
 	}
 	return ""
 }
 
-func (x *MailTemplateArchivedV1) GetTemplateRevision() uint64 {
+func (x *MailTemplateDeletedV1) GetTemplateRevision() uint64 {
 	if x != nil {
 		return x.TemplateRevision
 	}
 	return 0
 }
 
-func (x *MailTemplateArchivedV1) GetLastPublishedVersion() uint64 {
+func (x *MailTemplateDeletedV1) GetLastPublishedVersion() uint64 {
 	if x != nil {
 		return x.LastPublishedVersion
 	}
@@ -1259,8 +1259,8 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"\x10template_version\x18\x04 \x01(\x04R\x0ftemplateVersion\x12)\n" +
 	"\x10subject_template\x18\x05 \x01(\tR\x0fsubjectTemplate\x12#\n" +
 	"\rhtml_template\x18\a \x01(\tR\fhtmlTemplate\x12%\n" +
-	"\x0econtent_sha256\x18\t \x01(\fR\rcontentSha256J\x04\b\x06\x10\aJ\x04\b\b\x10\t\"\xde\x01\n" +
-	"\x16MailTemplateArchivedV1\x12@\n" +
+	"\x0econtent_sha256\x18\t \x01(\fR\rcontentSha256J\x04\b\x06\x10\aJ\x04\b\b\x10\t\"\xdd\x01\n" +
+	"\x15MailTemplateDeletedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +
 	"\vtemplate_id\x18\x02 \x01(\tR\n" +
 	"templateId\x12+\n" +
@@ -1344,7 +1344,7 @@ var file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes = []any{
 	(*MailConsumerDeleteV1)(nil),           // 7: mail.runtime.v1.MailConsumerDeleteV1
 	(*MailConsumerRuntimeReportedV1)(nil),  // 8: mail.runtime.v1.MailConsumerRuntimeReportedV1
 	(*MailTemplateVersionPublishedV1)(nil), // 9: mail.runtime.v1.MailTemplateVersionPublishedV1
-	(*MailTemplateArchivedV1)(nil),         // 10: mail.runtime.v1.MailTemplateArchivedV1
+	(*MailTemplateDeletedV1)(nil),          // 10: mail.runtime.v1.MailTemplateDeletedV1
 	(*KafkaMessageCoordinateV1)(nil),       // 11: mail.runtime.v1.KafkaMessageCoordinateV1
 	(*MailExecutionResultV1)(nil),          // 12: mail.runtime.v1.MailExecutionResultV1
 	nil,                                    // 13: mail.runtime.v1.MailMessageMappingV1.VariableJsonPathsEntry
@@ -1359,7 +1359,7 @@ var file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs = []int32{
 	3,  // 6: mail.runtime.v1.MailConsumerRuntimeReportedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	1,  // 7: mail.runtime.v1.MailConsumerRuntimeReportedV1.runtime_state:type_name -> mail.runtime.v1.MailConsumerRuntimeState
 	3,  // 8: mail.runtime.v1.MailTemplateVersionPublishedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	3,  // 9: mail.runtime.v1.MailTemplateArchivedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	3,  // 9: mail.runtime.v1.MailTemplateDeletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	3,  // 10: mail.runtime.v1.MailExecutionResultV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	11, // 11: mail.runtime.v1.MailExecutionResultV1.source:type_name -> mail.runtime.v1.KafkaMessageCoordinateV1
 	2,  // 12: mail.runtime.v1.MailExecutionResultV1.status:type_name -> mail.runtime.v1.MailExecutionStatus

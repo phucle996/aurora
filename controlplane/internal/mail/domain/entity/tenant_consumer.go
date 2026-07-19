@@ -13,6 +13,7 @@ type TenantConsumer struct {
 	ZoneID                uuid.UUID
 	ID                    uuid.UUID
 	WorkspaceID           uuid.UUID
+	Code                  string
 	Name                  string
 	SourceType            SourceType
 	BrokerResourceID      uuid.UUID
@@ -28,8 +29,6 @@ type TenantConsumer struct {
 	Parallelism           uint32
 	ConfigVersion         uint64
 	ConfigSHA256          []byte
-	IdempotencyKey        string
-	CreateRequestSHA256   []byte
 	DeletedAt             *time.Time
 	CreatedBy             *uuid.UUID
 	UpdatedBy             *uuid.UUID

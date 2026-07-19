@@ -29,7 +29,7 @@ func NewPersonalTemplateService(repo mailRepoInterface.PersonalTemplateRepositor
 }
 
 func (s *personalTemplateServiceImpl) CreateTemplate(ctx context.Context, command *mailEntity.PersonalTemplate) (*mailEntity.PersonalTemplate, error) {
-	// [COMMENT]: Dataplane tự discover {{placeholder}} khi render; CP chỉ canonicalize subject + HTML để hash/idempotency.
+	// [COMMENT]: Dataplane tự discover {{placeholder}} khi render; CP chỉ canonicalize content để tạo integrity hash.
 	canonicalContent, err := json.Marshal(struct {
 		Subject string `json:"subject"`
 		HTML    string `json:"html"`
@@ -38,20 +38,11 @@ func (s *personalTemplateServiceImpl) CreateTemplate(ctx context.Context, comman
 		return nil, fmt.Errorf("mail personal template service: canonicalize content: %w", err)
 	}
 	now := time.Now().UTC()
-	templateID := uuid.NewSHA1(personalMailTemplateEventNamespace, []byte("create:"+command.WorkspaceID.String()+":"+command.IdempotencyKey)).String()
+	templateID := uuid.New().String()
 	contentHash := sha256.Sum256(canonicalContent)
-	requestCanonical, err := json.Marshal(struct {
-		Name    string `json:"name"`
-		Content []byte `json:"content"`
-	}{command.Name, canonicalContent})
-	if err != nil {
-		return nil, fmt.Errorf("mail personal template service: canonicalize request: %w", err)
-	}
-	requestHash := sha256.Sum256(requestCanonical)
 	template := &mailEntity.PersonalTemplate{
 		ActorUserID: command.ActorUserID, ZoneID: command.ZoneID, ID: templateID, WorkspaceID: command.WorkspaceID,
-		Name: command.Name, CurrentVersion: 1, TemplateRevision: 1, Status: mailEntity.TemplateActive,
-		IdempotencyKey: command.IdempotencyKey, CreateRequestSHA256: append([]byte(nil), requestHash[:]...),
+		Code: command.Code, Name: command.Name, CurrentVersion: 1, TemplateRevision: 1,
 		CreatedAt: now, UpdatedAt: now, TemplateID: templateID, Version: 1,
 		SubjectTemplate: command.SubjectTemplate, HTMLTemplate: command.HTMLTemplate,
 		ContentSHA256: append([]byte(nil), contentHash[:]...), VersionCreatedAt: now,
@@ -84,9 +75,6 @@ func (s *personalTemplateServiceImpl) PublishTemplateVersion(ctx context.Context
 	if err != nil {
 		return nil, err
 	}
-	if template.Status != mailEntity.TemplateActive {
-		return nil, mailTaxonomy.ErrInvalidArgument
-	}
 	if template.TemplateRevision != command.ExpectedRevision {
 		return nil, mailTaxonomy.ErrVersionConflict
 	}
@@ -114,30 +102,27 @@ func (s *personalTemplateServiceImpl) PublishTemplateVersion(ctx context.Context
 	return template, nil
 }
 
-func (s *personalTemplateServiceImpl) ArchiveTemplate(ctx context.Context, command *mailEntity.PersonalTemplate) error {
+func (s *personalTemplateServiceImpl) DeleteTemplate(ctx context.Context, command *mailEntity.PersonalTemplate) error {
 	command.ID = command.TemplateID
 	template, err := s.repo.GetByID(ctx, command)
 	if err != nil {
 		return err
 	}
-	if template.Status != mailEntity.TemplateActive {
-		return mailTaxonomy.ErrInvalidArgument
-	}
 	if template.TemplateRevision != command.ExpectedRevision {
 		return mailTaxonomy.ErrVersionConflict
 	}
 	now := time.Now().UTC()
-	eventID := uuid.NewSHA1(personalMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:archive:%s", template.ID, command.ExpectedRevision+1, command.ZoneID))
-	event := &mailproto.MailTemplateArchivedV1{Metadata: &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"}, TemplateId: template.ID, TemplateRevision: command.ExpectedRevision + 1, LastPublishedVersion: template.CurrentVersion}
+	eventID := uuid.NewSHA1(personalMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:delete:%s", template.ID, command.ExpectedRevision+1, command.ZoneID))
+	event := &mailproto.MailTemplateDeletedV1{Metadata: &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"}, TemplateId: template.ID, TemplateRevision: command.ExpectedRevision + 1, LastPublishedVersion: template.CurrentVersion}
 	traceID := attachPersonalTemplateTrace(ctx, event.Metadata)
 	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("mail personal template service: marshal archive event: %w", err)
+		return fmt.Errorf("mail personal template service: marshal delete event: %w", err)
 	}
 	actor := command.ActorUserID
-	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.archived", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
+	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
 	command.ID, command.UpdatedAt = command.TemplateID, now
-	return s.repo.Archive(ctx, command, outbox)
+	return s.repo.Delete(ctx, command, outbox)
 }
 
 func personalTemplatePublishedOutbox(ctx context.Context, actor uuid.UUID, zone uuid.UUID, template *mailEntity.PersonalTemplate, now time.Time) (*mailEntity.MailOutboxRecord, error) {

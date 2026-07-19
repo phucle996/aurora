@@ -32,7 +32,7 @@ func (r *personalTemplateRepoCapture) PublishVersion(_ context.Context, entity *
 	r.entity, r.outbox = entity, outbox
 	return nil
 }
-func (r *personalTemplateRepoCapture) Archive(_ context.Context, _ *mailEntity.PersonalTemplate, outbox *mailEntity.MailOutboxRecord) error {
+func (r *personalTemplateRepoCapture) Delete(_ context.Context, _ *mailEntity.PersonalTemplate, outbox *mailEntity.MailOutboxRecord) error {
 	r.outbox = outbox
 	return nil
 }
@@ -40,7 +40,7 @@ func (r *personalTemplateRepoCapture) Archive(_ context.Context, _ *mailEntity.P
 func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	entity, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), IdempotencyKey: "request-0001", Name: "Receipt", SubjectTemplate: "Receipt {{id}}", HTMLTemplate: "<p>{{id}}</p>"})
+	entity, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), Code: "receipt", Name: "Receipt", SubjectTemplate: "Receipt {{id}}", HTMLTemplate: "<p>{{id}}</p>"})
 	if err != nil {
 		t.Fatalf("CreateTemplate() error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 func TestPersonalTemplateLeavesPlaceholderDetectionToDataplane(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	_, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), IdempotencyKey: "request-0002", Name: "Runtime", SubjectTemplate: "Hello {{name}}", HTMLTemplate: "<p>{{name}}</p>"})
+	_, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), Code: "runtime", Name: "Runtime", SubjectTemplate: "Hello {{name}}", HTMLTemplate: "<p>{{name}}</p>"})
 	if err != nil || repo.entity == nil {
 		t.Fatalf("template did not reach repository: %v", err)
 	}

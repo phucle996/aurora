@@ -38,20 +38,11 @@ func (s *tenantTemplateServiceImpl) CreateTemplate(ctx context.Context, command 
 		return nil, fmt.Errorf("mail tenant template service: canonicalize content: %w", err)
 	}
 	now, actor := time.Now().UTC(), command.ActorUserID
-	templateID := uuid.NewSHA1(tenantMailTemplateEventNamespace, []byte("create:"+command.WorkspaceID.String()+":"+command.IdempotencyKey)).String()
+	templateID := uuid.New().String()
 	contentHash := sha256.Sum256(canonicalContent)
-	requestCanonical, err := json.Marshal(struct {
-		Name    string `json:"name"`
-		Content []byte `json:"content"`
-	}{command.Name, canonicalContent})
-	if err != nil {
-		return nil, fmt.Errorf("mail tenant template service: canonicalize request: %w", err)
-	}
-	requestHash := sha256.Sum256(requestCanonical)
 	template := &mailEntity.TenantTemplate{
 		ActorUserID: actor, TenantID: command.TenantID, ZoneID: command.ZoneID, ID: templateID, WorkspaceID: command.WorkspaceID,
-		Name: command.Name, CurrentVersion: 1, TemplateRevision: 1, Status: mailEntity.TemplateActive,
-		IdempotencyKey: command.IdempotencyKey, CreateRequestSHA256: append([]byte(nil), requestHash[:]...),
+		Code: command.Code, Name: command.Name, CurrentVersion: 1, TemplateRevision: 1,
 		CreatedBy: &actor, UpdatedBy: &actor, CreatedAt: now, UpdatedAt: now,
 		TemplateID: templateID, Version: 1, SubjectTemplate: command.SubjectTemplate, HTMLTemplate: command.HTMLTemplate,
 		ContentSHA256: append([]byte(nil), contentHash[:]...), VersionCreatedBy: &actor, VersionCreatedAt: now,
@@ -91,9 +82,6 @@ func (s *tenantTemplateServiceImpl) PublishTemplateVersion(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	if template.Status != mailEntity.TemplateActive {
-		return nil, mailTaxonomy.ErrInvalidArgument
-	}
 	if template.TemplateRevision != command.ExpectedRevision {
 		return nil, mailTaxonomy.ErrVersionConflict
 	}
@@ -130,21 +118,18 @@ func (s *tenantTemplateServiceImpl) PublishTemplateVersion(ctx context.Context, 
 	return template, nil
 }
 
-func (s *tenantTemplateServiceImpl) ArchiveTemplate(ctx context.Context, command *mailEntity.TenantTemplate) error {
+func (s *tenantTemplateServiceImpl) DeleteTemplate(ctx context.Context, command *mailEntity.TenantTemplate) error {
 	command.ID = command.TemplateID
 	template, err := s.repo.GetByID(ctx, command)
 	if err != nil {
 		return err
 	}
-	if template.Status != mailEntity.TemplateActive {
-		return mailTaxonomy.ErrInvalidArgument
-	}
 	if template.TemplateRevision != command.ExpectedRevision {
 		return mailTaxonomy.ErrVersionConflict
 	}
 	now, actor := time.Now().UTC(), command.ActorUserID
-	eventID := uuid.NewSHA1(tenantMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:archive:%s", template.ID, command.ExpectedRevision+1, command.ZoneID))
-	event := &mailproto.MailTemplateArchivedV1{Metadata: &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"}, TemplateId: template.ID, TemplateRevision: command.ExpectedRevision + 1, LastPublishedVersion: template.CurrentVersion}
+	eventID := uuid.NewSHA1(tenantMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:delete:%s", template.ID, command.ExpectedRevision+1, command.ZoneID))
+	event := &mailproto.MailTemplateDeletedV1{Metadata: &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"}, TemplateId: template.ID, TemplateRevision: command.ExpectedRevision + 1, LastPublishedVersion: template.CurrentVersion}
 	var traceID []byte
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
 		event.Metadata.Traceparent = "00-" + spanContext.TraceID().String() + "-" + spanContext.SpanID().String() + "-" + fmt.Sprintf("%02x", byte(spanContext.TraceFlags()))
@@ -153,9 +138,9 @@ func (s *tenantTemplateServiceImpl) ArchiveTemplate(ctx context.Context, command
 	}
 	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
 	if err != nil {
-		return fmt.Errorf("mail tenant template service: marshal archive event: %w", err)
+		return fmt.Errorf("mail tenant template service: marshal delete event: %w", err)
 	}
-	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.archived", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
+	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
 	command.ID, command.UpdatedAt, command.UpdatedBy = command.TemplateID, now, &actor
-	return s.repo.Archive(ctx, command, outbox)
+	return s.repo.Delete(ctx, command, outbox)
 }

@@ -11,5 +11,5 @@ type PersonalTemplateRepository interface {
 	List(context.Context, *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error)
 	ListVersions(context.Context, *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error)
 	PublishVersion(context.Context, *mailEntity.PersonalTemplate, *mailEntity.MailOutboxRecord) error
-	Archive(context.Context, *mailEntity.PersonalTemplate, *mailEntity.MailOutboxRecord) error
+	Delete(context.Context, *mailEntity.PersonalTemplate, *mailEntity.MailOutboxRecord) error
 }

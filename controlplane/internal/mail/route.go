@@ -24,7 +24,7 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		personal.GET("/templates/:id", module.PersonalTemplateHandler.Get)
 		personal.POST("/templates/:id/versions", module.PersonalTemplateHandler.PublishVersion)
 		personal.GET("/templates/:id/versions", module.PersonalTemplateHandler.ListVersions)
-		personal.POST("/templates/:id/archive", module.PersonalTemplateHandler.Archive)
+		personal.DELETE("/templates/:id", module.PersonalTemplateHandler.Delete)
 	}
 
 	tenant := router.Group("/api/v1/tenant/mail")
@@ -42,6 +42,6 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		tenant.GET("/templates/:id", module.TenantTemplateHandler.Get)
 		tenant.POST("/templates/:id/versions", module.TenantTemplateHandler.PublishVersion)
 		tenant.GET("/templates/:id/versions", module.TenantTemplateHandler.ListVersions)
-		tenant.POST("/templates/:id/archive", module.TenantTemplateHandler.Archive)
+		tenant.DELETE("/templates/:id", module.TenantTemplateHandler.Delete)
 	}
 }

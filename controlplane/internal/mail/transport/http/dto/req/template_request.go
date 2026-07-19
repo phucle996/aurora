@@ -1,7 +1,7 @@
 package mailReq
 
 type CreateTemplateRequest struct {
-	IdempotencyKey  string `json:"idempotency_key" binding:"required,min=8,max=128"`
+	Code            string `json:"code" binding:"required,min=3,max=63"`
 	Name            string `json:"name" binding:"required"`
 	SubjectTemplate string `json:"subject_template" binding:"required"`
 	HTMLTemplate    string `json:"html_template" binding:"required"`
@@ -13,6 +13,6 @@ type PublishTemplateVersionRequest struct {
 	HTMLTemplate     string `json:"html_template" binding:"required"`
 }
 
-type ArchiveTemplateRequest struct {
+type DeleteTemplateRequest struct {
 	ExpectedRevision uint64 `json:"expected_revision" binding:"required,min=1"`
 }

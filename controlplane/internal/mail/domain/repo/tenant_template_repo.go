@@ -11,5 +11,5 @@ type TenantTemplateRepository interface {
 	List(context.Context, *mailEntity.TenantTemplate) ([]*mailEntity.TenantTemplate, error)
 	ListVersions(context.Context, *mailEntity.TenantTemplate) ([]*mailEntity.TenantTemplate, error)
 	PublishVersion(context.Context, *mailEntity.TenantTemplate, *mailEntity.MailOutboxRecord) error
-	Archive(context.Context, *mailEntity.TenantTemplate, *mailEntity.MailOutboxRecord) error
+	Delete(context.Context, *mailEntity.TenantTemplate, *mailEntity.MailOutboxRecord) error
 }

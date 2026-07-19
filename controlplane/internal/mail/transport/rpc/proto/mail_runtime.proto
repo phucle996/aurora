@@ -129,7 +129,7 @@ message MailTemplateVersionPublishedV1 {
   MailEventMetadataV1 metadata = 1;
   // [COMMENT]: Globally unique identity; scope/workspace đã được CP xử lý trước projection.
   string template_id = 2;
-  // [COMMENT]: Monotonic lifecycle revision dùng chống event publish/archive đến sai thứ tự.
+  // [COMMENT]: Monotonic revision dùng chống event publish/delete đến sai thứ tự.
   uint64 template_revision = 3;
   // [COMMENT]: Immutable content version được consumer pin; luôn lớn hơn 0.
   uint64 template_version = 4;
@@ -141,12 +141,12 @@ message MailTemplateVersionPublishedV1 {
   bytes content_sha256 = 9;
 }
 
-message MailTemplateArchivedV1 {
+message MailTemplateDeletedV1 {
   MailEventMetadataV1 metadata = 1;
   string template_id = 2;
   // [COMMENT]: Revision tombstone lớn hơn mọi lifecycle revision trước đó.
   uint64 template_revision = 3;
-  // [COMMENT]: Version snapshots vẫn được giữ để drain consumer đã pin; archive không hard delete content.
+  // [COMMENT]: Runtime xóa cache sau hard-delete đã được Controlplane kiểm tra không còn consumer active tham chiếu.
   uint64 last_published_version = 4;
 }
 

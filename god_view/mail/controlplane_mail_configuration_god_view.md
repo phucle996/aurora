@@ -87,16 +87,16 @@ sequenceDiagram
     participant R as Scoped Repository
     participant DB as PostgreSQL
 
-    C->>CP: Create JSON có idempotency_key + rewritten trusted scope
+	C->>CP: Create JSON có immutable code + rewritten trusted scope
     CP->>CP: Derive zonal/workspace Vault ref from broker_resource_id
     CP->>R: Guard caller + Workspace + Tenant/Personal + Zone
     R-->>CP: scoped mutation result
     CP->>CP: Validate template belongs Workspace/platform + sender versions
     CP->>CP: Validate JSONPaths, topic/group and bounded parallelism
-    CP->>DB: one guarded data-modifying CTE
-    DB->>DB: authorize scope + bind template version
-    DB->>DB: INSERT consumer(version=1, desired=PAUSED)
-    DB->>DB: INSERT mail_outbox_records from inserted row
+	CP->>DB: BEGIN transaction; KEY SHARE template identity
+	DB->>DB: authorize scope + bind immutable template version
+	DB->>DB: INSERT consumer(version=1, desired=PAUSED)
+	DB->>DB: INSERT mail_outbox_records; COMMIT
     CP-->>C: 201 desired=PAUSED, reported=STOPPED/UNKNOWN
 ```
 
@@ -112,7 +112,7 @@ transaction phải bảo đảm có idempotent template projection intent; DP gi
 > `personal_workspaces.owner_id`; Tenant repository bắt buộc `tenant_id` + active membership + Workspace Zone.
 > Mỗi nhánh dùng đúng một entity xuyên handler → service → repository: `PersonalConsumer`,
 > `TenantConsumer`, `PersonalTemplate`, hoặc `TenantTemplate`. Service chỉ nhận entity của nhánh đó;
-> mutation repository nhận thêm `MailOutboxRecord` do service tạo và commit cả hai bằng một CTE.
+> mutation repository nhận thêm `MailOutboxRecord` do service tạo và commit aggregate + outbox trong cùng PostgreSQL transaction.
 > Client không được gửi `source_config_ref`. Service tự derive exact namespace
 > `vault://zones/{zone}/workspaces/{workspace}/mail/brokers/{broker_id}` từ trusted scope và API không echo locator này.
 > Sự tồn tại/ACL thật của secret vẫn fail-close lần cuối bằng Vault service identity tại zonal Dataplane.
@@ -131,8 +131,8 @@ stateDiagram-v2
 
 - Mỗi transition tăng `config_version` và insert outbox trong cùng data-modifying CTE statement.
 - Delete từ `ENABLED` không hard-delete row; CP phát tombstone và chờ reported stop.
-- Phase 3 yêu cầu `idempotency_key` trong JSON body create; ACR/Envoy không tạo custom header này. Service tạo deterministic aggregate ID theo
-  `workspace_id + key`; database lưu canonical request hash để cùng key/khác payload trả `409`.
+- Create nhận `code` chuẩn hóa dạng kebab-case. Unique partial index `(workspace_id, code) WHERE deleted_at IS NULL`
+  chặn hai active resource trùng code; sau khi tombstone, cùng code có thể tạo lại với UUID runtime mới.
 
 ### 3.4 Desired state khác reported state
 
@@ -157,9 +157,9 @@ còn fresh của đúng desired config version. `runtime_generation/report_seque
 personal_mail_templates / tenant_mail_templates
   template_id
   workspace_id
+  code
   current_version
   template_revision
-  archived_at
 
 personal_mail_template_versions / tenant_mail_template_versions
   template_id + template_version
@@ -170,11 +170,11 @@ personal_mail_template_versions / tenant_mail_template_versions
 ```
 
 - `template_version` định danh immutable content.
-- `template_revision` là lifecycle clock, tăng cả khi publish hoặc archive để chống event đến sai thứ tự.
+- `template_revision` là optimistic concurrency clock, tăng khi publish version mới.
 - Không có cột `scope`: table Personal/Tenant là authorization namespace vật lý. IAM system mail dùng `system_mail_templates`, không giả ownership customer.
 - Personal template không lưu `created_by/updated_by`; Tenant template và version giữ actor audit.
-- Version đã được consumer pin không bị UPDATE hoặc DELETE.
-- PostgreSQL trigger chặn trực tiếp `UPDATE/DELETE` trên cả ba bảng version; rollback/retention có explicit migration bypass riêng.
+- Version không bị UPDATE riêng lẻ. Hard-delete hợp lệ xóa toàn bộ identity + versions trong một transaction có explicit session-scoped bypass.
+- PostgreSQL trigger chặn `UPDATE/DELETE` version ngoài transaction hard-delete aggregate.
 
 ### 4.2 Publish flow
 
@@ -192,12 +192,12 @@ sequenceDiagram
     TS->>DB: UPDATE head + INSERT outbox from updated row
 ```
 
-### 4.3 Archive semantics
+### 4.3 Hard-delete semantics
 
-- Archive chặn binding mới.
-- Published version snapshots vẫn tồn tại để consumer đã pin có thể drain ổn định.
-- Muốn dừng consumer đang dùng template archived, CP phát consumer desired-state update riêng.
-- `MailTemplateArchivedV1` không yêu cầu DP xóa immutable cache entry ngay lập tức.
+- API từ chối hard-delete với `409 template in use` nếu còn consumer chưa-xóa tham chiếu template.
+- Consumer create/update giữ `FOR KEY SHARE` trên template identity; delete giữ `FOR UPDATE`, loại race bind-vs-delete.
+- Khi không còn consumer active, identity + toàn bộ immutable versions + outbox `mail.template.deleted` commit nguyên tử.
+- Code template được giải phóng ngay sau commit và có thể dùng lại; lần create mới nhận UUID mới.
 
 ## 5. History model
 
@@ -269,7 +269,7 @@ GET  /api/v1/{personal|tenant}/mail/templates
 GET  /api/v1/{personal|tenant}/mail/templates/:id
 POST /api/v1/{personal|tenant}/mail/templates/:id/versions
 GET  /api/v1/{personal|tenant}/mail/templates/:id/versions
-POST /api/v1/{personal|tenant}/mail/templates/:id/archive
+DELETE /api/v1/{personal|tenant}/mail/templates/:id
 ```
 
 ### History
@@ -293,8 +293,9 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 | Result đến sai thứ tự | `state_version` monotonic head update |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Header mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
-| Workspace placement đổi giữa resolve và commit | Authorization CTE và mutation CTE cùng một statement/snapshot; zero row → not found/conflict |
-| Retry POST qua pod khác | Deterministic aggregate ID + unique `(workspace_id, idempotency_key)` + canonical request hash |
+| Workspace placement đổi giữa resolve và commit | Guarded transaction cross-check authoritative workspace; zero row → not found/conflict |
+| Hai create cùng code | Unique workspace/code index; một transaction thắng, transaction còn lại nhận `409` |
+| Create/update consumer đồng thời delete template | Consumer mutation giữ `KEY SHARE`; delete giữ `FOR UPDATE` và kiểm tra reference trước khi xóa |
 
 ## 8. Security requirements
 
@@ -312,8 +313,8 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 |---|---|
 | 0 | God View + protobuf contract |
 | 1 | Migrations/schema — implemented |
-| 2 | Personal/Tenant domain/repository/service + atomic CTE outbox — implemented |
-| 3 | Rewritten Personal/Tenant HTTP API, bounded body/cursor, idempotency, error mapping — implemented |
+| 2 | Personal/Tenant domain/repository/service + transactional outbox — implemented |
+| 3 | Rewritten Personal/Tenant HTTP API, bounded body/cursor, resource code, error mapping — implemented |
 | 4 | Projection/reconciliation |
 | 9 | Result inbox/history APIs |
 
@@ -325,12 +326,12 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
   `/api/v1/personal/mail/...` hoặc `/api/v1/tenant/mail/...`; UI không tự gửi owner, Tenant, Zone header.
 - TanStack Query key bắt buộc chứa Personal/Tenant context và `workspace_id`. Khi đổi context,
   request cũ bị abort và cache cũ không được render sang Workspace mới.
-- Create form sinh một `idempotency_key` cho mỗi lần mở form và giữ nguyên key đó qua mọi retry.
-- Consumer update/pause/resume/delete gửi `expected_config_version`; template publish/archive gửi
+- Create form đề xuất `code` từ name, cho phép sửa trước create và hiển thị read-only sau create.
+- Consumer update/pause/resume/delete gửi `expected_config_version`; template publish/delete gửi
   `expected_revision`. HTTP `409` không được auto-retry hoặc overwrite, UI yêu cầu reload latest.
 - Consumer mới luôn hiển thị `PAUSED`. Desired state không được trình bày như reported runtime state.
-- System template không xuất hiện trong customer Console; published customer version không có edit/delete. Archive chỉ chặn binding mới,
-  không ngầm dừng consumer đang pin version cũ.
+- System template không xuất hiện trong customer Console; published customer version không edit trực tiếp. Hard-delete yêu cầu
+  xóa hoặc chuyển mọi consumer đang tham chiếu trước.
 - Action create/update/delete được gate riêng theo render-context capability; repository vẫn authorize
   fail-close, vì UI permission không phải security boundary.
 

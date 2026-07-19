@@ -1,7 +1,6 @@
 import { fetchJSON } from "./fetcher";
 
 export type MailDesiredState = "paused" | "enabled" | "deleting";
-export type MailTemplateStatus = "active" | "archived";
 
 export type MailMessageMapping = {
   external_message_id_json_path: string;
@@ -12,6 +11,7 @@ export type MailMessageMapping = {
 export type MailConsumer = {
   id: string;
   workspace_id: string;
+  code: string;
   name: string;
   source_type: "kafka";
   broker_resource_id: string;
@@ -34,11 +34,10 @@ export type MailConsumer = {
 export type MailTemplate = {
   id: string;
   workspace_id: string | null;
+  code: string;
   name: string;
   current_version: number;
   template_revision: number;
-  status: MailTemplateStatus;
-  archived_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -108,7 +107,7 @@ export async function listMailConsumers(signal?: AbortSignal): Promise<MailConsu
   return requireData(response, "Mail consumers response is missing data").items.map(normalizeConsumer);
 }
 
-export async function createMailConsumer(input: ConsumerWrite & { idempotency_key: string }): Promise<MailConsumer> {
+export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer> {
   const response = await fetchJSON<DataEnvelope<Omit<MailConsumer, "mapping"> & { mapping: MailMessageMapping | string }>>(
     "/api/v1/mail/consumers",
     { method: "POST", body: input },
@@ -157,7 +156,7 @@ export async function listMailTemplateVersions(id: string, signal?: AbortSignal)
   return requireData(response, "Mail template versions response is missing data").items;
 }
 
-export async function createMailTemplate(input: TemplateContentWrite & { idempotency_key: string; name: string }): Promise<MailTemplateDetail> {
+export async function createMailTemplate(input: TemplateContentWrite & { code: string; name: string }): Promise<MailTemplateDetail> {
   const response = await fetchJSON<DataEnvelope<MailTemplateDetail>>("/api/v1/mail/templates", { method: "POST", body: input });
   return requireData(response, "Created mail template is missing");
 }
@@ -170,9 +169,9 @@ export async function publishMailTemplate(id: string, expectedRevision: number, 
   return requireData(response, "Published mail template is missing");
 }
 
-export async function archiveMailTemplate(id: string, expectedRevision: number): Promise<void> {
-  await fetchJSON(`/api/v1/mail/templates/${encodeURIComponent(id)}/archive`, {
-    method: "POST",
+export async function deleteMailTemplate(id: string, expectedRevision: number): Promise<void> {
+  await fetchJSON(`/api/v1/mail/templates/${encodeURIComponent(id)}`, {
+    method: "DELETE",
     body: { expected_revision: expectedRevision },
   });
 }

@@ -5,7 +5,7 @@ import (
 )
 
 type CreateConsumerRequest struct {
-	IdempotencyKey   string                `json:"idempotency_key" binding:"required,min=8,max=128"`
+	Code             string                `json:"code" binding:"required,min=3,max=63"`
 	Name             string                `json:"name" binding:"required"`
 	SourceType       mailEntity.SourceType `json:"source_type" binding:"required,oneof=kafka"`
 	BrokerResourceID string                `json:"broker_resource_id" binding:"required"`

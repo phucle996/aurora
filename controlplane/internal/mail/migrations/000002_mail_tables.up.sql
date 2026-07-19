@@ -2,23 +2,17 @@
 CREATE TABLE IF NOT EXISTS personal_mail_templates (
     id VARCHAR(128) PRIMARY KEY,
     workspace_id UUID NOT NULL,
+    code VARCHAR(63) NOT NULL,
     name VARCHAR(255) NOT NULL,
     current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     template_revision BIGINT NOT NULL DEFAULT 0 CHECK (template_revision >= 0),
-    status mail_template_status NOT NULL DEFAULT 'active',
-    create_idempotency_key VARCHAR(128) NOT NULL,
-    create_request_sha256 BYTEA NOT NULL CHECK (octet_length(create_request_sha256) = 32),
-    archived_at TIMESTAMPTZ NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_personal_mail_template_archive_state CHECK (
-        (status = 'active' AND archived_at IS NULL)
-        OR (status = 'archived' AND archived_at IS NOT NULL)
-    )
+    CONSTRAINT ck_personal_mail_template_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 );
 
 CREATE TABLE IF NOT EXISTS personal_mail_template_versions (
-    template_id VARCHAR(128) NOT NULL REFERENCES personal_mail_templates(id) ON DELETE RESTRICT,
+    template_id VARCHAR(128) NOT NULL REFERENCES personal_mail_templates(id) ON DELETE CASCADE,
     version BIGINT NOT NULL CHECK (version > 0),
     subject_template VARCHAR(998) NOT NULL,
     html_template TEXT NOT NULL,
@@ -30,19 +24,16 @@ CREATE TABLE IF NOT EXISTS personal_mail_template_versions (
 );
 
 CREATE TABLE IF NOT EXISTS tenant_mail_templates (
-    id VARCHAR(128) PRIMARY KEY, workspace_id UUID NOT NULL, name VARCHAR(255) NOT NULL,
+    id VARCHAR(128) PRIMARY KEY, workspace_id UUID NOT NULL, code VARCHAR(63) NOT NULL, name VARCHAR(255) NOT NULL,
     current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     template_revision BIGINT NOT NULL DEFAULT 0 CHECK (template_revision >= 0),
-    status mail_template_status NOT NULL DEFAULT 'active',
-    create_idempotency_key VARCHAR(128) NOT NULL,
-    create_request_sha256 BYTEA NOT NULL CHECK (octet_length(create_request_sha256) = 32),
-    archived_at TIMESTAMPTZ NULL, created_by UUID NOT NULL, updated_by UUID NOT NULL,
+    created_by UUID NOT NULL, updated_by UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_tenant_mail_template_archive_state CHECK ((status='active' AND archived_at IS NULL) OR (status='archived' AND archived_at IS NOT NULL))
+    CONSTRAINT ck_tenant_mail_template_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 );
 
 CREATE TABLE IF NOT EXISTS tenant_mail_template_versions (
-    template_id VARCHAR(128) NOT NULL REFERENCES tenant_mail_templates(id) ON DELETE RESTRICT,
+    template_id VARCHAR(128) NOT NULL REFERENCES tenant_mail_templates(id) ON DELETE CASCADE,
     version BIGINT NOT NULL CHECK (version > 0), subject_template VARCHAR(998) NOT NULL,
     html_template TEXT NOT NULL CHECK (html_template <> ''), content_sha256 BYTEA NOT NULL CHECK (octet_length(content_sha256)=32),
     created_by UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(template_id,version)
@@ -85,6 +76,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS mail_consumers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
+    code VARCHAR(63) NOT NULL,
     name VARCHAR(255) NOT NULL,
     source_type mail_source_type NOT NULL,
     broker_resource_id UUID NOT NULL,
@@ -100,8 +92,6 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     parallelism INTEGER NOT NULL DEFAULT 1 CHECK (parallelism BETWEEN 1 AND 256),
     config_version BIGINT NOT NULL DEFAULT 1 CHECK (config_version > 0),
     config_sha256 BYTEA NOT NULL,
-    create_idempotency_key VARCHAR(128) NOT NULL,
-    create_request_sha256 BYTEA NOT NULL,
     deleted_at TIMESTAMPTZ NULL,
     created_by UUID NULL,
     updated_by UUID NULL,
@@ -109,7 +99,7 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_mail_consumer_mapping_object CHECK (jsonb_typeof(mapping_json) = 'object'),
     CONSTRAINT ck_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
-    CONSTRAINT ck_mail_consumer_create_request_hash CHECK (octet_length(create_request_sha256) = 32),
+    CONSTRAINT ck_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'),
     CONSTRAINT ck_mail_consumer_delete_state CHECK (
         (desired_state = 'deleted' AND deleted_at IS NOT NULL)
         OR (desired_state <> 'deleted' AND deleted_at IS NULL)

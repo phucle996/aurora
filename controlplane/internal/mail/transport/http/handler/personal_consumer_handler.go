@@ -74,9 +74,16 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 		return
 	}
 
-	req.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
-	if len(req.IdempotencyKey) < 8 || len(req.IdempotencyKey) > 128 {
-		apires.RespondBadRequest(c, "invalid idempotency_key")
+	req.Code = strings.ToLower(strings.TrimSpace(req.Code))
+	validCode := len(req.Code) >= 3 && len(req.Code) <= 63 && req.Code[0] >= 'a' && req.Code[0] <= 'z'
+	for index, char := range req.Code {
+		if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || (char == '-' && index > 0 && index < len(req.Code)-1 && req.Code[index-1] != '-')) {
+			validCode = false
+			break
+		}
+	}
+	if !validCode {
+		apires.RespondBadRequest(c, "invalid consumer code")
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -114,7 +121,7 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 	}
 
 	consumer, err := h.svc.CreateConsumer(ctx, &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID,
-		IdempotencyKey: req.IdempotencyKey, Name: req.Name,
+		Code: req.Code, Name: req.Name,
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
 		Topic: req.Topic, ConsumerGroup: req.ConsumerGroup,
 		Mapping:    mailEntity.MessageMapping{ExternalMessageIDJSONPath: req.Mapping.ExternalMessageIDJSONPath, RecipientJSONPath: req.Mapping.RecipientJSONPath, VariableJSONPaths: req.Mapping.VariableJSONPaths},
@@ -132,8 +139,6 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
-		case errors.Is(err, mailTaxonomy.ErrIdempotencyConflict):
-			apires.RespondConflict(c, "idempotency key was already used with a different request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -144,6 +149,7 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 	apires.RespondCreated(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
+		"code":               consumer.Code,
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
@@ -199,8 +205,6 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
-		case errors.Is(err, mailTaxonomy.ErrIdempotencyConflict):
-			apires.RespondConflict(c, "idempotency key was already used with a different request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -211,6 +215,7 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
+		"code":               consumer.Code,
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
@@ -306,8 +311,6 @@ func (h *PersonalConsumerHandler) List(c *gin.Context) {
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
-		case errors.Is(err, mailTaxonomy.ErrIdempotencyConflict):
-			apires.RespondConflict(c, "idempotency key was already used with a different request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -319,6 +322,7 @@ func (h *PersonalConsumerHandler) List(c *gin.Context) {
 		items = append(items, gin.H{
 			"id":                 consumer.ID.String(),
 			"workspace_id":       consumer.WorkspaceID.String(),
+			"code":               consumer.Code,
 			"name":               consumer.Name,
 			"source_type":        consumer.SourceType,
 			"broker_resource_id": consumer.BrokerResourceID.String(),
@@ -434,8 +438,6 @@ func (h *PersonalConsumerHandler) Update(c *gin.Context) {
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
-		case errors.Is(err, mailTaxonomy.ErrIdempotencyConflict):
-			apires.RespondConflict(c, "idempotency key was already used with a different request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -446,6 +448,7 @@ func (h *PersonalConsumerHandler) Update(c *gin.Context) {
 	apires.RespondSuccess(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
+		"code":               consumer.Code,
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
@@ -526,8 +529,6 @@ func (h *PersonalConsumerHandler) changeState(c *gin.Context, desiredState mailE
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
-		case errors.Is(err, mailTaxonomy.ErrIdempotencyConflict):
-			apires.RespondConflict(c, "idempotency key was already used with a different request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
@@ -538,6 +539,7 @@ func (h *PersonalConsumerHandler) changeState(c *gin.Context, desiredState mailE
 	apires.RespondSuccess(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
+		"code":               consumer.Code,
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
@@ -615,8 +617,6 @@ func (h *PersonalConsumerHandler) Delete(c *gin.Context) {
 			apires.RespondConflict(c, "resource name already exists")
 		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
-		case errors.Is(err, mailTaxonomy.ErrIdempotencyConflict):
-			apires.RespondConflict(c, "idempotency key was already used with a different request")
 		default:
 			logger.HandlerError(c, op, err)
 			apires.RespondInternalError(c, "internal_error")
