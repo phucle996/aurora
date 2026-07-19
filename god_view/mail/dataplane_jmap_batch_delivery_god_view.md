@@ -2,6 +2,9 @@
 
 > **IMPORTANT — SINGLE SOURCE OF TRUTH**
 > Tài liệu này là nguồn chuẩn cho đoạn workflow từ mail job tại Zone Redis Stream đến khi Stalwart chấp nhận JMAP EmailSubmission. Mọi thay đổi về mail protobuf, sender binding, batching, JMAP request, retry, backpressure, health hoặc shutdown phải cập nhật tài liệu này trong cùng change-set.
+>
+> Broker-driven target flow (Kafka connection, JSON mapping, DP rendering và offset commit) được khóa
+> riêng tại `dataplane_broker_mail_execution_god_view.md`; flow đó tái sử dụng JMAP batcher trong tài liệu này.
 
 ## 0. Control header
 
@@ -16,7 +19,7 @@
 | Delivery semantics | Best-effort; success nghĩa Stalwart accepted submission, không nghĩa recipient đã nhận |
 | Runtime durability | Redis Stream/job outbox ở upstream; batch buffer là bounded memory |
 | Removed transport | LMTP client và connection pool tự viết đã bị xóa |
-| Future scope | Controlplane sender table, OTP/DNS verify và sender projection |
+| Future scope | Broker runtime theo `dataplane_broker_mail_execution_god_view.md`; sender verification/projection |
 | Verified against | Working tree, 2026-07-19 |
 
 ### 0.1 Invariants

@@ -1,25 +1,15 @@
 package mailEntity
 
-import "time"
+type TemplateScope string
 
-type Template struct {
-	ID        string
-	Name      string
-	Subject   string
-	Body      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
+const (
+	TemplateScopePlatform  TemplateScope = "platform"
+	TemplateScopeWorkspace TemplateScope = "workspace"
+)
 
-type CreateTemplateParams struct {
-	Name     string
-	Subject  string
-	Body     string
-}
+type TemplateStatus string
 
-type UpdateTemplateParams struct {
-	ID       string
-	Name     string
-	Subject  string
-	Body     string
-}
+const (
+	TemplateActive   TemplateStatus = "active"
+	TemplateArchived TemplateStatus = "archived"
+)

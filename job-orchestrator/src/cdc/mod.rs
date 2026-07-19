@@ -246,6 +246,7 @@ impl CdcStreamer {
             return Ok(());
         }
         let event_id = fields.get("event_id").cloned().unwrap_or_default();
+        // [COMMENT]: Mọi outbox dùng cùng routing_scope; Mail tạo zone:<uuid> từ trusted X-Zone-ID.
         let routing_scope = fields.get("routing_scope").cloned().unwrap_or_default();
         let job_topic = fields.get("job_topic").cloned().unwrap_or_default();
         let payload_hex = fields.get("payload").cloned().unwrap_or_default();

@@ -1,266 +1,157 @@
 "use client";
 
-import React, { useState } from "react";
-import {
-  Database,
-  Radio,
-  RefreshCw,
-  Search,
-  Activity,
-  Layers,
-  HardDrive,
-  Cpu,
-  CheckCircle2,
-  AlertTriangle,
-} from "lucide-react";
+import { FormEvent, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { toast } from "sonner";
+
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { type APIError } from "@/lib/api/fetcher";
+import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, listMailConsumers, type ConsumerWrite, type MailConsumer, updateMailConsumer } from "@/lib/api/mail";
 
-// [COMMENT]: Interface định nghĩa cho mỗi Stream Broker Consumer Instance (Redis Stream, Kafka Topic, NATS, v.v.)
-export interface StreamConsumerItem {
-  id: string;
-  brokerType: "Redis Stream" | "Apache Kafka" | "NATS JetStream" | "RabbitMQ";
-  topicOrStream: string;
-  consumerGroup: string;
-  activeConsumers: number;
-  lagOrPending: number;
-  throughputPerSec: number;
-  status: "Healthy" | "Degraded" | "Idle" | "Error";
-  lastPolled: string;
+type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
+type ConsumerForm = ConsumerWrite & { variables: string };
+
+const emptyForm: ConsumerForm = {
+  name: "", source_type: "kafka", broker_resource_id: "", topic: "", consumer_group: "",
+  mapping: { recipient_json_path: "$.recipient", external_message_id_json_path: "", variable_json_paths: {} },
+  variables: "{}", template_id: "", template_version: 1, sender_profile_id: "", sender_version: 1, parallelism: 1,
+};
+
+function errorMessage(error: unknown): string {
+  const apiError = error as APIError;
+  if (apiError?.status === 409) return "Configuration changed in another session. Reload the latest version before retrying.";
+  return apiError?.message || (error instanceof Error ? error.message : "Request failed");
 }
 
-// [COMMENT]: Tab 3 - ConsumersTab quản lý và giám sát các Stream Broker / Message Consumers
-// Phụ trách nhận mail payload từ Controlplane / Job-Orchestrator để chuyển xuống Dataplane
-export function ConsumersTab() {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [brokerFilter, setBrokerFilter] = useState<string>("All");
+export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelete }: ConsumersTabProps) {
+  const queryClient = useQueryClient();
+  const queryKey = ["mail", scopeKey, "consumers"] as const;
+  const [search, setSearch] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<MailConsumer | null>(null);
+  const [form, setForm] = useState<ConsumerForm>(emptyForm);
+  const [createKey, setCreateKey] = useState("");
 
-  // [COMMENT]: Dữ liệu mẫu khung giao diện cho các Stream Broker Consumers
-  const consumerList: StreamConsumerItem[] = [
-    {
-      id: "consumer_redis_mail_dispatch_v1",
-      brokerType: "Redis Stream",
-      topicOrStream: "stream:mail:dispatch:v1",
-      consumerGroup: "dataplane_mail_workers",
-      activeConsumers: 12,
-      lagOrPending: 14,
-      throughputPerSec: 185,
-      status: "Healthy",
-      lastPolled: "2 giây trước",
-    },
-    {
-      id: "consumer_redis_mail_results_v1",
-      brokerType: "Redis Stream",
-      topicOrStream: "stream:mail:results:v1",
-      consumerGroup: "job_orchestrator_results_processor",
-      activeConsumers: 4,
-      lagOrPending: 0,
-      throughputPerSec: 180,
-      status: "Healthy",
-      lastPolled: "1 giây trước",
-    },
-    {
-      id: "consumer_kafka_transactional_mails",
-      brokerType: "Apache Kafka",
-      topicOrStream: "aurora.mail.transactional.v1",
-      consumerGroup: "cg-mail-dataplane-cluster",
-      activeConsumers: 8,
-      lagOrPending: 3,
-      throughputPerSec: 420,
-      status: "Healthy",
-      lastPolled: "5 giây trước",
-    },
-    {
-      id: "consumer_nats_bulk_notifications",
-      brokerType: "NATS JetStream",
-      topicOrStream: "EVENTS.mail.bulk.dispatch",
-      consumerGroup: "bulk-mail-workers",
-      activeConsumers: 0,
-      lagOrPending: 0,
-      throughputPerSec: 0,
-      status: "Idle",
-      lastPolled: "1 phút trước",
-    },
-  ];
+  const consumers = useQuery({
+    queryKey,
+    queryFn: ({ signal }) => listMailConsumers(signal),
+    enabled,
+  });
+  const visible = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return consumers.data ?? [];
+    return (consumers.data ?? []).filter((item) => [item.name, item.topic, item.consumer_group, item.template_id].some((value) => value.toLowerCase().includes(needle)));
+  }, [consumers.data, search]);
 
-  const filteredConsumers = consumerList.filter((c) => {
-    const matchSearch =
-      c.topicOrStream.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.consumerGroup.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.id.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchBroker = brokerFilter === "All" || c.brokerType === brokerFilter;
-    return matchSearch && matchBroker;
+  const save = useMutation({
+    mutationFn: async () => {
+      let variablePaths: Record<string, string>;
+      try { variablePaths = JSON.parse(form.variables) as Record<string, string>; } catch { throw new Error("Variable mappings must be a JSON object."); }
+      const input: ConsumerWrite = {
+        ...form,
+        name: form.name.trim(), broker_resource_id: form.broker_resource_id.trim(), topic: form.topic.trim(),
+        consumer_group: form.consumer_group.trim(), template_id: form.template_id.trim(), sender_profile_id: form.sender_profile_id.trim(),
+        mapping: {
+          recipient_json_path: form.mapping.recipient_json_path.trim(),
+          external_message_id_json_path: form.mapping.external_message_id_json_path.trim(),
+          variable_json_paths: variablePaths,
+        },
+      };
+      // [COMMENT]: Retry create giữ cùng browser-generated key; edit luôn mang CAS version vừa đọc.
+      return editing
+        ? updateMailConsumer(editing.id, { ...input, desired_state: editing.desired_state, expected_config_version: editing.config_version })
+        : createMailConsumer({ ...input, idempotency_key: createKey });
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey });
+      toast.success(editing ? "Consumer updated" : "Consumer created paused");
+      setEditing(null); setForm(emptyForm); setFormOpen(false);
+    },
+    onError: (error) => toast.error(errorMessage(error)),
   });
 
+  const stateChange = useMutation({
+    mutationFn: ({ consumer, action }: { consumer: MailConsumer; action: "pause" | "resume" }) => changeMailConsumerState(consumer.id, action, consumer.config_version),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer desired state updated"); },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  const remove = useMutation({
+    mutationFn: (consumer: MailConsumer) => deleteMailConsumer(consumer.id, consumer.config_version),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer deletion requested"); },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+
+  function openCreate() {
+    // [COMMENT]: Một lần mở form là một logical operation; mọi retry giữ nguyên idempotency key.
+    setCreateKey(crypto.randomUUID()); setEditing(null); setForm(emptyForm); setFormOpen(true);
+  }
+  function openEdit(consumer: MailConsumer) {
+    setEditing(consumer);
+    setForm({
+      name: consumer.name, source_type: "kafka", broker_resource_id: consumer.broker_resource_id,
+      topic: consumer.topic, consumer_group: consumer.consumer_group, mapping: consumer.mapping,
+      variables: JSON.stringify(consumer.mapping.variable_json_paths ?? {}, null, 2), template_id: consumer.template_id,
+      template_version: consumer.template_version, sender_profile_id: consumer.sender_profile_id,
+      sender_version: consumer.sender_version, parallelism: consumer.parallelism,
+    });
+    setFormOpen(true);
+  }
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!form.name.trim() || !form.broker_resource_id.trim() || !form.topic.trim() || !form.consumer_group.trim() ||
+      !form.mapping.recipient_json_path.trim().startsWith("$") || !form.template_id.trim() || !form.sender_profile_id.trim()) {
+      toast.error("Complete all required fields and use a valid recipient JSONPath."); return;
+    }
+    save.mutate();
+  }
+
   return (
-    <div className="flex flex-col gap-5 text-foreground">
-      {/* [COMMENT]: Khối 1 - Broker Cluster Overview Header Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="p-4 rounded-xl border border-border/80 bg-card flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-emerald-500/10 text-emerald-500 flex items-center justify-center border border-emerald-500/20">
-              <Radio className="h-5 w-5 animate-pulse" />
-            </div>
-            <div>
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
-                Active Stream Brokers
-              </span>
-              <span className="text-xl font-bold text-foreground font-mono">
-                3 Connected
-              </span>
-            </div>
-          </div>
-          <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px]">
-            HA Ready
-          </Badge>
-        </div>
-
-        <div className="p-4 rounded-xl border border-border/80 bg-card flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center border border-blue-500/20">
-              <Activity className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
-                Total Ingestion Rate
-              </span>
-              <span className="text-xl font-bold text-foreground font-mono">
-                785 msgs/sec
-              </span>
-            </div>
-          </div>
-          <span className="text-xs text-muted-foreground font-mono">Realtime</span>
-        </div>
-
-        <div className="p-4 rounded-xl border border-border/80 bg-card flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-amber-500/10 text-amber-500 flex items-center justify-center border border-amber-500/20">
-              <Layers className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block">
-                Consumer Stream Lag
-              </span>
-              <span className="text-xl font-bold text-foreground font-mono">
-                17 pending
-              </span>
-            </div>
-          </div>
-          <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px]">
-            Optimal
-          </Badge>
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, topic, group or template…" className="max-w-md" />
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => consumers.refetch()} disabled={consumers.isFetching}><RefreshCw className={consumers.isFetching ? "animate-spin" : ""} />Refresh</Button>
+          {canCreate && <Button onClick={openCreate}><Plus />Create consumer</Button>}
         </div>
       </div>
 
-      {/* [COMMENT]: Khối 2 - Toolbar Lọc Broker Consumer */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border border-border/80 rounded-xl p-3 bg-card">
-        <div className="flex items-center gap-2 flex-1 max-w-md">
-          <div className="relative w-full">
-            <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Filter by stream, topic or consumer group..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 h-9 text-xs bg-background rounded-md"
-            />
+      {formOpen && (
+        <form onSubmit={submit} className="space-y-5 rounded-xl border bg-card p-5">
+          <div className="flex items-center justify-between"><div><h2 className="font-semibold">{editing ? "Edit consumer" : "Create consumer"}</h2><p className="text-xs text-muted-foreground">New consumers start paused. Credentials remain in Vault.</p></div><Button type="button" variant="ghost" size="icon" onClick={() => setFormOpen(false)}><X /></Button></div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div><Label htmlFor="consumer-name">Name</Label><Input id="consumer-name" value={form.name} maxLength={255} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>
+            <div><Label htmlFor="broker-id">Broker resource ID</Label><Input id="broker-id" value={form.broker_resource_id} onChange={(e) => setForm({ ...form, broker_resource_id: e.target.value })} required /></div>
+            <div><Label htmlFor="topic">Kafka topic</Label><Input id="topic" value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} required /></div>
+            <div><Label htmlFor="group">Consumer group</Label><Input id="group" value={form.consumer_group} onChange={(e) => setForm({ ...form, consumer_group: e.target.value })} required /></div>
+            <div><Label htmlFor="recipient-path">Recipient JSONPath</Label><Input id="recipient-path" value={form.mapping.recipient_json_path} onChange={(e) => setForm({ ...form, mapping: { ...form.mapping, recipient_json_path: e.target.value } })} required /></div>
+            <div><Label htmlFor="external-path">External message ID JSONPath</Label><Input id="external-path" value={form.mapping.external_message_id_json_path} onChange={(e) => setForm({ ...form, mapping: { ...form.mapping, external_message_id_json_path: e.target.value } })} /></div>
+            <div><Label htmlFor="template-id">Template ID</Label><Input id="template-id" value={form.template_id} onChange={(e) => setForm({ ...form, template_id: e.target.value })} required /></div>
+            <div><Label htmlFor="template-version">Template version</Label><Input id="template-version" type="number" min={1} value={form.template_version} onChange={(e) => setForm({ ...form, template_version: Number(e.target.value) })} required /></div>
+            <div><Label htmlFor="sender-id">Sender profile ID</Label><Input id="sender-id" value={form.sender_profile_id} onChange={(e) => setForm({ ...form, sender_profile_id: e.target.value })} required /></div>
+            <div><Label htmlFor="sender-version">Sender version</Label><Input id="sender-version" type="number" min={1} value={form.sender_version} onChange={(e) => setForm({ ...form, sender_version: Number(e.target.value) })} required /></div>
+            <div><Label htmlFor="parallelism">Parallelism</Label><Input id="parallelism" type="number" min={1} max={256} value={form.parallelism} onChange={(e) => setForm({ ...form, parallelism: Number(e.target.value) })} required /></div>
+            <div className="md:col-span-2"><Label htmlFor="variables">Variable paths (JSON object)</Label><Textarea id="variables" value={form.variables} onChange={(e) => setForm({ ...form, variables: e.target.value })} className="min-h-24 font-mono text-xs" /></div>
           </div>
-        </div>
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button><Button disabled={save.isPending}>{save.isPending && <Loader2 className="animate-spin" />}{editing ? "Save configuration" : "Create paused"}</Button></div>
+        </form>
+      )}
 
-        <div className="flex items-center gap-2">
-          <select
-            value={brokerFilter}
-            onChange={(e) => setBrokerFilter(e.target.value)}
-            className="h-9 px-3 rounded-md border border-border bg-background text-xs font-semibold text-foreground outline-none cursor-pointer"
-          >
-            <option value="All">Broker: All Types</option>
-            <option value="Redis Stream">Broker: Redis Stream</option>
-            <option value="Apache Kafka">Broker: Apache Kafka</option>
-            <option value="NATS JetStream">Broker: NATS JetStream</option>
-          </select>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-9 text-xs font-semibold gap-1.5"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh Stream Lag
-          </Button>
-        </div>
-      </div>
-
-      {/* [COMMENT]: Khối 3 - Stream Consumer Table View */}
-      <div className="border border-border/80 rounded-xl bg-card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-border/60 bg-muted/30 text-muted-foreground font-semibold text-[11px] uppercase tracking-wider">
-                <th className="py-2.5 px-4">Broker Type</th>
-                <th className="py-2.5 px-4">Stream / Topic Name</th>
-                <th className="py-2.5 px-4">Consumer Group</th>
-                <th className="py-2.5 px-4">Active Workers</th>
-                <th className="py-2.5 px-4">Stream Lag</th>
-                <th className="py-2.5 px-4">Throughput</th>
-                <th className="py-2.5 px-4">Status</th>
-                <th className="py-2.5 px-4">Last Polled</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/40 font-normal">
-              {filteredConsumers.map((c) => (
-                <tr key={c.id} className="hover:bg-muted/10 transition-colors">
-                  <td className="py-3 px-4 font-semibold text-foreground">
-                    <span className="px-2 py-0.5 rounded bg-muted border border-border/50 text-[11px] font-mono">
-                      {c.brokerType}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 font-mono font-semibold text-blue-500 select-all">
-                    {c.topicOrStream}
-                  </td>
-                  <td className="py-3 px-4 font-mono text-muted-foreground">
-                    {c.consumerGroup}
-                  </td>
-                  <td className="py-3 px-4 font-mono text-xs font-semibold text-foreground">
-                    {c.activeConsumers} threads
-                  </td>
-                  <td className="py-3 px-4 font-mono text-xs">
-                    <span
-                      className={`font-semibold ${
-                        c.lagOrPending > 50
-                          ? "text-amber-500"
-                          : "text-emerald-500"
-                      }`}
-                    >
-                      {c.lagOrPending} msgs
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 font-mono text-xs text-foreground">
-                    {c.throughputPerSec} /s
-                  </td>
-                  <td className="py-3 px-4">
-                    <div className="flex items-center gap-1.5">
-                      <span
-                        className={`h-2 w-2 rounded-full ${
-                          c.status === "Healthy"
-                            ? "bg-emerald-500"
-                            : c.status === "Idle"
-                            ? "bg-slate-400"
-                            : "bg-amber-500"
-                        }`}
-                      />
-                      <span className="font-medium text-foreground">
-                        {c.status}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="py-3 px-4 font-mono text-[11px] text-muted-foreground">
-                    {c.lastPolled}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <div className="overflow-hidden rounded-xl border bg-card">
+        {consumers.isLoading ? <div className="flex items-center justify-center gap-2 p-12 text-sm text-muted-foreground"><Loader2 className="animate-spin" />Loading consumers…</div> : consumers.isError ? <div className="p-10 text-center text-sm text-destructive">{errorMessage(consumers.error)}</div> : visible.length === 0 ? <div className="p-12 text-center text-sm text-muted-foreground">No consumers in this workspace.</div> : (
+          <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr><th className="px-4 py-3">Consumer</th><th className="px-4 py-3">Kafka source</th><th className="px-4 py-3">Template / sender</th><th className="px-4 py-3">Desired state</th><th className="px-4 py-3">Version</th><th className="px-4 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y">
+            {visible.map((consumer) => <tr key={consumer.id} className="hover:bg-muted/20"><td className="px-4 py-3"><div className="font-medium">{consumer.name}</div><div className="font-mono text-[11px] text-muted-foreground">{consumer.id}</div></td><td className="px-4 py-3"><div className="font-mono text-xs">{consumer.topic}</div><div className="text-xs text-muted-foreground">{consumer.consumer_group}</div></td><td className="px-4 py-3 text-xs"><div>{consumer.template_id} · v{consumer.template_version}</div><div className="text-muted-foreground">{consumer.sender_profile_id} · v{consumer.sender_version}</div></td><td className="px-4 py-3"><Badge variant="outline">{consumer.desired_state}</Badge></td><td className="px-4 py-3 font-mono text-xs">v{consumer.config_version}</td><td className="px-4 py-3"><div className="flex justify-end gap-1">
+              {canUpdate && <Button variant="ghost" size="icon-sm" title="Edit" onClick={() => openEdit(consumer)}><Pencil /></Button>}
+              {canUpdate && consumer.desired_state !== "deleting" && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : "Resume"} disabled={stateChange.isPending} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
+              {canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" className="text-destructive" title="Delete" />}><Trash2 /></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {consumer.name}?</AlertDialogTitle><AlertDialogDescription>An enabled consumer will drain before deletion. In-flight messages may finish.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(consumer)}>Request deletion</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}
+            </div></td></tr>)}
+          </tbody></table></div>
+        )}
       </div>
     </div>
   );

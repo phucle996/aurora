@@ -6,45 +6,44 @@ import (
 	"github.com/google/uuid"
 )
 
-// OutboxStatus đại diện cho trạng thái hiện tại của công việc trong Outbox
+// OutboxStatus đại diện cho trạng thái hiện tại của công việc trong mail outbox duy nhất.
 type OutboxStatus string
 
 const (
-	// OutboxStatusPending: Trạng thái ban đầu khi công việc (connection test) vừa được khởi tạo và ghi nhận bền vững vào DB.
+	// OutboxStatusPending: Trạng thái ban đầu khi mail job/config event được commit bền vững.
 	OutboxStatusPending OutboxStatus = "PENDING"
 
-	// OutboxStatusProcessing: Đánh dấu công việc đã được Dataplane Worker đón nhận từ Redis Stream và đang chạy kiểm tra bắt tay SMTP.
+	// OutboxStatusProcessing: Dataplane/projector đã nhận job từ Redis Stream.
 	OutboxStatusProcessing OutboxStatus = "PROCESSING"
 
-	// OutboxStatusSucceeded: Kết quả kiểm tra SMTP Handshake thành công hoàn toàn (Trạng thái cuối cùng).
+	// OutboxStatusSucceeded: Executor/projector hoàn thành thành công.
 	OutboxStatusSucceeded OutboxStatus = "SUCCEEDED"
 
-	// OutboxStatusFailed: Kết quả kiểm tra thất bại do cấu hình sai, kết nối lỗi hoặc quá thời gian Timeout (Trạng thái cuối cùng).
+	// OutboxStatusFailed: Executor/projector trả lỗi terminal.
 	OutboxStatusFailed OutboxStatus = "FAILED"
 )
 
-// MailOutboxRecord định nghĩa cấu trúc của bản ghi sự kiện Outbox dùng cho việc giao tiếp phi tập trung (CDC).
+// MailOutboxRecord định nghĩa routing envelope bền vững dùng cho CDC.
 type MailOutboxRecord struct {
 	// ID: Khóa chính tự tăng (BIGSERIAL) giúp tối ưu đánh chỉ mục vật lý và xác định thứ tự tuần tự trong Postgres
 	ID int64
 	// EventID: UUID định danh duy nhất toàn cục của sự kiện, dùng làm Idempotency Key chống trùng lặp giữa các node
 	EventID uuid.UUID
-	// RoutingScope: Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
+	// RoutingScope: Zone đích dạng zone:<uuid>, tạo từ trusted X-Zone-ID sau khi cross-check Workspace.
 	RoutingScope string
-	// JobTopic: Tên loại công việc hoặc topic sự kiện (ví dụ: "mail.test_connection")
+	// JobTopic: Discriminator của dispatcher (ví dụ: "mail.consumer.upsert").
 	JobTopic string
 	// Payload: Nội dung nhị phân (Protobuf) chứa tham số cấu hình hoặc dữ liệu chi tiết của công việc
 	Payload []byte
-	// UserID: ID của người dùng thực hiện yêu cầu (có thể là UUID hoặc định danh của hệ thống/SRE
-	// Do đó sử dụng kiểu string) để phục vụ thông báo real-time qua CDC
-	UserID string
+	// ActorUserID: Caller tạo intent; có thể nil với platform/system job và không phải billing owner.
+	ActorUserID *uuid.UUID
 	// Status: Trạng thái xử lý sự kiện (PENDING, PROCESSING, SUCCEEDED, FAILED)
 	Status OutboxStatus
 	// CompletedAt: Thời điểm công việc hoàn tất xử lý (succeeded hoặc failed)
 	CompletedAt *time.Time
 	// JobVersion: Phiên bản logic của Job chạy ở Dataplane
 	JobVersion uint32
-	// ResourceID: Định danh tài nguyên đích liên quan đến sự kiện (ví dụ: SMTP endpoint ID)
+	// ResourceID: Định danh aggregate đích liên quan đến sự kiện.
 	ResourceID string
 	// PayloadSchemaVersion: Phiên bản cấu trúc dữ liệu của Payload (Schema versioning)
 	PayloadSchemaVersion uint32

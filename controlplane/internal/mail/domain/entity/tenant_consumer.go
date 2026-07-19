@@ -1,0 +1,44 @@
+package mailEntity
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type TenantConsumer struct {
+	ActorUserID           uuid.UUID
+	TenantID              uuid.UUID
+	ZoneID                uuid.UUID
+	ID                    uuid.UUID
+	WorkspaceID           uuid.UUID
+	Name                  string
+	SourceType            SourceType
+	BrokerResourceID      uuid.UUID
+	SourceConfigRef       string
+	Topic                 string
+	ConsumerGroup         string
+	MappingJSON           json.RawMessage
+	TemplateID            string
+	TemplateVersion       uint64
+	SenderProfileID       string
+	SenderVersion         uint64
+	DesiredState          ConsumerDesiredState
+	Parallelism           uint32
+	ConfigVersion         uint64
+	ConfigSHA256          []byte
+	IdempotencyKey        string
+	CreateRequestSHA256   []byte
+	DeletedAt             *time.Time
+	CreatedBy             *uuid.UUID
+	UpdatedBy             *uuid.UUID
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	ExpectedConfigVersion uint64
+	DrainTimeoutSeconds   uint32
+	Reason                string
+	AfterID               *uuid.UUID
+	Limit                 uint32
+	Mapping               MessageMapping
+}

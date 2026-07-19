@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
 
-/// Truy vấn trực tiếp từ bảng mail.mail_templates các thông tin subject và body
+/// [COMMENT]: Legacy platform-mail bridge đọc đúng immutable current version trong schema Phase 1.
+/// Broker consumer runtime mới sẽ dùng Zone L2 projection, không gọi query này trên hot path.
 pub async fn fetch_template(
     config: &Config,
     template_id: &str,
@@ -21,10 +22,16 @@ pub async fn fetch_template(
         }
     });
 
-    // Query thông tin subject và body của template từ schema mail
+    // [COMMENT]: Join identity -> immutable version để seed verify-account tiếp tục tương thích
+    // trong lúc broker mail projection được triển khai ở các phase sau.
     let row = pg_client
         .query_one(
-            "SELECT subject, body FROM mail.mail_templates WHERE id = $1",
+            "SELECT v.subject_template, \
+                    CASE WHEN v.html_template <> '' THEN v.html_template ELSE v.text_template END \
+             FROM mail.mail_templates AS t \
+             JOIN mail.mail_template_versions AS v \
+               ON v.template_id = t.id AND v.version = t.current_version \
+             WHERE t.id = $1 AND t.status = 'active'",
             &[&template_id],
         )
         .await?;

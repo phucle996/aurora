@@ -1,55 +1,11 @@
-// ============================================================================
-// MAIL MODULE (CONTROL PLANE STATE ENGINE)
-// ============================================================================
-//
-// 📜 DESIGN CONTRACT (Hợp đồng Thiết kế):
-//   1. [Fail-Fast Bootstrapping Contract]: Bất kỳ dependency hệ thống nào bị 'nil' hoặc
-//      lỗi kết nối mạng trong pha khởi tạo NewModule() sẽ kích hoạt chặn đứng tiến trình
-//      và thoát lập tức (Exit Code > 0). Không bao giờ cho phép Pod chạy ở trạng thái "lỗi ngầm".
-//   2. [Interface Binding Contract]: Tất cả dịch vụ nội bộ kết nối thông qua ranh giới
-//      Interface được phân cấp tại `domain/repo` và `domain/service`. Tuyệt đối cấm liên kết
-//      trực tiếp các implementation cụ thể ở bên ngoài package `mail` để phục vụ Mocking dễ dàng.
-//
-// 🗄️ SOURCE OF TRUTH - SoT (Nguồn dữ liệu gốc):
-//   * [SOT for Dependency Injection & Wiring Graph (Tệp tin module.go)]:
-//     - File `module.go` đóng vai trò là SOURCE OF TRUTH duy nhất định nghĩa cách khởi tạo,
-//       quản lý vòng đời (Lifecycle), tiêm phụ thuộc (Dependency Injection - DI) thủ công,
-//       và thiết lập toàn bộ đồ thị liên kết (Wiring Graph) của tất cả thành phần thuộc phân hệ Mail.
-//     - Mọi sự phụ thuộc chéo (cross-dependency) giữa các repository, cache layers, services,
-//       và HTTP handlers của phân hệ Mail đều được phản ánh tường minh và chính xác tại đây.
-//     - SRE & Tech Lead Ghi chú: File này KHÔNG tự ý quyết định chính sách xử lý lỗi khẩn cấp
-//       (như tự gọi panic() hay os.Exit() khi phát hiện dependency bị nil hoặc lỗi khởi tạo).
-//       Nó thực hiện kiểm tra kiểm soát toàn vẹn đồ thị DI, phát hiện lỗi và trả lỗi (return error)
-//       ngược lên cho Callsite để Callsite chủ động quyết định chính sách Fail (Panic, Exit hay retry/restart pod).
-//
-// 🛡️ ARCHITECTURAL BOUNDARY (Ranh giới Thiết kế):
-//   - Tầng Transport (HTTP Handlers) <--> Tầng Service (Domain Logic) <--> Tầng Repository (DB Driver).
-//   - Tách biệt mô hình dữ liệu: Tầng Service hoàn toàn thao tác trên Domain Entities độc lập.
-//     Repository chịu trách nhiệm ánh xạ (Mapper hai chiều) sang Database Models trước khi DB Write.
-//
-// 👥 VAI TRÒ VÀ GHI CHÚ VẬN HÀNH (ROLE-SPECIFIC CHEATSHEET):
-//
-//   📌 ĐỐI VỚI SRE & DEVOPS PLATFORM ENGINEERS:
-//     * Cấu hình Hệ thống:
-//       - Yêu cầu kết nối PostgreSQL (`db`) và Redis (`rds`) phải luôn trực tuyến và có cơ chế Auto-Reconnect.
-//
-//   📌 ĐỐI VỚI TECH LEADS:
-//     * Quản lý Tài nguyên & DI:
-//       - Module này hoạt động như một Container Dependency Injection (DI) thủ công duy nhất của phân hệ.
-//       - Nghiêm cấm khởi tạo ad-hoc hoặc import trực tiếp `pgxpool` hay `redis` client vào sâu
-//         bên trong các Service layer. Tất cả các tài nguyên bắt buộc phải khai báo qua NewModule.
-//       - Khi mở rộng tính năng mới, hãy khai báo Interface tương ứng trước và tích hợp vào DI tại đây.
-//
-//   📌 ĐỐI VỚI APPLICATION DEVELOPERS:
-//     * Quy tắc mở rộng & Sửa đổi mã nguồn:
-//       - Luôn đảm bảo không có logic rò rỉ (no leak) giữa Database Models và Domain Entities.
-// ============================================================================
+// Mail module chỉ wire bốn luồng rõ ràng:
+// Personal/Tenant × Consumer/Template. PostgreSQL là dependency runtime duy nhất của Phase 2-3;
+// CDC/job-proxy đọc outbox bằng logical replication và không chạy poller trong process này.
 
 package mail
 
 import (
 	"context"
-	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -59,29 +15,29 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	goredis "github.com/redis/go-redis/v9"
 )
 
 type Module struct {
 	enabled bool
-	err     error // Stores initialization error for observability & diagnostics
-	cfg     *config.Config
+	err     error
 
 	// 1) Repositories
-	ConsumerRepo mailRepoInterface.ConsumerRepository
-	TemplateRepo mailRepoInterface.TemplateRepository
-	OutboxRepo   mailRepoInterface.MailOutboxRepository
+	PersonalConsumerRepo mailRepoInterface.PersonalConsumerRepository
+	TenantConsumerRepo   mailRepoInterface.TenantConsumerRepository
+	PersonalTemplateRepo mailRepoInterface.PersonalTemplateRepository
+	TenantTemplateRepo   mailRepoInterface.TenantTemplateRepository
 
 	// 2) Services
-	ConsumerService mailSvcInterface.ConsumerService
-	TemplateService mailSvcInterface.TemplateService
+	PersonalConsumerService mailSvcInterface.PersonalConsumerService
+	TenantConsumerService   mailSvcInterface.TenantConsumerService
+	PersonalTemplateService mailSvcInterface.PersonalTemplateService
+	TenantTemplateService   mailSvcInterface.TenantTemplateService
 
 	// 3) Handlers
-	ConsumerHandler *mailHandler.ConsumerHandler
-	TemplateHandler *mailHandler.TemplateHandler
-
-	// 5) Security
-	cacheEngine *cacheengine.CacheRegistry
+	PersonalConsumerHandler *mailHandler.PersonalConsumerHandler
+	TenantConsumerHandler   *mailHandler.TenantConsumerHandler
+	PersonalTemplateHandler *mailHandler.PersonalTemplateHandler
+	TenantTemplateHandler   *mailHandler.TenantTemplateHandler
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -108,66 +64,43 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the Dependency Graph for the Mail Module.
 // coreModule is required to resolve cross-module dependencies (e.g. ZoneService for endpoint zone resolution).
-func NewModule(cfg *config.Config, db *pgxpool.Pool, rds *goredis.Client, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
-
-	// ------------------------------------------------------------------------
-	// 🔄 GIAI ĐOẠN 1: CORE REPOSITORIES & CACHES BOOTSTRAPPING
-	// ------------------------------------------------------------------------
-
-	// Initialize Repositories
-	consumerRepo := mailRepoImpl.NewConsumerRepository(db, cfg)
-	if consumerRepo == nil {
-		return nil, errors.New("mail module: failed to construct consumer repository")
-	}
-	templateRepo := mailRepoImpl.NewTemplateRepository(db, cfg)
-	if templateRepo == nil {
-		return nil, errors.New("mail module: failed to construct template repository")
-	}
-	outboxRepo := mailRepoImpl.NewMailOutboxRepository(db, cfg)
-	if outboxRepo == nil {
-		return nil, errors.New("mail module: failed to construct outbox repository")
+func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
+	if cfg == nil || db == nil {
+		return nil, errors.New("mail module: config and postgres pool are required")
 	}
 
-	// ------------------------------------------------------------------------
-	// 💼 GIAI ĐOẠN 2: SERVICE LAYER INITIALIZATION
-	// ------------------------------------------------------------------------
+	// [COMMENT]: Repository được tách ngay tại DI boundary; không có generic repo tự chọn scope lúc runtime.
+	personalConsumerRepo := mailRepoImpl.NewPersonalConsumerRepository(db, cfg)
+	tenantConsumerRepo := mailRepoImpl.NewTenantConsumerRepository(db, cfg)
+	personalTemplateRepo := mailRepoImpl.NewPersonalTemplateRepository(db, cfg)
+	tenantTemplateRepo := mailRepoImpl.NewTenantTemplateRepository(db, cfg)
+	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil {
+		return nil, errors.New("mail module: failed to construct scoped repositories")
+	}
 
-	// Initialize Services
-	consumerSvc := mailSvcImpl.NewConsumerService(cfg, consumerRepo)
-	if consumerSvc == nil {
-		return nil, errors.New("mail module: failed to construct consumer service")
-	}
-	templateSvc := mailSvcImpl.NewTemplateService(cfg, templateRepo)
-	if templateSvc == nil {
-		return nil, errors.New("mail module: failed to construct template service")
-	}
-	// Đã decommissioning OutboxPoller cũ, việc chuyển tiếp dữ liệu qua Redis Stream
-	// giờ đây do job-proxy chạy ngầm đọc trực tiếp từ logical replication WAL stream.
-
-	// ------------------------------------------------------------------------
-	// 🎛️ GIAI ĐOẠN 3: TRANSPORT LAYER (HTTP HANDLERS) INITIALIZATION
-	// ------------------------------------------------------------------------
-
-	// Initialize Handlers
-	consumerHandler := mailHandler.NewConsumerHandler(consumerSvc)
-	if consumerHandler == nil {
-		return nil, errors.New("mail module: failed to construct consumer HTTP handler")
-	}
-	templateHandler := mailHandler.NewTemplateHandler(templateSvc)
-	if templateHandler == nil {
-		return nil, errors.New("mail module: failed to construct template HTTP handler")
-	}
+	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo)
+	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo)
+	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo)
+	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo)
+	personalConsumerHandler := mailHandler.NewPersonalConsumerHandler(personalConsumerSvc)
+	tenantConsumerHandler := mailHandler.NewTenantConsumerHandler(tenantConsumerSvc)
+	personalTemplateHandler := mailHandler.NewPersonalTemplateHandler(personalTemplateSvc)
+	tenantTemplateHandler := mailHandler.NewTenantTemplateHandler(tenantTemplateSvc)
 
 	return &Module{
-		enabled:         true,
-		cfg:             cfg,
-		ConsumerRepo:    consumerRepo,
-		TemplateRepo:    templateRepo,
-		OutboxRepo:      outboxRepo,
-		ConsumerService: consumerSvc,
-		TemplateService: templateSvc,
-		ConsumerHandler: consumerHandler,
-		TemplateHandler: templateHandler,
+		enabled:                 true,
+		PersonalConsumerRepo:    personalConsumerRepo,
+		TenantConsumerRepo:      tenantConsumerRepo,
+		PersonalTemplateRepo:    personalTemplateRepo,
+		TenantTemplateRepo:      tenantTemplateRepo,
+		PersonalConsumerService: personalConsumerSvc,
+		TenantConsumerService:   tenantConsumerSvc,
+		PersonalTemplateService: personalTemplateSvc,
+		TenantTemplateService:   tenantTemplateSvc,
+		PersonalConsumerHandler: personalConsumerHandler,
+		TenantConsumerHandler:   tenantConsumerHandler,
+		PersonalTemplateHandler: personalTemplateHandler,
+		TenantTemplateHandler:   tenantTemplateHandler,
 	}, nil
 }
 

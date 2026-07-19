@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package mail.runtime.v1;
+
+option go_package = "controlplane/internal/mail/transport/rpc/proto;mailproto";
+
+// [COMMENT]: Contract này chỉ mang desired state/template snapshot từ Controlplane xuống Zone
+// và runtime/result từ Dataplane về Controlplane. Zone là routing envelope của mail outbox/stream;
+// workspace chỉ là authorization boundary tại Controlplane, vì vậy cả hai không nằm trong payload.
+// Không message nào được chứa broker credential, rendered body hoặc template variables thô.
+
+enum MailConsumerDesiredState {
+  MAIL_CONSUMER_DESIRED_STATE_UNSPECIFIED = 0;
+  MAIL_CONSUMER_DESIRED_STATE_PAUSED = 1;
+  MAIL_CONSUMER_DESIRED_STATE_ENABLED = 2;
+}
+
+enum MailConsumerRuntimeState {
+  MAIL_CONSUMER_RUNTIME_STATE_UNSPECIFIED = 0;
+  MAIL_CONSUMER_RUNTIME_STATE_STOPPED = 1;
+  MAIL_CONSUMER_RUNTIME_STATE_STARTING = 2;
+  MAIL_CONSUMER_RUNTIME_STATE_RUNNING = 3;
+  MAIL_CONSUMER_RUNTIME_STATE_PAUSED = 4;
+  MAIL_CONSUMER_RUNTIME_STATE_DRAINING = 5;
+  MAIL_CONSUMER_RUNTIME_STATE_ERROR = 6;
+  MAIL_CONSUMER_RUNTIME_STATE_DEGRADED = 7;
+}
+
+enum MailExecutionStatus {
+  MAIL_EXECUTION_STATUS_UNSPECIFIED = 0;
+  MAIL_EXECUTION_STATUS_CONSUMED = 1;
+  MAIL_EXECUTION_STATUS_RENDERED = 2;
+  MAIL_EXECUTION_STATUS_SUBMITTING = 3;
+  MAIL_EXECUTION_STATUS_RETRY_SCHEDULED = 4;
+  MAIL_EXECUTION_STATUS_SUBMITTED = 5;
+  MAIL_EXECUTION_STATUS_REJECTED = 6;
+  MAIL_EXECUTION_STATUS_FAILED = 7;
+  MAIL_EXECUTION_STATUS_AMBIGUOUS = 8;
+}
+
+message MailEventMetadataV1 {
+  // [COMMENT]: UUIDv5 16-byte id, deterministic từ aggregate id + version + event type.
+  bytes event_id = 1;
+  // [COMMENT]: Bằng 1 cho toàn bộ message V1 trong file này.
+  uint32 schema_version = 2;
+  // [COMMENT]: Unix epoch milliseconds UTC do producer tạo event ghi nhận.
+  int64 occurred_at_unix_ms = 3;
+  // [COMMENT]: W3C traceparent; không chứa baggage của khách hàng.
+  string traceparent = 4;
+  // [COMMENT]: Tên workload nội bộ tạo event, phục vụ audit chứ không dùng authorization.
+  string producer = 5;
+}
+
+message KafkaSourceV1 {
+  // [COMMENT]: UUID 16-byte của Kafka binding; CP derive secret ref từ trusted Workspace/Zone scope.
+  bytes broker_resource_id = 1;
+  // [COMMENT]: Opaque Vault/secret reference; tuyệt đối không phải credential plaintext.
+  string source_config_ref = 2;
+  // [COMMENT]: Topic cụ thể đã được authorization; DP không nhận topic từ từng Kafka message.
+  string topic = 3;
+  // [COMMENT]: Consumer group ổn định của connector.
+  string consumer_group = 4;
+}
+
+message MailMessageMappingV1 {
+  // [COMMENT]: JSONPath tùy chọn lấy external event id cho audit; không dùng thay Kafka coordinate để dedupe.
+  string external_message_id_json_path = 1;
+  // [COMMENT]: JSONPath bắt buộc trả đúng một recipient scalar.
+  string recipient_json_path = 2;
+  // [COMMENT]: Template variable name -> JSONPath scalar; object/array bị reject nếu schema không cho phép.
+  map<string, string> variable_json_paths = 3;
+}
+
+message MailConsumerUpsertV1 {
+  MailEventMetadataV1 metadata = 1;
+  // [COMMENT]: UUID 16-byte của consumer aggregate; globally unique để DP không cần workspace prefix.
+  bytes consumer_id = 2;
+  // [COMMENT]: Monotonic version; DP chỉ apply version lớn hơn version hiện có.
+  uint64 config_version = 3;
+  KafkaSourceV1 kafka = 4;
+  MailMessageMappingV1 mapping = 5;
+  // [COMMENT]: Template identity được bind cố định tại config, không đọc từ Kafka payload.
+  string template_id = 6;
+  // [COMMENT]: Immutable content version; luôn lớn hơn 0.
+  uint64 template_version = 7;
+  // [COMMENT]: Sender identity được bind cố định tại config, không đọc từ Kafka payload.
+  string sender_profile_id = 8;
+  // [COMMENT]: Immutable sender version; luôn lớn hơn 0.
+  uint64 sender_version = 9;
+  MailConsumerDesiredState desired_state = 10;
+  // [COMMENT]: Số runtime slots tối đa; lease/fencing tại Zone giới hạn số Kafka connection thực tế.
+  uint32 parallelism = 11;
+  // [COMMENT]: SHA-256 32-byte của canonical config để phát hiện cùng version nhưng khác payload.
+  bytes config_sha256 = 12;
+}
+
+message MailConsumerDeleteV1 {
+  MailEventMetadataV1 metadata = 1;
+  bytes consumer_id = 2;
+  // [COMMENT]: Tombstone version phải lớn hơn mọi upsert version trước đó.
+  uint64 config_version = 3;
+  // [COMMENT]: DP ngừng poll, drain outstanding rồi đóng connection trong giới hạn này.
+  uint32 drain_timeout_seconds = 4;
+  // [COMMENT]: Sanitized operator reason; không chứa secret hoặc customer payload.
+  string reason = 5;
+}
+
+message MailConsumerRuntimeReportedV1 {
+  MailEventMetadataV1 metadata = 1;
+  bytes consumer_id = 2;
+  // [COMMENT]: Config version mà runtime thực tế đã observe/apply.
+  uint64 config_version = 3;
+  MailConsumerRuntimeState runtime_state = 4;
+  // [COMMENT]: Pod/instance opaque id; chỉ dùng diagnostics, không dùng làm metric label.
+  string instance_id = 5;
+  // [COMMENT]: Generation tăng sau mỗi COW swap/restart để fence runtime cũ.
+  uint64 runtime_generation = 6;
+  // [COMMENT]: Tổng lag snapshot, không phải source cho billing hay authorization.
+  uint64 consumer_lag = 7;
+  // [COMMENT]: Error taxonomy ổn định; rỗng khi runtime không ERROR.
+  string error_code = 8;
+  // [COMMENT]: Sanitized diagnostics, không chứa endpoint credential/message payload.
+  string error_message = 9;
+  // [COMMENT]: Monotonic trong cùng instance+generation; tạo event id mới cho từng heartbeat.
+  uint64 report_sequence = 10;
+}
+
+message MailTemplateVersionPublishedV1 {
+  MailEventMetadataV1 metadata = 1;
+  // [COMMENT]: Globally unique identity; scope/workspace đã được CP xử lý trước projection.
+  string template_id = 2;
+  // [COMMENT]: Monotonic lifecycle revision dùng chống event publish/archive đến sai thứ tự.
+  uint64 template_revision = 3;
+  // [COMMENT]: Immutable content version được consumer pin; luôn lớn hơn 0.
+  uint64 template_version = 4;
+  string subject_template = 5;
+  string text_template = 6;
+  string html_template = 7;
+  // [COMMENT]: Canonical UTF-8 JSON schema cho variables; DP validate trước render.
+  bytes variable_schema_json = 8;
+  // [COMMENT]: SHA-256 32-byte của canonical immutable template content.
+  bytes content_sha256 = 9;
+}
+
+message MailTemplateArchivedV1 {
+  MailEventMetadataV1 metadata = 1;
+  string template_id = 2;
+  // [COMMENT]: Revision tombstone lớn hơn mọi lifecycle revision trước đó.
+  uint64 template_revision = 3;
+  // [COMMENT]: Version snapshots vẫn được giữ để drain consumer đã pin; archive không hard delete content.
+  uint64 last_published_version = 4;
+}
+
+message KafkaMessageCoordinateV1 {
+  string topic = 1;
+  int32 partition = 2;
+  int64 offset = 3;
+  // [COMMENT]: Phase đầu luôn 0 vì một Kafka message tương ứng một recipient.
+  uint32 recipient_index = 4;
+  // [COMMENT]: Giá trị audit tùy chọn lấy từ mapping; Kafka coordinate mới là dedupe authority.
+  string external_message_id = 5;
+}
+
+message MailExecutionResultV1 {
+  MailEventMetadataV1 metadata = 1;
+  // [COMMENT]: UUIDv5 16-byte từ consumer + topic + partition + offset + recipient_index.
+  bytes submission_id = 2;
+  // [COMMENT]: Monotonic per-submission state version; CP bỏ qua result cũ/out-of-order.
+  uint64 state_version = 3;
+  bytes consumer_id = 4;
+  uint64 consumer_config_version = 5;
+  KafkaMessageCoordinateV1 source = 6;
+  // [COMMENT]: PII cần cho history; không log/metric và phải mã hóa hoặc retention tại CP.
+  string recipient = 7;
+  string template_id = 8;
+  uint64 template_version = 9;
+  string sender_profile_id = 10;
+  uint64 sender_version = 11;
+  uint32 attempt = 12;
+  MailExecutionStatus status = 13;
+  // [COMMENT]: Chỉ true cho transient attempt; terminal status luôn false.
+  bool retryable = 14;
+  string error_code = 15;
+  // [COMMENT]: Sanitized và bounded; không chứa raw JSON, variables hay rendered content.
+  string error_message = 16;
+  // [COMMENT]: Opaque JMAP submission id khi status SUBMITTED.
+  string jmap_submission_id = 17;
+  // [COMMENT]: SHA-256 32-byte phục vụ audit mà không lưu body.
+  bytes rendered_content_sha256 = 18;
+}

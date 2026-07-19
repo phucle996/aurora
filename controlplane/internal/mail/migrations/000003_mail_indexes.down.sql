@@ -1,6 +1,13 @@
--- 000003_mail_indexes.down.sql
-
-
-
-
-DROP INDEX IF EXISTS idx_mail_consumers_tenant;
+DROP INDEX IF EXISTS idx_mail_delivery_attempts_submission;
+DROP INDEX IF EXISTS idx_mail_submissions_consumer_history;
+DROP INDEX IF EXISTS idx_mail_submissions_workspace_history;
+DROP INDEX IF EXISTS idx_mail_result_inbox_pending;
+DROP INDEX IF EXISTS idx_mail_runtime_reports_expiry;
+DROP INDEX IF EXISTS idx_mail_template_versions_created_cursor;
+DROP INDEX IF EXISTS ux_mail_templates_platform_active_name;
+DROP INDEX IF EXISTS ux_mail_templates_workspace_active_name;
+DROP INDEX IF EXISTS ux_mail_templates_workspace_idempotency;
+DROP INDEX IF EXISTS idx_mail_consumers_desired_cursor;
+DROP INDEX IF EXISTS idx_mail_consumers_workspace_cursor;
+DROP INDEX IF EXISTS ux_mail_consumers_workspace_idempotency;
+DROP INDEX IF EXISTS ux_mail_consumers_workspace_active_name;

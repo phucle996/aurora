@@ -1,238 +1,109 @@
 "use client";
 
-import React, { useState } from "react";
-import {
-  FileCode,
-  Search,
-  Plus,
-  Filter,
-  Eye,
-  Edit,
-  MoreVertical,
-  RotateCcw,
-} from "lucide-react";
+import { FormEvent, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Archive, Eye, FilePlus2, Loader2, Plus, RefreshCw, X } from "lucide-react";
+import { toast } from "sonner";
+
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { type APIError } from "@/lib/api/fetcher";
+import { archiveMailTemplate, createMailTemplate, getMailTemplate, listMailTemplates, listMailTemplateVersions, publishMailTemplate, type MailTemplate, type TemplateContentWrite } from "@/lib/api/mail";
 
-// [COMMENT]: Interface đại diện cho thông tin mẫu email (Email Template)
-export interface MailTemplateItem {
-  id: string;
-  name: string;
-  subject: string;
-  version: number;
-  updatedAt: string;
-  status: "Active" | "Draft" | "Archived";
-  variables: string[];
+type TemplatesTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
+type TemplateForm = TemplateContentWrite & { name: string; schemaText: string };
+const emptyForm: TemplateForm = { name: "", subject_template: "", text_template: "", html_template: "", variable_schema_json: {}, schemaText: "{\n  \"type\": \"object\",\n  \"properties\": {}\n}" };
+
+function errorMessage(error: unknown): string {
+  const apiError = error as APIError;
+  if (apiError?.status === 409) return "Template changed in another session. Reload the latest revision before retrying.";
+  return apiError?.message || (error instanceof Error ? error.message : "Request failed");
 }
 
-// [COMMENT]: Tab 2 - TemplatesTab quản lý các mẫu email hệ thống & giao dịch (JMAP/HTML Templates)
-export function TemplatesTab() {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("All");
+export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelete }: TemplatesTabProps) {
+  const queryClient = useQueryClient();
+  const listKey = ["mail", scopeKey, "templates"] as const;
+  const [search, setSearch] = useState("");
+  const [selectedID, setSelectedID] = useState<string | null>(null);
+  const [formMode, setFormMode] = useState<"create" | "publish" | null>(null);
+  const [form, setForm] = useState<TemplateForm>(emptyForm);
+  const [createKey, setCreateKey] = useState("");
 
-  // [COMMENT]: Dữ liệu mẫu khung giao diện cho danh sách Email Templates
-  const templates: MailTemplateItem[] = [
-    {
-      id: "tpl_account_verify_v2",
-      name: "Account Verification Email",
-      subject: "Xác thực tài khoản Aurora Cloud Platform",
-      version: 2,
-      updatedAt: "2026-07-18 14:30:00",
-      status: "Active",
-      variables: ["activation_link", "username", "expire_hours"],
-    },
-    {
-      id: "tpl_password_reset_v1",
-      name: "Password Reset Request",
-      subject: "Yêu cầu đặt lại mật khẩu cho tài khoản {username}",
-      version: 1,
-      updatedAt: "2026-07-15 09:12:00",
-      status: "Active",
-      variables: ["reset_link", "username", "client_ip"],
-    },
-    {
-      id: "tpl_billing_invoice_v3",
-      name: "Monthly Billing Invoice Notification",
-      subject: "Hóa đơn dịch vụ tháng {billing_month} - Aurora Cloud",
-      version: 3,
-      updatedAt: "2026-07-01 00:00:00",
-      status: "Active",
-      variables: ["invoice_id", "total_amount", "pdf_download_url"],
-    },
-    {
-      id: "tpl_quota_alert_warning",
-      name: "Resource Quota Warning",
-      subject: "Cảnh báo vượt hạn ngạch tài nguyên [{workspace_name}]",
-      version: 1,
-      updatedAt: "2026-06-20 16:45:00",
-      status: "Draft",
-      variables: ["workspace_name", "usage_percent", "resource_type"],
-    },
-  ];
+  const templates = useQuery({ queryKey: listKey, queryFn: ({ signal }) => listMailTemplates(signal), enabled });
+  const detail = useQuery({ queryKey: ["mail", scopeKey, "template", selectedID], queryFn: ({ signal }) => getMailTemplate(selectedID!, signal), enabled: Boolean(selectedID) });
+  const versions = useQuery({ queryKey: ["mail", scopeKey, "template", selectedID, "versions"], queryFn: ({ signal }) => listMailTemplateVersions(selectedID!, signal), enabled: Boolean(selectedID) });
+  const visible = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return (templates.data ?? []).filter((item) => !needle || item.name.toLowerCase().includes(needle) || item.id.toLowerCase().includes(needle));
+  }, [search, templates.data]);
 
-  const filteredTemplates = templates.filter((tpl) => {
-    const matchSearch =
-      tpl.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      tpl.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      tpl.subject.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchStatus = statusFilter === "All" || tpl.status === statusFilter;
-    return matchSearch && matchStatus;
+  const save = useMutation({
+    mutationFn: async () => {
+      let schema: unknown;
+      try { schema = JSON.parse(form.schemaText); } catch { throw new Error("Variable schema must be valid JSON."); }
+      const content: TemplateContentWrite = {
+        subject_template: form.subject_template.trim(), text_template: form.text_template,
+        html_template: form.html_template, variable_schema_json: schema,
+      };
+      if (formMode === "publish" && detail.data) return publishMailTemplate(detail.data.template.id, detail.data.template.template_revision, content);
+      return createMailTemplate({ ...content, name: form.name.trim(), idempotency_key: createKey });
+    },
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["mail", scopeKey] });
+      setSelectedID(result.template.id); setFormMode(null); setForm(emptyForm);
+      toast.success(formMode === "publish" ? `Published version ${result.template.current_version}` : "Template created");
+    },
+    onError: (error) => toast.error(errorMessage(error)),
+  });
+  const archiveMutation = useMutation({
+    mutationFn: (template: MailTemplate) => archiveMailTemplate(template.id, template.template_revision),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ["mail", scopeKey] }); toast.success("Template archived"); },
+    onError: (error) => toast.error(errorMessage(error)),
   });
 
+  function startCreate() {
+    // [COMMENT]: Retry do timeout phải hội tụ về cùng aggregate thay vì sinh operation mới.
+    setCreateKey(crypto.randomUUID()); setSelectedID(null); setForm(emptyForm); setFormMode("create");
+  }
+  function startPublish() {
+    if (!detail.data) return;
+    const current = detail.data.current_version;
+    setForm({ name: detail.data.template.name, subject_template: current.subject_template, text_template: current.text_template, html_template: current.html_template, variable_schema_json: current.variable_schema_json, schemaText: JSON.stringify(current.variable_schema_json ?? {}, null, 2) });
+    setFormMode("publish");
+  }
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if ((formMode === "create" && !form.name.trim()) || !form.subject_template.trim() || (!form.text_template.trim() && !form.html_template.trim())) {
+      toast.error("Name, subject and at least one body are required."); return;
+    }
+    save.mutate();
+  }
+
+  if (selectedID && !formMode) {
+    const template = detail.data?.template;
+    const current = detail.data?.current_version;
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" onClick={() => setSelectedID(null)}>← Back to templates</Button>
+        {detail.isLoading ? <div className="flex justify-center p-12"><Loader2 className="animate-spin" /></div> : detail.isError || !template || !current ? <div className="rounded-lg border p-8 text-destructive">{errorMessage(detail.error)}</div> : <>
+          <div className="rounded-xl border bg-card p-5"><div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between"><div><div className="flex items-center gap-2"><h2 className="text-lg font-semibold">{template.name}</h2><Badge variant="outline">{template.scope}</Badge><Badge variant="outline">{template.status}</Badge></div><p className="mt-1 font-mono text-xs text-muted-foreground">{template.id}</p><p className="mt-3 text-sm">Current version <strong>v{template.current_version}</strong> · revision {template.template_revision}</p></div><div className="flex gap-2">{canUpdate && template.scope === "workspace" && template.status === "active" && <Button onClick={startPublish}><FilePlus2 />Publish new version</Button>}{canDelete && template.scope === "workspace" && template.status === "active" && <AlertDialog><AlertDialogTrigger render={<Button variant="outline" />}><Archive />Archive</AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Archive this template?</AlertDialogTitle><AlertDialogDescription>New consumers cannot bind it. Existing consumers pinned to a published version continue to work.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => archiveMutation.mutate(template)}>Archive template</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}</div></div></div>
+          <div className="grid gap-4 lg:grid-cols-2"><div className="rounded-xl border bg-card p-5"><h3 className="font-semibold">Current content</h3><div className="mt-4 space-y-4"><div><div className="text-xs font-medium text-muted-foreground">Subject</div><div className="mt-1 rounded-md bg-muted/40 p-3 text-sm">{current.subject_template}</div></div>{current.text_template && <div><div className="text-xs font-medium text-muted-foreground">Text</div><pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-xs">{current.text_template}</pre></div>}{current.html_template && <div><div className="text-xs font-medium text-muted-foreground">HTML source</div><pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-3 text-xs">{current.html_template}</pre></div>}</div></div><div className="rounded-xl border bg-card p-5"><h3 className="font-semibold">Immutable versions</h3>{versions.isLoading ? <Loader2 className="mt-5 animate-spin" /> : <div className="mt-4 divide-y">{(versions.data ?? []).map((version) => <div key={version.version} className="flex items-center justify-between py-3 text-sm"><div><strong>v{version.version}</strong><div className="font-mono text-[11px] text-muted-foreground">{version.content_sha256.slice(0, 16)}…</div></div><time className="text-xs text-muted-foreground">{new Date(version.created_at).toLocaleString()}</time></div>)}</div>}</div></div>
+        </>}
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-4 text-foreground">
-      {/* [COMMENT]: Khối 1 - Flat Integrated Toolbar (Thanh tìm kiếm & Nút tạo mới) */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border border-border/80 rounded-xl p-3 bg-card">
-        <div className="flex items-center gap-2 flex-1 max-w-md">
-          <div className="relative w-full">
-            <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search template name, ID or subject..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 h-9 text-xs bg-background rounded-md"
-            />
-          </div>
-        </div>
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search template name or ID…" className="max-w-md" /><div className="flex gap-2"><Button variant="outline" onClick={() => templates.refetch()} disabled={templates.isFetching}><RefreshCw className={templates.isFetching ? "animate-spin" : ""} />Refresh</Button>{canCreate && <Button onClick={startCreate}><Plus />Create template</Button>}</div></div>
 
-        <div className="flex items-center gap-2">
-          {/* Status Filter Selector */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="h-9 px-3 rounded-md border border-border bg-background text-xs font-semibold text-foreground outline-none cursor-pointer"
-          >
-            <option value="All">Status: All</option>
-            <option value="Active">Status: Active</option>
-            <option value="Draft">Status: Draft</option>
-            <option value="Archived">Status: Archived</option>
-          </select>
+      {formMode && <form onSubmit={submit} className="space-y-5 rounded-xl border bg-card p-5"><div className="flex items-center justify-between"><div><h2 className="font-semibold">{formMode === "create" ? "Create template" : `Publish version ${detail.data ? detail.data.template.current_version + 1 : ""}`}</h2><p className="text-xs text-muted-foreground">Published versions are immutable. Variables must be declared in the JSON schema.</p></div><Button type="button" variant="ghost" size="icon" onClick={() => setFormMode(null)}><X /></Button></div><div className="grid gap-4 lg:grid-cols-2">{formMode === "create" && <div className="lg:col-span-2"><Label htmlFor="template-name">Name</Label><Input id="template-name" value={form.name} maxLength={255} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></div>}<div className="lg:col-span-2"><Label htmlFor="subject">Subject</Label><Input id="subject" value={form.subject_template} maxLength={998} onChange={(e) => setForm({ ...form, subject_template: e.target.value })} required /></div><div><Label htmlFor="text-body">Text body</Label><Textarea id="text-body" value={form.text_template} onChange={(e) => setForm({ ...form, text_template: e.target.value })} className="min-h-64 font-mono text-xs" /></div><div><Label htmlFor="html-body">HTML body</Label><Textarea id="html-body" value={form.html_template} onChange={(e) => setForm({ ...form, html_template: e.target.value })} className="min-h-64 font-mono text-xs" /></div><div className="lg:col-span-2"><Label htmlFor="schema">Variable JSON Schema</Label><Textarea id="schema" value={form.schemaText} onChange={(e) => setForm({ ...form, schemaText: e.target.value })} className="min-h-44 font-mono text-xs" /></div></div><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setFormMode(null)}>Cancel</Button><Button disabled={save.isPending}>{save.isPending && <Loader2 className="animate-spin" />}{formMode === "create" ? "Create template" : "Publish immutable version"}</Button></div></form>}
 
-          {searchTerm || statusFilter !== "All" ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setSearchTerm("");
-                setStatusFilter("All");
-              }}
-              className="h-9 text-xs text-blue-500 hover:text-blue-600 font-semibold gap-1.5"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Reset
-            </Button>
-          ) : null}
-
-          <Button size="sm" className="h-9 text-xs font-semibold gap-1.5 bg-blue-600 hover:bg-blue-700 text-white">
-            <Plus className="h-4 w-4" />
-            Create Template
-          </Button>
-        </div>
-      </div>
-
-      {/* [COMMENT]: Khối 2 - Table-First Email Template List Container */}
-      <div className="border border-border/80 rounded-xl bg-card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="border-b border-border/60 bg-muted/30 text-muted-foreground font-semibold text-[11px] uppercase tracking-wider">
-                <th className="py-2.5 px-4">Template ID / Name</th>
-                <th className="py-2.5 px-4">Default Subject</th>
-                <th className="py-2.5 px-4">Variables</th>
-                <th className="py-2.5 px-4">Version</th>
-                <th className="py-2.5 px-4">Status</th>
-                <th className="py-2.5 px-4">Updated At</th>
-                <th className="py-2.5 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/40 font-normal">
-              {filteredTemplates.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-muted-foreground">
-                    Không tìm thấy mẫu email phù hợp
-                  </td>
-                </tr>
-              ) : (
-                filteredTemplates.map((tpl) => (
-                  <tr
-                    key={tpl.id}
-                    className="hover:bg-muted/10 transition-colors"
-                  >
-                    <td className="py-3 px-4">
-                      <div className="flex flex-col">
-                        <span className="font-semibold text-foreground text-sm">
-                          {tpl.name}
-                        </span>
-                        <span className="text-[11px] font-mono text-muted-foreground select-all">
-                          {tpl.id}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-muted-foreground max-w-[240px] truncate">
-                      {tpl.subject}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="flex flex-wrap gap-1 max-w-[200px]">
-                        {tpl.variables.map((v) => (
-                          <span
-                            key={v}
-                            className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/40"
-                          >
-                            {v}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-xs">
-                      v{tpl.version}
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`h-2 w-2 rounded-full ${
-                            tpl.status === "Active"
-                              ? "bg-emerald-500"
-                              : tpl.status === "Draft"
-                              ? "bg-amber-500"
-                              : "bg-slate-400"
-                          }`}
-                        />
-                        <span className="font-medium text-foreground">
-                          {tpl.status}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-[11px] text-muted-foreground">
-                      {tpl.updatedAt}
-                    </td>
-                    <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                          title="Preview Template"
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                          title="Edit Template"
-                        >
-                          <Edit className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <div className="overflow-hidden rounded-xl border bg-card">{templates.isLoading ? <div className="flex items-center justify-center gap-2 p-12 text-sm text-muted-foreground"><Loader2 className="animate-spin" />Loading templates…</div> : templates.isError ? <div className="p-10 text-center text-sm text-destructive">{errorMessage(templates.error)}</div> : visible.length === 0 ? <div className="p-12 text-center text-sm text-muted-foreground">No templates in this workspace.</div> : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr><th className="px-4 py-3">Template</th><th className="px-4 py-3">Scope</th><th className="px-4 py-3">Current version</th><th className="px-4 py-3">Revision</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Updated</th><th className="px-4 py-3 text-right">Action</th></tr></thead><tbody className="divide-y">{visible.map((template) => <tr key={template.id} className="hover:bg-muted/20"><td className="px-4 py-3"><div className="font-medium">{template.name}</div><div className="font-mono text-[11px] text-muted-foreground">{template.id}</div></td><td className="px-4 py-3"><Badge variant="outline">{template.scope}</Badge></td><td className="px-4 py-3 font-mono">v{template.current_version}</td><td className="px-4 py-3 font-mono">{template.template_revision}</td><td className="px-4 py-3"><Badge variant="outline">{template.status}</Badge></td><td className="px-4 py-3 text-xs text-muted-foreground">{new Date(template.updated_at).toLocaleString()}</td><td className="px-4 py-3 text-right"><Button variant="ghost" size="sm" onClick={() => setSelectedID(template.id)}><Eye />View</Button></td></tr>)}</tbody></table></div>}</div>
     </div>
   );
 }
