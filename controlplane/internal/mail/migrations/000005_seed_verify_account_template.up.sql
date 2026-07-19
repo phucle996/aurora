@@ -1,31 +1,25 @@
--- [COMMENT]: Platform identity được insert một lần; migration không mutate template lifecycle đã tồn tại.
-INSERT INTO mail_templates (
-    id, workspace_id, scope, name, current_version, template_revision, status, created_at, updated_at
-)
+-- [COMMENT]: System identity dành riêng IAM; không gán ownership Personal/Tenant giả.
+INSERT INTO system_mail_templates (id, name, current_version, updated_at)
 VALUES (
-    'platform/verify_account', NULL, 'platform', 'Verify Account', 1, 1, 'active', now(), now()
+    'system/verify_account', 'Verify Account', 1, now()
 )
 ON CONFLICT (id) DO NOTHING;
 
--- [COMMENT]: Version 1 là immutable. Hash là SHA-256 của canonical seed content do release tạo sẵn.
-INSERT INTO mail_template_versions (
+-- [COMMENT]: Version 1 immutable; hash được tính ngay từ subject + NUL + HTML để không drift khi sửa seed.
+INSERT INTO system_mail_template_versions (
     template_id,
     version,
     subject_template,
-    text_template,
     html_template,
-    variable_schema_json,
     content_sha256,
     created_at
 )
 VALUES (
-    'platform/verify_account',
+    'system/verify_account',
     1,
     'Kích hoạt tài khoản của bạn',
-    '',
     '<html><body><h1>Xin chào {{fullname}},</h1><p>Vui lòng mở trang Aurora để xác nhận kích hoạt: <a href="https://cloud.aurora.local/activate#user_id={{user_id}}&event_id={{event_id}}&token={{verify_token}}">Kích hoạt tài khoản</a></p></body></html>',
-    '{"type":"object","required":["fullname","user_id","event_id","verify_token"],"properties":{"fullname":{"type":"string"},"user_id":{"type":"string"},"event_id":{"type":"string"},"verify_token":{"type":"string"}},"additionalProperties":false}'::jsonb,
-    decode('3d4fff46e64b33228e3fa697f3804e3c0014d57d807b2150f47d8ca52ca9d944', 'hex'),
+    decode('7a78142c15c89e51eaf333e6fa4290169dbe554fc6957b9ed48f76e8316a40a8', 'hex'),
     now()
 )
 ON CONFLICT (template_id, version) DO NOTHING;

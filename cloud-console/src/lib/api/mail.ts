@@ -34,7 +34,6 @@ export type MailConsumer = {
 export type MailTemplate = {
   id: string;
   workspace_id: string | null;
-  scope: "platform" | "workspace";
   name: string;
   current_version: number;
   template_revision: number;
@@ -48,9 +47,7 @@ export type MailTemplateVersion = {
   template_id: string;
   version: number;
   subject_template: string;
-  text_template: string;
   html_template: string;
-  variable_schema_json: unknown;
   content_sha256: string;
   created_at: string;
 };
@@ -76,9 +73,7 @@ export type ConsumerWrite = {
 
 export type TemplateContentWrite = {
   subject_template: string;
-  text_template: string;
   html_template: string;
-  variable_schema_json: unknown;
 };
 
 type DataEnvelope<T> = { data?: T };

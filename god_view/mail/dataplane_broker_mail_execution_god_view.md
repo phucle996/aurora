@@ -188,7 +188,7 @@ Trước render phải giới hạn:
 - Recipient count đúng một.
 - Template rendered subject/body byte size.
 
-Object/array bị reject trừ khi variable schema và renderer contract sau này hỗ trợ rõ ràng. Phase đầu normalize variables thành scalar strings.
+Object/array bị reject; phase đầu normalize variables thành scalar strings và renderer tự đối chiếu các token `{{...}}` xuất hiện trong subject/HTML.
 
 ## 6. Immutable template runtime
 
@@ -203,7 +203,7 @@ Flow:
 1. Consumer config pin explicit `template_id + template_version`.
 2. L1 hit trả compiled immutable template.
 3. L1 miss đọc đúng version snapshot từ Zone L2.
-4. Validate content hash và variable schema.
+4. Validate content hash; detect placeholder trong subject/HTML và yêu cầu message cung cấp đủ scalar variables.
 5. Compile/coalesce concurrent miss rồi insert bounded Moka L1.
 6. Render subject/text/HTML tại DP.
 

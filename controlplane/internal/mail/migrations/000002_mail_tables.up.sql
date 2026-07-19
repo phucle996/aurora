@@ -1,53 +1,61 @@
--- [COMMENT]: Template identity thuộc Platform hoặc đúng một Workspace; owner/tenant không được duplicate tại Mail.
-CREATE TABLE IF NOT EXISTS mail_templates (
+-- [COMMENT]: Personal và Tenant dùng namespace vật lý riêng; không cần scope discriminator hoặc owner audit ở Personal.
+CREATE TABLE IF NOT EXISTS personal_mail_templates (
     id VARCHAR(128) PRIMARY KEY,
-    workspace_id UUID NULL,
-    scope mail_template_scope NOT NULL,
+    workspace_id UUID NOT NULL,
     name VARCHAR(255) NOT NULL,
     current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     template_revision BIGINT NOT NULL DEFAULT 0 CHECK (template_revision >= 0),
     status mail_template_status NOT NULL DEFAULT 'active',
-    -- [COMMENT]: Workspace template create retry dùng key + canonical request hash; platform seed không đi qua HTTP nên để NULL.
-    create_idempotency_key VARCHAR(128) NULL,
-    create_request_sha256 BYTEA NULL,
+    create_idempotency_key VARCHAR(128) NOT NULL,
+    create_request_sha256 BYTEA NOT NULL CHECK (octet_length(create_request_sha256) = 32),
     archived_at TIMESTAMPTZ NULL,
-    created_by UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_mail_template_scope_workspace CHECK (
-        (scope = 'platform' AND workspace_id IS NULL)
-        OR (scope = 'workspace' AND workspace_id IS NOT NULL)
-    ),
-    CONSTRAINT ck_mail_template_archive_state CHECK (
+    CONSTRAINT ck_personal_mail_template_archive_state CHECK (
         (status = 'active' AND archived_at IS NULL)
         OR (status = 'archived' AND archived_at IS NOT NULL)
-    ),
-    CONSTRAINT ck_mail_template_create_idempotency CHECK (
-        (scope = 'platform' AND create_idempotency_key IS NULL AND create_request_sha256 IS NULL)
-        OR (
-            scope = 'workspace'
-            AND create_idempotency_key IS NOT NULL
-            AND create_request_sha256 IS NOT NULL
-            AND octet_length(create_request_sha256) = 32
-        )
     )
 );
 
--- [COMMENT]: Content version là immutable/COW; update template luôn INSERT version mới.
-CREATE TABLE IF NOT EXISTS mail_template_versions (
-    template_id VARCHAR(128) NOT NULL REFERENCES mail_templates(id) ON DELETE RESTRICT,
+CREATE TABLE IF NOT EXISTS personal_mail_template_versions (
+    template_id VARCHAR(128) NOT NULL REFERENCES personal_mail_templates(id) ON DELETE RESTRICT,
     version BIGINT NOT NULL CHECK (version > 0),
     subject_template VARCHAR(998) NOT NULL,
-    text_template TEXT NOT NULL DEFAULT '',
-    html_template TEXT NOT NULL DEFAULT '',
-    variable_schema_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    html_template TEXT NOT NULL,
     content_sha256 BYTEA NOT NULL,
-    created_by UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (template_id, version),
-    CONSTRAINT ck_mail_template_has_body CHECK (text_template <> '' OR html_template <> ''),
-    CONSTRAINT ck_mail_template_schema_object CHECK (jsonb_typeof(variable_schema_json) = 'object'),
-    CONSTRAINT ck_mail_template_content_hash CHECK (octet_length(content_sha256) = 32)
+    CONSTRAINT ck_personal_mail_template_body CHECK (html_template <> ''),
+    CONSTRAINT ck_personal_mail_template_hash CHECK (octet_length(content_sha256) = 32)
+);
+
+CREATE TABLE IF NOT EXISTS tenant_mail_templates (
+    id VARCHAR(128) PRIMARY KEY, workspace_id UUID NOT NULL, name VARCHAR(255) NOT NULL,
+    current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
+    template_revision BIGINT NOT NULL DEFAULT 0 CHECK (template_revision >= 0),
+    status mail_template_status NOT NULL DEFAULT 'active',
+    create_idempotency_key VARCHAR(128) NOT NULL,
+    create_request_sha256 BYTEA NOT NULL CHECK (octet_length(create_request_sha256) = 32),
+    archived_at TIMESTAMPTZ NULL, created_by UUID NOT NULL, updated_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_tenant_mail_template_archive_state CHECK ((status='active' AND archived_at IS NULL) OR (status='archived' AND archived_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS tenant_mail_template_versions (
+    template_id VARCHAR(128) NOT NULL REFERENCES tenant_mail_templates(id) ON DELETE RESTRICT,
+    version BIGINT NOT NULL CHECK (version > 0), subject_template VARCHAR(998) NOT NULL,
+    html_template TEXT NOT NULL CHECK (html_template <> ''), content_sha256 BYTEA NOT NULL CHECK (octet_length(content_sha256)=32),
+    created_by UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(template_id,version)
+);
+
+-- [COMMENT]: IAM system mail không mang ownership giả và không lẫn với customer template tables.
+CREATE TABLE IF NOT EXISTS system_mail_templates (
+    id VARCHAR(128) PRIMARY KEY, name VARCHAR(255) NOT NULL, current_version BIGINT NOT NULL CHECK(current_version>0), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS system_mail_template_versions (
+    template_id VARCHAR(128) NOT NULL REFERENCES system_mail_templates(id) ON DELETE RESTRICT,
+    version BIGINT NOT NULL CHECK(version>0), subject_template VARCHAR(998) NOT NULL, html_template TEXT NOT NULL CHECK(html_template<>''),
+    content_sha256 BYTEA NOT NULL CHECK(octet_length(content_sha256)=32), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(template_id,version)
 );
 
 -- [COMMENT]: COW là invariant tại database, không chỉ convention ở service/repository.
@@ -60,23 +68,16 @@ BEGIN
         END IF;
         RETURN NEW;
     END IF;
-    RAISE EXCEPTION 'mail_template_versions is immutable; publish a new version'
+    RAISE EXCEPTION '% is immutable; publish a new version', TG_TABLE_NAME
         USING ERRCODE = '55000';
 END;
 $$ LANGUAGE plpgsql;
 
 DO $$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_trigger
-        WHERE tgname = 'trg_mail_template_versions_immutable'
-          AND tgrelid = 'mail_template_versions'::regclass
-          AND NOT tgisinternal
-    ) THEN
-        CREATE TRIGGER trg_mail_template_versions_immutable
-        BEFORE UPDATE OR DELETE ON mail_template_versions
-        FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
-    END IF;
+    CREATE TRIGGER trg_personal_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON personal_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
+    CREATE TRIGGER trg_tenant_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON tenant_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
+    CREATE TRIGGER trg_system_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON system_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
 END $$;
 
 -- [COMMENT]: Consumer authorization boundary là Workspace. Zone không nằm trong row này; mỗi mutation
@@ -106,8 +107,6 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     updated_by UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    FOREIGN KEY (template_id, template_version)
-        REFERENCES mail_template_versions(template_id, version) ON DELETE RESTRICT,
     CONSTRAINT ck_mail_consumer_mapping_object CHECK (jsonb_typeof(mapping_json) = 'object'),
     CONSTRAINT ck_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
     CONSTRAINT ck_mail_consumer_create_request_hash CHECK (octet_length(create_request_sha256) = 32),

@@ -41,10 +41,10 @@ func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailE
 			  ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active'
 			WHERE w.id=$2 AND w.zone_id=$3 AND w.tenant_id=$37
 		), template_available AS (
-			SELECT 1 FROM %s.mail_templates AS t
-			JOIN %s.mail_template_versions AS v ON v.template_id=t.id AND v.version=$11
+			SELECT 1 FROM %s.tenant_mail_templates AS t
+			JOIN %s.tenant_mail_template_versions AS v ON v.template_id=t.id AND v.version=$11
 			WHERE t.id=$10 AND t.status='active'
-			  AND (t.scope='platform' OR (t.scope='workspace' AND t.workspace_id=$2))
+			  AND t.workspace_id=$2
 		), inserted AS (
 			INSERT INTO %s.mail_consumers (
 				id,workspace_id,name,source_type,broker_resource_id,source_config_ref,topic,
@@ -221,10 +221,10 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			  ON m.tenant_id=w.tenant_id AND m.user_id=$16 AND m.status='active'
 			WHERE w.id=$19 AND w.zone_id=$20 AND w.tenant_id=$33
 		), template_available AS (
-			SELECT 1 FROM %s.mail_templates AS t
-			JOIN %s.mail_template_versions AS v ON v.template_id=t.id AND v.version=$9
+			SELECT 1 FROM %s.tenant_mail_templates AS t
+			JOIN %s.tenant_mail_template_versions AS v ON v.template_id=t.id AND v.version=$9
 			WHERE t.id=$8 AND t.status='active'
-			  AND (t.scope='platform' OR (t.scope='workspace' AND t.workspace_id=$19))
+			  AND t.workspace_id=$19
 		), target AS (
 			SELECT config_version FROM %s.mail_consumers WHERE id=$18 AND workspace_id=$19 AND deleted_at IS NULL
 			  AND EXISTS(SELECT 1 FROM authorized)

@@ -30,14 +30,6 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_type t
         JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE n.nspname = current_schema() AND t.typname = 'mail_template_scope'
-    ) THEN
-        CREATE TYPE mail_template_scope AS ENUM ('platform', 'workspace');
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE n.nspname = current_schema() AND t.typname = 'mail_template_status'
     ) THEN
         CREATE TYPE mail_template_status AS ENUM ('active', 'archived');

@@ -82,7 +82,7 @@ func (h *TenantTemplateHandler) Create(c *gin.Context) {
 		return
 	}
 
-	template, err := h.svc.CreateTemplate(ctx, &mailEntity.TenantTemplate{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: &workspaceID, ZoneID: zoneID, IdempotencyKey: req.IdempotencyKey, Name: req.Name, SubjectTemplate: req.SubjectTemplate, TextTemplate: req.TextTemplate, HTMLTemplate: req.HTMLTemplate, VariableSchemaJSON: req.VariableSchemaJSON})
+	template, err := h.svc.CreateTemplate(ctx, &mailEntity.TenantTemplate{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: &workspaceID, ZoneID: zoneID, IdempotencyKey: req.IdempotencyKey, Name: req.Name, SubjectTemplate: req.SubjectTemplate, HTMLTemplate: req.HTMLTemplate})
 	version := template
 	if err != nil {
 		switch {
@@ -108,7 +108,6 @@ func (h *TenantTemplateHandler) Create(c *gin.Context) {
 		"template": gin.H{
 			"id":                template.ID,
 			"workspace_id":      template.WorkspaceID,
-			"scope":             template.Scope,
 			"name":              template.Name,
 			"current_version":   template.CurrentVersion,
 			"template_revision": template.TemplateRevision,
@@ -118,14 +117,12 @@ func (h *TenantTemplateHandler) Create(c *gin.Context) {
 			"updated_at":        template.UpdatedAt,
 		},
 		"current_version": gin.H{
-			"template_id":          version.TemplateID,
-			"version":              version.Version,
-			"subject_template":     version.SubjectTemplate,
-			"text_template":        version.TextTemplate,
-			"html_template":        version.HTMLTemplate,
-			"variable_schema_json": version.VariableSchemaJSON,
-			"content_sha256":       hex.EncodeToString(version.ContentSHA256),
-			"created_at":           version.VersionCreatedAt,
+			"template_id":      version.TemplateID,
+			"version":          version.Version,
+			"subject_template": version.SubjectTemplate,
+			"html_template":    version.HTMLTemplate,
+			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
+			"created_at":       version.VersionCreatedAt,
 		},
 	}, "mail template created")
 }
@@ -183,7 +180,6 @@ func (h *TenantTemplateHandler) Get(c *gin.Context) {
 		"template": gin.H{
 			"id":                template.ID,
 			"workspace_id":      template.WorkspaceID,
-			"scope":             template.Scope,
 			"name":              template.Name,
 			"current_version":   template.CurrentVersion,
 			"template_revision": template.TemplateRevision,
@@ -193,14 +189,12 @@ func (h *TenantTemplateHandler) Get(c *gin.Context) {
 			"updated_at":        template.UpdatedAt,
 		},
 		"current_version": gin.H{
-			"template_id":          version.TemplateID,
-			"version":              version.Version,
-			"subject_template":     version.SubjectTemplate,
-			"text_template":        version.TextTemplate,
-			"html_template":        version.HTMLTemplate,
-			"variable_schema_json": version.VariableSchemaJSON,
-			"content_sha256":       hex.EncodeToString(version.ContentSHA256),
-			"created_at":           version.VersionCreatedAt,
+			"template_id":      version.TemplateID,
+			"version":          version.Version,
+			"subject_template": version.SubjectTemplate,
+			"html_template":    version.HTMLTemplate,
+			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
+			"created_at":       version.VersionCreatedAt,
 		},
 	}, "mail template loaded")
 }
@@ -259,7 +253,6 @@ func (h *TenantTemplateHandler) List(c *gin.Context) {
 		items = append(items, gin.H{
 			"id":                template.ID,
 			"workspace_id":      template.WorkspaceID,
-			"scope":             template.Scope,
 			"name":              template.Name,
 			"current_version":   template.CurrentVersion,
 			"template_revision": template.TemplateRevision,
@@ -344,14 +337,12 @@ func (h *TenantTemplateHandler) ListVersions(c *gin.Context) {
 	items := make([]gin.H, 0, len(versions))
 	for _, version := range versions {
 		items = append(items, gin.H{
-			"template_id":          version.TemplateID,
-			"version":              version.Version,
-			"subject_template":     version.SubjectTemplate,
-			"text_template":        version.TextTemplate,
-			"html_template":        version.HTMLTemplate,
-			"variable_schema_json": version.VariableSchemaJSON,
-			"content_sha256":       hex.EncodeToString(version.ContentSHA256),
-			"created_at":           version.VersionCreatedAt,
+			"template_id":      version.TemplateID,
+			"version":          version.Version,
+			"subject_template": version.SubjectTemplate,
+			"html_template":    version.HTMLTemplate,
+			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
+			"created_at":       version.VersionCreatedAt,
 		})
 	}
 	nextCursor := uint64(0)
@@ -410,13 +401,12 @@ func (h *TenantTemplateHandler) PublishVersion(c *gin.Context) {
 	req.SubjectTemplate = strings.TrimSpace(req.SubjectTemplate)
 	if req.ExpectedRevision == 0 || req.SubjectTemplate == "" || len(req.SubjectTemplate) > 998 ||
 		strings.ContainsAny(req.SubjectTemplate, "\r\n") ||
-		(strings.TrimSpace(req.TextTemplate) == "" && strings.TrimSpace(req.HTMLTemplate) == "") ||
-		len(req.TextTemplate) > 1<<20 || len(req.HTMLTemplate) > 1<<20 || len(req.VariableSchemaJSON) > 64<<10 {
+		strings.TrimSpace(req.HTMLTemplate) == "" || len(req.HTMLTemplate) > 1<<20 {
 		apires.RespondBadRequest(c, "invalid publish parameters")
 		return
 	}
 
-	template, err := h.svc.PublishTemplateVersion(ctx, &mailEntity.TenantTemplate{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: &workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision, SubjectTemplate: req.SubjectTemplate, TextTemplate: req.TextTemplate, HTMLTemplate: req.HTMLTemplate, VariableSchemaJSON: req.VariableSchemaJSON})
+	template, err := h.svc.PublishTemplateVersion(ctx, &mailEntity.TenantTemplate{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: &workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision, SubjectTemplate: req.SubjectTemplate, HTMLTemplate: req.HTMLTemplate})
 	version := template
 	if err != nil {
 		switch {
@@ -442,7 +432,6 @@ func (h *TenantTemplateHandler) PublishVersion(c *gin.Context) {
 		"template": gin.H{
 			"id":                template.ID,
 			"workspace_id":      template.WorkspaceID,
-			"scope":             template.Scope,
 			"name":              template.Name,
 			"current_version":   template.CurrentVersion,
 			"template_revision": template.TemplateRevision,
@@ -452,14 +441,12 @@ func (h *TenantTemplateHandler) PublishVersion(c *gin.Context) {
 			"updated_at":        template.UpdatedAt,
 		},
 		"published_version": gin.H{
-			"template_id":          version.TemplateID,
-			"version":              version.Version,
-			"subject_template":     version.SubjectTemplate,
-			"text_template":        version.TextTemplate,
-			"html_template":        version.HTMLTemplate,
-			"variable_schema_json": version.VariableSchemaJSON,
-			"content_sha256":       hex.EncodeToString(version.ContentSHA256),
-			"created_at":           version.VersionCreatedAt,
+			"template_id":      version.TemplateID,
+			"version":          version.Version,
+			"subject_template": version.SubjectTemplate,
+			"html_template":    version.HTMLTemplate,
+			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
+			"created_at":       version.VersionCreatedAt,
 		},
 	}, "mail template version published")
 }

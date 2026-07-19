@@ -26,12 +26,11 @@ pub async fn fetch_template(
     // trong lúc broker mail projection được triển khai ở các phase sau.
     let row = pg_client
         .query_one(
-            "SELECT v.subject_template, \
-                    CASE WHEN v.html_template <> '' THEN v.html_template ELSE v.text_template END \
-             FROM mail.mail_templates AS t \
-             JOIN mail.mail_template_versions AS v \
+            "SELECT v.subject_template, v.html_template \
+             FROM mail.system_mail_templates AS t \
+             JOIN mail.system_mail_template_versions AS v \
                ON v.template_id = t.id AND v.version = t.current_version \
-             WHERE t.id = $1 AND t.status = 'active'",
+             WHERE t.id = $1",
             &[&template_id],
         )
         .await?;

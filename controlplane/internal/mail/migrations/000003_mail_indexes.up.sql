@@ -15,20 +15,12 @@ CREATE INDEX IF NOT EXISTS idx_mail_consumers_desired_cursor
 ON mail_consumers (desired_state, id)
 WHERE deleted_at IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS ux_mail_templates_workspace_active_name
-ON mail_templates (workspace_id, lower(name))
-WHERE scope = 'workspace' AND archived_at IS NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_mail_templates_workspace_idempotency
-ON mail_templates (workspace_id, create_idempotency_key)
-WHERE scope = 'workspace';
-
-CREATE UNIQUE INDEX IF NOT EXISTS ux_mail_templates_platform_active_name
-ON mail_templates (lower(name))
-WHERE scope = 'platform' AND archived_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_mail_template_versions_created_cursor
-ON mail_template_versions (template_id, created_at DESC, version DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_personal_mail_templates_active_name ON personal_mail_templates(workspace_id,lower(name)) WHERE archived_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_personal_mail_templates_idempotency ON personal_mail_templates(workspace_id,create_idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_personal_mail_template_versions_cursor ON personal_mail_template_versions(template_id,created_at DESC,version DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_mail_templates_active_name ON tenant_mail_templates(workspace_id,lower(name)) WHERE archived_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_mail_templates_idempotency ON tenant_mail_templates(workspace_id,create_idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_tenant_mail_template_versions_cursor ON tenant_mail_template_versions(template_id,created_at DESC,version DESC);
 
 CREATE INDEX IF NOT EXISTS idx_mail_runtime_reports_expiry
 ON mail_consumer_runtime_reports (expires_at, consumer_id);

@@ -134,10 +134,9 @@ message MailTemplateVersionPublishedV1 {
   // [COMMENT]: Immutable content version được consumer pin; luôn lớn hơn 0.
   uint64 template_version = 4;
   string subject_template = 5;
-  string text_template = 6;
+  reserved 6;
   string html_template = 7;
-  // [COMMENT]: Canonical UTF-8 JSON schema cho variables; DP validate trước render.
-  bytes variable_schema_json = 8;
+  reserved 8;
   // [COMMENT]: SHA-256 32-byte của canonical immutable template content.
   bytes content_sha256 = 9;
 }

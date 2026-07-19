@@ -1,7 +1,6 @@
 package mailEntity
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +12,6 @@ type TenantTemplate struct {
 	ZoneID              uuid.UUID
 	ID                  string
 	WorkspaceID         *uuid.UUID
-	Scope               TemplateScope
 	Name                string
 	CurrentVersion      uint64
 	TemplateRevision    uint64
@@ -22,6 +20,7 @@ type TenantTemplate struct {
 	CreateRequestSHA256 []byte
 	ArchivedAt          *time.Time
 	CreatedBy           *uuid.UUID
+	UpdatedBy           *uuid.UUID
 	UpdatedAt           time.Time
 	ExpectedRevision    uint64
 	BeforeVersion       uint64
@@ -30,9 +29,7 @@ type TenantTemplate struct {
 	TemplateID          string
 	Version             uint64
 	SubjectTemplate     string
-	TextTemplate        string
 	HTMLTemplate        string
-	VariableSchemaJSON  json.RawMessage
 	ContentSHA256       []byte
 	CreatedAt           time.Time
 	VersionCreatedBy    *uuid.UUID

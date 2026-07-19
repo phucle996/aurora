@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.30.2
-// source: mail_runtime.proto
+// source: internal/mail/transport/rpc/proto/mail_runtime.proto
 
 package mailproto
 
@@ -54,11 +54,11 @@ func (x MailConsumerDesiredState) String() string {
 }
 
 func (MailConsumerDesiredState) Descriptor() protoreflect.EnumDescriptor {
-	return file_mail_runtime_proto_enumTypes[0].Descriptor()
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[0].Descriptor()
 }
 
 func (MailConsumerDesiredState) Type() protoreflect.EnumType {
-	return &file_mail_runtime_proto_enumTypes[0]
+	return &file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[0]
 }
 
 func (x MailConsumerDesiredState) Number() protoreflect.EnumNumber {
@@ -67,7 +67,7 @@ func (x MailConsumerDesiredState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MailConsumerDesiredState.Descriptor instead.
 func (MailConsumerDesiredState) EnumDescriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{0}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{0}
 }
 
 type MailConsumerRuntimeState int32
@@ -118,11 +118,11 @@ func (x MailConsumerRuntimeState) String() string {
 }
 
 func (MailConsumerRuntimeState) Descriptor() protoreflect.EnumDescriptor {
-	return file_mail_runtime_proto_enumTypes[1].Descriptor()
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[1].Descriptor()
 }
 
 func (MailConsumerRuntimeState) Type() protoreflect.EnumType {
-	return &file_mail_runtime_proto_enumTypes[1]
+	return &file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[1]
 }
 
 func (x MailConsumerRuntimeState) Number() protoreflect.EnumNumber {
@@ -131,7 +131,7 @@ func (x MailConsumerRuntimeState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MailConsumerRuntimeState.Descriptor instead.
 func (MailConsumerRuntimeState) EnumDescriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{1}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{1}
 }
 
 type MailExecutionStatus int32
@@ -185,11 +185,11 @@ func (x MailExecutionStatus) String() string {
 }
 
 func (MailExecutionStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_mail_runtime_proto_enumTypes[2].Descriptor()
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[2].Descriptor()
 }
 
 func (MailExecutionStatus) Type() protoreflect.EnumType {
-	return &file_mail_runtime_proto_enumTypes[2]
+	return &file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[2]
 }
 
 func (x MailExecutionStatus) Number() protoreflect.EnumNumber {
@@ -198,7 +198,7 @@ func (x MailExecutionStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use MailExecutionStatus.Descriptor instead.
 func (MailExecutionStatus) EnumDescriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{2}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{2}
 }
 
 type MailEventMetadataV1 struct {
@@ -219,7 +219,7 @@ type MailEventMetadataV1 struct {
 
 func (x *MailEventMetadataV1) Reset() {
 	*x = MailEventMetadataV1{}
-	mi := &file_mail_runtime_proto_msgTypes[0]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -231,7 +231,7 @@ func (x *MailEventMetadataV1) String() string {
 func (*MailEventMetadataV1) ProtoMessage() {}
 
 func (x *MailEventMetadataV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[0]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -244,7 +244,7 @@ func (x *MailEventMetadataV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailEventMetadataV1.ProtoReflect.Descriptor instead.
 func (*MailEventMetadataV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{0}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *MailEventMetadataV1) GetEventId() []byte {
@@ -298,7 +298,7 @@ type KafkaSourceV1 struct {
 
 func (x *KafkaSourceV1) Reset() {
 	*x = KafkaSourceV1{}
-	mi := &file_mail_runtime_proto_msgTypes[1]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -310,7 +310,7 @@ func (x *KafkaSourceV1) String() string {
 func (*KafkaSourceV1) ProtoMessage() {}
 
 func (x *KafkaSourceV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[1]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -323,7 +323,7 @@ func (x *KafkaSourceV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KafkaSourceV1.ProtoReflect.Descriptor instead.
 func (*KafkaSourceV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{1}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *KafkaSourceV1) GetBrokerResourceId() []byte {
@@ -368,7 +368,7 @@ type MailMessageMappingV1 struct {
 
 func (x *MailMessageMappingV1) Reset() {
 	*x = MailMessageMappingV1{}
-	mi := &file_mail_runtime_proto_msgTypes[2]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -380,7 +380,7 @@ func (x *MailMessageMappingV1) String() string {
 func (*MailMessageMappingV1) ProtoMessage() {}
 
 func (x *MailMessageMappingV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[2]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -393,7 +393,7 @@ func (x *MailMessageMappingV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailMessageMappingV1.ProtoReflect.Descriptor instead.
 func (*MailMessageMappingV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{2}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *MailMessageMappingV1) GetExternalMessageIdJsonPath() string {
@@ -445,7 +445,7 @@ type MailConsumerUpsertV1 struct {
 
 func (x *MailConsumerUpsertV1) Reset() {
 	*x = MailConsumerUpsertV1{}
-	mi := &file_mail_runtime_proto_msgTypes[3]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -457,7 +457,7 @@ func (x *MailConsumerUpsertV1) String() string {
 func (*MailConsumerUpsertV1) ProtoMessage() {}
 
 func (x *MailConsumerUpsertV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[3]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -470,7 +470,7 @@ func (x *MailConsumerUpsertV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailConsumerUpsertV1.ProtoReflect.Descriptor instead.
 func (*MailConsumerUpsertV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{3}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *MailConsumerUpsertV1) GetMetadata() *MailEventMetadataV1 {
@@ -573,7 +573,7 @@ type MailConsumerDeleteV1 struct {
 
 func (x *MailConsumerDeleteV1) Reset() {
 	*x = MailConsumerDeleteV1{}
-	mi := &file_mail_runtime_proto_msgTypes[4]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -585,7 +585,7 @@ func (x *MailConsumerDeleteV1) String() string {
 func (*MailConsumerDeleteV1) ProtoMessage() {}
 
 func (x *MailConsumerDeleteV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[4]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -598,7 +598,7 @@ func (x *MailConsumerDeleteV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailConsumerDeleteV1.ProtoReflect.Descriptor instead.
 func (*MailConsumerDeleteV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{4}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *MailConsumerDeleteV1) GetMetadata() *MailEventMetadataV1 {
@@ -661,7 +661,7 @@ type MailConsumerRuntimeReportedV1 struct {
 
 func (x *MailConsumerRuntimeReportedV1) Reset() {
 	*x = MailConsumerRuntimeReportedV1{}
-	mi := &file_mail_runtime_proto_msgTypes[5]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -673,7 +673,7 @@ func (x *MailConsumerRuntimeReportedV1) String() string {
 func (*MailConsumerRuntimeReportedV1) ProtoMessage() {}
 
 func (x *MailConsumerRuntimeReportedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[5]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -686,7 +686,7 @@ func (x *MailConsumerRuntimeReportedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailConsumerRuntimeReportedV1.ProtoReflect.Descriptor instead.
 func (*MailConsumerRuntimeReportedV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{5}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *MailConsumerRuntimeReportedV1) GetMetadata() *MailEventMetadataV1 {
@@ -769,10 +769,7 @@ type MailTemplateVersionPublishedV1 struct {
 	// [COMMENT]: Immutable content version được consumer pin; luôn lớn hơn 0.
 	TemplateVersion uint64 `protobuf:"varint,4,opt,name=template_version,json=templateVersion,proto3" json:"template_version,omitempty"`
 	SubjectTemplate string `protobuf:"bytes,5,opt,name=subject_template,json=subjectTemplate,proto3" json:"subject_template,omitempty"`
-	TextTemplate    string `protobuf:"bytes,6,opt,name=text_template,json=textTemplate,proto3" json:"text_template,omitempty"`
 	HtmlTemplate    string `protobuf:"bytes,7,opt,name=html_template,json=htmlTemplate,proto3" json:"html_template,omitempty"`
-	// [COMMENT]: Canonical UTF-8 JSON schema cho variables; DP validate trước render.
-	VariableSchemaJson []byte `protobuf:"bytes,8,opt,name=variable_schema_json,json=variableSchemaJson,proto3" json:"variable_schema_json,omitempty"`
 	// [COMMENT]: SHA-256 32-byte của canonical immutable template content.
 	ContentSha256 []byte `protobuf:"bytes,9,opt,name=content_sha256,json=contentSha256,proto3" json:"content_sha256,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -781,7 +778,7 @@ type MailTemplateVersionPublishedV1 struct {
 
 func (x *MailTemplateVersionPublishedV1) Reset() {
 	*x = MailTemplateVersionPublishedV1{}
-	mi := &file_mail_runtime_proto_msgTypes[6]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -793,7 +790,7 @@ func (x *MailTemplateVersionPublishedV1) String() string {
 func (*MailTemplateVersionPublishedV1) ProtoMessage() {}
 
 func (x *MailTemplateVersionPublishedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[6]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -806,7 +803,7 @@ func (x *MailTemplateVersionPublishedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailTemplateVersionPublishedV1.ProtoReflect.Descriptor instead.
 func (*MailTemplateVersionPublishedV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{6}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *MailTemplateVersionPublishedV1) GetMetadata() *MailEventMetadataV1 {
@@ -844,25 +841,11 @@ func (x *MailTemplateVersionPublishedV1) GetSubjectTemplate() string {
 	return ""
 }
 
-func (x *MailTemplateVersionPublishedV1) GetTextTemplate() string {
-	if x != nil {
-		return x.TextTemplate
-	}
-	return ""
-}
-
 func (x *MailTemplateVersionPublishedV1) GetHtmlTemplate() string {
 	if x != nil {
 		return x.HtmlTemplate
 	}
 	return ""
-}
-
-func (x *MailTemplateVersionPublishedV1) GetVariableSchemaJson() []byte {
-	if x != nil {
-		return x.VariableSchemaJson
-	}
-	return nil
 }
 
 func (x *MailTemplateVersionPublishedV1) GetContentSha256() []byte {
@@ -886,7 +869,7 @@ type MailTemplateArchivedV1 struct {
 
 func (x *MailTemplateArchivedV1) Reset() {
 	*x = MailTemplateArchivedV1{}
-	mi := &file_mail_runtime_proto_msgTypes[7]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -898,7 +881,7 @@ func (x *MailTemplateArchivedV1) String() string {
 func (*MailTemplateArchivedV1) ProtoMessage() {}
 
 func (x *MailTemplateArchivedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[7]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -911,7 +894,7 @@ func (x *MailTemplateArchivedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailTemplateArchivedV1.ProtoReflect.Descriptor instead.
 func (*MailTemplateArchivedV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{7}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *MailTemplateArchivedV1) GetMetadata() *MailEventMetadataV1 {
@@ -957,7 +940,7 @@ type KafkaMessageCoordinateV1 struct {
 
 func (x *KafkaMessageCoordinateV1) Reset() {
 	*x = KafkaMessageCoordinateV1{}
-	mi := &file_mail_runtime_proto_msgTypes[8]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -969,7 +952,7 @@ func (x *KafkaMessageCoordinateV1) String() string {
 func (*KafkaMessageCoordinateV1) ProtoMessage() {}
 
 func (x *KafkaMessageCoordinateV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[8]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -982,7 +965,7 @@ func (x *KafkaMessageCoordinateV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KafkaMessageCoordinateV1.ProtoReflect.Descriptor instead.
 func (*KafkaMessageCoordinateV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{8}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *KafkaMessageCoordinateV1) GetTopic() string {
@@ -1053,7 +1036,7 @@ type MailExecutionResultV1 struct {
 
 func (x *MailExecutionResultV1) Reset() {
 	*x = MailExecutionResultV1{}
-	mi := &file_mail_runtime_proto_msgTypes[9]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1065,7 +1048,7 @@ func (x *MailExecutionResultV1) String() string {
 func (*MailExecutionResultV1) ProtoMessage() {}
 
 func (x *MailExecutionResultV1) ProtoReflect() protoreflect.Message {
-	mi := &file_mail_runtime_proto_msgTypes[9]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1078,7 +1061,7 @@ func (x *MailExecutionResultV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailExecutionResultV1.ProtoReflect.Descriptor instead.
 func (*MailExecutionResultV1) Descriptor() ([]byte, []int) {
-	return file_mail_runtime_proto_rawDescGZIP(), []int{9}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MailExecutionResultV1) GetMetadata() *MailEventMetadataV1 {
@@ -1207,11 +1190,11 @@ func (x *MailExecutionResultV1) GetRenderedContentSha256() []byte {
 	return nil
 }
 
-var File_mail_runtime_proto protoreflect.FileDescriptor
+var File_internal_mail_transport_rpc_proto_mail_runtime_proto protoreflect.FileDescriptor
 
-const file_mail_runtime_proto_rawDesc = "" +
+const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"\n" +
-	"\x12mail_runtime.proto\x12\x0fmail.runtime.v1\"\xc4\x01\n" +
+	"4internal/mail/transport/rpc/proto/mail_runtime.proto\x12\x0fmail.runtime.v1\"\xc4\x01\n" +
 	"\x13MailEventMetadataV1\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\fR\aeventId\x12%\n" +
 	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12-\n" +
@@ -1267,7 +1250,7 @@ const file_mail_runtime_proto_rawDesc = "" +
 	"error_code\x18\b \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\t \x01(\tR\ferrorMessage\x12'\n" +
 	"\x0freport_sequence\x18\n" +
-	" \x01(\x04R\x0ereportSequence\"\xa9\x03\n" +
+	" \x01(\x04R\x0ereportSequence\"\xde\x02\n" +
 	"\x1eMailTemplateVersionPublishedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +
 	"\vtemplate_id\x18\x02 \x01(\tR\n" +
@@ -1275,10 +1258,8 @@ const file_mail_runtime_proto_rawDesc = "" +
 	"\x11template_revision\x18\x03 \x01(\x04R\x10templateRevision\x12)\n" +
 	"\x10template_version\x18\x04 \x01(\x04R\x0ftemplateVersion\x12)\n" +
 	"\x10subject_template\x18\x05 \x01(\tR\x0fsubjectTemplate\x12#\n" +
-	"\rtext_template\x18\x06 \x01(\tR\ftextTemplate\x12#\n" +
-	"\rhtml_template\x18\a \x01(\tR\fhtmlTemplate\x120\n" +
-	"\x14variable_schema_json\x18\b \x01(\fR\x12variableSchemaJson\x12%\n" +
-	"\x0econtent_sha256\x18\t \x01(\fR\rcontentSha256\"\xde\x01\n" +
+	"\rhtml_template\x18\a \x01(\tR\fhtmlTemplate\x12%\n" +
+	"\x0econtent_sha256\x18\t \x01(\fR\rcontentSha256J\x04\b\x06\x10\aJ\x04\b\b\x10\t\"\xde\x01\n" +
 	"\x16MailTemplateArchivedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +
 	"\vtemplate_id\x18\x02 \x01(\tR\n" +
@@ -1339,20 +1320,20 @@ const file_mail_runtime_proto_rawDesc = "" +
 	"\x1fMAIL_EXECUTION_STATUS_AMBIGUOUS\x10\bB:Z8controlplane/internal/mail/transport/rpc/proto;mailprotob\x06proto3"
 
 var (
-	file_mail_runtime_proto_rawDescOnce sync.Once
-	file_mail_runtime_proto_rawDescData []byte
+	file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescOnce sync.Once
+	file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescData []byte
 )
 
-func file_mail_runtime_proto_rawDescGZIP() []byte {
-	file_mail_runtime_proto_rawDescOnce.Do(func() {
-		file_mail_runtime_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_mail_runtime_proto_rawDesc), len(file_mail_runtime_proto_rawDesc)))
+func file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP() []byte {
+	file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescOnce.Do(func() {
+		file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc)))
 	})
-	return file_mail_runtime_proto_rawDescData
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescData
 }
 
-var file_mail_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_mail_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
-var file_mail_runtime_proto_goTypes = []any{
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes = []any{
 	(MailConsumerDesiredState)(0),          // 0: mail.runtime.v1.MailConsumerDesiredState
 	(MailConsumerRuntimeState)(0),          // 1: mail.runtime.v1.MailConsumerRuntimeState
 	(MailExecutionStatus)(0),               // 2: mail.runtime.v1.MailExecutionStatus
@@ -1368,7 +1349,7 @@ var file_mail_runtime_proto_goTypes = []any{
 	(*MailExecutionResultV1)(nil),          // 12: mail.runtime.v1.MailExecutionResultV1
 	nil,                                    // 13: mail.runtime.v1.MailMessageMappingV1.VariableJsonPathsEntry
 }
-var file_mail_runtime_proto_depIdxs = []int32{
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs = []int32{
 	13, // 0: mail.runtime.v1.MailMessageMappingV1.variable_json_paths:type_name -> mail.runtime.v1.MailMessageMappingV1.VariableJsonPathsEntry
 	3,  // 1: mail.runtime.v1.MailConsumerUpsertV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	4,  // 2: mail.runtime.v1.MailConsumerUpsertV1.kafka:type_name -> mail.runtime.v1.KafkaSourceV1
@@ -1389,27 +1370,27 @@ var file_mail_runtime_proto_depIdxs = []int32{
 	0,  // [0:13] is the sub-list for field type_name
 }
 
-func init() { file_mail_runtime_proto_init() }
-func file_mail_runtime_proto_init() {
-	if File_mail_runtime_proto != nil {
+func init() { file_internal_mail_transport_rpc_proto_mail_runtime_proto_init() }
+func file_internal_mail_transport_rpc_proto_mail_runtime_proto_init() {
+	if File_internal_mail_transport_rpc_proto_mail_runtime_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mail_runtime_proto_rawDesc), len(file_mail_runtime_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc)),
 			NumEnums:      3,
 			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_mail_runtime_proto_goTypes,
-		DependencyIndexes: file_mail_runtime_proto_depIdxs,
-		EnumInfos:         file_mail_runtime_proto_enumTypes,
-		MessageInfos:      file_mail_runtime_proto_msgTypes,
+		GoTypes:           file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes,
+		DependencyIndexes: file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs,
+		EnumInfos:         file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes,
+		MessageInfos:      file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes,
 	}.Build()
-	File_mail_runtime_proto = out.File
-	file_mail_runtime_proto_goTypes = nil
-	file_mail_runtime_proto_depIdxs = nil
+	File_internal_mail_transport_rpc_proto_mail_runtime_proto = out.File
+	file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes = nil
+	file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs = nil
 }

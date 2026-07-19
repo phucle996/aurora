@@ -26,7 +26,7 @@
 3. Broker credential không nằm trong PostgreSQL hoặc projection payload; CP chỉ giữ `source_config_ref`.
 4. Client chỉ gửi `broker_resource_id`; CP derive secret locator theo trusted scope, còn endpoint/credential thật chỉ zonal Dataplane resolve qua Vault.
 5. `sender_profile_id`, `template_id` và version được bind trong consumer config; Kafka payload không được chọn tùy ý.
-6. Template content version là immutable. Update template luôn tạo row version mới.
+6. Template content version chỉ gồm subject + HTML và là immutable. Update luôn tạo row version mới; Dataplane tự detect `{{placeholder}}` khi render.
 7. Một Kafka message tương ứng một recipient ở phase đầu.
 8. History là projection từ durable Dataplane result; không tham gia hot path gửi mail.
 9. Client không được tự chọn routing Zone: Envoy/ACR strip header bên ngoài rồi inject `X-Zone-ID`; handler chỉ đọc UUID đã parse từ context.
@@ -57,8 +57,8 @@ flowchart LR
 |---|---|---|
 | Consumer handler | Normalize và validate toàn bộ HTTP input, UUID, pagination, mapping path | Business transition |
 | Consumer service | Tạo desired config/version, deterministic event và outbox | Normalize/validate lại HTTP input, kết nối Kafka |
-| Template handler | Normalize và validate HTTP shape, size limit, header injection | Compile template |
-| Template service | Compile/validate restricted template syntax, publish immutable version và outbox | Trim/validate lại transport input, render production mail |
+| Template handler | Normalize và validate HTTP shape, subject/HTML size limit, header injection | Detect placeholder |
+| Template service | Canonicalize subject + HTML, publish immutable version và outbox | Parse variables, render production mail |
 | Repository | Query, authorization fail-close, optimistic concurrency và atomic aggregate + outbox CTE | Normalize/validate transport input |
 | Projection outbox | Durable CP → Zone intent | Chứa plaintext credential |
 | History ingestor | Idempotent apply result, monotonic state guard | Chọn retry/commit Kafka offset |
@@ -154,29 +154,27 @@ còn fresh của đúng desired config version. `runtime_generation/report_seque
 ### 4.1 Identity và immutable version
 
 ```text
-mail_templates
+personal_mail_templates / tenant_mail_templates
   template_id
-  scope = PLATFORM | WORKSPACE
-  workspace_id (chỉ WORKSPACE)
+  workspace_id
   current_version
   template_revision
   archived_at
 
-mail_template_versions
+personal_mail_template_versions / tenant_mail_template_versions
   template_id + template_version
   subject_template
-  text_template
   html_template
-  variable_schema_json
   content_sha256
   created_by + created_at
 ```
 
 - `template_version` định danh immutable content.
 - `template_revision` là lifecycle clock, tăng cả khi publish hoặc archive để chống event đến sai thứ tự.
-- Platform template có scope `PLATFORM`; không tạo fake workspace UUID.
+- Không có cột `scope`: table Personal/Tenant là authorization namespace vật lý. IAM system mail dùng `system_mail_templates`, không giả ownership customer.
+- Personal template không lưu `created_by/updated_by`; Tenant template và version giữ actor audit.
 - Version đã được consumer pin không bị UPDATE hoặc DELETE.
-- PostgreSQL trigger chặn trực tiếp `UPDATE/DELETE mail_template_versions`; rollback/retention có explicit migration bypass riêng.
+- PostgreSQL trigger chặn trực tiếp `UPDATE/DELETE` trên cả ba bảng version; rollback/retention có explicit migration bypass riêng.
 
 ### 4.2 Publish flow
 
@@ -186,8 +184,8 @@ sequenceDiagram
     participant TS as Template Service
     participant DB as PostgreSQL
 
-    C->>TS: Publish(subject, text/html, variable schema, expected_revision)
-    TS->>TS: Parse restricted syntax + validate schema + output limits
+    C->>TS: Publish(subject, html, expected_revision)
+    TS->>TS: Canonicalize subject + HTML; placeholder discovery thuộc Dataplane
     TS->>TS: Canonicalize and SHA-256 content
     TS->>DB: one guarded data-modifying CTE
     TS->>DB: CAS expected_revision + INSERT immutable version N
@@ -303,7 +301,7 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 - Envoy/ACR phải strip mọi client-supplied `X-Zone-ID`/`X-Workspace-ID`, authorize rồi inject lại; direct CP ingress bị NetworkPolicy chặn.
 - Authorization luôn dựa authenticated caller + authoritative Workspace membership/ownership; consumer query luôn scope theo Workspace.
 - Service tự derive exact secret-reference namespace/scope; request không nhận locator và response chỉ trả `source_configured`.
-- Template syntax là restricted data template, không cho arbitrary function/code execution.
+- Dataplane chỉ thay thế placeholder `{{...}}` từ message variables; template content không mang schema/function/code executable.
 - Error message lưu history phải sanitized và bounded.
 - Audit log chứa aggregate ID/version/action, không chứa recipient/template body/JSON variables.
 - CP database role của mail module không có quyền đọc secret store.
@@ -331,7 +329,7 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 - Consumer update/pause/resume/delete gửi `expected_config_version`; template publish/archive gửi
   `expected_revision`. HTTP `409` không được auto-retry hoặc overwrite, UI yêu cầu reload latest.
 - Consumer mới luôn hiển thị `PAUSED`. Desired state không được trình bày như reported runtime state.
-- Platform template là read-only; published version không có edit/delete. Archive chỉ chặn binding mới,
+- System template không xuất hiện trong customer Console; published customer version không có edit/delete. Archive chỉ chặn binding mới,
   không ngầm dừng consumer đang pin version cũ.
 - Action create/update/delete được gate riêng theo render-context capability; repository vẫn authorize
   fail-close, vì UI permission không phải security boundary.

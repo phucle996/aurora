@@ -153,7 +153,7 @@ DB transaction rollback có thể để orphan Redis key. Orphan vô hại vì k
 
 | Template variable | Source | Security |
 |---|---|---|
-| `template_id` | `platform/verify_account` | Constant allowlisted template |
+| `template_id` | `system/verify_account` | Constant allowlisted system template |
 | `to` | Canonical email | PII; không log payload |
 | `fullname` | Username hiện tại | Không phải profile fullname |
 | `user_id` | User UUID | Public identifier |

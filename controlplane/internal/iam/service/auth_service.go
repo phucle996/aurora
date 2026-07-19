@@ -212,7 +212,7 @@ func (s *AuthService) buildVerifyAccountOutboxJob(ctx context.Context, userID uu
 		SenderProfileId: "platform-default",
 		SenderVersion:   1,
 		Recipient:       email,
-		TemplateId:      "platform/verify_account",
+		TemplateId:      "system/verify_account",
 		TemplateVariables: map[string]string{
 			"fullname":     username,
 			"user_id":      userID.String(),

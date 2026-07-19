@@ -40,7 +40,7 @@ func (r *personalTemplateRepoCapture) Archive(_ context.Context, _ *mailEntity.P
 func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	entity, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), IdempotencyKey: "request-0001", Name: "Receipt", SubjectTemplate: "Receipt {{id}}", HTMLTemplate: "<p>{{id}}</p>", VariableSchemaJSON: []byte(`{"type":"object","properties":{"id":{"type":"string"}}}`)})
+	entity, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), IdempotencyKey: "request-0001", Name: "Receipt", SubjectTemplate: "Receipt {{id}}", HTMLTemplate: "<p>{{id}}</p>"})
 	if err != nil {
 		t.Fatalf("CreateTemplate() error = %v", err)
 	}
@@ -52,11 +52,11 @@ func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 	}
 }
 
-func TestPersonalTemplateRejectsExecutableSyntax(t *testing.T) {
+func TestPersonalTemplateLeavesPlaceholderDetectionToDataplane(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	_, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), IdempotencyKey: "request-0002", Name: "Unsafe", SubjectTemplate: "Hello {{#if admin}}", TextTemplate: "body"})
-	if err == nil || repo.entity != nil {
-		t.Fatal("unsafe template reached repository")
+	_, err := NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{ActorUserID: uuid.New(), WorkspaceID: &workspaceID, ZoneID: uuid.New(), IdempotencyKey: "request-0002", Name: "Runtime", SubjectTemplate: "Hello {{name}}", HTMLTemplate: "<p>{{name}}</p>"})
+	if err != nil || repo.entity == nil {
+		t.Fatalf("template did not reach repository: %v", err)
 	}
 }

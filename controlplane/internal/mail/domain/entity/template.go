@@ -1,12 +1,5 @@
 package mailEntity
 
-type TemplateScope string
-
-const (
-	TemplateScopePlatform  TemplateScope = "platform"
-	TemplateScopeWorkspace TemplateScope = "workspace"
-)
-
 type TemplateStatus string
 
 const (
