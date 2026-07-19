@@ -386,18 +386,20 @@ func (x *VerifyUserCredentialsRequest) GetTenantDomain() string {
 
 // [COMMENT]: Response trả về trạng thái xác thực và các thông tin định danh/claim
 type VerifyUserCredentialsResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Valid          bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`                                          // Cờ báo hiệu xác thực thông tin thành công hay thất bại
-	UserId         string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                           // UUID của người dùng dưới dạng chuỗi
-	RoleId         string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`                           // UUID của Role đang hoạt động của người dùng (dưới dạng chuỗi)
-	Level          int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`                                          // Cấp độ quyền (level)
-	TenantId       string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                     // ID/Context của Tenant liên đới (nếu có)
-	ClientDeviceId string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"` // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
-	RefreshToken   string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`         // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
-	ErrorMessage   string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`         // Mô tả lỗi chi tiết nếu valid = false
-	Username       string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`                                     // Tên đăng nhập của người dùng
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Valid                 bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`                                                                   // Cờ báo hiệu xác thực thông tin thành công hay thất bại
+	UserId                string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                                                    // UUID của người dùng dưới dạng chuỗi
+	RoleId                string                 `protobuf:"bytes,3,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`                                                    // UUID của Role đang hoạt động của người dùng (dưới dạng chuỗi)
+	Level                 int32                  `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`                                                                   // Cấp độ quyền (level)
+	TenantId              string                 `protobuf:"bytes,5,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`                                              // ID/Context của Tenant liên đới (nếu có)
+	ClientDeviceId        string                 `protobuf:"bytes,6,opt,name=client_device_id,json=clientDeviceId,proto3" json:"client_device_id,omitempty"`                          // UUID thiết bị được ghi nhận/sinh mới sau khi gắn kết thành công
+	RefreshToken          string                 `protobuf:"bytes,7,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`                                  // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
+	ErrorMessage          string                 `protobuf:"bytes,8,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`                                  // Mô tả lỗi chi tiết nếu valid = false
+	Username              string                 `protobuf:"bytes,9,opt,name=username,proto3" json:"username,omitempty"`                                                              // Tên đăng nhập của người dùng
+	ClientProofPublicKey  string                 `protobuf:"bytes,10,opt,name=client_proof_public_key,json=clientProofPublicKey,proto3" json:"client_proof_public_key,omitempty"`     // Canonical Ed25519 public key đã được IAM persist/resolve
+	RefreshTokenExpiresAt int64                  `protobuf:"varint,11,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"` // Unix seconds của expiry đã persist; ACR dùng làm Max-Age cookie
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *VerifyUserCredentialsResponse) Reset() {
@@ -493,6 +495,20 @@ func (x *VerifyUserCredentialsResponse) GetUsername() string {
 	return ""
 }
 
+func (x *VerifyUserCredentialsResponse) GetClientProofPublicKey() string {
+	if x != nil {
+		return x.ClientProofPublicKey
+	}
+	return ""
+}
+
+func (x *VerifyUserCredentialsResponse) GetRefreshTokenExpiresAt() int64 {
+	if x != nil {
+		return x.RefreshTokenExpiresAt
+	}
+	return 0
+}
+
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2
 type RoleEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -576,7 +592,7 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\n" +
 	"user_agent\x18\n" +
 	" \x01(\tR\tuserAgent\x12#\n" +
-	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\xaa\x02\n" +
+	"\rtenant_domain\x18\v \x01(\tR\ftenantDomain\"\x9a\x03\n" +
 	"\x1dVerifyUserCredentialsResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x17\n" +
@@ -586,7 +602,10 @@ const file_internal_iam_transport_rpc_proto_auth_proto_rawDesc = "" +
 	"\x10client_device_id\x18\x06 \x01(\tR\x0eclientDeviceId\x12#\n" +
 	"\rrefresh_token\x18\a \x01(\tR\frefreshToken\x12#\n" +
 	"\rerror_message\x18\b \x01(\tR\ferrorMessage\x12\x1a\n" +
-	"\busername\x18\t \x01(\tR\busername\"-\n" +
+	"\busername\x18\t \x01(\tR\busername\x125\n" +
+	"\x17client_proof_public_key\x18\n" +
+	" \x01(\tR\x14clientProofPublicKey\x127\n" +
+	"\x18refresh_token_expires_at\x18\v \x01(\x03R\x15refreshTokenExpiresAt\"-\n" +
 	"\tRoleEntry\x12 \n" +
 	"\vpermissions\x18\x01 \x03(\tR\vpermissions2\xd7\x02\n" +
 	"\vAuthService\x12o\n" +

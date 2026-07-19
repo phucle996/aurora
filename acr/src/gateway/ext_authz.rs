@@ -19,6 +19,7 @@ use crate::user::claims::Claims;
 use crate::user::revoke::handle_logout;
 use crate::user::tenant::{handle_tenant_switch, resolve_and_verify_tenant};
 use crate::user::verify::verify_edge_session;
+use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckRequestExt, CheckResponseExt};
 use envoy_types::pb::envoy::service::auth::v3::{
     authorization_server::Authorization, CheckRequest, CheckResponse,
@@ -223,6 +224,13 @@ impl Authorization for ExtAuthzService {
         }
 
         // ─── Local Interceptors ───────────────────────────────────────────────
+
+        // [COMMENT]: Login challenge là endpoint local của ACR; request vẫn đã qua CORS và pre-auth rate limit.
+        if let Some(res) =
+            crate::user::login::handle_login_challenge(&self.session_mgr, method, path).await
+        {
+            return res;
+        }
 
         // 1. User Login: POST /api/v1/auth/login
         if let Some(res) = crate::user::login::handle_login(
@@ -595,6 +603,93 @@ impl Authorization for ExtAuthzService {
             }
         }
 
+        // [COMMENT]: Challenge critical chỉ được cấp sau khi session, CSRF, zone và tenant đều đã được xác minh.
+        if claims.is_some()
+            && method == "POST"
+            && path_without_query == "/api/v1/auth/session-proof/challenge"
+        {
+            let challenge = match crate::user::session_proof::issue_critical_challenge(
+                &self.session_mgr,
+                &access_key,
+            )
+            .await
+            {
+                Ok(challenge) => challenge,
+                Err(error) => {
+                    Logger::sys_error(
+                        "user.session_proof.challenge",
+                        "Failed to issue critical challenge",
+                        &error,
+                    );
+                    return Ok(Response::new(CheckResponse::with_status(
+                        Status::unavailable("Session proof service unavailable"),
+                    )));
+                }
+            };
+            let body = serde_json::to_string(&challenge).unwrap_or_default();
+            let mut builder = envoy_types::ext_authz::v3::DeniedHttpResponseBuilder::new();
+            builder.set_http_status(HttpStatusCode::Ok);
+            builder.add_header("content-type", "application/json", None, false);
+            builder.set_body(body);
+            let mut response = CheckResponse::new();
+            response.set_status(Status::ok("critical session proof challenge issued"));
+            response.set_http_response(builder);
+            return Ok(Response::new(response));
+        }
+
+        // [COMMENT]: Mỗi mutation critical phải ký đúng method, original path và raw body bằng key đã bind vào session.
+        let mut session_proof_challenge_id = None;
+        if let Some(ref c) = claims {
+            if path_without_query.starts_with("/api/v1/critical/") {
+                let zone_id = c.zone_id.as_deref().unwrap_or("global");
+                let tenant_id = c.tenant_id.as_deref().unwrap_or("platform");
+                let session = match self
+                    .session_mgr
+                    .get_session(zone_id, tenant_id, &c.uid, &access_key)
+                    .await
+                {
+                    Ok(Some(session)) => session,
+                    _ => {
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied("Session proof key unavailable"),
+                        )))
+                    }
+                };
+                let raw_body = req
+                    .attributes
+                    .as_ref()
+                    .and_then(|a| a.request.as_ref())
+                    .and_then(|r| r.http.as_ref())
+                    .map(|h| {
+                        if !h.body.is_empty() {
+                            h.body.as_bytes().to_vec()
+                        } else {
+                            h.raw_body.clone()
+                        }
+                    })
+                    .unwrap_or_default();
+                match crate::user::session_proof::verify_critical_proof(
+                    &self.session_mgr,
+                    &access_key,
+                    &session.client_proof_public_key,
+                    client_headers,
+                    method,
+                    path_without_query,
+                    &raw_body,
+                )
+                .await
+                {
+                    Ok(challenge_id) => session_proof_challenge_id = Some(challenge_id),
+                    Err(error) => {
+                        Logger::authz_log(&c.uid, method, path, "DENIED", &error);
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied("Invalid session proof"),
+                        )));
+                    }
+                }
+            }
+        }
+
         // SRE Critical API Signature Verification
         if is_admin && path.starts_with("/admin/critical/") {
             let device_pubkey =
@@ -747,6 +842,28 @@ impl Authorization for ExtAuthzService {
             use envoy_types::pb::envoy::service::auth::v3::check_response::HttpResponse;
             if let HttpResponse::OkResponse(ref mut ok) = http_resp {
                 use envoy_types::pb::envoy::config::core::v3::HeaderValueOption;
+
+                // [COMMENT]: Luôn overwrite marker để client không thể tự giả mạo header đã được ACR xác minh.
+                let mut proof_header = HeaderValueOption::default();
+                proof_header.header = Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                    key: "x-session-proof-verified".to_string(),
+                    value: if session_proof_challenge_id.is_some() {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    },
+                });
+                ok.headers.push(proof_header);
+
+                if let Some(ref challenge_id) = session_proof_challenge_id {
+                    let mut challenge_header = HeaderValueOption::default();
+                    challenge_header.header =
+                        Some(envoy_types::pb::envoy::config::core::v3::HeaderValue {
+                            key: "x-session-proof-challenge-id".to_string(),
+                            value: challenge_id.clone(),
+                        });
+                    ok.headers.push(challenge_header);
+                }
 
                 if is_billing {
                     if let Some(bc) = billing_claims {

@@ -349,8 +349,7 @@ pub async fn try_handle_recovery_session(
         &resolved_zone_code,
         &client_device_id,
         &client_device_id,
-        true,
-        &refresh_token,
+        "",
     )
     .await
     {

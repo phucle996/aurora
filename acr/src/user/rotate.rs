@@ -153,6 +153,20 @@ impl SessionManager {
             "iam:user_session:{}:{}:{}:{}",
             zone_id, tenant_id, user_id, old_access_key
         );
+        // [COMMENT]: Rotation phải mang nguyên session-proof key sang access_key mới; không nhận key từ client.
+        let old_bytes: Option<Vec<u8>> = redis::cmd("GET")
+            .arg(&old_redis_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| AcrError::RedisError(format!("Load old session failed: {}", e)))?;
+        let old_session = old_bytes
+            .ok_or_else(|| {
+                AcrError::Internal("Old session disappeared during rotation".to_string())
+            })
+            .and_then(|bytes| {
+                UserAccessSession::decode(bytes.as_slice())
+                    .map_err(|e| AcrError::Internal(e.to_string()))
+            })?;
         let new_redis_key = format!(
             "iam:user_session:{}:{}:{}:{}",
             zone_id, tenant_id, user_id, new_access_key
@@ -165,6 +179,7 @@ impl SessionManager {
             ash: new_ash.to_string(),
             tdid: device_id.to_string(),
             lsa: now,
+            client_proof_public_key: old_session.client_proof_public_key,
         };
 
         let mut buf = Vec::new();

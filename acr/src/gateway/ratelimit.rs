@@ -11,6 +11,7 @@ use std::time::Duration;
 pub enum RouteGroup {
     SreCritical,
     SreGeneral,
+    UserCritical,
     UserPersonal,
     UserMe,
     UserTenant,
@@ -24,6 +25,7 @@ impl RouteGroup {
         match self {
             RouteGroup::SreCritical => "sre_critical",
             RouteGroup::SreGeneral => "sre_general",
+            RouteGroup::UserCritical => "user_critical",
             RouteGroup::UserPersonal => "user_personal",
             RouteGroup::UserMe => "user_me",
             RouteGroup::UserTenant => "user_tenant",
@@ -40,6 +42,8 @@ pub fn detect_route_group(path: &str) -> RouteGroup {
         RouteGroup::SreCritical
     } else if path.starts_with("/admin") {
         RouteGroup::SreGeneral
+    } else if path.starts_with("/api/v1/critical/") {
+        RouteGroup::UserCritical
     } else if path.starts_with("/api/v1/auth/") {
         RouteGroup::AuthPublic
     } else if path.starts_with("/api/v1/billing") {
@@ -96,6 +100,7 @@ impl RateLimiter {
         match group {
             RouteGroup::SreCritical => (50, 1, 5, 1),
             RouteGroup::SreGeneral => (200, 1, 15, 1),
+            RouteGroup::UserCritical => (20, 60, 6, 60),
             RouteGroup::Billing => (300, 1, 30, 1),
             // [COMMENT]: Argon2/register/login là CPU-expensive; limit thấp theo IP và device trước khi vào handler.
             RouteGroup::AuthPublic => (30, 60, 8, 60),
@@ -112,6 +117,7 @@ impl RateLimiter {
         match group {
             RouteGroup::SreCritical => (10, 1, 10, 1),
             RouteGroup::SreGeneral => (30, 1, 30, 1),
+            RouteGroup::UserCritical => (30, 60, 20, 60),
             RouteGroup::Billing => (80, 1, 80, 1),
             RouteGroup::AuthPublic => (20, 60, 20, 60),
             RouteGroup::UserPersonal => (60, 1, 60, 1),

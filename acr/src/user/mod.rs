@@ -8,6 +8,7 @@ pub mod recovery;
 pub mod revoke;
 pub mod rotate;
 pub mod session;
+pub mod session_proof;
 pub mod tenant;
 pub mod verify;
 pub mod zone_catalog;

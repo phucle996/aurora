@@ -345,6 +345,14 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, nil, iamMetrics.OutcomeInvalidCredential)
 	}
 
+	// [COMMENT]: Chỉ canonical Ed25519 key hợp lệ mới được bind vào session; empty/garbage key phải fail trước khi ghi device.
+	canonicalPublicKey, keyErr := normalizeUserDevicePublicKey(req.DevicePublicKey)
+	if keyErr != nil {
+		loginOutcome = iamMetrics.OutcomeInvalidCredential
+		return nil, apperr.Wrap(iamTaxonomy.ErrInvalidCredentials, keyErr, iamMetrics.OutcomeInvalidCredential)
+	}
+	req.DevicePublicKey = canonicalPublicKey
+
 	// [COMMENT]: 4. Phân giải/Tìm kiếm thiết bị đang hoạt động tương thích
 	matchedClientDeviceID, err := s.deviceSvc.ResolveDeviceIDByKey(ctx, user.ID, req.DevicePublicKey)
 
@@ -394,6 +402,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 
 	// [COMMENT]: 5. Sinh Refresh Token nếu thiết bị được đánh dấu tin cậy (Trust Device)
 	var rawRefresh string
+	var refreshExpiresAt time.Time
 	if req.TrustDevice {
 		var tenantUUIDPtr *uuid.UUID
 		if tenantID != "" {
@@ -406,7 +415,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		}
 
 		var refreshErr error
-		rawRefresh, _, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, tenantUUIDPtr)
+		rawRefresh, refreshExpiresAt, refreshErr = s.refreshSvc.CreateRefreshToken(ctx, user.ID, trackedDeviceID, tenantUUIDPtr)
 		if refreshErr != nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			return nil, refreshErr
@@ -417,12 +426,15 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 		Valid:  true,
 		UserID: user.ID.String(),
 		// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
-		RoleID:         user.RoleID,
-		Level:          user.Level,
-		TenantID:       tenantID,
-		ClientDeviceID: clientDeviceID,
-		RefreshToken:   rawRefresh,
-		Username:       user.Username,
+		RoleID:                user.RoleID,
+		Level:                 user.Level,
+		TenantID:              tenantID,
+		ClientDeviceID:        clientDeviceID,
+		RefreshToken:          rawRefresh,
+		RefreshTokenExpiresAt: refreshExpiresAt,
+		Username:              user.Username,
+		// [COMMENT]: Trả key canonical từ row đã persist thay vì echo trực tiếp input không đáng tin từ client.
+		ClientProofPublicKey: trackedDevice.PublicKey,
 		// [COMMENT]: TenantCode chỉ có giá trị khi login qua tenant_domain. Rỗng nếu login global.
 		TenantCode: tenantCode,
 	}, nil

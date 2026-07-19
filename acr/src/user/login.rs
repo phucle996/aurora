@@ -17,6 +17,7 @@ use crate::infra::nats::auth::{
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
+use crate::pkg::cookie::COOKIE_REFRESH_TOKEN;
 use crate::user::claims::Claims;
 use async_nats::HeaderMap;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
@@ -35,12 +36,49 @@ pub struct LoginPayload {
     pub password: Option<String>,
     pub device_name: Option<String>,
     pub device_type: Option<String>,
-    pub public_key: Option<String>,
-    pub signature: Option<String>,
+    // [COMMENT]: Wire contract chỉ chấp nhận tên canonical, không duy trì alias public_key legacy.
+    pub device_public_key: Option<String>,
+    pub session_proof_challenge_id: Option<String>,
+    pub session_proof_timestamp: Option<i64>,
+    pub session_proof_signature: Option<String>,
     pub trust_device: Option<bool>,
     pub zone_code: Option<String>,
     // [COMMENT]: Wire contract canonical luôn tách tenant domain khỏi username; UI có thể giữ cú pháp nhập user@domain.
     pub tenant_domain: Option<String>,
+}
+
+// [COMMENT]: Login challenge là public nhưng vẫn đi qua CORS + pre-auth rate limit của ExtAuthz.
+pub async fn handle_login_challenge(
+    session_mgr: &Arc<SessionManager>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    if !(method == "POST" && path == "/api/v1/auth/login/challenge") {
+        return None;
+    }
+    let challenge = match crate::user::session_proof::issue_login_challenge(session_mgr).await {
+        Ok(challenge) => challenge,
+        Err(error) => {
+            Logger::sys_error(
+                "user.login.challenge",
+                "Failed to issue login proof",
+                &error,
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Authentication service unavailable",
+            ))));
+        }
+    };
+    let body = serde_json::to_string(&challenge).unwrap_or_default();
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(HttpStatusCode::Ok);
+    builder.add_header("content-type", "application/json", None, false);
+    builder.set_body(body);
+    let mut response = CheckResponse::new();
+    response.set_status(Status::ok("login session proof challenge issued"));
+    response.set_http_response(builder);
+    Some(Ok(Response::new(response)))
 }
 
 /// [COMMENT]: Response JSON lỗi chung
@@ -96,8 +134,7 @@ pub async fn release_user_session(
     zone_id: &str,
     device_id: &str,
     client_device_id: &str,
-    _trust_device: bool,
-    _refresh_token: &str,
+    client_proof_public_key: &str,
 ) -> Result<ReleaseUserSessionResult, Status> {
     Logger::sys_info(
         "user.login.release",
@@ -160,6 +197,7 @@ pub async fn release_user_session(
             &access_key,
             &ash,
             device_id,
+            client_proof_public_key,
         )
         .await
     {
@@ -284,6 +322,32 @@ pub async fn handle_login(
 
     let client_device_id = Uuid::new_v4().to_string();
     let zone_code = payload.zone_code.as_deref().unwrap_or("global");
+    let public_key = payload.device_public_key.as_deref().unwrap_or_default();
+    if let Err(error) = crate::user::session_proof::verify_login_proof(
+        session_mgr,
+        payload
+            .session_proof_challenge_id
+            .as_deref()
+            .unwrap_or_default(),
+        payload.session_proof_timestamp.unwrap_or_default(),
+        &username,
+        &tenant_domain,
+        zone_code,
+        payload.trust_device.unwrap_or(false),
+        public_key,
+        payload
+            .session_proof_signature
+            .as_deref()
+            .unwrap_or_default(),
+    )
+    .await
+    {
+        Logger::sys_warn("user.login.proof", "Login session proof rejected", &error);
+        return Some(Ok(Response::new(build_denied_json(
+            HttpStatusCode::Unauthorized,
+            "Invalid login session proof",
+        ))));
+    }
 
     let client_ip = _client_headers
         .get("x-forwarded-for")
@@ -299,8 +363,8 @@ pub async fn handle_login(
         password,
         device_name: payload.device_name.unwrap_or_default(),
         device_type: payload.device_type.unwrap_or_default(),
-        public_key: payload.public_key.unwrap_or_default(),
-        signature: payload.signature.unwrap_or_default(),
+        public_key: public_key.to_string(),
+        signature: payload.session_proof_signature.unwrap_or_default(),
         client_device_id: client_device_id.clone(),
         trust_device: payload.trust_device.unwrap_or(false),
         client_ip,
@@ -392,6 +456,26 @@ pub async fn handle_login(
         ))));
     }
 
+    let trust_device = payload.trust_device.unwrap_or(false);
+    let refresh_cookie_max_age = if trust_device {
+        // [COMMENT]: IAM là issuer/durable owner; ACR chỉ phát cookie theo đúng expiry IAM đã commit.
+        let max_age = cp_res.refresh_token_expires_at - chrono::Utc::now().timestamp();
+        if cp_res.refresh_token.is_empty() || max_age <= 0 {
+            Logger::sys_error(
+                "user.login",
+                "IAM returned invalid refresh token contract",
+                "trusted login requires token and future expiry",
+            );
+            return Some(Ok(Response::new(build_denied_json(
+                HttpStatusCode::InternalServerError,
+                "Failed to issue refresh session",
+            ))));
+        }
+        Some(max_age)
+    } else {
+        None
+    };
+
     let res_val = match release_user_session(
         session_mgr,
         token_mgr,
@@ -406,8 +490,7 @@ pub async fn handle_login(
         zone_code,
         &cp_res.client_device_id,
         &cp_res.client_device_id,
-        payload.trust_device.unwrap_or(false),
-        &cp_res.refresh_token,
+        &cp_res.client_proof_public_key,
     )
     .await
     {
@@ -447,6 +530,15 @@ pub async fn handle_login(
         res_val.access_secret, config.session_ttl_secs, domain_str
     );
     denied_builder.add_header("set-cookie", &secret_cookie, None, false);
+
+    if let Some(max_age) = refresh_cookie_max_age {
+        // [COMMENT]: Chỉ nhánh user remember-me nhận opaque refresh token; JS không bao giờ đọc được cookie này.
+        let refresh_cookie = format!(
+            "{}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={}{}",
+            COOKIE_REFRESH_TOKEN, cp_res.refresh_token, max_age, domain_str
+        );
+        denied_builder.add_header("set-cookie", &refresh_cookie, None, false);
+    }
 
     let device_cookie = format!(
         "client_device_id={}; Path=/; Secure; SameSite=Lax; Max-Age=31536000{}",

@@ -22,12 +22,12 @@ type User struct {
 	Phone        *string
 	PasswordHash string
 	Status       UserStatus
-	Level        int32 // [COMMENT]: Level thô (chỉ dùng nội bộ ở Service/Repo, ẩn khi trả về Client)
-	RoleName     string // [COMMENT]: Tên hiển thị platform role được gán của user
-	MfaEnabled   bool   // [COMMENT]: Cờ cho biết user đã kích hoạt xác thực hai lớp (MFA) hay chưa
-	DevicesCount int32  // [COMMENT]: Số lượng thiết bị đã đăng ký của user
-	Bio          string // [COMMENT]: Mô tả ngắn về user lấy từ user_profiles
-	Fullname     string // [COMMENT]: Tên hiển thị đầy đủ lấy từ user_profiles
+	Level        int32      // [COMMENT]: Level thô (chỉ dùng nội bộ ở Service/Repo, ẩn khi trả về Client)
+	RoleName     string     // [COMMENT]: Tên hiển thị platform role được gán của user
+	MfaEnabled   bool       // [COMMENT]: Cờ cho biết user đã kích hoạt xác thực hai lớp (MFA) hay chưa
+	DevicesCount int32      // [COMMENT]: Số lượng thiết bị đã đăng ký của user
+	Bio          string     // [COMMENT]: Mô tả ngắn về user lấy từ user_profiles
+	Fullname     string     // [COMMENT]: Tên hiển thị đầy đủ lấy từ user_profiles
 	LastSeenIP   string     // [COMMENT]: IP gần nhất được ghi nhận từ device hoạt động cuối cùng
 	LastSeenAt   *time.Time // [COMMENT]: Thời điểm hoạt động gần nhất qua thiết bị
 	CreatedAt    time.Time
@@ -92,12 +92,14 @@ type VerifyUserCredentialsResult struct {
 	Valid  bool
 	UserID string
 	// [COMMENT]: RoleID là UUID của role đang hoạt động, ACR sẽ inject vào JWT claims và forward qua header X-User-Role-ID
-	RoleID         string
-	Level          int32
-	TenantID       string
-	ClientDeviceID string
-	RefreshToken   string
-	Username       string
+	RoleID                string
+	Level                 int32
+	TenantID              string
+	ClientDeviceID        string
+	RefreshToken          string
+	RefreshTokenExpiresAt time.Time
+	Username              string
+	ClientProofPublicKey  string
 	// [COMMENT]: TenantCode được điền khi login qua tenant_domain. Rỗng nếu login global.
 	TenantCode string
 }

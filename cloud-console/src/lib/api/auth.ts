@@ -10,7 +10,26 @@ export type LoginRequest = {
   // [COMMENT]: tenant_domain được điền khi user nhập username@tenant_domain.
   // Undefined = đăng nhập global context, có giá trị = đăng nhập tenant context.
   tenant_domain?: string;
+  session_proof_challenge_id: string;
+  session_proof_timestamp: number;
+  session_proof_signature: string;
 };
+
+export type SessionProofChallenge = {
+  challenge_id: string;
+  nonce: string;
+  expires_in: number;
+};
+
+export async function requestLoginChallenge(
+  options: { signal?: AbortSignal } = {},
+): Promise<SessionProofChallenge> {
+  return fetchJSON<SessionProofChallenge>("/api/v1/auth/login/challenge", {
+    method: "POST",
+    credentials: "include",
+    signal: options.signal,
+  });
+}
 
 export type RegisterRequest = {
   username: string;
@@ -83,6 +102,7 @@ export async function logout(
 
 export const authAPI = {
   login,
+  requestLoginChallenge,
   register,
 	verifyAccount,
   logout,

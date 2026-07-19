@@ -71,6 +71,8 @@ message VerifyUserCredentialsResponse {
   string refresh_token = 7;    // Opaque Refresh Token được sinh bởi CP để ACR ghi nhận cookie (nếu trust_device=true)
   string error_message = 8;    // Mô tả lỗi chi tiết nếu valid = false
   string username = 9;         // Tên đăng nhập của người dùng
+  string client_proof_public_key = 10; // Canonical Ed25519 public key đã được IAM persist/resolve
+  int64 refresh_token_expires_at = 11; // Unix seconds của expiry đã persist; ACR dùng làm Max-Age cookie
 }
 
 // [COMMENT]: Thông tin danh sách quyền hạn của một Role để lưu cache L1/L2

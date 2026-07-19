@@ -152,14 +152,16 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error)
 
 		// [COMMENT]: Chuẩn bị response: chỉ trả tenant_id, không trả tenant_code để bảo vệ an toàn định danh
 		resp := &iamproto.VerifyUserCredentialsResponse{
-			Valid:          res.Valid,
-			UserId:         res.UserID,
-			RoleId:         res.RoleID,
-			Level:          res.Level,
-			TenantId:       res.TenantID, // Trả tenant_id như yêu cầu
-			ClientDeviceId: res.ClientDeviceID,
-			RefreshToken:   res.RefreshToken,
-			Username:       res.Username,
+			Valid:                 res.Valid,
+			UserId:                res.UserID,
+			RoleId:                res.RoleID,
+			Level:                 res.Level,
+			TenantId:              res.TenantID, // Trả tenant_id như yêu cầu
+			ClientDeviceId:        res.ClientDeviceID,
+			RefreshToken:          res.RefreshToken,
+			RefreshTokenExpiresAt: res.RefreshTokenExpiresAt.Unix(),
+			Username:              res.Username,
+			ClientProofPublicKey:  res.ClientProofPublicKey,
 		}
 
 		respData, err := proto.Marshal(resp)

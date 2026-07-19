@@ -5,9 +5,10 @@ export type APIError = {
   message: string;
 };
 
-type FetchJSONOptions = {
+export type FetchJSONOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
+  serializedBody?: string;
   headers?: HeadersInit;
   credentials?: RequestCredentials;
   signal?: AbortSignal;
@@ -81,22 +82,27 @@ export async function fetchJSON<T>(
   const {
     method = "GET",
     body,
+    serializedBody,
     headers,
     credentials = "same-origin",
     signal,
   } = options;
 
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const requestHeaders = new Headers(headers);
+  if (!requestHeaders.has("Content-Type")) {
+    requestHeaders.set("Content-Type", "application/json");
+  }
   // [COMMENT]: Thực hiện cuộc gọi HTTP gốc và bọc kết quả lại bằng wrapResponse để kích hoạt lọc XSSI.
   const response = wrapResponse(
     await fetch(`${controlplaneBaseURL}${normalizedPath}`, {
       method,
-      headers: {
-        "Content-Type": "application/json",
-        ...(headers || {}),
-      },
+      headers: requestHeaders,
       credentials,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      // [COMMENT]: Critical fetcher ký đúng chuỗi này; tuyệt đối không stringify lần hai sau khi đã ký.
+      body: serializedBody !== undefined
+        ? serializedBody
+        : body === undefined ? undefined : JSON.stringify(body),
       signal,
     })
   );

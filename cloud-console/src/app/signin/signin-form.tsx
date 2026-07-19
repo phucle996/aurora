@@ -17,7 +17,7 @@ import { Separator } from "@/components/ui/separator";
 // [COMMENT]: Import các API và security modules
 import { authAPI, type LoginRequest } from "@/lib/api/auth";
 import { type ZoneCatalogItem } from "@/lib/api/zone";
-import { ensureDevicePublicKey, DeviceKeyUnsupportedError } from "@/lib/security/deviceKey";
+import { ensureDevicePublicKey, signSessionProof } from "@/lib/security/deviceKey";
 import { useUserSession } from "@/hooks/useUserSession";
 
 // [COMMENT]: Icon cho các SSO providers
@@ -123,28 +123,38 @@ export default function SignInForm({
     setIsLoading(true);
 
     try {
-      // [COMMENT]: Sinh Ed25519 device public key cho Trust Device flow
-      let devicePublicKey = "";
-      try {
-        devicePublicKey = await ensureDevicePublicKey();
-      } catch (err) {
-        if (err instanceof DeviceKeyUnsupportedError) {
-          console.warn("[SignIn] Ed25519 not supported, proceeding without device key");
-        } else {
-          throw err;
-        }
-      }
+      // [COMMENT]: Login fail-closed nếu browser không ký được challenge; session không có proof key sẽ không được phát hành.
+      const devicePublicKey = await ensureDevicePublicKey();
+      const challenge = await authAPI.requestLoginChallenge();
+      const proofTimestamp = Math.floor(Date.now() / 1000);
+      const canonicalUsername = rawUsername.trim().toLowerCase();
+      const canonicalTenantDomain = tenantDomain.trim().toLowerCase();
+      const canonicalZoneCode = selectedZoneCode || "global";
+      const proofMessage = [
+        "aurora.login-proof.v1",
+        challenge.challenge_id,
+        challenge.nonce,
+        canonicalUsername,
+        canonicalTenantDomain,
+        canonicalZoneCode,
+        String(trustDevice),
+        String(proofTimestamp),
+      ].join("\n");
+      const proofSignature = await signSessionProof(proofMessage);
 
       const payload: LoginRequest = {
         // [COMMENT]: Gửi raw username (không có @domain) và tenant_domain riêng biệt.
         // Nếu không có @domain, tenantDomain là chuỗi rỗng — CP sẽ xử lý global login.
-        username: rawUsername.trim().toLowerCase(),
+        username: canonicalUsername,
         password,
         device_public_key: devicePublicKey,
         trust_device: trustDevice,
 		// [COMMENT]: Pending login chỉ authorize resend nên không cần placement zone; account active vẫn giữ zone requirement.
-		zone_code: selectedZoneCode || "global",
-        tenant_domain: tenantDomain.trim().toLowerCase() || undefined,
+		zone_code: canonicalZoneCode,
+        tenant_domain: canonicalTenantDomain || undefined,
+        session_proof_challenge_id: challenge.challenge_id,
+        session_proof_timestamp: proofTimestamp,
+        session_proof_signature: proofSignature,
       };
 
       await authAPI.login(payload);

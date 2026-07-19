@@ -1,395 +1,487 @@
-<!-- markdownlint-disable MD033 -->
-# End-User Login & Session Initialization - Workflow God View (Gateway-Centric architecture)
+# User Login — God View (Master SoT)
 
-> [!NOTE]
-> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng Đăng nhập (Login) và Khởi tạo phiên hoạt động của End-User.
-> Mọi thay đổi về code liên quan đến xác thực mật khẩu, kiểm tra trạng thái tài khoản, gắn kết thiết bị và ghi nhận phiên chạy lên Redis L2 phải tuân thủ nghiêm ngặt đặc tả này.
+> **IMPORTANT — SINGLE SOURCE OF TRUTH (SoT)**
+> Tài liệu này là nguồn chuẩn cho workflow đăng nhập end-user và cấp runtime session. Mọi thay đổi liên quan đến login challenge, JSON contract, tenant identity, password verification, account state, device key, refresh token, Trinity credentials hoặc Redis L2 session phải cập nhật tài liệu này trong cùng change-set.
+
+## 0. Control header
+
+| Thuộc tính | Giá trị AS-IS |
+|---|---|
+| Domain | IAM / End-user authentication |
+| Public endpoints | `POST /api/v1/auth/login/challenge`, `POST /api/v1/auth/login` |
+| UI consumer | Cloud Console sign-in |
+| Edge owner | Envoy + ACR ExtAuthz |
+| Identity owner | Controlplane IAM |
+| Inter-service transport | NATS Core request/reply, subject `iam.auth.verify_credentials` |
+| Durable SoT | PostgreSQL: users, roles, memberships, devices, refresh tokens, IAM outbox |
+| Runtime SoT | Redis L2 user session encoded bằng Prost |
+| Crypto | Argon2 password verification; Ed25519 login proof; signed access token |
+| Login challenge TTL | 120 giây |
+| Pending resend cooldown | Redis `SET NX`, 60 giây |
+| Success response | HTTP `204 No Content` với cookies |
+| Related workflow | [User Critical Session Proof](user_critical_session_proof_workflow.md) |
+| Verified against | Working tree, 2026-07-19 |
+
+### 0.1 Những sự thật không được hiểu sai
+
+| Sự thật | Hệ quả |
+|---|---|
+| UI có thể nhận `username@tenant_domain`, wire contract thì không | Client phải tách thành `username` và `tenant_domain`; ACR từ chối username chứa `@` |
+| JSON chỉ nhận `device_public_key` | Không có alias `public_key` legacy |
+| Session proof không phải trusted-device assertion | Nó chứng minh request đang giữ private key tương ứng; `trust_device` chỉ quyết định có tạo refresh token hay không |
+| Login challenge chỉ dùng một lần | Sau khi chữ ký hợp lệ, ACR atomic compare-and-delete nonce trước khi gọi IAM |
+| Pending account không được cấp session | Password đúng chỉ kích hoạt resend có cooldown và trả HTTP 412 |
+| IAM trả canonical public key cho ACR | Redis session dùng key đã persist, không dùng lại trực tiếp input chưa tin cậy |
+| IAM là issuer và durable owner của refresh token; ACR là HTTP cookie writer | Khi `trust_device=true`, IAM persist hash + trả raw token/expiry đúng một lần; ACR phát HttpOnly cookie theo expiry đó |
+
+### 0.2 Severity gate
+
+| Mức | Ý nghĩa | Release gate |
+|---|---|---|
+| P0 | Có thể bypass authentication, cấp nhầm tenant/session hoặc lộ credential | Block production |
+| P1 | Replay/race làm cấp phiên sai hoặc mất khả năng recovery | Block rollout IAM |
+| P2 | HA, latency, observability hoặc abuse control không đạt | Cần owner và deadline |
+| P3 | UX/maintainability | Có thể backlog có kiểm soát |
 
 ---
 
-## 🗺️ 1. Giới Thiệu
+## 1. Phạm vi và trust boundaries
 
-### 👥 Tài Liệu Dành Cho Ai?
+### 1.1 In scope / out of scope
 
-Tài liệu được thiết kế cho các kỹ sư Backend phát triển dịch vụ IAM, đội ngũ chuyên viên Bảo mật giám sát phiên đăng nhập và các kỹ sư SRE chịu trách nhiệm đảm bảo tính khả dụng và khả năng tự rollback/khôi phục khi ghi nhận thông tin phiên lên cụm lưu trữ phân tán.
+| In scope | Out of scope nhưng liên quan |
+|---|---|
+| Sinh và verify login challenge | Account registration và account verification chi tiết |
+| Canonical login JSON contract | OAuth/SSO |
+| Global/tenant credential lookup | Tenant switching sau login |
+| Account-state handling | Admin/SRE login |
+| Device key persistence và refresh-token decision | Device là nguồn tin cậy vật lý; hệ thống không giả định điều đó |
+| Access token, access key, access secret, Redis session | Business authorization sau login |
+| Pending-account resend trigger | Mail delivery/retry chi tiết |
+| Failure, race, HA và security invariants | Critical route proof chi tiết, nằm ở God View riêng |
 
-### ❓ Phân hệ End-User Login là gì?
+### 1.2 Component ownership
 
-Đây là quy trình xác thực thông tin định danh (Username/Password), kiểm định trạng thái của tài khoản (Active, Pending-Active, Suspended, Disabled) và đăng ký/gắn kết thiết bị người dùng (Device Binding) dựa trên chữ ký khóa công khai Ed25519. Kết quả thành công sẽ phát hành bộ **Credentials 3 thành phần (Trinity Credentials)** được đồng bộ hóa lên tầng lưu trữ runtime Redis L2 dưới dạng nhị phân tối ưu hóa.
+| Component | Owns | Không được tự suy diễn |
+|---|---|---|
+| Cloud Console | Tách identity UI, giữ Ed25519 key, ký challenge, gửi canonical payload | Không tự tạo tenant ID hoặc zone ID |
+| Envoy | TLS, body buffering, gọi ExtAuthz | Không xác thực password |
+| ACR | CORS/rate limit, challenge, proof verification, NATS request, session issuance, cookies | Không query trực tiếp IAM PostgreSQL |
+| NATS Core | HA request/reply đến IAM queue group | Không phải durable event store cho login RPC |
+| Controlplane IAM | User lookup, password/state/role/device/refresh-token business rules | Không phát HTTP cookies |
+| PostgreSQL | Durable identity, device, role, membership, refresh token, resend outbox | Không giữ runtime access session |
+| Redis HA | One-time challenges, resend cooldown, binary runtime session và indexes | Không thay thế durable identity SoT |
 
-### 📍 Các Biên Công Nghệ Hoạt Động
-
-- **Frontend Cloud UI**: Trang `login` & [auth.ts](../../cloud-ui/src/lib/api/auth.ts).
-- **Envoy Ingress Gateway**: Cấu hình Ext-Authz chặn bắt `/api/v1/auth/login`.
-- **acr Service (Rust)**: Xử lý chặn bắt Ext-Authz tại biên, phân giải zone_code, ghi nhận phiên chạy lên Redis L2, sinh Trinity Credentials, ký JWT qua Vault, và phát hành Set-Cookie trực tiếp thông qua Denied Response.
-- **Controlplane IAM Service (Go)**: Xác thực thông tin đăng nhập và thông tin thiết bị thô của người dùng qua gRPC endpoint `VerifyUserCredentials`.
-- **Device Service**: [device_service.go](../../controlplane/internal/iam/service/device_service.go) (Phân giải thiết bị và tự dọn dẹp thiết bị vượt định mức).
-- **Security Signer**: Vault JWT Transit in [jwt.go](../../controlplane/internal/security/jwt.go).
-- **Database (PostgreSQL)**: Bảng `users`, `devices`, và `refresh_tokens`.
-- **Cache Engine**: Redis Cluster L2 (Lưu thông tin phiên dạng Protobuf `iamproto.UserAccessSession`).
-
----
-
-## 🏛️ 2. Sơ Đồ Hệ Thống & Ranh Giới Phase
+### 1.3 End-to-end topology
 
 ```mermaid
-graph TD
-    UI["💻 Browser Cloud UI"]
-    Envoy["🛡️ Envoy Ingress Gateway"]
-    acr["🛡️ acr Service (Rust - Ext-Authz)"]
-    CP["⚙️ Controlplane IAM (Go)"]
-    Vault["🔑 HashiCorp Vault (Transit Engine)"]
-    Redis[("⚡ Redis L2 (Runtime Sessions)")]
-    DB[("🗄️ PostgreSQL (Users & Devices SoT)")]
-
-    UI -- "POST /api/v1/auth/login" --> Envoy
-    Envoy -- "1. Intercept Request (Ext-Authz Check)" --> acr
-    acr -- "2. Verify User Credentials (gRPC)" --> CP
-    CP -- "3. Verify Argon2id & Load/Upsert Device" --> DB
-    CP -- "4. Return verification success & metadata" --> acr
-    acr -- "5. Resolve Zone Code to Zone ID" --> acr
-    acr -- "6. Sign token claims via Vault (Stateless)" --> Vault
-    acr -- "7. Write UserAccessSession to L2" --> Redis
-    acr -- "8. Return Denied (HTTP 204 & Set-Cookie)" --> Envoy
-    Envoy -- "9. Forward Set-Cookie & 204 Status" --> UI
+flowchart LR
+    UI[Cloud Console] -->|login challenge + login| E[Envoy]
+    E -->|ExtAuthz CheckRequest| A[ACR]
+    A -->|challenge/session| R[(Redis HA)]
+    A -->|NATS request/reply| N[NATS Core]
+    N -->|queue group iam_auth_service| IAM[Controlplane IAM]
+    IAM --> DB[(PostgreSQL)]
+    IAM -->|Protobuf response| N --> A
+    A -->|sign access token| K[Token signer]
+    A -->|HTTP 204 + Set-Cookie| E --> UI
 ```
 
 ---
 
-## 🔍 3. Chi Tiết Thực Thi Nghiệp Vụ Theo Phase
+## 2. Public contract
 
-### 🛡️ Chuỗi Middleware Áp Dụng (Security & Observability Pipeline)
+### 2.1 Route contract
 
-Khi một yêu cầu đăng nhập (`POST /api/v1/auth/login`) được gửi đến Ingress, nó đi qua bộ quy tắc của Envoy:
+| Method/path | Authentication | Owner | Kết quả |
+|---|---|---|---|
+| `POST /api/v1/auth/login/challenge` | Public, nhưng qua CORS và pre-auth rate limit | ACR local interceptor | `200` JSON challenge |
+| `POST /api/v1/auth/login` | Public login interceptor, bắt buộc proof | ACR → IAM | `204` cookies, `401`, `412`, hoặc `5xx` |
 
-| Middleware | Feature / Vai Trò | Level (App/Route) |
-| :--- | :--- | :--- |
-| `Envoy Local Rate Limit` | Chống DDoS/Spam bằng cách lọc chặn IP thô & Max Connection (Inflight) từ tầng Ingress. | Envoy Ingress |
-| `Ext-Authz Interceptor` | Chuyển hướng các request đăng nhập về phía dịch vụ acr (Rust) để thực hiện xác thực và phân giải quyền. | Ingress Policy |
+Hai endpoint được xử lý ngay trong ACR. Request login thành công không được forward xuống business HTTP API.
 
----
+### 2.2 Challenge response
 
-### 📌 PHASE 1: Interceptor (Chặn bắt & Chuyển tiếp - Rust acr / Envoy)
-
-#### 1. Sơ đồ trình tự (Sequence Diagram - Phase 1)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant UI as Browser Cloud UI
-    participant Envoy as Envoy Ingress
-    participant acr as Rust acr Service
-    participant CP as Go Controlplane
-
-    UI->>Envoy: POST /api/v1/auth/login (with username, password, etc)
-    Envoy->>acr: CheckRequest (HTTP Context, Headers & Body)
-    Note over acr: handle_login() intercepts
-    acr->>acr: Parse JSON payload
-    UI->>UI: Tách input username@domain thành hai JSON field
-    acr->>acr: Validate username không chứa @; canonicalize username + tenant_domain
-    acr->>acr: Extract client_device_id from cookies, client_ip, user_agent
-    acr->>CP: VerifyUserCredentials(raw_username, password, client_device_id, etc)
+```json
+{
+  "challenge_id": "<uuid-v7>",
+  "nonce": "<base64-32-byte-value>",
+  "expires_in": 120
+}
 ```
 
-#### 2. Mô tả nghiệp vụ
+Redis key:
 
-- **Chặn bắt tại Biên (Gateway Interception)**: Envoy Ingress chuyển tiếp toàn bộ request chứa thông tin đăng nhập đến Ext-Authz middleware (Rust acr).
-- **Phân tách và chuẩn bị dữ liệu**: 
-  - Rust acr bóc tách JSON payload gửi lên, đồng thời thu thập siêu dữ liệu gồm IP khách (Client IP), User-Agent từ Header của request và `client_device_id` từ HTTP Cookies hiện có (nếu có).
-  - **Tenant wire contract duy nhất**: UI có thể nhận cú pháp `alice@acme.platform.io`, nhưng request luôn gửi hai field `username="alice"` và `tenant_domain="acme.platform.io"`. ACR từ chối `username` còn chứa `@`; không tự suy diễn domain theo cách thứ hai.
-- **Giao tiếp NATS request/reply**: Rust acr đóng gói Protobuf và gửi yêu cầu xác thực đến Go Controlplane qua subject `iam.auth.verify_credentials`.
+```text
+iam:session_proof:login:{challenge_id} -> nonce, EX 120
+```
 
-#### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
+### 2.3 Canonical login request
 
-- **Rust Ingress Interceptor / Gateway Auth Handler**: [login_handler.rs](../../acr/src/service/login/login_handler.rs) - Chặn bắt HTTP POST `/api/v1/auth/login` tại biên, trích xuất cookie/IP/UA, tách domain và chuyển tiếp qua gRPC.
-- **gRPC API Definition (VerifyUserCredentials)**: [auth.proto](../../controlplane/internal/iam/transport/rpc/proto/auth.proto#L12-L28) - Định nghĩa message gRPC dùng để giao tiếp liên dịch vụ.
+```json
+{
+  "username": "alice",
+  "password": "<secret>",
+  "device_name": "optional",
+  "device_type": "optional",
+  "device_public_key": "<base64 Ed25519 32 bytes>",
+  "session_proof_challenge_id": "<uuid-v7>",
+  "session_proof_timestamp": 1784450000,
+  "session_proof_signature": "<base64 Ed25519 signature>",
+  "trust_device": true,
+  "zone_code": "vn",
+  "tenant_domain": "acme.example"
+}
+```
+
+| Field | Normalize/validation | Security meaning |
+|---|---|---|
+| `username` | Trim, lowercase, required, không chứa `@` | Identity local part duy nhất |
+| `password` | Required, không empty | Chỉ chuyển qua NATS request/reply đến IAM |
+| `tenant_domain` | Trim, lowercase, empty = global login | Chọn lookup global hoặc tenant membership |
+| `zone_code` | Default `global` nếu thiếu | Context zone dùng khi cấp claims/session |
+| `device_public_key` | ACR verify signature; IAM decode Base64 và yêu cầu đúng 32 bytes | Bind public key vào durable device và runtime session |
+| `session_proof_*` | Challenge tồn tại, timestamp trong 120s, signature hợp lệ | Chống replay và bind identity fields vào request |
+| `trust_device` | Default false | Chỉ là remember-me/refresh-token decision |
+
+### 2.4 Canonical signed message
+
+Các field nối bằng LF, không có LF cuối:
+
+```text
+aurora.login-proof.v1
+challenge_id
+nonce
+username
+tenant_domain
+zone_code
+remember_me
+unix_timestamp_seconds
+```
+
+Client và ACR phải dùng chính giá trị đã canonicalize. Thay đổi username, tenant domain, zone hoặc remember-me sau khi ký làm signature invalid.
+
+### 2.5 Responses
+
+| HTTP | Trường hợp | Session/cookies |
+|---:|---|---|
+| `200` | Challenge issued | Không |
+| `204` | Active account, credentials và proof hợp lệ, session đã ghi Redis | Có |
+| `400` | Empty body, JSON sai, username/password contract sai | Không |
+| `401` | Proof sai/hết hạn/replay, credentials sai, suspended/disabled | Không |
+| `412` | Password đúng nhưng account `pending-active` | Không; resend được queue nếu cooldown cho phép |
+| `500` | Redis/NATS/token signer/session persistence lỗi | Không được coi là login thành công |
+
+Response `412` canonical:
+
+```json
+{
+  "error_message": "Account verification required. A verification email has been queued if cooldown allows.",
+  "error_code": "ACCOUNT_VERIFICATION_REQUIRED",
+  "verification_email_queued": true
+}
+```
+
+`verification_email_queued=true` hiện biểu đạt workflow accepted/cooldown-compatible, không chứng minh một record mới chắc chắn được insert ở chính request đó.
 
 ---
 
-### 📌 PHASE 2: Controlplane (Xác thực & Nghiệp vụ DB - Go CP)
-
-#### 1. Sơ đồ trình tự (Sequence Diagram - Phase 2)
+## 3. Workflow end-to-end
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant acr as Rust acr Service
-    participant CP as Go Controlplane
-    participant Repo as PostgreSQL Repo
-    participant DB as PostgreSQL Database
+    participant UI as Cloud Console
+    participant ACR
+    participant Redis as Redis HA
+    participant NATS
+    participant IAM as Controlplane IAM
+    participant DB as PostgreSQL
+    participant Signer as Token Signer
 
-    acr->>CP: VerifyUserCredentials(grpc_request)
-    
-    CP->>Repo: LoginUserByUsername (hoặc LoginUserByUsernameAndTenantDomain)
-    Repo->>DB: Query SELECT u.*, r.code, r.role_level INNER JOIN user_role_assignments & roles
-    DB-->>Repo: Trả về user record kèm role (luôn non-null nhờ DB constraints trigger)
-    Repo-->>CP: Trả về LoginUser entity (chứa Role & Level kiểu dữ liệu thô)
-    
-    CP->>CP: Xác thực password hash (Argon2id verify)
-    
-    alt Trạng thái User là "pending-active"
-        Note over CP: Gửi token qua outbox & trả lỗi
-        CP-->>acr: valid=false (VerificationRequired)
-    else Trạng thái User là "suspended" hoặc "disabled"
-        CP-->>acr: valid=false (InvalidCredentials)
+    UI->>ACR: POST /api/v1/auth/login/challenge
+    ACR->>Redis: SET challenge nonce EX 120
+    ACR-->>UI: challenge_id + nonce
+    UI->>UI: Canonicalize identity and Ed25519 sign
+    UI->>ACR: POST /api/v1/auth/login
+    ACR->>Redis: GET challenge
+    ACR->>ACR: Verify timestamp + Ed25519 signature
+    ACR->>Redis: Lua compare-and-delete challenge
+    ACR->>NATS: request iam.auth.verify_credentials
+    NATS->>IAM: Queue group dispatch
+    IAM->>DB: Load global user or tenant-scoped membership + role
+    IAM->>IAM: Verify Argon2 password and account state
+    alt pending-active
+        IAM->>Redis: SET NX resend cooldown EX 60
+        opt cooldown winner
+            IAM->>DB: INSERT IAM mail outbox
+        end
+        IAM-->>ACR: ACCOUNT_VERIFICATION_REQUIRED
+        ACR-->>UI: HTTP 412, no session
+    else suspended/disabled/invalid
+        IAM-->>ACR: Invalid credentials
+        ACR-->>UI: HTTP 401
+    else active
+        IAM->>IAM: Canonicalize Ed25519 public key
+        IAM->>DB: Resolve/register device
+        opt trust_device=true
+            IAM->>DB: Persist hashed refresh token
+        end
+        IAM-->>ACR: Identity + role + device + proof key + raw refresh/expiry
+        ACR->>Signer: Sign access claims
+        ACR->>Redis: Register Prost UserAccessSession + indexes
+        ACR-->>UI: HTTP 204 + Trinity/context cookies
     end
-    
-    CP->>CP: Phân giải & Gắn kết thiết bị (Device Binding)
-    CP->>DB: INSERT/UPDATE devices (ON CONFLICT DO UPDATE)
-    
-    alt trust_device = true (Chọn tin cậy thiết bị)
-        CP->>CP: Sinh mới Opaque Refresh Token
-        CP->>DB: INSERT INTO refresh_tokens
-    end
-
-    CP-->>acr: VerifyUserCredentialsResponse (valid=true, user_id, role, refresh_token, client_device_id)
 ```
 
-#### 2. Mô tả nghiệp vụ
+### 3.1 Phase A — UI challenge and signing
 
-- **Xác thực tài khoản và phân quyền**: Go Controlplane truy xuất thông tin tài khoản người dùng từ PostgreSQL thông qua username. Sử dụng thuật toán Argon2id để kiểm tra mật khẩu. Phép truy vấn sử dụng `INNER JOIN` với `user_role_assignments` và `roles` để lấy kèm thông tin Role và Level kiểu dữ liệu thô (non-nullable).
-- **Ràng buộc phân quyền tại DB (Database Enforced Roles)**: Hệ thống sử dụng Postgres Constraint Triggers (`trg_auto_assign_platform_role` trên bảng `users` và `trg_auto_assign_tenant_role` trên bảng `tenant_memberships`) hoãn quét cho đến khi transaction commit (`DEFERRABLE INITIALLY DEFERRED`) để tự động gán các role mặc định (`platform_user` hoặc `tenant_member`) nếu người dùng chưa có. Điều này đảm bảo tính nhất quán dữ liệu ở mức DB (SOT) và loại bỏ hoàn toàn các lỗ hổng bypass role.
-- **Kiểm tra trạng thái tài khoản**:
-  - Nếu trạng thái là `pending-active`, hệ thống sẽ trả về lỗi `VerificationRequired` và đẩy mã OTP qua luồng outbox.
-  - Nếu trạng thái là `suspended` hoặc `disabled`, hệ thống trả về lỗi `InvalidCredentials`.
-- **Gắn kết thiết bị (Device Binding)**: Thực hiện logic Upsert thiết bị đăng nhập vào bảng `devices`. Trùng lặp dựa trên index duy nhất `(user_id, client_device_id)`. Các tham số nhạy cảm như `public_key` tuyệt đối không bị ghi đè để tránh tấn công chiếm quyền thiết bị. Siêu dữ liệu IP khách (Client IP) và User-Agent được nạp trực tiếp qua struct `LoginRequest` entity để đảm bảo tính tường minh.
-- **Phát hành Refresh Token**: Khi tham số `trust_device` là `true`, Controlplane sinh ra Opaque Refresh Token theo cấu trúc bảo mật `<userID>_<random_entropy>` (tổng độ dài khoảng 64 - 72 ký tự) và lưu hash của nó vào bảng `refresh_tokens`.
-- **Phản hồi gRPC**: Trả về dữ liệu thành công kèm theo metadata của User, Role, Level, Refresh Token và Device ID về lại cho Rust acr. Lỗi phân quyền hoặc không tìm thấy user được che giấu dưới dạng `ErrInvalidCredentials` đối với client để ngăn chặn brute-force/user enumeration.
+1. UI parses `alice@acme.example` only as input convenience.
+2. UI generates or loads Ed25519 key from origin IndexedDB.
+3. Durable private key is a non-extractable `CryptoKey`; legacy JWK is migrated on first use.
+4. UI requests a fresh login challenge.
+5. UI signs the canonical message and immediately calls login.
+6. Browser không hỗ trợ Ed25519/WebCrypto phải fail-closed; không phát login không có key.
 
-#### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
+### 3.2 Phase B — ACR edge verification
 
-- **gRPC Transport Server Handler**: [auth.go](../../controlplane/internal/iam/transport/rpc/handler/auth.go#L128-L179) - Tiếp nhận request gRPC từ acr Service, ánh xạ sang entity và chuyển giao cho tầng nghiệp vụ.
-- **Business AuthService Implementation**: [auth_service.go](../../controlplane/internal/iam/service/auth_service.go#L200-L280) - Thực hiện so khớp mật khẩu bằng Argon2id, kiểm soát trạng thái tài khoản (`pending-active`, `active`, `suspended`, `disabled`), sinh refresh token.
-- **Device Management Service**: [device_service.go](../../controlplane/internal/iam/service/device_service.go#L30-L75) - Đăng ký, kiểm tra dấu vân tay thiết bị (Fingerprint) và kiểm soát số lượng thiết bị hoạt động tối đa của user.
+1. CORS và route-group pre-auth rate limit chạy trước local interceptor.
+2. ACR parses raw body buffered bởi Envoy.
+3. ACR canonicalizes username/tenant domain; không chấp nhận contract `username@domain` trên wire.
+4. ACR loads nonce, kiểm tra timestamp và signature bằng `device_public_key` trong cùng request.
+5. Chỉ sau crypto success, Lua compare-and-delete consume challenge. Hai request concurrent cùng challenge chỉ một request được đi tiếp.
+6. ACR tạo `client_device_id` candidate mới, thêm client IP/User-Agent và gửi Protobuf qua NATS Core.
+
+### 3.3 Phase C — IAM credential and account-state decision
+
+Lookup path:
+
+- `tenant_domain == ""`: `LoginUserGlobal(username)`.
+- `tenant_domain != ""`: `LoginUserTenant(username, tenant_domain)`, yêu cầu membership/role trong scope đó.
+
+IAM verify password trước khi xử lý `pending-active`, vì resend không được trở thành user-enumeration endpoint.
+
+State decision:
+
+| State | Behavior |
+|---|---|
+| `pending-active` | Redis cooldown + durable IAM mail outbox, trả verification required |
+| `active` | Tiếp tục device/session issuance |
+| `suspended`, `disabled`, unknown | Trả invalid credentials |
+
+### 3.4 Phase D — Device and refresh-token persistence
+
+1. IAM canonicalizes Base64 Ed25519 public key thành standard Base64, đúng 32 bytes.
+2. Device service resolve device theo user + public key; nếu không tìm thấy thì tạo ID mới.
+3. IAM tính fingerprint SHA-256 trên canonical key và register/upsert device cùng IP/UA.
+4. Device row revoked hoặc ID không hợp lệ làm login fail.
+5. Khi `trust_device=true`, IAM tạo opaque refresh token và persist hash gắn với user, tracked device và optional tenant.
+6. IAM response trả `client_proof_public_key` từ tracked device đã persist; nếu remember-me được chọn thì trả raw refresh token và Unix expiry đúng một lần cho ACR.
+
+### 3.5 Phase E — ACR session issuance
+
+ACR sinh:
+
+- `access_key`: UUIDv7.
+- `access_secret`: UUIDv4; Redis chỉ giữ SHA-256 hash `ash`.
+- Access token claims: user ID, username, role ID, level, tenant ID, zone ID, access key, JTI, issuer, issued/expiry time.
+
+Redis key:
+
+```text
+iam:user_session:{zone_id}:{tenant_id}:{user_id}:{access_key}
+```
+
+Prost payload:
+
+| Field/tag | Meaning |
+|---|---|
+| `ash` / 1 | SHA-256 của access secret |
+| `tdid` / 2 | Tracked device ID |
+| `lsa` / 3 | Last-seen Unix timestamp |
+| `client_proof_public_key` / 4 | Canonical Ed25519 key cho critical session proof |
+
+Session manager đồng thời duy trì user/device access indexes và có thể evict session vượt device cap. Notification `iam.device.evicted` là best-effort sau Redis mutation; session eviction trong Redis mới là boundary chính.
+
+### 3.6 Success cookies AS-IS
+
+| Cookie | HttpOnly | Max-Age | Meaning |
+|---|---:|---:|---|
+| `access_token` | Yes | Session TTL | Signed access claims |
+| `access_key` | Yes | Session TTL | Runtime session locator |
+| `access_secret` | Yes | Session TTL | Proof checked against `ash` |
+| `refresh_token` | Yes | Expiry IAM đã persist | Opaque recovery credential, chỉ có khi `trust_device=true` |
+| `client_device_id` | No | 1 year | Client/device context |
+| `tenant_id` | No | 1 year | Routing context; `platform` cho global |
+| `zone_code` | No | 1 year | Placement context nếu request có field này |
+
+Tất cả cookies đều `Secure`, `SameSite=Lax`, `Path=/` và dùng optional configured parent domain. ACR fail-closed nếu trusted login nhận token rỗng hoặc expiry không còn ở tương lai; `Max-Age` được tính từ expiry IAM trả về thay vì hard-code TTL riêng ở ACR.
 
 ---
 
-### 📌 PHASE 3: Token Issuance & Session Storage (Cấp phát & Lưu trữ phiên - Rust acr)
-
-#### 1. Sơ đồ trình tự (Sequence Diagram - Phase 3)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant acr as Rust acr Service
-    participant Vault as HashiCorp Vault
-    participant RDS as Redis L2 Cluster
-    participant Envoy as Envoy Ingress
-    participant UI as Browser Cloud UI
-
-    Note over acr: Nhận VerifyUserCredentialsResponse (valid=true)
-    acr->>acr: Phân giải zone_code -> zone_id thô (L1 cache)
-    acr->>acr: Phân giải tenant_domain -> tenant_id (L1 -> L2 -> gRPC)
-    acr->>acr: Sinh mới access_key (UUIDv7) & access_secret (UUIDv4)
-    acr->>Vault: Ký Access Claims (Transit Engine - HMAC-SHA256) kèm claims.tenant_id
-    Vault-->>acr: Trả về signed JWT Access Token
-    
-    acr->>RDS: Pipeline: SET key session & SADD index set (Lưu runtime session)
-    RDS-->>acr: Trả về kết quả ghi Redis (OK/Err)
-    
-    Note over acr: Tạo DeniedHttpResponse (HTTP 204)
-    acr->>acr: Inject Set-Cookie headers (access_token, access_key, access_secret, client_device_id, refresh_token, tenant_domain)
-    acr-->>Envoy: CheckResponse (with DeniedHttpResponse & Cookies)
-    Envoy-->>UI: HTTP 204 No Content + Cookies
-```
-
-#### 2. Mô tả nghiệp vụ
-
-- **Phân giải Zone**: Rust acr ánh xạ `zone_code` sang `zone_id` bằng bộ nhớ đệm L1 cục bộ nhằm tối thiểu hóa độ trễ.
-- **Phân giải Tenant**: Rust acr sử dụng `TenantManager` để phân giải `tenant_domain` đã trích xuất ở Phase 1 thành `tenant_id` (sử dụng hybrid cache: L1 in-memory -> Redis L2 shared -> gRPC fallback sang Controlplane).
-- **Khởi tạo định danh runtime**: Sinh mới cặp khóa truy cập gồm `access_key` (UUIDv7) và `access_secret` (UUIDv4).
-- **Ký số Stateless JWT**: Gửi yêu cầu ký JWT Access Token chứa các claims về phân quyền (bao gồm cả `tenant_id` và `zone_id` đã được giải phân) tới HashiCorp Vault Transit Engine.
-- **Lưu trữ phiên hoạt động (Session Register)**: Đóng gói session metadata dưới dạng nhị phân Protobuf `UserAccessSession` và đẩy xuống Redis L2 bằng cơ chế Pipeline.
-- **Trả về Cookies**: Rust acr thiết lập HTTP `204 No Content` đi kèm các thẻ Set-Cookie an toàn gồm `access_token`, `refresh_token`, `access_key`, `access_secret`, `client_device_id`, và `tenant_domain` (bỏ hoàn toàn `tenant_code` cookie) thông qua Ext-Authz Denied Response gửi lại Envoy để chuyển về phía trình duyệt người dùng.
-
-#### 3. Bản đồ tham chiếu file mã nguồn (Implementation References)
-
-- **Zone Code Resolution**: [zone_resolution.rs](../../acr/src/service/zone_resolution.rs) - Phân giải cục bộ mã vùng của tenant.
-- **Tenant Domain Resolution**: [manager.rs](../../acr/src/service/tenant/manager.rs) - Giải phân tenant domain thành tenant_id (L1 -> L2 -> gRPC).
-- **Stateless Token Manager**: [token.rs](../../acr/src/core/token.rs#L151-L184) - Sinh claims và thực hiện ký số Access Token (JWT) qua HashiCorp Vault.
-- **L2 Redis Session Manager**: [session.rs](../../acr/src/core/session.rs#L59-L80) - Tuần tự hóa session sang nhị phân Protobuf và ghi nhận vào Redis Cluster L2.
-- **HTTP Response Set-Cookie Generator**: [login_handler.rs](../../acr/src/service/login/login_handler.rs) - Inject các cookie Trinity Credentials cùng tenant_domain vào DeniedHttpResponse để đẩy về trình duyệt.
-
----
-
-## 🔄 4. Vòng Đời Trạng Thái Người Dùng (User State Machine)
-
-Mọi yêu cầu đăng nhập của người dùng đều chịu ảnh hưởng trực tiếp từ trạng thái tài khoản tại Go Controlplane. Trạng thái người dùng tuân theo sơ đồ chuyển đổi dưới đây:
-
-```mermaid
-stateDiagram-v2
-    [*] --> pending_active : Đăng ký (Register)
-    
-    pending_active --> active : Xác thực OTP kích hoạt (Activate OTP)
-    pending_active --> suspended : Tạm khóa (Admin Block)
-    pending_active --> disabled : Vô hiệu hóa hoàn toàn (Admin Disable)
-    
-    active --> suspended : Tạm khóa (Admin Block)
-    active --> disabled : Vô hiệu hóa hoàn toàn (Admin Disable)
-    
-    suspended --> active : Kích hoạt lại (Admin Unblock)
-    suspended --> disabled : Vô hiệu hóa hoàn toàn (Admin Disable)
-    
-    disabled --> [*]
-```
-
-### 📋 Mô tả chi tiết các trạng thái & Chuyển đổi
-
-- **`pending-active` (Chờ kích hoạt)**:
-  - **Ý nghĩa**: Trạng thái mặc định sau khi tạo tài khoản thành công.
-  - **Phản ứng khi đăng nhập**: Controlplane trả lỗi `VerificationRequired`. Không cấp access token hay session L2. Đồng thời kích hoạt gửi mã xác minh (OTP) qua Outbox.
-  - **Sự kiện chuyển đổi**: Chuyển sang `active` khi người dùng nhập đúng OTP. Hoặc có thể bị khóa (`suspended`/`disabled`) trực tiếp bởi quản trị viên.
-
-- **`active` (Đang hoạt động)**:
-  - **Ý nghĩa**: Trạng thái hợp lệ cho phép truy cập toàn bộ dịch vụ.
-  - **Phản ứng khi đăng nhập**: Cho phép xác thực, đăng ký thiết bị và cấp phát Trinity Credentials.
-  - **Sự kiện chuyển đổi**: Bị tạm khóa (`suspended`) hoặc vô hiệu hóa (`disabled`) bởi các hành động quản trị hệ thống.
-
-- **`suspended` (Tạm khóa)**:
-  - **Ý nghĩa**: Khóa tạm thời tài khoản do nghi ngờ vi phạm hoặc yêu cầu khóa khẩn cấp.
-  - **Phản ứng khi đăng nhập**: Hệ thống từ chối đăng nhập với lỗi `InvalidCredentials` (hoặc lý do khóa cụ thể).
-  - **Sự kiện chuyển đổi**: Mở khóa chuyển về `active` sau khi xác minh thủ công thành công, hoặc chuyển thành `disabled`.
-
-- **`disabled` (Vô hiệu hóa)**:
-  - **Ý nghĩa**: Xóa logic tài khoản.
-  - **Phản ứng khi đăng nhập**: Hệ thống từ chối hoàn toàn với lỗi `InvalidCredentials` / `NotFound`.
-  - **Sự kiện chuyển đổi**: Trạng thái cuối cùng của vòng đời tài khoản.
-
----
-
-## 🗺️ 5. Khoanh Vùng Mô Hình Dữ Liệu & Bản Đồ Tham Chiếu (ERD & File References)
-
-### 1. Sơ đồ thực thể ERD (Entity Relationship Diagram)
+## 4. Data lineage
 
 ```mermaid
 erDiagram
-    users {
-        uuid id PK
-        varchar username UK
-        varchar email UK
-        varchar phone
-        text password_hash
-        varchar status
-        timestamptz created_at
-        timestamptz updated_at
-    }
-    devices {
-        uuid id PK
-        uuid user_id FK
-        varchar device_name
-        varchar device_type
-        varchar os_name
-        varchar browser_name
-        text public_key
-        varchar public_key_alg
-        varchar public_key_fingerprint
-        varchar status
-        timestamptz trusted_at
-        timestamptz quarantined_at
-        jsonb risk_flags
-        timestamptz revoked_at
-        varchar client_device_id UK "Unique with user_id"
-        inet last_seen_ip
-        text last_seen_user_agent
-        timestamptz last_seen_at
-        timestamptz created_at
-        timestamptz updated_at
-    }
-    refresh_tokens {
-        uuid id PK
-        uuid user_id FK
-        uuid device_id FK "Optional"
-        varchar token_hash UK
-        uuid tenant_id FK "Optional"
-        timestamptz issued_at
-        timestamptz expires_at
-        timestamptz used_at
-        timestamptz revoked_at
-    }
-    UserAccessSession {
-        string access_key PK "Redis L2 Key"
-        string ash "AccessSecretHash"
-        string tdid "TrackedDeviceID"
-        int64 lsa "LastSeenAt"
-    }
+    USERS ||--o{ DEVICES : owns
+    USERS ||--o{ REFRESH_TOKENS : receives
+    DEVICES ||--o{ REFRESH_TOKENS : binds
+    USERS ||--o{ USER_ROLE_ASSIGNMENTS : assigned
+    USERS ||--o{ TENANT_MEMBERSHIPS : joins
 
-    users ||--o{ devices : "đăng ký / liên kết"
-    users ||--o{ refresh_tokens : "phát hành"
-    devices ||--o{ refresh_tokens : "liên đới"
+    USERS {
+      uuid id PK
+      varchar username
+      text password_hash
+      user_status status
+    }
+    DEVICES {
+      uuid id PK
+      uuid user_id FK
+      text public_key
+      varchar public_key_fingerprint
+      varchar client_device_id
+      timestamptz revoked_at
+    }
+    REFRESH_TOKENS {
+      uuid id PK
+      uuid user_id FK
+      uuid device_id FK
+      uuid tenant_id
+      varchar token_hash
+      timestamptz expires_at
+      timestamptz revoked_at
+    }
+    USER_ACCESS_SESSION {
+      string redis_key PK
+      string ash
+      string tdid
+      int64 lsa
+      string client_proof_public_key
+    }
 ```
 
-### 🚧 Phân Tách Ranh Giới Lưu Trữ (Storage Boundaries)
-
-- **Ranh Giới Bền Vững (PostgreSQL - Persistence SoT)**:
-  - **Mục tiêu**: Lưu trữ vĩnh viễn và đảm bảo tính toàn vẹn tuyệt đối cho dữ liệu định danh (`users`), chứng thư thiết bị (`devices`), và lịch sử token ngoại tuyến (`refresh_tokens`).
-  - **Liên kết**: Ràng buộc khóa ngoại (`FK`) chặt chẽ giúp bảo vệ tính nhất quán khi thực hiện xóa hoặc cập nhật thực thể (ví dụ: `ON DELETE CASCADE` khi xóa User).
-  - **Duy nhất**: Sử dụng Unique Index trên SQL (`devices_user_client_device_uidx`) làm chốt chặn ngăn chặn việc nhân bản vô tội vạ thiết bị cho cùng một phiên đăng nhập của người dùng.
-
-- **Ranh Giới Runtime (Redis L2 Cluster - High Performance Volatile Session)**:
-  - **Mục tiêu**: Phục vụ nhu cầu kiểm chứng quyền hạn và phiên truy cập ở tốc độ microsecond tại API Ingress Gateway mà không cần thực hiện truy vấn trực tiếp vào PostgreSQL.
-  - **Dữ liệu**: Lưu trữ phiên rút gọn `UserAccessSession` (được tuần tự hóa dưới dạng Protobuf nhị phân) và lập chỉ mục qua `access_key` (UUIDv7). Phiên chạy này tự động hết hạn thông qua TTL của Redis và hoàn toàn độc lập với liên kết vật lý trong PostgreSQL SQL.
-
-### 2. Bản đồ tham chiếu file mã nguồn & Database Migrations (File Mapping & References)
-
-Nhằm đảm bảo tính nhất quán giữa tài liệu Đặc tả God View (SoT) và mã nguồn thực tế, dưới đây là bản đồ chỉ mục dẫn đến các file định nghĩa mô hình thực thể và cấu trúc DB:
-
-##### A. Thực thể nghiệp vụ (Domain Entities in Go CP)
-
-- **User Status & User Entity Model**: [auth.go](../../controlplane/internal/iam/domain/entity/auth.go#L9-L27) - Định nghĩa struct `User` và enum `UserStatus`.
-- **Device Entity Model**: [device_auth.go](../../controlplane/internal/iam/domain/entity/device_auth.go#L9-L50) - Định nghĩa struct `Device` và enum `DeviceStatus`.
-- **Refresh Token Entity Model**: [refresh_token.go](../../controlplane/internal/iam/domain/entity/refresh_token.go#L9-L30) - Định nghĩa các struct `RefreshToken` và `RefreshTokenSession`.
-- **In-Memory Session Model**: [user_access_session.go](../../controlplane/internal/iam/domain/entity/user_access_session.go#L5-L9) - Định nghĩa runtime cache `UserAccessSession`.
-
-##### B. Cấu trúc cơ sở dữ liệu (PostgreSQL Migrations)
-
-- **Kiểu dữ liệu Enum (User/Device status enums)**: [000001_iam_enums.up.sql](../../controlplane/internal/iam/migrations/000001_iam_enums.up.sql#L6-L47) - Tạo kiểu enum `user_status` và `device_status` trên PostgreSQL.
-- **Cấu trúc bảng và ràng buộc vật lý**: [000002_iam_tables.up.sql](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql#L4-L103) - Khởi tạo các bảng `users`, `devices`, `refresh_tokens` cùng khóa ngoại và chú thích (comment).
-- **Chỉ mục unique chống trùng lặp (Device Unique Index)**: [000003_iam_indexes.up.sql](../../controlplane/internal/iam/migrations/000003_iam_indexes.up.sql) - Thiết lập unique index chống trùng lặp client_device_id theo từng user.
-- **Ràng buộc tự động gán và kiểm tra Role (Constraint Triggers)**: 
-  - [000008_iam_role_constraints.up.sql](../../controlplane/internal/iam/migrations/000008_iam_role_constraints.up.sql) - Tự động hóa gán `platform_user` role khi đăng ký user mới.
-  - [000005_hierarchy_role_constraints.up.sql](../../controlplane/internal/hierarchy/migrations/000005_hierarchy_role_constraints.up.sql) - Tự động hóa gán `tenant_member` role khi thêm membership mới.
-
-##### C. Cấu trúc tầng cache (Protobuf Protocol Buffer)
-
-- **Protobuf UserAccessSession Schema**: [iam_cache.proto](../../controlplane/internal/iam/transport/rpc/proto/iam_cache.proto#L19-L23) - Định nghĩa schema protobuf để chuyển đổi nhị phân lưu trữ Redis.
+| Output | Source | Consumer |
+|---|---|---|
+| User/role/level | PostgreSQL login query | ACR access claims và downstream identity headers |
+| Tenant ID | Tenant-domain membership query | Claims, Redis namespace, tenant cookie |
+| Client device ID | Durable tracked device | Redis session/device index, cookie |
+| Canonical proof key | Durable device row | Redis session, critical proof verifier |
+| Refresh token + expiry | IAM refresh service và PostgreSQL | ACR phát HttpOnly cookie; recovery flow gửi token về IAM để kiểm tra hash/context |
+| Access token/key/secret | ACR runtime generation | Browser cookies và edge session verification |
 
 ---
 
-## 📊 6. Giám Sát Và Truy Vết - Grafana Runbook
+## 5. Race conditions, HA và failure semantics
 
-### 1. Prometheus Metrics Cảnh Báo
+| Case | Control hiện tại | Kết quả bắt buộc |
+|---|---|---|
+| Cùng challenge được gửi đồng thời | Redis Lua compare-and-delete | Chỉ một login request qua proof gate |
+| Signature sai nhưng challenge còn TTL | Verify trước consume | Client có thể gửi lại signature đúng; attacker không consume hộ |
+| Redis challenge unavailable | Fail-closed | Không gọi IAM |
+| Hai pending login cùng lúc | `SET NX` cooldown | Tối đa một outbox winner trong window |
+| Outbox insert lỗi sau cooldown winner | Best-effort DEL cooldown 500ms | Cho phép retry sớm; không cấp session |
+| NATS request timeout/unavailable | ACR trả authentication unavailable | Không cấp session |
+| IAM replica concurrency register device | Durable constraints/repository quyết định | Không được tạo identity session nếu device persistence fail |
+| Token signer fail | ACR fail trước Redis session write | Không có runtime session |
+| Redis session write fail sau token signing | ACR trả 500, không set cookies | Signed token không tới client |
+| ACR chết sau Redis write trước response | Client thấy failure nhưng session orphan có TTL/index cleanup | Retry tạo session mới; cần metric orphan pressure |
+| Eviction notification publish fail | Best-effort notification | Redis eviction vẫn có hiệu lực; CP cleanup có thể trễ |
 
-- **Service Outcomes**: `iam_service_calls_total{op="iam.auth.login", outcome}`
-- **Postgres Upsert Device Latency**: `iam_downstream_call_duration_seconds{op="iam.auth.login", kind="repo", destination="RegisterLoginDevice"}`
+### 5.1 HA assumptions
 
-#### 📈 PromQL Cần Thiết
-
-##### A. Đo lường tỷ lệ đăng nhập thành công của hệ thống
-
-```promql
-sum(rate(iam_service_calls_total{op="iam.auth.login", outcome="success"}[5m])) / sum(rate(iam_service_calls_total{op="iam.auth.login"}[5m])) * 100
-```
-
-##### B. Độ trễ ghi nhận Session lên Redis L2
-
-```promql
-histogram_quantile(0.99, sum(rate(iam_downstream_call_duration_seconds_bucket{kind="cache-engine-l2"}[5m])) by (le))
-```
-
-### 2. LogsQL (VictoriaLogs) Giám Sát
-
-##### Tìm kiếm các log lỗi xảy ra trong quá trình đăng nhập
-
-```logsql
-t="iam.auth.login" level="error" | select(request_id, error_message, client_ip)
-```
-
-##### Phát hiện hành vi dò quét đăng nhập trái phép (Brute-force)
-
-```logsql
-t="iam.auth.login" "login invalid credentials" | count() by (client_ip)
-```
+- Redis challenge/session cần HA và persistence phù hợp RPO; mất Redis làm login fail-closed, không fallback DB session.
+- IAM NATS subscribers dùng queue group `iam_auth_service` để chia tải giữa replicas.
+- NATS login request/reply không phải outbox; request có thể retry từ client bằng challenge mới.
+- PostgreSQL là durability boundary cho device/refresh token/outbox.
+- Clock của UI/ACR cần đồng bộ; login proof chỉ chấp nhận sai lệch trong TTL 120 giây.
 
 ---
-*Tài liệu kết thúc.*
-<!-- markdownlint-enable MD033 -->
+
+## 6. Security invariants và production risks
+
+### 6.1 Invariants
+
+1. Không log password, access secret, raw refresh token, signature hoặc private key.
+2. Error credential-facing phải chống user enumeration.
+3. ACR không được tin `tenant_id`, `zone_id`, user ID hoặc role do browser tự gửi.
+4. Public key từ client chỉ trở thành session key sau proof verification và IAM persistence/canonicalization.
+5. Challenge expired/replayed/missing và Redis failure đều fail-closed.
+6. Backend critical không tự đọc client proof header; chỉ tin marker ACR overwrite theo God View critical.
+7. IndexedDB non-extractable key giảm export risk nhưng không bảo vệ khỏi XSS đang chạy trong cùng origin; CSP và dependency integrity vẫn là bắt buộc.
+
+### 6.2 Open risks AS-IS
+
+| Severity | Risk | Impact / required decision |
+|---|---|---|
+| **P1** | Challenge login không bind IP/device trước signature và Redis namespace là global theo challenge ID | Entropy và signature vẫn chống đoán/replay, nhưng cần quota/capacity monitoring để chống challenge-flood |
+| **P1** | Login proof chứng minh giữ key vừa gửi, không phải second factor | Không được quảng bá như trusted device hoặc password-theft prevention |
+| **P2** | ACR response dùng ExtAuthz denied response với internal unauthenticated status để trả HTTP 204 | Cần integration test qua Envoy để đảm bảo proxy behavior không drift |
+| **P2** | ACR tạo candidate `client_device_id` mới mỗi login rồi IAM resolve theo public key | Cookie device ID cũ không quyết định identity; cần đảm bảo đây là contract mong muốn cho analytics/device UX |
+| **P2** | Eviction NATS notification best-effort | Durable cleanup phía Controlplane có thể trễ khi publish lỗi |
+| **P2** | UI/ACR canonical message được implement ở hai ngôn ngữ | Cần contract vector test cross-language trong CI để tránh drift field/order/encoding |
+
+---
+
+## 7. Observability và release validation
+
+### 7.1 Signals cần có
+
+| Signal | Dimensions tối thiểu | Alert intent |
+|---|---|---|
+| Login challenge issue/failure | route, Redis outcome | Redis outage hoặc flood |
+| Login proof rejection | reason class, route | Replay/clock drift/signature failures |
+| IAM login outcome | success, invalid credential, precondition, unavailable | Auth health và attack pattern |
+| NATS request latency/error | subject, timeout | Queue saturation hoặc replica outage |
+| Password verification latency | outcome | CPU pressure/Argon2 regression |
+| Device register latency/error | repo operation | PostgreSQL contention |
+| Session register latency/error | Redis operation | Runtime session health |
+| Pending resend winner/loser/outbox error | cooldown outcome | Mail abuse và delivery trigger health |
+
+Không dùng username/email/public key làm metric label vì cardinality và privacy.
+
+### 7.2 Release checklist
+
+- [ ] Challenge response contract và TTL đúng 120 giây.
+- [ ] Login thiếu/sai/replay proof bị từ chối trước NATS IAM call.
+- [ ] UI tenant input gửi hai field canonical; legacy combined username bị từ chối.
+- [ ] JSON `public_key` legacy không được chấp nhận; chỉ `device_public_key`.
+- [ ] Global login và tenant login đều trả đúng role/scope.
+- [ ] Pending login password sai không queue resend; password đúng trả 412 và không có cookies.
+- [ ] Suspended/disabled không lộ trạng thái cụ thể.
+- [ ] Redis/NATS/signer/PostgreSQL failure đều không tạo client-visible authenticated session.
+- [ ] Redis Prost payload chứa canonical `client_proof_public_key`.
+- [ ] Cookie flags được integration-test qua Envoy với configured public domain.
+- [ ] Critical call sau login verify được session proof theo God View riêng.
+- [ ] `trust_device=true` phát HttpOnly refresh cookie với `Max-Age` khớp expiry IAM; false không phát cookie.
+
+---
+
+## 8. Code map
+
+| Concern | Implementation |
+|---|---|
+| UI sign-in orchestration | [`cloud-console/src/app/signin/signin-form.tsx`](../../cloud-console/src/app/signin/signin-form.tsx) |
+| UI login API | [`cloud-console/src/lib/api/auth.ts`](../../cloud-console/src/lib/api/auth.ts) |
+| UI Ed25519 key/signing | [`cloud-console/src/lib/security/deviceKey.ts`](../../cloud-console/src/lib/security/deviceKey.ts) |
+| ACR ExtAuthz ordering/rate limit | [`acr/src/gateway/ext_authz.rs`](../../acr/src/gateway/ext_authz.rs), [`ratelimit.rs`](../../acr/src/gateway/ratelimit.rs) |
+| ACR login/challenge/session issue | [`acr/src/user/login.rs`](../../acr/src/user/login.rs) |
+| ACR proof primitives | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs) |
+| ACR Redis session binary | [`acr/src/user/session.rs`](../../acr/src/user/session.rs) |
+| NATS Protobuf contract | [`controlplane/internal/iam/transport/rpc/proto/auth.proto`](../../controlplane/internal/iam/transport/rpc/proto/auth.proto), [`acr/proto/auth.proto`](../../acr/proto/auth.proto) |
+| IAM NATS request handler | [`controlplane/internal/iam/transport/pubsub/handler/auth.go`](../../controlplane/internal/iam/transport/pubsub/handler/auth.go) |
+| IAM login business logic | [`controlplane/internal/iam/service/auth_service.go`](../../controlplane/internal/iam/service/auth_service.go) |
+| Device persistence | [`controlplane/internal/iam/service/device_self_service.go`](../../controlplane/internal/iam/service/device_self_service.go) |
+| PostgreSQL IAM schema | [`controlplane/internal/iam/migrations/000002_iam_tables.up.sql`](../../controlplane/internal/iam/migrations/000002_iam_tables.up.sql) |
+
+---
+
+## 9. Change rule
+
+Khi sửa login workflow:
+
+1. Cập nhật God View này trước hoặc trong cùng change-set.
+2. Nếu canonical signed message đổi, bump domain version và cập nhật UI + ACR + cross-language vectors cùng lúc.
+3. Nếu Redis session schema đổi, chỉ thêm Prost tag mới; không tái sử dụng tag cũ.
+4. Nếu route critical/session-proof đổi, cập nhật cả [User Critical Session Proof](user_critical_session_proof_workflow.md).
+5. Không thêm compatibility alias cho identity/security field nếu chưa có migration window và removal date rõ ràng.

@@ -4,7 +4,8 @@ const KEY_NAME = "iam.device.key.v1";
 
 type StoredKeyHandle = {
   publicKeyBase64: string;
-  privateKeyJwk: JsonWebKey;
+  privateKey?: CryptoKey;
+  privateKeyJwk?: JsonWebKey;
   publicKeyJwk: JsonWebKey;
 };
 
@@ -109,10 +110,18 @@ async function generateEd25519Keypair(): Promise<StoredKeyHandle> {
     throw new DeviceKeyUnsupportedError();
   }
 
+  // [COMMENT]: IndexedDB chỉ giữ CryptoKey non-extractable; private JWK tồn tại trong memory đúng lúc migration/generate.
+  const privateKey = await subtle.importKey(
+    "jwk",
+    privateKeyJwk,
+    { name: "Ed25519" } as AlgorithmIdentifier,
+    false,
+    ["sign"],
+  );
   return {
     publicKeyBase64: bytesToBase64(publicKeyBytes),
     publicKeyJwk,
-    privateKeyJwk,
+    privateKey,
   };
 }
 
@@ -123,16 +132,40 @@ export class DeviceKeyUnsupportedError extends Error {
   }
 }
 
-// [COMMENT]: Lấy hoặc khởi tạo khóa công khai của thiết bị từ IndexedDB (lưu trữ độc quyền, an toàn và chống XSS).
-export async function ensureDevicePublicKey(): Promise<string> {
-  // 1. Đọc khóa từ IndexedDB
+async function ensureSigningHandle(): Promise<StoredKeyHandle> {
   const existing = await getStoredHandleIndexedDB();
-  if (existing) {
-    return existing.publicKeyBase64;
+  if (existing?.privateKey) return existing;
+  if (existing?.privateKeyJwk) {
+    // [COMMENT]: Nâng dữ liệu legacy sang CryptoKey non-extractable ngay lần dùng đầu tiên.
+    const privateKey = await window.crypto.subtle.importKey(
+      "jwk",
+      existing.privateKeyJwk,
+      { name: "Ed25519" } as AlgorithmIdentifier,
+      false,
+      ["sign"],
+    );
+    const upgraded = { ...existing, privateKey, privateKeyJwk: undefined };
+    await setStoredHandleIndexedDB(upgraded);
+    return upgraded;
   }
-
-  // 2. Nếu chưa có cặp khóa nào, sinh mới và lưu trực tiếp vào IndexedDB
   const created = await generateEd25519Keypair();
   await setStoredHandleIndexedDB(created);
-  return created.publicKeyBase64;
+  return created;
+}
+
+// [COMMENT]: Lấy hoặc khởi tạo public key; private key non-extractable vẫn nằm trong origin IndexedDB.
+export async function ensureDevicePublicKey(): Promise<string> {
+  return (await ensureSigningHandle()).publicKeyBase64;
+}
+
+export async function signSessionProof(message: string): Promise<string> {
+  if (!isWebCryptoAvailable()) throw new DeviceKeyUnsupportedError();
+  const handle = await ensureSigningHandle();
+  if (!handle.privateKey) throw new DeviceKeyUnsupportedError();
+  const signature = await window.crypto.subtle.sign(
+    { name: "Ed25519" } as AlgorithmIdentifier,
+    handle.privateKey,
+    new TextEncoder().encode(message),
+  );
+  return bytesToBase64(new Uint8Array(signature));
 }

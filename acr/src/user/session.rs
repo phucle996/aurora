@@ -24,6 +24,10 @@ pub struct UserAccessSession {
     // Last Seen At (Unix timestamp ghi nhận hoạt động cuối)
     #[prost(int64, tag = "3")]
     pub lsa: i64,
+
+    // [COMMENT]: Canonical Ed25519 public key do IAM trả về sau login, dùng cho session-proof critical routes.
+    #[prost(string, tag = "4")]
+    pub client_proof_public_key: ::prost::alloc::string::String,
 }
 
 // ─── SessionManager impl for User Sessions ────────────────────────────────────
@@ -70,6 +74,7 @@ impl SessionManager {
         access_key: &str,
         ash: &str,
         device_id: &str,
+        client_proof_public_key: &str,
     ) -> Result<Vec<String>, AcrError> {
         const USER_DEVICE_CAP: usize = 50;
 
@@ -84,6 +89,7 @@ impl SessionManager {
             ash: ash.to_string(),
             tdid: device_id.to_string(),
             lsa: now,
+            client_proof_public_key: client_proof_public_key.to_string(),
         };
 
         let mut buf = Vec::new();
