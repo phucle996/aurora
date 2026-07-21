@@ -22,16 +22,3 @@ CREATE INDEX IF NOT EXISTS idx_tenant_mail_template_versions_cursor ON tenant_ma
 
 CREATE INDEX IF NOT EXISTS idx_mail_runtime_reports_expiry
 ON mail_consumer_runtime_reports (expires_at, consumer_id);
-
-CREATE INDEX IF NOT EXISTS idx_mail_result_inbox_pending
-ON mail_result_inbox (received_at, event_id)
-WHERE status = 'PENDING';
-
-CREATE INDEX IF NOT EXISTS idx_mail_submissions_workspace_history
-ON mail_submissions (workspace_id, created_at DESC, submission_id DESC);
-
-CREATE INDEX IF NOT EXISTS idx_mail_submissions_consumer_history
-ON mail_submissions (consumer_id, created_at DESC, submission_id DESC);
-
-CREATE INDEX IF NOT EXISTS idx_mail_delivery_attempts_submission
-ON mail_delivery_attempts (submission_id, state_version);

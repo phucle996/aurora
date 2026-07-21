@@ -33,6 +33,10 @@ func NewTenantConsumerService(repo mailRepoInterface.TenantConsumerRepository) m
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Tenant command.
 func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, command *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
 	// [COMMENT]: Handler đã normalize/validate; service bắt đầu trực tiếp từ business payload.
+	if command.SourceType != mailEntity.Kafka || len(command.SourceConfigEnvelope) > 16<<10 {
+		return nil, mailTaxonomy.ErrInvalidArgument
+	}
+
 	mappingJSON, err := json.Marshal(command.Mapping)
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant consumer service: marshal mapping: %w", err)
@@ -53,31 +57,42 @@ func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, command 
 		Name:             command.Name,
 		SourceType:       command.SourceType,
 		BrokerResourceID: command.BrokerResourceID,
-		SourceConfigRef:  "vault://zones/" + command.ZoneID.String() + "/workspaces/" + command.WorkspaceID.String() + "/mail/brokers/" + command.BrokerResourceID.String(),
-		Topic:            command.Topic,
-		ConsumerGroup:    command.ConsumerGroup,
-		MappingJSON:      mappingJSON,
-		TemplateID:       command.TemplateID,
-		TemplateVersion:  command.TemplateVersion,
-		SenderProfileID:  command.SenderProfileID,
-		SenderVersion:    command.SenderVersion,
-		DesiredState:     mailEntity.ConsumerPaused,
-		Parallelism:      command.Parallelism,
-		ConfigVersion:    1,
-		CreatedBy:        &actor,
-		UpdatedBy:        &actor,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		// [COMMENT]: Consumer CRUD không tự sinh Vault locator; envelope mã hóa do broker-resource flow cấp.
+		SourceConfigEnvelope: append([]byte(nil), command.SourceConfigEnvelope...),
+		Topic:                command.Topic,
+		ConsumerGroup:        command.ConsumerGroup,
+		MappingJSON:          mappingJSON,
+		TemplateID:           command.TemplateID,
+		TemplateVersion:      command.TemplateVersion,
+		SenderProfileID:      command.SenderProfileID,
+		SenderVersion:        command.SenderVersion,
+		DesiredState:         mailEntity.ConsumerPaused,
+		Parallelism:          command.Parallelism,
+		ConfigVersion:        1,
+		CreatedBy:            &actor,
+		UpdatedBy:            &actor,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+	}
+
+	// [COMMENT]: Adapter payload nằm sau generic stream discriminator; outbox row chỉ cần giữ một protobuf BYTEA.
+	kafkaPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.KafkaStreamPayloadV1{
+		SourceConfigEnvelope: consumer.SourceConfigEnvelope,
+		Topic:                consumer.Topic,
+		ConsumerGroup:        consumer.ConsumerGroup,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mail tenant consumer service: marshal Kafka stream payload: %w", err)
 	}
 
 	upsert := &mailproto.MailConsumerUpsertV1{
 		ConsumerId:    consumer.ID[:],
 		ConfigVersion: 1,
-		Kafka: &mailproto.KafkaSourceV1{
-			BrokerResourceId: consumer.BrokerResourceID[:],
-			SourceConfigRef:  consumer.SourceConfigRef,
-			Topic:            consumer.Topic,
-			ConsumerGroup:    consumer.ConsumerGroup,
+		Stream: &mailproto.MailStreamSourceV1{
+			StreamType:           mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA,
+			PayloadSchemaVersion: 1,
+			BrokerResourceId:     consumer.BrokerResourceID[:],
+			Payload:              kafkaPayload,
 		},
 		Mapping: &mailproto.MailMessageMappingV1{
 			ExternalMessageIdJsonPath: command.Mapping.ExternalMessageIDJSONPath,
@@ -155,7 +170,24 @@ func (s *tenantConsumerServiceImpl) ListConsumers(ctx context.Context, command *
 
 // UpdateConsumer cap nhat thong tin consumer voi optimistic version check va tao outbox event.
 func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, command *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
-	// [COMMENT]: Handler đã validate full-replacement command; service chỉ tạo version/event mới.
+	if command.SourceType != mailEntity.Kafka {
+		return nil, mailTaxonomy.ErrInvalidArgument
+	}
+	// [COMMENT]: API không echo ciphertext; envelope rỗng trong full update giữ nguyên cấu hình broker
+	// hiện tại để UI có thể sửa template/topic mà không phải giữ secret trong browser.
+	current, err := s.repo.GetByID(ctx, command)
+	if err != nil {
+		return nil, err
+	}
+	sourceConfigEnvelope := append([]byte(nil), command.SourceConfigEnvelope...)
+	if len(sourceConfigEnvelope) == 0 {
+		sourceConfigEnvelope = append([]byte(nil), current.SourceConfigEnvelope...)
+	}
+	if len(sourceConfigEnvelope) > 16<<10 || (command.DesiredState == mailEntity.ConsumerEnabled && len(sourceConfigEnvelope) == 0) {
+		return nil, mailTaxonomy.ErrInvalidArgument
+	}
+
+	// [COMMENT]: Optimistic config_version ở repository đóng race giữa lần đọc giữ envelope và UPDATE.
 	mappingJSON, err := json.Marshal(command.Mapping)
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant consumer service: marshal update mapping: %w", err)
@@ -173,7 +205,7 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, command 
 		Name:                  command.Name,
 		SourceType:            command.SourceType,
 		BrokerResourceID:      command.BrokerResourceID,
-		SourceConfigRef:       "vault://zones/" + command.ZoneID.String() + "/workspaces/" + command.WorkspaceID.String() + "/mail/brokers/" + command.BrokerResourceID.String(),
+		SourceConfigEnvelope:  sourceConfigEnvelope,
 		Topic:                 command.Topic,
 		ConsumerGroup:         command.ConsumerGroup,
 		MappingJSON:           mappingJSON,
@@ -194,14 +226,24 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, command 
 		desiredState = mailproto.MailConsumerDesiredState_MAIL_CONSUMER_DESIRED_STATE_ENABLED
 	}
 
+	// [COMMENT]: Mỗi config generation tự chứa adapter bytes immutable; JO không cần hiểu Kafka fields.
+	kafkaPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.KafkaStreamPayloadV1{
+		SourceConfigEnvelope: consumer.SourceConfigEnvelope,
+		Topic:                consumer.Topic,
+		ConsumerGroup:        consumer.ConsumerGroup,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mail tenant consumer service: marshal Kafka stream payload: %w", err)
+	}
+
 	upsert := &mailproto.MailConsumerUpsertV1{
 		ConsumerId:    consumer.ID[:],
 		ConfigVersion: consumer.ConfigVersion,
-		Kafka: &mailproto.KafkaSourceV1{
-			BrokerResourceId: consumer.BrokerResourceID[:],
-			SourceConfigRef:  consumer.SourceConfigRef,
-			Topic:            consumer.Topic,
-			ConsumerGroup:    consumer.ConsumerGroup,
+		Stream: &mailproto.MailStreamSourceV1{
+			StreamType:           mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA,
+			PayloadSchemaVersion: 1,
+			BrokerResourceId:     consumer.BrokerResourceID[:],
+			Payload:              kafkaPayload,
 		},
 		Mapping: &mailproto.MailMessageMappingV1{
 			ExternalMessageIdJsonPath: command.Mapping.ExternalMessageIDJSONPath,

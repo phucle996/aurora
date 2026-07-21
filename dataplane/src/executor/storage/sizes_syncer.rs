@@ -1,12 +1,15 @@
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::executor::storage::core::client::MinioClient;
 use crate::infra::redis::RedisClientManager;
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 
 // [COMMENT]: Định nghĩa cấu trúc tin nhắn gửi lên Redis PubSub
@@ -21,7 +24,7 @@ impl StorageSizesSyncer {
     // [COMMENT]: Khởi chạy luồng giám sát và quét dung lượng bucket định kỳ mỗi 15 giây
     pub fn start(
         _config: Arc<Config>,
-        redis_internal_zone: Arc<RedisClientManager>,
+        zone_kv: Arc<ZoneKvStore>,
         redis_job: Arc<RedisClientManager>,
     ) {
         tokio::spawn(async move {
@@ -30,31 +33,13 @@ impl StorageSizesSyncer {
                 "StorageSizesSyncer: Khởi chạy luồng nền quét dung lượng bucket mỗi 15s...",
             );
 
-            let mut conn_l2_opt = None;
             let mut conn_job_opt = None;
+            let instance_id = std::env::var("HOSTNAME")
+                .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));
 
             loop {
                 // [COMMENT]: Chu kỳ 15 giây
                 sleep(Duration::from_secs(15)).await;
-
-                // [COMMENT]: Đảm bảo kết nối Redis L2 (internal zone)
-                if conn_l2_opt.is_none() {
-                    match redis_internal_zone
-                        .client()
-                        .get_multiplexed_tokio_connection()
-                        .await
-                    {
-                        Ok(conn) => conn_l2_opt = Some(conn),
-                        Err(e) => {
-                            Logger::sys_error(
-                                "storage_syncer.redis_l2_connect_error",
-                                "Không thể kết nối tới Redis L2 để đọc metadata",
-                                &e.to_string(),
-                            );
-                            continue;
-                        }
-                    }
-                }
 
                 // [COMMENT]: Đảm bảo kết nối Redis Job (Pub/Sub broker)
                 if conn_job_opt.is_none() {
@@ -71,33 +56,18 @@ impl StorageSizesSyncer {
                     }
                 }
 
-                let mut conn_l2 = conn_l2_opt.clone().unwrap();
                 let mut conn_job = conn_job_opt.clone().unwrap();
 
-                // [COMMENT]: Kiểm tra trạng thái của Zone và dịch vụ Storage từ Redis L2
-                let metadata_res: Result<HashMap<String, String>, redis::RedisError> =
-                    redis::cmd("HGETALL")
-                        .arg("infra:zone:metadata")
-                        .query_async(&mut conn_l2)
-                        .await;
-
-                let (zone_active, storage_enabled) = match metadata_res {
-                    Ok(metadata) => {
-                        let status = metadata
-                            .get("status")
-                            .cloned()
-                            .unwrap_or_else(|| "active".to_string());
-                        let storage = metadata
-                            .get("service:storage")
-                            .cloned()
-                            .unwrap_or_else(|| "enabled".to_string());
-                        (status == "active", storage == "enabled")
-                    }
+                let (zone_active, storage_enabled) = match zone_kv.read_zone_metadata().await {
+                    Ok(metadata) => (
+                        metadata.status == "active",
+                        metadata.services.get("storage").copied().unwrap_or(true),
+                    ),
                     Err(e) => {
                         Logger::sys_warn(
                             "storage_syncer.read_metadata_fail",
-                            "Không thể đọc metadata từ Redis L2, mặc định là enabled",
-                            &e.to_string(),
+                            "Không thể đọc metadata từ Zone KV, mặc định là enabled",
+                            &e,
                         );
                         (true, true)
                     }
@@ -115,39 +85,62 @@ impl StorageSizesSyncer {
                     continue;
                 }
 
-                // [COMMENT]: Sử dụng khóa phân tán (Distributed Lock) NX PX trên Redis L2
+                // [COMMENT]: CAS lease trên NATS KV chỉ cho một replica quét MinIO trong chu kỳ.
                 // Chỉ cho phép tối đa 1 replica Dataplane thực hiện quét kích thước tệp tin tại 1 chu kỳ (15s),
                 // hạn chế trùng lặp ghi nhận và giảm tải lượng query lên MinIO API.
-                let lock_key = "locks:storage:sizes_syncer";
-                let lock_res: Result<Option<String>, redis::RedisError> = redis::cmd("SET")
-                    .arg(lock_key)
-                    .arg("acquired")
-                    .arg("NX")
-                    .arg("PX")
-                    .arg("12000") // Khóa tồn tại trong 12 giây (dưới chu kỳ 15 giây)
-                    .query_async(&mut conn_l2)
-                    .await;
-
-                match lock_res {
-                    Ok(Some(status)) if status == "OK" => {
+                let lock_key = "lease.storage.sizes_syncer";
+                let lease = match zone_kv
+                    .acquire_rotating_lease(
+                        lock_key,
+                        &instance_id,
+                        Duration::from_secs(12),
+                        Duration::from_secs(20),
+                    )
+                    .await
+                {
+                    Ok(Some(lease)) => {
                         Logger::sys_debug(
                             "storage_syncer.lock_acquired",
                             "Đã chiếm thành công khóa phân tán. Bắt đầu tiến hành quét dung lượng..."
                         );
+                        lease
                     }
-                    Ok(_) => {
-                        // Khóa đang được giữ bởi replica khác, bỏ qua chu kỳ này
-                        continue;
-                    }
+                    Ok(None) => continue,
                     Err(e) => {
                         Logger::sys_warn(
                             "storage_syncer.lock_error",
-                            "Gặp lỗi khi truy vấn khóa phân tán trên Redis L2, bỏ qua chu kỳ để đảm bảo an toàn",
-                            &e.to_string(),
+                            "Gặp lỗi khi lấy khóa NATS KV, bỏ qua chu kỳ để đảm bảo an toàn",
+                            &e,
                         );
                         continue;
                     }
-                }
+                };
+                // [COMMENT]: Scan có thể lâu hơn TTL; renew song song và chỉ publish khi owner/fencing vẫn còn hợp lệ.
+                let renewal_stop = CancellationToken::new();
+                let lease_lost = Arc::new(AtomicBool::new(false));
+                let renewal_handle = {
+                    let zone_kv = zone_kv.clone();
+                    let lease = lease.clone();
+                    let renewal_stop = renewal_stop.clone();
+                    let lease_lost = lease_lost.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                _ = renewal_stop.cancelled() => break,
+                                _ = sleep(Duration::from_secs(4)) => {
+                                    if !zone_kv
+                                        .renew_lease(&lease, Duration::from_secs(12))
+                                        .await
+                                        .unwrap_or(false)
+                                    {
+                                        lease_lost.store(true, Ordering::Release);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    })
+                };
 
                 // [COMMENT]: Khởi tạo MinIO client (S3 SDK)
                 let minio_client = MinioClient::from_env_private().await;
@@ -163,6 +156,9 @@ impl StorageSizesSyncer {
                             "Không thể lấy danh sách buckets từ MinIO",
                             &e.to_string(),
                         );
+                        renewal_stop.cancel();
+                        let _ = renewal_handle.await;
+                        let _ = zone_kv.release_lease(&lease).await;
                         continue;
                     }
                 };
@@ -219,8 +215,15 @@ impl StorageSizesSyncer {
                     }
                 }
 
+                // [COMMENT]: CAS renew ngay trước side effect; owner đã mất lease chỉ được bỏ snapshot, không publish đè chu kỳ mới.
+                let may_publish = !lease_lost.load(Ordering::Acquire)
+                    && zone_kv
+                        .renew_lease(&lease, Duration::from_secs(12))
+                        .await
+                        .unwrap_or(false);
+
                 // [COMMENT]: 4. Gửi kết quả dung lượng quét được lên Redis Stream và báo Pub/Sub
-                if !bucket_sizes.is_empty() {
+                if !bucket_sizes.is_empty() && may_publish {
                     let msg = SyncBucketSizesMsg {
                         sizes: bucket_sizes,
                     };
@@ -277,7 +280,16 @@ impl StorageSizesSyncer {
                             }
                         }
                     }
+                } else if !may_publish {
+                    Logger::sys_warn(
+                        "storage_syncer.lease_lost",
+                        "Bỏ snapshot bucket sizes vì replica đã mất fenced lease",
+                        "ZONE_KV_LEASE_LOST",
+                    );
                 }
+                renewal_stop.cancel();
+                let _ = renewal_handle.await;
+                let _ = zone_kv.release_lease(&lease).await;
             }
         });
     }

@@ -1,146 +1,185 @@
-# Zone Metadata Sync & State Machine - Workflow God View
+# Zone Metadata Sync và Dataplane State Machine — God View
 
-> [!NOTE]
-> Tài liệu này đóng vai trò là **Source of Truth (SoT) / God View** cho luồng Đồng bộ Cấu hình Phân vùng (Zone Metadata Sync) và Trạng thái Vận hành (Operational State Machine) của Dataplane Cluster.
-> Mọi thay đổi liên quan đến cấu hình trạng thái Zone, CdcStreamer và luồng đồng bộ/chặn kéo job của Dataplane bắt buộc phải tuân thủ nghiêm ngặt đặc tả này.
+> [!IMPORTANT]
+> Đây là Source of Truth cho việc đưa `hierarchy.zones.status` và `hierarchy.zone_services.desired_state` xuống runtime của một Zone. Redis Job chỉ là transport; current Zone state được lưu bền vững trong NATS JetStream KV. Không được khôi phục Redis riêng cho Zone runtime.
 
----
+## 0. Control header
 
-## 🗺️ 1. Giới Thiệu & Kiến Trúc Tổng Quan
+| Thuộc tính | Giá trị |
+|---|---|
+| Authoritative SoT | Controlplane PostgreSQL |
+| Real-time trigger | PostgreSQL WAL → JO CDC → Redis Job PubSub |
+| Repair path | Cold-start và khoảng một giờ/lần qua JO query/reply |
+| Runtime snapshot | `AURORA_ZONE_CONFIG/zone.metadata` |
+| Coordination | `AURORA_ZONE_COORDINATION/lease.gateway.metadata_sync` |
+| Physical boundary | NATS JetStream cluster riêng của từng Zone; không dùng NATS Core trung tâm |
+| Apply semantics | JSON aggregate + optimistic CAS |
+| Failure mode | Fail-closed: metadata thiếu/hỏng/KV unavailable thì dừng ingestion |
 
-Trong hệ thống Cloud-native HA (High Availability), việc điều phối trạng thái hoạt động của các phân vùng hạ tầng (Zones) và các dịch vụ chạy trong phân vùng đó (Zone Services) đóng vai trò quyết định đến tính bền vững của dữ liệu và hiệu năng tải. 
-
-Hệ thống triển khai mô hình **Hybrid Event-Driven & Pull Reconciliation** để đồng bộ trạng thái cấu hình từ database Controlplane (SoT) xuống Redis L2 của từng Zone:
-1. **CDC Real-time Event (Chính - <10ms)**: Bắt trực tiếp các thay đổi cấu hình (`INSERT` và `UPDATE`) trên các bảng `hierarchy.zones` và `hierarchy.zone_services` qua PostgreSQL Logical Replication, phát tán tin nhắn PubSub nhị phân để Dataplane áp dụng cấu hình lập tức.
-2. **Distributed Polling Reconciliation (Phụ - 1 giờ/lần)**: Lưới an toàn tự phục hồi (Self-Healing) đối soát cấu hình, được bảo vệ bằng **Distributed Lock** chống Write Stampede và Double-query.
-
-### 🌐 Sơ đồ Phối Hợp Sự Kiện & Dữ Liệu (Dataflow Diagram)
+## 1. Kiến trúc
 
 ```mermaid
-graph TD
-    classDef client fill:#332244,stroke:#8844ff,stroke-width:2px;
-    classDef storage fill:#333311,stroke:#cccc33,stroke-width:2px;
-    classDef proxy fill:#112233,stroke:#3388ff,stroke-width:2px;
-    classDef dataplane fill:#113322,stroke:#33cc88,stroke-width:2px;
+flowchart LR
+    SRE[SRE/API] --> CP[Controlplane]
+    CP --> PG[(PostgreSQL SoT)]
+    PG -->|WAL| JO[Job Orchestrator CDC]
+    JO -->|zone:event:metadata:zone_id| RJ[(Redis Job PubSub)]
+    RJ --> DPL[DP metadata listener]
+    DPL -->|CAS merge| CFG[(AURORA_ZONE_CONFIG)]
 
-    SRE["💻 SRE Admin / API"]:::client
-    DB["💾 PostgreSQL SoT<br/>(hierarchy.zones / services)"]:::storage
-    JP["🚀 job-orchestrator (CdcStreamer)"]:::proxy
-    RedisL1["⚡ Redis Platform L1"]:::storage
-    DP_Listener["💻 DP CDC Event Listener"]:::dataplane
-    DP_Sync["💻 DP Reconciliation Loop"]:::dataplane
-    RedisL2["⚡ Redis Zone L2<br/>(infra:zone:metadata)"]:::storage
-    MailMonitor["💻 Mail Workload Monitor"]:::dataplane
-    Consumer["💻 Job Consumer (Fetcher)"]:::dataplane
+    DPR[DP reconciler] -->|CAS fenced lease| COORD[(AURORA_ZONE_COORDINATION)]
+    DPR -->|zone:query:metadata| RJ
+    RJ --> JOQ[JO metadata query listener]
+    JOQ --> PG
+    JOQ -->|reply channel| RJ
+    RJ --> DPR
+    DPR -->|CAS replace fields| CFG
 
-    SRE -- "1. Update status/enabled" --> DB
-    DB -- "2. WAL Log (b'I' or b'U')" --> JP
-    JP -- "3. Parse & PUBLISH (Binary)" --> RedisL1
-    RedisL1 -- "4. Real-time PubSub Event" --> DP_Listener
-    DP_Listener -- "5. HSET metadata" --> RedisL2
-
-    DP_Sync -- "6. (Every 1h) SETNX Lock" --> RedisL2
-    DP_Sync -- "7. (If lock OK) PUBLISH Query" --> RedisL1
-    RedisL1 -- "8. Query Metadata" --> JP
-    JP -- "9. Query DB" --> DB
-    JP -- "10. PUBLISH Response (Binary)" --> RedisL1
-    RedisL1 -- "11. Response Event" --> DP_Sync
-    DP_Sync -- "12. HSET metadata" --> RedisL2
-
-    RedisL2 -- "Read Metadata" --> MailMonitor
-    RedisL2 -- "Read Metadata" --> Consumer
+    CFG --> JC[JobConsumer]
+    CFG --> MM[Mail monitor]
+    CFG --> SM[Storage monitor]
+    CFG --> HM[Hypervisor monitor]
 ```
 
----
+Mọi DP pod đều có thể nhận real-time PubSub event. CAS trên revision bảo toàn thay đổi đồng thời giữa `status` và từng service: loser đọc revision mới rồi retry, không blind overwrite aggregate.
 
-## 🏛️ 2. Mô Tả Chi Tiết Luồng Xử Lý
+NATS Core trung tâm và Zone NATS là hai deployment/credential boundary độc lập. Core phục vụ CP/JO/IAM/Notification; Zone JetStream phục vụ KV database cho Dataplane. `NATS_ZONE_URL` bắt buộc trỏ tới endpoint nội bộ của Zone và không được fallback sang biến kết nối Core.
 
-### 🔄 Trình Tự Đồng Bộ & Tự Phục Hồi (Sequence Diagram)
+## 2. Zone metadata contract
+
+Key `zone.metadata` chứa một JSON value:
+
+```json
+{
+  "status": "active",
+  "services": {
+    "mail": true,
+    "storage": true,
+    "hypervisor": false
+  },
+  "updated_at": 1784620800
+}
+```
+
+Rules:
+
+- `status` chưa được hydrate mặc định là `inactive`, không phải `active`.
+- Event `zone_status_changed` chỉ đổi `status`.
+- Event `service_status_changed` chỉ đổi một entry trong `services`.
+- Mỗi mutation đọc current entry, merge field, rồi `update(expected_revision)`; tối đa 5 lần tranh chấp trước khi báo lỗi.
+- Config bucket dùng file storage, history `1`, không TTL và replica factor `3/5` ở production.
+- Payload malformed/corrupt không được thay bằng default active.
+
+## 3. Real-time path
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant DB as 💾 PostgreSQL (SoT)
-    participant JP as 🚀 job-orchestrator (CDC)
-    participant L1 as ⚡ Redis Platform L1
-    participant DP1 as 💻 Dataplane Node A (Master)
-    participant DP2 as 💻 Dataplane Node B (Replica)
-    participant L2 as ⚡ Redis Zone L2
+    participant PG as PostgreSQL
+    participant JO as JO CDC
+    participant RJ as Redis Job PubSub
+    participant DPA as DP Pod A
+    participant DPB as DP Pod B
+    participant KV as Zone Config KV
 
-    Note over DB,JP: LUỒNG CDC THỜI GIAN THỰC (REAL-TIME PATH)
-    rect rgb(20, 30, 40)
-        DB->>DB: SRE thay đổi status Zone / enabled Service
-        DB->>JP: WAL Logical Replication Stream (INSERT b'I' hoặc UPDATE b'U')
-        Note over JP: CdcStreamer nhận diện thay đổi trên zones/zone_services
-        JP->>L1: PUBLISH zone:event:metadata:<zone_id> (Binary payload)
-        par Gửi tới các node đang lắng nghe PubSub
-            L1->>DP1: Tin nhắn cập nhật CDC
-            DP1->>L2: HSET infra:zone:metadata (cập nhật status / service)
-        and
-            L1->>DP2: Tin nhắn cập nhật CDC
-            DP2->>L2: HSET infra:zone:metadata (cập nhật status / service)
-        end
+    PG->>JO: WAL zones / zone_services
+    JO->>RJ: PUBLISH zone:event:metadata:zone_id
+    par subscriber A
+        RJ->>DPA: JSON event
+        DPA->>KV: read entry + CAS merge
+    and subscriber B
+        RJ->>DPB: same JSON event
+        DPB->>KV: read entry + CAS merge
     end
-
-    Note over DP1,L2: LUỒNG ĐỐI SOÁT ĐỊNH KỲ (RECONCILIATION & DISTRIBUTED LOCK)
-    rect rgb(30, 40, 20)
-        Note over DP1,DP2: Đến chu kỳ 1 giờ / Cold Start đồng thời
-        par Node A tranh chấp lock
-            DP1->>L2: SET lock:zone:sync_metadata node_A NX EX 10
-            L2-->>DP1: OK (Thành công)
-        and Node B tranh chấp lock
-            DP2->>L2: SET lock:zone:sync_metadata node_B NX EX 10
-            L2-->>DP2: nil (Thất bại)
-        end
-        Note over DP2: Node B hủy chu kỳ Polling
-        
-        DP1->>L1: SUBSCRIBE zone:reply:metadata:<zone_id>:<uuid>
-        DP1->>L1: PUBLISH zone:query:metadata (Binary Request)
-        L1->>JP: Nhận Request metadata
-        JP->>DB: SELECT status & enabled services
-        DB-->>JP: Trạng thái (status: maintenance, mail: enabled)
-        JP->>L1: PUBLISH zone:reply:metadata:<zone_id>:<uuid> (Binary Response)
-        L1-->>DP1: Nhận Response
-        DP1->>L2: HSET infra:zone:metadata
-        DP1->>L2: UNSUBSCRIBE & EVAL script Lua giải phóng lock nguyên tử
-    end
+    Note over DPA,KV: Một CAS thắng; replica còn lại retry/no-op với cùng desired value
 ```
 
----
+Redis PubSub không phải durability boundary. Sự kiện có thể mất khi subscriber disconnect; vì vậy real-time path chỉ giảm convergence latency, còn reconciler mới là repair boundary.
 
-## ⚙️ 3. Đặc Tả State Machine Zone Tại Dataplane
+## 4. Cold-start và periodic reconciliation
 
-Khi các luồng đồng bộ cập nhật giá trị vào khóa Redis L2 `infra:zone:metadata`, các daemon trong Dataplane Cluster sẽ phản ứng theo bảng trạng thái sau:
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DPA as DP Pod A
+    participant DPB as DP Pod B
+    participant CKV as Coordination KV
+    participant RJ as Redis Job
+    participant JO as JO Query Listener
+    participant PG as PostgreSQL
+    participant CFG as Config KV
 
-| Trạng thái Zone | Cấu hình Service | Phản ứng của Job Consumer (Fetcher) | Phản ứng của Mail Workload Monitor |
-| :--- | :--- | :--- | :--- |
-| **`active`** | `enabled` | **Cho phép kéo Job**: Kéo job bình thường từ Platform L1. | **Hoạt động đầy đủ**: Chạy TCP check & đọc HTTP SMTP queue metrics để tính capacity (0-100). |
-| **`planned`** | `enabled` / `disabled` | **Chặn kéo Job**: Tạm dừng kéo job mới từ Platform L1 (sleep 1s và loop). | **Healthcheck cơ bản**: Chỉ chạy TCP handshake check để báo healthy, bỏ qua quét hàng đợi SMTP nặng. |
-| **`maintenance`** | `enabled` / `disabled` | **Chặn kéo Job**: Ngưng kéo job mới từ L1. Chờ xử lý nốt các job đang chạy trong worker pool. | **Hoạt động đầy đủ**: Chạy TCP check & đọc metrics để tính capacity bình thường. |
-| **`draining`** | `enabled` / `disabled` | **Chặn kéo Job**: Ngưng kéo job mới từ L1. | **Hoạt động đầy đủ**: Chạy TCP check & đọc metrics để tính capacity bình thường. |
-| **`disabled`** | `*` (Bất kỳ) | **Chặn kéo Job**: Ngưng hoàn toàn kéo job mới từ L1. | **Tắt hoàn toàn**: Set `status = "down"`, `capacity = 0`. Ngắt kết nối Stalwart, bỏ qua healcheck. |
-| **`*` (Bất kỳ)** | **`disabled`** | *Không đổi* | **Tắt hoàn toàn**: Set `status = "down"`, `capacity = 0`. |
+    par lease race
+        DPA->>CKV: CAS acquire lease.gateway.metadata_sync, 10s
+        CKV-->>DPA: owner + fencing token
+    and
+        DPB->>CKV: CAS acquire same lease
+        CKV-->>DPB: not acquired
+    end
+    DPA->>RJ: SUBSCRIBE unique reply channel
+    DPA->>RJ: PUBLISH zone:query:metadata
+    RJ->>JO: request
+    JO->>PG: SELECT status + desired services
+    PG-->>JO: authoritative snapshot
+    JO->>RJ: PUBLISH reply
+    RJ-->>DPA: response, timeout 5s
+    DPA->>CFG: CAS merge status/services
+    DPA->>CKV: release only when owner+fencing match
+```
 
----
+- `counter=720` làm lần đầu chạy ngay khi process boot; sau đó khoảng 720 gateway cycle, tương đương xấp xỉ một giờ.
+- Mỗi request dùng reply channel có UUID để không ăn nhầm response.
+- Lease release không xóa key; nó CAS value sang released state, giữ fencing token đơn điệu.
+- Timeout/lỗi không thay metadata thành active. Lease hết hạn cho phép replica khác repair ở chu kỳ sau.
 
-## 🔒 4. Ranh Giới Bảo Mật & Rủi Ro HA (Security & Reliability Guardrails)
+## 5. State machine tại Dataplane
 
-1. **Distributed Lock Safety (An Toàn Khóa Phân Phối)**:
-   * Tránh **Write Stampede** (nhiều node cùng ghi đè đập nhau lên Redis L2) và **Double-query** (nhiều node cùng query DB SoT) bằng khóa `lock:zone:sync_metadata` với TTL 10 giây.
-   * Sử dụng lệnh **EVAL Lua Script** để đảm bảo giải phóng khóa nguyên tử:
-     ```lua
-     if redis.call('get', KEYS[1]) == ARGV[1] then
-         return redis.call('del', KEYS[1])
-     else
-         return 0
-     end
-     ```
-     Giải pháp này loại bỏ rủi ro Node A xóa nhầm lock của Node B nếu luồng của Node A bị nghẽn mạng quá TTL 10 giây.
+| Zone status | Job ingestion | Health probes |
+|---|---|---|
+| `active` | Cho phép Redis Job fetch khi admission còn capacity | Probe service được enable và ghi current snapshot |
+| `planned` | Dừng job mới, sleep 1 giây | Vẫn probe để SRE thấy readiness trước activation |
+| `maintenance` | Dừng job mới; job đã chạy tiếp tục theo lifecycle riêng | Vẫn probe service được enable |
+| `draining` | Dừng job mới | Vẫn probe để quan sát drain/recovery |
+| `disabled` | Dừng job mới | Mail/storage ghi `down`; service disabled không được coi healthy |
+| `inactive`, missing, corrupt, KV error | Dừng job mới theo fail-closed | Không được suy diễn Zone active |
 
-2. **Network Partition Resilience (Mất Gói Tin CDC)**:
-   * Redis PubSub là phi trạng thái. Nếu kết nối mạng giữa Platform L1 và Dataplane bị đứt đúng lúc publish CDC event, Dataplane sẽ bị lệch cấu hình.
-   * **Giải pháp tự phục hồi (Self-Healing)**: Luồng Reconciliation (Polling sync) chạy định kỳ mỗi 60 phút sẽ đóng vai trò chốt chặn cuối cùng sửa đổi và đồng bộ lại cấu hình chuẩn xác cho Redis L2 cache.
+Service flag mặc định `true` chỉ khi metadata aggregate đã đọc thành công nhưng chưa có entry tương ứng; migration/bootstrap phải hydrate đầy đủ service catalogue để tránh ambiguity này.
 
-3. **Memory Safety & Lifetime trong Rust Async**:
-   * Tránh lỗi mượn biến trùng lặp (Mutable Borrow Checker E0499) khi subscribe PubSub bất đồng bộ bằng cách bọc luồng lấy tin `stream.next()` và publish request trong một block scope `{}` cục bộ.
-   * Block scope này đảm bảo biến `stream` được drop trước khi gọi `unsubscribe` trên kết nối `pubsub_conn`.
+## 6. Health và coordination buckets
+
+| Bucket/key | Writer | Nội dung |
+|---|---|---|
+| `AURORA_ZONE_HEALTH/zone.node.<node_id>` | Mỗi DP pod | CPU, RAM, active workers, `updated_at` |
+| `.../zone.service.mail` | Rotating lease holder | JMAP health, capacity, queue pressure, probe node, fencing token |
+| `.../zone.service.storage` | Rotating lease holder | MinIO health/capacity, probe node, fencing token |
+| `.../zone.service.hypervisor` | Rotating lease holder | Proxmox nodes snapshot, probe node, fencing token |
+| `AURORA_ZONE_COORDINATION/lease.health.*` | Health monitors | Stable pod owner, fencing, expiry, last owner |
+| `.../lease.gateway.report` | Zone reporter | Một aggregate report mỗi cycle |
+
+Health bucket history là `1`, max age 24 giờ. Gateway bỏ node snapshot cũ hơn 15 giây. Service monitors dùng stable pod ID và same-owner cooldown: sau khi release, pod khác được ưu tiên; cụm một pod vẫn probe lại sau cooldown.
+
+## 7. HA, race và security guardrails
+
+| Case | Guard | Kết quả |
+|---|---|---|
+| Hai event sửa hai field cùng lúc | KV expected revision + retry | Không lost update |
+| Pod A release sau khi lease đã sang Pod B | Owner + fencing comparison | A không release được lease B |
+| N pod cold-start cùng lúc | CAS coordination lease | Chỉ một pod query JO/DB |
+| Redis PubSub mất event | Periodic authoritative reconciliation | Eventual repair |
+| NATS KV mất kết nối | Ingestion fail-closed | Không chạy job với desired state không xác định |
+| Bucket cấu hình sai replica/storage/history | Bootstrap validation | Pod fail-fast |
+| Health writer bị kẹt | Lease expiry + rotating owner | Replica khác tiếp quản |
+| Probe cũ trả kết quả sau takeover | Renew trước side effect + health CAS theo fencing token | Token thấp không overwrite snapshot mới |
+| Clock skew | Node time phải được NTP đồng bộ; fencing/CAS chặn stale release | Alert nếu skew vượt lease safety margin |
+
+NATS credential của Zone phải chỉ có quyền trên ba bucket của chính Zone. NetworkPolicy không cho endpoint Zone JetStream từ controlplane namespace. JO không có credential truy cập Zone KV; JO chỉ dùng CP PostgreSQL, Redis Job và NATS Core cho các luồng trung tâm khác.
+
+## 8. Code map
+
+- `dataplane/src/infra/zone_kv.rs`: buckets, metadata CAS, fenced/rotating lease.
+- `dataplane/src/zone_gateway/listener.rs`: real-time PubSub apply.
+- `dataplane/src/zone_gateway/reconciler.rs`: cold-start/periodic repair.
+- `dataplane/src/job_lifecycle/consumer.rs`: fail-closed state reaction.
+- `dataplane/src/zone_gateway/reporter.rs`: health aggregation và report lease.
+- `job-orchestrator/src/cdc/mod.rs`: zone/service CDC publisher.
+- `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: metadata query responder.

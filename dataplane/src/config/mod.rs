@@ -40,16 +40,10 @@ pub struct Config {
     /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Job Redis.
     pub redis_job_client_key: Option<String>,
 
-    /// Địa chỉ kết nối đến cụm Redis phục vụ Policy dynamic sync / pub/sub.
-    pub redis_internal_zone_url: String,
-    /// Chế độ bảo mật TLS cho Internal Zone Redis.
-    pub redis_internal_zone_tls_mode: RedisTlsMode,
-    /// Đường dẫn file chứng chỉ CA cho Internal Zone Redis.
-    pub redis_internal_zone_ca_cert: Option<String>,
-    /// Đường dẫn file chứng chỉ Client phục vụ mTLS cho Internal Zone Redis.
-    pub redis_internal_zone_client_cert: Option<String>,
-    /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Internal Zone Redis.
-    pub redis_internal_zone_client_key: Option<String>,
+    /// [COMMENT]: Endpoint JetStream riêng của Zone; tuyệt đối không trỏ sang NATS Core trung tâm.
+    pub nats_zone_url: String,
+    /// [COMMENT]: Replica factor của Zone KV; production nên dùng 3, dev single-node dùng 1.
+    pub nats_zone_kv_replicas: usize,
 
     /// Endpoint của OpenTelemetry Collector phục vụ gửi traces & metrics.
     pub otel_exporter_otlp_endpoint: String,
@@ -83,6 +77,24 @@ pub struct Config {
     pub mail_jmap_request_timeout_ms: u64,
     pub mail_jmap_max_retries: usize,
     pub mail_max_message_bytes: usize,
+
+    /// [COMMENT]: Một central Phase-5 scanner đọc bounded NATS KV key page; giới hạn chặn full materialize và thundering herd.
+    pub mail_config_scan_interval_seconds: u64,
+    pub mail_config_scan_page_size: usize,
+    pub mail_config_scan_max_pages_per_tick: usize,
+    /// [COMMENT]: Consumer registry có hard cap; template Moka dùng byte-weight thay vì chỉ đếm entry.
+    pub mail_consumer_l1_max_entries: usize,
+    pub mail_template_l1_max_bytes: u64,
+    pub mail_template_l1_ttl_seconds: u64,
+    /// [COMMENT]: Phase-6 dùng một supervisor timer chung; lease TTL phải dài hơn nhiều lần chu kỳ reconcile.
+    pub mail_stream_supervisor_interval_ms: u64,
+    pub mail_stream_slot_lease_ttl_seconds: u64,
+    pub mail_stream_ingress_capacity: usize,
+    pub mail_stream_max_slots_per_pod: usize,
+    /// [COMMENT]: Zone-local KEK 32-byte dạng hex; chỉ DP có, CP/JO/Zone KV không được log hoặc giải mã envelope.
+    pub mail_stream_envelope_key_hex: String,
+    /// [COMMENT]: Optional Zone CA path là trusted deployment config, không nhận filesystem path từ customer payload.
+    pub mail_stream_ca_cert_path: Option<String>,
 
     /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
     pub minio_host: Option<String>,
@@ -167,15 +179,39 @@ impl Config {
             redis_job_client_cert: env::var("REDIS_JOB_CLIENT_CERT").ok(),
             redis_job_client_key: env::var("REDIS_JOB_CLIENT_KEY").ok(),
 
-            redis_internal_zone_url: env::var("REDIS_INTERNAL_ZONE_URL")
-                .unwrap_or_else(|_| "redis://controlplane-redis:6379/1".to_string()),
-            redis_internal_zone_tls_mode: env::var("REDIS_INTERNAL_ZONE_TLS_ENABLED")
-                .unwrap_or_else(|_| "disable".to_string())
-                .parse::<RedisTlsMode>()
-                .unwrap_or(RedisTlsMode::Disable),
-            redis_internal_zone_ca_cert: env::var("REDIS_INTERNAL_ZONE_CA_CERT").ok(),
-            redis_internal_zone_client_cert: env::var("REDIS_INTERNAL_ZONE_CLIENT_CERT").ok(),
-            redis_internal_zone_client_key: env::var("REDIS_INTERNAL_ZONE_CLIENT_KEY").ok(),
+            nats_zone_url: {
+                // [COMMENT]: Không fallback NATS_URL vì đó là Core bus trung tâm; cross-wire sẽ phá isolation của Zone.
+                let value = env::var("NATS_ZONE_URL").unwrap_or_else(|err| {
+                    crate::observability::logger::Logger::sys_error(
+                        "system.bootstrap",
+                        "CRITICAL: NATS_ZONE_URL is required and must point to the Zone-local JetStream cluster",
+                        &err.to_string(),
+                    );
+                    std::process::abort();
+                });
+                if value.trim().is_empty() {
+                    crate::observability::logger::Logger::sys_error(
+                        "system.bootstrap",
+                        "CRITICAL: NATS_ZONE_URL cannot be empty",
+                        "ZONE_NATS_ENDPOINT_REQUIRED",
+                    );
+                    std::process::abort();
+                }
+                for central_variable in ["NATS_URL", "NATS_ADDR"] {
+                    if env::var(central_variable)
+                        .is_ok_and(|central_url| central_url.trim() == value.trim())
+                    {
+                        crate::observability::logger::Logger::sys_error(
+                            "system.bootstrap",
+                            "CRITICAL: Zone JetStream endpoint must not equal the central NATS Core endpoint",
+                            "ZONE_NATS_CORE_CROSS_WIRE",
+                        );
+                        std::process::abort();
+                    }
+                }
+                value
+            },
+            nats_zone_kv_replicas: parse_env("NATS_ZONE_KV_REPLICAS", 3_usize),
             otel_exporter_otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .unwrap_or_else(|_| "http://otel-collector:4317".to_string()),
             // Nạp min_workers từ biến môi trường MIN_WORKERS, mặc định là 1 để giữ tối thiểu 1 worker hoạt động.
@@ -225,6 +261,58 @@ impl Config {
             ),
             mail_jmap_max_retries: parse_env("MAIL_JMAP_MAX_RETRIES", 2_usize),
             mail_max_message_bytes: parse_env("MAIL_MAX_MESSAGE_BYTES", 1_048_576_usize),
+            mail_config_scan_interval_seconds: parse_env(
+                "MAIL_CONFIG_SCAN_INTERVAL_SECONDS",
+                60_u64,
+            )
+            .clamp(5, 3_600),
+            mail_config_scan_page_size: parse_env("MAIL_CONFIG_SCAN_PAGE_SIZE", 128_usize)
+                .clamp(16, 1_000),
+            mail_config_scan_max_pages_per_tick: parse_env(
+                "MAIL_CONFIG_SCAN_MAX_PAGES_PER_TICK",
+                8_usize,
+            )
+            .clamp(1, 128),
+            mail_consumer_l1_max_entries: parse_env(
+                "MAIL_CONSUMER_L1_MAX_ENTRIES",
+                50_000_usize,
+            )
+            .clamp(1_000, 1_000_000),
+            mail_template_l1_max_bytes: parse_env(
+                "MAIL_TEMPLATE_L1_MAX_BYTES",
+                67_108_864_u64,
+            )
+            .clamp(1_048_576, 1_073_741_824),
+            mail_template_l1_ttl_seconds: parse_env(
+                "MAIL_TEMPLATE_L1_TTL_SECONDS",
+                3_600_u64,
+            )
+            .clamp(60, 86_400),
+            mail_stream_supervisor_interval_ms: parse_env(
+                "MAIL_STREAM_SUPERVISOR_INTERVAL_MS",
+                1_000_u64,
+            )
+            .clamp(250, 60_000),
+            mail_stream_slot_lease_ttl_seconds: parse_env(
+                "MAIL_STREAM_SLOT_LEASE_TTL_SECONDS",
+                30_u64,
+            )
+            .clamp(15, 300),
+            mail_stream_ingress_capacity: parse_env(
+                "MAIL_STREAM_INGRESS_CAPACITY",
+                256_usize,
+            )
+            .clamp(16, 10_000),
+            mail_stream_max_slots_per_pod: parse_env(
+                "MAIL_STREAM_MAX_SLOTS_PER_POD",
+                256_usize,
+            )
+            .clamp(1, 10_000),
+            mail_stream_envelope_key_hex: env::var("MAIL_STREAM_ENVELOPE_KEY_HEX")
+                .unwrap_or_default(),
+            mail_stream_ca_cert_path: env::var("MAIL_STREAM_CA_CERT_PATH")
+                .ok()
+                .filter(|path| !path.trim().is_empty()),
 
             // [COMMENT]: Nạp cấu hình MinIO (không có fallback mặc định để hỗ trợ báo trạng thái unknown khi thiếu config)
             minio_host: env::var("MINIO_HOST").ok(),
@@ -241,7 +329,7 @@ impl Config {
                 .unwrap_or_else(|_| String::new()),
             // Chỉ bật trên môi trường dev/staging khi dùng self-signed cert
             proxmox_tls_insecure: env::var("PROXMOX_TLS_INSECURE")
-                .map(|v| v.to_ascii_lowercase() == "true" || v == "1")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false),
         }
     }

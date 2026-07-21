@@ -14,6 +14,7 @@ use super::storage_proto;
 ///   1. Tạo bucket vật lý (S3 SDK, Signature V4)
 ///   2. Tạo MinIO user với access_key + secret_key từ payload (Admin API)
 ///   3. Gán bucket policy cho user đó (S3 SDK put_bucket_policy)
+///
 /// Mỗi bước đều idempotent → toàn bộ job an toàn khi retry.
 pub struct BucketCreateExecutor;
 

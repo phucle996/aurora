@@ -4,10 +4,10 @@ type SourceType string
 
 const (
 	// [COMMENT]: Kafka là source được runtime phase đầu hỗ trợ; các enum còn lại dành cho contract mở rộng.
-	Kafka       SourceType = "kafka"
-	RedisStream SourceType = "redis_stream"
-	RabbitMQ    SourceType = "rabbitmq"
-	NATS        SourceType = "nats"
+	Kafka         SourceType = "kafka"
+	RedisStream   SourceType = "redis_stream"
+	RabbitMQ      SourceType = "rabbitmq"
+	NATSJetStream SourceType = "nats_jetstream"
 )
 
 type ConsumerDesiredState string

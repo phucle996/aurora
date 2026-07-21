@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     name VARCHAR(255) NOT NULL,
     source_type mail_source_type NOT NULL,
     broker_resource_id UUID NOT NULL,
-    source_config_ref VARCHAR(512) NOT NULL,
+    -- [COMMENT]: Credential/config broker là business data đã mã hóa; CP chỉ lưu ciphertext,
+    -- JO và Zone NATS KV chỉ chuyển tiếp opaque bytes, không phụ thuộc Vault của auth.
+    source_config_envelope BYTEA NOT NULL DEFAULT ''::bytea,
     topic VARCHAR(249) NOT NULL,
     consumer_group VARCHAR(255) NOT NULL,
     mapping_json JSONB NOT NULL,
@@ -99,6 +101,10 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_mail_consumer_mapping_object CHECK (jsonb_typeof(mapping_json) = 'object'),
     CONSTRAINT ck_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
+    CONSTRAINT ck_mail_consumer_source_config_envelope CHECK (octet_length(source_config_envelope) <= 16384),
+    CONSTRAINT ck_mail_consumer_enabled_source_config CHECK (
+        desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
+    ),
     CONSTRAINT ck_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'),
     CONSTRAINT ck_mail_consumer_delete_state CHECK (
         (desired_state = 'deleted' AND deleted_at IS NOT NULL)
@@ -121,71 +127,6 @@ CREATE TABLE IF NOT EXISTS mail_consumer_runtime_reports (
     expires_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (consumer_id, instance_id),
     CONSTRAINT ck_mail_runtime_expiry CHECK (expires_at > reported_at)
-);
-
--- [COMMENT]: Durable inbox dedupe; zone là metadata của result stream, không phải field do DP tự khai.
-CREATE TABLE IF NOT EXISTS mail_result_inbox (
-    event_id UUID PRIMARY KEY,
-    zone_id UUID NOT NULL,
-    payload BYTEA NOT NULL,
-    payload_schema_version INTEGER NOT NULL CHECK (payload_schema_version > 0),
-    status mail_result_inbox_status NOT NULL DEFAULT 'PENDING',
-    error_code VARCHAR(100) NULL,
-    error_message VARCHAR(1024) NULL,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_at TIMESTAMPTZ NULL,
-    CONSTRAINT ck_mail_result_inbox_applied CHECK (
-        (status = 'PENDING' AND applied_at IS NULL)
-        OR (status IN ('APPLIED', 'REJECTED') AND applied_at IS NOT NULL)
-    )
-);
-
--- [COMMENT]: Workspace được derive từ retained consumer và denormalize để mọi history query bắt buộc scope sớm.
-CREATE TABLE IF NOT EXISTS mail_submissions (
-    submission_id UUID PRIMARY KEY,
-    workspace_id UUID NOT NULL,
-    consumer_id UUID NOT NULL REFERENCES mail_consumers(id) ON DELETE RESTRICT,
-    consumer_config_version BIGINT NOT NULL CHECK (consumer_config_version > 0),
-    topic VARCHAR(249) NOT NULL,
-    partition_id INTEGER NOT NULL CHECK (partition_id >= 0),
-    offset_id BIGINT NOT NULL CHECK (offset_id >= 0),
-    recipient_index INTEGER NOT NULL DEFAULT 0 CHECK (recipient_index >= 0),
-    external_message_id VARCHAR(512) NULL,
-    recipient_ciphertext BYTEA NULL,
-    recipient_masked VARCHAR(320) NOT NULL,
-    template_id VARCHAR(128) NOT NULL,
-    template_version BIGINT NOT NULL CHECK (template_version > 0),
-    sender_profile_id VARCHAR(128) NOT NULL,
-    sender_version BIGINT NOT NULL CHECK (sender_version > 0),
-    current_status mail_execution_status NOT NULL,
-    current_state_version BIGINT NOT NULL CHECK (current_state_version > 0),
-    jmap_submission_id VARCHAR(512) NULL,
-    rendered_content_sha256 BYTEA NULL,
-    first_seen_at TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (consumer_id, topic, partition_id, offset_id, recipient_index),
-    CONSTRAINT ck_mail_submission_hash CHECK (
-        rendered_content_sha256 IS NULL OR octet_length(rendered_content_sha256) = 32
-    )
-);
-
--- [COMMENT]: Append-only attempt/state history; monotonic head update được thực hiện ở Phase 9.
-CREATE TABLE IF NOT EXISTS mail_delivery_attempts (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    event_id UUID NOT NULL UNIQUE,
-    submission_id UUID NOT NULL REFERENCES mail_submissions(submission_id) ON DELETE CASCADE,
-    attempt INTEGER NOT NULL CHECK (attempt > 0),
-    state_version BIGINT NOT NULL CHECK (state_version > 0),
-    status mail_execution_status NOT NULL,
-    retryable BOOLEAN NOT NULL DEFAULT FALSE,
-    error_code VARCHAR(100) NULL,
-    error_message VARCHAR(1024) NULL,
-    jmap_submission_id VARCHAR(512) NULL,
-    occurred_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (submission_id, state_version)
 );
 
 COMMENT ON TABLE mail_consumers IS 'Workspace-scoped desired state for broker mail runtimes; Zone is carried only by routing_scope in the mail outbox envelope.';

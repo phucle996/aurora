@@ -89,12 +89,3 @@ datasources:
     access: proxy
     url: redis://controlplane-redis-job:6379
     editable: false
-
-  # Datasource Redis Dataplane Zone 1 phục vụ giám sát co giãn và tải của Zone 1
-  - name: Redis-Dataplane-Z1
-    uid: redis-dataplane-z1
-    type: redis-datasource
-    access: proxy
-    url: redis://controlplane-redis-dataplane-z1:6379
-    editable: false
-

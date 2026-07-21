@@ -28,7 +28,7 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 pub struct AppContainer {
     pub config: Arc<Config>,
     pub redis_job: Arc<RedisClientManager>,
-    pub redis_internal_zone: Arc<RedisClientManager>,
+    pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
@@ -41,7 +41,7 @@ impl AppContainer {
             Self {
                 config: boot.config,
                 redis_job: boot.redis_job,
-                redis_internal_zone: boot.redis_internal_zone,
+                zone_kv: boot.zone_kv,
                 worker_pool: boot.worker_pool,
                 active_lock_registry: Arc::new(
                     crate::workerpool::watchdog::ActiveLockRegistry::new(),
@@ -57,23 +57,30 @@ impl AppContainer {
         crate::observability::otel::OtelTracer::init(&self.config);
         crate::workerpool::metrics::WorkerMetricsManager::init_registry();
 
-        // Khởi động Mail Workload Watchdog giám sát Stalwart L2 (HA & Decoupled)
+        // [COMMENT]: Phase 5 hydrate/watch NATS KV trước; Phase 6 supervisor chỉ đọc immutable COW snapshots.
+        self.worker_pool
+            .mail_runtime
+            .configuration
+            .start(self.zone_kv.clone());
+        self.worker_pool.mail_runtime.stream_supervisor.start();
+
+        // Khởi động Mail Workload Watchdog và ghi current snapshot vào Zone health KV.
         crate::executor::mail::monitor::MailWorkloadMonitor::start(
             self.config.clone(),
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
             self.worker_pool.mail_runtime.clone(),
         );
 
-        // [COMMENT]: Khởi động Storage Workload Watchdog giám sát MinIO L2 (HA & Decoupled)
+        // [COMMENT]: Khởi động Storage Workload Watchdog giám sát MinIO qua rotating KV lease.
         crate::executor::storage::StorageWorkloadMonitor::start(
             self.config.clone(),
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
         );
 
         // [COMMENT]: Khởi động luồng quét dung lượng bucket định kỳ mỗi 15s
         crate::executor::storage::StorageSizesSyncer::start(
             self.config.clone(),
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
             self.redis_job.clone(),
         );
 
@@ -82,43 +89,45 @@ impl AppContainer {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
 
-        // Khởi động ResourceMonitor kiêm Node Reporter báo cáo CPU/RAM và workers lên Redis L2 (Self-Healing L2 Node Reporter)
+        // Khởi động ResourceMonitor; mỗi node ghi snapshot riêng vào Zone health KV.
         crate::observability::resource::ResourceMonitor::start_monitor(
             node_id,
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
             self.worker_pool.clone(),
         );
 
         // Khởi động HypervisorMonitor polling Proxmox Cluster API mỗi 15 giây (Luồng B Auto-Discovery)
-        // Monitor này ghi trạng thái node vật lý vào Redis L2 `infra:hypervisor` để ZoneStatusGateway tổng hợp.
+        // Monitor này ghi snapshot `zone.service.hypervisor` để ZoneStatusGateway tổng hợp.
         // Nếu PROXMOX_API_URL hoặc PROXMOX_API_TOKEN chưa set, monitor tự degraded gracefully.
         crate::executor::hypervisor::core::monitor::HypervisorMonitor::start(
             self.config.clone(),
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
         );
 
-        // Khởi động Zone Gateway tổng hợp dữ liệu cụm L2 và đồng bộ lên Platform L1 (Bypass CP)
+        // Khởi động Zone Gateway tổng hợp snapshot KV và đẩy report qua Redis Job transport.
         crate::zone_gateway::ZoneStatusGateway::start_zone_gateway(
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
             self.redis_job.clone(),
             self.config.clone(),
         );
 
         // Khởi động CDC Metadata Event Listener lắng nghe các sự kiện cập nhật cấu hình thời gian thực
         crate::zone_gateway::ZoneStatusGateway::start_metadata_event_listener(
-            self.redis_internal_zone.clone(),
+            self.zone_kv.clone(),
             self.redis_job.clone(),
             self.config.clone(),
         );
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.active_lock_registry.clone();
-        let redis_internal = self.redis_internal_zone.clone();
+        let zone_kv_watchdog = self.zone_kv.clone();
+        let redis_job_watchdog = self.redis_job.clone();
         tokio::spawn(async move {
             crate::workerpool::watchdog::start_watchdog_loop(
                 registry,
-                redis_internal,
-                30,                      // TTL gia hạn trên Redis là 30 giây
+                zone_kv_watchdog,
+                redis_job_watchdog,
+                30,                      // TTL Zone KV lease là 30 giây
                 Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
             )
             .await;
@@ -132,7 +141,7 @@ impl AppContainer {
         // 0c. [COMMENT]: Khởi chạy dual persistent IngestionDaemons: một cho Zone, một cho Platform
         let config_ingest_zone = self.config.clone();
         let redis_job_ingest_zone = self.redis_job.clone();
-        let redis_internal_zone_ingest_zone = self.redis_internal_zone.clone();
+        let zone_kv_ingest_zone = self.zone_kv.clone();
         let tx_ingest_zone = tx.clone();
         let active_jobs_ingest_zone = active_jobs.clone();
         let cancel_token_zone = self.worker_pool.cancel_token();
@@ -142,7 +151,7 @@ impl AppContainer {
             crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
                 config_ingest_zone,
                 redis_job_ingest_zone,
-                redis_internal_zone_ingest_zone,
+                zone_kv_ingest_zone,
                 tx_ingest_zone,
                 cancel_token_zone,
                 active_jobs_ingest_zone,
@@ -154,7 +163,7 @@ impl AppContainer {
 
         let config_ingest_plat = self.config.clone();
         let redis_job_ingest_plat = self.redis_job.clone();
-        let redis_internal_zone_ingest_plat = self.redis_internal_zone.clone();
+        let zone_kv_ingest_plat = self.zone_kv.clone();
         let tx_ingest_plat = tx;
         let active_jobs_ingest_plat = active_jobs.clone();
         let cancel_token_plat = self.worker_pool.cancel_token();
@@ -163,7 +172,7 @@ impl AppContainer {
             crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
                 config_ingest_plat,
                 redis_job_ingest_plat,
-                redis_internal_zone_ingest_plat,
+                zone_kv_ingest_plat,
                 tx_ingest_plat,
                 cancel_token_plat,
                 active_jobs_ingest_plat,
@@ -179,7 +188,7 @@ impl AppContainer {
                 1,
                 self.config.clone(),
                 self.redis_job.clone(),
-                self.redis_internal_zone.clone(),
+                self.zone_kv.clone(),
                 self.active_lock_registry.clone(),
                 rx_shared.clone(),
                 active_jobs.clone(),
@@ -190,7 +199,7 @@ impl AppContainer {
         let config_scale = self.config.clone();
         let worker_pool_scale = self.worker_pool.clone();
         let redis_job_scale = self.redis_job.clone();
-        let redis_internal_zone_scale = self.redis_internal_zone.clone();
+        let zone_kv_scale = self.zone_kv.clone();
         let active_lock_registry_scale = self.active_lock_registry.clone();
         let rx_scale = rx_shared.clone();
         let active_jobs_scale = active_jobs.clone();
@@ -266,7 +275,7 @@ impl AppContainer {
                                     i,
                                     config_scale.clone(),
                                     redis_job_scale.clone(),
-                                    redis_internal_zone_scale.clone(),
+                                    zone_kv_scale.clone(),
                                     active_lock_registry_scale.clone(),
                                     rx_scale.clone(),
                                     active_jobs_scale.clone(),

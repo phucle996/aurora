@@ -9,20 +9,24 @@ type CreateConsumerRequest struct {
 	Name             string                `json:"name" binding:"required"`
 	SourceType       mailEntity.SourceType `json:"source_type" binding:"required,oneof=kafka"`
 	BrokerResourceID string                `json:"broker_resource_id" binding:"required"`
-	Topic            string                `json:"topic" binding:"required"`
-	ConsumerGroup    string                `json:"consumer_group" binding:"required"`
-	Mapping          MessageMappingRequest `json:"mapping" binding:"required"`
-	TemplateID       string                `json:"template_id" binding:"required"`
-	TemplateVersion  uint64                `json:"template_version" binding:"required,min=1"`
-	SenderProfileID  string                `json:"sender_profile_id" binding:"required"`
-	SenderVersion    uint64                `json:"sender_version" binding:"required,min=1"`
-	Parallelism      uint32                `json:"parallelism" binding:"required,min=1,max=256"`
+	// [COMMENT]: Base64 của encrypted broker envelope; client không được gửi plaintext credentials.
+	SourceConfigEnvelope string                `json:"source_config_envelope"`
+	Topic                string                `json:"topic" binding:"required"`
+	ConsumerGroup        string                `json:"consumer_group" binding:"required"`
+	Mapping              MessageMappingRequest `json:"mapping" binding:"required"`
+	TemplateID           string                `json:"template_id" binding:"required"`
+	TemplateVersion      uint64                `json:"template_version" binding:"required,min=1"`
+	SenderProfileID      string                `json:"sender_profile_id" binding:"required"`
+	SenderVersion        uint64                `json:"sender_version" binding:"required,min=1"`
+	Parallelism          uint32                `json:"parallelism" binding:"required,min=1,max=256"`
 }
 
 type UpdateConsumerRequest struct {
-	Name                  string                          `json:"name" binding:"required"`
-	SourceType            mailEntity.SourceType           `json:"source_type" binding:"required,oneof=kafka"`
-	BrokerResourceID      string                          `json:"broker_resource_id" binding:"required"`
+	Name             string                `json:"name" binding:"required"`
+	SourceType       mailEntity.SourceType `json:"source_type" binding:"required,oneof=kafka"`
+	BrokerResourceID string                `json:"broker_resource_id" binding:"required"`
+	// [COMMENT]: Base64 của encrypted broker envelope; client không được gửi plaintext credentials.
+	SourceConfigEnvelope  string                          `json:"source_config_envelope"`
 	Topic                 string                          `json:"topic" binding:"required"`
 	ConsumerGroup         string                          `json:"consumer_group" binding:"required"`
 	Mapping               MessageMappingRequest           `json:"mapping" binding:"required"`

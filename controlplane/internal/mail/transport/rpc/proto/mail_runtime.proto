@@ -5,9 +5,10 @@ package mail.runtime.v1;
 option go_package = "controlplane/internal/mail/transport/rpc/proto;mailproto";
 
 // [COMMENT]: Contract này chỉ mang desired state/template snapshot từ Controlplane xuống Zone
-// và runtime/result từ Dataplane về Controlplane. Zone là routing envelope của mail outbox/stream;
+// và runtime report từ Dataplane về Controlplane. Zone là routing envelope của mail outbox/stream;
 // workspace chỉ là authorization boundary tại Controlplane, vì vậy cả hai không nằm trong payload.
-// Không message nào được chứa broker credential, rendered body hoặc template variables thô.
+// Broker config chỉ xuất hiện dưới dạng ciphertext envelope; không message nào chứa plaintext credential,
+// rendered body hoặc template variables thô.
 
 enum MailConsumerDesiredState {
   MAIL_CONSUMER_DESIRED_STATE_UNSPECIFIED = 0;
@@ -26,18 +27,6 @@ enum MailConsumerRuntimeState {
   MAIL_CONSUMER_RUNTIME_STATE_DEGRADED = 7;
 }
 
-enum MailExecutionStatus {
-  MAIL_EXECUTION_STATUS_UNSPECIFIED = 0;
-  MAIL_EXECUTION_STATUS_CONSUMED = 1;
-  MAIL_EXECUTION_STATUS_RENDERED = 2;
-  MAIL_EXECUTION_STATUS_SUBMITTING = 3;
-  MAIL_EXECUTION_STATUS_RETRY_SCHEDULED = 4;
-  MAIL_EXECUTION_STATUS_SUBMITTED = 5;
-  MAIL_EXECUTION_STATUS_REJECTED = 6;
-  MAIL_EXECUTION_STATUS_FAILED = 7;
-  MAIL_EXECUTION_STATUS_AMBIGUOUS = 8;
-}
-
 message MailEventMetadataV1 {
   // [COMMENT]: UUIDv5 16-byte id, deterministic từ aggregate id + version + event type.
   bytes event_id = 1;
@@ -51,15 +40,32 @@ message MailEventMetadataV1 {
   string producer = 5;
 }
 
-message KafkaSourceV1 {
-  // [COMMENT]: UUID 16-byte của Kafka binding; CP derive secret ref từ trusted Workspace/Zone scope.
-  bytes broker_resource_id = 1;
-  // [COMMENT]: Opaque Vault/secret reference; tuyệt đối không phải credential plaintext.
-  string source_config_ref = 2;
-  // [COMMENT]: Topic cụ thể đã được authorization; DP không nhận topic từ từng Kafka message.
-  string topic = 3;
+enum MailStreamType {
+  MAIL_STREAM_TYPE_UNSPECIFIED = 0;
+  MAIL_STREAM_TYPE_KAFKA = 1;
+  MAIL_STREAM_TYPE_REDIS_STREAM = 2;
+  MAIL_STREAM_TYPE_NATS_JETSTREAM = 3;
+  MAIL_STREAM_TYPE_RABBITMQ = 4;
+}
+
+message MailStreamSourceV1 {
+  // [COMMENT]: Discriminator nằm trong protobuf payload của outbox; JO chỉ chuyển tiếp bytes và DP mới dispatch adapter.
+  MailStreamType stream_type = 1;
+  // [COMMENT]: Version của payload adapter bên dưới; unknown version chỉ cô lập consumer này.
+  uint32 payload_schema_version = 2;
+  // [COMMENT]: UUID 16-byte của broker binding đã được Controlplane authorization.
+  bytes broker_resource_id = 3;
+  // [COMMENT]: Opaque adapter protobuf; outer contract không cần thêm field mỗi khi có stream mới.
+  bytes payload = 4;
+}
+
+message KafkaStreamPayloadV1 {
+  // [COMMENT]: Opaque encrypted connection envelope; CP/JO/Zone KV không giải mã.
+  bytes source_config_envelope = 1;
+  // [COMMENT]: Topic cụ thể đã được authorization; DP không nhận topic từ từng broker message.
+  string topic = 2;
   // [COMMENT]: Consumer group ổn định của connector.
-  string consumer_group = 4;
+  string consumer_group = 3;
 }
 
 message MailMessageMappingV1 {
@@ -77,7 +83,7 @@ message MailConsumerUpsertV1 {
   bytes consumer_id = 2;
   // [COMMENT]: Monotonic version; DP chỉ apply version lớn hơn version hiện có.
   uint64 config_version = 3;
-  KafkaSourceV1 kafka = 4;
+  MailStreamSourceV1 stream = 4;
   MailMessageMappingV1 mapping = 5;
   // [COMMENT]: Template identity được bind cố định tại config, không đọc từ Kafka payload.
   string template_id = 6;
@@ -150,40 +156,9 @@ message MailTemplateDeletedV1 {
   uint64 last_published_version = 4;
 }
 
-message KafkaMessageCoordinateV1 {
-  string topic = 1;
-  int32 partition = 2;
-  int64 offset = 3;
-  // [COMMENT]: Phase đầu luôn 0 vì một Kafka message tương ứng một recipient.
-  uint32 recipient_index = 4;
-  // [COMMENT]: Giá trị audit tùy chọn lấy từ mapping; Kafka coordinate mới là dedupe authority.
-  string external_message_id = 5;
-}
-
-message MailExecutionResultV1 {
+// [COMMENT]: Marker kết thúc một full DB-backed reconciliation; không mang Zone vì stream envelope đã route.
+message MailProjectionReconcileCompletedV1 {
   MailEventMetadataV1 metadata = 1;
-  // [COMMENT]: UUIDv5 16-byte từ consumer + topic + partition + offset + recipient_index.
-  bytes submission_id = 2;
-  // [COMMENT]: Monotonic per-submission state version; CP bỏ qua result cũ/out-of-order.
-  uint64 state_version = 3;
-  bytes consumer_id = 4;
-  uint64 consumer_config_version = 5;
-  KafkaMessageCoordinateV1 source = 6;
-  // [COMMENT]: PII cần cho history; không log/metric và phải mã hóa hoặc retention tại CP.
-  string recipient = 7;
-  string template_id = 8;
-  uint64 template_version = 9;
-  string sender_profile_id = 10;
-  uint64 sender_version = 11;
-  uint32 attempt = 12;
-  MailExecutionStatus status = 13;
-  // [COMMENT]: Chỉ true cho transient attempt; terminal status luôn false.
-  bool retryable = 14;
-  string error_code = 15;
-  // [COMMENT]: Sanitized và bounded; không chứa raw JSON, variables hay rendered content.
-  string error_message = 16;
-  // [COMMENT]: Opaque JMAP submission id khi status SUBMITTED.
-  string jmap_submission_id = 17;
-  // [COMMENT]: SHA-256 32-byte phục vụ audit mà không lưu body.
-  bytes rendered_content_sha256 = 18;
+  uint64 reconcile_generation = 2;
+  int64 completed_at_unix_ms = 3;
 }

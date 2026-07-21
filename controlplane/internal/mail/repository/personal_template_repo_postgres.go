@@ -323,6 +323,10 @@ func (r *personalTemplateRepoPostgres) Delete(ctx context.Context, template *mai
 	if _, err = tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.personal_mail_templates WHERE id=$1 AND workspace_id=$2`, r.mailSchema), template.ID, template.WorkspaceID); err != nil {
 		return fmt.Errorf("mail personal template repo: hard delete: %w", err)
 	}
+	// [COMMENT]: Tombstone là rebuild authority sau outbox retention; không chứa template body hay owner data.
+	if _, err = tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.personal_mail_template_projection_tombstones (template_id,workspace_id,template_revision,last_published_version,event_id,deleted_at) VALUES ($1,$2,$3,$4,$5,$6)`, r.mailSchema), template.ID, template.WorkspaceID, template.ExpectedRevision+1, template.CurrentVersion, outbox.EventID, template.UpdatedAt); err != nil {
+		return fmt.Errorf("mail personal template repo: insert projection tombstone: %w", err)
+	}
 	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,routing_scope,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID); err != nil {
 		return fmt.Errorf("mail personal template repo: insert delete outbox: %w", err)
 	}

@@ -84,26 +84,29 @@ impl JobExecutionResult {
                 source_domain,
                 trace_id,
             },
-            Ok(Err(e)) => {
-                // Do chúng ta đã rút gọn ExecutorError chỉ còn variant ExecutionFailed để xóa dead code,
-                // phần match lỗi ở đây được đơn giản hóa để chỉ ánh xạ duy nhất lỗi này về Controlplane.
-                let (code, _msg) = match e {
-                    crate::executor::ExecutorError::ExecutionFailed(m) => {
-                        (Some("EXECUTION_FAILED".to_string()), m)
-                    }
-                };
-                Self {
-                    job_id,
-                    job_version,
-                    attempt,
-                    result_status: "FAILED".to_string(),
-                    error_code: code,
-                    message: "".to_string(),
-                    job_topic,
-                    source_domain,
-                    trace_id,
-                }
-            }
+            Ok(Err(crate::executor::ExecutorError::ExecutionFailed(message))) => Self {
+                job_id,
+                job_version,
+                attempt,
+                result_status: "FAILED".to_string(),
+                error_code: Some("EXECUTION_FAILED".to_string()),
+                message,
+                job_topic,
+                source_domain,
+                trace_id,
+            },
+            Ok(Err(crate::executor::ExecutorError::Retryable(message))) => Self {
+                job_id,
+                job_version,
+                attempt,
+                // [COMMENT]: RETRYABLE chỉ điều khiển local PEL; không relay thành terminal outbox.
+                result_status: "RETRYABLE".to_string(),
+                error_code: Some("TRANSIENT_INFRASTRUCTURE".to_string()),
+                message,
+                job_topic,
+                source_domain,
+                trace_id,
+            },
             Err(_) => Self {
                 job_id,
                 job_version,
@@ -214,5 +217,30 @@ impl JobResultReporter {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_executor_error_never_becomes_terminal_failure() {
+        let result = JobExecutionResult::from_outcome(
+            uuid::Uuid::nil().to_string(),
+            1,
+            0,
+            "mail.consumer.upsert".to_string(),
+            "MAIL".to_string(),
+            String::new(),
+            Ok(Err(crate::executor::ExecutorError::Retryable(
+                "redis unavailable".to_string(),
+            ))),
+        );
+        assert_eq!(result.result_status, "RETRYABLE");
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("TRANSIENT_INFRASTRUCTURE")
+        );
     }
 }

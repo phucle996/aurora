@@ -2,6 +2,7 @@ package mailHandler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -77,6 +78,11 @@ func (h *TenantConsumerHandler) Create(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid broker_resource_id")
 		return
 	}
+	sourceConfigEnvelope, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.SourceConfigEnvelope))
+	if err != nil || len(sourceConfigEnvelope) > 16<<10 {
+		apires.RespondBadRequest(c, "invalid source_config_envelope")
+		return
+	}
 
 	req.Code = strings.ToLower(strings.TrimSpace(req.Code))
 	validCode := len(req.Code) >= 3 && len(req.Code) <= 63 && req.Code[0] >= 'a' && req.Code[0] <= 'z'
@@ -127,7 +133,8 @@ func (h *TenantConsumerHandler) Create(c *gin.Context) {
 	consumer, err := h.svc.CreateConsumer(ctx, &mailEntity.TenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID,
 		Code: req.Code, Name: req.Name,
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
-		Topic: req.Topic, ConsumerGroup: req.ConsumerGroup,
+		SourceConfigEnvelope: sourceConfigEnvelope,
+		Topic:                req.Topic, ConsumerGroup: req.ConsumerGroup,
 		Mapping:    mailEntity.MessageMapping{ExternalMessageIDJSONPath: req.Mapping.ExternalMessageIDJSONPath, RecipientJSONPath: req.Mapping.RecipientJSONPath, VariableJSONPaths: req.Mapping.VariableJSONPaths},
 		TemplateID: req.TemplateID, TemplateVersion: req.TemplateVersion,
 		SenderProfileID: req.SenderProfileID, SenderVersion: req.SenderVersion, Parallelism: req.Parallelism,
@@ -157,7 +164,7 @@ func (h *TenantConsumerHandler) Create(c *gin.Context) {
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
-		"source_configured":  consumer.SourceConfigRef != "",
+		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
 		"mapping":            consumer.MappingJSON,
@@ -227,7 +234,7 @@ func (h *TenantConsumerHandler) Get(c *gin.Context) {
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
-		"source_configured":  consumer.SourceConfigRef != "",
+		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
 		"mapping":            consumer.MappingJSON,
@@ -337,7 +344,7 @@ func (h *TenantConsumerHandler) List(c *gin.Context) {
 			"name":               consumer.Name,
 			"source_type":        consumer.SourceType,
 			"broker_resource_id": consumer.BrokerResourceID.String(),
-			"source_configured":  consumer.SourceConfigRef != "",
+			"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 			"topic":              consumer.Topic,
 			"consumer_group":     consumer.ConsumerGroup,
 			"mapping":            consumer.MappingJSON,
@@ -409,6 +416,11 @@ func (h *TenantConsumerHandler) Update(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid broker_resource_id")
 		return
 	}
+	sourceConfigEnvelope, err := base64.StdEncoding.DecodeString(strings.TrimSpace(req.SourceConfigEnvelope))
+	if err != nil || len(sourceConfigEnvelope) > 16<<10 {
+		apires.RespondBadRequest(c, "invalid source_config_envelope")
+		return
+	}
 
 	req.Name = strings.TrimSpace(req.Name)
 	req.Topic = strings.TrimSpace(req.Topic)
@@ -435,7 +447,8 @@ func (h *TenantConsumerHandler) Update(c *gin.Context) {
 	consumer, err := h.svc.UpdateConsumer(ctx, &mailEntity.TenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID,
 		ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, Name: req.Name,
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
-		Topic: req.Topic, ConsumerGroup: req.ConsumerGroup,
+		SourceConfigEnvelope: sourceConfigEnvelope,
+		Topic:                req.Topic, ConsumerGroup: req.ConsumerGroup,
 		Mapping:    mailEntity.MessageMapping{ExternalMessageIDJSONPath: req.Mapping.ExternalMessageIDJSONPath, RecipientJSONPath: req.Mapping.RecipientJSONPath, VariableJSONPaths: req.Mapping.VariableJSONPaths},
 		TemplateID: req.TemplateID, TemplateVersion: req.TemplateVersion,
 		SenderProfileID: req.SenderProfileID, SenderVersion: req.SenderVersion,
@@ -466,7 +479,7 @@ func (h *TenantConsumerHandler) Update(c *gin.Context) {
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
-		"source_configured":  consumer.SourceConfigRef != "",
+		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
 		"mapping":            consumer.MappingJSON,
@@ -559,7 +572,7 @@ func (h *TenantConsumerHandler) changeState(c *gin.Context, desiredState mailEnt
 		"name":               consumer.Name,
 		"source_type":        consumer.SourceType,
 		"broker_resource_id": consumer.BrokerResourceID.String(),
-		"source_configured":  consumer.SourceConfigRef != "",
+		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
 		"mapping":            consumer.MappingJSON,

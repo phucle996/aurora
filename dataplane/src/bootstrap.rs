@@ -16,7 +16,7 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Nạp các tệp cấu hình môi trường (.env), logger hệ thống.
-///   - Mở các kết nối hạ tầng cốt lõi (SQLite, Redis Job, Redis Policy) dạng fail-fast.
+///   - Mở các kết nối hạ tầng cốt lõi (Redis Job và NATS JetStream KV) dạng fail-fast.
 ///   - Trả về đồ thị tài nguyên `BootstrapResult` để dựng AppContainer.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
@@ -24,19 +24,19 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 /// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
 ///   - Kiểm soát tính hợp lệ của cấu hình hệ thống ngay khi boot.
-///   - Nếu bất kỳ hạ tầng thiết yếu nào bị lỗi (SQLite, Redis), lập tức gọi abort tiến trình.
+///   - Nếu Redis Job hoặc Zone KV lỗi, bootstrap thất bại trước khi nhận workload.
 ///
 pub struct BootstrapResult {
     pub config: Arc<Config>,
     pub redis_job: Arc<RedisClientManager>,
-    pub redis_internal_zone: Arc<RedisClientManager>,
+    pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã loại bỏ trường policy_engine trong BootstrapResult
     pub worker_pool: Arc<WorkerLifecycleManager>,
     pub worker_signal_rx: mpsc::Receiver<WorkerSignal>,
 }
 
 /// Khởi chạy chuỗi hành động bootstrap hạ tầng hệ thống.
-pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
+pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     // 1. Load environment variables from .env
     dotenv().ok();
 
@@ -77,32 +77,17 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         }
     };
 
-    // 6. Initialize Internal Zone Redis connection pool
-    let redis_internal_zone = match RedisClientManager::new(
-        &cfg.redis_internal_zone_url,
-        cfg.redis_internal_zone_tls_mode,
-        &cfg.redis_internal_zone_ca_cert,
-        &cfg.redis_internal_zone_client_cert,
-        &cfg.redis_internal_zone_client_key,
-    ) {
-        Ok(r) => r,
-        Err(err) => {
-            Logger::sys_error(
-                "system.bootstrap",
-                "CRITICAL: Failed to initialize Internal Zone Redis client connection pool",
-                &err,
-            );
-            std::io::stdout().flush().ok();
-            std::io::stderr().flush().ok();
-            std::process::exit(1);
-        }
-    };
+    // [COMMENT]: Toàn bộ shared Zone state/lease nằm trong JetStream KV; Dataplane không bootstrap Internal Redis.
+    let zone_kv =
+        crate::infra::zone_kv::ZoneKvStore::connect(&cfg.nats_zone_url, cfg.nats_zone_kv_replicas)
+            .await
+            .map_err(|error| format!("initialize Zone NATS KV failed: {error}"))?;
 
     // Đã loại bỏ hoàn toàn phần đọc file policy.yaml và khởi tạo PolicyEngine ở đây.
     // max_workers sẽ được quản lý tĩnh qua biến môi trường nạp từ Config.
 
     // [COMMENT]: JMAP client + batcher được tạo đúng một lần cho toàn pod; cấu hình/auth sai làm bootstrap fail-fast.
-    let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg)
+    let mail_runtime = crate::executor::mail::MailRuntime::new(&cfg, zone_kv.clone())
         .map_err(|error| format!("initialize JMAP mail runtime failed: {error}"))?;
     let (worker_pool, worker_signal_rx) = WorkerLifecycleManager::new(mail_runtime);
     let worker_pool = Arc::new(worker_pool);
@@ -110,7 +95,7 @@ pub fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
     Ok(BootstrapResult {
         config: Arc::new(cfg),
         redis_job: Arc::new(redis_job),
-        redis_internal_zone: Arc::new(redis_internal_zone),
+        zone_kv,
         worker_pool,
         worker_signal_rx,
     })

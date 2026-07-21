@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
-use crate::infra::redis::RedisClientManager;
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 use crate::workerpool::lifecycle::WorkerLifecycleManager;
 
@@ -12,12 +12,12 @@ static CPU_USAGE_PCT: AtomicUsize = AtomicUsize::new(0);
 static RAM_USAGE_PCT: AtomicUsize = AtomicUsize::new(0);
 
 /// ============================================================================
-/// 📂 MODULE: observability/resource.rs - Giám Sát & Báo Cáo Tài Nguyên Node L2
+/// 📂 MODULE: observability/resource.rs - Giám Sát & Báo Cáo Tài Nguyên Node
 /// ============================================================================
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đọc trực tiếp `/proc/stat` và `/proc/meminfo` để đo hiệu năng CPU và RAM của Node.
-///   - Đẩy trực tiếp các chỉ số tài nguyên cục bộ này kèm số workers lên Redis L2 (Node Reporter).
+///   - Đẩy các chỉ số tài nguyên cục bộ kèm số workers vào health bucket của Zone KV.
 ///   - Cung cấp tốc độ đọc cực cao (<1ns) cho luồng nội bộ nhờ lưu trữ song song qua Atomics.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
@@ -36,10 +36,10 @@ impl ResourceMonitor {
         RAM_USAGE_PCT.load(Ordering::Relaxed) as f64 / 100.0
     }
 
-    /// Khởi chạy vòng lặp ngầm giám sát tài nguyên hệ thống và tự động đẩy lên Redis L2 (Self-Healing Node Reporter)
+    /// Khởi chạy vòng lặp giám sát và ghi snapshot riêng cho node vào Zone KV.
     pub fn start_monitor(
         node_id: String,
-        redis_internal_zone: Arc<RedisClientManager>,
+        zone_kv: Arc<ZoneKvStore>,
         worker_pool: Arc<WorkerLifecycleManager>,
     ) {
         tokio::spawn(async move {
@@ -53,9 +53,6 @@ impl ResourceMonitor {
 
             let mut prev_work = 0.0;
             let mut prev_total = 0.0;
-
-            // Duy trì kết nối Multiplexed động tới Redis L2
-            let mut conn_opt: Option<redis::aio::MultiplexedConnection> = None;
 
             loop {
                 // 1. Thu thập CPU từ /proc/stat
@@ -117,55 +114,31 @@ impl ResourceMonitor {
                 // 3. Đọc số lượng worker đang hoạt động trên Node hiện tại
                 let active_workers = worker_pool.active_worker_ids().len();
 
-                // 4. Kết nối và ghi nhận metrics của Node lên Redis L2 (Node Reporter)
-                if conn_opt.is_none() {
-                    if let Ok(conn) = redis_internal_zone
-                        .client()
-                        .get_multiplexed_tokio_connection()
-                        .await
-                    {
-                        conn_opt = Some(conn);
-                    }
-                }
-
-                if let Some(mut conn) = conn_opt.clone() {
-                    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                        Ok(dur) => dur.as_secs(),
-                        Err(_) => 0,
-                    };
-
-                    let key = format!("dataplane:node:{}", node_id);
-
-                    // Sử dụng pipeline HSET và EXPIRE bọc trong timeout 2s để tránh treo kết nối (HA & Anti-hang)
-                    let redis_write_res = tokio::time::timeout(
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or_default();
+                let key = format!(
+                    "zone.node.{}",
+                    node_id.replace(
+                        |character: char| !character.is_ascii_alphanumeric()
+                            && character != '-'
+                            && character != '_',
+                        "_"
+                    )
+                );
+                let snapshot = serde_json::json!({
+                    "cpu": cpu_usage / 100.0,
+                    "ram": ram_usage / 100.0,
+                    "active_workers": active_workers,
+                    "updated_at": now
+                });
+                if let Ok(value) = serde_json::to_vec(&snapshot) {
+                    let _ = tokio::time::timeout(
                         Duration::from_secs(2),
-                        redis::pipe()
-                            .cmd("HSET")
-                            .arg(&key)
-                            .arg("cpu")
-                            .arg(cpu_usage / 100.0) // Chuyển đổi về tỷ lệ 0.0 -> 1.0
-                            .arg("ram")
-                            .arg(ram_usage / 100.0) // Chuyển đổi về tỷ lệ 0.0 -> 1.0
-                            .arg("active_workers")
-                            .arg(active_workers)
-                            .arg("updated_at")
-                            .arg(now)
-                            .cmd("EXPIRE")
-                            .arg(&key)
-                            .arg(15) // TTL 15s để tự dọn khi node crash hoặc scale down
-                            .query_async::<_, ()>(&mut conn),
+                        zone_kv.health_put(&key, bytes::Bytes::from(value)),
                     )
                     .await;
-
-                    match redis_write_res {
-                        Ok(Ok(())) => {
-                            // Ghi thành công
-                        }
-                        _ => {
-                            // Gặp lỗi ghi hoặc timeout -> Reset connection để tái khởi tạo ở chu kỳ sau
-                            conn_opt = None;
-                        }
-                    }
                 }
 
                 // Thực hiện chu kỳ quét và đẩy tài nguyên định kỳ mỗi 5 giây (đồng bộ tải CPU/IO)

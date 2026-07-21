@@ -1,18 +1,7 @@
-/// ============================================================================
-/// 📂 MODULE: infra/redis/query.rs - Các Thao Tác Nghiệp Vụ & Giám Sát Redis
-/// ============================================================================
-///
-/// 📌 VAI TRÒ (ROLE):
-///   - Triển khai toàn bộ các thao tác nghiệp vụ động và giám sát trạng thái trên Redis.
-///   - Đây là nơi duy nhất thực thi các truy vấn động (Stream blocking reads, Lease Locking,
-///     Acknowledge, Lag/Latency queries).
-///
-/// 🎯 SOURCE OF TRUTH (SoT):
-///   - Hệ thống lưu trữ khóa-giá trị động và kênh truyền tin (Redis DB).
-///
-/// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
-///   - Thực hiện thao tác nghiệp vụ thô thông qua kết nối truyền tin bảo mật đã được xác thực.
-///
+// ============================================================================
+// 📂 MODULE: infra/redis/query.rs - Các Thao Tác Nghiệp Vụ & Giám Sát Redis
+// ============================================================================
+// Redis chỉ là Job transport; shared Zone state và lease thuộc NATS JetStream KV.
 
 /// Đọc gói tin tiếp theo từ Stream sử dụng cơ chế Consumer Group chặn (blocking read).
 use crate::job_lifecycle::message::JobPayload;
@@ -42,8 +31,42 @@ pub async fn fetch_next_stream_message(
         .query_async(&mut conn)
         .await;
 
-    // 2. Thực thi đọc XREADGROUP block 1000ms
-    let consumer_id = format!("consumer-{}", std::process::id());
+    // 2. Identity gồm hostname để nhiều pod có cùng PID không dùng chung Redis consumer name.
+    let consumer_id = format!(
+        "consumer-{}-{}",
+        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string()),
+        std::process::id()
+    );
+
+    // [COMMENT]: Claim đúng một entry đã idle; không spin toàn PEL và không làm mất transient failure.
+    let claimed: redis::Value = redis::cmd("XAUTOCLAIM")
+        .arg(stream_key)
+        .arg(group_name)
+        .arg(&consumer_id)
+        .arg(30_000)
+        .arg("0-0")
+        .arg("COUNT")
+        .arg(1)
+        .query_async(&mut conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let redis::Value::Bulk(parts) = claimed {
+        if let Some(redis::Value::Bulk(entries)) = parts.get(1) {
+            if !entries.is_empty() {
+                // [COMMENT]: XAUTOCLAIM và XREADGROUP khác wrapper nhưng Redis entry có cùng shape.
+                let wrapped = redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                    redis::Value::Data(stream_key.as_bytes().to_vec()),
+                    redis::Value::Bulk(entries.clone()),
+                ])]);
+                if let Some(mut payload) = parse_job_payload(&wrapped) {
+                    payload.redis_group_name = Some(group_name.to_string());
+                    return Ok(Some(payload));
+                }
+            }
+        }
+    }
+
+    // 3. Không có pending quá hạn thì block chờ job mới, tránh polling nóng.
     let reply: redis::Value = redis::cmd("XREADGROUP")
         .arg("GROUP")
         .arg(group_name)
@@ -59,7 +82,7 @@ pub async fn fetch_next_stream_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 3. Phân tích kết quả từ Value nguyên thủy của Redis trực tiếp thành JobPayload và gắn group_name
+    // 4. Phân tích kết quả từ Value nguyên thủy của Redis trực tiếp thành JobPayload và gắn group_name
     if let Some(mut payload) = parse_job_payload(&reply) {
         payload.redis_group_name = Some(group_name.to_string());
         Ok(Some(payload))
@@ -82,7 +105,7 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                             match entry {
                                 redis::Value::Bulk(entry_data) => {
                                     // Phần tử đầu tiên là ID của tin nhắn Redis (e.g. "171873918-0")
-                                    let msg_id_val = entry_data.get(0)?;
+                                    let msg_id_val = entry_data.first()?;
                                     let msg_id = match msg_id_val {
                                         redis::Value::Data(d) => {
                                             String::from_utf8_lossy(d).into_owned()
@@ -104,6 +127,7 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                             let mut payload = Vec::new();
                                             let mut trace_id = String::new();
                                             let mut idle = None;
+                                            let mut reconcile_generation = None;
 
                                             // Lặp qua từng cặp Key-Value trong bulk array
                                             for chunk in fields.chunks(2) {
@@ -193,6 +217,14 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                                                 idle = s.parse().ok();
                                                             }
                                                         }
+                                                        "reconcile_generation" => {
+                                                            if let redis::Value::Data(d) = &chunk[1]
+                                                            {
+                                                                let s = String::from_utf8_lossy(d);
+                                                                reconcile_generation =
+                                                                    s.parse().ok();
+                                                            }
+                                                        }
                                                         _ => {}
                                                     }
                                                 }
@@ -213,8 +245,10 @@ fn parse_job_payload(val: &redis::Value) -> Option<JobPayload> {
                                                 payload,
                                                 trace_id,
                                                 idle,
+                                                reconcile_generation,
                                                 redis_group_name: None,
                                                 redis_msg_id: Some(msg_id),
+                                                zone_lease: None,
                                             })
                                         }
                                         _ => None,
@@ -258,72 +292,6 @@ pub async fn acknowledge_message(
             msg_id, group
         ),
     );
-    Ok(())
-}
-
-/// Thiết lập Distributed Lease Lock với thời hạn (TTL) mặc định 30 giây.
-pub async fn acquire_lease_lock(client: &redis::Client, lock_key: &str) -> Result<bool, String> {
-    let mut conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut cmd = redis::cmd("SET");
-    cmd.arg(lock_key).arg("locked").arg("NX").arg("EX").arg(30);
-
-    let reply: redis::Value = cmd
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    match reply {
-        redis::Value::Okay => Ok(true),
-        redis::Value::Nil => Ok(false),
-        _ => Ok(true),
-    }
-}
-
-/// Giải phóng Distributed Lease Lock.
-pub async fn release_lease_lock(client: &redis::Client, lock_key: &str) -> Result<(), String> {
-    let mut conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| e.to_string())?;
-    let _: u64 = redis::cmd("DEL")
-        .arg(lock_key)
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
-    crate::observability::logger::Logger::sys_debug(
-        "infra.redis",
-        &format!(
-            "Infra Redis: Distributed lease lock '{}' successfully released",
-            lock_key
-        ),
-    );
-    Ok(())
-}
-
-/// Gia hạn hàng loạt các distributed lease lock bằng Redis Pipeline để tiết kiệm băng thông và I/O mạng.
-pub async fn bulk_expire_locks(
-    client: &redis::Client,
-    keys: &[String],
-    ttl_secs: u64,
-) -> Result<(), String> {
-    let mut conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Sử dụng redis::pipe() để gộp các lệnh EXPIRE gửi đi trong 1 TCP packet duy nhất.
-    let mut pipe = redis::pipe();
-    for key in keys {
-        pipe.cmd("EXPIRE").arg(key).arg(ttl_secs);
-    }
-
-    let _: () = pipe
-        .query_async(&mut conn)
-        .await
-        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

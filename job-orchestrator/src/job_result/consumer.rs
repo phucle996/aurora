@@ -53,38 +53,85 @@ impl JobResultConsumer {
             .arg("CREATE")
             .arg(stream_key)
             .arg(group_name)
-            .arg("$")
+            // [COMMENT]: First deployment phải đọc cả result đã durable trước khi group tồn tại.
+            .arg("0")
             .arg("MKSTREAM")
             .query_async(&mut redis_conn)
             .await;
 
-        let consumer_id = format!("job-proxy-{}", std::process::id());
+        let consumer_id = format!(
+            "job-proxy-{}-{}",
+            crate::config::get_node_hostname(),
+            std::process::id()
+        );
         Logger::sys_info(
             "job_result.run",
             &format!("JobResultConsumer: Đang lắng nghe kết quả từ Redis Stream: {} (Group: {}, Consumer: {})...", stream_key, group_name, consumer_id)
         );
 
         loop {
-            let reply: redis::Value = match redis::cmd("XREADGROUP")
-                .arg("GROUP")
+            // [COMMENT]: Reclaim result bị pod cũ giữ trong PEL trước khi block chờ result mới.
+            let claimed: redis::Value = match redis::cmd("XAUTOCLAIM")
+                .arg(stream_key)
                 .arg(group_name)
                 .arg(&consumer_id)
-                .arg("BLOCK")
-                .arg(2000)
+                .arg(30_000)
+                .arg("0-0")
                 .arg("COUNT")
                 .arg(1)
-                .arg("STREAMS")
-                .arg(stream_key)
-                .arg(">")
                 .query_async(&mut redis_conn)
                 .await
             {
-                Ok(val) => val,
-                Err(e) => {
-                    Logger::sys_error("job_result.read", "Lỗi đọc từ Redis Stream", &e.to_string());
+                Ok(value) => value,
+                Err(error) => {
+                    Logger::sys_error(
+                        "job_result.claim",
+                        "Lỗi claim pending result từ Redis Stream",
+                        &error.to_string(),
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
+            };
+            let reply = if let redis::Value::Bulk(parts) = claimed {
+                if let Some(redis::Value::Bulk(entries)) = parts.get(1) {
+                    if !entries.is_empty() {
+                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
+                            redis::Value::Data(stream_key.as_bytes().to_vec()),
+                            redis::Value::Bulk(entries.clone()),
+                        ])])
+                    } else {
+                        match redis::cmd("XREADGROUP")
+                            .arg("GROUP")
+                            .arg(group_name)
+                            .arg(&consumer_id)
+                            .arg("BLOCK")
+                            .arg(2000)
+                            .arg("COUNT")
+                            .arg(1)
+                            .arg("STREAMS")
+                            .arg(stream_key)
+                            .arg(">")
+                            .query_async(&mut redis_conn)
+                            .await
+                        {
+                            Ok(value) => value,
+                            Err(error) => {
+                                Logger::sys_error(
+                                    "job_result.read",
+                                    "Lỗi đọc từ Redis Stream",
+                                    &error.to_string(),
+                                );
+                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                continue;
+                            }
+                        }
+                    }
+                } else {
+                    redis::Value::Nil
+                }
+            } else {
+                redis::Value::Nil
             };
 
             if let redis::Value::Bulk(streams) = reply {

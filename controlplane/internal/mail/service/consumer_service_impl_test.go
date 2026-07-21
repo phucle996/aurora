@@ -1,6 +1,7 @@
 package mailSvcImpl
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"testing"
@@ -38,7 +39,42 @@ func (r *personalConsumerRepoCapture) Delete(_ context.Context, _ *mailEntity.Pe
 
 func validPersonalConsumer() *mailEntity.PersonalConsumer {
 	// [COMMENT]: Fixture mô phỏng entity đã được HTTP handler normalize và validate.
-	return &mailEntity.PersonalConsumer{ActorUserID: uuid.New(), WorkspaceID: uuid.New(), ZoneID: uuid.New(), Code: "orders", Name: "orders", SourceType: mailEntity.Kafka, BrokerResourceID: uuid.New(), Topic: "orders.created", ConsumerGroup: "mail-orders", Mapping: mailEntity.MessageMapping{RecipientJSONPath: "$.recipient", VariableJSONPaths: map[string]string{"name": "$.data.name"}}, TemplateID: "template-1", TemplateVersion: 2, SenderProfileID: "sender-1", SenderVersion: 1, Parallelism: 3}
+	return &mailEntity.PersonalConsumer{ActorUserID: uuid.New(), WorkspaceID: uuid.New(), ZoneID: uuid.New(), Code: "orders", Name: "orders", SourceType: mailEntity.Kafka, BrokerResourceID: uuid.New(), SourceConfigEnvelope: []byte{1, 2, 3}, Topic: "orders.created", ConsumerGroup: "mail-orders", Mapping: mailEntity.MessageMapping{RecipientJSONPath: "$.recipient", VariableJSONPaths: map[string]string{"name": "$.data.name"}}, TemplateID: "template-1", TemplateVersion: 2, SenderProfileID: "sender-1", SenderVersion: 1, Parallelism: 3}
+}
+
+func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
+	current := validPersonalConsumer()
+	current.ID = uuid.New()
+	current.ConfigVersion = 4
+	current.SourceConfigEnvelope = []byte{7, 8, 9}
+	repo := &personalConsumerRepoCapture{created: current}
+
+	command := *current
+	command.ExpectedConfigVersion = 4
+	command.ConfigVersion = 0
+	command.SourceConfigEnvelope = nil
+	command.DesiredState = mailEntity.ConsumerEnabled
+	updated, err := NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), &command)
+	if err != nil {
+		t.Fatalf("UpdateConsumer() error = %v", err)
+	}
+	if !bytes.Equal(updated.SourceConfigEnvelope, []byte{7, 8, 9}) {
+		t.Fatalf("encrypted source was not retained: %v", updated.SourceConfigEnvelope)
+	}
+
+	// [COMMENT]: Outbox phải chứa đúng ciphertext đã persist để hash/projection không lệch database.
+	var event mailproto.MailConsumerUpsertV1
+	if err = proto.Unmarshal(repo.outbox.Payload, &event); err != nil || event.Stream == nil {
+		t.Fatalf("invalid payload: %v", err)
+	}
+	var kafka mailproto.KafkaStreamPayloadV1
+	if err = proto.Unmarshal(event.Stream.Payload, &kafka); err != nil {
+		t.Fatalf("invalid Kafka stream payload: %v", err)
+	}
+	if event.Stream.StreamType != mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA ||
+		!bytes.Equal(kafka.SourceConfigEnvelope, updated.SourceConfigEnvelope) {
+		t.Fatalf("outbox stream differs from aggregate: %+v", event.Stream)
+	}
 }
 
 func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
@@ -54,7 +90,7 @@ func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 		t.Fatalf("unexpected outbox: %+v", repo.outbox)
 	}
 	var event mailproto.MailConsumerUpsertV1
-	if err = proto.Unmarshal(repo.outbox.Payload, &event); err != nil || event.Kafka == nil {
+	if err = proto.Unmarshal(repo.outbox.Payload, &event); err != nil || event.Stream == nil {
 		t.Fatalf("invalid payload: %v", err)
 	}
 }

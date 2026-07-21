@@ -8,16 +8,17 @@ import (
 )
 
 type TenantConsumer struct {
-	ActorUserID           uuid.UUID
-	TenantID              uuid.UUID
-	ZoneID                uuid.UUID
-	ID                    uuid.UUID
-	WorkspaceID           uuid.UUID
-	Code                  string
-	Name                  string
-	SourceType            SourceType
-	BrokerResourceID      uuid.UUID
-	SourceConfigRef       string
+	ActorUserID      uuid.UUID
+	TenantID         uuid.UUID
+	ZoneID           uuid.UUID
+	ID               uuid.UUID
+	WorkspaceID      uuid.UUID
+	Code             string
+	Name             string
+	SourceType       SourceType
+	BrokerResourceID uuid.UUID
+	// [COMMENT]: Encrypted broker configuration envelope; JO/Redis chỉ chuyển tiếp bytes.
+	SourceConfigEnvelope  []byte
 	Topic                 string
 	ConsumerGroup         string
 	MappingJSON           json.RawMessage

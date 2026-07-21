@@ -27,6 +27,15 @@ pub struct Config {
     pub cdc_sources: Vec<String>,
     /// Số lần thử lại tối đa khi thiết lập hạ tầng Logical Replication trước khi tắt ứng dụng
     pub max_setup_retries: u32,
+
+    /// [COMMENT]: Central mail reconciler chạy batch nhỏ; không tạo ticker riêng cho từng Zone.
+    pub mail_reconcile_interval_secs: u64,
+    pub mail_reconcile_scheduler_tick_secs: u64,
+    pub mail_reconcile_jitter_max_ms: u64,
+    pub mail_reconcile_lock_ttl_secs: u64,
+    pub mail_reconcile_page_size: i64,
+    pub mail_reconcile_max_pages_per_run: usize,
+    pub mail_reconcile_work_budget_secs: u64,
 }
 
 impl Config {
@@ -75,6 +84,42 @@ impl Config {
             .parse::<u32>()
             .unwrap_or(10);
 
+        let mail_reconcile_interval_secs = env::var("MAIL_RECONCILE_INTERVAL_SECS")
+            .unwrap_or_else(|_| "600".to_string())
+            .parse::<u64>()
+            .unwrap_or(600)
+            .max(60);
+        let mail_reconcile_scheduler_tick_secs = env::var("MAIL_RECONCILE_SCHEDULER_TICK_SECS")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse::<u64>()
+            .unwrap_or(5)
+            .clamp(2, 60);
+        let mail_reconcile_jitter_max_ms = env::var("MAIL_RECONCILE_JITTER_MAX_MS")
+            .unwrap_or_else(|_| "30000".to_string())
+            .parse::<u64>()
+            .unwrap_or(30_000)
+            .max(1_000);
+        let mail_reconcile_lock_ttl_secs = env::var("MAIL_RECONCILE_LOCK_TTL_SECS")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse::<u64>()
+            .unwrap_or(60)
+            .max(30);
+        let mail_reconcile_page_size = env::var("MAIL_RECONCILE_PAGE_SIZE")
+            .unwrap_or_else(|_| "100".to_string())
+            .parse::<i64>()
+            .unwrap_or(100)
+            .clamp(10, 500);
+        let mail_reconcile_max_pages_per_run = env::var("MAIL_RECONCILE_MAX_PAGES_PER_RUN")
+            .unwrap_or_else(|_| "4".to_string())
+            .parse::<usize>()
+            .unwrap_or(4)
+            .clamp(1, 32);
+        let mail_reconcile_work_budget_secs = env::var("MAIL_RECONCILE_WORK_BUDGET_SECS")
+            .unwrap_or_else(|_| "20".to_string())
+            .parse::<u64>()
+            .unwrap_or(20)
+            .clamp(5, mail_reconcile_lock_ttl_secs.saturating_sub(5));
+
         Ok(Self {
             database_url,
             redis_url,
@@ -86,6 +131,13 @@ impl Config {
             zone_id,
             cdc_sources,
             max_setup_retries,
+            mail_reconcile_interval_secs,
+            mail_reconcile_scheduler_tick_secs,
+            mail_reconcile_jitter_max_ms,
+            mail_reconcile_lock_ttl_secs,
+            mail_reconcile_page_size,
+            mail_reconcile_max_pages_per_run,
+            mail_reconcile_work_budget_secs,
         })
     }
 }

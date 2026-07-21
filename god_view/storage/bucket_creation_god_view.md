@@ -511,7 +511,8 @@ Hệ thống sử dụng OpenTelemetry Tracing kết hợp W3C Context Propagati
 | **Redis Job** | `job_results` | Stream | Hàng đợi tập trung nhận kết quả phản hồi từ Dataplane của toàn bộ các zone gửi về JO. |
 | **Redis Job** | `sizes:<zone_id>` | Stream | Hàng đợi cập nhật dung lượng đo đạc từ Dataplane (giới hạn độ dài `MAXLEN ~ 2`). |
 | **Redis Job** | `sizes:event-stream` | Stream | Kênh phát tín hiệu có đo đạc dung lượng mới tại zone_id cụ thể để JO trigger đọc `XREVRANGE`. |
-| **Redis Internal Zone** | `infra:zone:metadata` | Hash | Lưu trữ cấu hình zone (như `status` và `service:storage`). Dataplane đọc tệp metadata này để quyết định có chạy quét dung lượng hay không. |
+| **NATS Zone Config KV** | `AURORA_ZONE_CONFIG/zone.metadata` | JSON KV | Lưu `status` và `services.storage`; Dataplane chỉ quét khi Zone active và storage enabled. |
+| **NATS Zone Coordination KV** | `AURORA_ZONE_COORDINATION/lease.storage.sizes_syncer` | CAS lease | Chỉ một pod quét mỗi chu kỳ; renew trong lúc scan và bỏ snapshot nếu mất fencing lease. |
 | **Redis của ACR** | `session:user:{user_id}` | String | Cache thông tin phiên làm việc đã xác thực của người dùng. |
 | **Redis của ACR** | `workspace:meta:{workspace_id}` | Hash | Cache cấu hình của Workspace (`zone_id`, `tenant_id`,...) giúp ACR xác thực chống giả mạo. |
 | **Redis của ACR** | `user_role:{user_id}` | Hash | Cache aggregated Static Permissions (`*iamproto.RoleEntry`) cho người dùng cá nhân. |

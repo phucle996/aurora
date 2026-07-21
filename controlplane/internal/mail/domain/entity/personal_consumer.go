@@ -16,8 +16,8 @@ type PersonalConsumer struct {
 	Name             string
 	SourceType       SourceType
 	BrokerResourceID uuid.UUID
-	// [COMMENT]: Internal Vault locator do service derive từ trusted scope; HTTP request/response không nhận hoặc echo field này.
-	SourceConfigRef       string
+	// [COMMENT]: Encrypted broker configuration envelope; plaintext không đi qua entity projection.
+	SourceConfigEnvelope  []byte
 	Topic                 string
 	ConsumerGroup         string
 	MappingJSON           json.RawMessage

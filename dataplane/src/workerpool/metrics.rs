@@ -2,15 +2,10 @@ use opentelemetry::metrics::{Counter, Gauge, Histogram};
 use opentelemetry::{global, KeyValue};
 use std::sync::OnceLock;
 
-/// ============================================================================
-/// 📂 MODULE: workerpool/metrics.rs - Quản Lý Chỉ Số Hiệu Năng Worker (OTel Push)
-/// ============================================================================
-///
-/// 📌 VAI TRÒ (ROLE):
-///   - Cung cấp cơ cấu dữ liệu `MetricsType` đại diện cho các thông số vận hành của worker.
-///   - Tích hợp OpenTelemetry Metrics để tự động đẩy dữ liệu lên OTel Collector định kỳ.
-///   - Loại bỏ hoàn toàn HTTP scraper port cũ (Port 2112) phục vụ mô hình bảo mật zero-inbound.
-///
+// ============================================================================
+// 📂 MODULE: workerpool/metrics.rs - Quản Lý Chỉ Số Hiệu Năng Worker (OTel Push)
+// ============================================================================
+// OpenTelemetry instruments được khởi tạo một lần và push qua OTLP.
 
 // Sử dụng OnceLock để khởi tạo các OTel Metric Instruments tĩnh một cách an toàn.
 static STREAM_LAG: OnceLock<Gauge<f64>> = OnceLock::new();

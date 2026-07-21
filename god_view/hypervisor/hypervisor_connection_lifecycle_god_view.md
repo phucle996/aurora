@@ -28,7 +28,7 @@ graph TD
     acr["🛡️ acr Service (Rust)"]:::gateway
     CP["🚀 Controlplane Go (hypervisor module)"]:::backend
     DB["💾 PostgreSQL SoT (hypervisor schema)"]:::storage
-    RedisL2["⚡ Redis Zone L2 (Local Cache)"]:::storage
+    ZoneKV["🗄️ NATS Zone KV (Health + Coordination)"]:::storage
     RedisL1["⚡ Redis Platform L1 (Stream)"]:::storage
     JO["🚀 job-orchestrator (Rust Listener)"]:::backend
     DP["💻 Dataplane Agent (Rust)"]:::dataplane
@@ -44,10 +44,10 @@ graph TD
 
     %% Luồng Auto-discovery & Heartbeat
     DP -- "a. Poll Nodes & Metrics (Env Config)" --> PVE
-    DP -- "b. HSET infra:hypervisor <node_code> <JSON>" --> RedisL2
+    DP -- "b. CAS rotating lease + PUT zone.service.hypervisor" --> ZoneKV
     
     %% Gateway Gom & Sync L1 (ZoneStatusGateway)
-    RedisL2 -- "c. Read infra:mail & infra:hypervisor" --> RedisL2
+    ZoneKV -- "c. Read zone.service.* snapshots" --> DP
     DP -- "d. XADD zone:backpressure:reports" --> RedisL1
     
     %% Platform listener consume & write DB
@@ -57,25 +57,30 @@ graph TD
 
 ---
 
-## 🗃️ 2. Thiết Kế Cơ Sở Dữ Liệu & Redis Key Patterns
+## 🗃️ 2. Thiết Kế Cơ Sở Dữ Liệu & Zone KV
 
-### 1. Cấu Trúc Khóa Redis L2 (Zone Local Cache)
-* **Redis Key**: `infra:hypervisor` (kiểu dữ liệu: **Hash**)
-* **Field**: `<node_code>` (Định danh vật lý tự động phát hiện bởi Dataplane, ví dụ: `pve-node-01`, `pve-node-02`)
-* **Value**: Chuỗi JSON serialize chứa thông tin trạng thái và tải của Node vật lý đó:
+### 1. Current snapshot trong NATS Zone KV
+* **Health key**: `AURORA_ZONE_HEALTH/zone.service.hypervisor`
+* **Coordination key**: `AURORA_ZONE_COORDINATION/lease.health.hypervisor`
+* **Value**: Một JSON snapshot nguyên khối chứa toàn bộ node của chu kỳ, probe owner và fencing token:
   ```json
   {
-    "status": "connected",
-    "capacity": 85,
-    "metrics": {
+    "status": "healthy",
+    "nodes": {
+      "pve-node-01": {
+        "status": "connected",
       "cpu_cores_total": 64,
       "cpu_cores_used": 16,
       "ram_mb_total": 262144,
       "ram_mb_used": 65536,
       "storage_gb_total": 2048,
-      "storage_gb_used": 512
+        "storage_gb_used": 512,
+        "updated_at": 1719517200
+      }
     },
-    "updated_at": 1719517200
+    "updated_at": 1719517200,
+    "probe_node_id": "dataplane-vn-n2",
+    "fencing_token": 42
   }
   ```
 
@@ -120,7 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_hypervisor_nodes_status ON hypervisor.nodes(statu
 ### 1. Cơ chế Tự Động Phát Hiện Node (Auto-Discovery)
 - SRE **không cần** đăng ký thủ công từng node vật lý của Proxmox Cluster trên Admin UI.
 - Dataplane Agent khi khởi động sẽ kết nối tới Proxmox Cluster qua API endpoint (định cấu hình trong biến môi trường của Dataplane), tự động thực hiện truy vấn API danh sách node vật lý của Cluster đó.
-- Danh sách node này được ghi nhận cục bộ vào Redis L2 và đẩy lên Platform.
+- Danh sách node được ghi thành current snapshot trong Zone Health KV rồi Zone Gateway đẩy lên Platform.
 - Phía Platform (`job-orchestrator`), khi nhận báo cáo từ stream, nếu phát hiện `node_code` chưa tồn tại trong bảng `hypervisor.nodes` thuộc `zone_id` tương ứng, hệ thống sẽ tự động thực hiện **INSERT** bản ghi node mới với UUIDv7 được sinh tự động.
 
 ### 2. State Machine của Hypervisor Node
@@ -201,27 +206,27 @@ sequenceDiagram
     autonumber
     participant PVE as 🖥️ Proxmox Cluster
     participant DP as 💻 Dataplane Agent (Rust)
-    participant L2 as ⚡ Redis Zone L2
+    participant KV as 🗄️ NATS Zone KV
     participant L1 as ⚡ Redis Platform L1
     participant JO as 🚀 job-orchestrator (Rust)
     participant DB as 💾 PostgreSQL (hypervisor schema)
 
     Note over DP: [Mỗi 15s] Dataplane Agent check loop
+    DP->>KV: CAS acquire rotating lease.health.hypervisor
+    DP->>KV: GET zone.metadata, require hypervisor enabled
     DP->>PVE: GET /api2/json/nodes (Query danh sách node vật lý & metrics)
     alt Kết nối Proxmox Thành Công
         PVE-->>DP: Trả về danh sách host & thông số tài nguyên sử dụng
-        loop Với từng Node vật lý tìm thấy
-            Note over DP: Cập nhật JSON object (status = "connected")
-            DP->>L2: HSET infra:hypervisor <node_code> <JSON_payload>
-        end
+        DP->>DP: Build full nodes snapshot
+        DP->>KV: PUT zone.service.hypervisor
     else Kết nối Proxmox Thất Bại
         Note over DP: Đánh dấu tất cả các node thuộc cluster là "disconnected"
-        DP->>L2: HSET infra:hypervisor <node_code> {"status": "disconnected"}
+        DP->>KV: PUT zone.service.hypervisor (previous nodes disconnected)
     end
 
     Note over DP: [Mỗi 5s] ZoneStatusGateway chạy vòng lặp đồng bộ
-    DP->>L2: HGETALL infra:mail & HGETALL infra:hypervisor
-    L2-->>DP: Trả về các thông số workloads hiện tại
+    DP->>KV: GET zone.service.mail + zone.service.hypervisor
+    KV-->>DP: Trả về current workload snapshots
     DP->>DP: Gom dữ liệu workloads
     DP->>L1: XADD zone:backpressure:reports * zone_id <zone_id> payload <JSON_string>
     
@@ -271,5 +276,4 @@ sequenceDiagram
 ### 3. Tự Phục Hồi & Phát Hiện Node Chết (Dead Man's Switch)
 * **Giải pháp**:
   - `job-orchestrator` kế thừa cơ chế **Dead Man's Switch** của `listener.rs`. Nếu cả zone quá 30 giây không gửi report lên stream `zone:backpressure:reports`, hệ thống sẽ tự động chuyển trạng thái của Zone sang `inactive` và toàn bộ hypervisors của zone đó sang `disconnected`.
-  - Nếu zone vẫn gửi report nhưng một node cụ thể không được cập nhật trạng thái trong `infra:hypervisor` quá 45 giây, `job-orchestrator` khi phân tích payload sẽ tự động đánh dấu node đó là `disconnected`.
-
+  - Nếu zone vẫn gửi report nhưng một node cụ thể biến mất hoặc không được cập nhật trong `zone.service.hypervisor` quá 45 giây, `job-orchestrator` đánh dấu node đó là `disconnected`.

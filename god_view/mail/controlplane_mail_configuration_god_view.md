@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > Đây là Source of Truth cho phần Controlplane của Mail: consumer desired state, immutable template,
-> ownership authorization và history read model. Controlplane **không giữ broker connection, không
+> ownership authorization. Controlplane **không giữ broker connection, không
 > consume customer message, không render template và không gọi Stalwart**.
 
 ## 0. Control header
@@ -10,7 +10,7 @@
 | Thuộc tính | Giá trị |
 |---|---|
 | Trạng thái | Phase 0-3 implemented: contract, schema, scoped domain/repository/service và HTTP API |
-| Controlplane owns | Consumer config, template/version, outbox, submission/history projection |
+| Controlplane owns | Consumer config, template/version và outbox |
 | Dataplane owns | Broker connection, consume, mapping, render, offset, JMAP delivery |
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
 | Placement | Consumer row không lưu Zone; outbox ghi `routing_scope=zone:<uuid>` từ trusted `X-Zone-ID` sau cross-check Workspace |
@@ -23,12 +23,12 @@
 
 1. Controlplane chỉ lưu **desired state**; `RUNNING/ERROR/DRAINING` là reported state từ Dataplane.
 2. Controlplane không thử mở socket tới Kafka trong create/update/test API.
-3. Broker credential không nằm trong PostgreSQL hoặc projection payload; CP chỉ giữ `source_config_ref`.
-4. Client chỉ gửi `broker_resource_id`; CP derive secret locator theo trusted scope, còn endpoint/credential thật chỉ zonal Dataplane resolve qua Vault.
+3. Broker connection config là business data: CP lưu `source_config_envelope` đã mã hóa trong PostgreSQL và projection đóng gói vào generic `MailStreamSourceV1.payload`.
+4. Zone không phụ thuộc Vault. Broker-resource flow tạo envelope bằng zone-local encryption contract; DP Phase 6 mới giải mã trong memory khi mở connection, không ghi plaintext vào Redis/log/result.
 5. `sender_profile_id`, `template_id` và version được bind trong consumer config; Kafka payload không được chọn tùy ý.
 6. Template content version chỉ gồm subject + HTML và là immutable. Update luôn tạo row version mới; Dataplane tự detect `{{placeholder}}` khi render.
 7. Một Kafka message tương ứng một recipient ở phase đầu.
-8. History là projection từ durable Dataplane result; không tham gia hot path gửi mail.
+8. Delivery history chưa thuộc scope hiện tại; hot path chỉ trả JMAP accepted/rejected cho job lifecycle.
 9. Client không được tự chọn routing Zone: Envoy/ACR strip header bên ngoài rồi inject `X-Zone-ID`; handler chỉ đọc UUID đã parse từ context.
 10. Mail module có đúng một `mail_outbox_records`; `routing_scope` định tuyến như các module khác và `job_topic` chọn dispatcher.
 11. Mail outbox giữ đúng transport shape chung; aggregate/version/hash và lifecycle data nằm trong protobuf `payload`, không thêm cột theo từng event type.
@@ -47,10 +47,6 @@ flowchart LR
     PR --> DB[(Controlplane PostgreSQL)]
     TR --> DB
     DB --> OUT[(mail_outbox_records)]
-    HH[History Handler - Phase 9] --> HS[History Query Service]
-    HS --> DB
-    DP[Dataplane Results] --> IN[(Mail Result Inbox)]
-    IN --> DB
 ```
 
 | Thành phần | Có quyền quyết định | Không được làm |
@@ -60,9 +56,7 @@ flowchart LR
 | Template handler | Normalize và validate HTTP shape, subject/HTML size limit, header injection | Detect placeholder |
 | Template service | Canonicalize subject + HTML, publish immutable version và outbox | Parse variables, render production mail |
 | Repository | Query, authorization fail-close, optimistic concurrency và atomic aggregate + outbox CTE | Normalize/validate transport input |
-| Projection outbox | Durable CP → Zone intent | Chứa plaintext credential |
-| History ingestor | Idempotent apply result, monotonic state guard | Chọn retry/commit Kafka offset |
-| History query | Owner-scoped read, masking, cursor pagination | Sửa execution outcome |
+| Projection outbox | Durable CP → Zone intent; một protobuf BYTEA tự chứa `stream_type` + opaque adapter payload | Chứa plaintext credential hoặc discriminator column thừa |
 
 ## 3. Consumer aggregate
 
@@ -71,7 +65,7 @@ flowchart LR
 | Nhóm | Fields |
 |---|---|
 | Identity | `consumer_id`, `workspace_id` |
-| Kafka binding | `broker_resource_id`, `source_config_ref`, `topic`, `consumer_group` |
+| Kafka binding | `broker_resource_id`, `source_config_envelope`, `topic`, `consumer_group` |
 | Message mapping | recipient JSONPath, external ID JSONPath, variable-name → JSONPath map |
 | Mail binding | `template_id/version`, `sender_profile_id/version` |
 | Runtime controls | desired state, parallelism |
@@ -88,7 +82,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
 	C->>CP: Create JSON có immutable code + rewritten trusted scope
-    CP->>CP: Derive zonal/workspace Vault ref from broker_resource_id
+    CP->>CP: Decode bounded encrypted envelope; không nhận plaintext credential
     CP->>R: Guard caller + Workspace + Tenant/Personal + Zone
     R-->>CP: scoped mutation result
     CP->>CP: Validate template belongs Workspace/platform + sender versions
@@ -105,7 +99,8 @@ Client không gửi `owner_id`, `owner_type`, private endpoint hoặc runtime st
 để chặn confused-deputy hoặc proxy misconfiguration. Consumer row không duplicate `zone_id`; transaction
 snapshot `routing_scope=zone:<uuid>` vào outbox envelope để event không đổi hướng nếu Workspace placement thay đổi sau commit.
 CP không dựa vào thứ tự delivery giữa template và consumer events: khi bind một version vào Zone mới,
-transaction phải bảo đảm có idempotent template projection intent; DP giữ consumer `STARTING` nếu dependency đến sau.
+transaction phải bảo đảm có idempotent template projection intent. DP vẫn hydrate consumer binding trước;
+template chỉ được lazy-load khi message cần render và dependency đến trễ sẽ đi retry/degraded path, không làm hỏng L1 config.
 
 > [!NOTE]
 > AS-IS Phase 2-3 không dùng generic repository tự chọn scope. Personal repository chỉ JOIN
@@ -113,9 +108,14 @@ transaction phải bảo đảm có idempotent template projection intent; DP gi
 > Mỗi nhánh dùng đúng một entity xuyên handler → service → repository: `PersonalConsumer`,
 > `TenantConsumer`, `PersonalTemplate`, hoặc `TenantTemplate`. Service chỉ nhận entity của nhánh đó;
 > mutation repository nhận thêm `MailOutboxRecord` do service tạo và commit aggregate + outbox trong cùng PostgreSQL transaction.
-> Client không được gửi `source_config_ref`. Service tự derive exact namespace
-> `vault://zones/{zone}/workspaces/{workspace}/mail/brokers/{broker_id}` từ trusted scope và API không echo locator này.
-> Sự tồn tại/ACL thật của secret vẫn fail-close lần cuối bằng Vault service identity tại zonal Dataplane.
+> API nhận `source_config_envelope` dạng base64, tối đa 16 KiB, do broker-resource flow đã mã hóa;
+> API đọc không bao giờ echo ciphertext mà chỉ trả `source_configured`. Update không gửi envelope sẽ giữ nguyên
+> ciphertext hiện tại; optimistic `config_version` đóng race giữa lần đọc-giữ và UPDATE. Consumer `ENABLED`
+> bắt buộc có envelope ở cả service và database constraint. DP Phase 6 giải mã bằng zone-local key material;
+> Vault chỉ phục vụ authentication subsystem, không tham gia Mail Zone runtime.
+
+> Mỗi consumer pin đúng **một** `template_id + template_version`; Kafka payload không có template selector.
+> Template catalog có thể được nhiều consumer tham chiếu, nhưng một message của consumer không được fan-out qua nhiều template.
 
 ### 3.3 Desired state
 
@@ -199,53 +199,9 @@ sequenceDiagram
 - Khi không còn consumer active, identity + toàn bộ immutable versions + outbox `mail.template.deleted` commit nguyên tử.
 - Code template được giải phóng ngay sau commit và có thể dùng lại; lần create mới nhận UUID mới.
 
-## 5. History model
+## 5. Delivery history (deferred)
 
-### 5.1 Write model
-
-```text
-mail_result_inbox
-  event_id unique
-  payload/status/received_at
-
-mail_submissions
-  submission_id unique
-  workspace + consumer
-  Kafka coordinates
-  template/sender versions
-  current_status + current_state_version
-  recipient_ciphertext/masked recipient
-
-mail_delivery_attempts
-  submission_id + attempt + state_version unique
-  status/error/JMAP submission id/timestamp
-```
-
-### 5.2 Result apply transaction
-
-1. Insert inbox by `event_id`; conflict means ACK idempotently.
-2. Lấy Zone từ trusted result-stream envelope; resolve retained consumer → Workspace và cross-check Zone/config version.
-3. Append attempt/state event if unique.
-4. Update submission head only when incoming `state_version` is greater.
-5. Mark inbox applied and commit.
-6. ACK durable result only after commit.
-
-History không lưu raw Kafka JSON, variables hoặc rendered body. `recipient` trong result là PII: encrypted hoặc retention-limited tại CP và tuyệt đối không log.
-
-### 5.3 Status meaning
-
-| Status | Terminal | Kafka offset eligible | Ý nghĩa |
-|---|---:|---:|---|
-| `CONSUMED` | No | No | DP đã nhận message |
-| `RENDERED` | No | No | Mapping/schema/render thành công |
-| `SUBMITTING` | No | No | Đã vào delivery attempt |
-| `RETRY_SCHEDULED` | No | No | Transient failure, DP giữ offset |
-| `SUBMITTED` | Yes | Yes | Stalwart accepted JMAP submission |
-| `REJECTED` | Yes | Yes | Invalid message/template/recipient, không retry |
-| `FAILED` | Yes | Yes | Retry exhausted hoặc permanent infrastructure failure |
-| `AMBIGUOUS` | Yes | Yes | Không biết server đã nhận hay chưa; commit để tránh spam vô hạn |
-
-`SUBMITTED` không có nghĩa `DELIVERED`. Bounce/delivery tracking là contract khác trong phase sau.
+Mail result inbox, submission head, delivery-attempt tables, history APIs và execution-result protobuf chưa thuộc production scope hiện tại. Khi mở phase tương lai phải thiết kế riêng retention, PII encryption, idempotency và replay contract; JMAP submission ID hiện chỉ là kết quả transport của job, không phải lịch sử CP.
 
 ## 6. API surface target
 
@@ -272,15 +228,6 @@ GET  /api/v1/{personal|tenant}/mail/templates/:id/versions
 DELETE /api/v1/{personal|tenant}/mail/templates/:id
 ```
 
-### History
-
-```text
-GET /api/v1/{personal|tenant}/mail/history?cursor=&consumer_id=&status=&from=&to=
-GET /api/v1/{personal|tenant}/mail/history/:submission_id
-```
-
-List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc; không offset-scan bảng lớn.
-
 ## 7. Race and failure controls
 
 | Tình huống | Guard |
@@ -289,8 +236,6 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 | Template publish đồng thời | Lock identity + expected revision + unique version |
 | Upsert cũ đến sau delete | DP tombstone version cao hơn; bỏ event cũ |
 | Runtime report từ pod cũ | So sánh config version + runtime generation |
-| Result retry/duplicate | Inbox unique event ID |
-| Result đến sai thứ tự | `state_version` monotonic head update |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Header mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
 | Workspace placement đổi giữa resolve và commit | Guarded transaction cross-check authoritative workspace; zero row → not found/conflict |
@@ -303,7 +248,7 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 - Authorization luôn dựa authenticated caller + authoritative Workspace membership/ownership; consumer query luôn scope theo Workspace.
 - Service tự derive exact secret-reference namespace/scope; request không nhận locator và response chỉ trả `source_configured`.
 - Dataplane chỉ thay thế placeholder `{{...}}` từ message variables; template content không mang schema/function/code executable.
-- Error message lưu history phải sanitized và bounded.
+- Error message của job phải sanitized và bounded; không lưu delivery history tại CP.
 - Audit log chứa aggregate ID/version/action, không chứa recipient/template body/JSON variables.
 - CP database role của mail module không có quyền đọc secret store.
 
@@ -316,7 +261,7 @@ List APIs dùng cursor, bounded page size và `workspace_id` filter bắt buộc
 | 2 | Personal/Tenant domain/repository/service + transactional outbox — implemented |
 | 3 | Rewritten Personal/Tenant HTTP API, bounded body/cursor, resource code, error mapping — implemented |
 | 4 | Projection/reconciliation |
-| 9 | Result inbox/history APIs |
+| 9 | Delivery history (future, chưa triển khai) |
 
 ## 10. Cloud Console contract
 

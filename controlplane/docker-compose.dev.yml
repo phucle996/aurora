@@ -323,8 +323,6 @@ services:
         condition: service_healthy
       redis-job:
         condition: service_healthy
-      redis-dataplane-z1:
-        condition: service_healthy
     restart: unless-stopped
 
   acr-redis:
@@ -360,9 +358,28 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: controlplane-nats
+    # [COMMENT]: Event/request-reply bus trung tâm; không bật JetStream và không chứa Zone runtime state.
+    command: [ "-m", "8222" ]
     ports:
       - "4222:4222" # Port client kết nối NATS
       - "8222:8222" # Port monitor NATS HTTP
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  nats-zone-z1:
+    image: nats:2.10-alpine
+    container_name: dataplane-zone-z1-nats
+    # [COMMENT]: Database KV riêng của Zone 1; JetStream file storage không dùng chung NATS Core trung tâm.
+    command: [ "-js", "-sd", "/data", "-m", "8222" ]
+    ports:
+      - "14222:4222"
+      - "18222:8222"
+    volumes:
+      - dataplane_zone_z1_nats_data:/data
     healthcheck:
       test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
       interval: 5s
@@ -385,21 +402,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  redis-dataplane-z1:
-    image: redis:8.8.0
-    container_name: controlplane-redis-dataplane-z1
-    command: [ "redis-server", "--appendonly", "yes" ]
-    ports:
-      - "6382:6379" # Đổi sang port 6382 để tránh tranh chấp port 6381 với cp-redis
-    volumes:
-      - controlplane_redis_dp_z1_data:/data
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
   dataplane-vn-n1:
     build:
       context: ../dataplane
@@ -413,7 +415,8 @@ services:
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
-      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
+      NATS_ZONE_URL: "nats://nats-zone-z1:4222"
+      NATS_ZONE_KV_REPLICAS: "1"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
       APP_LOG_LEVEL: "info"
       TZ: "Asia/Ho_Chi_Minh"
@@ -431,7 +434,7 @@ services:
         condition: service_started
       redis-job:
         condition: service_healthy
-      redis-dataplane-z1:
+      nats-zone-z1:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -458,7 +461,8 @@ services:
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
-      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
+      NATS_ZONE_URL: "nats://nats-zone-z1:4222"
+      NATS_ZONE_KV_REPLICAS: "1"
       APP_LOG_LEVEL: "info"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "2112"
@@ -473,7 +477,7 @@ services:
         condition: service_started
       redis-job:
         condition: service_healthy
-      redis-dataplane-z1:
+      nats-zone-z1:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -492,7 +496,8 @@ services:
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
       REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
-      REDIS_INTERNAL_ZONE_URL: "redis://controlplane-redis-dataplane-z1:6379/0"
+      NATS_ZONE_URL: "nats://nats-zone-z1:4222"
+      NATS_ZONE_KV_REPLICAS: "1"
       APP_LOG_LEVEL: "info"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "2112"
@@ -507,7 +512,7 @@ services:
         condition: service_started
       redis-job:
         condition: service_healthy
-      redis-dataplane-z1:
+      nats-zone-z1:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -818,9 +823,8 @@ volumes:
   controlplane_vlogs_data: # Bộ đệm dữ liệu logs của VictoriaLogs
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
   admin_ui_node_modules:
-  controlplane_redis_job_data: # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 1
-  controlplane_redis_dp_z1_data: # Ổ đĩa lưu trữ bộ đệm cô lập của Zone 2
-  controlplane_redis_dp_z2_data:
+  controlplane_redis_job_data:
+  dataplane_zone_z1_nats_data:
   dataplane_cargo_target_z1:
   dataplane_cargo_cache_z1:
   dataplane_cargo_target_z2_n1:

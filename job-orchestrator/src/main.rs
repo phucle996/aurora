@@ -109,6 +109,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Logger::sys_error("main.run", "IAM Outbox Dispatcher dừng đột ngột", "");
             std::process::exit(1);
         }
+        _ = reverse_provider::mail::reconciler::run_periodic_mail_reconciliation(
+            config.clone(), redis_client.clone()
+        ) => {
+            Logger::sys_error("main.run", "Mail DB-backed Reconciler dừng đột ngột", "");
+            std::process::exit(1);
+        }
     }
 
     Ok(())

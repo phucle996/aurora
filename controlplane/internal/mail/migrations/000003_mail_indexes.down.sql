@@ -1,7 +1,3 @@
-DROP INDEX IF EXISTS idx_mail_delivery_attempts_submission;
-DROP INDEX IF EXISTS idx_mail_submissions_consumer_history;
-DROP INDEX IF EXISTS idx_mail_submissions_workspace_history;
-DROP INDEX IF EXISTS idx_mail_result_inbox_pending;
 DROP INDEX IF EXISTS idx_mail_runtime_reports_expiry;
 DROP INDEX IF EXISTS idx_tenant_mail_template_versions_cursor;
 DROP INDEX IF EXISTS ux_tenant_mail_templates_workspace_code;

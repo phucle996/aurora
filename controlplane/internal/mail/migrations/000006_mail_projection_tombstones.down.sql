@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS tenant_mail_template_projection_tombstones;
+DROP TABLE IF EXISTS personal_mail_template_projection_tombstones;

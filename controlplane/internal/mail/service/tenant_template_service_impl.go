@@ -141,6 +141,7 @@ func (s *tenantTemplateServiceImpl) DeleteTemplate(ctx context.Context, command 
 		return fmt.Errorf("mail tenant template service: marshal delete event: %w", err)
 	}
 	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
-	command.ID, command.UpdatedAt, command.UpdatedBy = command.TemplateID, now, &actor
+	// [COMMENT]: Repository ghi projection tombstone cùng transaction hard-delete + outbox.
+	command.ID, command.CurrentVersion, command.UpdatedAt, command.UpdatedBy = command.TemplateID, template.CurrentVersion, now, &actor
 	return s.repo.Delete(ctx, command, outbox)
 }

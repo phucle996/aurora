@@ -38,6 +38,9 @@ pub enum ExecutorError {
     // 2. Deadline được xử lý trực tiếp bởi lớp bảo vệ Watchdog (Timeout) ở tầng ngoài.
     /// Các lỗi phát sinh trong quá trình tương tác API hoặc lỗi vật lý của máy chủ ảo hóa.
     ExecutionFailed(String),
+
+    /// [COMMENT]: Hạ tầng tạm thời chưa sẵn sàng; Redis Stream entry phải ở lại PEL để pod claim và thử lại.
+    Retryable(String),
 }
 
 /// Cấu trúc kết quả trả về sau khi thực thi nghiệp vụ hoàn tất.

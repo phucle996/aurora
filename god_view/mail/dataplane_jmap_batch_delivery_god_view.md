@@ -1,7 +1,7 @@
 # Dataplane Bulk Mail JMAP Delivery — God View (Master SoT)
 
 > **IMPORTANT — SINGLE SOURCE OF TRUTH**
-> Tài liệu này là nguồn chuẩn cho đoạn workflow từ mail job tại Zone Redis Stream đến khi Stalwart chấp nhận JMAP EmailSubmission. Mọi thay đổi về mail protobuf, sender binding, batching, JMAP request, retry, backpressure, health hoặc shutdown phải cập nhật tài liệu này trong cùng change-set.
+> Tài liệu này là nguồn chuẩn cho đoạn workflow từ mail job transport đến khi Stalwart chấp nhận JMAP EmailSubmission. Mọi thay đổi về mail protobuf, sender binding, batching, JMAP request, retry, backpressure, health hoặc shutdown phải cập nhật tài liệu này trong cùng change-set.
 >
 > Broker-driven target flow (Kafka connection, JSON mapping, DP rendering và offset commit) được khóa
 > riêng tại `dataplane_broker_mail_execution_god_view.md`; flow đó tái sử dụng JMAP batcher trong tài liệu này.
@@ -42,7 +42,7 @@
 flowchart LR
     RS[(Redis Stream<br/>jobs:zone)] --> JR[JobRunner]
     JR --> EX[Generic Mail Executor]
-    EX --> T[Template Moka L1<br/>Redis L2<br/>PubSub fallback]
+    EX --> T[Template Moka L1<br/>NATS KV snapshot]
     EX --> Q[Bounded MailBatcher ingress]
     Q --> C[Collector<br/>50 / 1000 ms / bytes]
     C --> BQ[Bounded batch queue]
@@ -64,7 +64,7 @@ flowchart LR
 |---|---|---|
 | Job lifecycle | Lease, PROCESSING/final result, Redis XACK | JMAP object construction |
 | Mail executor | Decode, sender/profile validation, address/content/template validation | HTTP connection/concurrency |
-| Template module | Bounded/coalesced L1, Redis L2, render | Sender authorization |
+| Template module | Bounded/coalesced L1, NATS KV snapshot, render | Sender authorization |
 | Mail batcher | Time/count/byte boundary, bounded queues, per-job oneshot | Durable retry history |
 | JMAP client | Authentication, request construction, transport retry, response mapping | Customer ownership |
 | Stalwart | Accept submission và outbound queue | Aurora owner authorization |
@@ -144,7 +144,7 @@ sequenceDiagram
     EX-->>JR: ExecutionResult
 ```
 
-Moka L1 có capacity 10.000 và TTL một giờ. Concurrent miss cùng `template_id` được coalesce qua `try_get_with`; L2 Redis và PubSub fallback không bị gọi dồn theo số job.
+Moka L1 có capacity 10.000 và TTL một giờ. Concurrent miss cùng `template_id` được coalesce qua `try_get_with`; NATS KV snapshot không bị đọc dồn theo số job.
 
 ---
 
@@ -217,7 +217,7 @@ Retry request sau timeout có thể tạo duplicate vì batch buffer không có 
 | Stalwart chậm | Bounded batch + ingress queues | Backpressure tới active jobs/admission |
 | Pod shutdown với partial batch | Worker intake bị cancel; tracked JobRunner hoàn tất trước khi đóng batcher | Không có submit chạy đua phía sau shutdown command |
 | Pod crash trước response | Redis/job policy có thể redeliver | Duplicate có thể xảy ra |
-| JMAP health fail | Monitor ghi `infra:mail status=down capacity=0` | Zone coordination thấy mail unavailable |
+| JMAP health fail | Monitor ghi `AURORA_ZONE_HEALTH/zone.service.mail` với `down/0` | Zone reporter thấy mail unavailable |
 | Sender mismatch | Executor fail trước enqueue | Không gửi arbitrary From |
 
 Graceful shutdown order:
@@ -250,7 +250,7 @@ Bearer hoặc username/password là bắt buộc; thiếu auth làm bootstrap fa
 
 ## 8. Observability
 
-Monitor ghi `infra:mail`:
+Monitor ghi `AURORA_ZONE_HEALTH/zone.service.mail`:
 
 ```text
 status
@@ -259,6 +259,8 @@ pending_items
 in_flight_batches
 transport=jmap_batch
 updated_at
+fencing_token
+probe_node_id
 ```
 
 Không log recipient, subject, body, template variables hoặc auth token. Correlation dùng `job_id`, batch size và trace metadata ở job lifecycle.
@@ -300,7 +302,7 @@ Chưa thuộc change-set này:
 - Email OTP hoặc DNS ownership verification.
 - DKIM/SPF/DMARC provisioning.
 - Sender outbox/projector/reconciler.
-- Hard-revocation projection vào Zone Redis/Moka.
+- Hard-revocation projection vào Zone NATS KV/Moka.
 
 Khi phase đó được triển khai, Dataplane nhận projected `SenderProfile` theo ID/version. Batcher và JMAP client không được query trực tiếp database Controlplane.
 

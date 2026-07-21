@@ -51,7 +51,7 @@ func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mai
 	// [COMMENT]: Guarded INSERT vừa kiểm tra trusted workspace ownership vừa kiểm tra template version tồn tại.
 	tag, err := tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s.mail_consumers (
-			id, workspace_id, code, name, source_type, broker_resource_id, source_config_ref, topic,
+			id, workspace_id, code, name, source_type, broker_resource_id, source_config_envelope, topic,
 			consumer_group, mapping_json, template_id, template_version, sender_profile_id, sender_version,
 			desired_state, parallelism, config_version, config_sha256, created_by, updated_by, created_at, updated_at
 		)
@@ -60,7 +60,7 @@ func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mai
 		  AND EXISTS (SELECT 1 FROM %s.personal_mail_templates t JOIN %s.personal_mail_template_versions v ON v.template_id=t.id AND v.version=$12 WHERE t.id=$11 AND t.workspace_id=$2)
 	`, r.mailSchema, r.hierarchySchema, r.mailSchema, r.mailSchema),
 		consumer.ID, consumer.WorkspaceID, consumer.Code, consumer.Name, consumer.SourceType, consumer.BrokerResourceID,
-		consumer.SourceConfigRef, consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
+		consumer.SourceConfigEnvelope, consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState, consumer.Parallelism,
 		consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedBy, consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID)
 	if err != nil {
@@ -97,7 +97,7 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 
 	// [COMMENT]: Inline scan kết quả QueryRow trực tiếp vào các trường dữ liệu của struct Consumer
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_ref,
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.config_sha256, c.deleted_at,
@@ -115,7 +115,7 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		&consumer.Name,
 		&consumer.SourceType,
 		&consumer.BrokerResourceID,
-		&consumer.SourceConfigRef,
+		&consumer.SourceConfigEnvelope,
 		&consumer.Topic,
 		&consumer.ConsumerGroup,
 		&consumer.MappingJSON,
@@ -154,7 +154,7 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 	}
 
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
-		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_ref,
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.config_sha256, c.deleted_at,
@@ -186,7 +186,7 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 			&consumer.Name,
 			&consumer.SourceType,
 			&consumer.BrokerResourceID,
-			&consumer.SourceConfigRef,
+			&consumer.SourceConfigEnvelope,
 			&consumer.Topic,
 			&consumer.ConsumerGroup,
 			&consumer.MappingJSON,
@@ -243,7 +243,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			SET name = $1,
 			    source_type = $2,
 			    broker_resource_id = $3,
-			    source_config_ref = $4,
+			    source_config_envelope = $4,
 			    topic = $5,
 			    consumer_group = $6,
 			    mapping_json = $7,
@@ -277,7 +277,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			EXISTS (SELECT 1 FROM updated),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigRef,
+		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigEnvelope,
 		consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion,
 		consumer.DesiredState, consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256,

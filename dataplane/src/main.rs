@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // 1. Run bootstrap actions to initialize infrastructure & resources
-    let boot_result = bootstrap::run_actions()?;
+    let boot_result = bootstrap::run_actions().await?;
 
     // 2. Build the Application Module Graph container
     let (app, worker_signal_rx) = app::AppContainer::new(boot_result);

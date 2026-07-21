@@ -1,183 +1,120 @@
-# Dataplane Runtime - Job Consumer & Admission Control Specification
+# Dataplane Runtime — Job Transport, Zone KV và Admission Control
 
-This document specifies the generic Dataplane execution runtime. It details the worker loop, concurrency limits (admission control), distributed lease locks, and task scheduling mechanisms.
+Tài liệu này mô tả runtime generic của Dataplane. Redis chỉ còn là Job transport. Toàn bộ shared state nội bộ Zone, health snapshot và distributed lease nằm trên NATS JetStream KV; không còn Redis riêng cho Zone runtime.
 
----
+## 1. Hạ tầng và ranh giới dữ liệu
 
-## 🔄 Ingestion & Concurrency Lifecycle Sequence
+| Thành phần | Vai trò | Durability |
+|---|---|---|
+| NATS Core trung tâm | Request/reply và event bus của CP/JO/IAM/Notification; Dataplane Zone KV không kết nối vào đây | Core messaging, không phải Zone database |
+| NATS JetStream của từng Zone | Host ba KV bucket phía dưới; chỉ workload trong đúng Zone được cấp credential | File-backed JetStream riêng của Zone |
+| Redis Job | `jobs:<zone_id>`, `jobs:platform`, result/report streams và metadata PubSub transport | Redis Stream/AOF theo deployment |
+| `AURORA_ZONE_CONFIG` | Zone metadata, mail consumer/template heads và immutable snapshots | JetStream file storage, history `1`, không TTL |
+| `AURORA_ZONE_HEALTH` | Current node/service snapshots có thể tái tạo | JetStream file storage, history `1`, max age 24 giờ |
+| `AURORA_ZONE_COORDINATION` | Owner-aware CAS lease và fencing token | JetStream file storage, history `1`, max age 24 giờ |
+| Pod memory | Worker registry, admission counters và mail L1 | Không durable, rebuild từ KV |
 
-All incoming jobs pushed to the Redis stream `jobs:<zone_id>` are fetched, locked, and scheduled through a decoupled **Producer-Consumer** architecture using a local memory channel:
+`NATS_ZONE_URL` là bắt buộc và không fallback sang `NATS_URL`/`NATS_ADDR` của NATS Core. Production dùng `NATS_ZONE_KV_REPLICAS=3` hoặc `5`. Dev compose dùng service `nats-zone-z1` replica `1`, tách vật lý khỏi service Core `nats`. Bootstrap fail-fast nếu endpoint thiếu hoặc bucket sai storage/history/replica/retention contract.
+
+## 2. Luồng nhận và chạy job
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant RDS as Redis Streams (jobs:<zone_id>)
-    participant ID as IngestionDaemon (JobConsumer)
-    participant AC as Admission Controller
-    participant LZ as Local Cache (redis_internal_zone)
-    participant CH as Shared mpsc Channel (100 Capacity)
-    participant JW as Job Workers (WorkerPool)
-    participant JR as Job Runner (JobRunner)
+    participant RJ as Redis Job Stream
+    participant JC as JobConsumer
+    participant KV as Zone Coordination KV
+    participant Q as Bounded MPSC
+    participant JR as JobRunner
+    participant WD as Watchdog
 
-    loop Concurrency & Admission Evaluation
-        ID->>ID: Query static max_workers config limit
-        ID->>AC: Evaluate load (evaluate(active_jobs, max_workers))
-        alt Circuit Broken (active_jobs >= max_workers)
-            Note over ID: Pause pulling from Redis Stream<br/>Back off & sleep for 500ms
-        else Pacing Mode (active_jobs near limit)
-            Note over ID: Rate-pacing delay (sleep for pacing_delay_ms)
-        else Normal Capacity
-            Note over ID: Proceed to pull next stream message
-        end
-    end
-
-    ID->>RDS: Blocking Read next message (fetch_next_stream_message via XREADGROUP)
-    RDS-->>ID: Return job payload (event_id, payload, trace_id)
-    
-    ID->>LZ: Acquire Lease Lock on locks:job:<job_id> (acquire_lease_lock)
-    alt Lock Already Held by other replica
-        LZ-->>ID: Return lock acquisition failed (skip execution)
-    else Lock Acquired Successfully
-        LZ-->>ID: Return lock acquired
-        ID->>ID: Increment local active_jobs counter (atomic fetch_add)
-        ID->>CH: Push JobPayload (send)
-        alt Channel Send Success
-            CH-->>JW: Receive job (recv)
-            JW->>JR: Spawn runner thread (JobRunner::run_job)
-            Note over JR: Register ExecutionCleanupGuard (RAII lock/counter release)
-            JR->>RDS: Report outcome with status: PROCESSING (XADD to job_results_stream)
-            Note over JR: Dispatch specific workload executor (e.g., SmtpTestExecutor)
-        else Channel Send Failure (e.g., Shutdown)
-            ID->>ID: Decrement local active_jobs counter (atomic fetch_sub)
-            ID->>LZ: Release Lease Lock (release_lease_lock)
+    JC->>KV: read zone.metadata
+    alt metadata missing/unreadable or status != active
+        JC->>JC: fail-closed, pause ingestion
+    else active
+        JC->>RJ: XAUTOCLAIM idle PEL or XREADGROUP new entry
+        RJ-->>JC: JobPayload
+        JC->>KV: CAS acquire lease.job.sha256(job_id), TTL 30s
+        alt lease held
+            JC->>JC: leave entry pending for later reclaim
+        else lease acquired
+            JC->>Q: enqueue payload + owner/fencing lease
+            Q->>JR: execute workload
+            JR->>WD: register abort handle + lease
+            WD->>KV: bounded-concurrent CAS renew
+            JR->>RJ: PROCESSING / terminal result / XACK
+            JR->>KV: owner+fencing checked release
         end
     end
 ```
 
----
+Job key dùng SHA-256 của `job_id`, không ghép raw external ID vào NATS key. Stream delivery vẫn là at-least-once; lease giảm thực thi song song nhưng không biến side effect bên ngoài thành exactly-once. Executor phải idempotent hoặc có idempotency key riêng.
 
-## 📥 How Jobs are Received (Job Ingestion Loop)
+## 3. Admission và worker pool
 
-- **Entrypoint File**: `dataplane/src/job_lifecycle/consumer.rs`
-- **Caller/Function**: `JobConsumer::start_ingestion` (Starts at Line 34)
-- **Redis Query Callsite**: `dataplane/src/infra/redis/query.rs` -> `fetch_next_stream_message` (Starts at Line 18)
+Trước mỗi lần fetch, `AdmissionController` lấy giá trị lớn nhất giữa active-job ratio, CPU và RAM:
 
-### Description
+- Từ `80%`: circuit mở, ingestion nghỉ `500ms`.
+- Chỉ đóng lại khi tải xuống dưới `50%` để tránh dao động.
+- Dưới ngưỡng mở: pacing delay tăng tuyến tính theo tải.
+- MPSC capacity `100` tạo backpressure giữa ingestion và worker.
+- Autoscaler giữ `min_workers..max_workers`, dựa trên Redis Stream lag/latency.
 
-The ingestion loop runs vĩnh viễn (persistently) as a single **`IngestionDaemon`** Tokio task spawned during system bootstrap in `app.rs`.
+Hai ingestion daemon đọc `jobs:<zone_id>` và `jobs:platform`, nhưng dùng chung admission counter, worker channel và Zone coordination KV.
 
-- **Decoupled Architecture (Producer)**: The daemon is the single producer fetching jobs from the Redis Stream `jobs:<zone_id>`. It is not scaled and matches the application lifecycle. Once it fetches a job, it acquires a lease lock and pushes it to an in-memory `tokio::sync::mpsc::channel`.
-- **Dynamic Scaling (Consumers)**: The job workers in the worker pool act as consumers reading from this in-memory channel. To facilitate auto-scaling, the `AutoScaleEngine` evaluates queue metrics (lag/latency) and instructs `WorkerLifecycleManager` to dynamically scale the consumer tasks (Job Workers) up (to `max_workers`) or down (to `min_workers`, default `1`).
+## 4. Lease, watchdog và cleanup
 
----
+`ZoneKvStore` cấp lease bằng optimistic CAS trên revision gần nhất. Value lưu:
 
-## 🛡️ How Admission Control Limits Overloads
+```text
+owner_id
+fencing_token
+expires_at_unix_ms
+last_owner_id
+released_at_unix_ms
+```
 
-- **Entrypoint File**: `dataplane/src/job_lifecycle/admission.rs`
-- **Caller/Function**: `AdmissionController::evaluate` (Starts at Line 35)
+- Acquire chỉ thành công khi key chưa có, đã release hoặc đã hết hạn.
+- Renew/release phải khớp cả `owner_id` và `fencing_token`; owner cũ không thể release lease mới.
+- Watchdog chạy mỗi 10 giây, renew lease 30 giây với concurrency giới hạn `32`; mất lease thì abort task.
+- Quá execution limit thì abort và ghi `EXECUTION_TIMEOUT` vào result stream.
+- `ExecutionCleanupGuard` deregister và giảm local `active_jobs` ngay khi drop; network release KV chạy bất đồng bộ nên sự cố NATS không làm admission counter bị kẹt.
 
-### Description
+Health monitor dùng rotating lease với stable pod ID và same-owner cooldown. Sau một cycle, replica khác được ưu tiên; deployment một replica vẫn tự chạy lại sau cooldown. Snapshot luôn chứa fencing/cycle token và probe node để điều tra split-brain.
 
-Before pulling new messages from the Redis Stream, the ingestion loop evaluates the node's capacity ratio. The `evaluate` method computes the resource index `r = max(active_ratio, cpu_usage, ram_usage)` where `active_ratio = current_active / max_workers`:
+## 5. Mail stream runtime Phase 6
 
-- **Circuit Broken Mode**: If `r >= 80%` (`0.8`), the circuit breaker trips (OPEN), pausing stream ingestion and sleeping for `500ms`. It remains OPEN until load recovers and drops below `50%` (`0.5`) (hysteresis threshold).
-- **Pacing Mode**: If `0.0 < r < 0.8`, a dynamic, linear pacing delay is applied: `pacing_delay_ms = 1000 * (r / 0.8)` ms. This delays the fetch operation to naturally pace the ingestion rate before the node hits limits, preventing thundering herds.
+Mail configuration vẫn hydrate từ `AURORA_ZONE_CONFIG`, nhưng broker runtime dùng lease riêng
+`mail.consumer.slot.{consumer_id}.{slot}` trong `AURORA_ZONE_COORDINATION`. Một central supervisor có
+initial/per-slot jitter, hard cap `MAIL_STREAM_MAX_SLOTS_PER_POD` và chỉ reconcile khi COW generation đổi,
+slot kết thúc hoặc đến retry window.
 
----
+- Outbox/KV snapshot decode `MailStreamSourceV1`: `stream_type`, adapter schema version, broker resource ID và opaque adapter bytes.
+- Kafka adapter hiện đã ship; Redis Stream, NATS JetStream và RabbitMQ giữ stable discriminator nhưng trả `MAIL_STREAM_ADAPTER_UNSUPPORTED` theo consumer.
+- `MAIL_STREAM_ENVELOPE_KEY_HEX` là Zone-local AES-256 key dạng 64 hex characters. Thiếu/sai key không làm pod crash; chỉ consumer cần key không được start.
+- `MAIL_STREAM_CA_CERT_PATH` tùy chọn pin thêm private Zone CA từ trusted pod deployment; customer payload không chứa filesystem path.
+- Kafka chỉ chấp nhận `ssl` hoặc `sasl_plain_ssl`; auto-commit luôn tắt.
+- Record đi vào bounded MPSC (`MAIL_STREAM_INGRESS_CAPACITY`). Phase 6 không ACK/commit; Phase 7–8 phải hoàn tất trước khi công bố broker-to-mail end-to-end.
+- Slot health nằm tại `AURORA_ZONE_HEALTH/mail.runtime.{consumer_id}.{slot}` và dùng fencing token để writer cũ không overwrite generation mới.
 
-## 🔒 How Distributed Lease Locks & Watchdog are Managed
+## 6. Recovery và failure semantics
 
-- **Lock Acquisition Callsite**: `dataplane/src/infra/redis/query.rs` -> `acquire_lease_lock` (Starts at Line 142)
-- **Lock Release Callsite**: `dataplane/src/infra/redis/query.rs` -> `release_lease_lock` (Starts at Line 163)
-- **Registry**: `dataplane/src/workerpool/watchdog.rs` -> `ActiveLockRegistry` (Starts at Line 31)
-- **Watchdog Background Loop**: `dataplane/src/workerpool/watchdog.rs` -> `start_watchdog_loop` (Starts at Line 111)
+| Failure | Hành vi |
+|---|---|
+| Zone KV không đọc được | Ingestion fail-closed; không kéo job mới |
+| Redis Job tạm lỗi | Entry chưa XACK, được `XAUTOCLAIM` sau idle threshold |
+| Pod chết khi chạy | Lease hết hạn; PEL được replica khác claim |
+| Watchdog mất lease | Abort owner cũ và deregister |
+| Terminal result chưa durable | Không XACK để replay |
+| Release KV lỗi | Local counter vẫn đã cleanup; lease tự hết hạn |
+| PubSub metadata bị mất | Cold-start/hourly reconciler sửa `zone.metadata` từ PostgreSQL SoT qua JO |
 
-### 1. Distributed Lease Lock Concept
+## 7. Code map
 
-To achieve reliable multi-replica execution in a High Availability (HA) cluster and guarantee exactly-once processing, a distributed lease lock is acquired on Redis before processing a job:
-
-- **Key Pattern**: `locks:job:<job_id>`
-- **Acquisition**: Done via `SETNX` with a TTL of 30 seconds.
-- **Fail-Safe**: If lock acquisition fails (meaning another Dataplane node is already processing the job), the current node immediately skips the job message to avoid double execution.
-
-### 2. Active Lock Registry
-
-Once the lock is successfully acquired and the job is picked up by a worker thread, its metadata is registered in a thread-safe registry:
-
-- **Structure**: `ActiveLockRegistry` wrapping a `RwLock<HashMap<String, ActiveLockInfo>>`.
-- **Metadata stored**:
-  - `started_at` (timestamp when the execution started).
-  - `max_execution_limit` (the `idle` timeout option specified in the job payload, or a fallback default).
-  - `abort_handle` (the Tokio `AbortHandle` of the running task).
-  - `job_id`, `job_version`, `attempt`.
-
-### 3. Background Watchdog Loop (Auto-Renewal via Pipelining)
-
-The Watchdog runs as a background task executing every 10 seconds. In each tick, it scans all active registered locks:
-
-- **Renewal (Time elapsed < limit)**:
-  - If the job is still running and the elapsed time has not hit `max_execution_limit`, the Watchdog includes the lock key in a batch list.
-  - To optimize performance and prevent network blocking under high-concurrency, the Watchdog performs **Redis Pipelining** to batch-extend the expiration TTL of all running locks (`EXPIRE key 30`) in a single network request.
-- **Forced Timeout Abort (Time elapsed >= limit)**:
-  - If a job hangs or exceeds its maximum execution limit, the Watchdog triggers proactive cancellation:
-    1. Calls `abort_handle.abort()` to terminate the Tokio green task executing the job.
-    2. Deregisters the lock from the registry.
-    3. Spawns a background task to report a `FAILED` result with error code `EXECUTION_TIMEOUT` to the Redis Result Stream (`job_results_stream`).
-
-### 4. RAII Cleanup Guard (`ExecutionCleanupGuard`)
-
-To prevent lock leaks and resource leaks when a task finishes, is aborted, or panics, the execution is wrapped using an RAII pattern:
-
-- **Drop Lifecycle**:
-  - The runner registers `ExecutionCleanupGuard` which is bound to the task context.
-  - When the task completes (successfully or via failure/abort/panic), the guard's `drop()` method is automatically called.
-  - On drop, the guard:
-    1. **Instantly deregisters** the lock from the `ActiveLockRegistry` to stop the Watchdog from sending lease renewals.
-    2. Spawns a detached tokio task to call `release_lease_lock` (deleting the Redis lock key) and atomically decrements the global `active_jobs` counter.
-
----
-
-## 🚀 How Jobs are Executed & Cleaned Up
-
-- **Task Spawner Callsite**: `dataplane/src/job_lifecycle/runner.rs` -> `JobRunner::run_job` (Starts at Line 44)
-- **RAII Cleanup Guard**: `dataplane/src/job_lifecycle/runner.rs` -> `ExecutionCleanupGuard::drop` (Starts at Line 22)
-
-### Description
-
-Once the worker retrieves a job from the channel, it spawns a non-blocking async Tokio task using `run_job`:
-
-- **Early Processing Notification**: Before executing the workload, the runner immediately publishes a `PROCESSING` status update via the Redis Stream `job_results_stream` (XADD). This allows the Job-Proxy to receive the update, modify the Controlplane DB status to `PROCESSING` in a transaction, and trigger real-time progress notifications to the UI.
-- **Execution Guard**: The runner registers an `ExecutionCleanupGuard` (RAII pattern).
-- **Execution Timeout**: Workload execution is regulated by the Watchdog loop. The watchdog monitors the execution time against the specific task's `idle` limit (default 10 minutes). If a task exceeds its limit, the Watchdog triggers proactive cancellation via `AbortHandle::abort()`.
-- **Auto Release**: When the executor finishes (or is aborted/panics), the `ExecutionCleanupGuard` drops. This drops the active job count and releases the Redis lock asynchronously, ensuring complete resource cleanup and preventing leakage.
-
----
-
-## 📐 Architectural Design Patterns
-
-The Dataplane's high-performance, resilient runtime is built using several core design patterns:
-
-### 1. Job Ingestion & Decoupling: Producer-Consumer Pattern
-
-- **Implementation**: `dataplane/src/job_lifecycle/consumer.rs`
-- **Pattern**: Implements a **Producer-Consumer Pattern** where the single `IngestionDaemon` serves as the producer pushing payloads to a memory channel, and dynamic worker threads act as consumers. This decouples the network-level Redis stream fetch logic from task execution logic, allowing scaling to happen entirely in-memory without group rebalancing/recreation overhead on Redis.
-
-### 2. Admission Control: Circuit Breaker with Hysteresis & Rate Pacing
-
-- **Implementation**: `dataplane/src/job_lifecycle/admission.rs`
-- **Pattern**: Implements a **Circuit Breaker** with hysteresis bounds to shield the node from cascading resource failures. If local CPU, RAM, or worker thread usage exceeds `80%`, the loop cuts ingestion (OPEN state). It stays open until usage drops below `50%` (CLOSED state). Additionally, near-capacity workloads trigger a linear **Rate Pacing Delay** to prevent thundering herd spikes.
-
-### 3. Worker Pool & Auto Scale: Decoupled Multi-Consumer Worker Strategy
-
-- **Implementation**: `dataplane/src/workerpool/lifecycle.rs` & `dataplane/src/workerpool/auto_scale.rs`
-- **Pattern**: Instead of managing custom operating system threads or multiple direct Redis Stream consumer loops, logical workers are lightweight Tokio green tasks consuming from the local `mpsc` channel. The `AutoScaleEngine` scales the number of these channel-consumer workers up or down based on lag, ensuring we always have at least `min_workers` (baseline `1`) active.
-
-### 4. Distributed Lock and Lease: Watchdog-driven Lease & Execution Timeout Control Pattern
-
-- **Implementation**: `dataplane/src/infra/redis/query.rs`, `dataplane/src/workerpool/watchdog.rs` & `dataplane/src/job_lifecycle/runner.rs`
-- **Pattern**: Implements a **Lease Lock Pattern** using Redis key-value isolation (`SETNX` with TTL) to guarantee exactly-once processing in HA clusters. To prevent ghost-job duplicates and hung worker execution, the node maintains a thread-safe `ActiveLockRegistry` containing active task start times, abort handles, and execution limits, monitored by a background **Watchdog loop**. Every 10 seconds, the watchdog checks all active locks. If the elapsed execution time is below the task-specific `idle` timeout, the watchdog uses **Redis Pipelining** to batch-extend the lease TTL on Redis by 30 seconds. If a task exceeds its timeout limit, the watchdog triggers proactive task cancellation via its `AbortHandle`, stops extending the lease, and reports an `EXECUTION_TIMEOUT` failure to the Controlplane.
-
-### 5. Job Dispatch Workload: Command / Strategy Pattern
-
-- **Implementation**: `dataplane/src/job_lifecycle/consumer.rs`
-- **Pattern**: Utilizes a dynamic **Command Dispatcher** pattern. The ingestion loop parses incoming jobs by their dot-separated namespace/topic prefix (e.g., routing `mail.test_connection` to `SmtpTestExecutor`). The runner resolves these namespaces to individual execution strategies, decoupling the ingestion loop framework from concrete job business logic.
+- `src/infra/zone_kv.rs`: bucket bootstrap, CAS metadata và fenced/rotating lease.
+- `src/job_lifecycle/consumer.rs`: fail-closed ingestion và lease acquisition.
+- `src/executor/mail/stream_supervisor.rs`: generic slot supervisor, AES-GCM envelope boundary và Kafka Phase-6 adapter.
+- `src/job_lifecycle/runner.rs`: execution, result/XACK và RAII cleanup.
+- `src/workerpool/watchdog.rs`: timeout và bounded-concurrent lease renewal.
+- `src/observability/resource.rs`: per-node health snapshot.
+- `src/zone_gateway/`: metadata event/reconciliation và Zone report aggregation.

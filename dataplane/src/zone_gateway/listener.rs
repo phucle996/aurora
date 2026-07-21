@@ -1,131 +1,87 @@
 use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::infra::redis::RedisClientManager;
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 
-/// [COMMENT]: Lắng nghe các sự kiện cập nhật cấu hình thời gian thực (CDC events) từ Platform L1 PubSub
+/// [COMMENT]: Redis Job PubSub chỉ là transport; event hợp lệ được merge vào durable Zone metadata bằng KV CAS.
 #[allow(deprecated)]
 pub fn start_metadata_event_listener(
-    redis_internal_zone: Arc<RedisClientManager>,
+    zone_kv: Arc<ZoneKvStore>,
     redis_job: Arc<RedisClientManager>,
     config: Arc<Config>,
 ) {
     tokio::spawn(async move {
-        let channel_name = format!("zone:event:metadata:{}", config.zone_id);
-        Logger::sys_info(
-            "zone_gateway.cdc_listener",
-            &format!(
-                "Bắt đầu lắng nghe sự kiện CDC Metadata thời gian thực trên kênh {}",
-                channel_name
-            ),
-        );
-
+        let channel = format!("zone:event:metadata:{}", config.zone_id);
         loop {
-            // [COMMENT]: Tự động hồi phục kết nối nếu PubSub bị đứt
-            let conn_res = redis_job.client().get_async_connection().await;
-            match conn_res {
-                Ok(conn) => {
-                    #[allow(deprecated)]
-                    let mut pubsub = conn.into_pubsub();
-                    if let Err(e) = pubsub.subscribe(&channel_name).await {
+            match redis_job.client().get_async_connection().await {
+                Ok(connection) => {
+                    let mut pubsub = connection.into_pubsub();
+                    if let Err(error) = pubsub.subscribe(&channel).await {
                         Logger::sys_error(
-                            "zone_gateway.cdc_listener_error",
-                            "Không thể subscribe kênh sự kiện CDC",
-                            &e.to_string(),
+                            "zone_gateway.cdc_listener",
+                            "Không thể subscribe metadata event",
+                            &error.to_string(),
                         );
-                        sleep(Duration::from_secs(5)).await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                         continue;
                     }
-
-                    let mut stream = pubsub.on_message();
-                    let mut conn_l2_opt = None;
-
-                    while let Some(msg) = stream.next().await {
-                        // [COMMENT]: Đảm bảo có kết nối Redis L2 để ghi nhận sự thay đổi cấu hình
-                        if conn_l2_opt.is_none() {
-                            if let Ok(conn) = redis_internal_zone
-                                .client()
-                                .get_multiplexed_tokio_connection()
-                                .await
-                            {
-                                conn_l2_opt = Some(conn);
+                    let mut messages = pubsub.on_message();
+                    while let Some(message) = messages.next().await {
+                        let payload: Vec<u8> = message.get_payload().unwrap_or_default();
+                        let Ok(event) = serde_json::from_slice::<serde_json::Value>(&payload)
+                        else {
+                            continue;
+                        };
+                        let result = match event
+                            .get("event_type")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                        {
+                            "zone_status_changed" => {
+                                let status = event
+                                    .get("status")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("inactive");
+                                zone_kv.update_zone_metadata(Some(status), None).await
                             }
-                        }
-
-                        if let Some(mut conn_l2) = conn_l2_opt.clone() {
-                            let payload_bin: Vec<u8> = msg.get_payload().unwrap_or_default();
-                            if let Ok(event_json) =
-                                serde_json::from_slice::<serde_json::Value>(&payload_bin)
-                            {
-                                let event_type = event_json
-                                    .get("event_type")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-
-                                match event_type {
-                                    "zone_status_changed" => {
-                                        if let Some(status) =
-                                            event_json.get("status").and_then(|v| v.as_str())
-                                        {
-                                            let _: Result<(), redis::RedisError> =
-                                                redis::cmd("HSET")
-                                                    .arg("infra:zone:metadata")
-                                                    .arg("status")
-                                                    .arg(status)
-                                                    .query_async(&mut conn_l2)
-                                                    .await;
-
-                                            Logger::sys_info(
-                                                "zone_gateway.cdc_event",
-                                                &format!("[CDC EVENT] Đã cập nhật trạng thái Zone sang: '{}'", status),
-                                            );
-                                        }
-                                    }
-                                    "service_status_changed" => {
-                                        let service = event_json
-                                            .get("service")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let enabled = event_json
-                                            .get("enabled")
-                                            .and_then(|v| v.as_bool())
-                                            .unwrap_or(false);
-
-                                        if !service.is_empty() {
-                                            let field_name = format!("service:{}", service);
-                                            let val_str =
-                                                if enabled { "enabled" } else { "disabled" };
-                                            let _: Result<(), redis::RedisError> =
-                                                redis::cmd("HSET")
-                                                    .arg("infra:zone:metadata")
-                                                    .arg(&field_name)
-                                                    .arg(val_str)
-                                                    .query_async(&mut conn_l2)
-                                                    .await;
-
-                                            Logger::sys_info(
-                                                "zone_gateway.cdc_event",
-                                                &format!("[CDC EVENT] Đã cập nhật trạng thái dịch vụ '{}' sang: '{}'", service, val_str),
-                                            );
-                                        }
-                                    }
-                                    _ => {}
+                            "service_status_changed" => {
+                                let service = event
+                                    .get("service")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or_default();
+                                if service.is_empty() {
+                                    continue;
                                 }
+                                let enabled = event
+                                    .get("enabled")
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false);
+                                zone_kv
+                                    .update_zone_metadata(None, Some((service, enabled)))
+                                    .await
                             }
+                            _ => continue,
+                        };
+                        if let Err(error) = result {
+                            Logger::sys_error(
+                                "zone_gateway.cdc_listener",
+                                "Không thể merge metadata event vào Zone KV",
+                                &error,
+                            );
                         }
                     }
                 }
-                Err(e) => {
+                Err(error) => {
                     Logger::sys_error(
-                        "zone_gateway.cdc_listener_reconnect",
-                        "Mất kết nối tới Platform L1 Redis. Thử kết nối lại sau 5s...",
-                        &e.to_string(),
+                        "zone_gateway.cdc_listener",
+                        "Mất Redis Job metadata transport",
+                        &error.to_string(),
                     );
-                    sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
         }

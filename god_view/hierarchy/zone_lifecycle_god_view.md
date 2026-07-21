@@ -23,7 +23,7 @@
 13. [Decision Engine — Backpressure & Zone Status](#13-decision-engine--backpressure--zone-status)
 14. [Dead Man's Switch](#14-dead-mans-switch)
 15. [HA Guards & Race Condition Inventory](#15-ha-guards--race-condition-inventory)
-16. [Redis Key Registry](#16-redis-key-registry)
+16. [Runtime Store Registry](#16-runtime-store-registry)
 17. [Tham Chiếu Code Toàn Hệ Thống](#17-tham-chiếu-code-toàn-hệ-thống)
 
 ---
@@ -41,8 +41,8 @@ Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zon
 [PostgreSQL WAL] → Logical Replication → [Job Orchestrator CdcStreamer]
 [JO] → PUBLISH zone:event:metadata:{zone_id} → [Redis L1 PubSub]
 [Redis L1] → broadcast → [Dataplane start_metadata_event_listener()]
-[Dataplane] → HSET infra:zone:metadata → [Redis L2]
-[Dataplane monitors] → HSET infra:mail, infra:hypervisor → [Redis L2]
+[Dataplane] → CAS zone.metadata → [NATS Zone Config KV]
+[Dataplane monitors] → rotating lease + current snapshots → [NATS Zone Health/Coordination KV]
 [ZoneStatusGateway 5s] → XADD zone:backpressure:reports (Protobuf) → [Redis L1 Stream]
 [JO backpressure_listener] → XREADGROUP → decode → DecisionEngine.evaluate()
 [JO] → Throttled UPSERT actual_state → [PostgreSQL]
@@ -290,7 +290,7 @@ sequenceDiagram
     participant App as 💻 DP app.rs (Bootstrap)
     participant Consumer as 💻 consumer.rs (JobConsumer)
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone KV
     participant SW as 📧 Stalwart JMAP
 
     App->>App: read config.zone_id
@@ -298,24 +298,24 @@ sequenceDiagram
     App->>Monitor: start()
     
     loop Every loop cycle
-        Consumer->>L2: HGETALL infra:zone:metadata
-        L2-->>Consumer: metadata (status: "planned")
+        Consumer->>KV: GET zone.metadata
+        KV-->>Consumer: metadata (status: "planned")
         Note over Consumer: status is not active -> Suspend pulling, sleep 1s
     end
 
     loop Every monitor cycle
-        Monitor->>L2: HGETALL infra:zone:metadata
-        L2-->>Monitor: metadata (status: "planned")
+        Monitor->>KV: GET zone.metadata + acquire rotating health lease
+        KV-->>Monitor: metadata (status: "planned")
         Monitor->>SW: JMAP Core/echo health check
-        Monitor->>L2: HSET infra:mail status "healthy/down" capacity 100/0
+        Monitor->>KV: PUT zone.service.mail current snapshot
     end
 ```
 
 1. **Khởi chạy container**: Tiến trình Dataplane bootstrap tại [`app.rs#AppContainer::start()`](../../dataplane/src/app.rs#L55).
-2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs#L56) kiểm tra trạng thái Zone từ Redis L2 (`infra:zone:metadata`). Vì trạng thái là `planned` (chưa active), consumer sẽ ngắt kéo Job mới từ Platform L1, sleep 1s loop và ghi nhận log tạm dừng.
+2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) đọc `zone.metadata` từ `AURORA_ZONE_CONFIG`. Vì trạng thái là `planned`, consumer ngắt kéo Job mới và sleep 1s. Metadata thiếu/hỏng hoặc KV unavailable cũng dừng ingestion theo fail-closed.
 3. **Workload Health Check**:
    * Monitor tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs) dùng JMAP health cùng local pending/in-flight batch pressure để báo cáo capacity; không còn LMTP socket probe.
-   * Node Resource Monitor báo cáo năng lực phần cứng Dataplane node lên Redis L2 tại key `dataplane:node:{node_id}`.
+   * Node Resource Monitor ghi snapshot từng pod vào `AURORA_ZONE_HEALTH/zone.node.<node_id>`; Gateway bỏ snapshot cũ hơn 15 giây.
 
 ---
 
@@ -330,19 +330,19 @@ sequenceDiagram
     participant JO_CDC as ⚙️ JO (CdcStreamer)
     participant L1 as ⚡ Redis L1
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone KV
     participant JO_Back as ⚙️ JO (BackpressureListener)
 
     Note over DB,DP_Gate: 1. CONFIG DESIRED STATE SYNC (CDC PATH)
     DB->>JO_CDC: WAL b'I'/b'U' (zones / zone_services change)
     JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (binary JSON)
     L1->>DP_Gate: PubSub event received (start_metadata_event_listener)
-    DP_Gate->>L2: HSET infra:zone:metadata (update status / services desired_state)
+    DP_Gate->>KV: CAS merge zone.metadata (status / desired services)
 
     Note over DP_Gate,DB: 2. TELEMETRY WRITE-BACK PIPELINE
     loop Every 5 seconds
-        DP_Gate->>L2: HGETALL infra:mail / infra:hypervisor / dataplane:node:*
-        L2-->>DP_Gate: Raw telemetry values
+        DP_Gate->>KV: GET zone.service.* / zone.node.* snapshots
+        KV-->>DP_Gate: Current telemetry values
         DP_Gate->>DP_Gate: Pack Protobuf ZoneReport
         DP_Gate->>L1: XADD zone:backpressure:reports * payload {ZoneReport}
     end
@@ -364,9 +364,9 @@ sequenceDiagram
 1. **CDC Metadata Event**:
    * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs).
    * JO bắt sự kiện thay đổi trên các bảng metadata và publish event lên Redis L1 `zone:event:metadata:{zone_id}`.
-   * DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway.rs#L293) subscribe kênh này và đồng bộ ngay lập tức cấu hình mong muốn vào Redis L2 `infra:zone:metadata`.
+   * DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) subscribe kênh này và CAS-merge cấu hình mong muốn vào `AURORA_ZONE_CONFIG/zone.metadata`.
 2. **Telemetry Pack & Report**:
-   * Dataplane [`ZoneStatusGateway`](../../dataplane/src/zone_gateway.rs#L27) chạy định kỳ mỗi 5s, tổng hợp tài nguyên cluster từ L2 (CPU/RAM trung bình node, status và capacity thực tế của workloads).
+   * Dataplane [`ZoneStatusGateway`](../../dataplane/src/zone_gateway/reporter.rs) dùng rotating coordination lease, tổng hợp snapshot từ health KV rồi đẩy report qua Redis Job Stream.
    * Gateway đóng gói dữ liệu dạng Protobuf và push vào Redis L1 stream `zone:backpressure:reports`.
 3. **Write-back DB SoT**:
    * JO [`run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L15) đọc stream L1, decode Protobuf.
@@ -480,18 +480,18 @@ sequenceDiagram
     participant JO_CDC as ⚙️ JO (CdcStreamer)
     participant L1 as ⚡ Redis L1
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone Config KV
     participant Consumer as 💻 consumer.rs (JobConsumer)
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
 
     DB->>JO_CDC: WAL b'U' (zones status updated)
     JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (zone_status_changed)
     L1->>DP_Gate: PubSub event received (start_metadata_event_listener)
-    DP_Gate->>L2: HSET infra:zone:metadata status {target_status}
+    DP_Gate->>KV: CAS merge zone.metadata.status={target_status}
     
     Note over Consumer,Monitor: Dataplane State Machine phản ứng
-    Consumer->>L2: HGETALL infra:zone:metadata
-    L2-->>Consumer: status: active (hoặc disabled/draining)
+    Consumer->>KV: GET zone.metadata
+    KV-->>Consumer: status: active (hoặc disabled/draining)
     alt Status changed to active
         Consumer->>Consumer: Bắt đầu / Tiếp tục kéo job
         Monitor->>Monitor: Kích hoạt full workload health check
@@ -502,9 +502,9 @@ sequenceDiagram
 ```
 
 1. **CDC Broadcast**: Sự kiện update bảng `zones` được stream từ WAL Postgres đến JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) và được publish lên kênh Redis L1 `zone:event:metadata:{zone_id}`.
-2. **Dataplane L2 Sync**: DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway.rs#L293) ghi trạng thái mới vào Redis L2 `infra:zone:metadata`.
+2. **Dataplane KV Sync**: DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) merge trạng thái mới vào `AURORA_ZONE_CONFIG/zone.metadata` bằng expected revision.
 3. **State Machine Reaction**:
-   * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs#L56) ở chu kỳ lặp mới đọc trạng thái `active` từ L2, tiến hành kéo job trở lại. Nếu trạng thái là `disabled`, `maintenance`, hoặc `draining` -> ngừng kéo job mới.
+   * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
    * **Workload Health Check**: [`monitor.rs#start()`](../../dataplane/src/executor/mail/core/monitor.rs#L20) nếu đọc thấy status `active` sẽ khôi phục quét metrics đầy đủ, nếu là `disabled` sẽ tắt hẳn monitor.
 
 ---
@@ -604,29 +604,30 @@ sequenceDiagram
     participant JO_RAM as 🧠 JO (EnabledServicesMap — In-Memory)
     participant L1 as ⚡ Redis L1
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone KV
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
 
     DB->>JO_CDC: WAL b'U' (zone_services desired_state updated)
     JO_CDC->>JO_RAM: Cập nhật EnabledServicesMap[zone_id][service_type] = enabled/disabled
     JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (service_status_changed)
     L1->>DP_Gate: PubSub event received
-    DP_Gate->>L2: HSET infra:zone:metadata service:{type} "enabled/disabled"
+    DP_Gate->>KV: CAS merge zone.metadata.services[type]
     
     loop Every monitor cycle
-        Monitor->>L2: HGETALL infra:zone:metadata
-        L2-->>Monitor: service:{type} = "enabled" | "disabled"
+        Monitor->>KV: GET zone.metadata
+        KV-->>Monitor: services[type] = true | false
         alt service:{type} == "disabled"
-            Monitor->>Monitor: Skip health check hoàn toàn — không ghi metric
+            Monitor->>KV: Không probe; ghi current snapshot down/0
         else service:{type} == "enabled"
-            Monitor->>Monitor: Thực thi full health check, ghi infra:{type} vào L2
+            Monitor->>Monitor: Thực thi full health check
+            Monitor->>KV: PUT zone.service.{type}
         end
     end
 ```
 
 1. **CDC Event & RAM Update**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services` → cập nhật ngay **`EnabledServicesMap`** trong RAM của JO (SOT điều phối health check) → PUBLISH sự kiện `service_status_changed` lên Redis L1.
-2. **DP Listener**: [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway.rs#L293) hứng và ghi đè cấu hình `desired_state` của service vào L2 `infra:zone:metadata`.
-3. **Monitor Reaction**: [`monitor.rs#start()`](../../dataplane/src/executor/mail/core/monitor.rs#L20) ở chu kỳ quét tiếp theo đọc `service:{type}` từ L2. Nếu `"disabled"` → **bỏ qua hoàn toàn**, không ghi metric, không báo cáo `down`. Nếu `"enabled"` → thực thi full health check.
+2. **DP Listener**: [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) hứng event và CAS-merge `desired_state` vào `AURORA_ZONE_CONFIG/zone.metadata`.
+3. **Monitor Reaction**: Mail/storage/hypervisor monitor đọc `services[type]`. Nếu `false`, monitor không gọi backend nhưng ghi current snapshot `down/0` hoặc empty/down để xóa trạng thái khỏe cũ; DecisionEngine filter service disabled trước khi đánh giá. Nếu `true`, monitor thực hiện health check đầy đủ.
 4. **Fallback khi miss RAM**: Nếu `EnabledServicesMap` trong JO không có entry cho zone_id+service (ví dụ sau khi JO restart), JO **đọc trực tiếp từ PostgreSQL** (`zone_services` table) để lấy `desired_state` hiện tại và nạp lại vào RAM trước khi ra quyết định.
 
 ---
@@ -736,7 +737,7 @@ sequenceDiagram
 ```
 
 1. **CDC Broadcast**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện sự kiện DELETE (`b'D'`) -> PUBLISH sự kiện `zone_status_changed` với payload status null lên L1.
-2. **DP Detach**: DP [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway.rs#L293) ghi nhận và đưa agent về trạng thái treo/dừng hoạt động đồng bộ.
+2. **DP Detach**: DP [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) ghi nhận và đưa agent về trạng thái treo/dừng hoạt động đồng bộ.
 3. **JO Cleanup**: JO Backpressure Listener [`listener.rs`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L15) dừng tracking heartbeat của zone và dọn dẹp các cache vùng nhớ tạm trên RAM.
 
 ---
@@ -754,9 +755,9 @@ Cơ chế tự phục hồi cấu hình (Self-Healing) giúp đảm bảo Datapl
 ---
 
 ### 9.2 Cơ Chế Trigger
-1. **Khởi động nguội (Cold Start)**: Trigger ngay lập tức khi Dataplane boot up. Biến đếm `counter` được khởi tạo bằng giá trị tối đa `720` tại [`zone_gateway.rs`](../../dataplane/src/zone_gateway.rs#L44).
-2. **Định kỳ (Periodic Polling)**: Mỗi 60 phút (tiến trình Gateway chạy vòng lặp 5 giây, khi biến đếm đạt `720` chu kỳ sẽ tự động kích hoạt đồng bộ tại [`zone_gateway.rs`](../../dataplane/src/zone_gateway.rs#L50)).
-3. **Distributed Lock Guard**: Tranh chấp lock nguyên tử `lock:zone:sync_metadata` trên Redis L2 với thời gian hết hạn (TTL) 10 giây. Chỉ duy nhất node thắng cuộc được thực hiện truy vấn để tránh bão truy vấn lên Database SoT. Giải phóng lock nguyên tử bằng Lua script tại [`zone_gateway.rs`](../../dataplane/src/zone_gateway.rs#L558).
+1. **Khởi động nguội (Cold Start)**: Trigger ngay khi Dataplane boot. `counter` khởi tạo ở `720` trong [`reporter.rs`](../../dataplane/src/zone_gateway/reporter.rs).
+2. **Định kỳ (Periodic Polling)**: Sau khoảng 720 gateway cycle (xấp xỉ 60 phút), reporter kích hoạt một vòng repair mới; coordination lease loại duplicate query giữa các pod.
+3. **Distributed Lease Guard**: Các pod CAS key `lease.gateway.metadata_sync` trong `AURORA_ZONE_COORDINATION`, TTL logic 10 giây. Value mang owner và fencing token; release chỉ thành công khi cả hai còn khớp, nên owner cũ không thể giải phóng lease mới.
 4. **JO Metadata Handler**: JO lắng nghe kênh truy vấn tại [`listener.rs#run_metadata_query_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L460) để đọc dữ liệu SoT trực tiếp từ Postgres và phản hồi ngược lại cho Dataplane.
 
 ---
@@ -767,19 +768,20 @@ Cơ chế tự phục hồi cấu hình (Self-Healing) giúp đảm bảo Datapl
 sequenceDiagram
     autonumber
     participant DP_Node as 💻 Dataplane Node
-    participant L2 as ⚡ Redis L2
+    participant CKV as 🗄️ Coordination KV
+    participant CFG as 🗄️ Config KV
     participant L1 as ⚡ Redis L1
     participant JO as ⚙️ Job Orchestrator
     participant DB as 💾 PostgreSQL (SoT)
 
     Note over DP_Node: Trigger: Cold Start OR Polling 60 minutes
-    DP_Node->>L2: SET lock:zone:sync_metadata {uuid} NX EX 10
+    DP_Node->>CKV: CAS acquire lease.gateway.metadata_sync, TTL 10s
     
     alt Node tranh chấp Lock thất bại (Node khác đang thực thi)
-        L2-->>DP_Node: Trả về nil (Lock acquired failed)
+        CKV-->>DP_Node: Không acquire được
         Note over DP_Node: Hủy bỏ chu kỳ reconciliation hiện tại
     else Node tranh chấp Lock thành công
-        L2-->>DP_Node: Trả về OK
+        CKV-->>DP_Node: owner + fencing token
         DP_Node->>L1: SUBSCRIBE zone:reply:metadata:{zone_id}:{uuid}
         DP_Node->>L1: PUBLISH zone:query:metadata {zone_id, reply_channel}
         
@@ -789,10 +791,10 @@ sequenceDiagram
         JO->>L1: PUBLISH zone:reply:metadata:{zone_id}:{uuid} {status, services}
         
         L1-->>DP_Node: Nhận phản hồi cấu hình (timeout 5s)
-        DP_Node->>L2: HSET infra:zone:metadata status, service configurations
+        DP_Node->>CFG: CAS merge zone.metadata
         
-        DP_Node->>L2: EVAL Lua Script (Xóa lock nếu đúng UUID)
-        L2-->>DP_Node: Lock giải phóng thành công
+        DP_Node->>CKV: CAS release nếu owner + fencing còn khớp
+        CKV-->>DP_Node: Lease released
     end
 ```
 
@@ -800,17 +802,17 @@ sequenceDiagram
 
 ## 10. Dataplane State Machine
 
-### 10.1 Redis L2 Key: `infra:zone:metadata`
+### 10.1 NATS Config KV Key: `zone.metadata`
 
 ```
-HGETALL infra:zone:metadata → {
-    "status":              "planned" | "active" | "draining" | "maintenance" | "disabled",
-    "service:mail":        "enabled" | "disabled",
-    "service:hypervisor":  "enabled" | "disabled",
-    "service:kubernetes":  "enabled" | "disabled",
-    "service:ai":          "enabled" | "disabled",
-    "service:storage":     "enabled" | "disabled",
-    "updated_at":          unix_timestamp
+GET zone.metadata → {
+    "status": "planned" | "active" | "draining" | "maintenance" | "disabled" | "inactive",
+    "services": {
+        "mail": true | false,
+        "hypervisor": true | false,
+        "storage": true | false
+    },
+    "updated_at": unix_timestamp
 }
 ```
 
@@ -824,18 +826,18 @@ HGETALL infra:zone:metadata → {
 | Zone Status | Service | Job Consumer | Mail Monitor | Storage Monitor | Hypervisor Monitor |
 |:---|:---|:---|:---|:---|:---|
 | **`active`** | `enabled` | ✅ Kéo job bình thường | ✅ TCP + HTTP metrics, capacity 0-100 | ✅ HTTP health check MinIO | ✅ Poll Proxmox 15s |
-| **`active`** | `disabled` | ✅ Kéo job | ⏭️ Skip hoàn toàn — không metric | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
-| **`planned`** | `enabled` | ⏸️ sleep 1s, loop | ⚡ TCP only (không scan SMTP queue) | ⚡ TCP only | ✅ Poll Proxmox 15s |
-| **`planned`** | `disabled` | ⏸️ sleep 1s, loop | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`active`** | `disabled` | ✅ Kéo job | ❌ Ghi down/0, không probe | ❌ Ghi down/0, không probe | ❌ Ghi empty/down, không poll |
+| **`planned`** | `enabled` | ⏸️ sleep 1s, loop | ✅ JMAP health + local pressure | ✅ HTTP health MinIO | ✅ Poll Proxmox 15s |
+| **`planned`** | `disabled` | ⏸️ sleep 1s, loop | ❌ Ghi down/0 | ❌ Ghi down/0 | ❌ Ghi empty/down |
 | **`maintenance`** | `enabled` | ⏸️ Không kéo job mới | ✅ Full check + capacity | ✅ Full check | ✅ Poll Proxmox 15s |
-| **`maintenance`** | `disabled` | ⏸️ Không kéo job mới | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`maintenance`** | `disabled` | ⏸️ Không kéo job mới | ❌ Ghi down/0 | ❌ Ghi down/0 | ❌ Ghi empty/down |
 | **`draining`** | `enabled` | ⏸️ Không kéo job mới | ✅ Full check + capacity | ✅ Full check | ✅ Poll Proxmox 15s |
-| **`draining`** | `disabled` | ⏸️ Không kéo job mới | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn | ⏭️ Skip hoàn toàn |
+| **`draining`** | `disabled` | ⏸️ Không kéo job mới | ❌ Ghi down/0 | ❌ Ghi down/0 | ❌ Ghi empty/down |
 | **`disabled`** | any | ⏸️ Dừng hoàn toàn | ❌ status=down, capacity=0 | ❌ status=down | ❌ Dừng poll |
 
 ## 11. Dataplane Health Monitors
 
-Cụm Dataplane định kỳ quét sức khỏe của phần cứng và các workloads chạy trong phân vùng để cập nhật vào Redis L2.
+Cụm Dataplane dùng rotating lease trong `AURORA_ZONE_COORDINATION` để mỗi chu kỳ chỉ một pod probe service, rồi ghi current snapshot vào `AURORA_ZONE_HEALTH`. Stable pod ID cùng same-owner cooldown ưu tiên chuyển chu kỳ kế tiếp sang pod khác.
 
 ---
 
@@ -847,32 +849,33 @@ Báo cáo trạng thái Mail JMAP và local batch pressure. Triển khai tại [
 sequenceDiagram
     autonumber
     participant DP as 💻 DP (MailWorkloadMonitor)
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone KV
     participant SW as 📧 Stalwart JMAP HTTP
 
     Note over DP: Định kỳ 5s
-    DP->>L2: HGETALL infra:zone:metadata
-    L2-->>DP: {status, service:mail}
+    DP->>KV: CAS acquire lease.health.mail
+    DP->>KV: GET zone.metadata
+    KV-->>DP: {status, services.mail}
 
     alt status == 'disabled' OR service:mail == 'disabled'
-        DP->>L2: HSET infra:mail status='down', capacity=0
+        DP->>KV: PUT zone.service.mail status='down', capacity=0
     else service enabled
         DP->>SW: JMAP Core/echo
         alt JMAP health/auth failed
-            DP->>L2: HSET infra:mail status='down', capacity=0
+            DP->>KV: PUT zone.service.mail status='down', capacity=0
         else JMAP healthy
             DP->>DP: Read pending_items / queue_capacity
             DP->>DP: capacity=(1-queue_ratio)*100
             alt capacity < 10
-                DP->>L2: HSET infra:mail status='degraded', capacity=cap
+                DP->>KV: PUT zone.service.mail status='degraded', capacity=cap
             else capacity >= 10
-                DP->>L2: HSET infra:mail status='healthy', capacity=cap
+                DP->>KV: PUT zone.service.mail status='healthy', capacity=cap
             end
         end
     end
 ```
 
-* **Khi chưa setup Stalwart hoặc auth sai**: JMAP health thất bại → ghi `down`, `capacity = 0` vào Redis L2.
+* **Khi chưa setup Stalwart hoặc auth sai**: JMAP health thất bại → ghi `down`, `capacity = 0` vào health KV.
 
 ---
 
@@ -884,29 +887,32 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant DP as 💻 DP (HypervisorMonitor)
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone KV
     participant PM as ☁️ Proxmox VE API
 
     Note over DP: Định kỳ 15 giây
+    DP->>KV: CAS acquire rotating lease.health.hypervisor
+    DP->>KV: GET zone.metadata
     alt Cấu hình Proxmox url/token trống
         DP->>DP: Log cảnh báo & Dừng monitor thread
     else Cấu hình hợp lệ
         DP->>PM: GET /api2/json/nodes
         alt API Call Failed
             DP->>DP: Đánh dấu tất cả node cũ là 'disconnected'
-            DP->>L2: HSET infra:hypervisor {node: {status: 'disconnected'}}
+            DP->>KV: PUT zone.service.hypervisor (nodes disconnected)
         else API Call Successful
             loop Mỗi Hypervisor Node được trả về
                 alt node.status != 'online'
-                    DP->>L2: HSET infra:hypervisor {node: {status: 'disconnected'}}
+                    DP->>KV: Build node status disconnected
                 else node.status == 'online'
                     alt cpu > 90% OR ram > 90%
-                        DP->>L2: HSET infra:hypervisor {node: {status: 'degraded', cpu, ram}}
+                        DP->>KV: Build node status degraded + metrics
                     else cpu/ram ổn định
-                        DP->>L2: HSET infra:hypervisor {node: {status: 'connected', cpu, ram}}
+                        DP->>KV: Build node status connected + metrics
                     end
                 end
             end
+            DP->>KV: PUT zone.service.hypervisor full snapshot
         end
     end
 ```
@@ -924,12 +930,12 @@ sequenceDiagram
     autonumber
     participant DP as 💻 DP (ResourceMonitor)
     participant OS as 💻 OS / WorkerPool
-    participant L2 as ⚡ Redis L2
+    participant KV as 🗄️ NATS Zone Health KV
 
     Note over DP: Định kỳ 5 giây
     DP->>OS: Đọc tải CPU, RAM hiện tại & số active_workers
     OS-->>DP: cpu_usage, ram_usage, workers_count
-    DP->>L2: HSET dataplane:node:{node_id} cpu, ram, active_workers, updated_at
+    DP->>KV: PUT zone.node.{node_id} cpu, ram, active_workers, updated_at
 ```
 
 ---
@@ -1147,16 +1153,16 @@ sequenceDiagram
 
 | # | Rủi Ro | Cơ Chế Bảo Vệ | File & Location |
 |:---|:---|:---|:---|
-| 1 | **Write Stampede** khi sync metadata (nhiều DP node cùng đồng bộ) | `SET lock:zone:sync_metadata NX EX 10` — chỉ 1 node thắng | `zone_gateway.rs#L432-L453` |
-| 2 | **Lock orphan** (node crash trong TTL 10s) | TTL tự hết hạn sau 10s | Redis TTL |
-| 3 | **Sai lock chủ** (Node A xóa lock của Node B) | Lua atomic: `if get(key)==my_id then del(key)` | `zone_gateway.rs#L558-L571` |
-| 4 | **CDC packet loss** (mạng đứt lúc PUBLISH) | Reconciliation polling 60 phút self-healing | `zone_gateway.rs#L42-L68` |
+| 1 | **Write Stampede** khi sync metadata | CAS `lease.gateway.metadata_sync` — chỉ một owner/fencing thắng | `dataplane/src/infra/zone_kv.rs` |
+| 2 | **Lease orphan** khi pod crash | Logical expiry 10s cho phép replica khác takeover | `dataplane/src/zone_gateway/reconciler.rs` |
+| 3 | **Owner cũ release lease mới** | Renew/release bắt buộc khớp owner và fencing token | `dataplane/src/infra/zone_kv.rs` |
+| 4 | **CDC packet loss** khi Redis PubSub disconnect | Cold-start/hourly reconciliation từ PostgreSQL SoT | `dataplane/src/zone_gateway/reporter.rs` |
 | 5 | **Replay Attack** (resend request đã bắt) | Redis SETNX `iam:nonce:{nonce}` EX 120 atomic | `signature.rs#L86-L113` |
 | 6 | **Clock Skew Attack** (timestamp cũ để bypass) | `|now - ts| ≤ 120s` check | `signature.rs#L56-L71` |
 | 7 | **Out-of-order Hypervisor heartbeat** | `WHERE last_active_at < sent_at` trong UPSERT | `db.rs#L312` |
 | 8 | **actual_state IOPS spam** (ghi mỗi 5s) | Throttle: 3 điều kiện (status / delta>10 / >120s) | `listener.rs#L242-L258` |
 | 9 | **Zone flapping** (active↔congested) | Hysteresis: overload threshold > recovery threshold | `decision.rs#L33-L38` |
-| 10 | **Miss CDC khi cold start** | `counter = 720` → Reconciliation chạy ngay lập tức | `zone_gateway.rs#L44` |
+| 10 | **Miss CDC khi cold start** | `counter = 720` → reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/zone_gateway/reporter.rs` |
 | 11 | **Zombie zone** (DP crash, CP không biết) | Dead Man's Switch 30s → tự set `disabled` | `listener.rs#L362-L413` |
 | 12 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
 | 13 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
@@ -1168,7 +1174,7 @@ sequenceDiagram
 
 ---
 
-## 15. Redis Key Registry
+## 15. Runtime Store Registry
 
 ### Platform Redis (L1) — Shared
 
@@ -1184,21 +1190,24 @@ sequenceDiagram
 | `iam:admin_access_session:{access_key}` | Hash | Session TTL | `{device_public_key, ash, user_id, role}` | IAM module |
 | `iam:nonce:{nonce}` | String | 120s | `"1"` | ACR Replay prevention |
 
-### Zone Redis (L2) — Per-Zone Internal
+### NATS JetStream KV — Per-Zone Internal
 
-| Key | Type | TTL | Nội Dung | Owner |
+| Bucket / Key | Type | Retention | Nội Dung | Owner |
 |:---|:---|:---|:---|:---|
-| `infra:zone:metadata` | Hash | Persistent | `{status, service:*, updated_at}` | DP CDC/Reconciliation |
-| `infra:mail` | Hash | Persistent | `{status, capacity, updated_at}` | MailWorkloadMonitor |
-| `infra:hypervisor` | Hash | Persistent | `{node_code: JSON}` | HypervisorMonitor |
-| `dataplane:node:{node_id}` | Hash | Logic TTL 15s | `{cpu, ram, active_workers, updated_at}` | ResourceMonitor |
-| `lock:zone:sync_metadata` | String | 10s | `"{node_uuid}"` | DP Distributed Lock |
+| `AURORA_ZONE_CONFIG/zone.metadata` | JSON KV | Persistent, history 1 | `{status, services, updated_at}` | DP CDC/Reconciliation |
+| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | MailWorkloadMonitor |
+| `AURORA_ZONE_HEALTH/zone.service.storage` | JSON KV | Max age 24h, history 1 | MinIO status/capacity/fencing | StorageWorkloadMonitor |
+| `AURORA_ZONE_HEALTH/zone.service.hypervisor` | JSON KV | Max age 24h, history 1 | Hypervisor node snapshot/fencing | HypervisorMonitor |
+| `AURORA_ZONE_HEALTH/zone.node.<node_id>` | JSON KV | Max age 24h; logical stale 15s | CPU, RAM, workers, updated_at | ResourceMonitor |
+| `AURORA_ZONE_COORDINATION/lease.gateway.metadata_sync` | CAS lease | Logical TTL 10s | owner/fencing/expiry/last owner | DP Reconciler |
+| `AURORA_ZONE_COORDINATION/lease.health.*` | Rotating CAS lease | Logical TTL theo monitor | owner/fencing/expiry/last owner | DP monitors |
+| `AURORA_ZONE_COORDINATION/lease.job.<sha256>` | CAS lease | Logical TTL 30s | owner/fencing/expiry | Job lifecycle |
 
 ---
 
 > [!NOTE]
 > **File này thay thế hoàn toàn:**
 > - `sre_create_zone_god_view.md` (deprecated)
-> - `zone_metadata_sync_and_state_machine_god_view.md` (deprecated)
+> - `zone_metadata_sync_and_state_machine_god_view.md` là companion SoT chi tiết riêng cho metadata/KV state machine.
 >
 > Mọi PR/MR liên quan đến zone lifecycle phải tham chiếu và cập nhật file này.

@@ -86,12 +86,13 @@ impl WorkerLifecycleManager {
     }
 
     /// Cấp phát và khởi chạy một Worker (Luồng Worker xử lý Job từ channel) song song thực sự.
+    #[allow(clippy::too_many_arguments)] // [COMMENT]: Worker wiring giữ explicit để audit ownership của Redis Job và Zone KV.
     pub async fn spawn_worker(
         self: &Arc<Self>,
         worker_id: usize,
         config: Arc<crate::config::Config>,
         redis_job: Arc<crate::infra::redis::RedisClientManager>,
-        redis_internal_zone: Arc<crate::infra::redis::RedisClientManager>,
+        zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
         rx: Arc<
             tokio::sync::Mutex<
@@ -144,7 +145,7 @@ impl WorkerLifecycleManager {
                             payload,
                             self_clone.clone(),
                             redis_job.clone(),
-                            redis_internal_zone.clone(),
+                            zone_kv.clone(),
                             active_lock_registry.clone(),
                             active_jobs.clone(),
                             stream_key.clone(),

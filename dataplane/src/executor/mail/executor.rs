@@ -15,9 +15,70 @@ pub async fn dispatch_mail_job(
     action: &str,
     payload: JobPayload,
     worker_pool: Arc<WorkerLifecycleManager>,
-    redis_mgr: Arc<RedisClientManager>,
+    _redis_job: Arc<RedisClientManager>,
     _zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
+    // [COMMENT]: Projection là control path riêng; không decode nhầm desired-state thành SendMailConfig.
+    if action == "consumer.upsert" {
+        return super::projection::apply_mail_consumer_upsert(
+            payload,
+            worker_pool
+                .mail_runtime
+                .configuration
+                .zone_kv()
+                .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
+            _zone_id,
+        )
+        .await;
+    }
+    if action == "consumer.delete" {
+        return super::projection::apply_mail_consumer_delete(
+            payload,
+            worker_pool
+                .mail_runtime
+                .configuration
+                .zone_kv()
+                .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
+            _zone_id,
+        )
+        .await;
+    }
+    if action == "template.version_published" {
+        return super::projection::apply_mail_template_version_published(
+            payload,
+            worker_pool
+                .mail_runtime
+                .configuration
+                .zone_kv()
+                .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
+            _zone_id,
+        )
+        .await;
+    }
+    if action == "template.deleted" {
+        return super::projection::apply_mail_template_deleted(
+            payload,
+            worker_pool
+                .mail_runtime
+                .configuration
+                .zone_kv()
+                .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
+            _zone_id,
+        )
+        .await;
+    }
+    if action == "projection.reconcile_completed" {
+        return super::projection::apply_mail_reconcile_completed(
+            payload,
+            worker_pool
+                .mail_runtime
+                .configuration
+                .zone_kv()
+                .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?,
+            _zone_id,
+        )
+        .await;
+    }
     if action != "send" && action != "verify_account" && !action.starts_with("system.") {
         return Err(failed(format!("unsupported mail action: {action}")));
     }
@@ -40,7 +101,12 @@ pub async fn dispatch_mail_job(
         .email
         .to_string();
     let (subject, text_body, html_body) = if !config.template_id.trim().is_empty() {
-        let template = get_template(&redis_mgr, config.template_id.trim())
+        let zone_kv = worker_pool
+            .mail_runtime
+            .configuration
+            .zone_kv()
+            .ok_or_else(|| failed("MAIL_ZONE_KV_UNAVAILABLE"))?;
+        let template = get_template(&zone_kv, config.template_id.trim())
             .await
             .map_err(|error| failed(format!("MAIL_TEMPLATE_UNAVAILABLE: {error}")))?;
         (

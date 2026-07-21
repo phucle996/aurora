@@ -58,6 +58,10 @@ pub struct JobPayload {
     /// Hạn mức thời gian chạy tối đa (giây) của công việc
     pub idle: Option<u32>,
 
+    /// [COMMENT]: Chỉ có ở DB-backed reconciliation command; live WAL job để None.
+    #[serde(default)]
+    pub reconcile_generation: Option<u64>,
+
     /// [COMMENT]: Tên Consumer Group của Redis Stream mà tin nhắn này được đọc ra (để XACK chính xác group)
     #[serde(default)]
     pub redis_group_name: Option<String>,
@@ -65,4 +69,8 @@ pub struct JobPayload {
     /// Mã tin nhắn Redis Stream thực tế (Redis Message ID).
     #[serde(default)]
     pub redis_msg_id: Option<String>,
+
+    /// [COMMENT]: Lease runtime chỉ sinh sau khi consume; không phải field của Redis Job envelope.
+    #[serde(skip)]
+    pub zone_lease: Option<crate::infra::zone_kv::ZoneLease>,
 }

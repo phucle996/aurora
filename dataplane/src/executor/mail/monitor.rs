@@ -1,114 +1,108 @@
 use super::MailRuntime;
 use crate::config::Config;
-use crate::infra::redis::RedisClientManager;
+use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
+use bytes::Bytes;
+use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[derive(Serialize)]
+struct MailHealthSnapshot<'a> {
+    status: &'a str,
+    capacity: usize,
+    pending_items: usize,
+    in_flight_batches: usize,
+    transport: &'static str,
+    updated_at: u64,
+    fencing_token: u64,
+    probe_node_id: &'a str,
+}
+
 pub struct MailWorkloadMonitor;
 
 impl MailWorkloadMonitor {
-    pub fn start(
-        config: Arc<Config>,
-        redis_internal_zone: Arc<RedisClientManager>,
-        runtime: Arc<MailRuntime>,
-    ) {
+    pub fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, runtime: Arc<MailRuntime>) {
         tokio::spawn(async move {
+            let instance_id = std::env::var("HOSTNAME")
+                .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));
             loop {
-                let (zone_status, mail_enabled) = load_zone_state(&redis_internal_zone)
+                let lease = match zone_kv
+                    .acquire_rotating_lease(
+                        "lease.health.mail",
+                        &instance_id,
+                        Duration::from_secs(5),
+                        Duration::from_secs(6),
+                    )
                     .await
-                    .unwrap_or_else(|_| ("active".to_string(), "enabled".to_string()));
-                let disabled = zone_status == "disabled" || mail_enabled == "disabled";
+                {
+                    Ok(Some(lease)) => lease,
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                    Err(error) => {
+                        Logger::sys_warn(
+                            "mail_monitor.nats_kv",
+                            "Failed to acquire mail health lease",
+                            &error,
+                        );
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                };
+                let metadata = zone_kv.read_zone_metadata().await.unwrap_or_default();
+                let disabled = metadata.status == "disabled"
+                    || !metadata.services.get("mail").copied().unwrap_or(true);
                 let pending = runtime.stats.pending_items.load(Ordering::Relaxed);
                 let in_flight = runtime.stats.in_flight_batches.load(Ordering::Relaxed);
-                let queue_capacity = config.mail_batch_queue_capacity.max(1);
-                let queue_ratio = (pending as f64 / queue_capacity as f64).min(1.0);
-
-                let healthy = if disabled {
-                    false
-                } else {
-                    tokio::time::timeout(Duration::from_secs(3), runtime.healthcheck())
+                let queue_ratio =
+                    (pending as f64 / config.mail_batch_queue_capacity.max(1) as f64).min(1.0);
+                let healthy = !disabled
+                    && tokio::time::timeout(Duration::from_secs(3), runtime.healthcheck())
                         .await
-                        .map(|result| result.is_ok())
-                        .unwrap_or(false)
-                };
-                let (status, capacity) = if disabled || !healthy {
-                    ("down", 0usize)
+                        .is_ok_and(|result| result.is_ok());
+                let (status, capacity) = if !healthy {
+                    ("down", 0)
                 } else {
                     let capacity = ((1.0 - queue_ratio) * 100.0) as usize;
                     (if capacity < 10 { "degraded" } else { "healthy" }, capacity)
                 };
-
-                if let Err(error) =
-                    publish_status(&redis_internal_zone, status, capacity, pending, in_flight).await
-                {
-                    Logger::sys_warn(
-                        "mail_monitor.redis",
-                        "Failed to publish JMAP mail workload status",
-                        &error,
-                    );
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or_default();
+                let snapshot = MailHealthSnapshot {
+                    status,
+                    capacity,
+                    pending_items: pending,
+                    in_flight_batches: in_flight,
+                    transport: "jmap_batch",
+                    updated_at: now,
+                    fencing_token: lease.fencing_token,
+                    probe_node_id: &instance_id,
+                };
+                if let Ok(value) = serde_json::to_vec(&snapshot) {
+                    // [COMMENT]: Renew sát side effect và CAS theo fencing token để probe cũ không ghi đè cycle mới.
+                    if zone_kv
+                        .renew_lease(&lease, Duration::from_secs(5))
+                        .await
+                        .unwrap_or(false)
+                    {
+                        let _ = zone_kv
+                            .health_put_fenced(
+                                "zone.service.mail",
+                                Bytes::from(value),
+                                lease.fencing_token,
+                            )
+                            .await;
+                    }
                 }
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                let _ = zone_kv.release_lease(&lease).await;
+                tokio::time::sleep(Duration::from_millis(4_500 + rand::random::<u64>() % 1_000))
+                    .await;
             }
         });
     }
-}
-
-async fn load_zone_state(redis: &RedisClientManager) -> Result<(String, String), String> {
-    let mut conn = redis
-        .client()
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|error| error.to_string())?;
-    let metadata: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
-        .arg("infra:zone:metadata")
-        .query_async(&mut conn)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok((
-        metadata
-            .get("status")
-            .cloned()
-            .unwrap_or_else(|| "active".to_string()),
-        metadata
-            .get("service:mail")
-            .cloned()
-            .unwrap_or_else(|| "enabled".to_string()),
-    ))
-}
-
-async fn publish_status(
-    redis: &RedisClientManager,
-    status: &str,
-    capacity: usize,
-    pending: usize,
-    in_flight: usize,
-) -> Result<(), String> {
-    let mut conn = redis
-        .client()
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|error| error.to_string())?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
-    redis::cmd("HSET")
-        .arg("infra:mail")
-        .arg("status")
-        .arg(status)
-        .arg("capacity")
-        .arg(capacity)
-        .arg("pending_items")
-        .arg(pending)
-        .arg("in_flight_batches")
-        .arg(in_flight)
-        .arg("transport")
-        .arg("jmap_batch")
-        .arg("updated_at")
-        .arg(now)
-        .query_async::<_, ()>(&mut conn)
-        .await
-        .map_err(|error| error.to_string())
 }

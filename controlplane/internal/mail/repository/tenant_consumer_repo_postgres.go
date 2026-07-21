@@ -50,11 +50,11 @@ func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailE
 
 	// [COMMENT]: Tenant membership, workspace routing scope và template version đều được kiểm tra trong INSERT.
 	tag, err := tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.mail_consumers (id,workspace_id,code,name,source_type,broker_resource_id,source_config_ref,topic,consumer_group,mapping_json,template_id,template_version,sender_profile_id,sender_version,desired_state,parallelism,config_version,config_sha256,created_by,updated_by,created_at,updated_at)
+		INSERT INTO %s.mail_consumers (id,workspace_id,code,name,source_type,broker_resource_id,source_config_envelope,topic,consumer_group,mapping_json,template_id,template_version,sender_profile_id,sender_version,desired_state,parallelism,config_version,config_sha256,created_by,updated_by,created_at,updated_at)
 		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
 		WHERE EXISTS (SELECT 1 FROM %s.tenant_workspaces w JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$19 AND m.status='active' WHERE w.id=$2 AND w.zone_id=$23 AND w.tenant_id=$24)
 		  AND EXISTS (SELECT 1 FROM %s.tenant_mail_templates t JOIN %s.tenant_mail_template_versions v ON v.template_id=t.id AND v.version=$12 WHERE t.id=$11 AND t.workspace_id=$2)
-	`, r.mailSchema, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema), consumer.ID, consumer.WorkspaceID, consumer.Code, consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigRef, consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID, consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState, consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedBy, consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID, consumer.TenantID)
+	`, r.mailSchema, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema), consumer.ID, consumer.WorkspaceID, consumer.Code, consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigEnvelope, consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID, consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState, consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedBy, consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID, consumer.TenantID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -89,7 +89,7 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 
 	// [COMMENT]: Inline scan kết quả QueryRow trực tiếp vào các trường dữ liệu của Consumer struct cho Tenant scope
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
-		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_ref,
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.config_sha256, c.deleted_at,
@@ -109,7 +109,7 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 		&consumer.Name,
 		&consumer.SourceType,
 		&consumer.BrokerResourceID,
-		&consumer.SourceConfigRef,
+		&consumer.SourceConfigEnvelope,
 		&consumer.Topic,
 		&consumer.ConsumerGroup,
 		&consumer.MappingJSON,
@@ -148,7 +148,7 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 	}
 
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
-		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_ref,
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.config_sha256, c.deleted_at,
@@ -181,7 +181,7 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 			&consumer.Name,
 			&consumer.SourceType,
 			&consumer.BrokerResourceID,
-			&consumer.SourceConfigRef,
+			&consumer.SourceConfigEnvelope,
 			&consumer.Topic,
 			&consumer.ConsumerGroup,
 			&consumer.MappingJSON,
@@ -240,7 +240,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			SET name = $1,
 			    source_type = $2,
 			    broker_resource_id = $3,
-			    source_config_ref = $4,
+			    source_config_envelope = $4,
 			    topic = $5,
 			    consumer_group = $6,
 			    mapping_json = $7,
@@ -274,7 +274,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			EXISTS (SELECT 1 FROM updated),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigRef,
+		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigEnvelope,
 		consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion,
 		consumer.DesiredState, consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256,

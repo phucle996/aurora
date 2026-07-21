@@ -1,10 +1,10 @@
-use crate::infra::redis::RedisClientManager;
-use crate::observability::logger::Logger;
-use futures_util::StreamExt;
+use super::runtime_proto::MailTemplateVersionPublishedV1;
+use crate::infra::zone_kv::{TemplateConfigHead, ZoneKvStore};
 use moka::future::Cache;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -23,108 +23,67 @@ fn l1_cache() -> &'static Cache<String, MailTemplate> {
     })
 }
 
-/// [COMMENT]: Moka try_get_with coalesce concurrent cache miss cùng template_id thành một lần đọc L2/PubSub.
+/// [COMMENT]: Mail send path chỉ đọc immutable snapshot trong NATS KV; không còn request/response qua Redis hay history DB.
 pub async fn get_template(
-    redis_mgr: &RedisClientManager,
+    zone_kv: &Arc<ZoneKvStore>,
     template_id: &str,
 ) -> Result<MailTemplate, String> {
-    l1_cache()
-        .try_get_with(
-            template_id.to_string(),
-            load_template(redis_mgr, template_id),
-        )
-        .await
-        .map_err(|error: std::sync::Arc<String>| (*error).clone())
-}
-
-#[allow(deprecated)]
-async fn load_template(
-    redis_mgr: &RedisClientManager,
-    template_id: &str,
-) -> Result<MailTemplate, String> {
-    let client = redis_mgr.client();
-    let redis_key = format!("cache:mail_template:v2:{template_id}");
-    let mut conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|error| format!("mail template Redis unavailable: {error}"))?;
-    if let Ok(Some(cached_json)) = redis::cmd("GET")
-        .arg(&redis_key)
-        .query_async::<_, Option<String>>(&mut conn)
-        .await
-    {
-        if let Ok(template) = serde_json::from_str::<MailTemplate>(&cached_json) {
-            return Ok(template);
-        }
+    let head_key = format!("mail.template.head.{template_id}");
+    let head_bytes = zone_kv
+        .config_get(head_key)
+        .await?
+        .ok_or_else(|| "mail template head missing".to_string())?;
+    let head: TemplateConfigHead = serde_json::from_slice(&head_bytes)
+        .map_err(|error| format!("mail template head invalid: {error}"))?;
+    if head.tombstoned || head.current_version == 0 {
+        return Err("mail template is deleted or unpublished".to_string());
     }
-
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let response_channel = format!("mail.template.response:{request_id}");
-    let conn_pubsub = client
-        .get_async_connection()
-        .await
-        .map_err(|error| format!("mail template PubSub unavailable: {error}"))?;
-    let mut pubsub = conn_pubsub.into_pubsub();
-    pubsub
-        .subscribe(&response_channel)
-        .await
-        .map_err(|error| format!("subscribe mail template response failed: {error}"))?;
-    let trace_id =
-        crate::observability::otel::OtelTracer::get_current_trace_id().unwrap_or_default();
-    let request = serde_json::json!({
-        "request_id": request_id,
-        "template_id": template_id,
-        "reply_to": response_channel,
-        "trace_id": trace_id
-    });
-    redis::cmd("PUBLISH")
-        .arg("mail.template.request")
-        .arg(request.to_string())
-        .query_async::<_, ()>(&mut conn)
-        .await
-        .map_err(|error| format!("publish mail template request failed: {error}"))?;
-
-    let mut stream = pubsub.on_message();
-    let template = tokio::time::timeout(Duration::from_secs(5), async move {
-        let message = stream
-            .next()
-            .await
-            .ok_or_else(|| "mail template response channel closed".to_string())?;
-        let payload: String = message
-            .get_payload()
-            .map_err(|error| format!("decode mail template response failed: {error}"))?;
-        let value: serde_json::Value = serde_json::from_str(&payload)
-            .map_err(|error| format!("parse mail template response failed: {error}"))?;
-        Ok::<MailTemplate, String>(MailTemplate {
-            subject: value
-                .get("subject")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("No Subject")
-                .to_string(),
-            body: value
-                .get("content")
-                .or_else(|| value.get("body"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        })
-    })
-    .await
-    .map_err(|_| "timeout waiting for mail template".to_string())??;
-
-    if let Ok(serialized) = serde_json::to_string(&template) {
-        let _: redis::RedisResult<()> = redis::cmd("SETEX")
-            .arg(&redis_key)
-            .arg(3600)
-            .arg(serialized)
-            .query_async(&mut conn)
-            .await;
-    }
-    Logger::sys_info(
-        "executor.mail.template",
-        &format!("Loaded template_id={template_id} into bounded L1 cache"),
+    // [COMMENT]: Cache key pin version+hash; hard-delete/new publish luôn đọc head trước nên không dùng content cũ chỉ vì TTL L1.
+    let key = format!(
+        "{template_id}:v{}:{}",
+        head.current_version, head.content_sha256
     );
-    Ok(template)
+    let zone_kv = zone_kv.clone();
+    let template_id = template_id.to_string();
+    l1_cache()
+        .try_get_with(key, async move {
+            let snapshot_key = format!(
+                "mail.template.snapshot.{template_id}.v{}",
+                head.current_version
+            );
+            let snapshot = zone_kv
+                .config_get(snapshot_key)
+                .await?
+                .ok_or_else(|| "mail template snapshot missing".to_string())?;
+            let event = MailTemplateVersionPublishedV1::decode(snapshot.as_ref())
+                .map_err(|error| format!("mail template snapshot invalid: {error}"))?;
+            if event.template_id != template_id
+                || event.template_version != head.current_version
+                || event.subject_template.contains(['\r', '\n'])
+                || event.html_template.is_empty()
+                || event.content_sha256.len() != 32
+                || event
+                    .content_sha256
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+                    != head.content_sha256
+                || super::runtime_configuration::canonical_template_sha256(
+                    &event.subject_template,
+                    &event.html_template,
+                )
+                .as_slice()
+                    != event.content_sha256.as_slice()
+            {
+                return Err("mail template snapshot integrity mismatch".to_string());
+            }
+            Ok(MailTemplate {
+                subject: event.subject_template,
+                body: event.html_template,
+            })
+        })
+        .await
+        .map_err(|error: Arc<String>| (*error).clone())
 }
 
 pub fn render_subject(template: &str, variables: &HashMap<String, String>) -> String {

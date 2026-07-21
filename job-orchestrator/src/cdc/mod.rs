@@ -156,12 +156,17 @@ impl CdcStreamer {
                             let mut offset = 1;
                             if let Ok(relation_id) = read_u32(&data, &mut offset) {
                                 if let Some(rel) = relation_map.get(&relation_id) {
+                                    // [COMMENT]: Match đủ schema.table; không nhận nhầm outbox cùng tên ở domain khác.
                                     let is_monitored =
                                         self.config.cdc_sources.iter().any(|source| {
-                                            let parts: Vec<&str> = source.split('.').collect();
-                                            let table_name =
-                                                if parts.len() == 2 { parts[1] } else { parts[0] };
-                                            rel.relation_name == table_name
+                                            if let Some((schema_name, table_name)) =
+                                                source.split_once('.')
+                                            {
+                                                rel.schema_name == schema_name
+                                                    && rel.relation_name == table_name
+                                            } else {
+                                                rel.relation_name == source.as_str()
+                                            }
                                         });
 
                                     if is_monitored {

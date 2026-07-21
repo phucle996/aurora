@@ -2,17 +2,18 @@
 
 > [!IMPORTANT]
 > Đây là Source of Truth cho việc đưa consumer desired state và immutable template từ PostgreSQL
-> Controlplane xuống Redis L2 của đúng Zone. Dataplane không query PostgreSQL Controlplane và
+> Controlplane xuống NATS JetStream KV của đúng Zone. Dataplane không query PostgreSQL Controlplane và
 > projection không phụ thuộc polling 500ms.
 
 ## 0. Control header
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Trạng thái | Phase 0 — contract locked, implementation thuộc Phase 4 |
+| Trạng thái | Phase 4 projection + Phase 5 L2→L1 + Phase 6 generic supervisor/Kafka adapter đã ship |
 | Authoritative source | Controlplane PostgreSQL aggregates + single `mail_outbox_records` |
 | Real-time trigger | PostgreSQL WAL/logical replication |
-| Projection destination | Redis L2 của đúng Zone |
+| Projection transport | Redis Job Stream `jobs:<zone_id>` |
+| Projection destination | NATS JetStream KV deployment riêng của đúng Zone, chỉ Dataplane Zone được ghi |
 | Consistency | At-least-once transport, idempotent monotonic apply |
 | Recovery | Cold-start + periodic small-batch snapshot reconciliation |
 | Payload | `MailConsumer*V1`, `MailTemplate*V1` trong `mail_runtime.proto` |
@@ -24,10 +25,12 @@
 flowchart LR
     API[Controlplane Mail API] --> TX[Aggregate + Outbox TX]
     TX --> DB[(CP PostgreSQL)]
-    DB -->|WAL| JO[Job Orchestrator Mail Projector]
-    JO -->|versioned atomic apply| L2[(Zone Redis L2)]
-    L2 -->|small invalidation| DP1[DP Pod A]
-    L2 -->|small invalidation| DP2[DP Pod B]
+    DB -->|WAL| JO[Job Orchestrator Mail Dispatcher]
+    JO -->|XADD durable command| RJ[(Redis Job<br/>jobs:zone_id)]
+    RJ -->|XREADGROUP| ZP[Dataplane Zone Mail Projector]
+    ZP -->|versioned CAS apply| L2[(Zone NATS KV)]
+    L2 -->|jittered periodic repair| DP1[DP Pod A]
+    L2 -->|jittered periodic repair| DP2[DP Pod B]
     L2 -->|cold-start snapshot| DPN[DP Pod N]
 
     K[(Customer Kafka)] -. mail data .-> DP1
@@ -40,34 +43,43 @@ Customer Kafka payload không đi qua CP database, mail outbox hoặc Job Orches
 
 ### Boundary A — PostgreSQL aggregate + outbox
 
-Consumer/template mutation và outbox insert xảy ra trong cùng một data-modifying CTE statement:
+Consumer/template mutation, projection tombstone khi có và outbox insert phải nằm trong cùng một
+PostgreSQL transaction/commit boundary. Repository có thể dùng data-modifying CTE hoặc explicit
+transaction khi workflow cần nhiều bước khóa/kiểm tra; cú pháp SQL không phải invariant:
 
 ```text
-WITH authorized AS (...),
-     mutated AS (... INSERT/UPDATE ... RETURNING ...),
-     outbox_inserted AS (
-       INSERT INTO mail_outbox_records(...)
-       SELECT ... FROM mutated
-     )
-SELECT authorization/result classification
+BEGIN
+  authorize + lock aggregate
+  mutate aggregate / retain projection tombstone
+  insert mail_outbox_records
+COMMIT
 ```
 
 `routing_scope=zone:<uuid>` được tạo từ trusted `X-Zone-ID` sau khi CP cross-check authoritative Workspace/Broker Zone.
 Consumer row chỉ giữ `workspace_id`; payload không mang Workspace/owner/Zone. Không publish Redis/NATS trước
 commit. Outbox row được giữ theo retention policy sau terminal state; không xóa ngay khi thành công.
 
-### Boundary B — WAL relay → Zone L2
+### Boundary B — WAL relay → Redis Job
 
-- Logical replication slot giữ WAL đến khi projector xác nhận apply.
-- Projector chỉ advance/ack LSN sau khi Zone Redis trả kết quả apply/no-op hợp lệ.
-- Crash sau Redis apply nhưng trước LSN ack tạo replay; monotonic Lua guard biến replay thành no-op.
-- Zone Redis phải chạy HA/persistence phù hợp; dù vậy nó vẫn là projection có thể rebuild từ CP snapshot.
+- JO chỉ có network/credential tới CP PostgreSQL, Redis Job và NATS Core trung tâm cho các domain liên quan; JO tuyệt đối không có endpoint/credential truy cập Zone JetStream KV.
+- Logical replication slot chỉ giữ WAL đến khi JO `XADD` durable projection command thành công.
+- JO advance/ack LSN sau `XADD`; không giữ WAL chờ Zone apply vì một Zone mất kết nối không được làm phình WAL của toàn PostgreSQL.
+- Crash sau `XADD` nhưng trước LSN ack tạo duplicate command; `event_id` deterministic và monotonic Lua guard biến replay thành no-op.
 
-### Boundary C — L2 → Dataplane L1/runtime
+### Boundary C — Redis Job → Zone NATS KV
+
+- Dataplane Zone projector dùng consumer group đọc command, validate Zone/event/version/hash rồi mới apply L2.
+- Projector chỉ `XACK` command sau khi NATS KV CAS được server acknowledge; delivery result/history hiện chưa thuộc scope.
+- DB-reconciliation command không tương ứng outbox row nên không bắn PROCESSING/terminal result cho từng snapshot; L2 apply hoặc generation error marker là durability proof rồi mới `XACK`.
+- Lỗi NATS KV tạm thời không `XACK`; pending entry được claim lại sau bounded idle time.
+- `APPLIED`, `DUPLICATE`, `STALE` là success; `CONFLICT` hoặc payload/schema sai đi quarantine/FAILED và không overwrite L2.
+- Zone NATS JetStream phải chạy 3 hoặc 5 node HA; KV vẫn là projection có thể rebuild từ CP snapshot.
+- `NATS_ZONE_URL` không được fallback sang `NATS_URL`/`NATS_ADDR`; nhầm endpoint phải làm Dataplane fail bootstrap.
+
+### Boundary D — L2 → Dataplane L1/runtime
 
 - L2 là shared Zone snapshot.
-- Invalidation chỉ là fast path và có thể mất.
-- Mỗi DP pod reconcile registry/slot leases theo batch nhỏ lúc cold start và định kỳ, vì vậy PubSub không phải durability boundary.
+- Mỗi DP pod reconcile consumer heads theo batch nhỏ lúc cold start và định kỳ, có jitter; không dùng Redis PubSub.
 - Runtime COW swap chỉ xảy ra sau validation đầy đủ của snapshot mới.
 
 ## 3. Event catalogue
@@ -77,9 +89,8 @@ commit. Outbox row được giữ theo retention policy sau terminal state; khô
 | `MailConsumerUpsertV1` | CP → Zone | `config_version` | Store snapshot, update head, notify DP |
 | `MailConsumerDeleteV1` | CP → Zone | `config_version` | Store tombstone, drain/remove runtime |
 | `MailTemplateVersionPublishedV1` | CP → Zone | `template_revision` | Store immutable version + update catalog head |
-| `MailTemplateArchivedV1` | CP → Zone | `template_revision` | Mark catalog archived; retain version snapshots |
+| `MailTemplateDeletedV1` | CP → Zone | `template_revision` | Store durable tombstone; hard-delete identity cannot be resurrected |
 | `MailConsumerRuntimeReportedV1` | DP → CP | config version + runtime generation | Update reported state only |
-| `MailExecutionResultV1` | DP → CP | per-submission `state_version` | Append history + monotonic submission head |
 
 ### 3.1 Event identity
 
@@ -99,8 +110,7 @@ UUIDv5(mail_runtime_report_namespace,
        consumer_id || instance_id || runtime_generation || report_sequence)
 ```
 
-`report_sequence` tăng đơn điệu trong cùng instance generation. Execution result event dùng
-`submission_id + state_version + status`; replay đúng cùng state có cùng event ID.
+`report_sequence` tăng đơn điệu trong cùng instance generation. Delivery history/result event được deferred; JMAP submission ID chỉ trả về job transport.
 
 ### 3.2 UUID and version validation
 
@@ -109,43 +119,34 @@ UUIDv5(mail_runtime_report_namespace,
 - `schema_version == 1`.
 - Consumer/template/sender versions phải lớn hơn 0.
 - `workspace_id`, owner và `zone_id` không được xuất hiện trong protobuf runtime payload.
-- UUID trong outbox `routing_scope=zone:<uuid>` phải khớp Zone Redis connection mà projector đang ghi.
+- UUID trong outbox `routing_scope=zone:<uuid>` phải khớp Zone NATS KV connection mà projector đang ghi.
 
 ## 4. Zone L2 key model
 
 ```text
-mail:consumer:registry
-  HASH consumer_id -> config_version | desired_state | config_sha256
+mail.consumer.head.{consumer_id}
+  JSON version/event_id/config_sha256/desired_state/tombstoned
 
-mail:consumer:head:{consumer_id}
-  version
-  event_id
-  config_sha256
-  tombstoned
-  snapshot_key
-
-mail:consumer:snapshot:{consumer_id}:v{config_version}
+mail.consumer.snapshot.{consumer_id}.v{config_version}
   protobuf MailConsumerUpsertV1
 
-mail:template:head:{template_id}
-  revision
-  current_version
-  event_id
-  content_sha256
-  archived
+mail.template.head.{template_id}
+  JSON revision/current_version/event_id/content_sha256/tombstoned
 
-mail:template:snapshot:{template_id}:v{template_version}
+mail.template.snapshot.{template_id}.v{template_version}
   protobuf MailTemplateVersionPublishedV1
 
-mail:consumer:slot:{consumer_id}:{slot}
-  lease owner instance_id + fencing_token + config_version
+zone.service.mail
+  current health snapshot
+
+lease.health.mail
+  CAS lease owner/fencing_token/expires_at/last_owner
 ```
 
-- Registry là danh mục recoverable cho cold start/restart; dùng bounded `HSCAN`, không dùng `KEYS`.
+- Consumer head keys là danh mục recoverable cho cold start/restart; mỗi tick chỉ hydrate bounded slice.
 - Snapshot keys không overwrite immutable version.
 - Head/tombstone update phải atomic.
-- `parallelism=N` tạo tối đa N logical slots; pod chỉ mở Kafka connection sau khi giữ lease còn hạn.
-- Lease takeover phải cấp fencing token mới; callback của holder cũ không được commit offset/result sau khi mất lease.
+- Runtime stream slot lease/fencing dùng Zone KV CAS + broker group generation; không dùng Redis lock.
 - Không TTL consumer/template head đang active. Cleanup chỉ xóa unreachable snapshot sau retention và reconciliation proof.
 - L1 có thể TTL/bounded vì luôn reload được từ L2.
 
@@ -167,18 +168,22 @@ incoming.version > head.version
     => write immutable snapshot + swap head atomically
 ```
 
+Nếu head/hash hợp lệ nhưng immutable snapshot bị mất riêng lẻ, projection tự repair bằng KV create/CAS và trả
+`REPAIRED`, phục hồi phần thiếu nhưng không đổi aggregate clock. So sánh integrity dựa trên canonical
+business hash; protobuf envelope có thể khác metadata giữa WAL event và reconciliation replay.
+
 ### 5.2 Consumer tombstone
 
 - Chỉ apply khi delete version lớn hơn head version.
 - Tombstone không được xóa ngay để upsert cũ không hồi sinh consumer.
 - Re-create phải dùng consumer ID mới; không reset version về 1 trên ID cũ.
 
-### 5.3 Template publish/archive
+### 5.3 Template publish/delete
 
 - Immutable version key có cùng version/hash: duplicate no-op.
 - Cùng version nhưng khác hash: integrity violation.
 - Catalog head so sánh `template_revision`, không chỉ content version.
-- Archive giữ `last_published_version` và version snapshots để active consumer drain.
+- Delete giữ head tombstone và `last_published_version`; authoritative CP projection tombstone tồn tại sau outbox retention để rebuild không hồi sinh identity cũ.
 
 ## 6. Real-time projection sequence
 
@@ -187,44 +192,47 @@ sequenceDiagram
     autonumber
     participant API as CP Mail Service
     participant DB as CP PostgreSQL
-    participant JO as JO Mail Projector
-    participant L2 as Zone Redis L2
+    participant JO as JO Mail Dispatcher
+    participant RJ as Redis Job
+    participant ZP as DP Zone Projector
+    participant L2 as Zone NATS KV
     participant DP as Dataplane Pods
 
     API->>DB: guarded mutation + outbox data-modifying CTE
     DB-->>JO: Logical replication WAL row
-    JO->>JO: Decode protobuf + validate target Zone/version/hash
-    JO->>L2: EVAL atomic versioned apply
+    JO->>JO: Validate outbox envelope + target Zone
+    JO->>RJ: XADD jobs:zone_id durable projection command
+    RJ-->>ZP: XREADGROUP command
+    ZP->>ZP: Decode protobuf + validate configured Zone/version/hash
+    ZP->>L2: create immutable snapshot + CAS versioned head
     alt newer event
-        L2-->>JO: APPLIED
-        JO->>L2: PUBLISH compact invalidation(id, version)
-        L2-->>DP: Invalidation fast path
+        L2-->>ZP: APPLIED
+        L2-->>DP: jittered periodic scan
         DP->>L2: GET immutable snapshot
         DP->>DP: Validate + COW L1/runtime
     else replay/stale
-        L2-->>JO: DUPLICATE or STALE
+        L2-->>ZP: DUPLICATE or STALE
     else same-version conflict
-        L2-->>JO: CONFLICT
-        JO->>JO: Do not ack LSN; quarantine/alert
+        L2-->>ZP: CONFLICT
+        ZP->>ZP: Quarantine/FAILED; không overwrite
     end
-    JO->>DB: Mark outbox SUCCEEDED/completed_at (idempotent)
-    JO->>JO: Ack/advance WAL position
+    ZP->>RJ: XACK projection command
 ```
 
-`SUCCEEDED/completed_at` là observability/audit state; L2 versioned apply mới là proof projection.
-Projector không được mark terminal trước L2 response.
+JO ack WAL sau durable `XADD`; Zone projector chỉ `XACK` command sau KV server acknowledgement. Redis Job là durability bridge giữa hai network boundary.
 
 ## 7. Cold start and reconciliation
 
 ### 7.1 Cold start
 
-1. DP dùng một central ticker và bounded `HSCAN mail:consumer:registry`; tuyệt đối không `KEYS`/full materialize.
+1. DP dùng một central ticker và chỉ hydrate bounded slice các key `mail.consumer.head.*` mỗi tick.
 2. Mỗi tick dùng jitter theo pod identity và `MissedTickBehavior::Skip` để tránh thundering herd/tick backlog.
-3. Pod claim các runtime slots còn trống bằng lease + fencing token; không phải mọi pod mở mọi consumer.
-4. Load snapshot của desired `ENABLED/PAUSED` consumers mà pod giữ slot.
-5. Load đúng template/sender versions được các consumer đó pin rồi validate hashes/contracts.
-6. Nếu dependency thiếu, giữ runtime `STARTING`, không poll Kafka và để reconciler repair.
-7. Chỉ report `RUNNING` sau lease, dependency validation và Kafka readiness.
+3. Phase-5 registry load snapshot nhỏ của các desired `ENABLED/PAUSED` consumer và COW-swap theo version/hash.
+4. Phase-6 supervisor claim các runtime slots còn trống bằng lease + fencing token; không phải mọi pod mở mọi consumer.
+5. Cold start **không preload template content**. Consumer L1 chỉ giữ đúng một pinned `template_id + version`.
+6. Khi message đầu tiên cần render, Moka L1 miss mới đọc đúng immutable template snapshot từ L2, validate hash và singleflight concurrent miss.
+7. Template dependency đến trễ làm message/partition đi bounded retry hoặc runtime `DEGRADED`; reconciler sửa revision drift, không full-hydrate mọi template.
+8. `RUNNING` phản ánh lease + Kafka readiness; template lỗi khi thực thi phải report riêng và không mutate consumer config generation.
 
 Nếu L2 trống, DP không query CP DB. Nó yêu cầu zonal reconciliation và giữ mail broker runtime `STOPPED/STARTING` cho đến khi snapshot xuất hiện.
 
@@ -232,24 +240,34 @@ Nếu L2 trống, DP không query CP DB. Nó yêu cầu zonal reconciliation và
 
 ```mermaid
 sequenceDiagram
-    participant Leader as Zone Reconcile Leader
-    participant CP as CP Snapshot RPC
-    participant L2 as Zone Redis L2
+    participant Leader as JO Zone Reconcile Leader
+    participant DB as CP PostgreSQL read-only
+    participant RJ as Redis Job
+    participant ZP as DP Zone Projector
+    participant L2 as Zone NATS KV
 
-    Leader->>L2: Acquire fenced lock(zone, mail-config)
+    Leader->>RJ: Wait deterministic jitter
+    Leader->>RJ: Acquire fenced lock(zone, mail-config)
     loop Small bounded pages
-        Leader->>CP: List snapshots(zone_id, cursor, limit)
-        CP-->>Leader: items + next_cursor + snapshot watermark
-        Leader->>L2: Apply each item with same version/hash Lua guard
+        Leader->>DB: Read snapshot page(zone_id, cursor, limit, watermark)
+        DB-->>Leader: items + next_cursor
+        Leader->>RJ: XADD same versioned projection commands
+        RJ-->>ZP: XREADGROUP
+        ZP->>L2: Apply with same version/hash Lua guard
     end
-    Leader->>L2: Compare watermark and finalize sweep/tombstones
-    Leader->>L2: Release fenced lock
+    Leader->>RJ: Persist checkpoint/end generation
+    Leader->>RJ: Release fenced lock only when token still owns it
 ```
 
 - CP chọn consumer theo Zone bằng cách join `workspace_id` sang Hierarchy; `zone_id` không bị duplicate vào consumer row.
+- JO dùng PostgreSQL role read-only giới hạn đúng các bảng/view cần reconcile; Dataplane không bao giờ đọc CP DB.
 - Page size có hard cap và cấu hình; không load toàn bộ Zone vào RAM.
 - Reconcile sử dụng cursor ổn định + snapshot watermark để không xóa nhầm record được tạo giữa lúc scan.
-- Chỉ một leader mỗi Zone chạy full scan; các pod khác vẫn dùng L2.
+- Một central scheduler chọn các Zone đến hạn; không tạo ticker riêng cho từng Zone/consumer.
+- Mỗi JO instance chờ deterministic jitter theo `instance_id + zone_id + task_kind` trước đúng một lần thử lock; thua lock thì bỏ lượt, không spin retry.
+- Lock có fencing generation. Mỗi lượt chỉ xử lý tối đa số page/thời gian đã cấu hình rồi lưu checkpoint và nhường lượt để Zone lớn không làm Zone nhỏ starvation.
+- Tick trễ dùng `MissedTickBehavior::Skip`; lỗi dùng exponential backoff kèm random jitter.
+- Chỉ một leader mỗi Zone chạy full scan; các pod khác vẫn phục vụ WAL/result path.
 - Reconciliation chậm không block real-time WAL projection.
 - Ở DP, invalidation đánh thức cùng supervisor; timer/reconcile dùng một scheduling loop chung thay vì spawn một ticker cho mỗi consumer.
 - Reconcile interval có jitter và backoff khi Redis lỗi; tick bị trễ được skip, không chạy dồn để gây connection storm.
@@ -270,15 +288,16 @@ Dataplane ghi `MailConsumerRuntimeReportedV1` vào durable Zone result stream. R
 | Failure window | Recovery |
 |---|---|
 | CP aggregate commit, process chết trước publish | Outbox WAL vẫn tồn tại |
-| Projector apply L2, chết trước ack LSN | Replay → same version/hash no-op |
+| JO XADD Redis Job, chết trước ack LSN | WAL replay → duplicate command → same version/hash no-op |
+| Zone projector apply L2, chết trước result/XACK | PEL reclaim → same version/hash no-op → durable result |
 | Delete v7 đến trước upsert v6 | Tombstone v7; v6 bị bỏ |
 | Upsert v8 đến trước delayed delete v7 | Head v8; delete v7 bị bỏ |
 | Same version/different payload | Không last-write-wins; quarantine integrity conflict |
-| PubSub invalidation mất | Pod lookup/cold-start/periodic L2 reconcile sửa lại |
+| Pod bỏ lỡ revision trong một tick | Cold-start/periodic KV reconcile sửa lại |
 | Pod chết khi đang giữ runtime slot | Lease hết hạn; pod khác claim với fencing token mới rồi join cùng Kafka group |
 | Redis failover làm holder cũ tưởng còn lease | Kafka group + fencing token chặn callback/offset commit từ generation cũ |
-| Consumer upsert đến trước template snapshot | Runtime giữ `STARTING`, không poll Kafka; template event/reconcile unblock |
-| L2 failover mất projection mới | WAL/outbox replay hoặc snapshot reconcile |
+| Consumer upsert đến trước template snapshot | Consumer binding vẫn COW; first-message lazy load fail bounded/retry, template projection hoặc reconcile unblock |
+| L2 failover mất projection mới | DB-backed snapshot reconciliation qua Redis Job rebuild |
 | CP snapshot thay đổi giữa các page | Snapshot watermark tránh destructive sweep sai |
 | Zone network partition | CP tiếp tục nhận config; outbox lag tăng, DP giữ last known good config |
 | Credential rotation event lỗi | Runtime cũ giữ connection đến khi new config validated; không half-swap |
@@ -286,10 +305,12 @@ Dataplane ghi `MailConsumerRuntimeReportedV1` vào durable Zone result stream. R
 ## 10. Security and data minimization
 
 - Projection payload không chứa Kafka username/password, SASL secret hoặc TLS private key.
-- `source_config_ref` chỉ resolve được bởi zonal Dataplane service identity.
-- Projector chỉ dùng `routing_scope` trong trusted outbox envelope để chọn Redis connection; protobuf không thể tự đổi Zone.
-- Template body có thể chứa customer content: Redis L2 encryption-at-rest/access policy và không log payload.
-- Invalidation channel chỉ chứa aggregate ID/version, không template content hoặc source config reference.
+- Outbox row vẫn chỉ chứa `payload BYTEA`; bên trong `MailConsumerUpsertV1.stream` mang `stream_type`, adapter schema version, broker resource ID và adapter payload bytes.
+- `KafkaStreamPayloadV1.source_config_envelope` là opaque ciphertext tối đa 16 KiB. CP DB, outbox, JO và Zone NATS KV chỉ lưu/chuyển tiếp bytes; chỉ DP Kafka adapter giải mã bằng zone-local key material.
+- JO chỉ dùng `routing_scope` trong trusted outbox envelope để chọn Redis Job stream; protobuf không thể tự đổi Zone.
+- Zone projector so sánh stream/configured `zone_id`; command không thể yêu cầu ghi sang Redis của Zone khác.
+- Template body có thể chứa customer content: JetStream file-storage encryption/access policy và không log payload.
+- Invalidation channel chỉ chứa aggregate ID/version, không template content hoặc source config envelope.
 - Trace baggage từ customer không được đưa vào control event.
 
 ## 11. Observability
@@ -298,7 +319,7 @@ Metrics giữ low cardinality:
 
 - Outbox unprojected count/oldest age.
 - WAL/projector lag per Zone.
-- Apply outcome: applied/duplicate/stale/conflict.
+- Apply outcome: applied/repaired/duplicate/stale/conflict.
 - Reconcile duration/items/differences.
 - L2 snapshot/hash validation failures.
 - DP observed config-version lag.
@@ -311,10 +332,17 @@ Không dùng consumer ID, workspace ID, topic hoặc template ID làm metric lab
 |---|---|
 | Aggregate tables + single mail outbox schema | Phase 1, Controlplane Mail — implemented |
 | Guarded Personal/Tenant Workspace/Zone aggregate + outbox CTE | Phase 2, Controlplane Mail — implemented |
-| WAL decoder/projector | Phase 4, Job Orchestrator |
-| Versioned Redis Lua apply | Phase 4, Job Orchestrator/Zone L2 |
+| WAL decoder + Redis Job dispatcher | Phase 4, Job Orchestrator |
+| Redis Job consumer + immutable snapshot/NATS KV CAS apply | Phase 4, Dataplane Zone projector |
 | L2 loader + L1 COW | Phase 5, Dataplane |
-| Snapshot RPC/reconciler | Phase 4–5 |
+| DB-backed zonal snapshot reconciler | Phase 4, Job Orchestrator → Redis Job |
 | Runtime report reverse relay | Phase 8–9 |
 
-Tài liệu này khóa semantics; tên Redis key có thể được gom vào một constants module khi implement nhưng không được thay đổi version/tombstone/hash invariants.
+### 12.1 Code-shape invariant
+
+- Consumer upsert, consumer delete, template publish và template delete là bốn flow riêng; không gom thành generic business handler.
+- Cold-start reconciliation và periodic reconciliation là hai flow riêng; không điều khiển bằng một helper có nhiều cờ boolean.
+- Ưu tiên transaction/ack/retry/lock boundary nhìn thấy ngay tại callsite. Duplicate code có chủ đích được chấp nhận để luồng minh bạch.
+- Chỉ tách helper cho primitive hạ tầng không mang business decision như Redis connection, protobuf generated type, trace propagation và fenced-lock primitive.
+
+Tài liệu này khóa semantics; tên Redis key có thể được gom vào constants khi implement nhưng không được thay đổi version/tombstone/hash/fencing invariants.
