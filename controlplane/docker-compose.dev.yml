@@ -660,6 +660,7 @@ services:
       # [COMMENT]: Current runtime read model; JO vẫn block trên Redis Stream và chỉ reclaim PEL sau 30s.
       MAIL_RUNTIME_REPORT_TTL_SECS: "180"
       MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
+      MAIL_INFRA_REPORT_TTL_SECS: "180"
       APP_LOG_LEVEL: "debug"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "9102"

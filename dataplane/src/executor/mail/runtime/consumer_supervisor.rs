@@ -47,10 +47,11 @@ impl MailConsumerSupervisor {
         configuration: Arc<MailConfigurationRuntime>,
         zone_kv: Arc<ZoneKvStore>,
         processor: Arc<crate::executor::mail::processor::MailMessageProcessor>,
+        runtime_node_id: String,
+        runtime_boot_id: uuid::Uuid,
     ) -> Arc<Self> {
-        let instance_id = std::env::var("HOSTNAME")
-            .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));
-        let context = StreamRuntimeContext::new(config, instance_id, zone_kv, processor);
+        let context =
+            StreamRuntimeContext::new(config, runtime_node_id, runtime_boot_id, zone_kv, processor);
         Arc::new(Self {
             enabled: config.mail_stream_delivery_enabled,
             configuration,

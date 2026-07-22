@@ -322,7 +322,7 @@ func (r *personalTemplateRepoPostgres) Delete(ctx context.Context, template *mai
 		return mailTaxonomy.ErrVersionConflict
 	}
 	var inUse bool
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_consumers WHERE workspace_id=$1 AND template_id=$2 AND deleted_at IS NULL)`, r.mailSchema), template.WorkspaceID, template.ID).Scan(&inUse); err != nil {
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_consumers WHERE workspace_id=$1 AND template_id=$2)`, r.mailSchema), template.WorkspaceID, template.ID).Scan(&inUse); err != nil {
 		return fmt.Errorf("mail personal template repo: check template usage: %w", err)
 	}
 	if inUse {

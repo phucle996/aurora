@@ -64,6 +64,9 @@ pub struct Config {
     pub stalwart_jmap_bearer_token: String,
     pub stalwart_jmap_username: String,
     pub stalwart_jmap_password: String,
+    /// [COMMENT]: Read-only management identity chỉ được cấp ClusterNode query/get; không tái sử dụng mail submission credential.
+    pub stalwart_management_jmap_url: String,
+    pub stalwart_reporter_bearer_token: String,
     /// [COMMENT]: Sender tĩnh phase Dataplane; Controlplane sender projection sẽ thay registry này ở phase sau.
     pub mail_sender_profile_id: String,
     pub mail_sender_version: u32,
@@ -100,6 +103,9 @@ pub struct Config {
     pub mail_stream_envelope_key_hex: String,
     /// [COMMENT]: Optional Kafka Zone CA path là trusted deployment config, không nhận filesystem path từ customer payload.
     pub mail_stream_ca_cert_path: Option<String>,
+    /// [COMMENT]: Hai reverse reporter có cadence riêng để consumer cardinality không kéo theo infra load.
+    pub mail_consumer_report_interval_ms: u64,
+    pub mail_infra_report_interval_ms: u64,
 
     /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
     pub minio_host: Option<String>,
@@ -243,6 +249,10 @@ impl Config {
                 .unwrap_or_default(),
             stalwart_jmap_password: env::var("STALWART_JMAP_PASSWORD")
                 .unwrap_or_default(),
+            stalwart_management_jmap_url: env::var("STALWART_MANAGEMENT_JMAP_URL")
+                .unwrap_or_default(),
+            stalwart_reporter_bearer_token: env::var("STALWART_REPORTER_BEARER_TOKEN")
+                .unwrap_or_default(),
             mail_sender_profile_id: env::var("MAIL_SENDER_PROFILE_ID")
                 .unwrap_or_else(|_| "platform-default".to_string()),
             mail_sender_version: parse_env("MAIL_SENDER_VERSION", 1_u32),
@@ -325,6 +335,16 @@ impl Config {
             mail_stream_ca_cert_path: env::var("MAIL_STREAM_CA_CERT_PATH")
                 .ok()
                 .filter(|path| !path.trim().is_empty()),
+            mail_consumer_report_interval_ms: parse_env(
+                "MAIL_CONSUMER_REPORT_INTERVAL_MS",
+                5_000_u64,
+            )
+            .clamp(1_000, 60_000),
+            mail_infra_report_interval_ms: parse_env(
+                "MAIL_INFRA_REPORT_INTERVAL_MS",
+                10_000_u64,
+            )
+            .clamp(5_000, 120_000),
 
             // [COMMENT]: Nạp cấu hình MinIO (không có fallback mặc định để hỗ trợ báo trạng thái unknown khi thiếu config)
             minio_host: env::var("MINIO_HOST").ok(),

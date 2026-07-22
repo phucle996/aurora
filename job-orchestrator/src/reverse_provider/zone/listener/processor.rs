@@ -211,38 +211,8 @@ pub async fn process_report(
     // Lưu ý: chỉ ghi metrics cho service đang ENABLED. Service disabled không có actual_state đáng tin cậy.
     let now_instant = Instant::now();
 
-    if current_mail_enabled {
-        let should_update_mail = check_metrics_dirty(
-            service_metrics_cache,
-            &zone_id,
-            "mail",
-            &mail_status,
-            mail_capacity as i32,
-            now_instant,
-        );
-        if should_update_mail {
-            if let Err(e) = super::super::db::update_zone_service_metrics(
-                &config.database_url,
-                &zone_id,
-                "mail",
-                &mail_status,
-                mail_capacity as i32,
-            )
-            .await
-            {
-                Logger::sys_error(
-                    "backpressure_listener.metrics_db_error",
-                    "Thất bại khi cập nhật metrics Service mail vào DB",
-                    &e.to_string(),
-                );
-            } else {
-                service_metrics_cache.insert(
-                    (zone_id.clone(), "mail".to_string()),
-                    (mail_status.clone(), mail_capacity as i32, now_instant),
-                );
-            }
-        }
-    }
+    // [COMMENT]: Mail actual_state không còn được ghi từ generic Zone aggregate. Dedicated
+    // mail:infra:reports guarded projection là writer duy nhất, tránh hai stream đến sai thứ tự rollback nhau.
 
     if current_storage_enabled {
         let should_update_storage = check_metrics_dirty(

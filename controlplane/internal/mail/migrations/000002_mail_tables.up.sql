@@ -56,8 +56,12 @@ $$ LANGUAGE plpgsql;
 
 DO $$
 BEGIN
-    CREATE TRIGGER trg_personal_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON personal_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
-    CREATE TRIGGER trg_tenant_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON tenant_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_personal_mail_template_versions_immutable' AND NOT tgisinternal) THEN
+        CREATE TRIGGER trg_personal_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON personal_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_tenant_mail_template_versions_immutable' AND NOT tgisinternal) THEN
+        CREATE TRIGGER trg_tenant_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON tenant_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
+    END IF;
 END $$;
 
 -- [COMMENT]: Consumer authorization boundary là Workspace. Zone không nằm trong row này; mỗi mutation
@@ -82,7 +86,6 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     parallelism INTEGER NOT NULL DEFAULT 1 CHECK (parallelism BETWEEN 1 AND 256),
     config_version BIGINT NOT NULL DEFAULT 1 CHECK (config_version > 0),
     config_sha256 BYTEA NOT NULL,
-    deleted_at TIMESTAMPTZ NULL,
     created_by UUID NULL,
     updated_by UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -92,11 +95,7 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     CONSTRAINT ck_mail_consumer_enabled_source_config CHECK (
         desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
     ),
-    CONSTRAINT ck_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'),
-    CONSTRAINT ck_mail_consumer_delete_state CHECK (
-        (desired_state = 'deleted' AND deleted_at IS NOT NULL)
-        OR (desired_state <> 'deleted' AND deleted_at IS NULL)
-    )
+    CONSTRAINT ck_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 );
 
 -- [COMMENT]: Runtime report là per-instance lease/heartbeat read model, không sửa desired state.

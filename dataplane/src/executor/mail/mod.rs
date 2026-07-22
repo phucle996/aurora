@@ -25,11 +25,18 @@ pub struct MailRuntime {
     /// [COMMENT]: Phase-6 supervisor sở hữu slot leases và broker connections; executor job không tự mở consumer.
     pub consumer_supervisor: Arc<runtime::MailConsumerSupervisor>,
     pub metrics: Arc<MailWorkloadMetrics>,
+    // [COMMENT]: Physical process identity dùng chung cho infra report và consumer slot report.
+    // Hostname ổn định qua container lifetime; boot UUID đổi sau restart để không nhập nhằng incarnation.
+    pub(crate) runtime_node_id: String,
+    pub(crate) runtime_boot_id: uuid::Uuid,
     jmap: Arc<JmapClient>,
 }
 
 impl MailRuntime {
     pub fn new(config: &Config, zone_kv: Arc<ZoneKvStore>) -> Result<Arc<Self>, String> {
+        let runtime_node_id = std::env::var("HOSTNAME")
+            .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));
+        let runtime_boot_id = uuid::Uuid::new_v4();
         let sender = Arc::new(SenderProfile::from_config(config)?);
         let jmap = Arc::new(JmapClient::new(config, sender.clone())?);
         let metrics = Arc::new(MailWorkloadMetrics::default());
@@ -42,13 +49,21 @@ impl MailRuntime {
             batcher.clone(),
             sender.clone(),
         );
-        let consumer_supervisor =
-            runtime::MailConsumerSupervisor::new(config, configuration.clone(), zone_kv, processor);
+        let consumer_supervisor = runtime::MailConsumerSupervisor::new(
+            config,
+            configuration.clone(),
+            zone_kv,
+            processor,
+            runtime_node_id.clone(),
+            runtime_boot_id,
+        );
         Ok(Arc::new(Self {
             batcher,
             configuration,
             consumer_supervisor,
             metrics,
+            runtime_node_id,
+            runtime_boot_id,
             jmap,
         }))
     }

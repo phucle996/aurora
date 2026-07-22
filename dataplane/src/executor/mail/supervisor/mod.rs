@@ -1,7 +1,7 @@
 mod backpressure;
+mod consumer_reporter;
+mod infra_reporter;
 mod metrics;
-mod runtime_reporter;
-mod workload_monitor;
 
 use super::MailRuntime;
 use crate::config::Config;
@@ -11,7 +11,15 @@ use std::sync::Arc;
 
 pub use metrics::MailWorkloadMetrics;
 
-/// [COMMENT]: Mail tự sở hữu health và reverse runtime report; Zone Gateway chỉ còn tổng hợp snapshot cấp Zone.
+#[cfg(test)]
+#[path = "../test/backpressure.rs"]
+mod backpressure_tests;
+
+#[cfg(test)]
+#[path = "../test/report_contract.rs"]
+mod report_contract_tests;
+
+/// [COMMENT]: Mail tự sở hữu hai reverse path rõ nghĩa: consumer delta và infrastructure snapshot.
 pub struct MailWorkloadSupervisor;
 
 impl MailWorkloadSupervisor {
@@ -21,7 +29,7 @@ impl MailWorkloadSupervisor {
         redis_job: Arc<RedisClientManager>,
         runtime: Arc<MailRuntime>,
     ) {
-        workload_monitor::start(config.clone(), zone_kv.clone(), runtime);
-        runtime_reporter::start(config, zone_kv, redis_job);
+        infra_reporter::start(config.clone(), zone_kv.clone(), redis_job.clone(), runtime);
+        consumer_reporter::start(config, zone_kv, redis_job);
     }
 }

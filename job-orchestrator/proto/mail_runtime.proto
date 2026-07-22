@@ -142,6 +142,67 @@ message MailConsumerRuntimeReportedV1 {
   string error_message = 9;
   // [COMMENT]: Monotonic trong cùng instance+generation; tạo event id mới cho từng heartbeat.
   uint64 report_sequence = 10;
+  // [COMMENT]: Physical Dataplane pod đang giữ logical slot; chỉ dùng cho Admin infrastructure diagnostics.
+  string runtime_node_id = 11;
+  // [COMMENT]: UUID 16-byte sinh một lần mỗi process boot để phân biệt pod restart cùng hostname.
+  bytes runtime_boot_id = 12;
+}
+
+// [COMMENT]: Consumer report có cardinality cao nên relay gom bounded delta vào một Redis Stream entry.
+message MailConsumerRuntimeReportBatchV1 {
+  repeated MailConsumerRuntimeReportedV1 reports = 1;
+}
+
+enum MailInfrastructureState {
+  MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED = 0;
+  MAIL_INFRASTRUCTURE_STATE_HEALTHY = 1;
+  MAIL_INFRASTRUCTURE_STATE_DEGRADED = 2;
+  MAIL_INFRASTRUCTURE_STATE_UNHEALTHY = 3;
+  MAIL_INFRASTRUCTURE_STATE_DOWN = 4;
+}
+
+enum MailStalwartNodeState {
+  MAIL_STALWART_NODE_STATE_UNSPECIFIED = 0;
+  MAIL_STALWART_NODE_STATE_ACTIVE = 1;
+  MAIL_STALWART_NODE_STATE_STALE = 2;
+  MAIL_STALWART_NODE_STATE_INACTIVE = 3;
+}
+
+message MailDataplaneNodeSnapshotV1 {
+  string node_id = 1;
+  bytes boot_id = 2;
+  MailInfrastructureState state = 3;
+  uint32 capacity = 4;
+  uint64 pending_items = 5;
+  uint64 in_flight_batches = 6;
+  uint32 active_consumer_slots = 7;
+  bool jmap_reachable = 8;
+  int64 last_probe_at_unix_ms = 9;
+  int64 observed_at_unix_ms = 10;
+  string error_code = 11;
+}
+
+message MailStalwartNodeSnapshotV1 {
+  uint64 node_id = 1;
+  string hostname = 2;
+  MailStalwartNodeState state = 3;
+  int64 last_renewal_unix_ms = 4;
+}
+
+// [COMMENT]: Low-cardinality current snapshot; không chứa endpoint, credential hay customer mail data.
+message MailInfrastructureSnapshotReportedV1 {
+  MailEventMetadataV1 metadata = 1;
+  uint64 report_generation = 2;
+  uint64 report_sequence = 3;
+  MailInfrastructureState service_state = 4;
+  uint32 capacity = 5;
+  uint64 pending_items = 6;
+  uint64 in_flight_batches = 7;
+  string probe_node_id = 8;
+  repeated MailDataplaneNodeSnapshotV1 dataplane_nodes = 9;
+  repeated MailStalwartNodeSnapshotV1 stalwart_nodes = 10;
+  bool inventory_truncated = 11;
+  string error_code = 12;
 }
 
 message MailTemplateVersionPublishedV1 {

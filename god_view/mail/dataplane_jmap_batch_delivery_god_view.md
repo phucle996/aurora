@@ -240,7 +240,7 @@ Low-cardinality state từ `MailWorkloadMetrics`:
 | `accepted_total` | Per-item JMAP accepted |
 | `failed_total` | Per-item typed failure |
 
-Mail workload monitor dùng các snapshot này để report Zone health/backpressure. Không dùng recipient,
+Mail infrastructure reporter dùng các snapshot này để report Zone health/backpressure. Không dùng recipient,
 consumer UUID hoặc submission ID làm metric label có cardinality cao.
 
 ## 13. Failure/race checklist
@@ -266,4 +266,4 @@ consumer UUID hoặc submission ID làm metric label có cardinality cao.
 | JMAP request/retry/parser | `dataplane/src/executor/mail/processor/jmap.rs` |
 | Centralized tests | `dataplane/src/executor/mail/test/batcher.rs`, `test/jmap.rs`, `test/stream_processor.rs` |
 | Broker settlement | `dataplane/src/executor/mail/runtime/{kafka,redis_stream,nats_jetstream,rabbitmq}.rs` |
-| Workload monitoring/report | `dataplane/src/executor/mail/supervisor/` |
+| Consumer/infrastructure reporting | `dataplane/src/executor/mail/supervisor/` |

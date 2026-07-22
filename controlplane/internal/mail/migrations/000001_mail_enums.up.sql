@@ -14,7 +14,8 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE n.nspname = current_schema() AND t.typname = 'mail_consumer_desired_state'
     ) THEN
-        CREATE TYPE mail_consumer_desired_state AS ENUM ('paused', 'enabled', 'deleting', 'deleted');
+        -- [COMMENT]: Consumer infrastructure hard-delete sau ACK; không tồn tại soft-delete state.
+        CREATE TYPE mail_consumer_desired_state AS ENUM ('paused', 'enabled', 'deleting');
     END IF;
 
     IF NOT EXISTS (

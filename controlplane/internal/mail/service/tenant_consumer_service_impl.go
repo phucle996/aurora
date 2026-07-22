@@ -36,7 +36,7 @@ func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, command 
 		return nil, mailTaxonomy.ErrInvalidArgument
 	}
 
-	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; code có thể được dùng lại sau soft-delete mà không va PK cũ.
+	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; hard-delete giải phóng code nhưng không cho tái sử dụng identity cũ.
 	consumerID := uuid.New()
 	now := time.Now().UTC()
 	actor := command.ActorUserID

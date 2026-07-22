@@ -11,12 +11,14 @@ CREATE TABLE IF NOT EXISTS mail_outbox_records (
         CHECK (status IN ('PENDING', 'PROCESSING', 'SUCCEEDED', 'FAILED')),
     completed_at TIMESTAMPTZ,
     job_version INT NOT NULL DEFAULT 1,
-    resource_id VARCHAR(64),
+    resource_id VARCHAR(128),
     payload_schema_version INT NOT NULL DEFAULT 1,
     trace_id BYTEA,
     idle INT,
     error_code VARCHAR(100),
     error_message TEXT,
+    -- [COMMENT]: Fences out-of-order PROCESSING/FAILED results across Dataplane retries.
+    result_attempt INT NOT NULL DEFAULT 0 CHECK (result_attempt >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

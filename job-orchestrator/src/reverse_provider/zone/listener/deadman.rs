@@ -5,7 +5,8 @@ use std::time::Instant;
 // [COMMENT]: Import hypervisor DB ops từ provider riêng biệt
 use super::super::super::hypervisor::db as hypervisor_db;
 
-/// [COMMENT]: Kiểm tra Dead Man's Switch Zone-level (30 giây không nhận heartbeat -> disabled)
+/// [COMMENT]: Kiểm tra Dead Man's Switch của generic Zone report.
+/// Timeout chỉ hạ actual health mà generic reporter sở hữu; không tự đổi lifecycle/desired state.
 /// zone_heartbeats: Key: zone_id, Value: (last_report_ts, zone_status, mail_enabled, storage_enabled)
 /// service_metrics_cache: Key: (zone_id, service), Value: (status, capacity, last_update)
 pub async fn check_zone_heartbeats(
@@ -29,39 +30,15 @@ pub async fn check_zone_heartbeats(
         Logger::sys_warn(
             "backpressure_listener.deadman",
             &format!(
-                "Zone {} quá 30 giây không gửi metrics report. Tự động chuyển sang status: 'disabled'.",
+                "Zone {} quá 30 giây không gửi generic metrics report; giữ nguyên desired/lifecycle và hạ owned actual health.",
                 zone_id
             ),
             "Heartbeat Timeout (Dead Man's Switch Triggered)",
         );
 
-        // [COMMENT]: Cập nhật DB chuyển zone sang disabled và disabled mail/storage service (Bypass CP)
-        let _ =
-            super::super::db::update_zone_status(&config.database_url, &zone_id, "disabled").await;
-        let _ = super::super::db::update_zone_service_status(
-            &config.database_url,
-            &zone_id,
-            "mail",
-            false,
-        )
-        .await;
-        let _ = super::super::db::update_zone_service_status(
-            &config.database_url,
-            &zone_id,
-            "storage",
-            false,
-        )
-        .await;
-
-        // [COMMENT]: Cập nhật metrics service sập hoàn toàn về down/0 capacity
-        let _ = super::super::db::update_zone_service_metrics(
-            &config.database_url,
-            &zone_id,
-            "mail",
-            "down",
-            0,
-        )
-        .await;
+        // [COMMENT]: Dead-man report không có quyền thay Zone lifecycle hoặc desired_state;
+        // đó là SRE command boundary. Mail actual_state cũng thuộc dedicated infra projection.
+        // Generic Zone reporter chỉ được hạ actual state của workload mà nó vẫn sở hữu.
         let _ = super::super::db::update_zone_service_metrics(
             &config.database_url,
             &zone_id,
@@ -73,20 +50,13 @@ pub async fn check_zone_heartbeats(
 
         // [COMMENT]: Reset metrics cache để tránh stale data khi zone hồi phục
         service_metrics_cache.insert(
-            (zone_id.clone(), "mail".to_string()),
-            ("down".to_string(), 0, Instant::now()),
-        );
-        service_metrics_cache.insert(
             (zone_id.clone(), "storage".to_string()),
             ("down".to_string(), 0, Instant::now()),
         );
 
-        // [COMMENT]: Đồng bộ cache RAM: reset timer & tắt toàn bộ service flags
+        // [COMMENT]: Reset timer tránh lặp log/write mỗi loop; giữ nguyên lifecycle và desired flags.
         if let Some(val) = zone_heartbeats.get_mut(&zone_id) {
-            val.0 = Instant::now(); // Reset timer để tránh lặp lại Dead Man's Switch
-            val.1 = "disabled".to_string();
-            val.2 = false;
-            val.3 = false;
+            val.0 = Instant::now();
         }
     }
 }

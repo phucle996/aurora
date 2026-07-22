@@ -64,14 +64,14 @@ stateDiagram-v2
     planned --> disabled : SRE disable
     
     active --> draining : SRE drain OR Decision Engine (enabled service down)
-    active --> disabled : Dead Man's Switch (timeout 30s)
+    active --> disabled : SRE disable
     
     draining --> active : SRE activate OR Recovery
     draining --> maintenance : SRE maintenance
-    draining --> disabled : SRE disable OR Dead Man's Switch (timeout 30s)
+    draining --> disabled : SRE disable
     
     maintenance --> active : SRE activate
-    maintenance --> disabled : Dead Man's Switch (timeout 30s)
+    maintenance --> disabled : SRE disable
     
     disabled --> planned : SRE recover (to buffer healthcheck)
     disabled --> [*] : DELETE (if no active services)
@@ -81,11 +81,11 @@ stateDiagram-v2
 
 | Trạng thái | Ý nghĩa | Code / Reference quan trọng |
 |:---|:---|:---|
-| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Workload monitor check kết nối nhẹ, bỏ qua check hàng đợi: [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L119). |
-| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ Platform L1: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103).<br/>Workload monitor chạy full health check đo đạc hiệu năng: [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L126). |
+| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80). Mail infrastructure reporter vẫn ghi snapshot node và probe JMAP để SRE quan sát trước khi activate: [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs). |
+| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ Platform L1: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103). Mail infrastructure reporter tổng hợp node, consumer pressure và Stalwart health: [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs). |
 | **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L29). |
 | **`maintenance`** | Zone bảo trì | Chặn kéo Job mới, chạy nốt worker pool: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Cho phép SRE update service toggle desired_state: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L434). |
-| **`disabled`** | Vô hiệu hóa hoàn toàn | Workload monitor tắt hẳn, status=down: [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L94).<br/>Kích hoạt tự động khi zone mất tín hiệu quá 30s: [`listener.rs`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L383).<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
+| **`disabled`** | Vô hiệu hóa hoàn toàn | Dataplane không kéo job mới; infrastructure reporter vẫn có thể báo snapshot để SRE phân biệt disabled có chủ đích với mất kết nối. Dead-man không tự đổi lifecycle hoặc `desired_state`.<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
 
 **Ràng buộc & Kiểm tra chuyển đổi:**
 * **Kiểm tra nghiệp vụ (Go Map)**: Được xác định qua bảng ánh xạ `allowed` map tại [`zone_service.go#UpdateZoneStatus()`](../../controlplane/internal/hierarchy/service/zone_service.go#L141).
@@ -119,10 +119,10 @@ Trạng thái đo đạc và phản ánh sức khỏe thực tế (actual_state)
 | Trạng thái | Ý nghĩa | Điều kiện chuyển dịch / Telemetry Source | Code / Reference cập nhật vào DB SoT |
 |:---|:---|:---|:---|
 | **`unknown`** | Chưa nhận được báo cáo tài nguyên | Giá trị mặc định khi khởi tạo hoặc chưa có report push về. | [`zone_repo.go#CreateZone()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219) |
-| **`healthy`** | Hoạt động bình thường, ổn định | JMAP Core/echo thành công và local batch queue còn capacity tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs). | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
-| **`degraded`** | Gặp sự cố hiệu năng hoặc nghẽn | Queue SMTP quá tải hoặc lỗi đọc HTTP metrics Stalwart tại [`monitor.rs`](../../dataplane/src/executor/mail/core/monitor.rs#L138). | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
-| **`unhealthy`** | Lỗi logic / tài nguyên cạn kiệt | Lỗi vận hành hoặc quá tải nghiêm trọng kéo dài. | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L261) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
-| **`down`** | Offline hoàn toàn | JMAP health/auth thất bại tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs) hoặc kích hoạt bởi Dead Man's Switch. | [`listener.rs#run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L393) & [`db.rs`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) |
+| **`healthy`** | Hoạt động bình thường, ổn định | Fresh successful JMAP probe và batch queue còn capacity. | Dedicated [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs) → [`infra_report.rs`](../../job-orchestrator/src/reverse_provider/mail/infra_report.rs) |
+| **`degraded`** | Gặp sự cố hiệu năng hoặc nghẽn | Một phần Dataplane probe lỗi, queue pressure cao hoặc inventory bị truncate. | Dedicated Mail infra projection |
+| **`unhealthy`** | Lỗi logic / probe chưa đủ bằng chứng | Physical node chưa có fresh probe hoặc current snapshot không hoàn chỉnh. | Dedicated Mail infra projection |
+| **`down`** | Offline hoàn toàn | Không còn fresh successful JMAP probe hoặc service bị disable. | Dedicated Mail infra projection |
 
 ---
 
@@ -313,8 +313,8 @@ sequenceDiagram
 
 1. **Khởi chạy container**: Tiến trình Dataplane bootstrap tại [`app.rs#AppContainer::start()`](../../dataplane/src/app.rs#L55).
 2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) đọc `zone.metadata` từ `AURORA_ZONE_CONFIG`. Vì trạng thái là `planned`, consumer ngắt kéo Job mới và sleep 1s. Metadata thiếu/hỏng hoặc KV unavailable cũng dừng ingestion theo fail-closed.
-3. **Workload Health Check**:
-   * Monitor tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs) dùng JMAP health cùng local pending/in-flight batch pressure để báo cáo capacity; không còn LMTP socket probe.
+3. **Mail Infrastructure Report**:
+   * [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs) dùng JMAP health cùng local pending/in-flight batch pressure để báo cáo capacity; không còn LMTP socket probe.
    * Node Resource Monitor ghi snapshot từng pod vào `AURORA_ZONE_HEALTH/zone.node.<node_id>`; Gateway bỏ snapshot cũ hơn 15 giây.
 
 ---
@@ -494,10 +494,10 @@ sequenceDiagram
     KV-->>Consumer: status: active (hoặc disabled/draining)
     alt Status changed to active
         Consumer->>Consumer: Bắt đầu / Tiếp tục kéo job
-        Monitor->>Monitor: Kích hoạt full workload health check
+        Monitor->>Monitor: Tiếp tục report actual state và workload pressure
     else Status changed to disabled
         Consumer->>Consumer: Tạm dừng kéo job mới
-        Monitor->>Monitor: Tắt hoàn toàn health check
+        Monitor->>Monitor: Tiếp tục report snapshot; không tự đổi desired/lifecycle
     end
 ```
 
@@ -505,7 +505,7 @@ sequenceDiagram
 2. **Dataplane KV Sync**: DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) merge trạng thái mới vào `AURORA_ZONE_CONFIG/zone.metadata` bằng expected revision.
 3. **State Machine Reaction**:
    * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
-   * **Workload Health Check**: [`monitor.rs#start()`](../../dataplane/src/executor/mail/core/monitor.rs#L20) nếu đọc thấy status `active` sẽ khôi phục quét metrics đầy đủ, nếu là `disabled` sẽ tắt hẳn monitor.
+   * **Mail Infrastructure Reporter**: [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs) tiếp tục ghi nhận actual state và freshness ở mọi lifecycle; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
 
 ---
 
@@ -841,19 +841,19 @@ Cụm Dataplane dùng rotating lease trong `AURORA_ZONE_COORDINATION` để mỗ
 
 ---
 
-### 11.1 Workload Monitor (Mail / Stalwart)
+### 11.1 Infrastructure Reporter (Mail / Stalwart)
 
-Báo cáo trạng thái Mail JMAP và local batch pressure. Triển khai tại [`monitor.rs`](../../dataplane/src/executor/mail/monitor.rs).
+Báo cáo trạng thái Mail JMAP, local batch pressure, Dataplane node và Stalwart registry. Triển khai tại [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant DP as 💻 DP (MailWorkloadMonitor)
+    participant DP as 💻 DP (Mail infra reporter)
     participant KV as 🗄️ NATS Zone KV
     participant SW as 📧 Stalwart JMAP HTTP
 
     Note over DP: Định kỳ 5s
-    DP->>KV: CAS acquire lease.health.mail
+    DP->>KV: CAS acquire lease.mail.infra.report
     DP->>KV: GET zone.metadata
     KV-->>DP: {status, services.mail}
 
@@ -1093,13 +1093,16 @@ if mail_ok && storage_ok && is_recovered {
 
 ## 13. Dead Man's Switch
 
-Lớp bảo vệ chủ động tự động hủy kích hoạt Zone hoặc Node nếu mất kết nối hoặc không nhận được tín hiệu heartbeat.
+Lớp bảo vệ hạ actual operational health nếu mất heartbeat. Nó không có quyền đổi Zone lifecycle hoặc
+`zone_services.desired_state`; hai loại write đó chỉ thuộc SRE command boundary.
 
 ---
 
 ### 13.1 Zone-Level (30 giây)
 
-Nếu một phân vùng không gửi báo cáo ZoneReport sau 30 giây, Orchestrator sẽ tự động cập nhật phân vùng đó thành `disabled`. Triển khai tại [`listener.rs#L362-L413`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L362-L413).
+Nếu một phân vùng không gửi generic ZoneReport sau 30 giây, Orchestrator giữ nguyên Zone status và desired
+service flags, chỉ hạ actual health của workload do generic reporter sở hữu. Mail actual health thuộc dedicated
+`mail:infra:reports` projection, không được ghi từ dead-man generic.
 
 ```mermaid
 sequenceDiagram
@@ -1111,10 +1114,9 @@ sequenceDiagram
     loop Every 2 seconds (XREADGROUP cycle)
         JO_Loop->>Cache: Đọc last_report của các active zones
         alt now - last_report > 30s (DP Node crash / Mất mạng)
-            JO_Loop->>DB: update_zone_status(db, zone_id, 'disabled')
-            JO_Loop->>DB: update_zone_service_metrics(db, zone_id, 'mail', 'down', 0)
-            JO_Loop->>Cache: Cập nhật trạng thái zone = 'disabled'
-            Note over JO_Loop, Cache: Zone bị ngắt hoạt động hoàn toàn
+            JO_Loop->>DB: update owned generic service actual health only
+            JO_Loop->>Cache: Reset timeout; preserve lifecycle + desired flags
+            Note over JO_Loop, Cache: SRE ownership không bị reporter vượt quyền
         else Hoạt động bình thường (now - last_report <= 30s)
             Note over JO_Loop: Tiếp tục chu kỳ lặp
         end
@@ -1163,7 +1165,7 @@ sequenceDiagram
 | 8 | **actual_state IOPS spam** (ghi mỗi 5s) | Throttle: 3 điều kiện (status / delta>10 / >120s) | `listener.rs#L242-L258` |
 | 9 | **Zone flapping** (active↔congested) | Hysteresis: overload threshold > recovery threshold | `decision.rs#L33-L38` |
 | 10 | **Miss CDC khi cold start** | `counter = 720` → reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/zone_gateway/reporter.rs` |
-| 11 | **Zombie zone** (DP crash, CP không biết) | Dead Man's Switch 30s → tự set `disabled` | `listener.rs#L362-L413` |
+| 11 | **Zombie generic Zone report** | Dead Man's Switch hạ owned actual health; lifecycle/desired chỉ SRE được sửa | `reverse_provider/zone/listener/deadman.rs` |
 | 12 | **Invalid state transition** | State machine map + DB CTE guard | `zone_repo.go#L338-L370` |
 | 13 | **Cascade DELETE workspace** | `ON DELETE RESTRICT` trên `workspaces.zone_id` | Migration L106 |
 | 14 | **Duplicate zone code** | `UNIQUE (code)` → `ErrCodeAlreadyExists` | `zone_repo.go#L239-L244` |
@@ -1195,7 +1197,8 @@ sequenceDiagram
 | Bucket / Key | Type | Retention | Nội Dung | Owner |
 |:---|:---|:---|:---|:---|
 | `AURORA_ZONE_CONFIG/zone.metadata` | JSON KV | Persistent, history 1 | `{status, services, updated_at}` | DP CDC/Reconciliation |
-| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | MailWorkloadMonitor |
+| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | Mail infra reporter |
+| `AURORA_ZONE_HEALTH/mail.infra.node.<node_id>` | JSON KV | Max age 24h; logical stale by report TTL | Per-process Mail pressure/probe snapshot | Every Dataplane Mail pod |
 | `AURORA_ZONE_HEALTH/zone.service.storage` | JSON KV | Max age 24h, history 1 | MinIO status/capacity/fencing | StorageWorkloadMonitor |
 | `AURORA_ZONE_HEALTH/zone.service.hypervisor` | JSON KV | Max age 24h, history 1 | Hypervisor node snapshot/fencing | HypervisorMonitor |
 | `AURORA_ZONE_HEALTH/zone.node.<node_id>` | JSON KV | Max age 24h; logical stale 15s | CPU, RAM, workers, updated_at | ResourceMonitor |

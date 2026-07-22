@@ -43,7 +43,7 @@ spec:
               imagePullPolicy: IfNotPresent
               env:
                 # [COMMENT]: Secret dùng DB role riêng, chỉ có CONNECT/USAGE/SELECT/DELETE trên
-                # ba outbox table và mail runtime TTL read-model table.
+                # ba outbox table và hai Mail TTL current read-model table.
                 - name: DATABASE_URL
                   valueFrom:
                     secretKeyRef:
@@ -131,6 +131,29 @@ spec:
                       RETURNING target.consumer_id
                   )
                   SELECT 'mail.mail_consumer_runtime_reports' AS table_name, COUNT(*) AS deleted_rows
+                  FROM deleted;
+                  COMMIT;
+                  SQL
+
+                  psql "$DATABASE_URL" -X --set=ON_ERROR_STOP=1 <<'SQL' || failures=1
+                  BEGIN;
+                  SET LOCAL lock_timeout = '250ms';
+                  SET LOCAL statement_timeout = '5s';
+                  SET LOCAL idle_in_transaction_session_timeout = '5s';
+                  WITH candidates AS (
+                      SELECT zone_id
+                      FROM mail.mail_infrastructure_reports
+                      WHERE expires_at < NOW() - INTERVAL '1 hour'
+                      ORDER BY expires_at, zone_id
+                      FOR UPDATE SKIP LOCKED
+                      LIMIT 200
+                  ), deleted AS (
+                      DELETE FROM mail.mail_infrastructure_reports AS target
+                      USING candidates
+                      WHERE target.zone_id = candidates.zone_id
+                      RETURNING target.zone_id
+                  )
+                  SELECT 'mail.mail_infrastructure_reports' AS table_name, COUNT(*) AS deleted_rows
                   FROM deleted;
                   COMMIT;
                   SQL

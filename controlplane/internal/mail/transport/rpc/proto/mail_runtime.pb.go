@@ -189,6 +189,113 @@ func (MailStreamType) EnumDescriptor() ([]byte, []int) {
 	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{2}
 }
 
+type MailInfrastructureState int32
+
+const (
+	MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED MailInfrastructureState = 0
+	MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_HEALTHY     MailInfrastructureState = 1
+	MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_DEGRADED    MailInfrastructureState = 2
+	MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_UNHEALTHY   MailInfrastructureState = 3
+	MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_DOWN        MailInfrastructureState = 4
+)
+
+// Enum value maps for MailInfrastructureState.
+var (
+	MailInfrastructureState_name = map[int32]string{
+		0: "MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED",
+		1: "MAIL_INFRASTRUCTURE_STATE_HEALTHY",
+		2: "MAIL_INFRASTRUCTURE_STATE_DEGRADED",
+		3: "MAIL_INFRASTRUCTURE_STATE_UNHEALTHY",
+		4: "MAIL_INFRASTRUCTURE_STATE_DOWN",
+	}
+	MailInfrastructureState_value = map[string]int32{
+		"MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED": 0,
+		"MAIL_INFRASTRUCTURE_STATE_HEALTHY":     1,
+		"MAIL_INFRASTRUCTURE_STATE_DEGRADED":    2,
+		"MAIL_INFRASTRUCTURE_STATE_UNHEALTHY":   3,
+		"MAIL_INFRASTRUCTURE_STATE_DOWN":        4,
+	}
+)
+
+func (x MailInfrastructureState) Enum() *MailInfrastructureState {
+	p := new(MailInfrastructureState)
+	*p = x
+	return p
+}
+
+func (x MailInfrastructureState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MailInfrastructureState) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[3].Descriptor()
+}
+
+func (MailInfrastructureState) Type() protoreflect.EnumType {
+	return &file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[3]
+}
+
+func (x MailInfrastructureState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MailInfrastructureState.Descriptor instead.
+func (MailInfrastructureState) EnumDescriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{3}
+}
+
+type MailStalwartNodeState int32
+
+const (
+	MailStalwartNodeState_MAIL_STALWART_NODE_STATE_UNSPECIFIED MailStalwartNodeState = 0
+	MailStalwartNodeState_MAIL_STALWART_NODE_STATE_ACTIVE      MailStalwartNodeState = 1
+	MailStalwartNodeState_MAIL_STALWART_NODE_STATE_STALE       MailStalwartNodeState = 2
+	MailStalwartNodeState_MAIL_STALWART_NODE_STATE_INACTIVE    MailStalwartNodeState = 3
+)
+
+// Enum value maps for MailStalwartNodeState.
+var (
+	MailStalwartNodeState_name = map[int32]string{
+		0: "MAIL_STALWART_NODE_STATE_UNSPECIFIED",
+		1: "MAIL_STALWART_NODE_STATE_ACTIVE",
+		2: "MAIL_STALWART_NODE_STATE_STALE",
+		3: "MAIL_STALWART_NODE_STATE_INACTIVE",
+	}
+	MailStalwartNodeState_value = map[string]int32{
+		"MAIL_STALWART_NODE_STATE_UNSPECIFIED": 0,
+		"MAIL_STALWART_NODE_STATE_ACTIVE":      1,
+		"MAIL_STALWART_NODE_STATE_STALE":       2,
+		"MAIL_STALWART_NODE_STATE_INACTIVE":    3,
+	}
+)
+
+func (x MailStalwartNodeState) Enum() *MailStalwartNodeState {
+	p := new(MailStalwartNodeState)
+	*p = x
+	return p
+}
+
+func (x MailStalwartNodeState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MailStalwartNodeState) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[4].Descriptor()
+}
+
+func (MailStalwartNodeState) Type() protoreflect.EnumType {
+	return &file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes[4]
+}
+
+func (x MailStalwartNodeState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MailStalwartNodeState.Descriptor instead.
+func (MailStalwartNodeState) EnumDescriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{4}
+}
+
 type MailEventMetadataV1 struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// [COMMENT]: UUIDv5 16-byte id, deterministic từ aggregate id + version + event type.
@@ -806,7 +913,7 @@ type MailConsumerRuntimeReportedV1 struct {
 	// [COMMENT]: Config version mà runtime thực tế đã observe/apply.
 	ConfigVersion uint64                   `protobuf:"varint,3,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
 	RuntimeState  MailConsumerRuntimeState `protobuf:"varint,4,opt,name=runtime_state,json=runtimeState,proto3,enum=mail.runtime.v1.MailConsumerRuntimeState" json:"runtime_state,omitempty"`
-	// [COMMENT]: Pod/instance opaque id; chỉ dùng diagnostics, không dùng làm metric label.
+	// [COMMENT]: Logical runtime instance (V1 là slot:<n>); không dùng làm metric label.
 	InstanceId string `protobuf:"bytes,5,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
 	// [COMMENT]: Generation tăng sau mỗi COW swap/restart để fence runtime cũ.
 	RuntimeGeneration uint64 `protobuf:"varint,6,opt,name=runtime_generation,json=runtimeGeneration,proto3" json:"runtime_generation,omitempty"`
@@ -818,8 +925,12 @@ type MailConsumerRuntimeReportedV1 struct {
 	ErrorMessage string `protobuf:"bytes,9,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	// [COMMENT]: Monotonic trong cùng instance+generation; tạo event id mới cho từng heartbeat.
 	ReportSequence uint64 `protobuf:"varint,10,opt,name=report_sequence,json=reportSequence,proto3" json:"report_sequence,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// [COMMENT]: Physical Dataplane pod đang giữ logical slot; chỉ dùng cho Admin infrastructure diagnostics.
+	RuntimeNodeId string `protobuf:"bytes,11,opt,name=runtime_node_id,json=runtimeNodeId,proto3" json:"runtime_node_id,omitempty"`
+	// [COMMENT]: UUID 16-byte sinh một lần mỗi process boot để phân biệt pod restart cùng hostname.
+	RuntimeBootId []byte `protobuf:"bytes,12,opt,name=runtime_boot_id,json=runtimeBootId,proto3" json:"runtime_boot_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MailConsumerRuntimeReportedV1) Reset() {
@@ -922,6 +1033,390 @@ func (x *MailConsumerRuntimeReportedV1) GetReportSequence() uint64 {
 	return 0
 }
 
+func (x *MailConsumerRuntimeReportedV1) GetRuntimeNodeId() string {
+	if x != nil {
+		return x.RuntimeNodeId
+	}
+	return ""
+}
+
+func (x *MailConsumerRuntimeReportedV1) GetRuntimeBootId() []byte {
+	if x != nil {
+		return x.RuntimeBootId
+	}
+	return nil
+}
+
+// [COMMENT]: Consumer report có cardinality cao nên relay gom bounded delta vào một Redis Stream entry.
+type MailConsumerRuntimeReportBatchV1 struct {
+	state         protoimpl.MessageState           `protogen:"open.v1"`
+	Reports       []*MailConsumerRuntimeReportedV1 `protobuf:"bytes,1,rep,name=reports,proto3" json:"reports,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MailConsumerRuntimeReportBatchV1) Reset() {
+	*x = MailConsumerRuntimeReportBatchV1{}
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailConsumerRuntimeReportBatchV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailConsumerRuntimeReportBatchV1) ProtoMessage() {}
+
+func (x *MailConsumerRuntimeReportBatchV1) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailConsumerRuntimeReportBatchV1.ProtoReflect.Descriptor instead.
+func (*MailConsumerRuntimeReportBatchV1) Descriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *MailConsumerRuntimeReportBatchV1) GetReports() []*MailConsumerRuntimeReportedV1 {
+	if x != nil {
+		return x.Reports
+	}
+	return nil
+}
+
+type MailDataplaneNodeSnapshotV1 struct {
+	state               protoimpl.MessageState  `protogen:"open.v1"`
+	NodeId              string                  `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	BootId              []byte                  `protobuf:"bytes,2,opt,name=boot_id,json=bootId,proto3" json:"boot_id,omitempty"`
+	State               MailInfrastructureState `protobuf:"varint,3,opt,name=state,proto3,enum=mail.runtime.v1.MailInfrastructureState" json:"state,omitempty"`
+	Capacity            uint32                  `protobuf:"varint,4,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	PendingItems        uint64                  `protobuf:"varint,5,opt,name=pending_items,json=pendingItems,proto3" json:"pending_items,omitempty"`
+	InFlightBatches     uint64                  `protobuf:"varint,6,opt,name=in_flight_batches,json=inFlightBatches,proto3" json:"in_flight_batches,omitempty"`
+	ActiveConsumerSlots uint32                  `protobuf:"varint,7,opt,name=active_consumer_slots,json=activeConsumerSlots,proto3" json:"active_consumer_slots,omitempty"`
+	JmapReachable       bool                    `protobuf:"varint,8,opt,name=jmap_reachable,json=jmapReachable,proto3" json:"jmap_reachable,omitempty"`
+	LastProbeAtUnixMs   int64                   `protobuf:"varint,9,opt,name=last_probe_at_unix_ms,json=lastProbeAtUnixMs,proto3" json:"last_probe_at_unix_ms,omitempty"`
+	ObservedAtUnixMs    int64                   `protobuf:"varint,10,opt,name=observed_at_unix_ms,json=observedAtUnixMs,proto3" json:"observed_at_unix_ms,omitempty"`
+	ErrorCode           string                  `protobuf:"bytes,11,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *MailDataplaneNodeSnapshotV1) Reset() {
+	*x = MailDataplaneNodeSnapshotV1{}
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailDataplaneNodeSnapshotV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailDataplaneNodeSnapshotV1) ProtoMessage() {}
+
+func (x *MailDataplaneNodeSnapshotV1) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailDataplaneNodeSnapshotV1.ProtoReflect.Descriptor instead.
+func (*MailDataplaneNodeSnapshotV1) Descriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetBootId() []byte {
+	if x != nil {
+		return x.BootId
+	}
+	return nil
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetState() MailInfrastructureState {
+	if x != nil {
+		return x.State
+	}
+	return MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetCapacity() uint32 {
+	if x != nil {
+		return x.Capacity
+	}
+	return 0
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetPendingItems() uint64 {
+	if x != nil {
+		return x.PendingItems
+	}
+	return 0
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetInFlightBatches() uint64 {
+	if x != nil {
+		return x.InFlightBatches
+	}
+	return 0
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetActiveConsumerSlots() uint32 {
+	if x != nil {
+		return x.ActiveConsumerSlots
+	}
+	return 0
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetJmapReachable() bool {
+	if x != nil {
+		return x.JmapReachable
+	}
+	return false
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetLastProbeAtUnixMs() int64 {
+	if x != nil {
+		return x.LastProbeAtUnixMs
+	}
+	return 0
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetObservedAtUnixMs() int64 {
+	if x != nil {
+		return x.ObservedAtUnixMs
+	}
+	return 0
+}
+
+func (x *MailDataplaneNodeSnapshotV1) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+type MailStalwartNodeSnapshotV1 struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	NodeId            uint64                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Hostname          string                 `protobuf:"bytes,2,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	State             MailStalwartNodeState  `protobuf:"varint,3,opt,name=state,proto3,enum=mail.runtime.v1.MailStalwartNodeState" json:"state,omitempty"`
+	LastRenewalUnixMs int64                  `protobuf:"varint,4,opt,name=last_renewal_unix_ms,json=lastRenewalUnixMs,proto3" json:"last_renewal_unix_ms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *MailStalwartNodeSnapshotV1) Reset() {
+	*x = MailStalwartNodeSnapshotV1{}
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailStalwartNodeSnapshotV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailStalwartNodeSnapshotV1) ProtoMessage() {}
+
+func (x *MailStalwartNodeSnapshotV1) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailStalwartNodeSnapshotV1.ProtoReflect.Descriptor instead.
+func (*MailStalwartNodeSnapshotV1) Descriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *MailStalwartNodeSnapshotV1) GetNodeId() uint64 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *MailStalwartNodeSnapshotV1) GetHostname() string {
+	if x != nil {
+		return x.Hostname
+	}
+	return ""
+}
+
+func (x *MailStalwartNodeSnapshotV1) GetState() MailStalwartNodeState {
+	if x != nil {
+		return x.State
+	}
+	return MailStalwartNodeState_MAIL_STALWART_NODE_STATE_UNSPECIFIED
+}
+
+func (x *MailStalwartNodeSnapshotV1) GetLastRenewalUnixMs() int64 {
+	if x != nil {
+		return x.LastRenewalUnixMs
+	}
+	return 0
+}
+
+// [COMMENT]: Low-cardinality current snapshot; không chứa endpoint, credential hay customer mail data.
+type MailInfrastructureSnapshotReportedV1 struct {
+	state              protoimpl.MessageState         `protogen:"open.v1"`
+	Metadata           *MailEventMetadataV1           `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	ReportGeneration   uint64                         `protobuf:"varint,2,opt,name=report_generation,json=reportGeneration,proto3" json:"report_generation,omitempty"`
+	ReportSequence     uint64                         `protobuf:"varint,3,opt,name=report_sequence,json=reportSequence,proto3" json:"report_sequence,omitempty"`
+	ServiceState       MailInfrastructureState        `protobuf:"varint,4,opt,name=service_state,json=serviceState,proto3,enum=mail.runtime.v1.MailInfrastructureState" json:"service_state,omitempty"`
+	Capacity           uint32                         `protobuf:"varint,5,opt,name=capacity,proto3" json:"capacity,omitempty"`
+	PendingItems       uint64                         `protobuf:"varint,6,opt,name=pending_items,json=pendingItems,proto3" json:"pending_items,omitempty"`
+	InFlightBatches    uint64                         `protobuf:"varint,7,opt,name=in_flight_batches,json=inFlightBatches,proto3" json:"in_flight_batches,omitempty"`
+	ProbeNodeId        string                         `protobuf:"bytes,8,opt,name=probe_node_id,json=probeNodeId,proto3" json:"probe_node_id,omitempty"`
+	DataplaneNodes     []*MailDataplaneNodeSnapshotV1 `protobuf:"bytes,9,rep,name=dataplane_nodes,json=dataplaneNodes,proto3" json:"dataplane_nodes,omitempty"`
+	StalwartNodes      []*MailStalwartNodeSnapshotV1  `protobuf:"bytes,10,rep,name=stalwart_nodes,json=stalwartNodes,proto3" json:"stalwart_nodes,omitempty"`
+	InventoryTruncated bool                           `protobuf:"varint,11,opt,name=inventory_truncated,json=inventoryTruncated,proto3" json:"inventory_truncated,omitempty"`
+	ErrorCode          string                         `protobuf:"bytes,12,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) Reset() {
+	*x = MailInfrastructureSnapshotReportedV1{}
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailInfrastructureSnapshotReportedV1) ProtoMessage() {}
+
+func (x *MailInfrastructureSnapshotReportedV1) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailInfrastructureSnapshotReportedV1.ProtoReflect.Descriptor instead.
+func (*MailInfrastructureSnapshotReportedV1) Descriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetMetadata() *MailEventMetadataV1 {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetReportGeneration() uint64 {
+	if x != nil {
+		return x.ReportGeneration
+	}
+	return 0
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetReportSequence() uint64 {
+	if x != nil {
+		return x.ReportSequence
+	}
+	return 0
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetServiceState() MailInfrastructureState {
+	if x != nil {
+		return x.ServiceState
+	}
+	return MailInfrastructureState_MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetCapacity() uint32 {
+	if x != nil {
+		return x.Capacity
+	}
+	return 0
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetPendingItems() uint64 {
+	if x != nil {
+		return x.PendingItems
+	}
+	return 0
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetInFlightBatches() uint64 {
+	if x != nil {
+		return x.InFlightBatches
+	}
+	return 0
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetProbeNodeId() string {
+	if x != nil {
+		return x.ProbeNodeId
+	}
+	return ""
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetDataplaneNodes() []*MailDataplaneNodeSnapshotV1 {
+	if x != nil {
+		return x.DataplaneNodes
+	}
+	return nil
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetStalwartNodes() []*MailStalwartNodeSnapshotV1 {
+	if x != nil {
+		return x.StalwartNodes
+	}
+	return nil
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetInventoryTruncated() bool {
+	if x != nil {
+		return x.InventoryTruncated
+	}
+	return false
+}
+
+func (x *MailInfrastructureSnapshotReportedV1) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
 type MailTemplateVersionPublishedV1 struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Metadata *MailEventMetadataV1   `protobuf:"bytes,1,opt,name=metadata,proto3" json:"metadata,omitempty"`
@@ -941,7 +1436,7 @@ type MailTemplateVersionPublishedV1 struct {
 
 func (x *MailTemplateVersionPublishedV1) Reset() {
 	*x = MailTemplateVersionPublishedV1{}
-	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[9]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -953,7 +1448,7 @@ func (x *MailTemplateVersionPublishedV1) String() string {
 func (*MailTemplateVersionPublishedV1) ProtoMessage() {}
 
 func (x *MailTemplateVersionPublishedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[9]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -966,7 +1461,7 @@ func (x *MailTemplateVersionPublishedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailTemplateVersionPublishedV1.ProtoReflect.Descriptor instead.
 func (*MailTemplateVersionPublishedV1) Descriptor() ([]byte, []int) {
-	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{9}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *MailTemplateVersionPublishedV1) GetMetadata() *MailEventMetadataV1 {
@@ -1032,7 +1527,7 @@ type MailTemplateDeletedV1 struct {
 
 func (x *MailTemplateDeletedV1) Reset() {
 	*x = MailTemplateDeletedV1{}
-	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[10]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1044,7 +1539,7 @@ func (x *MailTemplateDeletedV1) String() string {
 func (*MailTemplateDeletedV1) ProtoMessage() {}
 
 func (x *MailTemplateDeletedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[10]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1057,7 +1552,7 @@ func (x *MailTemplateDeletedV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailTemplateDeletedV1.ProtoReflect.Descriptor instead.
 func (*MailTemplateDeletedV1) Descriptor() ([]byte, []int) {
-	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{10}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *MailTemplateDeletedV1) GetMetadata() *MailEventMetadataV1 {
@@ -1100,7 +1595,7 @@ type MailProjectionReconcileCompletedV1 struct {
 
 func (x *MailProjectionReconcileCompletedV1) Reset() {
 	*x = MailProjectionReconcileCompletedV1{}
-	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[11]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1112,7 +1607,7 @@ func (x *MailProjectionReconcileCompletedV1) String() string {
 func (*MailProjectionReconcileCompletedV1) ProtoMessage() {}
 
 func (x *MailProjectionReconcileCompletedV1) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[11]
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1125,7 +1620,7 @@ func (x *MailProjectionReconcileCompletedV1) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use MailProjectionReconcileCompletedV1.ProtoReflect.Descriptor instead.
 func (*MailProjectionReconcileCompletedV1) Descriptor() ([]byte, []int) {
-	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{11}
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *MailProjectionReconcileCompletedV1) GetMetadata() *MailEventMetadataV1 {
@@ -1206,7 +1701,7 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"consumerId\x12%\n" +
 	"\x0econfig_version\x18\x03 \x01(\x04R\rconfigVersion\x122\n" +
 	"\x15drain_timeout_seconds\x18\x04 \x01(\rR\x13drainTimeoutSeconds\x12\x16\n" +
-	"\x06reason\x18\x05 \x01(\tR\x06reason\"\xd9\x03\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\"\xa9\x04\n" +
 	"\x1dMailConsumerRuntimeReportedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +
 	"\vconsumer_id\x18\x02 \x01(\fR\n" +
@@ -1221,7 +1716,45 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"error_code\x18\b \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\t \x01(\tR\ferrorMessage\x12'\n" +
 	"\x0freport_sequence\x18\n" +
-	" \x01(\x04R\x0ereportSequence\"\xde\x02\n" +
+	" \x01(\x04R\x0ereportSequence\x12&\n" +
+	"\x0fruntime_node_id\x18\v \x01(\tR\rruntimeNodeId\x12&\n" +
+	"\x0fruntime_boot_id\x18\f \x01(\fR\rruntimeBootId\"l\n" +
+	" MailConsumerRuntimeReportBatchV1\x12H\n" +
+	"\areports\x18\x01 \x03(\v2..mail.runtime.v1.MailConsumerRuntimeReportedV1R\areports\"\xd7\x03\n" +
+	"\x1bMailDataplaneNodeSnapshotV1\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x17\n" +
+	"\aboot_id\x18\x02 \x01(\fR\x06bootId\x12>\n" +
+	"\x05state\x18\x03 \x01(\x0e2(.mail.runtime.v1.MailInfrastructureStateR\x05state\x12\x1a\n" +
+	"\bcapacity\x18\x04 \x01(\rR\bcapacity\x12#\n" +
+	"\rpending_items\x18\x05 \x01(\x04R\fpendingItems\x12*\n" +
+	"\x11in_flight_batches\x18\x06 \x01(\x04R\x0finFlightBatches\x122\n" +
+	"\x15active_consumer_slots\x18\a \x01(\rR\x13activeConsumerSlots\x12%\n" +
+	"\x0ejmap_reachable\x18\b \x01(\bR\rjmapReachable\x120\n" +
+	"\x15last_probe_at_unix_ms\x18\t \x01(\x03R\x11lastProbeAtUnixMs\x12-\n" +
+	"\x13observed_at_unix_ms\x18\n" +
+	" \x01(\x03R\x10observedAtUnixMs\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\v \x01(\tR\terrorCode\"\xc0\x01\n" +
+	"\x1aMailStalwartNodeSnapshotV1\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\x04R\x06nodeId\x12\x1a\n" +
+	"\bhostname\x18\x02 \x01(\tR\bhostname\x12<\n" +
+	"\x05state\x18\x03 \x01(\x0e2&.mail.runtime.v1.MailStalwartNodeStateR\x05state\x12/\n" +
+	"\x14last_renewal_unix_ms\x18\x04 \x01(\x03R\x11lastRenewalUnixMs\"\x99\x05\n" +
+	"$MailInfrastructureSnapshotReportedV1\x12@\n" +
+	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12+\n" +
+	"\x11report_generation\x18\x02 \x01(\x04R\x10reportGeneration\x12'\n" +
+	"\x0freport_sequence\x18\x03 \x01(\x04R\x0ereportSequence\x12M\n" +
+	"\rservice_state\x18\x04 \x01(\x0e2(.mail.runtime.v1.MailInfrastructureStateR\fserviceState\x12\x1a\n" +
+	"\bcapacity\x18\x05 \x01(\rR\bcapacity\x12#\n" +
+	"\rpending_items\x18\x06 \x01(\x04R\fpendingItems\x12*\n" +
+	"\x11in_flight_batches\x18\a \x01(\x04R\x0finFlightBatches\x12\"\n" +
+	"\rprobe_node_id\x18\b \x01(\tR\vprobeNodeId\x12U\n" +
+	"\x0fdataplane_nodes\x18\t \x03(\v2,.mail.runtime.v1.MailDataplaneNodeSnapshotV1R\x0edataplaneNodes\x12R\n" +
+	"\x0estalwart_nodes\x18\n" +
+	" \x03(\v2+.mail.runtime.v1.MailStalwartNodeSnapshotV1R\rstalwartNodes\x12/\n" +
+	"\x13inventory_truncated\x18\v \x01(\bR\x12inventoryTruncated\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\f \x01(\tR\terrorCode\"\xde\x02\n" +
 	"\x1eMailTemplateVersionPublishedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +
 	"\vtemplate_id\x18\x02 \x01(\tR\n" +
@@ -1259,7 +1792,18 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"\x16MAIL_STREAM_TYPE_KAFKA\x10\x01\x12!\n" +
 	"\x1dMAIL_STREAM_TYPE_REDIS_STREAM\x10\x02\x12#\n" +
 	"\x1fMAIL_STREAM_TYPE_NATS_JETSTREAM\x10\x03\x12\x1d\n" +
-	"\x19MAIL_STREAM_TYPE_RABBITMQ\x10\x04B:Z8controlplane/internal/mail/transport/rpc/proto;mailprotob\x06proto3"
+	"\x19MAIL_STREAM_TYPE_RABBITMQ\x10\x04*\xe0\x01\n" +
+	"\x17MailInfrastructureState\x12)\n" +
+	"%MAIL_INFRASTRUCTURE_STATE_UNSPECIFIED\x10\x00\x12%\n" +
+	"!MAIL_INFRASTRUCTURE_STATE_HEALTHY\x10\x01\x12&\n" +
+	"\"MAIL_INFRASTRUCTURE_STATE_DEGRADED\x10\x02\x12'\n" +
+	"#MAIL_INFRASTRUCTURE_STATE_UNHEALTHY\x10\x03\x12\"\n" +
+	"\x1eMAIL_INFRASTRUCTURE_STATE_DOWN\x10\x04*\xb1\x01\n" +
+	"\x15MailStalwartNodeState\x12(\n" +
+	"$MAIL_STALWART_NODE_STATE_UNSPECIFIED\x10\x00\x12#\n" +
+	"\x1fMAIL_STALWART_NODE_STATE_ACTIVE\x10\x01\x12\"\n" +
+	"\x1eMAIL_STALWART_NODE_STATE_STALE\x10\x02\x12%\n" +
+	"!MAIL_STALWART_NODE_STATE_INACTIVE\x10\x03B:Z8controlplane/internal/mail/transport/rpc/proto;mailprotob\x06proto3"
 
 var (
 	file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescOnce sync.Once
@@ -1273,41 +1817,54 @@ func file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP() []b
 	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescData
 }
 
-var file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes = []any{
-	(MailConsumerDesiredState)(0),              // 0: mail.runtime.v1.MailConsumerDesiredState
-	(MailConsumerRuntimeState)(0),              // 1: mail.runtime.v1.MailConsumerRuntimeState
-	(MailStreamType)(0),                        // 2: mail.runtime.v1.MailStreamType
-	(*MailEventMetadataV1)(nil),                // 3: mail.runtime.v1.MailEventMetadataV1
-	(*MailStreamSourceV1)(nil),                 // 4: mail.runtime.v1.MailStreamSourceV1
-	(*KafkaStreamPayloadV1)(nil),               // 5: mail.runtime.v1.KafkaStreamPayloadV1
-	(*RedisStreamPayloadV1)(nil),               // 6: mail.runtime.v1.RedisStreamPayloadV1
-	(*NatsJetStreamPayloadV1)(nil),             // 7: mail.runtime.v1.NatsJetStreamPayloadV1
-	(*RabbitMqPayloadV1)(nil),                  // 8: mail.runtime.v1.RabbitMqPayloadV1
-	(*MailConsumerUpsertV1)(nil),               // 9: mail.runtime.v1.MailConsumerUpsertV1
-	(*MailConsumerDeleteV1)(nil),               // 10: mail.runtime.v1.MailConsumerDeleteV1
-	(*MailConsumerRuntimeReportedV1)(nil),      // 11: mail.runtime.v1.MailConsumerRuntimeReportedV1
-	(*MailTemplateVersionPublishedV1)(nil),     // 12: mail.runtime.v1.MailTemplateVersionPublishedV1
-	(*MailTemplateDeletedV1)(nil),              // 13: mail.runtime.v1.MailTemplateDeletedV1
-	(*MailProjectionReconcileCompletedV1)(nil), // 14: mail.runtime.v1.MailProjectionReconcileCompletedV1
+	(MailConsumerDesiredState)(0),                // 0: mail.runtime.v1.MailConsumerDesiredState
+	(MailConsumerRuntimeState)(0),                // 1: mail.runtime.v1.MailConsumerRuntimeState
+	(MailStreamType)(0),                          // 2: mail.runtime.v1.MailStreamType
+	(MailInfrastructureState)(0),                 // 3: mail.runtime.v1.MailInfrastructureState
+	(MailStalwartNodeState)(0),                   // 4: mail.runtime.v1.MailStalwartNodeState
+	(*MailEventMetadataV1)(nil),                  // 5: mail.runtime.v1.MailEventMetadataV1
+	(*MailStreamSourceV1)(nil),                   // 6: mail.runtime.v1.MailStreamSourceV1
+	(*KafkaStreamPayloadV1)(nil),                 // 7: mail.runtime.v1.KafkaStreamPayloadV1
+	(*RedisStreamPayloadV1)(nil),                 // 8: mail.runtime.v1.RedisStreamPayloadV1
+	(*NatsJetStreamPayloadV1)(nil),               // 9: mail.runtime.v1.NatsJetStreamPayloadV1
+	(*RabbitMqPayloadV1)(nil),                    // 10: mail.runtime.v1.RabbitMqPayloadV1
+	(*MailConsumerUpsertV1)(nil),                 // 11: mail.runtime.v1.MailConsumerUpsertV1
+	(*MailConsumerDeleteV1)(nil),                 // 12: mail.runtime.v1.MailConsumerDeleteV1
+	(*MailConsumerRuntimeReportedV1)(nil),        // 13: mail.runtime.v1.MailConsumerRuntimeReportedV1
+	(*MailConsumerRuntimeReportBatchV1)(nil),     // 14: mail.runtime.v1.MailConsumerRuntimeReportBatchV1
+	(*MailDataplaneNodeSnapshotV1)(nil),          // 15: mail.runtime.v1.MailDataplaneNodeSnapshotV1
+	(*MailStalwartNodeSnapshotV1)(nil),           // 16: mail.runtime.v1.MailStalwartNodeSnapshotV1
+	(*MailInfrastructureSnapshotReportedV1)(nil), // 17: mail.runtime.v1.MailInfrastructureSnapshotReportedV1
+	(*MailTemplateVersionPublishedV1)(nil),       // 18: mail.runtime.v1.MailTemplateVersionPublishedV1
+	(*MailTemplateDeletedV1)(nil),                // 19: mail.runtime.v1.MailTemplateDeletedV1
+	(*MailProjectionReconcileCompletedV1)(nil),   // 20: mail.runtime.v1.MailProjectionReconcileCompletedV1
 }
 var file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs = []int32{
 	2,  // 0: mail.runtime.v1.MailStreamSourceV1.stream_type:type_name -> mail.runtime.v1.MailStreamType
-	3,  // 1: mail.runtime.v1.MailConsumerUpsertV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	4,  // 2: mail.runtime.v1.MailConsumerUpsertV1.stream:type_name -> mail.runtime.v1.MailStreamSourceV1
+	5,  // 1: mail.runtime.v1.MailConsumerUpsertV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	6,  // 2: mail.runtime.v1.MailConsumerUpsertV1.stream:type_name -> mail.runtime.v1.MailStreamSourceV1
 	0,  // 3: mail.runtime.v1.MailConsumerUpsertV1.desired_state:type_name -> mail.runtime.v1.MailConsumerDesiredState
-	3,  // 4: mail.runtime.v1.MailConsumerDeleteV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	3,  // 5: mail.runtime.v1.MailConsumerRuntimeReportedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	5,  // 4: mail.runtime.v1.MailConsumerDeleteV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	5,  // 5: mail.runtime.v1.MailConsumerRuntimeReportedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	1,  // 6: mail.runtime.v1.MailConsumerRuntimeReportedV1.runtime_state:type_name -> mail.runtime.v1.MailConsumerRuntimeState
-	3,  // 7: mail.runtime.v1.MailTemplateVersionPublishedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	3,  // 8: mail.runtime.v1.MailTemplateDeletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	3,  // 9: mail.runtime.v1.MailProjectionReconcileCompletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	13, // 7: mail.runtime.v1.MailConsumerRuntimeReportBatchV1.reports:type_name -> mail.runtime.v1.MailConsumerRuntimeReportedV1
+	3,  // 8: mail.runtime.v1.MailDataplaneNodeSnapshotV1.state:type_name -> mail.runtime.v1.MailInfrastructureState
+	4,  // 9: mail.runtime.v1.MailStalwartNodeSnapshotV1.state:type_name -> mail.runtime.v1.MailStalwartNodeState
+	5,  // 10: mail.runtime.v1.MailInfrastructureSnapshotReportedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	3,  // 11: mail.runtime.v1.MailInfrastructureSnapshotReportedV1.service_state:type_name -> mail.runtime.v1.MailInfrastructureState
+	15, // 12: mail.runtime.v1.MailInfrastructureSnapshotReportedV1.dataplane_nodes:type_name -> mail.runtime.v1.MailDataplaneNodeSnapshotV1
+	16, // 13: mail.runtime.v1.MailInfrastructureSnapshotReportedV1.stalwart_nodes:type_name -> mail.runtime.v1.MailStalwartNodeSnapshotV1
+	5,  // 14: mail.runtime.v1.MailTemplateVersionPublishedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	5,  // 15: mail.runtime.v1.MailTemplateDeletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	5,  // 16: mail.runtime.v1.MailProjectionReconcileCompletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_internal_mail_transport_rpc_proto_mail_runtime_proto_init() }
@@ -1320,8 +1877,8 @@ func file_internal_mail_transport_rpc_proto_mail_runtime_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   12,
+			NumEnums:      5,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -329,8 +329,8 @@ AURORA_ZONE_HEALTH/mail.runtime.{consumer_id}.{slot}
 ```
 
 Snapshot gồm state, consumer/config version, runtime generation, slot, fencing token, heartbeat và low-cardinality
-error code. Snapshot còn có logical `instance_id=slot:<n>` và monotonic report sequence. Mail runtime reporter lease holder
-chỉ XADD delta qua `mail:runtime:reports`; shared Redis gate coalesce heartbeat không đổi còn 60s nhưng phát state
+error code. Snapshot còn có logical `instance_id=slot:<n>`, physical node/boot identity và monotonic report sequence. Mail consumer reporter lease holder
+chỉ XADD bounded delta batch qua `mail:consumer:reports`; shared Redis gate coalesce heartbeat không đổi còn 60s nhưng phát state
 transition ngay. Nó không gửi recipient, rendered content hay per-mail result. Metric processor chỉ label `zone_id + status + taxonomy code`; không label topic/queue/recipient/template.
 Config runtime có apply/error/scan/L1 metrics. Broker-specific lag/rebalance/PEL/redelivery dashboards còn là deployment
 gate, không được giả là đã có chỉ vì suite đã compile.
@@ -364,9 +364,13 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | Fixed envelope/render/JMAP taxonomy | `dataplane/src/executor/mail/processor/stream.rs` |
 | Config COW/lazy template | `dataplane/src/executor/mail/runtime/configuration.rs` |
 | Redis Job projection entry | `dataplane/src/executor/mail/executor.rs` |
-| JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler.rs` |
-| Zonal runtime report relay | `dataplane/src/executor/mail/supervisor/runtime_reporter.rs` |
-| JO runtime report apply/settle | `job-orchestrator/src/reverse_provider/mail/runtime_report.rs` |
+| JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
+| JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/l2_dispatcher.rs` |
+| JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
+| Zonal consumer report relay | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
+| Zonal infrastructure reporter | `dataplane/src/executor/mail/supervisor/infra_reporter.rs` |
+| JO consumer report apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
+| JO infrastructure apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/infrastructure.rs` |
 | Mail runtime/processor tests | `dataplane/src/executor/mail/test/` |
 
 ## 15. Phase status

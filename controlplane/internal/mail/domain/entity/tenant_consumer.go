@@ -28,7 +28,6 @@ type TenantConsumer struct {
 	Parallelism           uint32
 	ConfigVersion         uint64
 	ConfigSHA256          []byte
-	DeletedAt             *time.Time
 	CreatedBy             *uuid.UUID
 	UpdatedBy             *uuid.UUID
 	CreatedAt             time.Time

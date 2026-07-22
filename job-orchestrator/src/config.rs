@@ -41,6 +41,8 @@ pub struct Config {
     /// reclaim entry thật sự bị pod khác bỏ lại, không polling PostgreSQL theo chu kỳ.
     pub mail_runtime_report_ttl_secs: u64,
     pub mail_runtime_report_claim_idle_ms: u64,
+    /// [COMMENT]: Infra snapshot có TTL riêng nhưng dùng cùng blocking/reclaim transport policy.
+    pub mail_infra_report_ttl_secs: u64,
 }
 
 impl Config {
@@ -134,6 +136,11 @@ impl Config {
             .parse::<u64>()
             .unwrap_or(30_000)
             .clamp(5_000, 300_000);
+        let mail_infra_report_ttl_secs = env::var("MAIL_INFRA_REPORT_TTL_SECS")
+            .unwrap_or_else(|_| "180".to_string())
+            .parse::<u64>()
+            .unwrap_or(180)
+            .clamp(60, 900);
 
         Ok(Self {
             database_url,
@@ -155,6 +162,7 @@ impl Config {
             mail_reconcile_work_budget_secs,
             mail_runtime_report_ttl_secs,
             mail_runtime_report_claim_idle_ms,
+            mail_infra_report_ttl_secs,
         })
     }
 }

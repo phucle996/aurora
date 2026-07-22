@@ -137,15 +137,17 @@ stateDiagram-v2
     [*] --> PAUSED: create
     PAUSED --> ENABLED: resume
     ENABLED --> PAUSED: pause
-    PAUSED --> DELETED: delete tombstone
+    PAUSED --> DELETING: delete request
     ENABLED --> DELETING: delete request
-    DELETING --> DELETED: DP reported STOPPED after drain
+    DELETING --> [*]: DP delete SUCCEEDED + hard delete row
 ```
 
 - Mỗi transition tăng `config_version` và insert outbox trong cùng data-modifying CTE statement.
-- Delete từ `ENABLED` không hard-delete row; CP phát tombstone và chờ reported stop.
-- Create nhận `code` chuẩn hóa dạng kebab-case. Unique partial index `(workspace_id, code) WHERE deleted_at IS NULL`
-  chặn hai active resource trùng code; sau khi tombstone, cùng code có thể tạo lại với UUID runtime mới.
+- Delete request chuyển row sang `DELETING`; JO chỉ hard-delete exact `config_version` sau khi Dataplane trả `SUCCEEDED`.
+- `mail_consumers` không có `deleted_at` hoặc desired state `DELETED`. Durable projection tombstone nằm ở bảng riêng
+  để reconciler không hồi sinh Zone KV sau khi outbox hết retention.
+- Create nhận `code` chuẩn hóa dạng kebab-case. Unique index `(workspace_id, code)` chặn trùng code;
+  hard-delete thành công giải phóng code, lần create sau bắt buộc dùng UUID runtime mới.
 
 ### 3.4 Desired state khác reported state
 
@@ -255,6 +257,10 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Hai UI update cùng consumer | `expected_config_version` optimistic concurrency |
 | Template publish đồng thời | Lock identity + expected revision + unique version |
 | Upsert cũ đến sau delete | DP tombstone version cao hơn; bỏ event cũ |
+| Create V1 FAILED đến sau update V2 | JO chỉ hard-delete khi business row vẫn đúng V1 |
+| Delete result cũ đến sau mutation mới | Hard-delete bắt buộc khớp `resource_id + config_version + DELETING` |
+| Outbox FAILED nhưng reconciler retry thành công | `SUCCEEDED` được phép heal outbox và finalize hard-delete nguyên tử |
+| PROCESSING/FAILED của retry cũ đến sau retry mới | `mail_outbox_records.result_attempt` fence theo attempt; chỉ `SUCCEEDED` được thắng terminal cũ vì nó chứng minh projection đã áp dụng |
 | Runtime report từ pod cũ | Logical slot row + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Authorized context mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |

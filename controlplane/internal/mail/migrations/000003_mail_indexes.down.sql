@@ -5,5 +5,5 @@ DROP INDEX IF EXISTS idx_personal_mail_template_versions_cursor;
 DROP INDEX IF EXISTS ux_personal_mail_templates_workspace_code;
 DROP INDEX IF EXISTS idx_mail_consumers_desired_cursor;
 DROP INDEX IF EXISTS idx_mail_consumers_workspace_cursor;
-DROP INDEX IF EXISTS ux_mail_consumers_workspace_active_code;
-DROP INDEX IF EXISTS ux_mail_consumers_workspace_active_name;
+DROP INDEX IF EXISTS ux_mail_consumers_workspace_code;
+DROP INDEX IF EXISTS ux_mail_consumers_workspace_name;

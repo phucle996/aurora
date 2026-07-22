@@ -81,12 +81,15 @@ pub(crate) struct RuntimeHealthSnapshot {
     pub report_sequence: u64,
     pub consumer_lag: u64,
     pub error_code: String,
+    pub runtime_node_id: String,
+    pub runtime_boot_id: String,
 }
 
 /// [COMMENT]: Context này chỉ chứa Aurora scheduling/config/JMAP dependencies; broker connection và settlement vẫn nằm trong từng suite.
 pub struct StreamRuntimeContext {
     pub zone_id: String,
     pub instance_id: String,
+    pub runtime_boot_id: uuid::Uuid,
     pub zone_kv: Arc<ZoneKvStore>,
     pub processor: Arc<MailMessageProcessor>,
     pub lease_ttl: Duration,
@@ -102,6 +105,7 @@ impl StreamRuntimeContext {
     pub fn new(
         config: &Config,
         instance_id: String,
+        runtime_boot_id: uuid::Uuid,
         zone_kv: Arc<ZoneKvStore>,
         processor: Arc<MailMessageProcessor>,
     ) -> Arc<Self> {
@@ -134,6 +138,7 @@ impl StreamRuntimeContext {
         Arc::new(Self {
             zone_id: config.zone_id.clone(),
             instance_id,
+            runtime_boot_id,
             zone_kv,
             processor,
             lease_ttl: Duration::from_secs(config.mail_stream_slot_lease_ttl_seconds),
@@ -244,6 +249,8 @@ impl StreamRuntimeContext {
             // không được dùng một giá trị ước lượng hoặc đọc lag của Redis Job thay cho customer broker.
             consumer_lag: 0,
             error_code: error_code.to_string(),
+            runtime_node_id: self.instance_id.clone(),
+            runtime_boot_id: self.runtime_boot_id.to_string(),
         };
         if let Ok(bytes) = serde_json::to_vec(&snapshot) {
             let key = format!("mail.runtime.{}.{}", configuration.consumer_id, slot);

@@ -43,7 +43,6 @@ const (
 	ConsumerPaused   ConsumerDesiredState = "paused"
 	ConsumerEnabled  ConsumerDesiredState = "enabled"
 	ConsumerDeleting ConsumerDesiredState = "deleting"
-	ConsumerDeleted  ConsumerDesiredState = "deleted"
 )
 
 // PersonalConsumer là entity duy nhất đi xuyên handler -> service -> Personal repository.

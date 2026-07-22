@@ -26,18 +26,21 @@ type Module struct {
 	TenantConsumerRepo   mailRepoInterface.TenantConsumerRepository
 	PersonalTemplateRepo mailRepoInterface.PersonalTemplateRepository
 	TenantTemplateRepo   mailRepoInterface.TenantTemplateRepository
+	InfrastructureRepo   mailRepoInterface.InfrastructureRepository
 
 	// 2) Services
 	PersonalConsumerService mailSvcInterface.PersonalConsumerService
 	TenantConsumerService   mailSvcInterface.TenantConsumerService
 	PersonalTemplateService mailSvcInterface.PersonalTemplateService
 	TenantTemplateService   mailSvcInterface.TenantTemplateService
+	InfrastructureService   mailSvcInterface.InfrastructureService
 
 	// 3) Handlers
 	PersonalConsumerHandler *mailHandler.PersonalConsumerHandler
 	TenantConsumerHandler   *mailHandler.TenantConsumerHandler
 	PersonalTemplateHandler *mailHandler.PersonalTemplateHandler
 	TenantTemplateHandler   *mailHandler.TenantTemplateHandler
+	InfrastructureHandler   *mailHandler.InfrastructureHandler
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -74,7 +77,8 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
 	tenantConsumerRepo := mailRepoImpl.NewTenantConsumerRepository(db, cfg)
 	personalTemplateRepo := mailRepoImpl.NewPersonalTemplateRepository(db, cfg)
 	tenantTemplateRepo := mailRepoImpl.NewTenantTemplateRepository(db, cfg)
-	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil {
+	infrastructureRepo := mailRepoImpl.NewInfrastructureRepository(db, cfg)
+	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil || infrastructureRepo == nil {
 		return nil, errors.New("mail module: failed to construct scoped repositories")
 	}
 
@@ -82,10 +86,12 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
 	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo)
 	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo)
 	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo)
+	infrastructureSvc := mailSvcImpl.NewInfrastructureService(infrastructureRepo)
 	personalConsumerHandler := mailHandler.NewPersonalConsumerHandler(personalConsumerSvc)
 	tenantConsumerHandler := mailHandler.NewTenantConsumerHandler(tenantConsumerSvc)
 	personalTemplateHandler := mailHandler.NewPersonalTemplateHandler(personalTemplateSvc)
 	tenantTemplateHandler := mailHandler.NewTenantTemplateHandler(tenantTemplateSvc)
+	infrastructureHandler := mailHandler.NewInfrastructureHandler(infrastructureSvc)
 
 	return &Module{
 		enabled:                 true,
@@ -93,14 +99,17 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
 		TenantConsumerRepo:      tenantConsumerRepo,
 		PersonalTemplateRepo:    personalTemplateRepo,
 		TenantTemplateRepo:      tenantTemplateRepo,
+		InfrastructureRepo:      infrastructureRepo,
 		PersonalConsumerService: personalConsumerSvc,
 		TenantConsumerService:   tenantConsumerSvc,
 		PersonalTemplateService: personalTemplateSvc,
 		TenantTemplateService:   tenantTemplateSvc,
+		InfrastructureService:   infrastructureSvc,
 		PersonalConsumerHandler: personalConsumerHandler,
 		TenantConsumerHandler:   tenantConsumerHandler,
 		PersonalTemplateHandler: personalTemplateHandler,
 		TenantTemplateHandler:   tenantTemplateHandler,
+		InfrastructureHandler:   infrastructureHandler,
 	}, nil
 }
 

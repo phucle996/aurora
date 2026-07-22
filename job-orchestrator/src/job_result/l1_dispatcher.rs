@@ -68,18 +68,20 @@ pub async fn dispatch_result(
 
             let job_uuid = uuid::Uuid::from_slice(&result.job_id).unwrap_or_default();
 
-			// [COMMENT]: Route theo source domain do CDC gắn từ schema; topic chỉ mô tả executor.
-			let row_opt = if result.source_domain == "MAIL" {
-                reverse_provider::mail::db::update_outbox_record(
+            // [COMMENT]: L1 chỉ route source domain; Mail L2 mới chịu trách nhiệm dispatch
+            // topic và transaction hard-delete/tombstone cụ thể của từng resource flow.
+            let row_opt = if result.source_domain == "MAIL" {
+                reverse_provider::mail::l2_dispatcher::dispatch_mail_result(
                     pg_client,
                     job_uuid,
                     &result.job_topic,
                     &status,
+                    result.attempt,
                     error_code,
                     error_message,
                 )
                 .await?
-			} else if result.source_domain == "STORAGE" {
+            } else if result.source_domain == "STORAGE" {
                 // [COMMENT]: Định tuyến xuống Storage L2 Dispatcher.
                 // L2 dispatcher trả về Box<dyn Error> vì bucket create/delete cần bắt đầu transaction
                 // để đảm bảo atomic: UPDATE outbox + INSERT lifecycle event.
@@ -96,9 +98,9 @@ pub async fn dispatch_result(
                     Box::<dyn std::error::Error>::from(e.to_string())
                 })?
 
-			} else {
-				return Err(format!("unsupported source_domain '{}'", result.source_domain).into());
-			};
+            } else {
+                return Err(format!("unsupported source_domain '{}'", result.source_domain).into());
+            };
 
             if let Some(row) = row_opt {
                 Logger::job_log(

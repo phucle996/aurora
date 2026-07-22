@@ -53,56 +53,6 @@ pub async fn update_zone_status(
     }
 }
 
-/// [COMMENT]: Cập nhật trạng thái kích hoạt của Zone Service trực tiếp trong PostgreSQL.
-/// Giao dịch có tính nguyên tử, sử dụng ON CONFLICT để UPSERT an toàn trong môi trường HA.
-pub async fn update_zone_service_status(
-    db_url: &str,
-    zone_id: &str,
-    service_type: &str,
-    enabled: bool,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
-
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            Logger::sys_error(
-                "zone_db.connection_svc",
-                "Lỗi kết nối chạy ngầm của PostgreSQL khi cập nhật Service",
-                &e.to_string(),
-            );
-        }
-    });
-
-    // [COMMENT]: Sinh ID ngẫu nhiên dạng chuỗi để ép kiểu trong SQL (Bypass ToSql UUID missing feature)
-    let svc_id_str = uuid::Uuid::new_v4().to_string();
-
-    // [COMMENT]: Atomic UPSERT trên bảng hierarchy.zone_services.
-    // Điều kiện WHERE trong DO UPDATE ngăn ghi nếu desired_state không đổi (No-op guard tối ưu IOPS).
-    let rows_affected = pg_client
-        .execute(
-            "INSERT INTO hierarchy.zone_services (id, zone_id, service_type, desired_state, created_at, updated_at) \
-             VALUES ($1::text::uuid, $2::text::uuid, $3::text::hierarchy.zone_service_type, $4, NOW(), NOW()) \
-             ON CONFLICT (zone_id, service_type) \
-             DO UPDATE SET desired_state = EXCLUDED.desired_state, updated_at = NOW() \
-             WHERE zone_services.desired_state != EXCLUDED.desired_state",
-            &[&svc_id_str, &zone_id, &service_type, &enabled],
-        )
-        .await?;
-
-    if rows_affected > 0 {
-        Logger::sys_info(
-            "zone_db.update_service",
-            &format!(
-                "Đã cập nhật Service '{}' của Zone {} sang enabled: {} trực tiếp trong DB SoT.",
-                service_type, zone_id, enabled
-            ),
-        );
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
 /// [COMMENT]: Lấy trạng thái hiện tại của Zone và Service từ DB để đồng bộ cache lúc khởi chạy (Cold Start Sync).
 /// Được gọi khi zone_heartbeats cache không có entry cho zone_id (lần đầu xuất hiện trong stream).
 pub async fn query_current_state(

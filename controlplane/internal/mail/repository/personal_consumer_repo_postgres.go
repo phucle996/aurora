@@ -104,11 +104,11 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.config_sha256, c.deleted_at,
+		       c.config_sha256,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
 		FROM %s.mail_consumers AS c
 		JOIN %s.personal_workspaces AS w ON w.id = c.workspace_id
-		WHERE c.id = $1 AND c.workspace_id = $2 AND c.deleted_at IS NULL
+		WHERE c.id = $1 AND c.workspace_id = $2
 		  AND w.zone_id = $3 AND w.owner_id = $4
 	`, r.mailSchema, r.hierarchySchema),
 		query.ID, query.WorkspaceID, query.ZoneID, query.ActorUserID,
@@ -130,7 +130,6 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		&consumer.Parallelism,
 		&consumer.ConfigVersion,
 		&consumer.ConfigSHA256,
-		&consumer.DeletedAt,
 		&consumer.CreatedBy,
 		&consumer.UpdatedBy,
 		&consumer.CreatedAt,
@@ -211,11 +210,11 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.config_sha256, c.deleted_at,
+		       c.config_sha256,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
 		FROM %s.mail_consumers AS c
 		JOIN %s.personal_workspaces AS w ON w.id = c.workspace_id
-		WHERE c.workspace_id = $1 AND c.deleted_at IS NULL
+		WHERE c.workspace_id = $1
 		  AND w.zone_id = $2 AND w.owner_id = $3
 		  AND ($4::text IS NULL OR c.source_type::text = $4::text)
 		  AND ($5::text IS NULL OR c.desired_state::text = $5::text)
@@ -251,7 +250,6 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 			&consumer.Parallelism,
 			&consumer.ConfigVersion,
 			&consumer.ConfigSHA256,
-			&consumer.DeletedAt,
 			&consumer.CreatedBy,
 			&consumer.UpdatedBy,
 			&consumer.CreatedAt,
@@ -293,7 +291,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 		), target AS (
 			SELECT config_version
 			FROM %s.mail_consumers
-			WHERE id = $17 AND workspace_id = $18 AND deleted_at IS NULL
+			WHERE id = $17 AND workspace_id = $18 AND desired_state <> 'deleting'
 			  AND EXISTS (SELECT 1 FROM authorized)
 		), updated AS (
 			UPDATE %s.mail_consumers
@@ -313,7 +311,8 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			    config_sha256 = $14,
 			    updated_by = $15,
 			    updated_at = $16
-			WHERE id = $17 AND workspace_id = $18 AND config_version = $20 AND deleted_at IS NULL
+			WHERE id = $17 AND workspace_id = $18 AND config_version = $20
+			  AND desired_state <> 'deleting'
 			  AND EXISTS (SELECT 1 FROM authorized)
 			  AND EXISTS (SELECT 1 FROM template_available)
 			RETURNING id
@@ -390,7 +389,7 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 		), target AS (
 			SELECT config_version
 			FROM %s.mail_consumers
-			WHERE id = $4 AND workspace_id = $1 AND deleted_at IS NULL
+			WHERE id = $4 AND workspace_id = $1 AND desired_state <> 'deleting'
 			  AND EXISTS (SELECT 1 FROM authorized)
 		), updated AS (
 			UPDATE %s.mail_consumers
@@ -398,7 +397,8 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 			    config_version = config_version + 1,
 			    updated_by = $3,
 			    updated_at = $6
-			WHERE id = $4 AND workspace_id = $1 AND config_version = $5 AND deleted_at IS NULL
+			WHERE id = $4 AND workspace_id = $1 AND config_version = $5
+			  AND desired_state <> 'deleting'
 			  AND EXISTS (SELECT 1 FROM authorized)
 			RETURNING id
 		), outbox_inserted AS (

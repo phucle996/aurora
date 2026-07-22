@@ -90,7 +90,8 @@ commit. Outbox row được giữ theo retention policy sau terminal state; khô
 | `MailConsumerDeleteV1` | CP → Zone | `config_version` | Store tombstone, drain/remove runtime |
 | `MailTemplateVersionPublishedV1` | CP → Zone | `template_revision` | Store immutable version + update catalog head |
 | `MailTemplateDeletedV1` | CP → Zone | `template_revision` | Store durable tombstone; hard-delete identity cannot be resurrected |
-| `MailConsumerRuntimeReportedV1` | DP → CP | config version + runtime generation | Update reported state only |
+| `MailConsumerRuntimeReportBatchV1` | DP → CP | config version + runtime generation | Bounded consumer delta batch |
+| `MailInfrastructureSnapshotReportedV1` | DP → CP | infra lease generation + sequence | Atomic Admin/SRE current snapshot |
 
 ### 3.1 Event identity
 
@@ -139,7 +140,7 @@ mail.template.snapshot.{template_id}.v{template_version}
 zone.service.mail
   current health snapshot
 
-lease.health.mail
+lease.mail.infra.report
   CAS lease owner/fencing_token/expires_at/last_owner
 ```
 
@@ -177,6 +178,10 @@ business hash; protobuf envelope có thể khác metadata giữa WAL event và r
 - Chỉ apply khi delete version lớn hơn head version.
 - Tombstone không được xóa ngay để upsert cũ không hồi sinh consumer.
 - Re-create phải dùng consumer ID mới; không reset version về 1 trên ID cũ.
+- Controlplane business table không có `deleted_at`: JO hard-delete exact deleting generation sau Dataplane success,
+  còn `mail_consumer_projection_tombstones` giữ rebuild authority độc lập với business row.
+- JO khóa outbox theo `event_id + job_topic` và dùng `result_attempt` để chặn PROCESSING/FAILED đến sai thứ tự;
+  `SUCCEEDED` vẫn được phép heal FAILED vì cùng event là idempotent projection command.
 
 ### 5.3 Template publish/delete
 
@@ -280,16 +285,16 @@ Phase 9 AS-IS dùng current snapshot, không tạo mail delivery history:
 sequenceDiagram
     participant Slot as DP logical runtime slot
     participant KV as Zone Health KV
-    participant Relay as Zone Gateway lease holder
+    participant Relay as Consumer reporter lease holder
     participant RJ as Redis Job Stream
     participant JO as JO blocking consumer group
     participant DB as CP PostgreSQL
     participant UI as Consumer Detail
 
     Slot->>KV: fenced put mail.runtime.consumer.slot
-    Relay->>KV: acquire/renew lease.gateway.report
+    Relay->>KV: acquire/renew lease.mail.consumer.report
     Relay->>KV: scan current runtime snapshots
-    Relay->>RJ: pipelined XADD changed MailConsumerRuntimeReportedV1
+    Relay->>RJ: XADD bounded MailConsumerRuntimeReportBatchV1
     JO->>RJ: XAUTOCLAIM then XREADGROUP BLOCK
     JO->>DB: scope guard + monotonic single-row UPSERT
     DB-->>JO: commit
@@ -298,8 +303,8 @@ sequenceDiagram
 ```
 
 1. Mỗi health key là một logical slot; `instance_id=slot:<n>`. Pod takeover cùng slot nhận fencing generation cao hơn và cập nhật đúng một read-model row, không để hostname cũ tạo ghost instance.
-2. Zone relay dùng cùng rotating `lease.gateway.report`; local marker chỉ giảm duplicate. Shared Redis Lua gate theo `zone + consumer + logical slot` giới hạn heartbeat không đổi tối đa một report/60s trên toàn bộ rotating leaders, nhưng state/config/generation/error transition được phát ngay. Gate tự hết TTL sau 5 phút; relay chia pipeline tối đa 500 report và renew fence trước từng chunk.
-3. Redis stream `mail:runtime:reports` dùng `MINID ~ now-1h`, không dùng fixed `MAXLEN`: đây là reconstructable current state nên cửa sổ thời gian chặn Redis tăng vô hạn khi JO/DB outage, còn active slot luôn refresh trong 60s. CP TTL mặc định 180s giữ đủ failover margin. JO chỉ XDEL sau permanent reject hoặc PostgreSQL commit; lỗi DB giữ entry trong PEL để replica khác reclaim trong retention window.
+2. Zone relay dùng rotating `lease.mail.consumer.report`. Shared Redis gate theo `zone + consumer + logical slot` giới hạn heartbeat không đổi tối đa một report/60s, nhưng state/config/generation/node/error transition được phát ngay. Relay gom tối đa 250 delta/512 KiB và renew fence trước từng batch.
+3. Redis stream `mail:consumer:reports` dùng time-window trimming khoảng một giờ. CP TTL mặc định 180s giữ failover margin. JO chỉ XDEL sau permanent reject hoặc toàn batch đã apply; lỗi DB giữ entry trong PEL để replica khác reclaim.
 4. Không có inbox/history row cho từng heartbeat. Một row `(consumer_id, logical slot)` giữ `event_id` cuối; duplicate/stale no-op bằng `config_version + runtime_generation + report_sequence`. Report version thấp hơn desired có thể nằm trong diagnostic row nhưng không tham gia aggregate hiện hành; version cao hơn desired bị scope/target guard bỏ.
 5. Trong cùng logical slot và config version, `runtime_generation` cao hơn thắng; cùng generation thì `report_sequence` cao hơn thắng. Report từ generation đã bị fence không thể đổi state.
 6. `GET /api/v1/{personal|tenant}/mail/consumers/:id` chỉ aggregate heartbeat chưa hết TTL và đúng desired config version. Response không lộ hostname/pod hay dữ liệu từng email.
@@ -361,7 +366,9 @@ Không dùng consumer ID, workspace ID, topic hoặc template ID làm metric lab
 | Redis Job consumer + immutable snapshot/NATS KV CAS apply | Phase 4, Dataplane Zone projector |
 | L2 loader + L1 COW | Phase 5, Dataplane |
 | DB-backed zonal snapshot reconciler | Phase 4, Job Orchestrator → Redis Job |
-| Runtime report reverse relay + CP Consumer Detail read model | Phase 9 — implemented |
+| Mail result L2 + transactional hard-delete | Job Orchestrator `reverse_provider/mail/{l2_dispatcher,service}` |
+| Consumer report reverse relay + CP Consumer Detail read model | Phase 9 — implemented |
+| Infrastructure snapshot + Admin read model | Mail infrastructure reporting God View — implemented |
 
 ### 12.1 Code-shape invariant
 

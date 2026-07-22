@@ -1,4 +1,4 @@
-use super::MailBackpressureSnapshot;
+use super::backpressure::MailBackpressureSnapshot;
 
 #[test]
 fn unavailable_transport_has_no_capacity() {

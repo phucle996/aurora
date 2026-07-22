@@ -25,7 +25,3 @@ impl MailBackpressureSnapshot {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../test/backpressure.rs"]
-mod tests;
