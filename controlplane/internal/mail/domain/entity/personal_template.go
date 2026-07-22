@@ -15,6 +15,9 @@ type PersonalTemplate struct {
 	Name             string
 	CurrentVersion   uint64
 	TemplateRevision uint64
+	NextVersion      uint64
+	NextRevision     uint64
+	OperationID      uuid.UUID
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	ExpectedRevision uint64

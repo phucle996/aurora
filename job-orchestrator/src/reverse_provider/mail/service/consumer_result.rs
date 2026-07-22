@@ -2,10 +2,8 @@ use super::super::runtime_proto::{MailConsumerDeleteV1, MailConsumerUpsertV1};
 use prost::Message;
 use uuid::Uuid;
 
-const CONSUMER_EVENT_NAMESPACE: &str = "43de31a4-0c86-54e9-8384-47b33f541c28";
-
 /// [COMMENT]: Upsert result dùng payload đã khóa trong PostgreSQL, không tin resource identity
-/// từ Dataplane result. FAILED của create V1 hard-delete đúng V1 và để lại projection tombstone.
+/// từ Dataplane result. Create FAILED xóa aggregate; update dùng candidate COW rồi promote sau ACK.
 pub async fn apply_upsert_result(
     pg_client: &mut tokio_postgres::Client,
     event_id: Uuid,
@@ -31,10 +29,11 @@ pub async fn apply_upsert_result(
     let current_status: String = locked.get(0);
     let current_attempt: i32 = locked.get(1);
     let attempt = attempt as i32;
-    // [COMMENT]: SUCCEEDED là bằng chứng projection đã áp dụng nên luôn heal FAILED cũ.
-    // PROCESSING/FAILED phải tôn trọng attempt fence để result đến trễ không rollback retry mới.
+    // [COMMENT]: Upsert FAILED đã cleanup candidate nên terminal; PROCESSING/FAILED vẫn dùng attempt fence.
     let transition_allowed = current_status != "SUCCEEDED"
+        && current_status != "FAILED"
         && match status {
+            // [COMMENT]: FAILED đã cleanup create/update candidate nên là terminal cho upsert event này.
             "SUCCEEDED" => true,
             "PROCESSING" => current_status == "PENDING" || attempt > current_attempt,
             "FAILED" => {
@@ -44,11 +43,24 @@ pub async fn apply_upsert_result(
             _ => false,
         };
     if !transition_allowed {
+        // [COMMENT]: DB terminal có thể đã commit nhưng NATS notify lỗi. Redis result redelivery
+        // được phép phát lại cùng notification ID mà không chạy lại cleanup/promote.
+        let notification = if current_status == status && matches!(status, "SUCCEEDED" | "FAILED") {
+            transaction
+                .query_opt(
+                    "SELECT actor_user_id::text,job_topic,trace_id,resource_id \
+                     FROM mail.mail_outbox_records WHERE event_id=$1 AND job_topic='mail.consumer.upsert'",
+                    &[&event_id],
+                )
+                .await?
+        } else {
+            None
+        };
         transaction.commit().await?;
-        return Ok(None);
+        return Ok(notification);
     }
     let resource_id = Uuid::parse_str(locked.get::<_, Option<String>>(2).as_deref().unwrap_or(""))?;
-    let zone_id: Uuid = locked.get(3);
+    let _zone_id: Uuid = locked.get(3);
     let payload: Vec<u8> = locked.get(4);
     let command = MailConsumerUpsertV1::decode(payload.as_slice())?;
     let command_consumer_id = Uuid::from_slice(&command.consumer_id)?;
@@ -56,41 +68,64 @@ pub async fn apply_upsert_result(
         return Err("Mail consumer upsert outbox identity/version mismatch".into());
     }
 
-    if status == "FAILED" && command.config_version == 1 {
-        let delete_version = 2_i64;
-        let namespace = Uuid::parse_str(CONSUMER_EVENT_NAMESPACE)?;
-        let delete_event_id = Uuid::new_v5(
-            &namespace,
-            format!("consumer:{resource_id}:{delete_version}:delete:{zone_id}").as_bytes(),
-        );
-        // [COMMENT]: Tombstone và hard delete phụ thuộc cùng exact config_version; result V1 đến
-        // muộn sau update V2 không thể xóa connection mới hơn.
-        transaction
-            .execute(
-                "WITH target AS MATERIALIZED ( \
-                     SELECT id FROM mail.mail_consumers \
-                     WHERE id=$1 AND config_version=1 \
-                     FOR UPDATE \
-                 ), tombstone AS ( \
-                     INSERT INTO mail.mail_consumer_projection_tombstones( \
-                         consumer_id,zone_id,config_version,delete_event_id,tombstoned_at \
-                     ) \
-                     SELECT id,$2,$3,$4,NOW() FROM target \
-                     ON CONFLICT (consumer_id) DO UPDATE SET \
-                         zone_id=EXCLUDED.zone_id,config_version=EXCLUDED.config_version, \
-                         delete_event_id=EXCLUDED.delete_event_id,tombstoned_at=EXCLUDED.tombstoned_at \
-                     WHERE EXCLUDED.config_version > mail_consumer_projection_tombstones.config_version \
-                     RETURNING consumer_id \
-                 ) \
-                 DELETE FROM mail.mail_consumers AS consumer \
-                 WHERE consumer.id=$1 AND consumer.config_version=1 \
-                   AND (EXISTS(SELECT 1 FROM tombstone) OR EXISTS( \
-                       SELECT 1 FROM mail.mail_consumer_projection_tombstones AS saved \
-                       WHERE saved.consumer_id=$1 AND saved.config_version >= $3 \
-                   ))",
-                &[&resource_id, &zone_id, &delete_version, &delete_event_id],
+    let config_version = i64::try_from(command.config_version)
+        .map_err(|_| "Mail consumer upsert config_version exceeds BIGINT")?;
+    if status == "FAILED" {
+        let cleaned = if command.config_version == 1 {
+            // [COMMENT]: Create chưa có historical generation; terminal failure trả business state về trước create.
+            transaction
+                .execute(
+                    "DELETE FROM mail.mail_consumers WHERE id=$1 AND config_version=1",
+                    &[&resource_id],
+                )
+                .await?
+        } else {
+            // [COMMENT]: Candidate FAILED bị xóa chính xác theo event/version; sequence trên head không lùi.
+            transaction
+                .execute(
+                    "DELETE FROM mail.mail_consumer_update_versions \
+                     WHERE consumer_id=$1 AND config_version=$2 AND event_id=$3",
+                    &[&resource_id, &config_version, &event_id],
+                )
+                .await?
+        };
+        if cleaned != 1 {
+            return Err("Mail consumer FAILED result has no exact generation to clean".into());
+        }
+    } else if status == "SUCCEEDED" && command.config_version > 1 {
+        // [COMMENT]: Zone đã apply thành công mới được promote candidate thành active business row.
+        let promoted = transaction
+			.execute(
+                "UPDATE mail.mail_consumers AS active SET \
+                     name=candidate.name,source_type=candidate.source_type, \
+                     broker_resource_id=candidate.broker_resource_id, \
+                     source_config_envelope=candidate.source_config_envelope,topic=candidate.topic, \
+                     consumer_group=candidate.consumer_group,template_id=candidate.template_id, \
+                     template_version=candidate.template_version,sender_profile_id=candidate.sender_profile_id, \
+                     sender_version=candidate.sender_version,desired_state=candidate.desired_state, \
+                     parallelism=candidate.parallelism,config_version=candidate.config_version, \
+                     config_sha256=candidate.config_sha256,updated_by=candidate.updated_by, \
+                     updated_at=candidate.created_at \
+                 FROM mail.mail_consumer_update_versions AS candidate \
+                 WHERE active.id=$1 AND candidate.consumer_id=active.id \
+                   AND candidate.config_version=$2 AND candidate.event_id=$3 \
+                   AND active.config_version < candidate.config_version",
+                &[&resource_id, &config_version, &event_id],
+			)
+			.await?;
+        if promoted != 1 {
+            return Err("Mail consumer update ACK has no exact candidate to promote".into());
+        }
+    } else if status == "SUCCEEDED" {
+        let exists = transaction
+            .query_opt(
+                "SELECT 1 FROM mail.mail_consumers WHERE id=$1 AND config_version=1 FOR UPDATE",
+                &[&resource_id],
             )
             .await?;
+        if exists.is_none() {
+            return Err("Mail consumer create ACK has no V1 aggregate".into());
+        }
     }
 
     let row = transaction
@@ -111,7 +146,7 @@ pub async fn apply_upsert_result(
 }
 
 /// [COMMENT]: Delete success hard-delete connection row và persist tombstone trong cùng transaction.
-/// FAILED chỉ đóng outbox, giữ row `deleting` để reconciler tiếp tục phát delete command.
+/// FAILED chỉ đóng outbox và giữ nguyên business row để người dùng có thể retry.
 pub async fn apply_delete_result(
     pg_client: &mut tokio_postgres::Client,
     event_id: Uuid,
@@ -137,9 +172,9 @@ pub async fn apply_delete_result(
     let current_status: String = locked.get(0);
     let current_attempt: i32 = locked.get(1);
     let attempt = attempt as i32;
-    // [COMMENT]: Viết riêng transition của delete để transaction boundary hiện rõ; result
-    // attempt cũ không được hard-delete sau khi một retry mới hơn đã bắt đầu.
+    // [COMMENT]: FAILED là terminal cho operation ID; delete retry tạo event mới với cùng version fence.
     let transition_allowed = current_status != "SUCCEEDED"
+        && current_status != "FAILED"
         && match status {
             "SUCCEEDED" => true,
             "PROCESSING" => current_status == "PENDING" || attempt > current_attempt,
@@ -150,8 +185,21 @@ pub async fn apply_delete_result(
             _ => false,
         };
     if !transition_allowed {
+        // [COMMENT]: Cùng terminal result được redeliver chỉ để retry NATS notification;
+        // resource mutation vẫn tuyệt đối không chạy lần hai.
+        let notification = if current_status == status && matches!(status, "SUCCEEDED" | "FAILED") {
+            transaction
+                .query_opt(
+                    "SELECT actor_user_id::text,job_topic,trace_id,resource_id \
+                     FROM mail.mail_outbox_records WHERE event_id=$1 AND job_topic='mail.consumer.delete'",
+                    &[&event_id],
+                )
+                .await?
+        } else {
+            None
+        };
         transaction.commit().await?;
-        return Ok(None);
+        return Ok(notification);
     }
     let resource_id = Uuid::parse_str(locked.get::<_, Option<String>>(2).as_deref().unwrap_or(""))?;
     let zone_id: Uuid = locked.get(3);
@@ -165,9 +213,19 @@ pub async fn apply_delete_result(
     if status == "SUCCEEDED" {
         let config_version = i64::try_from(command.config_version)
             .map_err(|_| "Mail consumer delete config_version exceeds BIGINT")?;
-        // [COMMENT]: Tombstone được ghi cả khi row đã mất do retry; hard delete chỉ chạm exact
-        // deleting generation nên result cũ không thể xóa consumer generation mới hơn.
-        transaction
+        let target = transaction
+            .query_opt(
+                "SELECT config_version FROM mail.mail_consumers WHERE id=$1 FOR UPDATE",
+                &[&resource_id],
+            )
+            .await?
+            .ok_or("Mail consumer delete ACK has no aggregate")?;
+        let active_version: i64 = target.get(0);
+        if active_version >= config_version {
+            return Err("Mail consumer delete fence is not newer than active version".into());
+        }
+        // [COMMENT]: Tombstone là rebuild authority; command fence phải lớn hơn active version.
+        let tombstoned = transaction
             .execute(
                 "INSERT INTO mail.mail_consumer_projection_tombstones( \
                      consumer_id,zone_id,config_version,delete_event_id,tombstoned_at \
@@ -179,13 +237,18 @@ pub async fn apply_delete_result(
                 &[&resource_id, &zone_id, &config_version, &event_id],
             )
             .await?;
-        transaction
+        if tombstoned != 1 {
+            return Err("Mail consumer delete ACK did not advance projection tombstone".into());
+        }
+        let deleted = transaction
             .execute(
-                "DELETE FROM mail.mail_consumers \
-                 WHERE id=$1 AND config_version=$2 AND desired_state='deleting'",
+                "DELETE FROM mail.mail_consumers WHERE id=$1 AND config_version < $2",
                 &[&resource_id, &config_version],
             )
             .await?;
+        if deleted != 1 {
+            return Err("Mail consumer delete ACK did not remove aggregate".into());
+        }
     }
 
     let row = transaction

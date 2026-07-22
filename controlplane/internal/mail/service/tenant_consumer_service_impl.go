@@ -155,7 +155,12 @@ func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, command 
 	if err = s.repo.Create(ctx, consumer, outbox); err != nil {
 		return nil, err
 	}
-	return s.repo.GetByID(ctx, consumer)
+	created, err := s.repo.GetByID(ctx, consumer)
+	if err != nil {
+		return nil, err
+	}
+	created.OperationID = outbox.EventID
+	return created, nil
 }
 
 // GetConsumer lay thong tin consumer theo ID va Tenant command.
@@ -196,26 +201,31 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, command 
 	actor := command.ActorUserID
 
 	consumer := &mailEntity.TenantConsumer{
-		ActorUserID:           command.ActorUserID,
-		TenantID:              command.TenantID,
-		ZoneID:                command.ZoneID,
-		ID:                    command.ID,
-		WorkspaceID:           command.WorkspaceID,
-		Name:                  command.Name,
-		SourceType:            command.SourceType,
-		BrokerResourceID:      command.BrokerResourceID,
-		SourceConfigEnvelope:  sourceConfigEnvelope,
-		Topic:                 command.Topic,
-		ConsumerGroup:         command.ConsumerGroup,
-		TemplateID:            command.TemplateID,
-		TemplateVersion:       command.TemplateVersion,
-		SenderProfileID:       command.SenderProfileID,
-		SenderVersion:         command.SenderVersion,
-		DesiredState:          command.DesiredState,
-		Parallelism:           command.Parallelism,
-		ConfigVersion:         command.ExpectedConfigVersion + 1,
+		ActorUserID:          command.ActorUserID,
+		TenantID:             command.TenantID,
+		ZoneID:               command.ZoneID,
+		ID:                   command.ID,
+		WorkspaceID:          command.WorkspaceID,
+		Code:                 current.Code,
+		Name:                 command.Name,
+		SourceType:           command.SourceType,
+		BrokerResourceID:     command.BrokerResourceID,
+		SourceConfigEnvelope: sourceConfigEnvelope,
+		Topic:                command.Topic,
+		ConsumerGroup:        command.ConsumerGroup,
+		TemplateID:           command.TemplateID,
+		TemplateVersion:      command.TemplateVersion,
+		SenderProfileID:      command.SenderProfileID,
+		SenderVersion:        command.SenderVersion,
+		DesiredState:         command.DesiredState,
+		Parallelism:          command.Parallelism,
+		// [COMMENT]: Candidate lấy monotonic sequence của aggregate; version FAILED không được tái sử dụng.
+		ConfigVersion:         current.NextConfigVersion,
+		NextConfigVersion:     current.NextConfigVersion + 1,
 		ExpectedConfigVersion: command.ExpectedConfigVersion,
+		CreatedBy:             current.CreatedBy,
 		UpdatedBy:             &actor,
+		CreatedAt:             current.CreatedAt,
 		UpdatedAt:             now,
 	}
 
@@ -305,11 +315,12 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, command 
 		Idle:                 60,
 	}
 
-	// [COMMENT]: Optimistic version check và outbox insert cùng nằm trong CTE của Tenant repository.
+	// [COMMENT]: Repository chỉ lưu immutable candidate + outbox; active row chờ JO promote sau Zone ACK.
 	if err = s.repo.Update(ctx, consumer, outbox); err != nil {
 		return nil, err
 	}
-	return s.repo.GetByID(ctx, consumer)
+	consumer.OperationID = outbox.EventID
+	return consumer, nil
 }
 
 // ChangeConsumerState thay doi trang thai pause/resume cua consumer.
@@ -349,9 +360,19 @@ func (s *tenantConsumerServiceImpl) ChangeConsumerState(ctx context.Context, com
 
 // DeleteConsumer xoa consumer va phat tombstone delete event vao outbox.
 func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, command *mailEntity.TenantConsumer) error {
-	// [COMMENT]: Tenant delete tạo tombstone version kế tiếp trước khi CTE đổi desired_state sang deleting.
+	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
+	current, err := s.repo.GetByID(ctx, command)
+	if err != nil {
+		return err
+	}
+	if current.ConfigVersion != command.ExpectedConfigVersion {
+		return mailTaxonomy.ErrVersionConflict
+	}
+	// [COMMENT]: Fence lấy monotonic allocator để cao hơn cả candidate FAILED có thể từng chạm Zone.
+	deleteFence := current.NextConfigVersion
 	updatedAt := time.Now().UTC()
-	eventID := uuid.NewSHA1(tenantMailConsumerEventNamespace, fmt.Appendf(nil, "consumer:%s:%d:delete:%s", command.ID, command.ExpectedConfigVersion+1, command.ZoneID))
+	// [COMMENT]: Delete không advance business version, nên mỗi retry cần operation ID mới; DP vẫn dedupe bằng version fence.
+	eventID := uuid.New()
 	tombstone := &mailproto.MailConsumerDeleteV1{
 		Metadata: &mailproto.MailEventMetadataV1{
 			EventId:          eventID[:],
@@ -360,7 +381,7 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, command 
 			Producer:         "controlplane-mail",
 		},
 		ConsumerId:          command.ID[:],
-		ConfigVersion:       command.ExpectedConfigVersion + 1,
+		ConfigVersion:       deleteFence,
 		DrainTimeoutSeconds: command.DrainTimeoutSeconds,
 		Reason:              command.Reason,
 	}
@@ -392,7 +413,11 @@ func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, command 
 		Idle:                 command.DrainTimeoutSeconds + 30,
 	}
 
-	// [COMMENT]: Tenant repository chỉ phát tombstone nếu cùng CTE update đúng expected version.
+	// [COMMENT]: Repository khóa aggregate và chỉ insert outbox; JO hard-delete record sau Zone ACK.
 	command.UpdatedAt = updatedAt
-	return s.repo.Delete(ctx, command, outbox)
+	if err = s.repo.Delete(ctx, command, outbox); err != nil {
+		return err
+	}
+	command.OperationID = outbox.EventID
+	return nil
 }

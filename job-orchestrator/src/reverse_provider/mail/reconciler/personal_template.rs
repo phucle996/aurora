@@ -1,4 +1,4 @@
-use super::{xadd_mail_projection_command, PERSONAL_TEMPLATE_EVENT_NAMESPACE};
+use super::xadd_mail_projection_command;
 use crate::reverse_provider::mail::runtime_proto::{
     MailEventMetadataV1, MailTemplateDeletedV1, MailTemplateVersionPublishedV1,
 };
@@ -15,26 +15,27 @@ pub(super) async fn reconcile_personal_template_versions(
     limit: i64,
     generation: u64,
 ) -> Result<(usize, String, i64), Box<dyn std::error::Error + Send + Sync>> {
-    let rows = pg.query(
-        "SELECT t.id, v.version, v.subject_template, v.html_template, v.content_sha256, v.created_at \
+    let rows = pg
+        .query(
+            "SELECT t.id,v.version,v.template_revision,v.event_id, \
+                v.subject_template,v.html_template,v.content_sha256,v.created_at \
          FROM mail.personal_mail_templates t \
          JOIN mail.personal_mail_template_versions v ON v.template_id=t.id \
          JOIN hierarchy.personal_workspaces w ON w.id=t.workspace_id \
-         WHERE w.zone_id=$1 AND (t.id, v.version) > ($2, $3) \
+         WHERE w.zone_id=$1 AND v.version <= t.current_version \
+           AND (t.id, v.version) > ($2, $3) \
          ORDER BY t.id, v.version LIMIT $4",
-        &[&zone_id, &cursor_id, &cursor_version, &limit],
-    ).await?;
-    let namespace = Uuid::parse_str(PERSONAL_TEMPLATE_EVENT_NAMESPACE)?;
+            &[&zone_id, &cursor_id, &cursor_version, &limit],
+        )
+        .await?;
     let mut last_id = String::new();
     let mut last_version = 0;
     for row in &rows {
         let template_id: String = row.get(0);
         let version: i64 = row.get(1);
-        let created_at: DateTime<Utc> = row.get(5);
-        let event_id = Uuid::new_v5(
-            &namespace,
-            format!("template:{template_id}:{version}:publish:{zone_id}").as_bytes(),
-        );
+        let revision: i64 = row.get(2);
+        let event_id: Uuid = row.get(3);
+        let created_at: DateTime<Utc> = row.get(7);
         let event = MailTemplateVersionPublishedV1 {
             metadata: Some(MailEventMetadataV1 {
                 event_id: event_id.as_bytes().to_vec(),
@@ -44,11 +45,11 @@ pub(super) async fn reconcile_personal_template_versions(
                 producer: "job-orchestrator-mail-reconciler".to_string(),
             }),
             template_id: template_id.clone(),
-            template_revision: version as u64,
+            template_revision: revision as u64,
             template_version: version as u64,
-            subject_template: row.get(2),
-            html_template: row.get(3),
-            content_sha256: row.get(4),
+            subject_template: row.get(4),
+            html_template: row.get(5),
+            content_sha256: row.get(6),
         };
         xadd_mail_projection_command(
             redis_conn,

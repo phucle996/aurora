@@ -1,6 +1,6 @@
 import { fetchJSON } from "./fetcher";
 
-export type MailDesiredState = "paused" | "enabled" | "deleting";
+export type MailDesiredState = "paused" | "enabled";
 export type MailSourceType = "kafka" | "redis_stream" | "nats_jetstream" | "rabbitmq";
 export type MailRuntimeState = "stopped" | "starting" | "running" | "paused" | "draining" | "error" | "degraded";
 
@@ -35,6 +35,8 @@ export type MailConsumer = {
   config_sha256: string;
   created_at: string;
   updated_at: string;
+  // [COMMENT]: Mutation responses carry the outbox event ID; read responses may omit it.
+  operation_id?: string;
   // [COMMENT]: List response may omit runtime; detail returns null when no fresh heartbeat exists.
   runtime?: MailConsumerRuntime | null;
 };
@@ -62,7 +64,11 @@ export type MailTemplateVersion = {
 export type MailTemplateDetail = {
   template: MailTemplate;
   current_version: MailTemplateVersion;
+  published_version?: MailTemplateVersion;
+  operation_id?: string;
 };
+
+export type MailDeleteOperation = { consumer_id?: string; template_id?: string; operation_id: string };
 
 export type ConsumerWrite = {
   name: string;
@@ -106,35 +112,36 @@ export async function getMailConsumer(id: string, signal?: AbortSignal): Promise
   return requireData(response, "Mail consumer detail is missing");
 }
 
-export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer> {
-  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
+export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer & { operation_id: string }> {
+  const response = await fetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
     "/api/v1/mail/consumers",
     { method: "POST", body: input },
   );
   return requireData(response, "Created mail consumer is missing");
 }
 
-export async function updateMailConsumer(id: string, input: ConsumerWrite & { desired_state: MailDesiredState; expected_config_version: number }): Promise<MailConsumer> {
-  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
+export async function updateMailConsumer(id: string, input: ConsumerWrite & { desired_state: MailDesiredState; expected_config_version: number }): Promise<MailConsumer & { operation_id: string }> {
+  const response = await fetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
     `/api/v1/mail/consumers/${encodeURIComponent(id)}`,
     { method: "PATCH", body: input },
   );
   return requireData(response, "Updated mail consumer is missing");
 }
 
-export async function changeMailConsumerState(id: string, action: "pause" | "resume", expectedConfigVersion: number): Promise<MailConsumer> {
-  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
+export async function changeMailConsumerState(id: string, action: "pause" | "resume", expectedConfigVersion: number): Promise<MailConsumer & { operation_id: string }> {
+  const response = await fetchJSON<DataEnvelope<MailConsumer & { operation_id: string }>>(
     `/api/v1/mail/consumers/${encodeURIComponent(id)}/${action}`,
     { method: "POST", body: { expected_config_version: expectedConfigVersion } },
   );
   return requireData(response, "Updated mail consumer state is missing");
 }
 
-export async function deleteMailConsumer(id: string, expectedConfigVersion: number): Promise<void> {
-  await fetchJSON(`/api/v1/mail/consumers/${encodeURIComponent(id)}`, {
+export async function deleteMailConsumer(id: string, expectedConfigVersion: number): Promise<MailDeleteOperation> {
+  const response = await fetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/mail/consumers/${encodeURIComponent(id)}`, {
     method: "DELETE",
     body: { expected_config_version: expectedConfigVersion, drain_timeout_seconds: 30, reason: "console delete" },
   });
+  return requireData(response, "Mail consumer delete operation is missing");
 }
 
 export async function listMailTemplates(signal?: AbortSignal): Promise<MailTemplate[]> {
@@ -155,22 +162,23 @@ export async function listMailTemplateVersions(id: string, signal?: AbortSignal)
   return requireData(response, "Mail template versions response is missing data").items;
 }
 
-export async function createMailTemplate(input: TemplateContentWrite & { code: string; name: string }): Promise<MailTemplateDetail> {
-  const response = await fetchJSON<DataEnvelope<MailTemplateDetail>>("/api/v1/mail/templates", { method: "POST", body: input });
+export async function createMailTemplate(input: TemplateContentWrite & { code: string; name: string }): Promise<MailTemplateDetail & { operation_id: string }> {
+  const response = await fetchJSON<DataEnvelope<MailTemplateDetail & { operation_id: string }>>("/api/v1/mail/templates", { method: "POST", body: input });
   return requireData(response, "Created mail template is missing");
 }
 
-export async function publishMailTemplate(id: string, expectedRevision: number, input: TemplateContentWrite): Promise<MailTemplateDetail> {
-  const response = await fetchJSON<DataEnvelope<MailTemplateDetail>>(
+export async function publishMailTemplate(id: string, expectedRevision: number, input: TemplateContentWrite): Promise<MailTemplateDetail & { operation_id: string }> {
+  const response = await fetchJSON<DataEnvelope<MailTemplateDetail & { operation_id: string }>>(
     `/api/v1/mail/templates/${encodeURIComponent(id)}/versions`,
     { method: "POST", body: { ...input, expected_revision: expectedRevision } },
   );
   return requireData(response, "Published mail template is missing");
 }
 
-export async function deleteMailTemplate(id: string, expectedRevision: number): Promise<void> {
-  await fetchJSON(`/api/v1/mail/templates/${encodeURIComponent(id)}`, {
+export async function deleteMailTemplate(id: string, expectedRevision: number): Promise<MailDeleteOperation> {
+  const response = await fetchJSON<DataEnvelope<MailDeleteOperation>>(`/api/v1/mail/templates/${encodeURIComponent(id)}`, {
     method: "DELETE",
     body: { expected_revision: expectedRevision },
   });
+  return requireData(response, "Mail template delete operation is missing");
 }

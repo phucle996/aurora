@@ -10,8 +10,6 @@ pub use scheduler::run_periodic_mail_reconciliation;
 use uuid::Uuid;
 
 pub(super) const CONSUMER_EVENT_NAMESPACE: &str = "43de31a4-0c86-54e9-8384-47b33f541c28";
-pub(super) const PERSONAL_TEMPLATE_EVENT_NAMESPACE: &str = "9314352a-19ba-5808-b8e2-14e06df7b791";
-pub(super) const TENANT_TEMPLATE_EVENT_NAMESPACE: &str = "92712973-d86b-5e59-9a86-9bf5726c9981";
 pub(super) const RECONCILE_COMPLETION_NAMESPACE: &str = "e295a8c6-c04f-56f3-9577-f53521006bb9";
 
 // [COMMENT]: Đây là transport primitive duy nhất được dùng chung; business query/encode vẫn tách theo từng flow.

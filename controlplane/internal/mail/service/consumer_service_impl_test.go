@@ -46,6 +46,7 @@ func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
 	current := validPersonalConsumer()
 	current.ID = uuid.New()
 	current.ConfigVersion = 4
+	current.NextConfigVersion = 5
 	current.SourceConfigEnvelope = []byte{7, 8, 9}
 	repo := &personalConsumerRepoCapture{created: current}
 
@@ -75,12 +76,16 @@ func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
 		!bytes.Equal(kafka.SourceConfigEnvelope, updated.SourceConfigEnvelope) {
 		t.Fatalf("outbox stream differs from aggregate: %+v", event.Stream)
 	}
+	if updated.ConfigVersion != 5 || event.ConfigVersion != 5 || updated.OperationID != repo.outbox.EventID {
+		t.Fatalf("update did not allocate candidate operation: entity=%+v event=%+v", updated, event)
+	}
 }
 
 func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T) {
 	current := validPersonalConsumer()
 	current.ID = uuid.New()
 	current.ConfigVersion = 4
+	current.NextConfigVersion = 5
 	current.SourceConfigEnvelope = []byte{7, 8, 9}
 	repo := &personalConsumerRepoCapture{created: current}
 
@@ -132,6 +137,28 @@ func TestPersonalCreateUsesFreshRuntimeIdentity(t *testing.T) {
 	}
 	if first.ID == second.ID {
 		t.Fatal("recreated consumer reused a tombstoned runtime identity")
+	}
+}
+
+func TestPersonalDeleteUsesNextAllocatorAsTombstoneFence(t *testing.T) {
+	current := validPersonalConsumer()
+	current.ID = uuid.New()
+	current.ConfigVersion = 4
+	current.NextConfigVersion = 9
+	repo := &personalConsumerRepoCapture{created: current}
+	command := &mailEntity.PersonalConsumer{
+		ActorUserID: current.ActorUserID, WorkspaceID: current.WorkspaceID, ZoneID: current.ZoneID,
+		ID: current.ID, ExpectedConfigVersion: 4, DrainTimeoutSeconds: 30,
+	}
+	if err := NewPersonalConsumerService(repo).DeleteConsumer(context.Background(), command); err != nil {
+		t.Fatalf("DeleteConsumer() error = %v", err)
+	}
+	var event mailproto.MailConsumerDeleteV1
+	if err := proto.Unmarshal(repo.outbox.Payload, &event); err != nil {
+		t.Fatalf("invalid delete payload: %v", err)
+	}
+	if event.ConfigVersion != 9 || command.OperationID != repo.outbox.EventID {
+		t.Fatalf("delete did not use monotonic fence: event=%+v command=%+v", event, command)
 	}
 }
 

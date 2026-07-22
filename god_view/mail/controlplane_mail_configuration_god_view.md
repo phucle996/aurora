@@ -15,7 +15,7 @@
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
 | Placement | Consumer row không lưu Zone; outbox snapshot `zone_id UUID` từ authorized request context sau DB cross-check Workspace |
 | Contract | `controlplane/internal/mail/transport/rpc/proto/mail_runtime.proto` |
-| Schema | `controlplane/internal/mail/migrations/000001..000007` |
+| Schema | `controlplane/internal/mail/migrations/000001..000009` |
 | Related SoT | `mail_configuration_projection_god_view.md`, `dataplane_broker_mail_execution_god_view.md` |
 | Verified against | Working tree, 2026-07-22 |
 
@@ -70,7 +70,7 @@ flowchart LR
 | Message contract | Không lưu mapping; mọi broker record dùng fixed envelope `{to, parameter}` |
 | Mail binding | `template_id/version`, `sender_profile_id/version` |
 | Runtime controls | desired state, parallelism |
-| Concurrency | monotonic `config_version`, timestamps |
+| Concurrency | active `config_version`, monotonic `next_config_version`, timestamps |
 
 Hai tên cột `topic`/`consumer_group` được giữ ở business schema hiện tại, nhưng API/Console diễn giải rõ theo discriminator:
 
@@ -103,7 +103,7 @@ sequenceDiagram
 	DB->>DB: authorize scope + bind immutable template version
 	DB->>DB: INSERT consumer(version=1, desired=PAUSED)
 	DB->>DB: INSERT mail_outbox_records; COMMIT
-    CP-->>C: 201 desired=PAUSED, reported=STOPPED/UNKNOWN
+	CP-->>C: 202 + operation_id; desired row is PAUSED, Zone result pending
 ```
 
 Client không gửi `owner_id`, `owner_type`, private endpoint hoặc runtime status. Workspace và
@@ -137,13 +137,16 @@ stateDiagram-v2
     [*] --> PAUSED: create
     PAUSED --> ENABLED: resume
     ENABLED --> PAUSED: pause
-    PAUSED --> DELETING: delete request
-    ENABLED --> DELETING: delete request
-    DELETING --> [*]: DP delete SUCCEEDED + hard delete row
+	PAUSED --> PAUSED: delete operation pending
+	ENABLED --> ENABLED: delete operation pending
+	PAUSED --> [*]: DP delete SUCCEEDED + JO hard delete
+	ENABLED --> [*]: DP drain/delete SUCCEEDED + JO hard delete
 ```
 
-- Mỗi transition tăng `config_version` và insert outbox trong cùng data-modifying CTE statement.
-- Delete request chuyển row sang `DELETING`; JO chỉ hard-delete exact `config_version` sau khi Dataplane trả `SUCCEEDED`.
+- Update/pause/resume allocate immutable candidate từ `next_config_version`, tăng riêng counter và insert outbox trong cùng transaction. Active row không đổi trước Zone ACK.
+- `SUCCEEDED` promote candidate vào active row; `FAILED` hard-delete đúng candidate nhưng không lùi counter, vì vậy result cũ không va vào version mới.
+- Delete request chỉ insert outbox với fence lấy từ monotonic `next_config_version`, nên lớn hơn cả active và mọi candidate FAILED có thể từng chạm Zone; không tăng version, không đổi desired state và không xóa business row trước Zone.
+- JO chỉ hard-delete theo `resource_id` sau khi Dataplane trả `SUCCEEDED`; `FAILED` giữ nguyên business row để retry.
 - `mail_consumers` không có `deleted_at` hoặc desired state `DELETED`. Durable projection tombstone nằm ở bảng riêng
   để reconciler không hồi sinh Zone KV sau khi outbox hết retention.
 - Create nhận `code` chuẩn hóa dạng kebab-case. Unique index `(workspace_id, code)` chặn trùng code;
@@ -182,9 +185,12 @@ personal_mail_templates / tenant_mail_templates
   code
   current_version
   template_revision
+	next_version
+	next_template_revision
 
 personal_mail_template_versions / tenant_mail_template_versions
   template_id + template_version
+	template_revision + event_id
   subject_template
   html_template
   content_sha256
@@ -192,7 +198,7 @@ personal_mail_template_versions / tenant_mail_template_versions
 ```
 
 - `template_version` định danh immutable content.
-- `template_revision` là optimistic concurrency clock, tăng khi publish version mới.
+- `template_revision` là active optimistic concurrency clock; `next_*` là monotonic allocator không lùi khi candidate thất bại.
 - Không có cột `scope`: table Personal/Tenant là authorization namespace vật lý. Verification mail dùng ordinary root-owned Personal template/consumer, không có system-template namespace.
 - Personal template không lưu `created_by/updated_by`; Tenant template và version giữ actor audit.
 - Version không bị UPDATE riêng lẻ. Hard-delete hợp lệ xóa toàn bộ identity + versions trong một transaction có explicit session-scoped bypass.
@@ -209,17 +215,19 @@ sequenceDiagram
     C->>TS: Publish(subject, html, expected_revision)
     TS->>TS: Canonicalize subject + HTML; placeholder discovery thuộc Dataplane
     TS->>TS: Canonicalize and SHA-256 content
-    TS->>DB: one guarded data-modifying CTE
-    TS->>DB: CAS expected_revision + INSERT immutable version N
-    TS->>DB: UPDATE head + INSERT outbox from updated row
+	TS->>DB: lock head + reject live resource operation
+	TS->>DB: CAS expected_revision + INSERT immutable candidate N
+	TS->>DB: advance next counters + INSERT outbox; current head unchanged
+	Note over DB: Zone SUCCEEDED => JO promotes head; FAILED => JO deletes exact candidate
 ```
 
 ### 4.3 Hard-delete semantics
 
-- API từ chối hard-delete với `409 template in use` nếu còn consumer chưa-xóa tham chiếu template.
+- API từ chối hard-delete với `409 template in use` nếu active consumer hoặc immutable update candidate chưa-promote còn tham chiếu template. Candidate history đã promote có version `<= active.config_version` nên không giữ template vĩnh viễn.
 - Consumer create/update giữ `FOR KEY SHARE` trên template identity; delete giữ `FOR UPDATE`, loại race bind-vs-delete.
-- Khi không còn consumer active, identity + toàn bộ immutable versions + outbox `mail.template.deleted` commit nguyên tử.
-- Code template được giải phóng ngay sau commit và có thể dùng lại; lần create mới nhận UUID mới.
+- Khi không còn consumer active, CP chỉ commit outbox `mail.template.deleted`; identity + versions vẫn là active business truth trong lúc Zone xử lý.
+- Zone `SUCCEEDED` làm JO ghi durable projection tombstone rồi hard-delete identity + versions trong cùng transaction. `FAILED` giữ nguyên aggregate.
+- Code template chỉ được giải phóng sau result transaction thành công; lần create mới nhận UUID mới.
 
 ## 5. Delivery history (deferred)
 
@@ -258,15 +266,21 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Template publish đồng thời | Lock identity + expected revision + unique version |
 | Upsert cũ đến sau delete | DP tombstone version cao hơn; bỏ event cũ |
 | Create V1 FAILED đến sau update V2 | JO chỉ hard-delete khi business row vẫn đúng V1 |
-| Delete result cũ đến sau mutation mới | Hard-delete bắt buộc khớp `resource_id + config_version + DELETING` |
-| Outbox FAILED nhưng reconciler retry thành công | `SUCCEEDED` được phép heal outbox và finalize hard-delete nguyên tử |
-| PROCESSING/FAILED của retry cũ đến sau retry mới | `mail_outbox_records.result_attempt` fence theo attempt; chỉ `SUCCEEDED` được thắng terminal cũ vì nó chứng minh projection đã áp dụng |
+| Delete đồng thời update/publish | Row lock + chỉ một outbox `PENDING/PROCESSING` trên mỗi `resource_id`; request sau nhận `409` |
+| Delete result cũ đến sau mutation mới | Không có mutation mới khi delete live; DP fence lấy từ `next_*` để vượt mọi allocated candidate và JO khóa outbox + aggregate |
+| Result đến sau terminal FAILED | Mọi FAILED là terminal cho operation ID; create/update/publish cleanup candidate, còn delete giữ aggregate và retry bằng operation ID mới |
+| PROCESSING/FAILED của attempt cũ đến sai thứ tự | `mail_outbox_records.result_attempt` fence theo attempt; `FAILED` và `SUCCEEDED` đều terminal cho operation ID, retry business operation phải dùng event ID mới |
+| JO commit terminal result nhưng NATS notify lỗi | Redis result không ACK; cùng terminal result được redeliver chỉ trả notification metadata, không chạy lại promote/cleanup/delete; `transaction_id` giữ nguyên nên UI overwrite |
 | Runtime report từ pod cũ | Logical slot row + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Authorized context mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
 | Workspace placement đổi giữa resolve và commit | Guarded transaction cross-check authoritative workspace; zero row → not found/conflict |
 | Hai create cùng code | Unique workspace/code index; một transaction thắng, transaction còn lại nhận `409` |
-| Create/update consumer đồng thời delete template | Consumer mutation giữ `KEY SHARE`; delete giữ `FOR UPDATE` và kiểm tra reference trước khi xóa |
+| Create/update consumer đồng thời delete template | Consumer mutation giữ `KEY SHARE`, rồi đọc live template outbox ở READ COMMITTED statement kế tiếp; delete giữ `FOR UPDATE` và kiểm tra cả active reference lẫn candidate có version mới hơn active trước khi phát command |
+
+Các mutation cùng resource dùng row lock trước rồi đọc live outbox bằng statement kế tiếp trong cùng transaction.
+Việc tách snapshot là bắt buộc: nếu statement đã lấy snapshot trước khi chờ row lock, nó có thể không nhìn thấy outbox
+vừa commit bởi transaction thắng lock dù lock order trông có vẻ đúng.
 
 ## 8. Security requirements
 
@@ -315,5 +329,9 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
   xóa hoặc chuyển mọi consumer đang tham chiếu trước.
 - Action create/update/delete được gate riêng theo render-context capability; repository vẫn authorize
   fail-close, vì UI permission không phải security boundary.
+- Mutation response trả `operation_id = outbox.event_id`. Console tạo activity local-only ở chuông header;
+  không có status URL, polling, localStorage audit hoặc history API trong phase này.
+- Centrifugo terminal result mang `operation + resource_id + transaction_id`; header ghi đè activity cùng ID,
+  còn màn hình đang mở chỉ invalidate/merge đúng consumer/template read model. Audit/history là phase riêng trong tương lai.
 
 Broker suites đã có trong code nhưng production activation vẫn fail-closed mặc định. Delivery history chưa được triển khai.

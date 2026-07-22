@@ -16,6 +16,9 @@ type TenantTemplate struct {
 	Name             string
 	CurrentVersion   uint64
 	TemplateRevision uint64
+	NextVersion      uint64
+	NextRevision     uint64
+	OperationID      uuid.UUID
 	CreatedBy        *uuid.UUID
 	UpdatedBy        *uuid.UUID
 	UpdatedAt        time.Time

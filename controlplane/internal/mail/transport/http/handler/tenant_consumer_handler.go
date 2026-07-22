@@ -151,7 +151,7 @@ func (h *TenantConsumerHandler) Create(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -160,7 +160,7 @@ func (h *TenantConsumerHandler) Create(c *gin.Context) {
 		return
 	}
 
-	apires.RespondCreated(c, gin.H{
+	apires.RespondAccepted(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
 		"code":               consumer.Code,
@@ -180,7 +180,8 @@ func (h *TenantConsumerHandler) Create(c *gin.Context) {
 		"config_sha256":      hex.EncodeToString(consumer.ConfigSHA256),
 		"created_at":         consumer.CreatedAt,
 		"updated_at":         consumer.UpdatedAt,
-	}, "mail consumer created in paused state")
+		"operation_id":       consumer.OperationID.String(),
+	}, "mail consumer creation scheduled")
 }
 
 func (h *TenantConsumerHandler) Get(c *gin.Context) {
@@ -220,7 +221,7 @@ func (h *TenantConsumerHandler) Get(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -301,7 +302,7 @@ func (h *TenantConsumerHandler) List(c *gin.Context) {
 	var state *mailEntity.ConsumerDesiredState
 	if raw := strings.TrimSpace(c.Query("desired_state")); raw != "" {
 		value := mailEntity.ConsumerDesiredState(raw)
-		if value != mailEntity.ConsumerPaused && value != mailEntity.ConsumerEnabled && value != mailEntity.ConsumerDeleting {
+		if value != mailEntity.ConsumerPaused && value != mailEntity.ConsumerEnabled {
 			apires.RespondBadRequest(c, "invalid desired_state")
 			return
 		}
@@ -344,7 +345,7 @@ func (h *TenantConsumerHandler) List(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -491,7 +492,7 @@ func (h *TenantConsumerHandler) Update(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -500,7 +501,8 @@ func (h *TenantConsumerHandler) Update(c *gin.Context) {
 		return
 	}
 
-	apires.RespondSuccess(c, gin.H{
+	// [COMMENT]: Cấu hình chỉ trở thành active sau khi Zone xác nhận terminal SUCCESS.
+	apires.RespondAccepted(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
 		"code":               consumer.Code,
@@ -520,7 +522,8 @@ func (h *TenantConsumerHandler) Update(c *gin.Context) {
 		"config_sha256":      hex.EncodeToString(consumer.ConfigSHA256),
 		"created_at":         consumer.CreatedAt,
 		"updated_at":         consumer.UpdatedAt,
-	}, "mail consumer updated")
+		"operation_id":       consumer.OperationID.String(),
+	}, "mail consumer update scheduled")
 }
 
 func (h *TenantConsumerHandler) Pause(c *gin.Context) {
@@ -587,7 +590,7 @@ func (h *TenantConsumerHandler) changeState(c *gin.Context, desiredState mailEnt
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -596,7 +599,7 @@ func (h *TenantConsumerHandler) changeState(c *gin.Context, desiredState mailEnt
 		return
 	}
 
-	apires.RespondSuccess(c, gin.H{
+	apires.RespondAccepted(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
 		"code":               consumer.Code,
@@ -616,7 +619,8 @@ func (h *TenantConsumerHandler) changeState(c *gin.Context, desiredState mailEnt
 		"config_sha256":      hex.EncodeToString(consumer.ConfigSHA256),
 		"created_at":         consumer.CreatedAt,
 		"updated_at":         consumer.UpdatedAt,
-	}, "mail consumer desired state updated")
+		"operation_id":       consumer.OperationID.String(),
+	}, "mail consumer state change scheduled")
 }
 
 func (h *TenantConsumerHandler) Delete(c *gin.Context) {
@@ -668,7 +672,8 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	err = h.svc.DeleteConsumer(ctx, &mailEntity.TenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DrainTimeoutSeconds: req.DrainTimeoutSeconds, Reason: req.Reason})
+	command := &mailEntity.TenantConsumer{ActorUserID: actorID, TenantID: tenantID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DrainTimeoutSeconds: req.DrainTimeoutSeconds, Reason: req.Reason}
+	err = h.svc.DeleteConsumer(ctx, command)
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -678,7 +683,7 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -686,5 +691,5 @@ func (h *TenantConsumerHandler) Delete(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondAccepted(c, gin.H{"consumer_id": consumerID.String(), "desired_state": mailEntity.ConsumerDeleting}, "mail consumer deletion scheduled")
+	apires.RespondAccepted(c, gin.H{"consumer_id": consumerID.String(), "operation_id": command.OperationID.String()}, "mail consumer deletion scheduled")
 }

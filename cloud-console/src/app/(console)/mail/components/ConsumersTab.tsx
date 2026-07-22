@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -13,9 +13,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { type APIError } from "@/lib/api/fetcher";
 import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/lib/api/mail";
+import { useRealtime } from "@/context/RealtimeContext";
 
 type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type ConsumerForm = ConsumerWrite & { code: string };
+type MailConsumerJobNotification = { operation?: unknown; resource_id?: string; status?: string };
 
 const emptyForm: ConsumerForm = {
   code: "", name: "", source_type: "kafka", broker_resource_id: "", topic: "", consumer_group: "",
@@ -37,6 +39,7 @@ function errorMessage(error: unknown): string {
 
 export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelete }: ConsumersTabProps) {
   const queryClient = useQueryClient();
+  const { subscribeToEvent } = useRealtime();
   const queryKey = ["mail", scopeKey, "consumers"] as const;
   const [search, setSearch] = useState("");
   const [formOpen, setFormOpen] = useState(false);
@@ -60,6 +63,17 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     return (consumers.data ?? []).filter((item) => [item.name, item.topic, item.consumer_group, item.template_id].some((value) => value.toLowerCase().includes(needle)));
   }, [consumers.data, search]);
 
+  useEffect(() => {
+    // [COMMENT]: Không poll status URL và không lưu audit ở UI; terminal Centrifugo signal chỉ merge lại read model liên quan.
+    return subscribeToEvent("job.notification", (payload: MailConsumerJobNotification) => {
+      if (typeof payload?.operation !== "string" || !payload.operation.startsWith("mail.consumer.") || !payload.resource_id || typeof payload.status !== "string" || !["SUCCESS", "FAILED"].includes(payload.status)) return;
+      void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumers"] });
+      if (detailConsumerID === payload.resource_id) {
+        void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumer-detail", detailConsumerID] });
+      }
+    });
+  }, [detailConsumerID, queryClient, scopeKey, subscribeToEvent]);
+
   const save = useMutation({
     mutationFn: async () => {
       const input: ConsumerWrite = {
@@ -73,9 +87,14 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         ? updateMailConsumer(editing.id, { ...input, desired_state: editing.desired_state, expected_config_version: editing.config_version })
         : createMailConsumer({ ...input, code: form.code });
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      // [COMMENT]: Header activity là local-only; cùng operation_id sẽ được realtime result ghi đè.
+      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
+        id: result.operation_id, title: editing ? "Updating mail consumer" : "Creating mail consumer",
+        message: `${result.name} is being applied in the selected zone.`, type: "processing",
+      } }));
       await queryClient.invalidateQueries({ queryKey });
-      toast.success(editing ? "Consumer updated" : "Consumer created paused");
+      toast.success(editing ? "Consumer update scheduled" : "Consumer creation scheduled");
       setEditing(null); setForm(emptyForm); setFormOpen(false);
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -83,12 +102,24 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
 
   const stateChange = useMutation({
     mutationFn: ({ consumer, action }: { consumer: MailConsumer; action: "pause" | "resume" }) => changeMailConsumerState(consumer.id, action, consumer.config_version),
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer desired state updated"); },
+    onSuccess: async (result) => {
+      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
+        id: result.operation_id, title: "Applying mail consumer state",
+        message: `${result.name} is being applied in the selected zone.`, type: "processing",
+      } }));
+      await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer state change scheduled");
+    },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const remove = useMutation({
     mutationFn: (consumer: MailConsumer) => deleteMailConsumer(consumer.id, consumer.config_version),
-    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer deletion requested"); },
+    onSuccess: (result, consumer) => {
+      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
+        id: result.operation_id, title: "Deleting mail consumer",
+        message: `${consumer.name} is being deleted from the selected zone.`, type: "processing",
+      } }));
+      toast.success("Consumer deletion scheduled");
+    },
     onError: (error) => toast.error(errorMessage(error)),
   });
 
@@ -185,7 +216,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
             {visible.map((consumer) => <tr key={consumer.id} className="hover:bg-muted/20"><td className="px-4 py-3"><div className="font-medium">{consumer.name}</div><div className="font-mono text-[11px] text-muted-foreground">{consumer.id}</div></td><td className="px-4 py-3"><Badge variant="outline" className="mb-1">{sourceLabels[consumer.source_type].name}</Badge>{!consumer.source_configured && <Badge variant="outline" className="mb-1 ml-1 text-amber-600">Needs credentials</Badge>}<div className="font-mono text-xs">{consumer.topic}</div><div className="text-xs text-muted-foreground">{consumer.consumer_group}</div></td><td className="px-4 py-3 text-xs"><div>{consumer.template_id} · v{consumer.template_version}</div><div className="text-muted-foreground">{consumer.sender_profile_id} · v{consumer.sender_version}</div></td><td className="px-4 py-3"><Badge variant="outline">{consumer.desired_state}</Badge></td><td className="px-4 py-3 font-mono text-xs">v{consumer.config_version}</td><td className="px-4 py-3"><div className="flex justify-end gap-1">
               <Button variant="ghost" size="icon-sm" title="View runtime detail" onClick={() => setDetailConsumerID(consumer.id)}><Eye /></Button>
               {canUpdate && <Button variant="ghost" size="icon-sm" title="Edit" onClick={() => openEdit(consumer)}><Pencil /></Button>}
-              {canUpdate && consumer.desired_state !== "deleting" && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : consumer.source_configured ? "Resume" : "Configure broker credentials before resume"} disabled={stateChange.isPending || (consumer.desired_state !== "enabled" && !consumer.source_configured)} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
+              {canUpdate && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : consumer.source_configured ? "Resume" : "Configure broker credentials before resume"} disabled={stateChange.isPending || (consumer.desired_state !== "enabled" && !consumer.source_configured)} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
               {canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" className="text-destructive" title="Delete" />}><Trash2 /></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {consumer.name}?</AlertDialogTitle><AlertDialogDescription>An enabled consumer will drain before deletion. In-flight messages may finish.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(consumer)}>Request deletion</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}
             </div></td></tr>)}
           </tbody></table></div>

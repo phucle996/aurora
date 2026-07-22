@@ -47,9 +47,10 @@ func (r *personalTemplateRepoPostgres) Create(ctx context.Context, template *mai
 			WHERE id = $2 AND zone_id = $7 AND owner_id = $8
 		), identity_inserted AS (
 			INSERT INTO %s.personal_mail_templates (
-				id, workspace_id, code, name, current_version, template_revision, created_at, updated_at
+				id, workspace_id, code, name, current_version, template_revision,
+				next_version, next_template_revision, created_at, updated_at
 			)
-			SELECT $1, $2, $3, $4, $5, $6, $9, $10
+			SELECT $1, $2, $3, $4, $5, $6, $5 + 1, $6 + 1, $9, $10
 			WHERE EXISTS (SELECT 1 FROM authorized)
 			ON CONFLICT (workspace_id, code) DO NOTHING
 			RETURNING id
@@ -60,9 +61,10 @@ func (r *personalTemplateRepoPostgres) Create(ctx context.Context, template *mai
 			  AND EXISTS (SELECT 1 FROM authorized)
 		), version_inserted AS (
 			INSERT INTO %s.personal_mail_template_versions (
-				template_id, version, subject_template, html_template, content_sha256, created_at
+				template_id, version, template_revision, event_id,
+				subject_template, html_template, content_sha256, created_at
 			)
-			SELECT $11, $12, $13, $14, $15, $16
+			SELECT $11, $12, $6, $17, $13, $14, $15, $16
 			FROM identity_inserted
 			RETURNING template_id
 		), outbox_inserted AS (
@@ -122,6 +124,7 @@ func (r *personalTemplateRepoPostgres) GetByID(ctx context.Context, query *mailE
 
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT t.id, t.workspace_id, t.code, t.name, t.current_version, t.template_revision,
+		       t.next_version, t.next_template_revision,
 		       t.created_at, t.updated_at,
 		       v.template_id, v.version, v.subject_template, v.html_template, v.content_sha256, v.created_at
 		FROM %s.personal_mail_templates AS t
@@ -133,6 +136,7 @@ func (r *personalTemplateRepoPostgres) GetByID(ctx context.Context, query *mailE
 		query.ID, query.WorkspaceID, query.ZoneID, query.ActorUserID,
 	).Scan(
 		&template.ID, &template.WorkspaceID, &template.Code, &template.Name, &template.CurrentVersion, &template.TemplateRevision,
+		&template.NextVersion, &template.NextRevision,
 		&template.CreatedAt, &template.UpdatedAt,
 		&template.TemplateID, &template.Version, &template.SubjectTemplate, &template.HTMLTemplate, &template.ContentSHA256, &template.VersionCreatedAt,
 	)
@@ -150,6 +154,7 @@ func (r *personalTemplateRepoPostgres) GetByID(ctx context.Context, query *mailE
 func (r *personalTemplateRepoPostgres) List(ctx context.Context, query *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error) {
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT t.id, t.workspace_id, t.code, t.name, t.current_version, t.template_revision,
+		       t.next_version, t.next_template_revision,
 		       t.created_at, t.updated_at
 		FROM %s.personal_mail_templates AS t
 		WHERE t.workspace_id = $1 AND ($4 = '' OR t.id > $4)
@@ -168,6 +173,7 @@ func (r *personalTemplateRepoPostgres) List(ctx context.Context, query *mailEnti
 		t := &mailEntity.PersonalTemplate{}
 		if err = rows.Scan(
 			&t.ID, &t.WorkspaceID, &t.Code, &t.Name, &t.CurrentVersion, &t.TemplateRevision,
+			&t.NextVersion, &t.NextRevision,
 			&t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("mail personal template repo: scan list: %w", err)
@@ -187,6 +193,7 @@ func (r *personalTemplateRepoPostgres) ListVersions(ctx context.Context, query *
 		FROM %s.personal_mail_template_versions AS v
 		JOIN %s.personal_mail_templates AS t ON t.id = v.template_id
 		WHERE v.template_id = $1 AND t.workspace_id = $2
+		  AND v.version <= t.current_version
 		  AND ($5::bigint = 0 OR v.version < $5)
 		  AND EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id = $2 AND zone_id = $3 AND owner_id = $4)
 		ORDER BY v.version DESC LIMIT $6
@@ -226,33 +233,63 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, templ
 	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
 	}
-	var authorized, versionInserted, updated bool
-	var currentVersion, currentRevision uint64
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("mail personal template repo: begin publish: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// [COMMENT]: Lock và live-operation read tách statement để snapshot sau lock nhìn thấy delete/publish vừa commit.
+	var lockedTemplateID string
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT t.id FROM %s.personal_mail_templates t JOIN %s.personal_workspaces w ON w.id=t.workspace_id WHERE t.id=$1 AND t.workspace_id=$2 AND w.zone_id=$3 AND w.owner_id=$4 FOR UPDATE OF t`, r.mailSchema, r.hierarchySchema), template.ID, template.WorkspaceID, template.ZoneID, template.ActorUserID).Scan(&lockedTemplateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailTaxonomy.ErrTemplateNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mail personal template repo: lock publish target: %w", err)
+	}
+	var lockedOperation bool
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), template.ID).Scan(&lockedOperation); err != nil {
+		return fmt.Errorf("mail personal template repo: check publish operation: %w", err)
+	}
+	if lockedOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	var authorized, liveOperation, versionInserted bool
+	var currentVersion, currentRevision, nextVersion, nextRevision uint64
 	var outboxID sql.NullInt64
 
-	err := r.db.QueryRow(ctx, fmt.Sprintf(`
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
 		WITH authorized AS (
 			SELECT 1
 			FROM %s.personal_workspaces
 			WHERE id = $1 AND zone_id = $2 AND owner_id = $3
-		), target AS (
-			SELECT current_version, template_revision
+		), target AS MATERIALIZED (
+			SELECT current_version, template_revision, next_version, next_template_revision
 			FROM %s.personal_mail_templates
 			WHERE id = $4 AND workspace_id = $1
 			  AND EXISTS (SELECT 1 FROM authorized)
+			FOR UPDATE
+		), live_operation AS (
+			SELECT 1 FROM %s.mail_outbox_records
+			WHERE resource_id=$4 AND status IN ('PENDING','PROCESSING')
+			LIMIT 1
 		), version_inserted AS (
 			INSERT INTO %s.personal_mail_template_versions (
-				template_id, version, subject_template, html_template, content_sha256, created_at
+				template_id, version, template_revision, event_id,
+				subject_template, html_template, content_sha256, created_at
 			)
-			SELECT $5, $6, $7, $8, $9, $10
+			SELECT $5, $6, $12, $13, $7, $8, $9, $10
 			FROM target
-			WHERE template_revision = $11 AND $6 = current_version + 1
+			WHERE template_revision=$11 AND next_version=$6 AND next_template_revision=$12
+			  AND NOT EXISTS (SELECT 1 FROM live_operation)
 			ON CONFLICT DO NOTHING
 			RETURNING template_id
-		), head_updated AS (
+		), counter_updated AS (
 			UPDATE %s.personal_mail_templates
-			SET current_version = $6, template_revision = $12, updated_at = $13
+			SET next_version=$6+1, next_template_revision=$12+1
 			WHERE id = $4 AND workspace_id = $1 AND template_revision = $11
+			  AND next_version=$6 AND next_template_revision=$12
 			  AND EXISTS (SELECT 1 FROM version_inserted)
 			RETURNING id
 		), outbox_inserted AS (
@@ -260,25 +297,29 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, templ
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			SELECT $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
-			FROM head_updated
+			SELECT $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
+			FROM counter_updated
 			RETURNING id
 		)
 		SELECT
 			EXISTS (SELECT 1 FROM authorized),
 			COALESCE((SELECT current_version FROM target), 0),
 			COALESCE((SELECT template_revision FROM target), 0),
+			COALESCE((SELECT next_version FROM target), 0),
+			COALESCE((SELECT next_template_revision FROM target), 0),
+			EXISTS (SELECT 1 FROM live_operation),
 			EXISTS (SELECT 1 FROM version_inserted),
-			EXISTS (SELECT 1 FROM head_updated),
 			(SELECT id FROM outbox_inserted)
-	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		template.WorkspaceID, template.ZoneID, template.ActorUserID, template.ID, template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt, template.ExpectedRevision, template.TemplateRevision, template.UpdatedAt, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
+	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
+		template.WorkspaceID, template.ZoneID, template.ActorUserID, template.ID, template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt, template.ExpectedRevision, template.TemplateRevision, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
 	).Scan(
 		&authorized,
 		&currentVersion,
 		&currentRevision,
+		&nextVersion,
+		&nextRevision,
+		&liveOperation,
 		&versionInserted,
-		&updated,
 		&outboxID,
 	)
 
@@ -289,7 +330,10 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, templ
 	if !authorized || currentRevision == 0 {
 		return mailTaxonomy.ErrTemplateNotFound
 	}
-	if currentRevision != template.ExpectedRevision || template.Version != currentVersion+1 || !versionInserted || !updated {
+	if liveOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	if currentRevision != template.ExpectedRevision || template.Version != nextVersion || template.TemplateRevision != nextRevision || !versionInserted {
 		return mailTaxonomy.ErrVersionConflict
 	}
 	if !outboxID.Valid {
@@ -297,6 +341,9 @@ func (r *personalTemplateRepoPostgres) PublishVersion(ctx context.Context, templ
 	}
 
 	outbox.ID = outboxID.Int64
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("mail personal template repo: commit publish: %w", err)
+	}
 	return nil
 }
 
@@ -321,24 +368,31 @@ func (r *personalTemplateRepoPostgres) Delete(ctx context.Context, template *mai
 	if revision != template.ExpectedRevision {
 		return mailTaxonomy.ErrVersionConflict
 	}
+	var liveOperation bool
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), template.ID).Scan(&liveOperation); err != nil {
+		return fmt.Errorf("mail personal template repo: check live operation: %w", err)
+	}
+	if liveOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
 	var inUse bool
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_consumers WHERE workspace_id=$1 AND template_id=$2)`, r.mailSchema), template.WorkspaceID, template.ID).Scan(&inUse); err != nil {
+	// [COMMENT]: Candidate mới hơn active là consumer update đang chờ Zone ACK. History đã promote
+	// có version <= active nên không giữ template vĩnh viễn sau khi consumer chuyển sang template khác.
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (
+		SELECT 1 FROM %s.mail_consumers c
+		WHERE c.workspace_id=$1 AND c.template_id=$2
+		UNION ALL
+		SELECT 1 FROM %s.mail_consumer_update_versions candidate
+		JOIN %s.mail_consumers active ON active.id=candidate.consumer_id
+		WHERE active.workspace_id=$1 AND candidate.template_id=$2
+		  AND candidate.config_version > active.config_version
+	)`, r.mailSchema, r.mailSchema, r.mailSchema), template.WorkspaceID, template.ID).Scan(&inUse); err != nil {
 		return fmt.Errorf("mail personal template repo: check template usage: %w", err)
 	}
 	if inUse {
 		return mailTaxonomy.ErrTemplateInUse
 	}
-	// [COMMENT]: Immutable versions chỉ được xóa trong transaction hard-delete đã khóa identity.
-	if _, err = tx.Exec(ctx, `SELECT set_config('mail.allow_template_version_mutation','on',true)`); err != nil {
-		return fmt.Errorf("mail personal template repo: enable aggregate delete: %w", err)
-	}
-	if _, err = tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.personal_mail_templates WHERE id=$1 AND workspace_id=$2`, r.mailSchema), template.ID, template.WorkspaceID); err != nil {
-		return fmt.Errorf("mail personal template repo: hard delete: %w", err)
-	}
-	// [COMMENT]: Tombstone là rebuild authority sau outbox retention; không chứa template body hay owner data.
-	if _, err = tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.personal_mail_template_projection_tombstones (template_id,workspace_id,template_revision,last_published_version,event_id,deleted_at) VALUES ($1,$2,$3,$4,$5,$6)`, r.mailSchema), template.ID, template.WorkspaceID, template.ExpectedRevision+1, template.CurrentVersion, outbox.EventID, template.UpdatedAt); err != nil {
-		return fmt.Errorf("mail personal template repo: insert projection tombstone: %w", err)
-	}
+	// [COMMENT]: CP giữ nguyên identity/version; JO chỉ hard-delete aggregate sau khi Zone xác nhận hạ tầng đã xóa.
 	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID); err != nil {
 		return fmt.Errorf("mail personal template repo: insert delete outbox: %w", err)
 	}

@@ -11,6 +11,7 @@ impl JobNotifier {
         attempt: u32,
         status: &str,
         job_topic: &str,
+        resource_id: &str,
         message: &str,
         trace_id: &str,
         nats_client: &async_nats::Client,
@@ -34,16 +35,32 @@ impl JobNotifier {
         // [COMMENT]: Đóng gói thông báo trực tiếp dạng JSON gửi qua NATS
         let nats_payload = serde_json::json!({
             "status": notification_status,
-            "title": match job_topic {
+            // [COMMENT]: Title phản ánh đúng terminal outcome; FAILED không được mang nhãn đã apply/delete thành công.
+            "title": match (job_topic, status) {
+                ("mail.consumer.upsert", "SUCCEEDED") => "Mail Consumer Applied".to_string(),
+                ("mail.consumer.upsert", "FAILED") => "Mail Consumer Apply Failed".to_string(),
+                ("mail.consumer.upsert", _) => "Applying Mail Consumer".to_string(),
+                ("mail.consumer.delete", "SUCCEEDED") => "Mail Consumer Deleted".to_string(),
+                ("mail.consumer.delete", "FAILED") => "Mail Consumer Delete Failed".to_string(),
+                ("mail.consumer.delete", _) => "Deleting Mail Consumer".to_string(),
+                ("mail.template.version_published", "SUCCEEDED") => "Mail Template Published".to_string(),
+                ("mail.template.version_published", "FAILED") => "Mail Template Publish Failed".to_string(),
+                ("mail.template.version_published", _) => "Publishing Mail Template".to_string(),
+                ("mail.template.deleted", "SUCCEEDED") => "Mail Template Deleted".to_string(),
+                ("mail.template.deleted", "FAILED") => "Mail Template Delete Failed".to_string(),
+                ("mail.template.deleted", _) => "Deleting Mail Template".to_string(),
+                (job_topic, _) => match job_topic {
                 "mail.test_connection" => "SMTP Connection Test".to_string(),
                 "storage.bucket.create" => "Bucket Created".to_string(),
                 "storage.bucket.delete" => "Bucket Deleted".to_string(),
                 "storage.credential.create" => "Storage Credential Created".to_string(),
                 "storage.credential.delete" => "Storage Credential Deleted".to_string(),
                 _ => "Job Notification".to_string(),
+                },
             },
             // [COMMENT]: operation = job_topic dùng làm signal cho client quyết định realtime behavior
             "operation": job_topic,
+            "resource_id": resource_id,
             "message": message,
             "created_at": chrono::Utc::now().to_rfc3339(),
             "job_id": job_id,

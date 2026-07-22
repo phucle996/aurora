@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, FilePlus2, Loader2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -12,9 +12,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { type APIError } from "@/lib/api/fetcher";
 import { createMailTemplate, deleteMailTemplate, getMailTemplate, listMailTemplates, listMailTemplateVersions, publishMailTemplate, type MailTemplate, type TemplateContentWrite } from "@/lib/api/mail";
+import { useRealtime } from "@/context/RealtimeContext";
 
 type TemplatesTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type TemplateForm = TemplateContentWrite & { code: string; name: string };
+type MailTemplateJobNotification = { operation?: unknown; resource_id?: string; status?: string };
 const emptyForm: TemplateForm = { code: "", name: "", subject_template: "", html_template: "" };
 
 function errorMessage(error: unknown): string {
@@ -24,6 +26,7 @@ function errorMessage(error: unknown): string {
 }
 export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelete }: TemplatesTabProps) {
   const queryClient = useQueryClient();
+  const { subscribeToEvent } = useRealtime();
   const listKey = ["mail", scopeKey, "templates"] as const;
   const [search, setSearch] = useState("");
   const [selectedID, setSelectedID] = useState<string | null>(null);
@@ -38,6 +41,19 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     return (templates.data ?? []).filter((item) => !needle || item.name.toLowerCase().includes(needle) || item.id.toLowerCase().includes(needle));
   }, [search, templates.data]);
 
+  useEffect(() => {
+    // [COMMENT]: Screen không poll operation; terminal Centrifugo signal merge lại list/detail/version read model.
+    return subscribeToEvent("job.notification", (payload: MailTemplateJobNotification) => {
+      if (typeof payload?.operation !== "string" || !payload.operation.startsWith("mail.template.") || !payload.resource_id || typeof payload.status !== "string" || !["SUCCESS", "FAILED"].includes(payload.status)) return;
+      void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "templates"] });
+      if (selectedID === payload.resource_id) {
+        void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "template", selectedID] });
+        void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "template", selectedID, "versions"] });
+        if (payload.operation === "mail.template.deleted" && payload.status === "SUCCESS") setSelectedID(null);
+      }
+    });
+  }, [queryClient, scopeKey, selectedID, subscribeToEvent]);
+
   const save = useMutation({
     mutationFn: async () => {
       const content: TemplateContentWrite = {
@@ -47,15 +63,25 @@ export function TemplatesTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
       return createMailTemplate({ ...content, code: form.code, name: form.name.trim() });
     },
     onSuccess: async (result) => {
+      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
+        id: result.operation_id, title: formMode === "publish" ? "Publishing mail template" : "Creating mail template",
+        message: `${result.template.name} is being applied in the selected zone.`, type: "processing",
+      } }));
       await queryClient.invalidateQueries({ queryKey: ["mail", scopeKey] });
       setSelectedID(result.template.id); setFormMode(null); setForm(emptyForm);
-      toast.success(formMode === "publish" ? `Published version ${result.template.current_version}` : "Template created");
+      toast.success(formMode === "publish" ? "Template publish scheduled" : "Template creation scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),
   });
   const deleteMutation = useMutation({
     mutationFn: (template: MailTemplate) => deleteMailTemplate(template.id, template.template_revision),
-    onSuccess: async () => { setSelectedID(null); await queryClient.invalidateQueries({ queryKey: ["mail", scopeKey] }); toast.success("Template deleted"); },
+    onSuccess: (result, template) => {
+      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
+        id: result.operation_id, title: "Deleting mail template",
+        message: `${template.name} is being deleted from the selected zone.`, type: "processing",
+      } }));
+      toast.success("Template deletion scheduled");
+    },
     onError: (error) => toast.error(errorMessage(error)),
   });
 

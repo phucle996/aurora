@@ -27,7 +27,9 @@ type TenantConsumer struct {
 	DesiredState          ConsumerDesiredState
 	Parallelism           uint32
 	ConfigVersion         uint64
+	NextConfigVersion     uint64
 	ConfigSHA256          []byte
+	OperationID           uuid.UUID
 	CreatedBy             *uuid.UUID
 	UpdatedBy             *uuid.UUID
 	CreatedAt             time.Time

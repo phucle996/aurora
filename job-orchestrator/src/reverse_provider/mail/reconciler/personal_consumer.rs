@@ -1,8 +1,8 @@
 use super::{xadd_mail_projection_command, CONSUMER_EVENT_NAMESPACE};
 use crate::reverse_provider::mail::runtime_proto::{
-    KafkaStreamPayloadV1, MailConsumerDeleteV1, MailConsumerDesiredState, MailConsumerUpsertV1,
-    MailEventMetadataV1, MailStreamSourceV1, MailStreamType, NatsJetStreamPayloadV1,
-    RabbitMqPayloadV1, RedisStreamPayloadV1,
+    KafkaStreamPayloadV1, MailConsumerDesiredState, MailConsumerUpsertV1, MailEventMetadataV1,
+    MailStreamSourceV1, MailStreamType, NatsJetStreamPayloadV1, RabbitMqPayloadV1,
+    RedisStreamPayloadV1,
 };
 use chrono::{DateTime, Utc};
 use prost::Message;
@@ -31,26 +31,7 @@ pub(super) async fn reconcile_personal_consumers(
         let config_version: i64 = row.get(11);
         let desired_state: String = row.get(9);
         let updated_at: DateTime<Utc> = row.get(13);
-        let (event_id, topic, payload) = if desired_state == "deleting" {
-            let event_id = Uuid::new_v5(
-                &namespace,
-                format!("consumer:{consumer_id}:{config_version}:delete:{zone_id}").as_bytes(),
-            );
-            let event = MailConsumerDeleteV1 {
-                metadata: Some(MailEventMetadataV1 {
-                    event_id: event_id.as_bytes().to_vec(),
-                    schema_version: 1,
-                    occurred_at_unix_ms: updated_at.timestamp_millis(),
-                    traceparent: String::new(),
-                    producer: "job-orchestrator-mail-reconciler".to_string(),
-                }),
-                consumer_id: consumer_id.as_bytes().to_vec(),
-                config_version: config_version as u64,
-                drain_timeout_seconds: 0,
-                reason: "periodic-reconciliation".to_string(),
-            };
-            (event_id, "mail.consumer.delete", event.encode_to_vec())
-        } else {
+        let (event_id, topic, payload) = {
             let event_id = Uuid::new_v5(
                 &namespace,
                 format!("consumer:{consumer_id}:{config_version}:upsert:{zone_id}").as_bytes(),

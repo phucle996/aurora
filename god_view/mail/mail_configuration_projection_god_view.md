@@ -178,16 +178,17 @@ business hash; protobuf envelope có thể khác metadata giữa WAL event và r
 - Chỉ apply khi delete version lớn hơn head version.
 - Tombstone không được xóa ngay để upsert cũ không hồi sinh consumer.
 - Re-create phải dùng consumer ID mới; không reset version về 1 trên ID cũ.
-- Controlplane business table không có `deleted_at`: JO hard-delete exact deleting generation sau Dataplane success,
+- Controlplane business table không có `deleted_at` hay desired state `deleting`: CP giữ active row trong lúc delete operation chạy; JO hard-delete theo resource ID sau Dataplane success,
   còn `mail_consumer_projection_tombstones` giữ rebuild authority độc lập với business row.
-- JO khóa outbox theo `event_id + job_topic` và dùng `result_attempt` để chặn PROCESSING/FAILED đến sai thứ tự;
-  `SUCCEEDED` vẫn được phép heal FAILED vì cùng event là idempotent projection command.
+- JO khóa outbox theo `event_id + job_topic` và dùng `result_attempt` để chặn PROCESSING/FAILED đến sai thứ tự.
+  Mọi `FAILED` là terminal cho operation ID; upsert/publish cleanup candidate, còn delete giữ aggregate và retry phát operation ID mới với cùng `next_*` fence.
 
 ### 5.3 Template publish/delete
 
 - Immutable version key có cùng version/hash: duplicate no-op.
 - Cùng version nhưng khác hash: integrity violation.
 - Catalog head so sánh `template_revision`, không chỉ content version.
+- CP publish chỉ tạo candidate immutable; JO promote current head sau Zone `SUCCEEDED`, hoặc xóa exact candidate theo `event_id + version + revision` khi `FAILED`.
 - Delete giữ head tombstone và `last_published_version`; authoritative CP projection tombstone tồn tại sau outbox retention để rebuild không hồi sinh identity cũ.
 
 ## 6. Real-time projection sequence
@@ -222,9 +223,14 @@ sequenceDiagram
         ZP->>ZP: Quarantine/FAILED; không overwrite
     end
     ZP->>RJ: XACK projection command
+	ZP-->>JO: durable JobExecutionResult
+	JO->>DB: lock outbox + promote candidate / hard-delete after success
+	JO-->>UI: NATS Core -> notification service -> Centrifugo
 ```
 
 JO ack WAL sau durable `XADD`; Zone projector chỉ `XACK` command sau KV server acknowledgement. Redis Job là durability bridge giữa hai network boundary.
+Nếu terminal DB transaction đã commit nhưng NATS Core publish lỗi, JO không ACK Redis result. Lần redelivery cùng terminal status
+chỉ đọc lại notification metadata và publish lại cùng `transaction_id`; nó không chạy lần hai promote/cleanup/hard-delete.
 
 ## 7. Cold start and reconciliation
 
@@ -309,7 +315,7 @@ sequenceDiagram
 5. Trong cùng logical slot và config version, `runtime_generation` cao hơn thắng; cùng generation thì `report_sequence` cao hơn thắng. Report từ generation đã bị fence không thể đổi state.
 6. `GET /api/v1/{personal|tenant}/mail/consumers/:id` chỉ aggregate heartbeat chưa hết TTL và đúng desired config version. Response không lộ hostname/pod hay dữ liệu từng email.
 7. CronJob xóa runtime row stale theo batch 200 với `SKIP LOCKED`. Không tạo append-only heartbeat ledger; delivery history vẫn deferred.
-8. NATS Core không nằm trong correctness path của Phase 9. Console lazy-fetch detail khi người dùng mở; realtime invalidation chỉ được thêm sau commit như optimization, không thay Redis PEL/PostgreSQL guard.
+8. NATS Core không nằm trong correctness path. Console lazy-fetch detail và dùng terminal Centrifugo signal để invalidate/merge read model; activity ở header chỉ nằm trong memory, không phải audit và không thay Redis PEL/PostgreSQL guard.
 
 ## 9. Race/failure matrix
 
@@ -318,7 +324,7 @@ sequenceDiagram
 | CP aggregate commit, process chết trước publish | Outbox WAL vẫn tồn tại |
 | JO XADD Redis Job, chết trước ack LSN | WAL replay → duplicate command → same version/hash no-op |
 | Zone projector apply L2, chết trước result/XACK | PEL reclaim → same version/hash no-op → durable result |
-| Delete v7 đến trước upsert v6 | Tombstone v7; v6 bị bỏ |
+| Delete v7 đến trước upsert v6 | DP tombstone v7; v6 bị bỏ; JO chỉ xóa CP row sau success |
 | Upsert v8 đến trước delayed delete v7 | Head v8; delete v7 bị bỏ |
 | Same version/different payload | Không last-write-wins; quarantine integrity conflict |
 | Pod bỏ lỡ revision trong một tick | Cold-start/periodic KV reconcile sửa lại |
@@ -327,6 +333,9 @@ sequenceDiagram
 | Consumer upsert đến trước template snapshot | Consumer binding vẫn COW; first-message lazy load fail bounded/retry, template projection hoặc reconcile unblock |
 | L2 failover mất projection mới | DB-backed snapshot reconciliation qua Redis Job rebuild |
 | CP snapshot thay đổi giữa các page | Snapshot watermark tránh destructive sweep sai |
+| UI rời resource page giữa operation | Activity vẫn ở in-memory header trong phiên; khi quay lại, terminal Centrifugo signal invalidate/merge read model, không poll status URL |
+| JO commit terminal result nhưng notify lỗi | Redis result ở lại PEL; redelivery retry cùng notification ID, business mutation không chạy lại |
+| Template delete đua với consumer update candidate | `FOR UPDATE`/`KEY SHARE` serialize identity; delete kiểm tra candidate version lớn hơn active nên không xóa dependency chưa-promote |
 | Zone network partition | CP tiếp tục nhận config; outbox lag tăng, DP giữ last known good config |
 | Credential rotation event lỗi | Runtime cũ giữ connection đến khi new config validated; không half-swap |
 | JO chết sau DB commit trước Redis settle | PEL reclaim; guarded UPSERT no-op rồi ACK/XDEL |

@@ -40,9 +40,8 @@ type ConsumerRuntimeSummary struct {
 type ConsumerDesiredState string
 
 const (
-	ConsumerPaused   ConsumerDesiredState = "paused"
-	ConsumerEnabled  ConsumerDesiredState = "enabled"
-	ConsumerDeleting ConsumerDesiredState = "deleting"
+	ConsumerPaused  ConsumerDesiredState = "paused"
+	ConsumerEnabled ConsumerDesiredState = "enabled"
 )
 
 // PersonalConsumer là entity duy nhất đi xuyên handler -> service -> Personal repository.

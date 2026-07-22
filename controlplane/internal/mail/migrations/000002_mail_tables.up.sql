@@ -6,6 +6,9 @@ CREATE TABLE IF NOT EXISTS personal_mail_templates (
     name VARCHAR(255) NOT NULL,
     current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     template_revision BIGINT NOT NULL DEFAULT 0 CHECK (template_revision >= 0),
+    -- [COMMENT]: Candidate thất bại bị hard-delete nhưng sequence không lùi để result cũ không va version mới.
+    next_version BIGINT NOT NULL DEFAULT 1 CHECK (next_version > current_version),
+    next_template_revision BIGINT NOT NULL DEFAULT 1 CHECK (next_template_revision > template_revision),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_personal_mail_template_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
@@ -14,6 +17,9 @@ CREATE TABLE IF NOT EXISTS personal_mail_templates (
 CREATE TABLE IF NOT EXISTS personal_mail_template_versions (
     template_id VARCHAR(128) NOT NULL REFERENCES personal_mail_templates(id) ON DELETE CASCADE,
     version BIGINT NOT NULL CHECK (version > 0),
+	-- [COMMENT]: Revision/event giữ mapping chính xác khi candidate FAILED làm version sequence có gap.
+	template_revision BIGINT NOT NULL CHECK (template_revision > 0),
+	event_id UUID NOT NULL UNIQUE,
     subject_template VARCHAR(998) NOT NULL,
     html_template TEXT NOT NULL,
     content_sha256 BYTEA NOT NULL,
@@ -27,6 +33,8 @@ CREATE TABLE IF NOT EXISTS tenant_mail_templates (
     id VARCHAR(128) PRIMARY KEY, workspace_id UUID NOT NULL, code VARCHAR(63) NOT NULL, name VARCHAR(255) NOT NULL,
     current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     template_revision BIGINT NOT NULL DEFAULT 0 CHECK (template_revision >= 0),
+    next_version BIGINT NOT NULL DEFAULT 1 CHECK (next_version > current_version),
+    next_template_revision BIGINT NOT NULL DEFAULT 1 CHECK (next_template_revision > template_revision),
     created_by UUID NOT NULL, updated_by UUID NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_tenant_mail_template_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
@@ -35,6 +43,7 @@ CREATE TABLE IF NOT EXISTS tenant_mail_templates (
 CREATE TABLE IF NOT EXISTS tenant_mail_template_versions (
     template_id VARCHAR(128) NOT NULL REFERENCES tenant_mail_templates(id) ON DELETE CASCADE,
     version BIGINT NOT NULL CHECK (version > 0), subject_template VARCHAR(998) NOT NULL,
+	template_revision BIGINT NOT NULL CHECK (template_revision > 0), event_id UUID NOT NULL UNIQUE,
     html_template TEXT NOT NULL CHECK (html_template <> ''), content_sha256 BYTEA NOT NULL CHECK (octet_length(content_sha256)=32),
     created_by UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(template_id,version)
 );
@@ -85,6 +94,9 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     desired_state mail_consumer_desired_state NOT NULL DEFAULT 'paused',
     parallelism INTEGER NOT NULL DEFAULT 1 CHECK (parallelism BETWEEN 1 AND 256),
     config_version BIGINT NOT NULL DEFAULT 1 CHECK (config_version > 0),
+    -- [COMMENT]: Delete dùng next_config_version làm fence nhưng không mutate counter này;
+    -- chỉ update COW mới advance allocator, retry delete dùng operation ID mới.
+    next_config_version BIGINT NOT NULL DEFAULT 2 CHECK (next_config_version > config_version),
     config_sha256 BYTEA NOT NULL,
     created_by UUID NULL,
     updated_by UUID NULL,
@@ -96,6 +108,34 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
         desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
     ),
     CONSTRAINT ck_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
+);
+
+-- [COMMENT]: Chỉ update/pause/resume tạo immutable candidate. Create nằm trực tiếp ở aggregate V1;
+-- JO promote candidate sau Zone ACK hoặc hard-delete candidate khi FAILED.
+CREATE TABLE IF NOT EXISTS mail_consumer_update_versions (
+    consumer_id UUID NOT NULL REFERENCES mail_consumers(id) ON DELETE CASCADE,
+    config_version BIGINT NOT NULL CHECK (config_version > 1),
+    event_id UUID NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    source_type mail_source_type NOT NULL,
+    broker_resource_id UUID NOT NULL,
+    source_config_envelope BYTEA NOT NULL,
+    topic VARCHAR(249) NOT NULL,
+    consumer_group VARCHAR(255) NOT NULL,
+    template_id VARCHAR(128) NOT NULL,
+    template_version BIGINT NOT NULL CHECK (template_version > 0),
+    sender_profile_id VARCHAR(128) NOT NULL,
+    sender_version BIGINT NOT NULL CHECK (sender_version > 0),
+    desired_state mail_consumer_desired_state NOT NULL,
+    parallelism INTEGER NOT NULL CHECK (parallelism BETWEEN 1 AND 256),
+    config_sha256 BYTEA NOT NULL CHECK (octet_length(config_sha256) = 32),
+    updated_by UUID,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (consumer_id, config_version),
+    CONSTRAINT ck_mail_consumer_update_envelope CHECK (octet_length(source_config_envelope) <= 16384),
+    CONSTRAINT ck_mail_consumer_update_enabled_envelope CHECK (
+        desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
+    )
 );
 
 -- [COMMENT]: Runtime report là per-instance lease/heartbeat read model, không sửa desired state.

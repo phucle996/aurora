@@ -116,6 +116,7 @@ pub async fn dispatch_result(
                 let actor_user_id: Option<String> = row.get(0);
                 let job_topic: String = row.get(1);
                 let trace_id_bytes = row.get::<_, Option<Vec<u8>>>(2).unwrap_or_default();
+				let resource_id = row.get::<_, Option<String>>(3).unwrap_or_default();
                 let trace_id = if trace_id_bytes.is_empty() {
                     String::new()
                 } else {
@@ -162,6 +163,7 @@ pub async fn dispatch_result(
                         result.attempt,
                         &status_clone,
                         &job_topic_clone,
+						&resource_id,
                         &result_message,
                         &trace_id,
                         nats_client,

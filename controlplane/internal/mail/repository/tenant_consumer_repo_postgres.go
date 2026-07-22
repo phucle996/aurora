@@ -51,6 +51,14 @@ func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailE
 	if err != nil {
 		return fmt.Errorf("mail tenant consumer repo: lock template: %w", err)
 	}
+	// [COMMENT]: Delete template giữ business row đến Zone ACK; live outbox là fence ngăn consumer mới bind vào resource đang xóa.
+	var templateOperation bool
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), consumer.TemplateID).Scan(&templateOperation); err != nil {
+		return fmt.Errorf("mail tenant consumer repo: check template operation: %w", err)
+	}
+	if templateOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
 
 	// [COMMENT]: Tenant membership, workspace routing scope và template version đều được kiểm tra trong INSERT.
 	tag, err := tx.Exec(ctx, fmt.Sprintf(`
@@ -96,7 +104,7 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.config_sha256,
+		       c.next_config_version, c.config_sha256,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
 		FROM %s.mail_consumers AS c
 		JOIN %s.tenant_workspaces AS w ON w.id = c.workspace_id
@@ -123,6 +131,7 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 		&consumer.DesiredState,
 		&consumer.Parallelism,
 		&consumer.ConfigVersion,
+		&consumer.NextConfigVersion,
 		&consumer.ConfigSHA256,
 		&consumer.CreatedBy,
 		&consumer.UpdatedBy,
@@ -204,7 +213,7 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.config_sha256,
+		       c.next_config_version, c.config_sha256,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
 		FROM %s.mail_consumers AS c
 		JOIN %s.tenant_workspaces AS w ON w.id = c.workspace_id
@@ -244,6 +253,7 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 			&consumer.DesiredState,
 			&consumer.Parallelism,
 			&consumer.ConfigVersion,
+			&consumer.NextConfigVersion,
 			&consumer.ConfigSHA256,
 			&consumer.CreatedBy,
 			&consumer.UpdatedBy,
@@ -266,11 +276,52 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
 	}
-	var authorized, templateAvailable, updated bool
-	var currentVersion uint64
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("mail tenant consumer repo: begin update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// [COMMENT]: Hai statement cố ý dùng READ COMMITTED snapshot mới sau khi KEY SHARE hết chờ;
+	// nếu template delete/publish commit trước thì live outbox phải nhìn thấy trước khi bind candidate.
+	var lockedTemplateID string
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT t.id FROM %s.tenant_mail_templates t JOIN %s.tenant_mail_template_versions v ON v.template_id=t.id AND v.version=$2 JOIN %s.tenant_workspaces w ON w.id=t.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$5 AND m.status='active' WHERE t.id=$1 AND t.workspace_id=$3 AND w.zone_id=$4 AND w.tenant_id=$6 FOR KEY SHARE OF t`, r.mailSchema, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.TemplateID, consumer.TemplateVersion, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedTemplateID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailTaxonomy.ErrTemplateNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mail tenant consumer repo: lock update template: %w", err)
+	}
+	var lockedTemplateOperation bool
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), consumer.TemplateID).Scan(&lockedTemplateOperation); err != nil {
+		return fmt.Errorf("mail tenant consumer repo: check update template operation: %w", err)
+	}
+	if lockedTemplateOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	var lockedConsumerVersion uint64
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedConsumerVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailTaxonomy.ErrConsumerNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mail tenant consumer repo: lock update consumer: %w", err)
+	}
+	if lockedConsumerVersion != consumer.ExpectedConfigVersion {
+		return mailTaxonomy.ErrVersionConflict
+	}
+	var lockedConsumerOperation bool
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), consumer.ID.String()).Scan(&lockedConsumerOperation); err != nil {
+		return fmt.Errorf("mail tenant consumer repo: check update consumer operation: %w", err)
+	}
+	if lockedConsumerOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	var authorized, templateAvailable, templateOperation, liveOperation, versionInserted bool
+	var currentVersion, nextVersion uint64
 	var outboxID sql.NullInt64
 
-	err := r.db.QueryRow(ctx, fmt.Sprintf(`
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
 		WITH authorized AS (
 			SELECT 1
 			FROM %s.tenant_workspaces AS w
@@ -285,33 +336,38 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			WHERE t.id = $7
 			  AND t.workspace_id = $18
 			FOR KEY SHARE OF t
-		), target AS (
-			SELECT config_version
+		), template_operation AS (
+			SELECT 1 FROM %s.mail_outbox_records
+			WHERE resource_id=$7 AND status IN ('PENDING','PROCESSING') LIMIT 1
+		), target AS MATERIALIZED (
+			SELECT config_version, next_config_version
 			FROM %s.mail_consumers
-			WHERE id = $17 AND workspace_id = $18 AND desired_state <> 'deleting'
+			WHERE id = $17 AND workspace_id = $18
 			  AND EXISTS (SELECT 1 FROM authorized)
-		), updated AS (
-			UPDATE %s.mail_consumers
-			SET name = $1,
-			    source_type = $2,
-			    broker_resource_id = $3,
-			    source_config_envelope = $4,
-			    topic = $5,
-			    consumer_group = $6,
-			    template_id = $7,
-			    template_version = $8,
-			    sender_profile_id = $9,
-			    sender_version = $10,
-			    desired_state = $11,
-			    parallelism = $12,
-			    config_version = $13,
-			    config_sha256 = $14,
-			    updated_by = $15,
-			    updated_at = $16
-			WHERE id = $17 AND workspace_id = $18 AND config_version = $20
-			  AND desired_state <> 'deleting'
-			  AND EXISTS (SELECT 1 FROM authorized)
+			FOR UPDATE
+		), live_operation AS (
+			SELECT 1 FROM %s.mail_outbox_records
+			WHERE resource_id=$17::text AND status IN ('PENDING','PROCESSING')
+			LIMIT 1
+		), version_inserted AS (
+			INSERT INTO %s.mail_consumer_update_versions (
+				consumer_id,config_version,event_id,name,source_type,broker_resource_id,
+				source_config_envelope,topic,consumer_group,template_id,template_version,
+				sender_profile_id,sender_version,desired_state,parallelism,config_sha256,
+				updated_by,created_at
+			)
+			SELECT $17,$13,$21,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$14,$15,$16
+			FROM target
+			WHERE config_version=$20 AND next_config_version=$13
+			  AND NOT EXISTS (SELECT 1 FROM live_operation)
+			  AND NOT EXISTS (SELECT 1 FROM template_operation)
 			  AND EXISTS (SELECT 1 FROM template_available)
+			ON CONFLICT DO NOTHING
+			RETURNING consumer_id
+		), counter_updated AS (
+			UPDATE %s.mail_consumers SET next_config_version=$13+1
+			WHERE id=$17 AND workspace_id=$18 AND config_version=$20
+			  AND next_config_version=$13 AND EXISTS (SELECT 1 FROM version_inserted)
 			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
@@ -319,16 +375,19 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
 			SELECT $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
-			FROM updated
+			FROM counter_updated
 			RETURNING id
 		)
 		SELECT
 			EXISTS (SELECT 1 FROM authorized),
 			EXISTS (SELECT 1 FROM template_available),
+			EXISTS (SELECT 1 FROM template_operation),
 			COALESCE((SELECT config_version FROM target), 0),
-			EXISTS (SELECT 1 FROM updated),
+			COALESCE((SELECT next_config_version FROM target), 0),
+			EXISTS (SELECT 1 FROM live_operation),
+			EXISTS (SELECT 1 FROM version_inserted),
 			(SELECT id FROM outbox_inserted)
-	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
+	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
 		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigEnvelope,
 		consumer.Topic, consumer.ConsumerGroup, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion,
@@ -340,8 +399,11 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 	).Scan(
 		&authorized,
 		&templateAvailable,
+		&templateOperation,
 		&currentVersion,
-		&updated,
+		&nextVersion,
+		&liveOperation,
+		&versionInserted,
 		&outboxID,
 	)
 
@@ -359,7 +421,13 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 	if !templateAvailable {
 		return mailTaxonomy.ErrTemplateNotFound
 	}
-	if currentVersion != consumer.ExpectedConfigVersion || !updated {
+	if templateOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	if liveOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	if currentVersion != consumer.ExpectedConfigVersion || nextVersion != consumer.ConfigVersion || !versionInserted {
 		return mailTaxonomy.ErrVersionConflict
 	}
 	if !outboxID.Valid {
@@ -367,6 +435,9 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 	}
 
 	outbox.ID = outboxID.Int64
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("mail tenant consumer repo: commit update: %w", err)
+	}
 	return nil
 }
 
@@ -375,55 +446,76 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
 	}
-	var authorized, updated bool
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("mail tenant consumer repo: begin delete: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var lockedVersion uint64
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return mailTaxonomy.ErrConsumerNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("mail tenant consumer repo: lock delete consumer: %w", err)
+	}
+	if lockedVersion != consumer.ExpectedConfigVersion {
+		return mailTaxonomy.ErrVersionConflict
+	}
+	var lockedOperation bool
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), consumer.ID.String()).Scan(&lockedOperation); err != nil {
+		return fmt.Errorf("mail tenant consumer repo: check delete consumer operation: %w", err)
+	}
+	if lockedOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	var authorized, liveOperation, outboxInserted bool
 	var currentVersion uint64
 	var outboxID sql.NullInt64
 
-	err := r.db.QueryRow(ctx, fmt.Sprintf(`
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
 		WITH authorized AS (
 			SELECT 1
 			FROM %s.tenant_workspaces AS w
 			JOIN %s.tenant_memberships AS m
 			  ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
-			WHERE w.id = $1 AND w.zone_id = $2 AND w.tenant_id = $18
-		), target AS (
+			WHERE w.id = $1 AND w.zone_id = $2 AND w.tenant_id = $17
+		), target AS MATERIALIZED (
 			SELECT config_version
 			FROM %s.mail_consumers
-			WHERE id = $4 AND workspace_id = $1 AND desired_state <> 'deleting'
+			WHERE id = $4 AND workspace_id = $1
 			  AND EXISTS (SELECT 1 FROM authorized)
-		), updated AS (
-			UPDATE %s.mail_consumers
-			SET desired_state = 'deleting',
-			    config_version = config_version + 1,
-			    updated_by = $3,
-			    updated_at = $6
-			WHERE id = $4 AND workspace_id = $1 AND config_version = $5
-			  AND desired_state <> 'deleting'
-			  AND EXISTS (SELECT 1 FROM authorized)
-			RETURNING id
+			FOR UPDATE
+		), live_operation AS (
+			SELECT 1 FROM %s.mail_outbox_records
+			WHERE resource_id=$4::text AND status IN ('PENDING','PROCESSING')
+			LIMIT 1
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
 				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			SELECT $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
-			FROM updated
+			SELECT $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+			FROM target
+			WHERE config_version=$5 AND NOT EXISTS (SELECT 1 FROM live_operation)
 			RETURNING id
 		)
 		SELECT
 			EXISTS (SELECT 1 FROM authorized),
 			COALESCE((SELECT config_version FROM target), 0),
-			EXISTS (SELECT 1 FROM updated),
+			EXISTS (SELECT 1 FROM live_operation),
+			EXISTS (SELECT 1 FROM outbox_inserted),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.ID, consumer.ExpectedConfigVersion, consumer.UpdatedAt,
+		consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.ID, consumer.ExpectedConfigVersion,
 		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion,
 		outbox.TraceID, outbox.Idle, consumer.TenantID,
 	).Scan(
 		&authorized,
 		&currentVersion,
-		&updated,
+		&liveOperation,
+		&outboxInserted,
 		&outboxID,
 	)
 
@@ -434,7 +526,10 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 	if !authorized || currentVersion == 0 {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
-	if currentVersion != consumer.ExpectedConfigVersion || !updated {
+	if liveOperation {
+		return mailTaxonomy.ErrOperationInProgress
+	}
+	if currentVersion != consumer.ExpectedConfigVersion || !outboxInserted {
 		return mailTaxonomy.ErrVersionConflict
 	}
 	if !outboxID.Valid {
@@ -442,5 +537,8 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 	}
 
 	outbox.ID = outboxID.Int64
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("mail tenant consumer repo: commit delete: %w", err)
+	}
 	return nil
 }

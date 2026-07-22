@@ -96,7 +96,7 @@ func (h *PersonalTemplateHandler) Create(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -105,7 +105,8 @@ func (h *PersonalTemplateHandler) Create(c *gin.Context) {
 		return
 	}
 
-	apires.RespondCreated(c, gin.H{
+	apires.RespondAccepted(c, gin.H{
+		"operation_id": template.OperationID.String(),
 		"template": gin.H{
 			"id":                template.ID,
 			"workspace_id":      template.WorkspaceID,
@@ -124,7 +125,7 @@ func (h *PersonalTemplateHandler) Create(c *gin.Context) {
 			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
 			"created_at":       version.VersionCreatedAt,
 		},
-	}, "mail template created")
+	}, "mail template creation scheduled")
 }
 
 func (h *PersonalTemplateHandler) Get(c *gin.Context) {
@@ -161,7 +162,7 @@ func (h *PersonalTemplateHandler) Get(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -227,7 +228,7 @@ func (h *PersonalTemplateHandler) List(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -306,7 +307,7 @@ func (h *PersonalTemplateHandler) ListVersions(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -391,7 +392,7 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		default:
 			logger.HandlerError(c, op, err)
@@ -400,14 +401,15 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 		return
 	}
 
-	apires.RespondCreated(c, gin.H{
+	apires.RespondAccepted(c, gin.H{
+		"operation_id": template.OperationID.String(),
 		"template": gin.H{
 			"id":                template.ID,
 			"workspace_id":      template.WorkspaceID,
 			"code":              template.Code,
 			"name":              template.Name,
 			"current_version":   template.CurrentVersion,
-			"template_revision": template.TemplateRevision,
+			"template_revision": template.ExpectedRevision,
 			"created_at":        template.CreatedAt,
 			"updated_at":        template.UpdatedAt,
 		},
@@ -419,7 +421,7 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
 			"created_at":       version.VersionCreatedAt,
 		},
-	}, "mail template version published")
+	}, "mail template publish scheduled")
 }
 
 func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
@@ -466,7 +468,8 @@ func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	err := h.svc.DeleteTemplate(ctx, &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision})
+	command := &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision}
+	err := h.svc.DeleteTemplate(ctx, command)
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -476,7 +479,7 @@ func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
 			apires.RespondNotFound(c, "mail resource not found")
 		case errors.Is(err, mailTaxonomy.ErrAlreadyExists):
 			apires.RespondConflict(c, "resource name already exists")
-		case errors.Is(err, mailTaxonomy.ErrVersionConflict):
+		case errors.Is(err, mailTaxonomy.ErrVersionConflict), errors.Is(err, mailTaxonomy.ErrOperationInProgress):
 			apires.RespondConflict(c, "resource version changed; reload before retrying")
 		case errors.Is(err, mailTaxonomy.ErrTemplateInUse):
 			apires.RespondConflict(c, "template is still used by an active consumer")
@@ -486,5 +489,5 @@ func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondSuccess(c, gin.H{"template_id": templateID}, "mail template deleted")
+	apires.RespondAccepted(c, gin.H{"template_id": templateID, "operation_id": command.OperationID.String()}, "mail template deletion scheduled")
 }

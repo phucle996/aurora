@@ -42,7 +42,7 @@ func (s *tenantTemplateServiceImpl) CreateTemplate(ctx context.Context, command 
 	contentHash := sha256.Sum256(canonicalContent)
 	template := &mailEntity.TenantTemplate{
 		ActorUserID: actor, TenantID: command.TenantID, ZoneID: command.ZoneID, ID: templateID, WorkspaceID: command.WorkspaceID,
-		Code: command.Code, Name: command.Name, CurrentVersion: 1, TemplateRevision: 1,
+		Code: command.Code, Name: command.Name, CurrentVersion: 1, TemplateRevision: 1, NextVersion: 2, NextRevision: 2,
 		CreatedBy: &actor, UpdatedBy: &actor, CreatedAt: now, UpdatedAt: now,
 		TemplateID: templateID, Version: 1, SubjectTemplate: command.SubjectTemplate, HTMLTemplate: command.HTMLTemplate,
 		ContentSHA256: append([]byte(nil), contentHash[:]...), VersionCreatedBy: &actor, VersionCreatedAt: now,
@@ -63,7 +63,12 @@ func (s *tenantTemplateServiceImpl) CreateTemplate(ctx context.Context, command 
 	if err = s.repo.Create(ctx, template, outbox); err != nil {
 		return nil, err
 	}
-	return s.repo.GetByID(ctx, template)
+	created, err := s.repo.GetByID(ctx, template)
+	if err != nil {
+		return nil, err
+	}
+	created.OperationID = outbox.EventID
+	return created, nil
 }
 
 func (s *tenantTemplateServiceImpl) GetTemplate(ctx context.Context, command *mailEntity.TenantTemplate) (*mailEntity.TenantTemplate, error) {
@@ -95,8 +100,9 @@ func (s *tenantTemplateServiceImpl) PublishTemplateVersion(ctx context.Context, 
 	now, actor := time.Now().UTC(), command.ActorUserID
 	hash := sha256.Sum256(canonicalContent)
 	template.ActorUserID, template.TenantID, template.ZoneID, template.ExpectedRevision = actor, command.TenantID, command.ZoneID, command.ExpectedRevision
-	template.CurrentVersion, template.TemplateRevision, template.UpdatedAt, template.UpdatedBy = template.CurrentVersion+1, template.TemplateRevision+1, now, &actor
-	template.TemplateID, template.Version = template.ID, template.CurrentVersion
+	// [COMMENT]: Publish tạo candidate monotonic; current head chỉ được JO promote sau Zone ACK.
+	template.UpdatedAt, template.UpdatedBy = now, &actor
+	template.TemplateID, template.Version, template.TemplateRevision = template.ID, template.NextVersion, template.NextRevision
 	template.SubjectTemplate, template.HTMLTemplate = command.SubjectTemplate, command.HTMLTemplate
 	template.ContentSHA256, template.VersionCreatedBy, template.VersionCreatedAt = append([]byte(nil), hash[:]...), &actor, now
 	eventID := uuid.NewSHA1(tenantMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:publish:%s", template.ID, template.TemplateRevision, command.ZoneID))
@@ -115,6 +121,7 @@ func (s *tenantTemplateServiceImpl) PublishTemplateVersion(ctx context.Context, 
 	if err = s.repo.PublishVersion(ctx, template, outbox); err != nil {
 		return nil, err
 	}
+	template.OperationID = outbox.EventID
 	return template, nil
 }
 
@@ -128,8 +135,10 @@ func (s *tenantTemplateServiceImpl) DeleteTemplate(ctx context.Context, command 
 		return mailTaxonomy.ErrVersionConflict
 	}
 	now, actor := time.Now().UTC(), command.ActorUserID
-	eventID := uuid.NewSHA1(tenantMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:delete:%s", template.ID, command.ExpectedRevision+1, command.ZoneID))
-	event := &mailproto.MailTemplateDeletedV1{Metadata: &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"}, TemplateId: template.ID, TemplateRevision: command.ExpectedRevision + 1, LastPublishedVersion: template.CurrentVersion}
+	// [COMMENT]: Delete retry giữ nguyên revision fence nhưng phải có operation ID mới sau một terminal failure.
+	eventID := uuid.New()
+	// [COMMENT]: Tombstone dùng next allocator để vượt cả revision candidate FAILED có thể từng đến Zone.
+	event := &mailproto.MailTemplateDeletedV1{Metadata: &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"}, TemplateId: template.ID, TemplateRevision: template.NextRevision, LastPublishedVersion: template.CurrentVersion}
 	var traceID []byte
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
 		event.Metadata.Traceparent = "00-" + spanContext.TraceID().String() + "-" + spanContext.SpanID().String() + "-" + fmt.Sprintf("%02x", byte(spanContext.TraceFlags()))
@@ -141,7 +150,11 @@ func (s *tenantTemplateServiceImpl) DeleteTemplate(ctx context.Context, command 
 		return fmt.Errorf("mail tenant template service: marshal delete event: %w", err)
 	}
 	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, ZoneID: command.ZoneID, JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
-	// [COMMENT]: Repository ghi projection tombstone cùng transaction hard-delete + outbox.
+	// [COMMENT]: Repository chỉ ghi delete outbox; JO xóa aggregate sau Zone ACK.
 	command.ID, command.CurrentVersion, command.UpdatedAt, command.UpdatedBy = command.TemplateID, template.CurrentVersion, now, &actor
-	return s.repo.Delete(ctx, command, outbox)
+	if err = s.repo.Delete(ctx, command, outbox); err != nil {
+		return err
+	}
+	command.OperationID = outbox.EventID
+	return nil
 }
