@@ -62,12 +62,13 @@ impl AppContainer {
             .mail_runtime
             .configuration
             .start(self.zone_kv.clone());
-        self.worker_pool.mail_runtime.stream_supervisor.start();
+        self.worker_pool.mail_runtime.consumer_supervisor.start();
 
         // Khởi động Mail Workload Watchdog và ghi current snapshot vào Zone health KV.
-        crate::executor::mail::monitor::MailWorkloadMonitor::start(
+        crate::executor::mail::supervisor::MailWorkloadSupervisor::start(
             self.config.clone(),
             self.zone_kv.clone(),
+            self.redis_job.clone(),
             self.worker_pool.mail_runtime.clone(),
         );
 

@@ -284,11 +284,14 @@ Metrics cần giữ cardinality thấp:
 |---|---|
 | Runtime wiring | `dataplane/src/executor/mail/mod.rs` |
 | Typed preparation | `dataplane/src/executor/mail/executor.rs` |
-| Internal models/sender profile | `dataplane/src/executor/mail/model.rs` |
-| Micro-batching/backpressure | `dataplane/src/executor/mail/batcher.rs` |
-| JMAP HTTP contract | `dataplane/src/executor/mail/jmap.rs` |
-| Template cache/render | `dataplane/src/executor/mail/template.rs` |
-| Health/capacity projection | `dataplane/src/executor/mail/monitor.rs` |
+| Internal models/sender profile | `dataplane/src/executor/mail/processor/model.rs` |
+| Micro-batching | `dataplane/src/executor/mail/processor/batcher.rs` |
+| JMAP HTTP contract | `dataplane/src/executor/mail/processor/jmap.rs` |
+| Template cache/render | `dataplane/src/executor/mail/processor/template.rs` |
+| Health/capacity projection | `dataplane/src/executor/mail/supervisor/workload_monitor.rs` |
+| Backpressure policy | `dataplane/src/executor/mail/supervisor/backpressure.rs` |
+| Mail workload metrics | `dataplane/src/executor/mail/supervisor/metrics.rs` |
+| Mail unit tests | `dataplane/src/executor/mail/test/` |
 | Pod lifecycle owner | `dataplane/src/workerpool/lifecycle.rs` |
 | Mail protobuf | `dataplane/proto/mail_job.proto` |
 

@@ -1,4 +1,4 @@
-use super::runtime_proto::MailTemplateVersionPublishedV1;
+use crate::executor::mail::runtime_proto::MailTemplateVersionPublishedV1;
 use crate::infra::zone_kv::{TemplateConfigHead, ZoneKvStore};
 use moka::future::Cache;
 use prost::Message;
@@ -68,7 +68,7 @@ pub async fn get_template(
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>()
                     != head.content_sha256
-                || super::runtime_configuration::canonical_template_sha256(
+                || crate::executor::mail::runtime::configuration::canonical_template_sha256(
                     &event.subject_template,
                     &event.html_template,
                 )
@@ -118,20 +118,5 @@ fn html_escape(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{render_html, render_subject};
-    use std::collections::HashMap;
-
-    #[test]
-    fn html_variables_are_escaped_but_subject_is_plain_text() {
-        let variables = HashMap::from([("name".to_string(), "<Alice & Bob>".to_string())]);
-        assert_eq!(
-            render_html("<p>{{name}}</p>", &variables),
-            "<p>&lt;Alice &amp; Bob&gt;</p>"
-        );
-        assert_eq!(
-            render_subject("Hello {{name}}", &variables),
-            "Hello <Alice & Bob>"
-        );
-    }
-}
+#[path = "../test/template.rs"]
+mod tests;

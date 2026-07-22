@@ -1,5 +1,5 @@
-use super::model::PreparedMail;
-use super::template::{get_template, render_html, render_subject};
+use super::processor::model::PreparedMail;
+use super::processor::template::{get_template, render_html, render_subject};
 use crate::executor::{ExecutionResult, ExecutorError};
 use crate::infra::redis::RedisClientManager;
 use crate::job_lifecycle::message::JobPayload;

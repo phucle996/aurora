@@ -105,7 +105,7 @@ pub fn start_zone_gateway(
                 if !key.starts_with("zone.node.") {
                     continue;
                 }
-                let Some(bytes) = zone_kv.health_get(key).await.ok().flatten() else {
+                let Some(bytes) = zone_kv.health_get(key.clone()).await.ok().flatten() else {
                     continue;
                 };
                 let Ok(node) = serde_json::from_slice::<NodeSnapshot>(&bytes) else {
@@ -203,7 +203,7 @@ pub fn start_zone_gateway(
                 if let Ok(mut connection) =
                     redis_job.client().get_multiplexed_tokio_connection().await
                 {
-                    let _: redis::RedisResult<()> = redis::cmd("XADD")
+                    let _zone_published: redis::RedisResult<String> = redis::cmd("XADD")
                         .arg("zone:backpressure:reports")
                         .arg("MAXLEN")
                         .arg("~")

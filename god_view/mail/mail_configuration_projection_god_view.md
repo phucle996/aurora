@@ -9,7 +9,7 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Trạng thái | Phase 4 projection + Phase 5 L2→L1 + Phase 6–8 fenced supervisor và bốn broker suites đã ship trong code; activation gated |
+| Trạng thái | Phase 4 projection + Phase 5 L2→L1 + Phase 6–8 broker runtime + Phase 9 runtime reverse report đã ship; activation gated |
 | Authoritative source | Controlplane PostgreSQL aggregates + single `mail_outbox_records` |
 | Real-time trigger | PostgreSQL WAL/logical replication |
 | Projection transport | Redis Job Stream `jobs:<zone_id>` |
@@ -103,11 +103,11 @@ UUIDv5(mail_event_namespace,
 
 Không hash serialized protobuf vì map ordering có thể khác nhau. Producer canonicalize domain fields rồi mới tính `config_sha256`/`content_sha256`.
 
-Runtime heartbeat dùng công thức riêng để mỗi heartbeat không bị inbox dedupe nhầm:
+Runtime heartbeat dùng công thức riêng để event ID vẫn xác định khi Redis replay:
 
 ```text
 UUIDv5(mail_runtime_report_namespace,
-       consumer_id || instance_id || runtime_generation || report_sequence)
+       zone_id || consumer_id || instance_id || runtime_generation || report_sequence)
 ```
 
 `report_sequence` tăng đơn điệu trong cùng instance generation. Delivery history/result event được deferred; JMAP submission ID chỉ trả về job transport.
@@ -274,14 +274,37 @@ sequenceDiagram
 
 ## 8. Runtime report reverse path
 
-Dataplane ghi `MailConsumerRuntimeReportedV1` vào durable Zone result stream. Relay về CP apply theo:
+Phase 9 AS-IS dùng current snapshot, không tạo mail delivery history:
 
-1. `event_id` inbox dedupe.
-2. Report `config_version` thấp hơn desired version chỉ lưu diagnostics, không tham gia aggregate hiện hành.
-3. Trong cùng `instance_id` và config version, `runtime_generation` cao hơn thắng; cùng generation thì `report_sequence` cao hơn thắng.
-4. Generation/sequence của hai instance khác nhau không có thứ tự toàn cục; CP giữ per-instance heartbeat rồi aggregate.
-5. Report từ generation đã bị fence không được đổi state của chính instance đó.
-6. CP UI luôn hiển thị cả desired và aggregate reported state/timestamp.
+```mermaid
+sequenceDiagram
+    participant Slot as DP logical runtime slot
+    participant KV as Zone Health KV
+    participant Relay as Zone Gateway lease holder
+    participant RJ as Redis Job Stream
+    participant JO as JO blocking consumer group
+    participant DB as CP PostgreSQL
+    participant UI as Consumer Detail
+
+    Slot->>KV: fenced put mail.runtime.consumer.slot
+    Relay->>KV: acquire/renew lease.gateway.report
+    Relay->>KV: scan current runtime snapshots
+    Relay->>RJ: pipelined XADD changed MailConsumerRuntimeReportedV1
+    JO->>RJ: XAUTOCLAIM then XREADGROUP BLOCK
+    JO->>DB: scope guard + monotonic single-row UPSERT
+    DB-->>JO: commit
+    JO->>RJ: Lua XACK then XDEL
+    UI->>DB: GET Consumer Detail aggregate
+```
+
+1. Mỗi health key là một logical slot; `instance_id=slot:<n>`. Pod takeover cùng slot nhận fencing generation cao hơn và cập nhật đúng một read-model row, không để hostname cũ tạo ghost instance.
+2. Zone relay dùng cùng rotating `lease.gateway.report`; local marker chỉ giảm duplicate. Shared Redis Lua gate theo `zone + consumer + logical slot` giới hạn heartbeat không đổi tối đa một report/60s trên toàn bộ rotating leaders, nhưng state/config/generation/error transition được phát ngay. Gate tự hết TTL sau 5 phút; relay chia pipeline tối đa 500 report và renew fence trước từng chunk.
+3. Redis stream `mail:runtime:reports` dùng `MINID ~ now-1h`, không dùng fixed `MAXLEN`: đây là reconstructable current state nên cửa sổ thời gian chặn Redis tăng vô hạn khi JO/DB outage, còn active slot luôn refresh trong 60s. CP TTL mặc định 180s giữ đủ failover margin. JO chỉ XDEL sau permanent reject hoặc PostgreSQL commit; lỗi DB giữ entry trong PEL để replica khác reclaim trong retention window.
+4. Không có inbox/history row cho từng heartbeat. Một row `(consumer_id, logical slot)` giữ `event_id` cuối; duplicate/stale no-op bằng `config_version + runtime_generation + report_sequence`. Report version thấp hơn desired có thể nằm trong diagnostic row nhưng không tham gia aggregate hiện hành; version cao hơn desired bị scope/target guard bỏ.
+5. Trong cùng logical slot và config version, `runtime_generation` cao hơn thắng; cùng generation thì `report_sequence` cao hơn thắng. Report từ generation đã bị fence không thể đổi state.
+6. `GET /api/v1/{personal|tenant}/mail/consumers/:id` chỉ aggregate heartbeat chưa hết TTL và đúng desired config version. Response không lộ hostname/pod hay dữ liệu từng email.
+7. CronJob xóa runtime row stale theo batch 200 với `SKIP LOCKED`. Không tạo append-only heartbeat ledger; delivery history vẫn deferred.
+8. NATS Core không nằm trong correctness path của Phase 9. Console lazy-fetch detail khi người dùng mở; realtime invalidation chỉ được thêm sau commit như optimization, không thay Redis PEL/PostgreSQL guard.
 
 ## 9. Race/failure matrix
 
@@ -301,6 +324,8 @@ Dataplane ghi `MailConsumerRuntimeReportedV1` vào durable Zone result stream. R
 | CP snapshot thay đổi giữa các page | Snapshot watermark tránh destructive sweep sai |
 | Zone network partition | CP tiếp tục nhận config; outbox lag tăng, DP giữ last known good config |
 | Credential rotation event lỗi | Runtime cũ giữ connection đến khi new config validated; không half-swap |
+| JO chết sau DB commit trước Redis settle | PEL reclaim; guarded UPSERT no-op rồi ACK/XDEL |
+| Pod takeover logical slot khi report ERROR cũ còn TTL | Cùng `slot:<n>`, generation mới overwrite row cũ |
 
 ## 10. Security and data minimization
 
@@ -336,7 +361,7 @@ Không dùng consumer ID, workspace ID, topic hoặc template ID làm metric lab
 | Redis Job consumer + immutable snapshot/NATS KV CAS apply | Phase 4, Dataplane Zone projector |
 | L2 loader + L1 COW | Phase 5, Dataplane |
 | DB-backed zonal snapshot reconciler | Phase 4, Job Orchestrator → Redis Job |
-| Runtime report reverse relay | Phase 8–9 |
+| Runtime report reverse relay + CP Consumer Detail read model | Phase 9 — implemented |
 
 ### 12.1 Code-shape invariant
 

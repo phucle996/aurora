@@ -1,5 +1,7 @@
 package mailEntity
 
+import "time"
+
 type SourceType string
 
 const (
@@ -9,6 +11,31 @@ const (
 	RabbitMQ      SourceType = "rabbitmq"
 	NATSJetStream SourceType = "nats_jetstream"
 )
+
+type ConsumerRuntimeState string
+
+const (
+	ConsumerRuntimeStopped  ConsumerRuntimeState = "stopped"
+	ConsumerRuntimeStarting ConsumerRuntimeState = "starting"
+	ConsumerRuntimeRunning  ConsumerRuntimeState = "running"
+	ConsumerRuntimePaused   ConsumerRuntimeState = "paused"
+	ConsumerRuntimeDraining ConsumerRuntimeState = "draining"
+	ConsumerRuntimeError    ConsumerRuntimeState = "error"
+	ConsumerRuntimeDegraded ConsumerRuntimeState = "degraded"
+)
+
+// ConsumerRuntimeSummary là current operational read model dùng chung cho Personal/Tenant detail.
+// Nó không chứa recipient, rendered payload hay lịch sử từng email.
+type ConsumerRuntimeSummary struct {
+	State           ConsumerRuntimeState
+	ConfigVersion   uint64
+	ActiveInstances uint32
+	ConsumerLag     uint64
+	ErrorCode       string
+	ErrorMessage    string
+	ReportedAt      time.Time
+	NextExpiryAt    time.Time
+}
 
 type ConsumerDesiredState string
 

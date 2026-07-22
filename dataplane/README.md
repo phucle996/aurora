@@ -120,10 +120,12 @@ slot kết thúc hoặc đến retry window.
 
 - `src/infra/zone_kv.rs`: bucket bootstrap, CAS metadata và fenced/rotating lease.
 - `src/job_lifecycle/consumer.rs`: fail-closed ingestion và lease acquisition.
-- `src/executor/mail/stream_supervisor.rs`: desired slot scheduling, jitter và Zone lease/fencing.
-- `src/executor/mail/stream_dispatcher.rs`: match stream type đúng một lần.
-- `src/executor/mail/stream/`: common encrypted-envelope/fence/health và bốn broker suites độc lập.
-- `src/executor/mail/stream_processor.rs`: fixed envelope, lazy template render và typed JMAP result.
+- `src/executor/mail/runtime/consumer_supervisor.rs`: desired slot scheduling, jitter và Zone lease/fencing.
+- `src/executor/mail/runtime/dispatcher.rs`: match stream type đúng một lần.
+- `src/executor/mail/runtime/`: common encrypted-envelope/fence/health và bốn broker suites độc lập.
+- `src/executor/mail/processor/stream.rs`: fixed envelope, lazy template render và typed JMAP result.
+- `src/executor/mail/supervisor/`: workload health, backpressure snapshot và runtime report relay.
+- `src/executor/mail/test/`: toàn bộ unit test của mail; source module chỉ giữ test path declaration.
 - `src/job_lifecycle/runner.rs`: execution, result/XACK và RAII cleanup.
 - `src/workerpool/watchdog.rs`: timeout và bounded-concurrent lease renewal.
 - `src/observability/resource.rs`: per-node health snapshot.

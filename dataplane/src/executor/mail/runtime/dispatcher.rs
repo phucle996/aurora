@@ -1,6 +1,7 @@
-use super::runtime_configuration::RuntimeConsumerConfiguration;
-use super::runtime_proto::MailStreamType;
-use super::stream::{self, RuntimeGenerationFence, StreamRuntimeContext};
+use super::configuration::RuntimeConsumerConfiguration;
+use super::context::{RuntimeGenerationFence, StreamRuntimeContext};
+use super::{kafka, nats_jetstream, rabbitmq, redis_stream};
+use crate::executor::mail::runtime_proto::MailStreamType;
 use crate::infra::zone_kv::ZoneLease;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -17,7 +18,7 @@ pub async fn dispatch_stream_runtime(
 ) {
     match configuration.stream.stream_type {
         MailStreamType::Kafka => {
-            stream::kafka::run(
+            kafka::run(
                 context,
                 configuration,
                 slot,
@@ -29,7 +30,7 @@ pub async fn dispatch_stream_runtime(
             .await;
         }
         MailStreamType::RedisStream => {
-            stream::redis_stream::run(
+            redis_stream::run(
                 context,
                 configuration,
                 slot,
@@ -41,7 +42,7 @@ pub async fn dispatch_stream_runtime(
             .await;
         }
         MailStreamType::NatsJetstream => {
-            stream::nats_jetstream::run(
+            nats_jetstream::run(
                 context,
                 configuration,
                 slot,
@@ -53,7 +54,7 @@ pub async fn dispatch_stream_runtime(
             .await;
         }
         MailStreamType::Rabbitmq => {
-            stream::rabbitmq::run(
+            rabbitmq::run(
                 context,
                 configuration,
                 slot,

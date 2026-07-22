@@ -36,6 +36,11 @@ pub struct Config {
     pub mail_reconcile_page_size: i64,
     pub mail_reconcile_max_pages_per_run: usize,
     pub mail_reconcile_work_budget_secs: u64,
+
+    /// [COMMENT]: Runtime report là current read model có lease-like TTL; consumer Redis chỉ
+    /// reclaim entry thật sự bị pod khác bỏ lại, không polling PostgreSQL theo chu kỳ.
+    pub mail_runtime_report_ttl_secs: u64,
+    pub mail_runtime_report_claim_idle_ms: u64,
 }
 
 impl Config {
@@ -119,6 +124,16 @@ impl Config {
             .parse::<u64>()
             .unwrap_or(20)
             .clamp(5, mail_reconcile_lock_ttl_secs.saturating_sub(5));
+        let mail_runtime_report_ttl_secs = env::var("MAIL_RUNTIME_REPORT_TTL_SECS")
+            .unwrap_or_else(|_| "180".to_string())
+            .parse::<u64>()
+            .unwrap_or(180)
+            .clamp(120, 900);
+        let mail_runtime_report_claim_idle_ms = env::var("MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS")
+            .unwrap_or_else(|_| "30000".to_string())
+            .parse::<u64>()
+            .unwrap_or(30_000)
+            .clamp(5_000, 300_000);
 
         Ok(Self {
             database_url,
@@ -138,6 +153,8 @@ impl Config {
             mail_reconcile_page_size,
             mail_reconcile_max_pages_per_run,
             mail_reconcile_work_budget_secs,
+            mail_runtime_report_ttl_secs,
+            mail_runtime_report_claim_idle_ms,
         })
     }
 }

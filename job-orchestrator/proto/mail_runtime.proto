@@ -130,7 +130,7 @@ message MailConsumerRuntimeReportedV1 {
   // [COMMENT]: Config version mà runtime thực tế đã observe/apply.
   uint64 config_version = 3;
   MailConsumerRuntimeState runtime_state = 4;
-  // [COMMENT]: Pod/instance opaque id; chỉ dùng diagnostics, không dùng làm metric label.
+  // [COMMENT]: Logical runtime instance (V1 là slot:<n>); không dùng làm metric label.
   string instance_id = 5;
   // [COMMENT]: Generation tăng sau mỗi COW swap/restart để fence runtime cũ.
   uint64 runtime_generation = 6;

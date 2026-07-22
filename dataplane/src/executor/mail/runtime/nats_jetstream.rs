@@ -1,7 +1,7 @@
 use super::{RuntimeGenerationFence, StreamRuntimeContext};
-use crate::executor::mail::runtime_configuration::RuntimeConsumerConfiguration;
+use crate::executor::mail::processor::stream::MailProcessingStatus;
+use crate::executor::mail::runtime::configuration::RuntimeConsumerConfiguration;
 use crate::executor::mail::runtime_proto::{MailStreamType, NatsJetStreamPayloadV1};
-use crate::executor::mail::stream_processor::MailProcessingStatus;
 use crate::infra::zone_kv::ZoneLease;
 use async_nats::jetstream::{self, consumer::PullConsumer, AckKind};
 use futures_util::StreamExt;

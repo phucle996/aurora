@@ -657,6 +657,9 @@ services:
       REPLICATION_SLOT_NAME: "outbox_slot"
       PUBLICATION_NAME: "outbox_pub"
       RESULT_STREAM_NAME: "job_results_stream"
+      # [COMMENT]: Current runtime read model; JO vẫn block trên Redis Stream và chỉ reclaim PEL sau 30s.
+      MAIL_RUNTIME_REPORT_TTL_SECS: "180"
+      MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
       APP_LOG_LEVEL: "debug"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "9102"

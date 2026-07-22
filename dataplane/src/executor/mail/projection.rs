@@ -232,7 +232,7 @@ pub async fn apply_mail_consumer_upsert(
         event.config_sha256.as_slice().try_into().map_err(|_| {
             ExecutorError::ExecutionFailed("MAIL_CONSUMER_HASH_INVALID".to_string())
         })?;
-    if super::runtime_configuration::canonical_consumer_sha256(&event) != event_hash {
+    if super::runtime::configuration::canonical_consumer_sha256(&event) != event_hash {
         return Err(ExecutorError::ExecutionFailed(
             "MAIL_CONSUMER_HASH_MISMATCH".to_string(),
         ));
@@ -456,7 +456,7 @@ pub async fn apply_mail_template_version_published(
         event.content_sha256.as_slice().try_into().map_err(|_| {
             ExecutorError::ExecutionFailed("MAIL_TEMPLATE_HASH_INVALID".to_string())
         })?;
-    if super::runtime_configuration::canonical_template_sha256(
+    if super::runtime::configuration::canonical_template_sha256(
         &event.subject_template,
         &event.html_template,
     ) != event_hash

@@ -9,15 +9,15 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Trạng thái | Phase 0-8 implemented trong code; broker runtime activation vẫn gated tại Dataplane |
-| Controlplane owns | Consumer config, template/version và outbox |
+| Trạng thái | Phase 0-9 implemented trong code; broker runtime activation vẫn gated tại Dataplane |
+| Controlplane owns | Consumer config, template/version, outbox và current runtime read model |
 | Dataplane owns | Broker connection, consume, fixed-envelope decode, render, offset, JMAP delivery |
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
 | Placement | Consumer row không lưu Zone; outbox ghi `routing_scope=zone:<uuid>` từ trusted `X-Zone-ID` sau cross-check Workspace |
 | Contract | `controlplane/internal/mail/transport/rpc/proto/mail_runtime.proto` |
-| Schema | `controlplane/internal/mail/migrations/000001..000005` |
+| Schema | `controlplane/internal/mail/migrations/000001..000007` |
 | Related SoT | `mail_configuration_projection_god_view.md`, `dataplane_broker_mail_execution_god_view.md` |
-| Verified against | Working tree, 2026-07-21 |
+| Verified against | Working tree, 2026-07-22 |
 
 ## 1. Non-negotiable boundaries
 
@@ -159,8 +159,15 @@ stateDiagram-v2
 | delete requested | `DRAINING` | Không nhận message mới, đang xử lý outstanding |
 
 CP không được tự đổi reported state sang `RUNNING` ngay sau khi ghi DB.
-Reported state được lưu theo từng Dataplane `instance_id`; CP chỉ derive aggregate từ các heartbeat
-còn fresh của đúng desired config version. `runtime_generation/report_sequence` chỉ có thứ tự trong cùng instance.
+Reported state được lưu theo logical `instance_id=slot:<n>`; hostname/pod không đi ra customer API. CP chỉ derive
+aggregate từ heartbeat còn fresh của đúng desired config version. `runtime_generation/report_sequence` chỉ có thứ tự
+trong cùng logical slot; takeover pod dùng fencing generation cao hơn để overwrite row cũ.
+
+`GET /api/v1/{personal|tenant}/mail/consumers/:id` trả thêm nullable `runtime`. Khi không có heartbeat fresh,
+`runtime=null`; UI không được suy diễn thành `STOPPED`. Khi có report, response chỉ gồm aggregate state,
+config version, active logical slots, lag, sanitized error và timestamps. Nó không phải mail history.
+Nếu desired `ENABLED`, ít nhất một slot báo `RUNNING` nhưng số slot fresh nhỏ hơn `parallelism`, detail derive
+`DEGRADED/MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL` thay vì che partial outage bằng một badge `RUNNING`.
 
 ## 4. Template aggregate
 
@@ -248,7 +255,7 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Hai UI update cùng consumer | `expected_config_version` optimistic concurrency |
 | Template publish đồng thời | Lock identity + expected revision + unique version |
 | Upsert cũ đến sau delete | DP tombstone version cao hơn; bỏ event cũ |
-| Runtime report từ pod cũ | So sánh config version + runtime generation |
+| Runtime report từ pod cũ | Logical slot row + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Header mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
 | Workspace placement đổi giữa resolve và commit | Guarded transaction cross-check authoritative workspace; zero row → not found/conflict |
@@ -278,12 +285,13 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | 6 | Fenced supervisor + stream dispatcher |
 | 7 | Fixed envelope + render/JMAP processor |
 | 8 | Kafka/Redis Stream/JetStream/RabbitMQ suites + native settlement, activation gated |
-| 9 | Delivery history (future, chưa triển khai) |
+| 9 | Runtime reverse report + TTL read model + Consumer Detail — implemented |
+| 10 | Delivery history (future, chưa triển khai) |
 
 ## 10. Cloud Console contract
 
-- Console chỉ render hai surface đã có backend thật: `Consumers` và `Templates`; không hiển thị
-  throughput, Dataplane node, runtime health hoặc delivery history bằng dữ liệu giả.
+- Console chỉ render hai surface đã có backend thật: `Consumers` và `Templates`. Consumer Detail lazy-fetch
+  runtime aggregate thật; không hiển thị throughput, Dataplane hostname hoặc delivery history bằng dữ liệu giả.
 - Browser luôn gọi public path `/api/v1/mail/...`. ACR xác minh session/context rồi rewrite sang
   `/api/v1/personal/mail/...` hoặc `/api/v1/tenant/mail/...`; UI không tự gửi owner, Tenant, Zone header.
 - TanStack Query key bắt buộc chứa Personal/Tenant context và `workspace_id`. Khi đổi context,

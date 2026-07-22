@@ -2,6 +2,18 @@ import { fetchJSON } from "./fetcher";
 
 export type MailDesiredState = "paused" | "enabled" | "deleting";
 export type MailSourceType = "kafka" | "redis_stream" | "nats_jetstream" | "rabbitmq";
+export type MailRuntimeState = "stopped" | "starting" | "running" | "paused" | "draining" | "error" | "degraded";
+
+export type MailConsumerRuntime = {
+  state: MailRuntimeState;
+  config_version: number;
+  active_instances: number;
+  consumer_lag: number;
+  error_code: string;
+  error_message: string;
+  reported_at: string;
+  next_expiry_at: string;
+};
 
 export type MailConsumer = {
   id: string;
@@ -23,6 +35,8 @@ export type MailConsumer = {
   config_sha256: string;
   created_at: string;
   updated_at: string;
+  // [COMMENT]: List response may omit runtime; detail returns null when no fresh heartbeat exists.
+  runtime?: MailConsumerRuntime | null;
 };
 
 export type MailTemplate = {
@@ -82,6 +96,14 @@ export async function listMailConsumers(signal?: AbortSignal): Promise<MailConsu
     { signal },
   );
   return requireData(response, "Mail consumers response is missing data").items;
+}
+
+export async function getMailConsumer(id: string, signal?: AbortSignal): Promise<MailConsumer> {
+  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
+    `/api/v1/mail/consumers/${encodeURIComponent(id)}`,
+    { signal },
+  );
+  return requireData(response, "Mail consumer detail is missing");
 }
 
 export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer> {

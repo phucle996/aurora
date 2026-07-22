@@ -37,4 +37,5 @@ type PersonalConsumer struct {
 	Reason                string
 	AfterID               *uuid.UUID
 	Limit                 uint32
+	Runtime               *ConsumerRuntimeSummary
 }

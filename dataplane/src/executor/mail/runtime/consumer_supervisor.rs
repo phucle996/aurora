@@ -1,9 +1,9 @@
-use super::runtime_configuration::{
+use super::configuration::{
     MailConfigurationRuntime, RuntimeConsumerConfiguration, RuntimeConsumerEntry,
     RuntimeDesiredState,
 };
-use super::stream::{RuntimeGenerationFence, StreamRuntimeContext};
-use super::stream_dispatcher::dispatch_stream_runtime;
+use super::context::{RuntimeGenerationFence, StreamRuntimeContext};
+use super::dispatcher::dispatch_stream_runtime;
 use crate::config::Config;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
@@ -30,7 +30,7 @@ struct RuntimeSlotHandle {
 }
 
 /// [COMMENT]: Supervisor chỉ reconcile desired slots và Aurora lease; broker lifecycle được dispatch nguyên bộ theo stream_type.
-pub struct MailStreamSupervisor {
+pub struct MailConsumerSupervisor {
     enabled: bool,
     configuration: Arc<MailConfigurationRuntime>,
     context: Arc<StreamRuntimeContext>,
@@ -41,12 +41,12 @@ pub struct MailStreamSupervisor {
     task: Mutex<Option<JoinHandle<()>>>,
 }
 
-impl MailStreamSupervisor {
+impl MailConsumerSupervisor {
     pub fn new(
         config: &Config,
         configuration: Arc<MailConfigurationRuntime>,
         zone_kv: Arc<ZoneKvStore>,
-        processor: Arc<super::stream_processor::MailStreamProcessor>,
+        processor: Arc<crate::executor::mail::processor::MailMessageProcessor>,
     ) -> Arc<Self> {
         let instance_id = std::env::var("HOSTNAME")
             .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));

@@ -43,7 +43,11 @@ impl ReverseProvider {
         let redis_client_st = self.redis_client.clone();
         let nats_client_st = self.nats_client.clone();
 
-        // [COMMENT]: Chạy song song cả bốn luồng lắng nghe độc lập (HA & Fault Tolerance)
+        let config_mail_runtime = self.config.clone();
+        let redis_client_mail_runtime = self.redis_client.clone();
+
+        // [COMMENT]: Chạy song song các listener độc lập; mail runtime reverse path dùng blocking
+        // Redis consumer group riêng, không chia PEL với generic job result.
         tokio::select! {
             res = tokio::spawn(async move {
                 loop {
@@ -109,6 +113,26 @@ impl ReverseProvider {
                                 "reverse_provider.storage_sizes_listener",
                                 "Storage Bucket Sizes Listener gặp lỗi, tiến hành kết nối lại sau 5s...",
                                 &err_msg
+                            );
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }) => {
+                let _ = res;
+            }
+            res = tokio::spawn(async move {
+                loop {
+                    {
+                        let run_res = mail::runtime_report::run_runtime_report_listener(
+                            &config_mail_runtime,
+                            &redis_client_mail_runtime,
+                        ).await;
+                        if let Err(error) = run_res {
+                            Logger::sys_error(
+                                "reverse_provider.mail_runtime_report",
+                                "Mail Runtime Report Listener failed; reconnecting after 5s",
+                                &error.to_string(),
                             );
                         }
                     }

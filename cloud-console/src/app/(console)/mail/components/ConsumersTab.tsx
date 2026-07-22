@@ -2,16 +2,17 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { Eye, Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { type APIError } from "@/lib/api/fetcher";
-import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, listMailConsumers, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/lib/api/mail";
+import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/lib/api/mail";
 
 type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type ConsumerForm = ConsumerWrite & { code: string };
@@ -41,11 +42,17 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<MailConsumer | null>(null);
   const [form, setForm] = useState<ConsumerForm>(emptyForm);
+  const [detailConsumerID, setDetailConsumerID] = useState<string | null>(null);
 
   const consumers = useQuery({
     queryKey,
     queryFn: ({ signal }) => listMailConsumers(signal),
     enabled,
+  });
+  const consumerDetail = useQuery({
+    queryKey: ["mail", scopeKey, "consumer-detail", detailConsumerID],
+    queryFn: ({ signal }) => getMailConsumer(detailConsumerID as string, signal),
+    enabled: enabled && Boolean(detailConsumerID),
   });
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -117,6 +124,40 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         </div>
       </div>
 
+      <Dialog open={Boolean(detailConsumerID)} onOpenChange={(open) => { if (!open) setDetailConsumerID(null); }}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{consumerDetail.data?.name ?? "Consumer detail"}</DialogTitle>
+            <DialogDescription>Desired configuration and the latest fresh runtime aggregate for this consumer.</DialogDescription>
+          </DialogHeader>
+          {consumerDetail.isLoading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground"><Loader2 className="animate-spin" />Loading current state…</div>
+          ) : consumerDetail.isError ? (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-destructive">{errorMessage(consumerDetail.error)}</div>
+          ) : consumerDetail.data ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
+                <div><div className="text-xs text-muted-foreground">Desired state</div><Badge variant="outline" className="mt-1">{consumerDetail.data.desired_state}</Badge></div>
+                <div><div className="text-xs text-muted-foreground">Config version</div><div className="mt-1 font-mono">v{consumerDetail.data.config_version}</div></div>
+                <div><div className="text-xs text-muted-foreground">Source</div><div className="mt-1">{sourceLabels[consumerDetail.data.source_type].name} · <span className="font-mono">{consumerDetail.data.topic}</span></div></div>
+                <div><div className="text-xs text-muted-foreground">Template</div><div className="mt-1 font-mono">{consumerDetail.data.template_id} · v{consumerDetail.data.template_version}</div></div>
+              </div>
+              {consumerDetail.data.runtime ? (
+                <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
+                  <div><div className="text-xs text-muted-foreground">Reported runtime</div><Badge variant="outline" className="mt-1">{consumerDetail.data.runtime.state}</Badge></div>
+                  <div><div className="text-xs text-muted-foreground">Active logical slots</div><div className="mt-1 font-mono">{consumerDetail.data.runtime.active_instances} / {consumerDetail.data.parallelism}</div></div>
+                  <div><div className="text-xs text-muted-foreground">Reported config</div><div className="mt-1 font-mono">v{consumerDetail.data.runtime.config_version}</div></div>
+                  <div><div className="text-xs text-muted-foreground">Last report</div><div className="mt-1">{new Date(consumerDetail.data.runtime.reported_at).toLocaleString()}</div></div>
+                  {(consumerDetail.data.runtime.error_code || consumerDetail.data.runtime.error_message) && <div className="sm:col-span-2 rounded-md bg-destructive/5 p-3 text-sm text-destructive"><div className="font-mono">{consumerDetail.data.runtime.error_code}</div>{consumerDetail.data.runtime.error_message && <div className="mt-1">{consumerDetail.data.runtime.error_message}</div>}</div>}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">No fresh runtime report exists for the current config version. This is distinct from a confirmed stopped state.</div>
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       {formOpen && (
         <form onSubmit={submit} className="space-y-5 rounded-xl border bg-card p-5">
           <div className="flex items-center justify-between"><div><h2 className="font-semibold">{editing ? "Edit consumer" : "Create consumer"}</h2><p className="text-xs text-muted-foreground">New consumers start paused. Broker credentials remain encrypted.</p></div><Button type="button" variant="ghost" size="icon" onClick={() => setFormOpen(false)}><X /></Button></div>
@@ -142,6 +183,7 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         {consumers.isLoading ? <div className="flex items-center justify-center gap-2 p-12 text-sm text-muted-foreground"><Loader2 className="animate-spin" />Loading consumers…</div> : consumers.isError ? <div className="p-10 text-center text-sm text-destructive">{errorMessage(consumers.error)}</div> : visible.length === 0 ? <div className="p-12 text-center text-sm text-muted-foreground">No consumers in this workspace.</div> : (
           <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="border-b bg-muted/30 text-xs text-muted-foreground"><tr><th className="px-4 py-3">Consumer</th><th className="px-4 py-3">Stream source</th><th className="px-4 py-3">Template / sender</th><th className="px-4 py-3">Desired state</th><th className="px-4 py-3">Version</th><th className="px-4 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y">
             {visible.map((consumer) => <tr key={consumer.id} className="hover:bg-muted/20"><td className="px-4 py-3"><div className="font-medium">{consumer.name}</div><div className="font-mono text-[11px] text-muted-foreground">{consumer.id}</div></td><td className="px-4 py-3"><Badge variant="outline" className="mb-1">{sourceLabels[consumer.source_type].name}</Badge>{!consumer.source_configured && <Badge variant="outline" className="mb-1 ml-1 text-amber-600">Needs credentials</Badge>}<div className="font-mono text-xs">{consumer.topic}</div><div className="text-xs text-muted-foreground">{consumer.consumer_group}</div></td><td className="px-4 py-3 text-xs"><div>{consumer.template_id} · v{consumer.template_version}</div><div className="text-muted-foreground">{consumer.sender_profile_id} · v{consumer.sender_version}</div></td><td className="px-4 py-3"><Badge variant="outline">{consumer.desired_state}</Badge></td><td className="px-4 py-3 font-mono text-xs">v{consumer.config_version}</td><td className="px-4 py-3"><div className="flex justify-end gap-1">
+              <Button variant="ghost" size="icon-sm" title="View runtime detail" onClick={() => setDetailConsumerID(consumer.id)}><Eye /></Button>
               {canUpdate && <Button variant="ghost" size="icon-sm" title="Edit" onClick={() => openEdit(consumer)}><Pencil /></Button>}
               {canUpdate && consumer.desired_state !== "deleting" && <Button variant="ghost" size="icon-sm" title={consumer.desired_state === "enabled" ? "Pause" : consumer.source_configured ? "Resume" : "Configure broker credentials before resume"} disabled={stateChange.isPending || (consumer.desired_state !== "enabled" && !consumer.source_configured)} onClick={() => stateChange.mutate({ consumer, action: consumer.desired_state === "enabled" ? "pause" : "resume" })}>{consumer.desired_state === "enabled" ? <Pause /> : <Play />}</Button>}
               {canDelete && <AlertDialog><AlertDialogTrigger render={<Button variant="ghost" size="icon-sm" className="text-destructive" title="Delete" />}><Trash2 /></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {consumer.name}?</AlertDialogTitle><AlertDialogDescription>An enabled consumer will drain before deletion. In-flight messages may finish.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => remove.mutate(consumer)}>Request deletion</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>}

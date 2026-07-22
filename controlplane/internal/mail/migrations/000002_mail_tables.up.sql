@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
 -- [COMMENT]: Runtime report là per-instance lease/heartbeat read model, không sửa desired state.
 CREATE TABLE IF NOT EXISTS mail_consumer_runtime_reports (
     consumer_id UUID NOT NULL REFERENCES mail_consumers(id) ON DELETE CASCADE,
+    -- [COMMENT]: Chỉ giữ event gần nhất; không tạo inbox row cho từng heartbeat gây write amplification.
+    event_id UUID NOT NULL,
     instance_id VARCHAR(255) NOT NULL,
     config_version BIGINT NOT NULL CHECK (config_version > 0),
     runtime_state mail_consumer_runtime_state NOT NULL,

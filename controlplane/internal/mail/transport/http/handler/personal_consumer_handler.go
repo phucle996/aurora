@@ -221,6 +221,21 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 		return
 	}
 
+	var runtime any
+	if consumer.Runtime != nil {
+		// [COMMENT]: API chỉ lộ aggregate operational state; instance hostname nội bộ và từng
+		// recipient/render result không thuộc Consumer Detail contract.
+		runtime = gin.H{
+			"state":            consumer.Runtime.State,
+			"config_version":   consumer.Runtime.ConfigVersion,
+			"active_instances": consumer.Runtime.ActiveInstances,
+			"consumer_lag":     consumer.Runtime.ConsumerLag,
+			"error_code":       consumer.Runtime.ErrorCode,
+			"error_message":    consumer.Runtime.ErrorMessage,
+			"reported_at":      consumer.Runtime.ReportedAt,
+			"next_expiry_at":   consumer.Runtime.NextExpiryAt,
+		}
+	}
 	apires.RespondSuccess(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
@@ -241,6 +256,7 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 		"config_sha256":      hex.EncodeToString(consumer.ConfigSHA256),
 		"created_at":         consumer.CreatedAt,
 		"updated_at":         consumer.UpdatedAt,
+		"runtime":            runtime,
 	}, "mail consumer loaded")
 }
 
