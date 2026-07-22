@@ -43,7 +43,7 @@ spec:
               imagePullPolicy: IfNotPresent
               env:
                 # [COMMENT]: Secret dùng DB role riêng, chỉ có CONNECT/USAGE/SELECT/DELETE trên
-                # bốn outbox table và mail runtime TTL read-model table.
+                # ba outbox table và mail runtime TTL read-model table.
                 - name: DATABASE_URL
                   valueFrom:
                     secretKeyRef:
@@ -82,31 +82,6 @@ spec:
                       RETURNING target.id
                   )
                   SELECT 'storage.storage_outbox_records' AS table_name, COUNT(*) AS deleted_rows
-                  FROM deleted;
-                  COMMIT;
-                  SQL
-
-                  psql "$DATABASE_URL" -X --set=ON_ERROR_STOP=1 <<'SQL' || failures=1
-                  BEGIN;
-                  SET LOCAL lock_timeout = '250ms';
-                  SET LOCAL statement_timeout = '5s';
-                  SET LOCAL idle_in_transaction_session_timeout = '5s';
-                  WITH candidates AS (
-                      SELECT id
-                      FROM iam.iam_outbox_records
-                      WHERE status IN ('SUCCEEDED', 'FAILED')
-                        AND completed_at IS NOT NULL
-                        AND completed_at < NOW() - INTERVAL '30 days'
-                      ORDER BY completed_at, id
-                      FOR UPDATE SKIP LOCKED
-                      LIMIT 200
-                  ), deleted AS (
-                      DELETE FROM iam.iam_outbox_records AS target
-                      USING candidates
-                      WHERE target.id = candidates.id
-                      RETURNING target.id
-                  )
-                  SELECT 'iam.iam_outbox_records' AS table_name, COUNT(*) AS deleted_rows
                   FROM deleted;
                   COMMIT;
                   SQL

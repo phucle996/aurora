@@ -55,7 +55,7 @@ BEGIN
 COMMIT
 ```
 
-`routing_scope=zone:<uuid>` được tạo từ trusted `X-Zone-ID` sau khi CP cross-check authoritative Workspace/Broker Zone.
+Typed `zone_id UUID` được snapshot từ authorized request context sau khi CP cross-check authoritative Workspace/Broker Zone.
 Consumer row chỉ giữ `workspace_id`; payload không mang Workspace/owner/Zone. Không publish Redis/NATS trước
 commit. Outbox row được giữ theo retention policy sau terminal state; không xóa ngay khi thành công.
 
@@ -119,7 +119,7 @@ UUIDv5(mail_runtime_report_namespace,
 - `schema_version == 1`.
 - Consumer/template/sender versions phải lớn hơn 0.
 - `workspace_id`, owner và `zone_id` không được xuất hiện trong protobuf runtime payload.
-- UUID trong outbox `routing_scope=zone:<uuid>` phải khớp Zone NATS KV connection mà projector đang ghi.
+- UUID trong outbox `zone_id` phải khớp Zone NATS KV connection mà projector đang ghi.
 
 ## 4. Zone L2 key model
 
@@ -332,7 +332,7 @@ sequenceDiagram
 - Projection payload không chứa plaintext broker username/password/token/TLS private key.
 - Outbox row vẫn chỉ chứa `payload BYTEA`; bên trong `MailConsumerUpsertV1.stream` mang `stream_type`, adapter schema version, broker resource ID và adapter payload bytes.
 - Mỗi suite payload mang `source_config_envelope` opaque tối đa 16 KiB. CP DB, outbox, JO và Zone NATS KV chỉ lưu/chuyển tiếp bytes; chỉ đúng DP suite giải mã bằng zone-local key material.
-- JO chỉ dùng `routing_scope` trong trusted outbox envelope để chọn Redis Job stream; protobuf không thể tự đổi Zone.
+- JO chỉ dùng typed `zone_id` trong trusted outbox envelope để chọn Redis Job stream; protobuf không thể tự đổi Zone.
 - Zone projector so sánh stream/configured `zone_id`; command không thể yêu cầu ghi sang Redis của Zone khác.
 - Template body có thể chứa customer content: JetStream file-storage encryption/access policy và không log payload.
 - Invalidation channel chỉ chứa aggregate ID/version, không template content hoặc source config envelope.

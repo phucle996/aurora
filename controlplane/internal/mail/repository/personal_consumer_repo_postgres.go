@@ -32,6 +32,10 @@ func NewPersonalConsumerRepository(db *pgxpool.Pool, cfg *config.Config) mailRep
 }
 
 func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	// [COMMENT]: Outbox route phải chính là Zone đã được aggregate authorization guard kiểm tra; mismatch fail closed.
+	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
+		return mailTaxonomy.ErrInvalidArgument
+	}
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("mail personal consumer repo: begin create: %w", err)
@@ -82,7 +86,7 @@ func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mai
 	}
 
 	// [COMMENT]: Outbox được insert trên cùng connection/transaction; commit là ranh giới bền vững duy nhất.
-	err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,routing_scope,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID)
+	err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID)
 	if err != nil {
 		return fmt.Errorf("mail personal consumer repo: insert outbox: %w", err)
 	}
@@ -265,6 +269,10 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 }
 
 func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	// [COMMENT]: Không cho service bug chuyển projection sang Zone khác aggregate đã authorize.
+	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
+		return mailTaxonomy.ErrInvalidArgument
+	}
 	var authorized, templateAvailable, updated bool
 	var currentVersion uint64
 	var outboxID sql.NullInt64
@@ -311,7 +319,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
-				event_id, routing_scope, job_topic, payload, actor_user_id, status,
+				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
 			SELECT $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
@@ -330,7 +338,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion,
 		consumer.DesiredState, consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256,
 		consumer.ActorUserID, consumer.UpdatedAt, consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ExpectedConfigVersion,
-		outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
+		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
 	).Scan(
 		&authorized,
@@ -366,6 +374,10 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 }
 
 func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	// [COMMENT]: Tombstone phải đi đúng Zone của guarded workspace mutation.
+	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
+		return mailTaxonomy.ErrInvalidArgument
+	}
 	var authorized, updated bool
 	var currentVersion uint64
 	var outboxID sql.NullInt64
@@ -391,7 +403,7 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
-				event_id, routing_scope, job_topic, payload, actor_user_id, status,
+				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
 			SELECT $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
@@ -405,7 +417,7 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema),
 		consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.ID, consumer.ExpectedConfigVersion, consumer.UpdatedAt,
-		outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
+		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID,
 		outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
 	).Scan(
 		&authorized,

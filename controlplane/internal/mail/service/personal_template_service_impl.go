@@ -120,7 +120,7 @@ func (s *personalTemplateServiceImpl) DeleteTemplate(ctx context.Context, comman
 		return fmt.Errorf("mail personal template service: marshal delete event: %w", err)
 	}
 	actor := command.ActorUserID
-	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
+	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, ZoneID: command.ZoneID, JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
 	// [COMMENT]: Repository ghi projection tombstone cùng transaction hard-delete + outbox.
 	command.ID, command.CurrentVersion, command.UpdatedAt = command.TemplateID, template.CurrentVersion, now
 	return s.repo.Delete(ctx, command, outbox)
@@ -134,7 +134,7 @@ func personalTemplatePublishedOutbox(ctx context.Context, actor uuid.UUID, zone 
 	if err != nil {
 		return nil, fmt.Errorf("mail personal template service: marshal publish event: %w", err)
 	}
-	return &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + zone.String(), JobTopic: "mail.template.version_published", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}, nil
+	return &mailEntity.MailOutboxRecord{EventID: eventID, ZoneID: zone, JobTopic: "mail.template.version_published", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}, nil
 }
 
 func attachPersonalTemplateTrace(ctx context.Context, metadata *mailproto.MailEventMetadataV1) []byte {

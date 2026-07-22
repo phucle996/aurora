@@ -45,6 +45,8 @@ pub enum MailProcessingStatus {
 struct FixedMailEnvelope {
     to: String,
     parameter: HashMap<String, String>,
+    // [COMMENT]: Optional broker-level expiry prevents delayed verification/reset mail from being sent after token TTL.
+    not_after_unix_ms: Option<u64>,
 }
 
 struct FlatParameters(HashMap<String, String>);
@@ -177,7 +179,8 @@ impl<'de> Deserialize<'de> for FixedMailEnvelope {
             type Value = FixedMailEnvelope;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an object containing exactly to and parameter")
+                formatter
+                    .write_str("an object containing to, parameter, and optional not_after_unix_ms")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -186,21 +189,31 @@ impl<'de> Deserialize<'de> for FixedMailEnvelope {
             {
                 let mut to = None;
                 let mut parameter = None;
+                let mut not_after_unix_ms = None;
                 while let Some(field) = map.next_key::<String>()? {
                     match field.as_str() {
                         "to" if to.is_none() => to = Some(map.next_value::<String>()?),
                         "parameter" if parameter.is_none() => {
                             parameter = Some(map.next_value::<FlatParameters>()?.0)
                         }
-                        "to" | "parameter" => {
+                        "not_after_unix_ms" if not_after_unix_ms.is_none() => {
+                            not_after_unix_ms = Some(map.next_value::<u64>()?)
+                        }
+                        "to" | "parameter" | "not_after_unix_ms" => {
                             return Err(de::Error::custom("duplicate top-level field"));
                         }
-                        _ => return Err(de::Error::unknown_field(&field, &["to", "parameter"])),
+                        _ => {
+                            return Err(de::Error::unknown_field(
+                                &field,
+                                &["to", "parameter", "not_after_unix_ms"],
+                            ))
+                        }
                     }
                 }
                 Ok(FixedMailEnvelope {
                     to: to.ok_or_else(|| de::Error::missing_field("to"))?,
                     parameter: parameter.ok_or_else(|| de::Error::missing_field("parameter"))?,
+                    not_after_unix_ms,
                 })
             }
         }
@@ -255,8 +268,17 @@ impl MailMessageProcessor {
                 }
             }
         };
-        let retryable = |code| MailProcessingStatus::Retryable { code };
-        let rejected = |code| MailProcessingStatus::PermanentRejected { code };
+        // [COMMENT]: Mọi early outcome cũng phải vào metric; nếu chỉ record sau JMAP thì decode/expiry/config failures bị mù.
+        let retryable = |code| {
+            let status = MailProcessingStatus::Retryable { code };
+            self.record_outcome(&status);
+            status
+        };
+        let rejected = |code| {
+            let status = MailProcessingStatus::PermanentRejected { code };
+            self.record_outcome(&status);
+            status
+        };
 
         // [COMMENT]: Current pointer check loại queued work cũ; suite vẫn giữ nguyên broker coordinate để quyết định redelivery.
         let current = self
@@ -282,6 +304,14 @@ impl MailMessageProcessor {
             Ok(envelope) => envelope,
             Err(code) => return rejected(code),
         };
+        // [COMMENT]: Expired mail is terminally ACKed by source suites; retrying can never make its token valid again.
+        if envelope.not_after_unix_ms.is_some_and(|deadline| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .is_ok_and(|elapsed| elapsed.as_millis() >= u128::from(deadline))
+        }) {
+            return rejected("MAIL_MESSAGE_EXPIRED");
+        }
         if envelope.to.len() > MAX_RECIPIENT_BYTES || envelope.to.contains(['\r', '\n']) {
             return rejected("MAIL_RECIPIENT_INVALID");
         }

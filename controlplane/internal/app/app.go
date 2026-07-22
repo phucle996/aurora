@@ -43,9 +43,9 @@ package app
 
 import (
 	"context"
+	natsinfra "controlplane/infra/nats"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
-	natsinfra "controlplane/infra/nats"
 	"controlplane/infra/vault"
 	"controlplane/internal/app/bootstrap"
 	"controlplane/internal/config"
@@ -117,6 +117,18 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	if rds == nil {
 		app.Stop()
 		return nil, fmt.Errorf("bootstrap: redis client is required")
+	}
+
+	// [COMMENT]: Redis Job là broker tách biệt với Redis session/cache; IAM chỉ ghi mail intent vào stream này.
+	rdsJob, err := redisinfra.NewRedis(ctx, &cfg.RedisJob)
+	if err != nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: redis job init failed: %w", err)
+	}
+	app.rdsJob = rdsJob
+	if rdsJob == nil {
+		app.Stop()
+		return nil, fmt.Errorf("bootstrap: redis job client is required")
 	}
 
 	// [COMMENT]: Khởi tạo NATS Core Client từ infra connector hỗ trợ TLS/mTLS và retry
@@ -226,7 +238,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, cacheEngine, app.natsConn, app.otel)
+	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, cacheEngine, app.natsConn, app.otel)
 	if err != nil {
 		app.Stop()
 		return nil, err
@@ -251,7 +263,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, err
 	}
 	app.grpc = g
-
 
 	// Register tất cả HTTP routes sau khi modules đã wire xong hoàn toàn.
 	NewGlobalRoutes(engine, modules)

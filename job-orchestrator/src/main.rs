@@ -103,12 +103,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Logger::sys_error("main.run", "Resource Lifecycle Relay Worker dừng đột ngột", "");
             std::process::exit(1);
         }
-        _ = reverse_provider::iam::outbox_dispatcher::run_iam_outbox_dispatch_loop(
-            config.database_url.clone(), redis_client.clone()
-        ) => {
-            Logger::sys_error("main.run", "IAM Outbox Dispatcher dừng đột ngột", "");
-            std::process::exit(1);
-        }
         _ = reverse_provider::mail::reconciler::run_periodic_mail_reconciliation(
             config.clone(), redis_client.clone()
         ) => {

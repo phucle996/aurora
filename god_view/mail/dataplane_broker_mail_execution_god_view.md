@@ -11,7 +11,7 @@
 | Trạng thái | Phase 5–9 đã ship trong code; production activation vẫn gated |
 | Stream suites | Kafka, Redis Stream, NATS JetStream, RabbitMQ |
 | Runtime entry | `MailConsumerSupervisor::run_slot` → `runtime::dispatcher::dispatch_stream_runtime` |
-| Không phải runtime entry | `dispatch_mail_job`; hàm này chỉ xử lý Redis Job nội bộ/projection/direct system mail |
+| Không phải delivery entry | `dispatch_mail_job`; hàm này chỉ xử lý Redis Job projection commands |
 | Config L2 | Zone-local NATS JetStream KV |
 | Config L1 | Immutable `ArcSwap` consumer registry + byte-bounded Moka template cache |
 | Rendering | Fixed JSON envelope + restricted placeholder renderer tại Dataplane |
@@ -49,7 +49,7 @@ flowchart LR
 Hai đường thực thi phải giữ tách biệt:
 
 1. `dispatch_mail_job` nhận Aurora Redis Job. Với `mail.consumer.upsert/delete` và template events, nó ghi
-   desired snapshot vào Zone KV. Với direct system mail, nó gọi mail executor hiện hữu.
+   desired snapshot vào Zone KV; mọi direct/system mail action đều bị reject.
 2. `MailConsumerSupervisor` quan sát L1 desired registry, claim một Zone lease cho từng logical slot rồi gọi
    `dispatch_stream_runtime`. Chỉ dispatcher này match `stream_type` và mở customer broker connection.
 
@@ -195,19 +195,21 @@ Mọi suite đưa nguyên broker payload bytes vào cùng processor. V1 chỉ ch
     "order_code": "A001",
     "amount": 123,
     "paid": true
-  }
+  },
+  "not_after_unix_ms": 1784700000000
 }
 ```
 
 Rules:
 
-- Top-level có đúng `to` và `parameter`; unknown/duplicate field bị permanent reject.
+- Top-level bắt buộc `to`, `parameter` và cho phép optional `not_after_unix_ms`; unknown/duplicate field bị permanent reject.
 - `to` là đúng một mailbox, không có recipient array.
 - `parameter` là flat object; value chỉ string, finite number hoặc boolean.
 - Key theo identifier `^[A-Za-z_][A-Za-z0-9_]*$`; số key và byte key/value/tổng đều có hard cap.
 - Không có JSONPath mapper. Sender/template/workspace/Zone không được lấy từ customer message.
 - Consumer config pin đúng một `template_id + template_version` và verified sender identity/version.
 - Missing hoặc thừa parameter đều reject; HTML variable luôn escape; subject cấm control character.
+- `not_after_unix_ms` đã qua deadline bị permanent reject + source ACK/term; field absent nghĩa là ordinary bulk mail không có broker-level expiry.
 - Raw recipient/payload/template parameter không được log hoặc dùng làm metric label.
 
 Stable submission identity được derive bằng UUIDv5:

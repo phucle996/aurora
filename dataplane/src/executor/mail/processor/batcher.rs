@@ -62,11 +62,7 @@ impl MailBatcherHandle {
 
     pub async fn submit(&self, mail: PreparedMail) -> MailSubmitResult {
         if self.closed.load(Ordering::Acquire) {
-            return Err(MailSubmitError::new(
-                "MAIL_BATCHER_SHUTTING_DOWN",
-                "mail batcher is shutting down",
-                true,
-            ));
+            return Err(MailSubmitError::new("MAIL_BATCHER_SHUTTING_DOWN", true));
         }
         let (reply_tx, reply_rx) = oneshot::channel();
         self.metrics.pending_items.fetch_add(1, Ordering::Relaxed);
@@ -78,28 +74,16 @@ impl MailBatcherHandle {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
                 self.metrics.pending_items.fetch_sub(1, Ordering::Relaxed);
-                return Err(MailSubmitError::new(
-                    "MAIL_BATCHER_CLOSED",
-                    "mail batcher channel closed",
-                    true,
-                ));
+                return Err(MailSubmitError::new("MAIL_BATCHER_CLOSED", true));
             }
             Err(_) => {
                 self.metrics.pending_items.fetch_sub(1, Ordering::Relaxed);
-                return Err(MailSubmitError::new(
-                    "MAIL_BATCHER_BACKPRESSURE",
-                    "mail batch queue is full",
-                    true,
-                ));
+                return Err(MailSubmitError::new("MAIL_BATCHER_BACKPRESSURE", true));
             }
         }
-        reply_rx.await.unwrap_or_else(|_| {
-            Err(MailSubmitError::new(
-                "MAIL_BATCHER_RESULT_DROPPED",
-                "mail batch worker stopped before returning a result",
-                true,
-            ))
-        })
+        reply_rx
+            .await
+            .unwrap_or_else(|_| Err(MailSubmitError::new("MAIL_BATCHER_RESULT_DROPPED", true)))
     }
 
     pub async fn shutdown(&self) {
@@ -261,11 +245,7 @@ async fn flush_batch(
 fn fail_item(item: QueuedMail, metrics: &MailWorkloadMetrics, code: &str) {
     metrics.pending_items.fetch_sub(1, Ordering::Relaxed);
     metrics.failed_total.fetch_add(1, Ordering::Relaxed);
-    let _ = item.reply.send(Err(MailSubmitError::new(
-        code,
-        "mail batch flush path is unavailable",
-        true,
-    )));
+    let _ = item.reply.send(Err(MailSubmitError::new(code, true)));
 }
 
 #[cfg(test)]

@@ -1,8 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Biên dịch các file proto mail_job.proto và job_result.proto
+    // [COMMENT]: Mail delivery dùng fixed JSON envelope từ customer broker; protobuf chỉ còn control-plane contracts.
     prost_build::compile_protos(
         &[
-            "proto/mail_job.proto",
             // [COMMENT]: Contract versioned cho CP desired state ↔ DP broker/runtime/result.
             "proto/mail_runtime.proto",
             "proto/job_result.proto",

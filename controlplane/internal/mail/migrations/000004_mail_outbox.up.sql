@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS mail_outbox_records (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID UNIQUE NOT NULL,
-    routing_scope VARCHAR(100) NOT NULL,
+    zone_id UUID NOT NULL,
     job_topic VARCHAR(100) NOT NULL,
     payload BYTEA NOT NULL,
     actor_user_id UUID,

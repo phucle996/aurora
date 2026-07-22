@@ -459,39 +459,6 @@ COMMENT ON COLUMN oauth_tokens.created_at IS 'Timestamp when the OAuth token rec
 
 
 
--- -------------------------------------------------------------
--- Bảng outbox lưu trữ các sự kiện/tác vụ bất đồng bộ của module IAM để CDC đồng bộ sang Redis/Kafka
--- -------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS iam_outbox_records (
-    id BIGSERIAL PRIMARY KEY,
-    event_id UUID UNIQUE NOT NULL, -- UUID định danh duy nhất của sự kiện (Idempotency Key)
-    routing_scope VARCHAR(100) NOT NULL, -- Phạm vi định tuyến và thực thi (e.g. platform, zone:vn)
-    job_topic VARCHAR(100) NOT NULL, -- Tên topic/tác vụ (e.g. mail.system.verify_account)
-    payload BYTEA NOT NULL, -- Dữ liệu nhị phân serialized dạng Protobuf
-    -- [COMMENT]: Tách payer khỏi actor để Billing và notification không suy diễn owner từ người thao tác.
-    owner_id UUID NOT NULL,
-    owner_type billing_owner_type NOT NULL,
-    actor_user_id UUID NOT NULL,
-	status VARCHAR(50) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PUBLISHING', 'PUBLISHED', 'PROCESSING', 'COMPLETED', 'SUCCEEDED', 'FAILED')),
-	completed_at TIMESTAMP WITH TIME ZONE, -- Thời gian hoàn tất tác vụ
-	attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-	available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	lease_until TIMESTAMPTZ,
-	last_dispatch_error TEXT,
-	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
-    -- CÁC CỘT ĐỒNG BỘ CONTRACT:
-    job_version INT NOT NULL DEFAULT 1,
-    resource_id VARCHAR(64),
-    payload_schema_version INT NOT NULL DEFAULT 1,
-    trace_id BYTEA, -- Trích xuất OpenTelemetry trace parent để liên kết vết
-    idle INT, -- Hạn mức timeout cho tác vụ tính bằng giây
-
-    -- CÁC CỘT PHẢN HỒI KẾT QUẢ:
-    error_code VARCHAR(100),
-    error_message TEXT
-);
-
 -- Sửa các ràng buộc CHECK regex lỗi định dạng khoảng ký tự '-'
 ALTER TABLE hierarchy.tenants DROP CONSTRAINT IF EXISTS ck_tenants_code_format;
 ALTER TABLE hierarchy.tenants ADD CONSTRAINT ck_tenants_code_format CHECK (code ~ '^[a-z0-9_\-]+$');

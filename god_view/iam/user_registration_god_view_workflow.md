@@ -1,365 +1,297 @@
-# End-User Registration — God View (Master SoT)
+# User Registration and Verification-Mail Dispatch — God View
 
-> **SINGLE SOURCE OF TRUTH**
-> Tài liệu này chỉ sở hữu workflow tạo tài khoản `pending-active`, phát activation challenge và chuyển mail intent sang Dataplane. Activation, role và Billing wallet thuộc [`account_verification_god_view_workflow.md`](account_verification_god_view_workflow.md).
+> [!IMPORTANT]
+> Đây là Source of Truth cho việc tạo account `pending-active` và phát message xác minh vào broker.
+> Việc consume broker, render template và gửi JMAP là ordinary Mail workflow; việc activate account,
+> gán role và provision Billing wallet thuộc
+> [`account_verification_god_view_workflow.md`](account_verification_god_view_workflow.md).
 
 ## 0. Control header
 
-| Thuộc tính | Contract |
+| Thuộc tính | Giá trị |
 |---|---|
-| Domain | IAM / End-User Registration |
-| Endpoint | `POST /api/v1/auth/register` |
-| Resend entry | Pending account đăng nhập lại bằng password đúng |
-| UI | Cloud Console Sign Up / Sign In |
-| Identity SoT | PostgreSQL `iam.users`, `iam.user_profiles` |
-| OTT | Redis HA, key `iam:ott:account_verify:<user_id>:<event_id>` |
-| Mail intent | PostgreSQL `iam.iam_outbox_records` |
-| Mail execution | JO IAM dispatcher → Redis Stream → Dataplane micro-batch → Stalwart JMAP |
-| Retention | Kubernetes CronJob `k8s/outbox-retention-cronjob.yaml`, 30 ngày |
-| Output state | User `pending-active` + durable mail intent |
-| Downstream handoff | `user_id + event_id + plaintext OTT` trong activation URL fragment |
+| Public API | `POST /api/v1/auth/register` |
+| Identity SoT | PostgreSQL `iam.users` + `iam.user_profiles` |
+| Account state sau create | `pending-active` |
+| OTT state | Redis HA chính của IAM, hash-only, TTL cấu hình, replication `WAIT` |
+| Verification broker | Redis Job Stream `{iam-account-verification-v1}:messages` |
+| Mail envelope | Fixed JSON `{to, parameter, not_after_unix_ms}` |
+| Recovery | Pending-user login đúng password tự resend, cooldown 60 giây |
+| Không tồn tại | IAM mail outbox, system template, system sender, `jobs:platform` mail job |
+| Activation/Billing | Verify transaction + `iam.billing_outbox_records` ở God View riêng |
+| Verified against | Working tree, 2026-07-22 |
 
-## 1. Boundary và invariant
+## 1. Architectural decision
 
-### 1.1 In scope
+IAM chỉ biết rằng cần phát một message xác minh vào broker. IAM không biết:
 
-- Client validation và Sign Up state.
-- Exact public route, CORS và pre-auth abuse limiter.
-- Canonical username/email và password hashing.
-- Redis OTT issue, TTL và replica durability gate.
-- Atomic transaction `user + profile + IAM mail outbox`.
-- IAM outbox dispatch/reconciliation và mail delivery result.
-- Pending-login resend đã xác thực password.
-- Retry, idempotency, retention và failure recovery trước activation.
+- Zone nào sẽ chạy consumer.
+- Consumer ID, template ID/version hoặc sender profile.
+- JMAP/Stalwart endpoint.
+- Cách Dataplane phân slot, batch hoặc settle broker message.
 
-### 1.2 Out of scope
+Root user cấu hình một **ordinary Personal Mail consumer** ở Zone mong muốn. Consumer đó bind:
 
-- OTT validation/consume.
-- Chuyển account sang `active`.
-- Gán `platform_user`.
-- Billing outbox, JetStream, inbox và wallet.
-- Zone/Workspace provisioning.
+- `source_type=redis_stream`;
+- stream key `{iam-account-verification-v1}:messages`;
+- credential tới Redis Job trung tâm;
+- một ordinary Personal template có các placeholder trong bảng contract;
+- một ordinary sender profile.
 
-### 1.3 Non-negotiable invariants
+Nhờ vậy account verification không tạo đường gửi mail đặc biệt. Cùng Mail runtime, template COW,
+NATS Zone KV, batching và JMAP path của customer workload được tái sử dụng nguyên trạng.
 
-| Invariant | Hệ quả |
-|---|---|
-| PostgreSQL unique index là uniqueness arbiter | Không dùng Redis bitmap/cache để từ chối identity |
-| Password là opaque secret | Không trim, log, trace hoặc đưa vào outbox |
-| OTT đạt Redis replica ACK trước DB transaction | Replica gate fail thì không được tạo user |
-| `users + user_profiles + iam_outbox_records` cùng transaction | HTTP `201` không tồn tại khi thiếu mail intent |
-| `201` chỉ chứng minh intent durable | Không khẳng định Stalwart hoặc recipient đã nhận mail |
-| Mỗi mail có `event_id` và Redis key riêng | Mail đến đảo thứ tự không invalidate link còn TTL |
-| Resend yêu cầu password đúng | Không có unauthenticated resend oracle; không cấp session cho pending user |
-| JO route result bằng `source_domain` | Topic `mail.*` không được dùng để suy diễn source table |
-| Registration không ghi Hierarchy/Billing | Failure ngoài IAM mail không rollback identity creation |
+## 2. Boundary và invariant
 
-## 2. Public API contract
+1. User và profile phải cùng commit trong một PostgreSQL transaction.
+2. Không publish broker trước DB commit: mail không được trỏ tới identity chưa tồn tại.
+3. Broker publish sau commit là best-effort. Publish lỗi không rollback được identity và không đổi `201` thành
+   lỗi giả; pending-login resend là recovery path.
+4. Pending account không bao giờ được cấp device/session/refresh token.
+5. Password phải được verify trước resend để broker không trở thành user-enumeration API.
+6. OTT plaintext chỉ xuất hiện trong response nội bộ của token issuer và fixed mail payload; IAM Redis chỉ lưu hash.
+7. Stream append và event dedupe phải atomic trên Redis; hai key dùng cùng Redis Cluster hash tag.
+8. Message hết `not_after_unix_ms` là terminal reject + ACK; backlog cũ không được gửi link đã hết hạn.
+9. Stream phải bounded; publisher dùng approximate `MAXLEN` để không tăng vô hạn khi consumer chưa được cấu hình.
+10. Verification mail không tạo hoặc provision wallet. Chỉ verify thành công mới ghi Billing outbox atomic với activation.
 
-### 2.1 Edge contract
+## 3. HTTP contract
 
-```text
-POST /api/v1/auth/register
-Content-Type: application/json
-Public route = exact(method, normalized path)
-             + allowed-origin policy
-             + AuthPublic IP/device limiter
-             + body buffer limit
-             + no session/tenant/zone requirement
-```
-
-Prefix hoặc method khác không được public. Public decision chỉ chạy sau CORS và pre-auth limiter.
-
-### 2.2 Request
+Request:
 
 ```json
 {
-  "username": "phucle996",
-  "email": "phucle@aurora.local",
-  "password": "SuperSecurePassword123!",
-  "fullname": "Phuc Le",
+  "username": "alice_01",
+  "email": "alice@example.com",
+  "password": "opaque-user-secret",
+  "fullname": "Alice",
   "phone": "+84901234567",
   "location": "VN",
   "timezone": "Asia/Ho_Chi_Minh"
 }
 ```
 
-| Field | Normalize/validate | Durable target | Remaining concern |
-|---|---|---|---|
-| `username` | Trim, lowercase, `^[a-z0-9][a-z0-9_-]{5,63}$` | `users.username` | UI/backend phải giữ regex parity |
-| `email` | Trim, lowercase, email validator | `users.email` | Nên thêm max 255 explicit |
-| `password` | Không trim; min 8, lower/upper/digit/special | Argon2id hash | Nên thêm field max explicit |
-| `fullname` | Trim, required | `user_profiles.fullname` | Nên validate max 120 sau trim |
-| `phone` | Optional E.164 | `users.phone` | Không unique |
-| `location` | Optional; GeoIP có thể ghi đè | `user_profiles.locale` | Semantics location/locale cần chuẩn hóa |
-| `timezone` | Trim, optional | `user_profiles.timezone` | Cần IANA validation |
+Handler behavior:
 
-### 2.3 Response taxonomy
+| Field | Canonicalization/validation |
+|---|---|
+| `username` | trim + lowercase; 6–64; regex `^[a-z0-9][a-z0-9_-]{5,63}$` |
+| `email` | trim + lowercase; Gin email validation |
+| `password` | không trim; tối thiểu 8 và có lower/upper/digit/special |
+| `fullname` | trim |
+| `phone` | optional E.164 |
+| `location` | optional; GeoIP có thể thay bằng quốc gia resolve từ trusted client IP |
+| `timezone` | optional, trim |
 
-| Condition | HTTP | Meaning/retry |
-|---|---:|---|
-| Invalid body/canonical/password | `400` | Sửa input |
-| Username/email unique conflict | `409` | Không retry cùng identity |
-| Redis issue/replica gate unavailable | `500` dependency failure | Không có user; retry sau recovery |
-| PostgreSQL failure | `500` | Transaction rollback; retry có kiểm soát |
-| OTT durable + DB transaction commit | `201` | Pending account và mail intent durable |
+Canonical responses:
 
-Success body:
+| HTTP | Nghĩa |
+|---:|---|
+| `201` | Identity transaction đã commit; mail publish đã được attempt nhưng không phải durability proof |
+| `400` | JSON hoặc field contract sai |
+| `409` | Lowercase username/email unique conflict |
+| `500` | Hashing hoặc PostgreSQL transaction thất bại trước durable identity commit |
 
-```json
-{"message":"account created"}
+## 4. Registration sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Cloud Console
+    participant Edge as Envoy + ACR
+    participant IAM as Controlplane IAM
+    participant DB as PostgreSQL
+    participant R as IAM Redis HA
+    participant RJ as Redis Job HA
+
+    UI->>Edge: POST /api/v1/auth/register
+    Edge->>IAM: Forward public route after rate limit
+    IAM->>IAM: Strict bind, canonicalize, validate
+    IAM->>IAM: Argon2 password hash + UUIDv7 user ID
+    IAM->>DB: BEGIN
+    IAM->>DB: INSERT users(status=pending-active)
+    IAM->>DB: INSERT user_profiles
+    IAM->>DB: COMMIT
+    IAM->>R: SET OTT hash + TTL, WAIT replica ACK
+    IAM->>RJ: Lua SET NX dedupe + XADD fixed envelope
+    alt publish thành công
+        IAM-->>UI: 201 account created
+    else OTT/Redis Job lỗi sau DB commit
+        IAM->>IAM: Metric + structured error log, không log email/token
+        IAM-->>UI: 201 account created
+        Note over UI,IAM: User login lại để recovery resend
+    end
 ```
 
-Response không trả plaintext OTT, password hash hoặc internal outbox state.
+Repository transaction chỉ sở hữu identity data:
 
-## 3. Data contract
+```text
+BEGIN
+  INSERT iam.users
+  INSERT iam.user_profiles
+COMMIT
+```
 
-### 3.1 Identity transaction
+Không có `iam.iam_outbox_records` trong schema hoặc transaction này.
+
+## 5. Direct broker contract
+
+### 5.1 Stream and dedupe keys
+
+```text
+stream:  {iam-account-verification-v1}:messages
+dedupe:  {iam-account-verification-v1}:event:<event_uuid>
+```
+
+Hai key có cùng hash tag `{iam-account-verification-v1}`, nên Lua chạy hợp lệ trên Redis Cluster.
+Publisher dùng một Lua invocation:
+
+```text
+SET dedupe_key 1 NX EX 604800
+XADD stream MAXLEN ~ 1000000 * event_id <uuid> payload <json-bytes>
+```
+
+`SET NX` thua nghĩa là event đã được append trước đó và retry là no-op. Lua không giải quyết duplicate do
+một request resend mới chủ động sinh event ID mới; trường hợp đó là business resend hợp lệ.
+
+### 5.2 Fixed envelope
+
+Redis Stream entry có field `payload`:
+
+```json
+{
+  "to": "alice@example.com",
+  "parameter": {
+    "username": "alice_01",
+    "user_id": "018f...",
+    "event_id": "018f...",
+    "verify_token": "plaintext-ott"
+  },
+  "not_after_unix_ms": 1784700000000
+}
+```
+
+| Field | Rule |
+|---|---|
+| `to` | Một recipient hợp lệ; không CR/LF |
+| `parameter` | Flat scalar map; root template phải dùng đúng các key trên |
+| `not_after_unix_ms` | Bằng OTT expiry; Dataplane terminal-reject nếu deadline đã qua |
+| Stream `event_id` | Observability/dedupe metadata; authoritative verify input vẫn nằm trong mail parameter |
+
+IAM không gửi `zone_id`, `template_id`, `sender_profile_id`, `consumer_id` hoặc ownership vào payload.
+
+## 6. Root-user Mail setup
 
 ```mermaid
 flowchart LR
-    INPUT[Canonical input] --> HASH[Argon2id + UUIDv7]
-    HASH --> OTT[Redis SET hash TTL]
-    OTT --> WAIT[WAIT replica ACK<br/>same connection]
-    WAIT --> TX[PostgreSQL BEGIN]
-    TX --> U[INSERT users pending-active]
-    U --> P[INSERT user_profiles]
-    P --> O[INSERT iam_outbox_records]
-    O --> COMMIT[COMMIT]
-    COMMIT --> HTTP[HTTP 201]
+    ROOT[Root user] --> T[Create Personal template]
+    ROOT --> C[Create Personal Redis Stream consumer]
+    T --> B[Bind template version]
+    C --> B
+    B --> O[mail_outbox_records with zone_id UUID]
+    O --> JO[JO WAL relay]
+    JO --> Z[Dataplane in selected Zone]
+    RJ[(IAM Redis Job stream)] --> Z
+    Z --> J[JMAP batch to Stalwart]
 ```
 
-DB transaction rollback có thể để orphan Redis key. Orphan vô hại vì key chứa random `event_id`, không có user/outbox để phát mail và tự hết TTL.
-
-### 3.2 IAM outbox row
-
-| Field | Contract |
-|---|---|
-| `event_id` | UUIDv7 mới cho từng mail |
-| `routing_scope` | `platform` |
-| `job_topic` | `mail.verify_account` |
-| `owner_id` | Personal user UUID |
-| `owner_type` | `PERSONAL` |
-| `actor_user_id` | Personal user UUID |
-| `payload` | Protobuf `SendMailConfig` |
-| `status` | `PENDING` |
-| `job_version` | `1` |
-| `resource_id` | `verify_account` |
-| `payload_schema_version` | `1` |
-| `trace_id` | 16 bytes nếu span hợp lệ |
-| `idle` | `60` giây |
-
-### 3.3 Mail payload
-
-| Template variable | Source | Security |
-|---|---|---|
-| `template_id` | `system/verify_account` | Constant allowlisted system template |
-| `to` | Canonical email | PII; không log payload |
-| `fullname` | Username hiện tại | Không phải profile fullname |
-| `user_id` | User UUID | Public identifier |
-| `event_id` | Outbox event UUID | Challenge identity |
-| `verify_token` | OTT plaintext | Bearer secret, chỉ tồn tại trong mail payload |
-| `from` | `noreply@aurora.system` | Constant sender |
-
-Canonical link:
+Template ví dụ phải do root quản trị như business data, không seed trong migration:
 
 ```text
-https://cloud.aurora.local/activate#user_id=<uuid>&event_id=<uuid>&token=<ott>
+Subject: Verify your Aurora account, {{username}}
+HTML:    link chứa user_id, event_id và verify_token
 ```
 
-Fragment không được gửi tới Envoy/ACR. Consumer contract nằm trong Account Verification God View.
+Nếu root chưa tạo/enable consumer, message nằm trong bounded stream. Khi consumer được enable sau đó,
+expired message bị ACK với `MAIL_MESSAGE_EXPIRED`; message còn TTL mới được render/send.
 
-## 4. End-to-end sequence
+## 7. Pending-login resend
 
-### 4.1 Phase 1: Registration and Account Creation (Sync HTTP and Durable Intent)
+Login state machine verify username/password trước. Với `pending-active`:
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant UI as Cloud Console
-    participant Edge as Envoy and ACR
-    participant IAM as IAM Handler/Service
-    participant Redis as Redis HA
-    participant DB as PostgreSQL IAM
-
-    User->>UI: Submit Sign Up
-    UI->>Edge: POST /api/v1/auth/register
-    Edge->>Edge: CORS, AuthPublic limiter and exact route
-    Edge->>IAM: Forward body
-    IAM->>IAM: Canonicalize, Argon2id and UUIDv7
-    IAM->>Redis: SET event-scoped OTT hash and TTL
-    IAM->>Redis: WAIT configured replicas on same connection
-    Redis-->>IAM: ACK gate passed
-    IAM->>DB: BEGIN, INSERT user, profile and IAM outbox, COMMIT
-    DB-->>IAM: Durable commit
-    IAM-->>UI: 201 account created
+flowchart TD
+    P[Password valid + pending-active] --> C{SET NX cooldown 60s}
+    C -- loser --> R[Return verification required]
+    C -- winner --> M[Issue new per-event OTT]
+    M --> X[Lua append broker message]
+    X -- success --> R
+    X -- failure --> D[DEL cooldown best-effort]
+    D --> E[Return authentication dependency unavailable]
 ```
 
-### 4.2 Phase 2: Async Mail Delivery and Outbox Terminal Update (JO and Dataplane)
+Cooldown key:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant JO as JO IAM Dispatcher
-    participant DB as PostgreSQL IAM
-    participant Jobs as Redis jobs:platform
-    participant DP as Dataplane Mail
-    participant JMAP as Stalwart JMAP
-    participant Results as Redis Result Stream
-
-    JO->>DB: Claim batch SKIP LOCKED with lease
-    JO->>Jobs: Atomic XADD and event marker
-    JO->>DB: Mark PUBLISHED
-    Jobs-->>DP: Consumer-group delivery
-    DP->>JMAP: Render, enqueue, batch <=50/1000ms and submit
-    DP->>Results: Result with source_domain=IAM
-    Results-->>JO: Consume result
-    JO->>DB: Update iam.iam_outbox_records terminal state
+```text
+iam:account_verify:resend_cooldown:<user_uuid>
 ```
 
+Mỗi resend có `event_id` và OTT key riêng. Các link chưa hết TTL có thể cùng hợp lệ; verify transaction vẫn
+idempotent theo durable user state và deterministic Billing event ID. Đây là semantics hiện tại, không được
+mô tả nhầm là resend vô hiệu hóa link cũ.
 
-## 5. State machines
+## 8. Failure and race matrix
 
-### 5.1 Account before handoff
-
-```mermaid
-stateDiagram-v2
-    [*] --> absent
-    absent --> pending_active: registration transaction commit
-    pending_active --> pending_active: authenticated resend queues new mail
-    pending_active --> handoff: user opens activation landing
-```
-
-Registration không sở hữu transition `pending_active → active`.
-
-### 5.2 OTT
-
-```mermaid
-stateDiagram-v2
-    [*] --> issued: SET hash + TTL + replica ACK
-    issued --> issued: resend creates independent event key
-    issued --> handed_off: mail contains fragment link
-    issued --> expired: TTL or eviction
-```
-
-### 5.3 IAM mail outbox
-
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING: registration/resend insert
-    PENDING --> PUBLISHING: JO lease claim
-    PUBLISHING --> PENDING: Redis failure + backoff
-    PUBLISHING --> PUBLISHED: atomic XADD marker success
-    PUBLISHED --> PROCESSING: Dataplane result
-    PROCESSING --> SUCCEEDED: JMAP EmailSubmission accepted
-    PROCESSING --> FAILED: terminal executor failure
-    SUCCEEDED --> retained: audit 30 days
-    FAILED --> retained: audit 30 days
-```
-
-Kubernetes CronJob `outbox-retention` xóa tối đa 200 terminal row/bảng/phút sau 30 ngày. JO không chạy retention cleaner.
-
-## 6. Resend contract
-
-Resend không có endpoint anonymous riêng và không gọi lại Register:
-
-1. UI xóa password sau registration và chỉ nhớ pending username.
-2. User chuyển sang Sign In và nhập lại password.
-3. IAM lookup user và verify Argon2id trước mọi mail side effect.
-4. Nếu status `pending-active`, Redis `SETNX` cooldown theo user trong 60 giây.
-5. Winner issue OTT/event mới và insert IAM outbox.
-6. ACR trả typed `412 ACCOUNT_VERIFICATION_REQUIRED`, không tạo session/cookie.
-7. Password sai không queue mail và không tiết lộ pending state.
-
-Hai request đồng thời chỉ một request thắng cooldown. Mỗi resend thành công vẫn có key per-event độc lập, nên email cũ còn valid tới TTL.
-
-## 7. Race và failure matrix
-
-| Scenario | Durable result | Recovery/control |
+| Window | Durable state | Recovery/behavior |
 |---|---|---|
-| Hai registration cùng identity | Một commit, một unique conflict | PostgreSQL unique index quyết định |
-| Redis SET fail | Không user/outbox | Retry sau Redis recovery |
-| Redis ACK thiếu | Key cleanup best-effort, không DB tx | Fail closed |
-| Redis success, DB conflict/fail | Orphan key tới TTL | Không có mail row nên không usable |
-| DB commit, HTTP response mất | Pending user + mail row | Client retry có thể `409`; resend qua login |
-| JO crash trước claim | Row vẫn PENDING | Polling reconciler claim lại |
-| JO crash sau XADD trước DB mark | Redis marker giữ stream entry ID | Lease retry không XADD lần hai trong 30 ngày |
-| JMAP accepted, result mất | Có thể redelivery/duplicate mail theo best-effort semantics | Theo dõi ambiguous retry bằng job_id; không tuyên bố exactly-once |
-| Result sai/missing domain | Không fallback theo topic | Alert contract error; không update nhầm table |
-| Một outbox table cleanup lỗi | Hai bảng khác vẫn được CronJob thử | Transaction độc lập/batch nhỏ |
+| Hash lỗi | Chưa có user | `500`, retry toàn request |
+| User insert thành công, profile insert lỗi | Transaction rollback | Không user mồ côi |
+| DB commit, OTT issue lỗi | Pending user tồn tại, chưa có message | `201`; login đúng password resend |
+| OTT issue thành công, broker lỗi | OTT hash tồn tại tới TTL, chưa chắc có message | `201`; login resend sinh event mới |
+| Lua reply timeout sau server commit | Message có thể đã append | Dedupe bảo vệ retry cùng event; resend mới có thể tạo mail thứ hai |
+| Hai login pending đồng thời | Một cooldown winner | Chỉ winner publish; cả hai không có session |
+| Broker delivery duplicate | Cùng broker coordinate/event | Source suite + deterministic JMAP submission ID xử lý at-least-once |
+| Consumer tạo sau OTT expiry | Expired backlog | Permanent reject + ACK, không gửi mail vô dụng |
+| User verify trong lúc mail khác đang queue | User active | Verify API idempotent; mail cũ có thể đến nhưng không tạo wallet thứ hai |
 
-## 8. HA và security posture
+## 9. Security and abuse controls
 
-| Component | HA/control |
+- Edge rate-limit register/login trước khi Argon2 để giảm CPU exhaustion.
+- Không log password, OTT, fixed payload hoặc full email.
+- Redis Job bắt buộc TLS/auth/network policy; chỉ IAM publisher và configured Mail runtime được quyền truy cập.
+- Root consumer credential là encrypted business configuration; plaintext chỉ được Dataplane giữ trong memory.
+- Stream key là reserved contract; customer không được mutate IAM publisher config qua register API.
+- `MAXLEN` giới hạn memory nhưng không thay thế monitoring consumer lag và stream trimming.
+- Direct mail là best-effort có chủ đích; identity và Billing wallet vẫn dùng PostgreSQL durability boundaries.
+
+## 10. Observability
+
+Low-cardinality signals:
+
+| Signal | Labels |
 |---|---|
-| ACR limiter | Distributed Redis counters theo route/IP/device |
-| Argon2id | Load-test theo pod CPU/memory; body cap trước handler |
-| Redis OTT | AOF, `noeviction`, TLS/ACL, replica ACK và replication-lag alert |
-| PostgreSQL | Unique indexes, atomic tx, connection pool/TLS |
-| JO dispatcher | Multi-pod SKIP LOCKED, 30s lease, bounded batch; drain nhanh khi có backlog, khi rỗng chỉ reconciliation 30–39s có jitter, không poll DB mỗi 500ms |
-| Redis job stream | Consumer group, retention/trim và pending alert |
-| Dataplane | At-least-once; cần durable mail side-effect dedupe |
-| Cleanup | Kubernetes CronJob `Forbid`, batch 200, lock/statement timeout |
+| IAM downstream duration | `kind=broker`, `destination=PublishAccountVerification`, `outcome` |
+| Registration service call | `op=iam.auth.register`, `outcome` |
+| Pending resend failures | dependency/outcome, không user/email label |
+| Redis stream lag | consumer group + deployment, không recipient |
+| Mail processing outcome | `MAIL_MESSAGE_EXPIRED`, decode/render/JMAP classes |
 
-Plaintext password/OTT/email không được dùng làm metric label. Edge/app log không được ghi body hoặc activation secret.
+Structured registration log khi post-commit publish lỗi chỉ chứa `user_id` và error class/message đã sanitize;
+không chứa envelope.
 
-## 9. Runbook
+## 11. Production checklist
 
-Identity và profile:
+- [ ] `REDIS_JOB_*` trỏ Redis Job HA, không trỏ IAM session Redis hoặc Zone NATS KV.
+- [ ] Redis ACL của IAM chỉ cho `EVAL`, `SET`, `XADD` trên reserved hash tag.
+- [ ] Root Personal template dùng đúng bốn parameter key.
+- [ ] Root Redis Stream consumer dùng exact stream key và group riêng.
+- [ ] Consumer được placement vào một Zone qua ordinary Mail API/outbox `zone_id UUID`.
+- [ ] Dataplane reject + ACK expired fixed envelope.
+- [ ] Register trả `201` sau identity commit kể cả mail publish lỗi; alert theo metric/log.
+- [ ] Pending login không cấp refresh/access token trong mọi cooldown/publish branch.
+- [ ] `iam_outbox_records`, system template seed và direct Mail job executor không còn trong code/schema.
+- [ ] Verify transaction vẫn atomic activation + default role + `billing_outbox_records`.
 
-```sql
-SELECT u.id, u.username, u.email, u.status, u.created_at,
-       p.fullname, p.locale, p.timezone
-FROM iam.users u
-JOIN iam.user_profiles p ON p.user_id = u.id
-WHERE lower(u.email) = lower($1);
-```
+## 12. Code map
 
-Mail jobs:
-
-```sql
-SELECT id, event_id, owner_id, owner_type, actor_user_id,
-       job_topic, status, attempts, available_at, lease_until,
-       completed_at, error_code, error_message
-FROM iam.iam_outbox_records
-WHERE owner_id = $1 AND owner_type = 'PERSONAL'
-ORDER BY id DESC;
-```
-
-Không sửa trực tiếp user/outbox status trong incident. Repair phải idempotent, có operator/reason/timestamp và giữ nguyên `event_id` khi replay cùng logical mail job.
-
-## 10. Acceptance gates
-
-- [ ] Exact `POST /register` public route; route con/method khác bị deny.
-- [ ] Limiter chạy trước Argon2id.
-- [ ] Password không trim/log/persist raw.
-- [ ] Redis SET và WAIT dùng cùng connection.
-- [ ] Replica gate fail không tạo user.
-- [ ] User/profile/mail intent cùng commit hoặc cùng rollback.
-- [ ] Concurrent duplicate chỉ tạo một identity.
-- [ ] Pending-login password sai không queue mail.
-- [ ] Resend cooldown không tạo session.
-- [ ] JO crash/replay không tạo duplicate stream entry trong marker window.
-- [ ] Result `source_domain=IAM` update đúng IAM row.
-- [ ] CronJob cleanup không overlap và không full-table scan.
-- [ ] Browser/E2E không thấy password hoặc OTT trong logs/storage ngoài activation fragment.
-
-## 11. Source map
-
-| Concern | Canonical source |
+| Responsibility | File |
 |---|---|
-| Sign Up/resend UI | `cloud-console/src/app/signin/signup-form.tsx`, `signin-form.tsx` |
-| Cloud Console API | `cloud-console/src/lib/api/auth.ts` |
-| ACR public route/limiter | `acr/src/config.rs`, `gateway/ext_authz.rs`, `gateway/ratelimit.rs` |
-| IAM DTO/handler | `controlplane/internal/iam/transport/http/dto/req/auth_request.go`, `handler/auth_handler.go` |
-| Registration/resend orchestration | `controlplane/internal/iam/service/auth_service.go` |
-| OTT | `controlplane/internal/iam/service/one_time_token_service.go` |
-| Atomic registration repository | `controlplane/internal/iam/repository/auth_repo.go` |
-| IAM outbox schema/index | `controlplane/internal/iam/migrations/000002_iam_tables.up.sql`, `000003_iam_indexes.up.sql` |
-| IAM dispatcher/reconciler | `job-orchestrator/src/reverse_provider/iam/outbox_dispatcher.rs` |
-| Result source routing | `job-orchestrator/src/job_result/l1_dispatcher.rs` |
-| Dataplane mail | `dataplane/src/executor/mail/send.rs`, `verify_account.rs` |
-| Mail template | `controlplane/internal/mail/migrations/000005_seed_verify_account_template.up.sql` |
-| Retention scheduler | `k8s/outbox-retention-cronjob.yaml` |
-| Downstream activation | `god_view/iam/account_verification_god_view_workflow.md` |
+| HTTP route/handler/DTO | `controlplane/internal/iam/route.go`, `transport/http/handler/auth_handler.go`, `transport/http/dto/req/auth_request.go` |
+| Registration + direct publisher + pending resend | `controlplane/internal/iam/service/auth_service.go` |
+| Identity transaction | `controlplane/internal/iam/repository/auth_repo.go` |
+| OTT hash/TTL/replication gate | `controlplane/internal/iam/service/one_time_token_service.go` |
+| Redis Job bootstrap/DI | `controlplane/internal/app/app.go`, `internal/app/module.go`, `internal/iam/module.go` |
+| Fixed envelope expiry | `dataplane/src/executor/mail/processor/stream.rs` |
+| Ordinary Redis Stream runtime | `dataplane/src/executor/mail/runtime/redis_stream.rs` |
+| Mail configuration SoT | `god_view/mail/controlplane_mail_configuration_god_view.md` |
+| Activation and wallet outbox | `god_view/iam/account_verification_god_view_workflow.md` |

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,14 +19,14 @@ import (
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamMetrics "controlplane/internal/iam/metrics"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
 	"controlplane/internal/security"
 	"controlplane/pkg/apperr"
+	"controlplane/pkg/logger"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
 
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/trace"
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,7 +38,7 @@ type AuthService struct {
 	deviceSvc             iamSvcInterface.DeviceSelfService // [COMMENT]: Sử dụng DeviceSelfService phục vụ quản trị thiết bị cá nhân
 	registry              *cacheengine.CacheRegistry
 	ott                   iamSvcInterface.OneTimeTokenService
-	outboxRepo            iamRepoInterface.IamOutboxRepository
+	verificationBroker    *goredis.Client
 	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier
 	cfg                   *config.Config
 	acrClient             iamproto.SessionServiceClient
@@ -49,7 +50,7 @@ func NewAuthService(cfg *config.Config,
 	deviceSvc iamSvcInterface.DeviceSelfService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
-	outboxRepo iamRepoInterface.IamOutboxRepository,
+	verificationBroker *goredis.Client,
 	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier,
 	acrClient iamproto.SessionServiceClient,
 ) iamSvcInterface.AuthService {
@@ -59,7 +60,7 @@ func NewAuthService(cfg *config.Config,
 		deviceSvc:             deviceSvc,
 		registry:              registry,
 		ott:                   ott,
-		outboxRepo:            outboxRepo,
+		verificationBroker:    verificationBroker,
 		billingOutboxNotifier: billingOutboxNotifier,
 		cfg:                   cfg,
 		acrClient:             acrClient,
@@ -100,16 +101,9 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 	profile.CreatedAt = now
 	profile.UpdatedAt = now
 
-	// [COMMENT]: Redis OTT phải đạt replication gate trước khi transaction PostgreSQL tạo identity được phép bắt đầu.
-	verificationMail, mailErr := s.buildVerifyAccountOutboxJob(ctx, user.ID, user.Username, user.Email)
-	if mailErr != nil {
-		result = iamMetrics.OutcomeFailureUnknown
-		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, mailErr, iamMetrics.OutcomeFailureUnknown)
-	}
-
 	// Thực hiện ghi dữ liệu xuống database và đo lường latency của transaction (I/O-bound).
 	insertStart := time.Now()
-	insertErr := s.repo.CreateRegisteredUser(ctx, user, profile, verificationMail)
+	insertErr := s.repo.CreateRegisteredUser(ctx, user, profile)
 	if insertErr != nil {
 		// DB unique violation được map về domain duplicate; PostgreSQL unique index vẫn là SoT duy nhất.
 		if errors.Is(insertErr, iamTaxonomy.ErrUserAlreadyExist) {
@@ -122,6 +116,18 @@ func (s *AuthService) RegisterAccount(ctx context.Context, user iamEntity.User, 
 		result = iamMetrics.OutcomeFailureUnknown
 		iamMetrics.Downstream(ctx, iamMetrics.KindRepo, "CreateRegisteredUser", iamMetrics.OutcomeFailureUnknown, time.Since(insertStart), insertErr)
 		return insertErr
+	}
+
+	// [COMMENT]: Mail xác minh là best-effort sau identity commit; resend khi login là recovery path nếu broker gián đoạn.
+	publishCtx, publishCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	publishStart := time.Now()
+	publishErr := s.publishAccountVerification(publishCtx, user.ID, user.Username, user.Email)
+	publishCancel()
+	if publishErr != nil {
+		iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeFailureUnknown, time.Since(publishStart), publishErr)
+		logger.SysError("iam.account_verification.publish", fmt.Sprintf("registration committed but verification message publish failed for user_id=%s: %v", user.ID, publishErr))
+	} else {
+		iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeSuccess, time.Since(publishStart), nil)
 	}
 
 	return nil
@@ -189,60 +195,64 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 	return nil
 }
 
-// [COMMENT]: buildVerifyAccountOutboxJob tạo OTT per-event và immutable mail intent; caller quyết định transaction ghi row.
-func (s *AuthService) buildVerifyAccountOutboxJob(ctx context.Context, userID uuid.UUID, username, email string) (*iamEntity.IamOutboxRecord, error) {
-	if s.ott == nil {
-		return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamMetrics.OutcomeFailureUnknown)
+// [COMMENT]: Script giữ dedupe key và stream append trong cùng Redis atomic boundary trên cùng hash slot.
+const publishAccountVerificationScript = `
+if not redis.call("SET", KEYS[2], "1", "NX", "EX", ARGV[1]) then
+  return 0
+end
+redis.call("XADD", KEYS[1], "MAXLEN", "~", ARGV[2], "*", "event_id", ARGV[3], "payload", ARGV[4])
+return 1
+`
+
+// [COMMENT]: publishAccountVerification phát fixed mail envelope; IAM không biết Zone, consumer hay template runtime.
+func (s *AuthService) publishAccountVerification(ctx context.Context, userID uuid.UUID, username, email string) error {
+	if s.ott == nil || s.verificationBroker == nil {
+		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamMetrics.OutcomeFailureUnknown)
 	}
 
-	eventID := uuid.Must(uuid.NewV7())
-	verificationToken, _, issueErr := s.ott.Issue(ctx, "account_verify", userID, eventID)
+	eventID, eventErr := uuid.NewV7()
+	if eventErr != nil {
+		return fmt.Errorf("generate verification event ID: %w", eventErr)
+	}
+	verificationToken, expiresAt, issueErr := s.ott.Issue(ctx, "account_verify", userID, eventID)
 	if issueErr != nil {
-		return nil, fmt.Errorf("failed to issue verification token: %w", issueErr)
+		return fmt.Errorf("issue verification token: %w", issueErr)
 	}
 
-	var traceID []byte
-	if spanCtx := trace.SpanContextFromContext(ctx); spanCtx.IsValid() {
-		tid := spanCtx.TraceID()
-		traceID = tid[:]
-	}
-
-	// [COMMENT]: Đóng gói thông tin email thành Protobuf cấu hình gửi mail với đầy đủ tham số định danh, người nhận và template_id
-	mailConfig := &mailproto.SendMailConfig{
-		SenderProfileId: "platform-default",
-		SenderVersion:   1,
-		Recipient:       email,
-		TemplateId:      "system/verify_account",
-		TemplateVariables: map[string]string{
-			"fullname":     username,
+	// [COMMENT]: Parameter giữ scalar phẳng để ordinary template engine render mà không cần IAM-specific decoder.
+	payloadBytes, marshalErr := json.Marshal(struct {
+		To                string            `json:"to"`
+		Parameter         map[string]string `json:"parameter"`
+		NotAfterUnixMilli int64             `json:"not_after_unix_ms"`
+	}{
+		To: email,
+		Parameter: map[string]string{
+			"username":     username,
 			"user_id":      userID.String(),
 			"event_id":     eventID.String(),
 			"verify_token": verificationToken,
 		},
-	}
-
-	payloadBytes, marshalErr := proto.Marshal(mailConfig)
+		NotAfterUnixMilli: expiresAt.UnixMilli(),
+	})
 	if marshalErr != nil {
-		return nil, fmt.Errorf("failed to marshal verification mail payload: %w", marshalErr)
+		return fmt.Errorf("marshal verification mail envelope: %w", marshalErr)
 	}
 
-	record := &iamEntity.IamOutboxRecord{
-		EventID:              eventID,
-		RoutingScope:         "platform",
-		JobTopic:             "mail.verify_account",
-		Payload:              payloadBytes,
-		OwnerID:              userID,
-		OwnerType:            "PERSONAL",
-		ActorUserID:          userID,
-		Status:               iamEntity.IamOutboxStatusPending,
-		JobVersion:           1,
-		ResourceID:           "verify_account",
-		PayloadSchemaVersion: 1,
-		TraceID:              traceID,
-		Idle:                 60,
+	streamKey := "{iam-account-verification-v1}:messages"
+	dedupeKey := "{iam-account-verification-v1}:event:" + eventID.String()
+	if _, publishErr := s.verificationBroker.Eval(
+		ctx,
+		publishAccountVerificationScript,
+		[]string{streamKey, dedupeKey},
+		int64((7*24*time.Hour)/time.Second),
+		1_000_000,
+		eventID.String(),
+		payloadBytes,
+	).Result(); publishErr != nil {
+		return fmt.Errorf("publish verification message: %w", publishErr)
 	}
 
-	return record, nil
+	return nil
 }
 
 // [COMMENT]: VerifyUserCredentials thực hiện xác thực thông tin đăng nhập (username, password),
@@ -299,8 +309,8 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	// [COMMENT]: 3. Kiểm tra trạng thái tài khoản của người dùng
 	switch user.Status {
 	case iamEntity.UserStatusPendingActive:
-		// [COMMENT]: Password đã đúng; nhánh pending tự sở hữu cooldown và persistence của resend outbox.
-		if s.outboxRepo == nil {
+		// [COMMENT]: Password đã đúng; nhánh pending tự sở hữu cooldown và direct broker resend.
+		if s.verificationBroker == nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamMetrics.OutcomeFailureUnknown)
 		}
@@ -311,23 +321,18 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, cooldownErr, "cache_unavailable")
 		}
 		if acquired {
-			record, buildErr := s.buildVerifyAccountOutboxJob(ctx, user.ID, user.Username, user.Email)
-			if buildErr != nil {
-				// [COMMENT]: Release cooldown có timeout riêng để user retry sau lỗi issue/marshal, không treo login context.
+			publishStart := time.Now()
+			publishErr := s.publishAccountVerification(ctx, user.ID, user.Username, user.Email)
+			if publishErr != nil {
+				// [COMMENT]: Publish chưa thành công thì nhả cooldown best-effort để lần login sau có thể recovery ngay.
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 				_ = s.registry.L2.Client().Del(cleanupCtx, cooldownKey).Err()
 				cleanupCancel()
+				iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeFailureUnknown, time.Since(publishStart), publishErr)
 				loginOutcome = iamMetrics.OutcomeFailureUnknown
-				return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, buildErr, iamMetrics.OutcomeFailureUnknown)
+				return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, publishErr, iamMetrics.OutcomeFailureUnknown)
 			}
-			if createErr := s.outboxRepo.Create(ctx, record); createErr != nil {
-				// [COMMENT]: DB insert chưa commit thì cooldown phải được nhả best-effort; outbox vẫn là durability boundary.
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				_ = s.registry.L2.Client().Del(cleanupCtx, cooldownKey).Err()
-				cleanupCancel()
-				loginOutcome = iamMetrics.OutcomeFailureUnknown
-				return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, createErr, iamMetrics.OutcomeFailureUnknown)
-			}
+			iamMetrics.Downstream(ctx, "broker", "PublishAccountVerification", iamMetrics.OutcomeSuccess, time.Since(publishStart), nil)
 		}
 
 		// [COMMENT]: Cooldown winner hay loser đều trả cùng taxonomy; pending account không được cấp session.

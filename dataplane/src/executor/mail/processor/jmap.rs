@@ -93,22 +93,19 @@ impl JmapClient {
             return Vec::new();
         }
         let payload = self.build_batch_request(mails);
-        let mut last_error =
-            MailSubmitError::new("MAIL_JMAP_UNAVAILABLE", "JMAP submission unavailable", true);
+        let mut last_error = MailSubmitError::new("MAIL_JMAP_UNAVAILABLE", true);
 
         for attempt in 0..=self.max_retries {
             match self.request().json(&payload).send().await {
                 Ok(response) if response.status().is_success() => {
                     return match response.json::<Value>().await {
                         Ok(value) => self.parse_batch_response(mails, &value),
-                        Err(error) => vec![
-                            Err(MailSubmitError::new(
-                                "MAIL_JMAP_INVALID_RESPONSE",
-                                format!("decode JMAP response failed: {error}"),
-                                true,
-                            ));
-                            mails.len()
-                        ],
+                        Err(_error) => {
+                            vec![
+                                Err(MailSubmitError::new("MAIL_JMAP_INVALID_RESPONSE", true,));
+                                mails.len()
+                            ]
+                        }
                     };
                 }
                 Ok(response) => {
@@ -117,19 +114,14 @@ impl JmapClient {
                         status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
                     last_error = MailSubmitError::new(
                         format!("MAIL_JMAP_HTTP_{}", status.as_u16()),
-                        format!("Stalwart JMAP returned HTTP {}", status.as_u16()),
                         retryable,
                     );
                     if !retryable {
                         break;
                     }
                 }
-                Err(error) => {
-                    last_error = MailSubmitError::new(
-                        "MAIL_JMAP_TRANSPORT",
-                        format!("Stalwart JMAP request failed: {error}"),
-                        true,
-                    );
+                Err(_error) => {
+                    last_error = MailSubmitError::new("MAIL_JMAP_TRANSPORT", true);
                 }
             }
             if attempt < self.max_retries {
@@ -228,11 +220,7 @@ impl JmapClient {
             Some(value) => value,
             None => {
                 return vec![
-                    Err(MailSubmitError::new(
-                        "MAIL_JMAP_INVALID_RESPONSE",
-                        "JMAP response has no methodResponses",
-                        true,
-                    ));
+                    Err(MailSubmitError::new("MAIL_JMAP_INVALID_RESPONSE", true,));
                     mails.len()
                 ]
             }
@@ -258,7 +246,6 @@ impl JmapClient {
                         creation_key(&mail.job_id),
                         Err(MailSubmitError::new(
                             "MAIL_JMAP_METHOD_ERROR",
-                            format!("EmailSubmission/set failed: {error_type}"),
                             is_retryable_jmap_error(error_type),
                         )),
                     );
@@ -267,14 +254,10 @@ impl JmapClient {
             }
             let args = &parts[1];
             if let Some(created) = args.get("created").and_then(Value::as_object) {
-                for (submission_key, value) in created {
+                for (submission_key, _) in created {
                     if let Some(key) = submission_key.strip_prefix("submit-") {
-                        let submission_id = value
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or(submission_key)
-                            .to_string();
-                        by_key.insert(key.to_string(), Ok(MailAccepted { submission_id }));
+                        // [COMMENT]: Current phase không lưu delivery history; created key là đủ để settle item.
+                        by_key.insert(key.to_string(), Ok(MailAccepted));
                     }
                 }
             }
@@ -289,7 +272,6 @@ impl JmapClient {
                             key.to_string(),
                             Err(MailSubmitError::new(
                                 "MAIL_JMAP_SUBMISSION_REJECTED",
-                                format!("Email submission rejected: {error_type}"),
                                 is_retryable_jmap_error(error_type),
                             )),
                         );
@@ -303,13 +285,7 @@ impl JmapClient {
             .map(|mail| {
                 by_key
                     .remove(&creation_key(&mail.job_id))
-                    .unwrap_or_else(|| {
-                        Err(MailSubmitError::new(
-                            "MAIL_JMAP_RESULT_MISSING",
-                            "JMAP response omitted mail submission result",
-                            true,
-                        ))
-                    })
+                    .unwrap_or_else(|| Err(MailSubmitError::new("MAIL_JMAP_RESULT_MISSING", true)))
             })
             .collect()
     }

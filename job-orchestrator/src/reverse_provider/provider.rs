@@ -30,9 +30,6 @@ impl ReverseProvider {
             "ReverseProvider: Khởi chạy luồng xử lý truy vấn ngược tài nguyên và Backpressure (Bypass CP)...",
         );
 
-        let config_svc = self.config.clone();
-        let redis_client_svc = self.redis_client.clone();
-
         let config_bp = self.config.clone();
         let redis_client_bp = self.redis_client.clone();
 
@@ -49,24 +46,6 @@ impl ReverseProvider {
         // [COMMENT]: Chạy song song các listener độc lập; mail runtime reverse path dùng blocking
         // Redis consumer group riêng, không chia PEL với generic job result.
         tokio::select! {
-            res = tokio::spawn(async move {
-                loop {
-                    {
-                        let run_res = mail::listener::run_listener(&config_svc, &redis_client_svc).await;
-                        if let Err(e) = run_res {
-                            let err_msg = e.to_string();
-                            Logger::sys_error(
-                                "reverse_provider.mail_listener",
-                                "Template Listener gặp lỗi, tiến hành kết nối lại sau 5s...",
-                                &err_msg
-                            );
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }) => {
-                let _ = res;
-            }
             res = tokio::spawn(async move {
                 loop {
                     {

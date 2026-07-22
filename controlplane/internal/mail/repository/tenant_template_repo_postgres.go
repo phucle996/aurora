@@ -32,6 +32,10 @@ func NewTenantTemplateRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoI
 }
 
 func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, template *mailEntity.TenantTemplate, outbox *mailEntity.MailOutboxRecord) error {
+	// [COMMENT]: Template projection phải dùng đúng Zone đã đi qua tenant/workspace guard.
+	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
+		return mailTaxonomy.ErrInvalidArgument
+	}
 	var authorized, versionInserted bool
 	var insertedID, existingID string
 	var outboxID sql.NullInt64
@@ -66,7 +70,7 @@ func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, template *mailE
 			RETURNING template_id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
-				event_id, routing_scope, job_topic, payload, actor_user_id, status,
+				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
 			SELECT $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
@@ -83,7 +87,7 @@ func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, template *mailE
 		template.ID, template.WorkspaceID, template.Code, template.Name, template.CurrentVersion, template.TemplateRevision,
 		template.ZoneID, template.ActorUserID, template.CreatedAt, template.UpdatedAt,
 		template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt,
-		outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, template.TenantID,
+		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, template.TenantID,
 	).Scan(
 		&authorized,
 		&insertedID,
@@ -239,6 +243,10 @@ func (r *tenantTemplateRepoPostgres) ListVersions(ctx context.Context, query *ma
 }
 
 func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, template *mailEntity.TenantTemplate, outbox *mailEntity.MailOutboxRecord) error {
+	// [COMMENT]: Version event không được route lệch khỏi Zone của aggregate đã authorize.
+	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
+		return mailTaxonomy.ErrInvalidArgument
+	}
 	var authorized, versionInserted, updated bool
 	var currentVersion, currentRevision uint64
 	var outboxID sql.NullInt64
@@ -272,7 +280,7 @@ func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, templat
 			RETURNING id
 		), outbox_inserted AS (
 			INSERT INTO %s.mail_outbox_records (
-				event_id, routing_scope, job_topic, payload, actor_user_id, status,
+				event_id, zone_id, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
 			SELECT $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
@@ -287,7 +295,7 @@ func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, templat
 			EXISTS (SELECT 1 FROM head_updated),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		template.WorkspaceID, template.ZoneID, template.ActorUserID, template.ID, template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt, template.ExpectedRevision, template.TemplateRevision, template.UpdatedAt, outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, template.TenantID,
+		template.WorkspaceID, template.ZoneID, template.ActorUserID, template.ID, template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt, template.ExpectedRevision, template.TemplateRevision, template.UpdatedAt, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, template.TenantID,
 	).Scan(
 		&authorized,
 		&currentVersion,
@@ -316,6 +324,10 @@ func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, templat
 }
 
 func (r *tenantTemplateRepoPostgres) Delete(ctx context.Context, template *mailEntity.TenantTemplate, outbox *mailEntity.MailOutboxRecord) error {
+	// [COMMENT]: Hard-delete tombstone phải route đúng Zone của guarded tenant workspace.
+	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
+		return mailTaxonomy.ErrInvalidArgument
+	}
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("mail tenant template repo: begin delete: %w", err)
@@ -350,7 +362,7 @@ func (r *tenantTemplateRepoPostgres) Delete(ctx context.Context, template *mailE
 	if _, err = tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.tenant_mail_template_projection_tombstones (template_id,workspace_id,template_revision,last_published_version,event_id,deleted_at) VALUES ($1,$2,$3,$4,$5,$6)`, r.mailSchema), template.ID, template.WorkspaceID, template.ExpectedRevision+1, template.CurrentVersion, outbox.EventID, template.UpdatedAt); err != nil {
 		return fmt.Errorf("mail tenant template repo: insert projection tombstone: %w", err)
 	}
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,routing_scope,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.RoutingScope, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID); err != nil {
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID); err != nil {
 		return fmt.Errorf("mail tenant template repo: insert delete outbox: %w", err)
 	}
 	if err = tx.Commit(ctx); err != nil {

@@ -79,16 +79,6 @@ pub async fn dispatch_result(
                     error_message,
                 )
                 .await?
-			} else if result.source_domain == "IAM" {
-                reverse_provider::iam::db::update_outbox_record(
-                    pg_client,
-                    job_uuid,
-                    &result.job_topic,
-                    &status,
-                    error_code,
-                    error_message,
-                )
-                .await?
 			} else if result.source_domain == "STORAGE" {
                 // [COMMENT]: Định tuyến xuống Storage L2 Dispatcher.
                 // L2 dispatcher trả về Box<dyn Error> vì bucket create/delete cần bắt đầu transaction

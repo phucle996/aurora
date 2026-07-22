@@ -663,7 +663,7 @@ services:
       APP_LOG_LEVEL: "debug"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "9102"
-      CDC_SOURCES: "mail.mail_outbox_records,iam.iam_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
+      CDC_SOURCES: "mail.mail_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:

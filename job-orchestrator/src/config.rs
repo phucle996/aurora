@@ -76,7 +76,7 @@ impl Config {
 
         // Đọc danh sách các bảng CDC phân cách bởi dấu phẩy
         let cdc_sources_raw = env::var("CDC_SOURCES")
-            .unwrap_or_else(|_| "mail.mail_outbox_records,iam.iam_outbox_records,storage.storage_outbox_records,hierarchy.zones,hierarchy.zone_services".to_string());
+            .unwrap_or_else(|_| "mail.mail_outbox_records,storage.storage_outbox_records,hierarchy.zones,hierarchy.zone_services".to_string());
         let cdc_sources = cdc_sources_raw
             .split(',')
             .map(|s| s.trim().to_string())

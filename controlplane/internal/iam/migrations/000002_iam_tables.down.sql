@@ -1,4 +1,3 @@
-DROP TABLE IF EXISTS iam_outbox_records;
 DROP TABLE IF EXISTS oauth_tokens;
 DROP TABLE IF EXISTS oauth_grants;
 DROP TABLE IF EXISTS oauth_authorization_codes;

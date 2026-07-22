@@ -246,13 +246,10 @@ impl CdcStreamer {
         source_domain: &str,
         redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if source_domain.eq_ignore_ascii_case("iam") {
-            // [COMMENT]: IAM mail do lease dispatcher DB-poll sở hữu; bỏ direct XADD để một source có đúng một publisher.
-            return Ok(());
-        }
         let event_id = fields.get("event_id").cloned().unwrap_or_default();
-        // [COMMENT]: Mọi outbox dùng cùng routing_scope; Mail tạo zone:<uuid> từ trusted X-Zone-ID.
+        // [COMMENT]: Mail dùng UUID typed trực tiếp; Storage giữ routing_scope theo contract riêng của resource jobs.
         let routing_scope = fields.get("routing_scope").cloned().unwrap_or_default();
+        let mail_zone_id = fields.get("zone_id").cloned().unwrap_or_default();
         let job_topic = fields.get("job_topic").cloned().unwrap_or_default();
         let payload_hex = fields.get("payload").cloned().unwrap_or_default();
         let job_version_str = fields.get("job_version").cloned().unwrap_or_default();
@@ -270,15 +267,18 @@ impl CdcStreamer {
         let idle_str = fields.get("idle").cloned().unwrap_or_default();
         let source_domain = source_domain.trim().to_ascii_uppercase();
 
-        if event_id.is_empty()
-            || routing_scope.is_empty()
-            || job_topic.is_empty()
-            || source_domain.is_empty()
+        let route_missing = if source_domain == "MAIL" {
+            mail_zone_id.is_empty()
+        } else {
+            routing_scope.is_empty()
+        };
+
+        if event_id.is_empty() || route_missing || job_topic.is_empty() || source_domain.is_empty()
         {
             Logger::sys_warn(
                 "cdc.insert",
                 "CdcStreamer: Bỏ qua dòng insert thiếu trường quan trọng",
-                "Missing event_id/routing_scope/job_topic",
+                "Missing event_id/zone route/job_topic",
             );
             return Ok(());
         }
@@ -297,6 +297,7 @@ impl CdcStreamer {
         let event_id_clone = event_id.clone();
         let job_topic_clone = job_topic.clone();
         let routing_scope_clone = routing_scope.clone();
+        let mail_zone_id_clone = mail_zone_id.clone();
         let payload_hex_clone = payload_hex.clone();
         let job_version_str_clone = job_version_str.clone();
         let resource_id_clone = resource_id.clone();
@@ -322,11 +323,6 @@ impl CdcStreamer {
                     "job_id",
                     event_id_clone.clone(),
                 ));
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "routing_scope",
-                    routing_scope_clone.clone(),
-                ));
-
                 let payload_bytes = match decode_pg_bytea(&payload_hex_clone) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -344,20 +340,28 @@ impl CdcStreamer {
                     idle_str_clone.parse::<u32>().ok()
                 };
 
-                let (stream_key, target_zone_id) =
-                    if routing_scope_clone == "platform" || routing_scope_clone == "global" {
-                        ("jobs:platform".to_string(), "platform".to_string())
+                let (stream_key, target_zone_id) = if source_domain_clone == "MAIL" {
+                    // [COMMENT]: PostgreSQL UUID column đã loại string scope; nil UUID vẫn bị chặn để tránh jobs:0000...
+                    let parsed_zone_id = uuid::Uuid::parse_str(&mail_zone_id_clone)
+                        .map_err(|error| format!("invalid mail zone_id: {error}"))?;
+                    if parsed_zone_id.is_nil() {
+                        return Err("invalid mail zone_id: nil UUID".into());
+                    }
+                    let canonical_zone_id = parsed_zone_id.to_string();
+                    (format!("jobs:{canonical_zone_id}"), canonical_zone_id)
+                } else if routing_scope_clone == "platform" || routing_scope_clone == "global" {
+                    ("jobs:platform".to_string(), "platform".to_string())
+                } else {
+                    let zone_id = if routing_scope_clone.starts_with("zone:") {
+                        routing_scope_clone
+                            .strip_prefix("zone:")
+                            .unwrap_or(&routing_scope_clone)
+                            .to_string()
                     } else {
-                        let zone_id = if routing_scope_clone.starts_with("zone:") {
-                            routing_scope_clone
-                                .strip_prefix("zone:")
-                                .unwrap_or(&routing_scope_clone)
-                                .to_string()
-                        } else {
-                            routing_scope_clone.clone()
-                        };
-                        (format!("jobs:{}", zone_id), zone_id)
+                        routing_scope_clone.clone()
                     };
+                    (format!("jobs:{}", zone_id), zone_id)
+                };
 
                 span.set_attribute(opentelemetry::KeyValue::new("zone_id", target_zone_id));
 

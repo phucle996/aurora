@@ -172,7 +172,7 @@ Client và ACR phải dùng chính giá trị đã canonicalize. Thay đổi use
 | `204` | Active account, credentials và proof hợp lệ, session đã ghi Redis | Có |
 | `400` | Empty body, JSON sai, username/password contract sai | Không |
 | `401` | Proof sai/hết hạn/replay, credentials sai, suspended/disabled | Không |
-| `412` | Password đúng nhưng account `pending-active` | Không; resend được queue nếu cooldown cho phép |
+| `412` | Password đúng nhưng account `pending-active` | Không; direct broker resend được attempt nếu cooldown cho phép |
 | `500` | Redis/NATS/token signer/session persistence lỗi | Không được coi là login thành công |
 
 Response `412` canonical:
@@ -185,7 +185,8 @@ Response `412` canonical:
 }
 ```
 
-`verification_email_queued=true` hiện biểu đạt workflow accepted/cooldown-compatible, không chứng minh một record mới chắc chắn được insert ở chính request đó.
+`verification_email_queued=true` biểu đạt pending/resend workflow accepted theo contract của ACR; cooldown loser
+không publish message mới. Cooldown winner chỉ trả nhánh này sau direct Redis Stream publish thành công.
 
 ---
 
@@ -269,7 +270,7 @@ State decision:
 
 | State | Behavior |
 |---|---|
-| `pending-active` | Redis cooldown + durable IAM mail outbox, trả verification required |
+| `pending-active` | Redis cooldown + direct append vào reserved verification stream, trả verification required; không cấp session |
 | `active` | Tiếp tục device/session issuance |
 | `suspended`, `disabled`, unknown | Trả invalid credentials |
 

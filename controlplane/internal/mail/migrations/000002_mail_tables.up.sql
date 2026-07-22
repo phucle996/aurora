@@ -39,16 +39,6 @@ CREATE TABLE IF NOT EXISTS tenant_mail_template_versions (
     created_by UUID NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(template_id,version)
 );
 
--- [COMMENT]: IAM system mail không mang ownership giả và không lẫn với customer template tables.
-CREATE TABLE IF NOT EXISTS system_mail_templates (
-    id VARCHAR(128) PRIMARY KEY, name VARCHAR(255) NOT NULL, current_version BIGINT NOT NULL CHECK(current_version>0), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS system_mail_template_versions (
-    template_id VARCHAR(128) NOT NULL REFERENCES system_mail_templates(id) ON DELETE RESTRICT,
-    version BIGINT NOT NULL CHECK(version>0), subject_template VARCHAR(998) NOT NULL, html_template TEXT NOT NULL CHECK(html_template<>''),
-    content_sha256 BYTEA NOT NULL CHECK(octet_length(content_sha256)=32), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(template_id,version)
-);
-
 -- [COMMENT]: COW là invariant tại database, không chỉ convention ở service/repository.
 CREATE OR REPLACE FUNCTION reject_mail_template_version_mutation()
 RETURNS TRIGGER AS $$
@@ -68,11 +58,10 @@ DO $$
 BEGIN
     CREATE TRIGGER trg_personal_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON personal_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
     CREATE TRIGGER trg_tenant_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON tenant_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
-    CREATE TRIGGER trg_system_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON system_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
 END $$;
 
 -- [COMMENT]: Consumer authorization boundary là Workspace. Zone không nằm trong row này; mỗi mutation
--- phải resolve/cross-check X-Zone-ID với Workspace rồi ghi routing_scope zone:<uuid> vào mail outbox.
+-- phải resolve/cross-check Zone với Workspace rồi snapshot UUID vào mail outbox.
 CREATE TABLE IF NOT EXISTS mail_consumers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
@@ -129,4 +118,4 @@ CREATE TABLE IF NOT EXISTS mail_consumer_runtime_reports (
     CONSTRAINT ck_mail_runtime_expiry CHECK (expires_at > reported_at)
 );
 
-COMMENT ON TABLE mail_consumers IS 'Workspace-scoped desired state for broker mail runtimes; Zone is carried only by routing_scope in the mail outbox envelope.';
+COMMENT ON TABLE mail_consumers IS 'Workspace-scoped desired state for broker mail runtimes; Zone UUID is carried only by the mail outbox envelope.';

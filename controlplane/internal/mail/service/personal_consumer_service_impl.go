@@ -138,7 +138,7 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 
 	outbox := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		RoutingScope:         "zone:" + command.ZoneID.String(),
+		ZoneID:               command.ZoneID,
 		JobTopic:             "mail.consumer.upsert",
 		Payload:              payload,
 		ActorUserID:          &actor,
@@ -291,7 +291,7 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 
 	outbox := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		RoutingScope:         "zone:" + command.ZoneID.String(),
+		ZoneID:               command.ZoneID,
 		JobTopic:             "mail.consumer.upsert",
 		Payload:              payload,
 		ActorUserID:          &actor,
@@ -377,7 +377,7 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, comman
 	actor := command.ActorUserID
 	outbox := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		RoutingScope:         "zone:" + command.ZoneID.String(),
+		ZoneID:               command.ZoneID,
 		JobTopic:             "mail.consumer.delete",
 		Payload:              payload,
 		ActorUserID:          &actor,

@@ -59,7 +59,7 @@ func (s *tenantTemplateServiceImpl) CreateTemplate(ctx context.Context, command 
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant template service: marshal create event: %w", err)
 	}
-	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.version_published", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: templateID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
+	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, ZoneID: command.ZoneID, JobTopic: "mail.template.version_published", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: templateID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
 	if err = s.repo.Create(ctx, template, outbox); err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (s *tenantTemplateServiceImpl) PublishTemplateVersion(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant template service: marshal publish event: %w", err)
 	}
-	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.version_published", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
+	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, ZoneID: command.ZoneID, JobTopic: "mail.template.version_published", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
 	if err = s.repo.PublishVersion(ctx, template, outbox); err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func (s *tenantTemplateServiceImpl) DeleteTemplate(ctx context.Context, command 
 	if err != nil {
 		return fmt.Errorf("mail tenant template service: marshal delete event: %w", err)
 	}
-	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, RoutingScope: "zone:" + command.ZoneID.String(), JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
+	outbox := &mailEntity.MailOutboxRecord{EventID: eventID, ZoneID: command.ZoneID, JobTopic: "mail.template.deleted", Payload: payload, ActorUserID: &actor, Status: mailEntity.OutboxStatusPending, JobVersion: 1, ResourceID: template.ID, PayloadSchemaVersion: 1, TraceID: traceID, Idle: 60}
 	// [COMMENT]: Repository ghi projection tombstone cùng transaction hard-delete + outbox.
 	command.ID, command.CurrentVersion, command.UpdatedAt, command.UpdatedBy = command.TemplateID, template.CurrentVersion, now, &actor
 	return s.repo.Delete(ctx, command, outbox)

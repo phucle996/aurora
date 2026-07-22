@@ -64,22 +64,19 @@ pub struct PreparedMail {
 }
 
 #[derive(Clone, Debug)]
-pub struct MailAccepted {
-    pub submission_id: String,
-}
+pub struct MailAccepted;
 
 #[derive(Clone, Debug)]
 pub struct MailSubmitError {
     pub code: String,
-    pub message: String,
     pub retryable: bool,
 }
 
 impl MailSubmitError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
+    // [COMMENT]: Hot path chỉ giữ low-cardinality taxonomy; transport details không được kéo theo recipient payload.
+    pub fn new(code: impl Into<String>, retryable: bool) -> Self {
         Self {
             code: code.into(),
-            message: message.into(),
             retryable,
         }
     }

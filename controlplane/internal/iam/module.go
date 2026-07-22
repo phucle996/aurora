@@ -52,6 +52,7 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
+	rdsJob *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
 	otel *observability.OTel,
@@ -72,6 +73,9 @@ func NewModule(
 	}
 	if rds == nil {
 		return nil, errors.New("iam module: redis cluster client (rds) is nil (check redis sentinel/cluster endpoint)")
+	}
+	if rdsJob == nil {
+		return nil, errors.New("iam module: redis job broker client is nil")
 	}
 
 	if cacheEngine == nil {
@@ -165,11 +169,6 @@ func NewModule(
 		return nil, errors.New("iam module: failed to construct session refresh service")
 	}
 
-	// Khởi tạo repository phục vụ cơ chế Transactional Outbox riêng biệt của module IAM (giải quyết HA & data reliability)
-	iamOutboxRepo := iamRepoImpl.NewIamOutboxRepository(db, cfg)
-	if iamOutboxRepo == nil {
-		return nil, errors.New("iam module: failed to construct IAM outbox repository")
-	}
 	if natsConn == nil {
 		return nil, errors.New("iam module: nats connection is required for account domain events")
 	}
@@ -181,7 +180,7 @@ func NewModule(
 
 	authSvc := iamSvcImpl.NewAuthService(
 		cfg, authRepo, refreshSvc, deviceSelfSvc,
-		cacheEngine, oneTimeTokenSvc, iamOutboxRepo,
+		cacheEngine, oneTimeTokenSvc, rdsJob,
 		billingOutboxRelay,
 		nil,
 	)

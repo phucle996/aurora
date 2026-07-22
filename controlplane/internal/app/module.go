@@ -46,6 +46,7 @@ type Modules struct {
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
+	rdsJob *goredis.Client,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
 	otel *observability.OTel,
@@ -96,7 +97,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, cacheEngine, natsConn, otel)
+	iamModule, err := iam.NewModule(cfg, db, rds, rdsJob, cacheEngine, natsConn, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}

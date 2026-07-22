@@ -3,7 +3,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost_build::compile_protos(
         &[
             "proto/job_event.proto",
-            "proto/mail_job.proto",
             // [COMMENT]: Mail projection/result contract dùng chung giữa CP, JO và DP.
             "proto/mail_runtime.proto",
             "proto/job_result.proto",

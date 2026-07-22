@@ -14,7 +14,7 @@ type AuthRepository interface {
 	// JOIN users → tenant_memberships → tenant_domains để xác minh user là thành viên active của tenant đó.
 	// Trả về LoginUser chứa thông tin user kèm TenantID và TenantCode trong struct.
 	LoginUserTenant(ctx context.Context, username, tenantDomain string) (*iamEntity.LoginUser, error)
-	CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, verificationMail *iamEntity.IamOutboxRecord) error
+	CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error
 	IsUserActive(ctx context.Context, userID uuid.UUID) (bool, error)
 	// [COMMENT]: ActivateUser thực hiện kích hoạt tài khoản (chuyển trạng thái sang active)
 	// và gán vai trò tương ứng cho tài khoản trong một transaction nguyên tử để bảo toàn dữ liệu.

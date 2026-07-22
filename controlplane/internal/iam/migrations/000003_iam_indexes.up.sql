@@ -85,11 +85,3 @@ CREATE INDEX IF NOT EXISTS oauth_tokens_client_id_idx ON oauth_tokens(client_id)
 CREATE INDEX IF NOT EXISTS oauth_tokens_user_id_idx ON oauth_tokens(user_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_grant_id_idx ON oauth_tokens(grant_id);
 CREATE INDEX IF NOT EXISTS oauth_tokens_expires_at_idx ON oauth_tokens(expires_at);
-
--- Outbox indexes
-CREATE INDEX IF NOT EXISTS idx_iam_outbox_pending
-ON iam_outbox_records (available_at, id)
-WHERE status IN ('PENDING', 'PUBLISHING');
-CREATE INDEX IF NOT EXISTS idx_iam_outbox_terminal_cleanup
-ON iam_outbox_records (completed_at, id)
-WHERE status IN ('SUCCEEDED', 'FAILED') AND completed_at IS NOT NULL;

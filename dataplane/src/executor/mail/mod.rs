@@ -24,7 +24,6 @@ pub struct MailRuntime {
     pub configuration: Arc<runtime::MailConfigurationRuntime>,
     /// [COMMENT]: Phase-6 supervisor sở hữu slot leases và broker connections; executor job không tự mở consumer.
     pub consumer_supervisor: Arc<runtime::MailConsumerSupervisor>,
-    pub sender: Arc<SenderProfile>,
     pub metrics: Arc<MailWorkloadMetrics>,
     jmap: Arc<JmapClient>,
 }
@@ -49,7 +48,6 @@ impl MailRuntime {
             batcher,
             configuration,
             consumer_supervisor,
-            sender,
             metrics,
             jmap,
         }))

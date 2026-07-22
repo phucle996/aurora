@@ -108,7 +108,7 @@ func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 	if consumer.Name != "orders" || consumer.ConfigVersion != 1 || len(consumer.ConfigSHA256) != sha256.Size {
 		t.Fatalf("unexpected aggregate: %+v", consumer)
 	}
-	if repo.outbox == nil || repo.outbox.RoutingScope != "zone:"+command.ZoneID.String() {
+	if repo.outbox == nil || repo.outbox.ZoneID != command.ZoneID {
 		t.Fatalf("unexpected outbox: %+v", repo.outbox)
 	}
 	var event mailproto.MailConsumerUpsertV1

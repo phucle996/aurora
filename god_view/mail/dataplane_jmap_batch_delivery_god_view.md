@@ -1,322 +1,269 @@
-# Dataplane Bulk Mail JMAP Delivery — God View (Master SoT)
+# Dataplane JMAP Batch Delivery — God View
 
-> **IMPORTANT — SINGLE SOURCE OF TRUTH**
-> Tài liệu này là nguồn chuẩn cho đoạn workflow từ mail job transport đến khi Stalwart chấp nhận JMAP EmailSubmission. Mọi thay đổi về mail protobuf, sender binding, batching, JMAP request, retry, backpressure, health hoặc shutdown phải cập nhật tài liệu này trong cùng change-set.
->
-> Broker-driven flow (bốn stream suites, fixed-envelope decode, DP rendering và native settlement) được khóa
-> riêng tại `dataplane_broker_mail_execution_god_view.md`; flow đó tái sử dụng JMAP batcher trong tài liệu này.
+> [!IMPORTANT]
+> Đây là Source of Truth cho đoạn sau khi ordinary broker runtime đã decode fixed envelope và render
+> template: `PreparedMail → shared batcher → Stalwart JMAP → typed per-item result`.
+> Không có direct/system Mail job, LMTP hoặc Controlplane DB query trong đường này.
 
 ## 0. Control header
 
-| Thuộc tính | Giá trị AS-IS |
+| Thuộc tính | Giá trị |
 |---|---|
-| Domain | Dataplane bulk mail delivery |
-| Input | Redis Stream `jobs:{zone_id}`, một job tương ứng một recipient |
-| Transport | JMAP over HTTP(S), shared `reqwest::Client` |
-| Batch policy | Tối đa 50 mail, 1000 ms từ item đầu, hoặc byte cap |
-| JMAP operations | Một `Email/set` + một `EmailSubmission/set` cho mỗi batch |
-| Sender registry | Static profile từ environment/Kubernetes Secret trong phase hiện tại |
-| Delivery semantics | Best-effort; success nghĩa Stalwart accepted submission, không nghĩa recipient đã nhận |
-| Runtime durability | Redis Stream/job outbox ở upstream; batch buffer là bounded memory |
-| Removed transport | LMTP client và connection pool tự viết đã bị xóa |
-| Broker reuse | Kafka/Redis Stream/JetStream/RabbitMQ suites gọi cùng batcher qua `MailStreamProcessor` |
-| Future scope | Sender verification/projection và durable delivery history |
-| Verified against | Working tree, 2026-07-21 |
+| Runtime owner | Dataplane pod trong đúng Zone |
+| Entry | `MailMessageProcessor::process` |
+| Shared transport | Một `MailBatcherHandle` + một `JmapClient` trên mỗi pod |
+| Flush defaults/intent | Tối đa 50 items, 1000 ms hoặc byte cap cấu hình |
+| Protocol | JMAP `Email/set` + `EmailSubmission/set` trong một HTTP request |
+| Result | `MailSubmitResult` riêng cho từng broker message |
+| Retry | Chỉ transport, HTTP 429/5xx và retryable JMAP error; exponential backoff + jitter |
+| History | Không lưu delivery history trong phase hiện tại |
+| Verified against | Working tree, 2026-07-22 |
 
-### 0.1 Invariants
+## 1. Boundary
 
-| Invariant | Hệ quả |
-|---|---|
-| Một job chỉ có một recipient | Result, retry và privacy tách riêng từng người nhận |
-| Dataplane không tin arbitrary `From` trong payload | Job chỉ mang `sender_profile_id` + version; địa chỉ/identity lấy từ registry |
-| Một HTTP 200 không đồng nghĩa cả batch thành công | Phải parse `created`/`notCreated` từng submission |
-| Batcher dùng chung toàn pod | Không tạo HTTP client, timer hoặc queue theo từng job |
-| Batch partition theo account/identity | Phase static chỉ có một profile; multi-sender phase sau phải giữ rule này |
-| Batch buffer không phải durability boundary | Shutdown flush; crash trước submission để Redis/job lifecycle redeliver theo policy upstream |
-| Email object không được giữ vĩnh viễn | `onSuccessDestroyEmail` cleanup source Email sau khi submission được tạo |
+JMAP layer nhận `PreparedMail` đã được validate/render:
 
----
+```text
+job_id
+recipient
+subject
+optional text_body
+optional html_body
+estimated_bytes
+```
 
-## 1. Component topology
+Layer này không được:
+
+- Decode customer broker payload.
+- Chọn template, sender, owner, Workspace hoặc Zone.
+- Query Controlplane PostgreSQL/NATS KV.
+- Commit Kafka offset, ACK Redis/JetStream/Rabbit delivery.
+- Retry permanent recipient/template errors.
+
+Mỗi broker suite giữ coordinate/settlement riêng. Processor chỉ trả typed outcome để suite quyết định
+commit/ACK/requeue/term theo semantics của broker đó.
+
+## 2. End-to-end flow
 
 ```mermaid
 flowchart LR
-    RS[(Redis Stream<br/>jobs:zone)] --> JR[JobRunner]
-    JR --> EX[Generic Mail Executor]
-    EX --> T[Template Moka L1<br/>NATS KV snapshot]
-    EX --> Q[Bounded MailBatcher ingress]
-    Q --> C[Collector<br/>50 / 1000 ms / bytes]
-    C --> BQ[Bounded batch queue]
-    BQ --> F1[JMAP flusher]
-    BQ --> F2[JMAP flusher]
-    BQ --> FN[JMAP flusher N]
-    F1 --> HC[Shared HTTP client]
-    F2 --> HC
-    FN --> HC
-    HC --> SW[Stalwart JMAP]
-    SW --> MAP[Per-submission mapping]
-    MAP -->|oneshot result| JR
-    JR --> RES[(job_results_stream)]
+    K[Kafka suite] --> P[MailMessageProcessor]
+    R[Redis Stream suite] --> P
+    N[NATS JetStream suite] --> P
+    Q[RabbitMQ suite] --> P
+    P --> V[Fixed envelope + expiry + render validation]
+    V --> B[Shared bounded MailBatcher]
+    B --> W1[JMAP flush worker 1]
+    B --> WN[JMAP flush worker N]
+    W1 --> S[Stalwart JMAP]
+    WN --> S
+    S --> PR[Per-item typed result]
+    PR --> K
+    PR --> R
+    PR --> N
+    PR --> Q
 ```
 
-### 1.1 Ownership
+Processor giữ generation-fence submit permit xuyên suốt `batcher.submit().await`. Config COW hoặc mất lease
+không hủy mù một HTTP request đã vào critical section; generation cũ chờ typed result rồi mới đóng.
 
-| Component | Owns | Không owns |
-|---|---|---|
-| Job lifecycle | Lease, PROCESSING/final result, Redis XACK | JMAP object construction |
-| Mail executor | Decode, sender/profile validation, address/content/template validation | HTTP connection/concurrency |
-| Template module | Bounded/coalesced L1, NATS KV snapshot, render | Sender authorization |
-| Mail batcher | Time/count/byte boundary, bounded queues, per-job oneshot | Durable retry history |
-| JMAP client | Authentication, request construction, transport retry, response mapping | Customer ownership |
-| Stalwart | Accept submission và outbound queue | Aurora owner authorization |
-| Mail monitor | JMAP health + local batch pressure projection | SMTP recipient delivery confirmation |
+## 3. Sender binding
 
----
+Một pod bootstrap static sender profile từ deployment config:
 
-## 2. Job contract
+```text
+MAIL_SENDER_PROFILE_ID
+MAIL_SENDER_VERSION > 0
+MAIL_SENDER_ADDRESS
+STALWART_JMAP_ACCOUNT_ID
+STALWART_JMAP_IDENTITY_ID
+STALWART_JMAP_MAILBOX_ID
+```
 
-`SendMailConfig` là typed protobuf:
+Mỗi consumer snapshot pin `sender_profile_id + sender_version`. Processor so sánh exact với pod sender trước
+khi render/submit. Mismatch là retryable configuration-unavailable; customer payload không được chọn From.
 
-```protobuf
-message SendMailConfig {
-  map<string, string> template_variables = 1;
-  string sender_profile_id = 2;
-  uint32 sender_version = 3;
-  string recipient = 4;
-  string template_id = 5;
-  string subject = 6;
-  string text_body = 7;
-  string html_body = 8;
+Account-verification cũng là ordinary root-owned consumer và bind sender theo cơ chế này. IAM không biết
+sender profile nào được dùng.
+
+## 4. Batcher contract
+
+### 4.1 Queue and admission
+
+`MailBatcherHandle` sở hữu bounded Tokio MPSC queue. `submit`:
+
+1. Fail retryable nếu batcher đang shutdown.
+2. Tăng `pending_items`.
+3. Enqueue trong bounded timeout.
+4. Chờ one-shot result đúng item.
+5. Không tự suy settlement broker.
+
+Queue đầy hoặc enqueue timeout trả `MAIL_BATCHER_BACKPRESSURE`. Không mở thêm batcher/HTTP client theo
+consumer hoặc message vì sẽ phá global capacity control và nhân connection tới Stalwart.
+
+### 4.2 Flush conditions
+
+Current batch flush khi điều kiện đầu tiên xảy ra:
+
+- `current.len() >= MAIL_BATCH_MAX_ITEMS`;
+- tổng `estimated_bytes >= MAIL_BATCH_MAX_BYTES`;
+- thời gian từ item đầu đạt `MAIL_BATCH_MAX_WAIT_MS`;
+- item kế tiếp làm vượt byte cap, nên batch hiện tại flush trước;
+- graceful shutdown, nên partial batch được flush.
+
+`estimated_bytes` đã gồm recipient + subject + bodies + 1024-byte overhead estimate. Processor cũng enforce
+per-message maximum trước khi enqueue.
+
+### 4.3 Flush concurrency
+
+Supervisor tạo bounded flush workers bằng `MAIL_JMAP_MAX_INFLIGHT_PER_POD`. Workers dùng chung receiver và
+`Arc<JmapClient>`; số HTTP request song song không vượt cấu hình. Worker không spawn vô hạn theo batch.
+
+## 5. JMAP request
+
+Mỗi batch tạo đúng hai method calls:
+
+1. `Email/set` tạo draft Email objects.
+2. `EmailSubmission/set` tham chiếu `#mail-<creation_key>` và dùng `onSuccessDestroyEmail` để không giữ bản sao mailbox.
+
+Request skeleton:
+
+```json
+{
+  "using": [
+    "urn:ietf:params:jmap:core",
+    "urn:ietf:params:jmap:mail",
+    "urn:ietf:params:jmap:submission"
+  ],
+  "methodCalls": [
+    ["Email/set", {"accountId": "...", "create": {}}, "create-mails"],
+    ["EmailSubmission/set", {
+      "accountId": "...",
+      "create": {},
+      "onSuccessDestroyEmail": []
+    }, "submit-mails"]
+  ]
 }
 ```
 
-| Field | Rule AS-IS |
+`creation_key` lọc `job_id` còn ASCII alphanumeric. `job_id` được từng broker suite derive deterministic từ
+consumer + broker coordinate, giúp retry cùng message dùng stable client creation identity.
+
+## 6. HTTP client and authentication
+
+Một shared `reqwest::Client` được bootstrap với:
+
+- connect timeout 3 giây;
+- total request timeout cấu hình;
+- idle pool timeout 90 giây;
+- TCP keepalive 30 giây;
+- bearer token hoặc Basic auth, bắt buộc một trong hai;
+- không log auth header/token.
+
+Endpoint rỗng hoặc sender/auth config thiếu làm Mail runtime fail bootstrap thay vì chạy half-configured.
+
+## 7. Typed per-item result
+
+Parser chỉ đọc `EmailSubmission/set` response call `submit-mails`:
+
+| JMAP response | Per-item result |
 |---|---|
-| `sender_profile_id` | Bắt buộc bằng static configured profile |
-| `sender_version` | Bắt buộc khớp configured version; mismatch fail-closed |
-| `recipient` | Parse thành một canonical email address |
-| `template_id` | Nếu có, subject/body lấy từ template và variables |
-| Explicit subject/body | Chỉ dùng khi `template_id` rỗng |
-| `subject` | Required, không CR/LF, tối đa 998 bytes |
-| Body | Cần text hoặc HTML; toàn message bị giới hạn byte |
-| `template_variables` | Không chứa `from`, `to` hoặc `template_id` routing fields |
+| `created[submit-key]` | `MailAccepted`; phase hiện tại không persist submission ID/history |
+| `notCreated[submit-key]` | `MAIL_JMAP_SUBMISSION_REJECTED` + typed retryability |
+| Method-level `error` | `MAIL_JMAP_METHOD_ERROR` cho mọi item |
+| Missing method/result | `MAIL_JMAP_RESULT_MISSING`, retryable |
+| Invalid JSON/shape | `MAIL_JMAP_INVALID_RESPONSE`, retryable |
 
-`job_id` phải là UUID và được dùng tạo stable JMAP client creation IDs trong request.
+Không được coi HTTP `2xx` là toàn batch success: từng creation key phải có kết quả. Replies được zip đúng thứ
+tự input; item A reject không biến item B thành failed.
 
-### 2.1 Sender phase hiện tại
+## 8. Retry matrix
 
-Static sender profile gồm:
+| Failure | Retry trong JMAP client? | Processor/suite outcome |
+|---|---:|---|
+| HTTP 429 | Có | Retryable nếu hết budget |
+| HTTP 5xx | Có | Retryable nếu hết budget |
+| Connect/timeout/transport | Có | Retryable nếu hết budget |
+| HTTP 4xx khác | Không | Non-retryable JMAP result |
+| JMAP `serverFail/serverPartialFail/rateLimit/tooManyRequests` | Typed retryable | Suite local-retry bounded rồi terminal theo bulk-mail policy nếu hết budget |
+| JMAP validation/rejection khác | Không | Suite terminal settle theo source semantics |
+| Queue full/shutdown | Không retry nội bộ | Retryable về suite để tránh hidden double-submit |
 
-```text
-profile_id
-version
-from_address
-Stalwart account_id
-Stalwart identity_id
-mailbox_id
-```
+Backoff là exponential bounded theo attempt với random jitter 0–99 ms. Retry nằm ở HTTP request boundary;
+không tạo một retry loop polling DB/Redis mỗi 500 ms.
 
-Controlplane IAM verify-account producer dùng `platform-default`, version `1`. Dataplane không query PostgreSQL Controlplane. Future sender verification sẽ thay static registry bằng projected registry nhưng không thay batch/JMAP contract.
+## 9. HA, ambiguity and delivery semantics
 
----
+JMAP timeout có thể xảy ra sau khi Stalwart đã nhận request nhưng trước khi Dataplane nhận response. Vì phase
+hiện tại không có durable delivery ledger, hệ thống chỉ cam kết best-effort/at-least-once theo broker và có thể
+duplicate trong ambiguous window.
 
-## 3. Preparation flow
+Không được tuyên bố exactly-once chỉ dựa vào deterministic creation key. Cần staging test với Stalwart để xác
+nhận idempotency behavior xuyên request/reconnect trước khi nâng contract.
 
-```mermaid
-sequenceDiagram
-    participant JR as JobRunner
-    participant EX as MailExecutor
-    participant TC as Template cache
-    participant MB as MailBatcher
+Generation fence giảm duplicate do stale Zone owner:
 
-    JR->>EX: action + JobPayload
-    EX->>EX: decode typed protobuf
-    EX->>EX: validate UUID + sender profile/version + recipient
-    alt template_id present
-        EX->>TC: get_template(template_id)
-        TC-->>EX: subject + HTML template
-        EX->>EX: render subject + escaped HTML variables
-    else explicit content
-        EX->>EX: validate subject/text/html
-    end
-    EX->>EX: enforce max message bytes
-    EX->>MB: submit PreparedMail + oneshot
-    MB-->>EX: Accepted or per-mail error
-    EX-->>JR: ExecutionResult
-```
+- lease/config stale trước submit: không enqueue;
+- stale trong khi HTTP đang chạy: chờ typed result, sau đó owner cũ dừng intake;
+- không settlement nếu broker generation/rebalance state không còn hợp lệ.
 
-Moka L1 có capacity 10.000 và TTL một giờ. Concurrent miss cùng `template_id` được coalesce qua `try_get_with`; NATS KV snapshot không bị đọc dồn theo số job.
+## 10. Graceful shutdown
 
----
+Order bắt buộc:
 
-## 4. Batch state machine
+1. Supervisor dừng intake/claim slot mới.
+2. Generation fences chặn submit mới và drain critical sections.
+3. Configuration runtime dừng listener/reconciler.
+4. Batcher nhận `Shutdown`, flush partial batch và đợi tất cả flush workers.
+5. Chỉ sau đó process mới đóng shared HTTP runtime.
 
-```mermaid
-stateDiagram-v2
-    [*] --> EMPTY
-    EMPTY --> COLLECTING: first item / set deadline +1000 ms
-    COLLECTING --> COLLECTING: append item
-    COLLECTING --> FLUSH: count >= max_items
-    COLLECTING --> FLUSH: estimated bytes >= max_bytes
-    COLLECTING --> FLUSH: first-item deadline reached
-    FLUSH --> EMPTY: batch queued to flusher pool
-    COLLECTING --> DRAINING: shutdown
-    EMPTY --> DRAINING: shutdown
-    DRAINING --> STOPPED: partial batch + queued batches completed
-```
+Nếu batch worker chết trước reply, submitter nhận `MAIL_BATCHER_RESULT_DROPPED`, không treo vô hạn.
 
-Defaults:
+## 11. Security and privacy
 
-| Setting | Default |
-|---|---:|
-| Maximum items | 50 |
-| Maximum wait from first item | 1000 ms |
-| Maximum estimated batch size | 4 MiB |
-| Ingress items | 5000 |
-| Enqueue timeout | 1000 ms |
-| Concurrent JMAP flush workers | 4 per pod |
-| JMAP request timeout | 10 seconds |
-| Transport retries | 2 |
-| Maximum individual message | 1 MiB |
+- Recipient, subject, HTML/text body, template parameters và JMAP auth không được log/metric-label.
+- Subject đã bị reject CR/LF/control characters trước JMAP build.
+- Recipient đã parse thành một canonical mailbox; không có recipient-array injection.
+- HTML parameters đã escape; template không chạy code/function.
+- Request byte caps và batch byte caps chặn oversized allocation/request.
+- NetworkPolicy chỉ cho Mail Dataplane egress tới configured Stalwart endpoint.
+- TLS certificate verification dùng trusted deployment roots; production credential phải được mount từ Secret.
 
-Collector và HTTP flusher tách riêng. Batch queue có capacity `2 × flush_workers`; Stalwart chậm sẽ block collector, rồi fill ingress queue và cuối cùng trả backpressure thay vì tăng RAM vô hạn.
+## 12. Observability and backpressure
 
----
+Low-cardinality state từ `MailWorkloadMetrics`:
 
-## 5. JMAP request and response
-
-Mỗi batch tạo:
-
-1. Một `Email/set` với tối đa 50 create objects.
-2. Một `EmailSubmission/set` với tối đa 50 submission objects tham chiếu `#mail-{job_id}`.
-3. `onSuccessDestroyEmail` để không tích tụ mail trong service mailbox.
-
-Request dùng capabilities Core, Mail và Submission. Envelope `mailFrom` lấy từ trusted sender profile; `rcptTo` lấy từ canonical recipient.
-
-Response handling:
-
-| JMAP result | Job result |
+| Signal | Ý nghĩa |
 |---|---|
-| Submission nằm trong `created` | Accepted, trả submission ID |
-| Submission nằm trong `notCreated` | Failed riêng item đó |
-| Method-level `error` | Failed toàn bộ item chưa có result |
-| Missing/malformed response | Retryable transport-style failure |
-| HTTP 429/5xx/network | Retry nguyên request với exponential backoff + jitter |
-| HTTP 4xx khác | Không retry |
+| `pending_items` | Queue + đang đợi JMAP result |
+| `in_flight_batches` | HTTP batches đang chạy |
+| `accepted_total` | Per-item JMAP accepted |
+| `failed_total` | Per-item typed failure |
 
-Retry request sau timeout có thể tạo duplicate vì batch buffer không có durable idempotency ledger. Đây là best-effort bulk-mail semantics đã chấp nhận; không được mô tả là exactly-once.
+Mail workload monitor dùng các snapshot này để report Zone health/backpressure. Không dùng recipient,
+consumer UUID hoặc submission ID làm metric label có cardinality cao.
 
----
+## 13. Failure/race checklist
 
-## 6. HA, races và shutdown
+- [ ] Queue capacity, enqueue timeout, batch count/time/byte caps đều > 0 và bounded.
+- [ ] `MAIL_JMAP_MAX_INFLIGHT_PER_POD` khớp capacity Stalwart và số Dataplane replicas.
+- [ ] Partial batch flush khi shutdown đã có test.
+- [ ] Per-item `created/notCreated/missing` mapping đã có test.
+- [ ] Retry chỉ áp dụng 429/5xx/transport/retryable JMAP types.
+- [ ] Processor giữ generation permit xuyên `batcher.submit().await`.
+- [ ] Suite không ACK/commit khi generation/rebalance/lease đã stale.
+- [ ] Không có direct/system `SendMailConfig` executor/protobuf.
+- [ ] Không có mail history DB write trên hot path.
 
-| Case | Control | Outcome |
-|---|---|---|
-| 50th item và timer cùng ready | Collector đơn owner của buffer | Một flush duy nhất |
-| N worker submit đồng thời | Bounded MPSC | Không race mutate batch |
-| Một item fail trong batch | Per-key response map | Không fail 49 item đã accepted |
-| Stalwart chậm | Bounded batch + ingress queues | Backpressure tới active jobs/admission |
-| Pod shutdown với partial batch | Worker intake bị cancel; tracked JobRunner hoàn tất trước khi đóng batcher | Không có submit chạy đua phía sau shutdown command |
-| Pod crash trước response | Redis/job policy có thể redeliver | Duplicate có thể xảy ra |
-| JMAP health fail | Monitor ghi `AURORA_ZONE_HEALTH/zone.service.mail` với `down/0` | Zone reporter thấy mail unavailable |
-| Sender mismatch | Executor fail trước enqueue | Không gửi arbitrary From |
+## 14. Code map
 
-Graceful shutdown order:
-
-1. Cancel worker intake.
-2. Đợi worker receive-loop và mọi detached JobRunner trong cùng task barrier; batcher vẫn mở để các job đang chạy nhận per-mail result.
-3. Đóng mail batcher sau khi chắc chắn không còn producer.
-4. Flush partial batch rồi drain bounded batch queue và in-flight HTTP requests.
-5. Hoàn tất shutdown runtime.
-
----
-
-## 7. Configuration and secrets
-
-| Variable | Purpose |
+| Responsibility | File |
 |---|---|
-| `STALWART_JMAP_URL` | Direct `/jmap` endpoint |
-| `STALWART_JMAP_ACCOUNT_ID` | Opaque service account ID do Stalwart cấp; required, không fallback từ username |
-| `STALWART_JMAP_IDENTITY_ID` | Opaque authorized identity ID; required |
-| `STALWART_JMAP_MAILBOX_ID` | Opaque draft/source mailbox ID; required |
-| `STALWART_JMAP_BEARER_TOKEN` | OAuth bearer option |
-| `STALWART_JMAP_USERNAME/PASSWORD` | Application-password option nếu không dùng bearer |
-| `MAIL_SENDER_PROFILE_ID/VERSION/ADDRESS` | Static trusted sender binding |
-| `MAIL_BATCH_*` | Queue/count/time/byte controls |
-| `MAIL_JMAP_*` | Concurrency/timeout/retry controls |
-
-Bearer hoặc username/password là bắt buộc; thiếu auth làm bootstrap fail. Secret phải đến từ Kubernetes Secret hoặc Vault Agent, không nằm trong image, protobuf, log hay metric label.
-
----
-
-## 8. Observability
-
-Monitor ghi `AURORA_ZONE_HEALTH/zone.service.mail`:
-
-```text
-status
-capacity
-pending_items
-in_flight_batches
-transport=jmap_batch
-updated_at
-fencing_token
-probe_node_id
-```
-
-Không log recipient, subject, body, template variables hoặc auth token. Correlation dùng `job_id`, batch size và trace metadata ở job lifecycle.
-
-Metrics cần giữ cardinality thấp:
-
-- Batch size histogram.
-- Flush reason: count/time/bytes/shutdown.
-- Queue depth và enqueue backpressure.
-- JMAP request latency/status.
-- Accepted/failed item count.
-- Partial batch failure count.
-- Ambiguous timeout/retry count.
-
----
-
-## 9. Code map
-
-| Concern | File |
-|---|---|
-| Runtime wiring | `dataplane/src/executor/mail/mod.rs` |
-| Typed preparation | `dataplane/src/executor/mail/executor.rs` |
-| Internal models/sender profile | `dataplane/src/executor/mail/processor/model.rs` |
-| Micro-batching | `dataplane/src/executor/mail/processor/batcher.rs` |
-| JMAP HTTP contract | `dataplane/src/executor/mail/processor/jmap.rs` |
-| Template cache/render | `dataplane/src/executor/mail/processor/template.rs` |
-| Health/capacity projection | `dataplane/src/executor/mail/supervisor/workload_monitor.rs` |
-| Backpressure policy | `dataplane/src/executor/mail/supervisor/backpressure.rs` |
-| Mail workload metrics | `dataplane/src/executor/mail/supervisor/metrics.rs` |
-| Mail unit tests | `dataplane/src/executor/mail/test/` |
-| Pod lifecycle owner | `dataplane/src/workerpool/lifecycle.rs` |
-| Mail protobuf | `dataplane/proto/mail_job.proto` |
-
----
-
-## 10. Deferred sender-control phase
-
-Chưa thuộc change-set này:
-
-- PostgreSQL `mail_senders`.
-- Owner ID/type và sender management API.
-- Email OTP hoặc DNS ownership verification.
-- DKIM/SPF/DMARC provisioning.
-- Sender outbox/projector/reconciler.
-- Hard-revocation projection vào Zone NATS KV/Moka.
-
-Khi phase đó được triển khai, Dataplane nhận projected `SenderProfile` theo ID/version. Batcher và JMAP client không được query trực tiếp database Controlplane.
-
----
-
-## 11. Deployment gates
-
-Trước khi rollout production phải hoàn tất ngoài code:
-
-1. Provision service account, submission identity, source mailbox và least-privilege credential trên Stalwart; inject opaque IDs/secret qua Kubernetes Secret hoặc Vault.
-2. Đọc JMAP Session của đúng Stalwart deployment để xác nhận Mail/Submission capabilities và đặt `MAIL_BATCH_MAX_ITEMS/BYTES` không vượt `maxObjectsInSet`/`maxSizeRequest` của server.
-3. Chạy integration test trên đúng Stalwart version cho `Email/set`, `EmailSubmission/set`, partial `notCreated` và `onSuccessDestroyEmail`.
-4. Load test nhiều Dataplane replica cùng lúc, gồm 429/5xx, timeout mơ hồ, backpressure và pod termination giữa batch.
+| Runtime composition/shutdown | `dataplane/src/executor/mail/mod.rs` |
+| Fixed envelope/render/fence | `dataplane/src/executor/mail/processor/stream.rs` |
+| Prepared/result models | `dataplane/src/executor/mail/processor/model.rs` |
+| Bounded batcher | `dataplane/src/executor/mail/processor/batcher.rs` |
+| JMAP request/retry/parser | `dataplane/src/executor/mail/processor/jmap.rs` |
+| Centralized tests | `dataplane/src/executor/mail/test/batcher.rs`, `test/jmap.rs`, `test/stream_processor.rs` |
+| Broker settlement | `dataplane/src/executor/mail/runtime/{kafka,redis_stream,nats_jetstream,rabbitmq}.rs` |
+| Workload monitoring/report | `dataplane/src/executor/mail/supervisor/` |

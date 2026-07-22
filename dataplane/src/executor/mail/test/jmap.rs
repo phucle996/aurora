@@ -63,7 +63,7 @@ fn maps_partial_submission_results_back_to_jobs() {
     });
     let results = client().parse_batch_response(&mails, &response);
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0].as_ref().unwrap().submission_id, "submission-1");
+    assert!(results[0].is_ok());
     assert_eq!(
         results[1].as_ref().unwrap_err().code,
         "MAIL_JMAP_SUBMISSION_REJECTED"

@@ -29,13 +29,13 @@ type MailOutboxRecord struct {
 	ID int64
 	// EventID: UUID định danh duy nhất toàn cục của sự kiện, dùng làm Idempotency Key chống trùng lặp giữa các node
 	EventID uuid.UUID
-	// RoutingScope: Zone đích dạng zone:<uuid>, tạo từ trusted X-Zone-ID sau khi cross-check Workspace.
-	RoutingScope string
+	// ZoneID: UUID Zone đã được service cross-check với Workspace trước khi tạo immutable outbox envelope.
+	ZoneID uuid.UUID
 	// JobTopic: Discriminator của dispatcher (ví dụ: "mail.consumer.upsert").
 	JobTopic string
 	// Payload: Nội dung nhị phân (Protobuf) chứa tham số cấu hình hoặc dữ liệu chi tiết của công việc
 	Payload []byte
-	// ActorUserID: Caller tạo intent; có thể nil với platform/system job và không phải billing owner.
+	// ActorUserID: Caller tạo configuration intent; là audit actor và không phải billing owner.
 	ActorUserID *uuid.UUID
 	// Status: Trạng thái xử lý sự kiện (PENDING, PROCESSING, SUCCEEDED, FAILED)
 	Status OutboxStatus

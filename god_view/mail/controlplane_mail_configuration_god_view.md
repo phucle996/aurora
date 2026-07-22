@@ -13,7 +13,7 @@
 | Controlplane owns | Consumer config, template/version, outbox và current runtime read model |
 | Dataplane owns | Broker connection, consume, fixed-envelope decode, render, offset, JMAP delivery |
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
-| Placement | Consumer row không lưu Zone; outbox ghi `routing_scope=zone:<uuid>` từ trusted `X-Zone-ID` sau cross-check Workspace |
+| Placement | Consumer row không lưu Zone; outbox snapshot `zone_id UUID` từ authorized request context sau DB cross-check Workspace |
 | Contract | `controlplane/internal/mail/transport/rpc/proto/mail_runtime.proto` |
 | Schema | `controlplane/internal/mail/migrations/000001..000007` |
 | Related SoT | `mail_configuration_projection_god_view.md`, `dataplane_broker_mail_execution_god_view.md` |
@@ -27,11 +27,11 @@
 4. Zone không phụ thuộc Vault. Broker-resource flow tạo envelope bằng zone-local encryption contract; DP Phase 6 mới giải mã trong memory khi mở connection, không ghi plaintext vào Redis/log/result.
 5. `sender_profile_id`, `template_id` và version được bind trong consumer config; customer message không được chọn tùy ý.
 6. Template content version chỉ gồm subject + HTML và là immutable. Update luôn tạo row version mới; Dataplane tự detect `{{placeholder}}` khi render.
-7. Broker message dùng fixed envelope `{ "to": "...", "parameter": {...} }`; Controlplane không lưu JSONPath/message mapping.
+7. Broker message dùng fixed envelope `{ "to": "...", "parameter": {...}, "not_after_unix_ms": optional }`; Controlplane không lưu JSONPath/message mapping.
 8. Một broker message tương ứng một recipient ở phase đầu.
 9. Delivery history chưa thuộc scope hiện tại; hot path chỉ trả JMAP accepted/rejected cho job lifecycle.
-10. Client không được tự chọn routing Zone: Envoy/ACR strip header bên ngoài rồi inject `X-Zone-ID`; handler chỉ đọc UUID đã parse từ context.
-11. Mail module có đúng một `mail_outbox_records`; `routing_scope` định tuyến như các module khác và `job_topic` chọn dispatcher.
+10. Client không được tự khai ownership/routing trong body; handler chỉ đọc Zone UUID đã được edge đưa vào authenticated context.
+11. Mail module có đúng một `mail_outbox_records`; `zone_id UUID` chọn Redis Job stream và `job_topic` chọn dispatcher.
 12. Mail outbox giữ đúng transport shape chung; aggregate/version/hash và lifecycle data nằm trong protobuf `payload`, không thêm cột theo từng event type.
 
 ## 2. Component ownership
@@ -106,10 +106,10 @@ sequenceDiagram
     CP-->>C: 201 desired=PAUSED, reported=STOPPED/UNKNOWN
 ```
 
-Client không gửi `owner_id`, `owner_type`, private endpoint hoặc runtime status. `X-Workspace-ID` và
-`X-Zone-ID` chỉ được tin sau ACR authorization; CP vẫn cross-check Zone với authoritative Workspace/Broker
+Client không gửi `owner_id`, `owner_type`, private endpoint hoặc runtime status. Workspace và
+Zone context chỉ được tin sau edge authorization; CP vẫn cross-check Zone với authoritative Workspace/Broker
 để chặn confused-deputy hoặc proxy misconfiguration. Consumer row không duplicate `zone_id`; transaction
-snapshot `routing_scope=zone:<uuid>` vào outbox envelope để event không đổi hướng nếu Workspace placement thay đổi sau commit.
+snapshot typed `zone_id UUID` vào outbox envelope để event không đổi hướng nếu Workspace placement thay đổi sau commit.
 CP không dựa vào thứ tự delivery giữa template và consumer events: khi bind một version vào Zone mới,
 transaction phải bảo đảm có idempotent template projection intent. DP vẫn hydrate consumer binding trước;
 template chỉ được lazy-load khi message cần render và dependency đến trễ sẽ đi retry/degraded path, không làm hỏng L1 config.
@@ -191,7 +191,7 @@ personal_mail_template_versions / tenant_mail_template_versions
 
 - `template_version` định danh immutable content.
 - `template_revision` là optimistic concurrency clock, tăng khi publish version mới.
-- Không có cột `scope`: table Personal/Tenant là authorization namespace vật lý. IAM system mail dùng `system_mail_templates`, không giả ownership customer.
+- Không có cột `scope`: table Personal/Tenant là authorization namespace vật lý. Verification mail dùng ordinary root-owned Personal template/consumer, không có system-template namespace.
 - Personal template không lưu `created_by/updated_by`; Tenant template và version giữ actor audit.
 - Version không bị UPDATE riêng lẻ. Hard-delete hợp lệ xóa toàn bộ identity + versions trong một transaction có explicit session-scoped bypass.
 - PostgreSQL trigger chặn `UPDATE/DELETE` version ngoài transaction hard-delete aggregate.
@@ -257,15 +257,16 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Upsert cũ đến sau delete | DP tombstone version cao hơn; bỏ event cũ |
 | Runtime report từ pod cũ | Logical slot row + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
-| Workspace/Broker đổi Zone | Header mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
+| Workspace/Broker đổi Zone | Authorized context mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
 | Workspace placement đổi giữa resolve và commit | Guarded transaction cross-check authoritative workspace; zero row → not found/conflict |
 | Hai create cùng code | Unique workspace/code index; một transaction thắng, transaction còn lại nhận `409` |
 | Create/update consumer đồng thời delete template | Consumer mutation giữ `KEY SHARE`; delete giữ `FOR UPDATE` và kiểm tra reference trước khi xóa |
 
 ## 8. Security requirements
 
-- Envoy/ACR phải strip mọi client-supplied `X-Zone-ID`/`X-Workspace-ID`, authorize rồi inject lại; direct CP ingress bị NetworkPolicy chặn.
+- Envoy/ACR phải strip mọi client-supplied scope metadata rồi tạo authenticated context; direct CP ingress bị NetworkPolicy chặn.
 - Authorization luôn dựa authenticated caller + authoritative Workspace membership/ownership; consumer query luôn scope theo Workspace.
+- Repository fail closed nếu `MailOutboxRecord.zone_id` khác Zone trên aggregate đã đi qua Workspace authorization guard.
 - Service tự derive exact secret-reference namespace/scope; request không nhận locator và response chỉ trả `source_configured`.
 - Dataplane chỉ thay thế placeholder `{{...}}` từ message variables; template content không mang schema/function/code executable.
 - Error message của job phải sanitized và bounded; không lưu delivery history tại CP.

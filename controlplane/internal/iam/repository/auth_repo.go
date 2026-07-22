@@ -151,7 +151,7 @@ func (r *AuthRepository) LoginUserTenant(
 	return loginUser, nil
 }
 
-func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile, verificationMail *iamEntity.IamOutboxRecord) error {
+func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntity.User, profile iamEntity.UserProfile) error {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("iam repo: begin register tx: %w", err)
@@ -229,26 +229,6 @@ func (r *AuthRepository) CreateRegisteredUser(ctx context.Context, user iamEntit
 		profileModel.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("iam repo: insert user profile: %w", err)
-	}
-
-	if verificationMail == nil {
-		return fmt.Errorf("iam repo: verification mail outbox is required")
-	}
-	// [COMMENT]: User, profile và mail intent cùng commit; HTTP 201 không thể tồn tại nếu thiếu durable outbox row.
-	outboxQuery := fmt.Sprintf(`
-		INSERT INTO %s.iam_outbox_records (
-			event_id, routing_scope, job_topic, payload, owner_id, owner_type, actor_user_id, status,
-			job_version, resource_id, payload_schema_version, trace_id, idle
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`, r.schema)
-	if _, err := tx.Exec(ctx, outboxQuery,
-		verificationMail.EventID, verificationMail.RoutingScope, verificationMail.JobTopic,
-		verificationMail.Payload, verificationMail.OwnerID, verificationMail.OwnerType,
-		verificationMail.ActorUserID, verificationMail.Status, verificationMail.JobVersion,
-		verificationMail.ResourceID, verificationMail.PayloadSchemaVersion,
-		verificationMail.TraceID, verificationMail.Idle,
-	); err != nil {
-		return fmt.Errorf("iam repo: insert verification outbox: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

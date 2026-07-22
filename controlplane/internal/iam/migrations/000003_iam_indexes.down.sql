@@ -1,7 +1,3 @@
-DROP INDEX IF EXISTS idx_iam_outbox_pending;
-DROP INDEX IF EXISTS idx_iam_outbox_terminal_cleanup;
-
-
 -- [COMMENT]: Bỏ drop index admin do bảng đã xóa
 DROP INDEX IF EXISTS oauth_tokens_expires_at_idx;
 DROP INDEX IF EXISTS oauth_tokens_grant_id_idx;
