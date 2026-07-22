@@ -5,6 +5,9 @@ pub mod model;
 pub mod monitor;
 pub mod projection;
 pub mod runtime_configuration;
+pub mod stream;
+pub mod stream_dispatcher;
+pub mod stream_processor;
 pub mod stream_supervisor;
 pub mod template;
 
@@ -42,8 +45,19 @@ impl MailRuntime {
         let batcher = MailBatcherHandle::start(config, jmap.clone(), stats.clone());
         let configuration =
             runtime_configuration::MailConfigurationRuntime::new(config, zone_kv.clone());
-        let stream_supervisor =
-            stream_supervisor::MailStreamSupervisor::new(config, configuration.clone(), zone_kv);
+        let stream_processor = stream_processor::MailStreamProcessor::new(
+            config,
+            configuration.clone(),
+            zone_kv.clone(),
+            batcher.clone(),
+            sender.clone(),
+        );
+        let stream_supervisor = stream_supervisor::MailStreamSupervisor::new(
+            config,
+            configuration.clone(),
+            zone_kv,
+            stream_processor.clone(),
+        );
         Ok(Arc::new(Self {
             batcher,
             configuration,

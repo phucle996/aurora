@@ -68,13 +68,25 @@ message KafkaStreamPayloadV1 {
   string consumer_group = 3;
 }
 
-message MailMessageMappingV1 {
-  // [COMMENT]: JSONPath tùy chọn lấy external event id cho audit; không dùng thay Kafka coordinate để dedupe.
-  string external_message_id_json_path = 1;
-  // [COMMENT]: JSONPath bắt buộc trả đúng một recipient scalar.
-  string recipient_json_path = 2;
-  // [COMMENT]: Template variable name -> JSONPath scalar; object/array bị reject nếu schema không cho phép.
-  map<string, string> variable_json_paths = 3;
+message RedisStreamPayloadV1 {
+  // [COMMENT]: Ciphertext chứa URL/TLS/auth; chỉ Redis Stream suite tại Zone được giải mã.
+  bytes source_config_envelope = 1;
+  string stream_key = 4;
+  string consumer_group = 5;
+}
+
+message NatsJetStreamPayloadV1 {
+  // [COMMENT]: NATS customer connection độc lập với NATS Core trung tâm và Zone NATS KV.
+  bytes source_config_envelope = 1;
+  string stream_name = 6;
+  string durable_name = 7;
+}
+
+message RabbitMqPayloadV1 {
+  // [COMMENT]: Ciphertext chứa AMQPS endpoint/auth; plaintext chỉ tồn tại trong RabbitMQ suite.
+  bytes source_config_envelope = 1;
+  string queue_name = 8;
+  string consumer_tag_prefix = 9;
 }
 
 message MailConsumerUpsertV1 {
@@ -84,17 +96,18 @@ message MailConsumerUpsertV1 {
   // [COMMENT]: Monotonic version; DP chỉ apply version lớn hơn version hiện có.
   uint64 config_version = 3;
   MailStreamSourceV1 stream = 4;
-  MailMessageMappingV1 mapping = 5;
-  // [COMMENT]: Template identity được bind cố định tại config, không đọc từ Kafka payload.
+  // [COMMENT]: Field mapping cũ bị loại bỏ; broker payload V1 luôn là fixed envelope {to, parameter}.
+  reserved 5;
+  // [COMMENT]: Template identity được bind cố định tại config, không đọc từ customer broker payload.
   string template_id = 6;
   // [COMMENT]: Immutable content version; luôn lớn hơn 0.
   uint64 template_version = 7;
-  // [COMMENT]: Sender identity được bind cố định tại config, không đọc từ Kafka payload.
+  // [COMMENT]: Sender identity được bind cố định tại config, không đọc từ customer broker payload.
   string sender_profile_id = 8;
   // [COMMENT]: Immutable sender version; luôn lớn hơn 0.
   uint64 sender_version = 9;
   MailConsumerDesiredState desired_state = 10;
-  // [COMMENT]: Số runtime slots tối đa; lease/fencing tại Zone giới hạn số Kafka connection thực tế.
+  // [COMMENT]: Số runtime slots tối đa; mỗi broker suite tự diễn giải connection/consumer concurrency.
   uint32 parallelism = 11;
   // [COMMENT]: SHA-256 32-byte của canonical config để phát hiện cùng version nhưng khác payload.
   bytes config_sha256 = 12;

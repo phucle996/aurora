@@ -9,29 +9,30 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Trạng thái | Phase 0-3 implemented: contract, schema, scoped domain/repository/service và HTTP API |
+| Trạng thái | Phase 0-8 implemented trong code; broker runtime activation vẫn gated tại Dataplane |
 | Controlplane owns | Consumer config, template/version và outbox |
-| Dataplane owns | Broker connection, consume, mapping, render, offset, JMAP delivery |
+| Dataplane owns | Broker connection, consume, fixed-envelope decode, render, offset, JMAP delivery |
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
 | Placement | Consumer row không lưu Zone; outbox ghi `routing_scope=zone:<uuid>` từ trusted `X-Zone-ID` sau cross-check Workspace |
 | Contract | `controlplane/internal/mail/transport/rpc/proto/mail_runtime.proto` |
 | Schema | `controlplane/internal/mail/migrations/000001..000005` |
 | Related SoT | `mail_configuration_projection_god_view.md`, `dataplane_broker_mail_execution_god_view.md` |
-| Locked at | 2026-07-19 |
+| Verified against | Working tree, 2026-07-21 |
 
 ## 1. Non-negotiable boundaries
 
 1. Controlplane chỉ lưu **desired state**; `RUNNING/ERROR/DRAINING` là reported state từ Dataplane.
-2. Controlplane không thử mở socket tới Kafka trong create/update/test API.
+2. Controlplane không thử mở socket tới customer broker trong create/update/test API.
 3. Broker connection config là business data: CP lưu `source_config_envelope` đã mã hóa trong PostgreSQL và projection đóng gói vào generic `MailStreamSourceV1.payload`.
 4. Zone không phụ thuộc Vault. Broker-resource flow tạo envelope bằng zone-local encryption contract; DP Phase 6 mới giải mã trong memory khi mở connection, không ghi plaintext vào Redis/log/result.
-5. `sender_profile_id`, `template_id` và version được bind trong consumer config; Kafka payload không được chọn tùy ý.
+5. `sender_profile_id`, `template_id` và version được bind trong consumer config; customer message không được chọn tùy ý.
 6. Template content version chỉ gồm subject + HTML và là immutable. Update luôn tạo row version mới; Dataplane tự detect `{{placeholder}}` khi render.
-7. Một Kafka message tương ứng một recipient ở phase đầu.
-8. Delivery history chưa thuộc scope hiện tại; hot path chỉ trả JMAP accepted/rejected cho job lifecycle.
-9. Client không được tự chọn routing Zone: Envoy/ACR strip header bên ngoài rồi inject `X-Zone-ID`; handler chỉ đọc UUID đã parse từ context.
-10. Mail module có đúng một `mail_outbox_records`; `routing_scope` định tuyến như các module khác và `job_topic` chọn dispatcher.
-11. Mail outbox giữ đúng transport shape chung; aggregate/version/hash và lifecycle data nằm trong protobuf `payload`, không thêm cột theo từng event type.
+7. Broker message dùng fixed envelope `{ "to": "...", "parameter": {...} }`; Controlplane không lưu JSONPath/message mapping.
+8. Một broker message tương ứng một recipient ở phase đầu.
+9. Delivery history chưa thuộc scope hiện tại; hot path chỉ trả JMAP accepted/rejected cho job lifecycle.
+10. Client không được tự chọn routing Zone: Envoy/ACR strip header bên ngoài rồi inject `X-Zone-ID`; handler chỉ đọc UUID đã parse từ context.
+11. Mail module có đúng một `mail_outbox_records`; `routing_scope` định tuyến như các module khác và `job_topic` chọn dispatcher.
+12. Mail outbox giữ đúng transport shape chung; aggregate/version/hash và lifecycle data nằm trong protobuf `payload`, không thêm cột theo từng event type.
 
 ## 2. Component ownership
 
@@ -51,8 +52,8 @@ flowchart LR
 
 | Thành phần | Có quyền quyết định | Không được làm |
 |---|---|---|
-| Consumer handler | Normalize và validate toàn bộ HTTP input, UUID, pagination, mapping path | Business transition |
-| Consumer service | Tạo desired config/version, deterministic event và outbox | Normalize/validate lại HTTP input, kết nối Kafka |
+| Consumer handler | Normalize và validate HTTP input, UUID, pagination, broker/template binding | Business transition |
+| Consumer service | Tạo desired config/version, deterministic event và outbox | Normalize/validate lại HTTP input, kết nối customer broker |
 | Template handler | Normalize và validate HTTP shape, subject/HTML size limit, header injection | Detect placeholder |
 | Template service | Canonicalize subject + HTML, publish immutable version và outbox | Parse variables, render production mail |
 | Repository | Query, authorization fail-close, optimistic concurrency và atomic aggregate + outbox CTE | Normalize/validate transport input |
@@ -65,11 +66,22 @@ flowchart LR
 | Nhóm | Fields |
 |---|---|
 | Identity | `consumer_id`, `workspace_id` |
-| Kafka binding | `broker_resource_id`, `source_config_envelope`, `topic`, `consumer_group` |
-| Message mapping | recipient JSONPath, external ID JSONPath, variable-name → JSONPath map |
+| Stream binding | `source_type`, `broker_resource_id`, `source_config_envelope`; hai business columns `topic/consumer_group` mang nghĩa suite-specific ở bảng dưới |
+| Message contract | Không lưu mapping; mọi broker record dùng fixed envelope `{to, parameter}` |
 | Mail binding | `template_id/version`, `sender_profile_id/version` |
 | Runtime controls | desired state, parallelism |
 | Concurrency | monotonic `config_version`, timestamps |
+
+Hai tên cột `topic`/`consumer_group` được giữ ở business schema hiện tại, nhưng API/Console diễn giải rõ theo discriminator:
+
+| `source_type` | `topic` mang nghĩa | `consumer_group` mang nghĩa | Adapter protobuf |
+|---|---|---|---|
+| `kafka` | topic | consumer group | `KafkaStreamPayloadV1` |
+| `redis_stream` | stream key | consumer group | `RedisStreamPayloadV1` |
+| `nats_jetstream` | stream name | durable name | `NatsJetStreamPayloadV1` |
+| `rabbitmq` | queue name | consumer tag prefix | `RabbitMqPayloadV1` |
+
+Service và JO reconciler đều match đủ bốn branch rồi encode adapter protobuf. Không được mặc định mọi row thành Kafka.
 
 ### 3.2 Creation authorization
 
@@ -86,7 +98,7 @@ sequenceDiagram
     CP->>R: Guard caller + Workspace + Tenant/Personal + Zone
     R-->>CP: scoped mutation result
     CP->>CP: Validate template belongs Workspace/platform + sender versions
-    CP->>CP: Validate JSONPaths, topic/group and bounded parallelism
+	CP->>CP: Validate topic/group, template/sender binding and bounded parallelism
 	CP->>DB: BEGIN transaction; KEY SHARE template identity
 	DB->>DB: authorize scope + bind immutable template version
 	DB->>DB: INSERT consumer(version=1, desired=PAUSED)
@@ -110,11 +122,12 @@ template chỉ được lazy-load khi message cần render và dependency đến
 > mutation repository nhận thêm `MailOutboxRecord` do service tạo và commit aggregate + outbox trong cùng PostgreSQL transaction.
 > API nhận `source_config_envelope` dạng base64, tối đa 16 KiB, do broker-resource flow đã mã hóa;
 > API đọc không bao giờ echo ciphertext mà chỉ trả `source_configured`. Update không gửi envelope sẽ giữ nguyên
-> ciphertext hiện tại; optimistic `config_version` đóng race giữa lần đọc-giữ và UPDATE. Consumer `ENABLED`
+> ciphertext hiện tại chỉ khi `source_type + broker_resource_id` không đổi. Vì AES-GCM AAD bind hai identity này,
+> đổi một trong hai bắt buộc gửi envelope mới; optimistic `config_version` đóng race giữa lần đọc-giữ và UPDATE. Consumer `ENABLED`
 > bắt buộc có envelope ở cả service và database constraint. DP Phase 6 giải mã bằng zone-local key material;
 > Vault chỉ phục vụ authentication subsystem, không tham gia Mail Zone runtime.
 
-> Mỗi consumer pin đúng **một** `template_id + template_version`; Kafka payload không có template selector.
+> Mỗi consumer pin đúng **một** `template_id + template_version`; broker payload không có template selector.
 > Template catalog có thể được nhiều consumer tham chiếu, nhưng một message của consumer không được fan-out qua nhiều template.
 
 ### 3.3 Desired state
@@ -139,7 +152,7 @@ stateDiagram-v2
 | Desired | Reported ví dụ | Ý nghĩa UI |
 |---|---|---|
 | `PAUSED` | `STOPPED`/`PAUSED` | Đúng desired state |
-| `ENABLED` | `STARTING` | Đang thiết lập Kafka consumer |
+| `ENABLED` | `STARTING` | Đang thiết lập broker suite |
 | `ENABLED` | `RUNNING` | Hoạt động |
 | `ENABLED` | `DEGRADED` | Một phần runtime/partition lỗi nhưng vẫn còn khả năng xử lý |
 | `ENABLED` | `ERROR` | Desired vẫn enabled nhưng runtime lỗi |
@@ -261,6 +274,10 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | 2 | Personal/Tenant domain/repository/service + transactional outbox — implemented |
 | 3 | Rewritten Personal/Tenant HTTP API, bounded body/cursor, resource code, error mapping — implemented |
 | 4 | Projection/reconciliation |
+| 5 | Zone KV COW registry + lazy template |
+| 6 | Fenced supervisor + stream dispatcher |
+| 7 | Fixed envelope + render/JMAP processor |
+| 8 | Kafka/Redis Stream/JetStream/RabbitMQ suites + native settlement, activation gated |
 | 9 | Delivery history (future, chưa triển khai) |
 
 ## 10. Cloud Console contract
@@ -275,9 +292,13 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 - Consumer update/pause/resume/delete gửi `expected_config_version`; template publish/delete gửi
   `expected_revision`. HTTP `409` không được auto-retry hoặc overwrite, UI yêu cầu reload latest.
 - Consumer mới luôn hiển thị `PAUSED`. Desired state không được trình bày như reported runtime state.
+- Consumer form không có JSONPath mapper; Console hiển thị fixed broker envelope
+  `{ "to": "alice@example.com", "parameter": {"name": "Alice"} }` và nhắc parameter key phải khớp placeholder.
+- Console cho chọn đúng bốn `source_type`; nhãn hai field binding đổi theo suite: topic/group,
+  stream/group, stream/durable hoặc queue/consumer-tag-prefix.
 - System template không xuất hiện trong customer Console; published customer version không edit trực tiếp. Hard-delete yêu cầu
   xóa hoặc chuyển mọi consumer đang tham chiếu trước.
 - Action create/update/delete được gate riêng theo render-context capability; repository vẫn authorize
   fail-close, vì UI permission không phải security boundary.
 
-Cho đến khi các phase tương ứng hoàn tất, tài liệu này mô tả **locked target contract**, không được dùng để tuyên bố runtime hiện tại đã có Kafka consumer/history.
+Broker suites đã có trong code nhưng production activation vẫn fail-closed mặc định. Delivery history chưa được triển khai.

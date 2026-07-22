@@ -82,7 +82,7 @@ released_at_unix_ms
 
 Health monitor dùng rotating lease với stable pod ID và same-owner cooldown. Sau một cycle, replica khác được ưu tiên; deployment một replica vẫn tự chạy lại sau cooldown. Snapshot luôn chứa fencing/cycle token và probe node để điều tra split-brain.
 
-## 5. Mail stream runtime Phase 6
+## 5. Mail stream runtime Phase 6–8
 
 Mail configuration vẫn hydrate từ `AURORA_ZONE_CONFIG`, nhưng broker runtime dùng lease riêng
 `mail.consumer.slot.{consumer_id}.{slot}` trong `AURORA_ZONE_COORDINATION`. Một central supervisor có
@@ -90,11 +90,18 @@ initial/per-slot jitter, hard cap `MAIL_STREAM_MAX_SLOTS_PER_POD` và chỉ reco
 slot kết thúc hoặc đến retry window.
 
 - Outbox/KV snapshot decode `MailStreamSourceV1`: `stream_type`, adapter schema version, broker resource ID và opaque adapter bytes.
-- Kafka adapter hiện đã ship; Redis Stream, NATS JetStream và RabbitMQ giữ stable discriminator nhưng trả `MAIL_STREAM_ADAPTER_UNSUPPORTED` theo consumer.
+- Dispatcher match `stream_type` đúng một lần; Kafka, Redis Stream, NATS JetStream và RabbitMQ đều có suite connect/consume/retry/settlement riêng.
 - `MAIL_STREAM_ENVELOPE_KEY_HEX` là Zone-local AES-256 key dạng 64 hex characters. Thiếu/sai key không làm pod crash; chỉ consumer cần key không được start.
-- `MAIL_STREAM_CA_CERT_PATH` tùy chọn pin thêm private Zone CA từ trusted pod deployment; customer payload không chứa filesystem path.
-- Kafka chỉ chấp nhận `ssl` hoặc `sasl_plain_ssl`; auto-commit luôn tắt.
-- Record đi vào bounded MPSC (`MAIL_STREAM_INGRESS_CAPACITY`). Phase 6 không ACK/commit; Phase 7–8 phải hoàn tất trước khi công bố broker-to-mail end-to-end.
+- `MAIL_STREAM_CA_CERT_PATH` tùy chọn pin thêm private Kafka CA từ trusted pod deployment; customer payload không chứa filesystem path.
+- Kafka chỉ chấp nhận TLS, Redis Stream dùng `rediss://`, customer JetStream dùng `tls://`, RabbitMQ dùng `amqps://`.
+- `MAIL_STREAM_MAX_INFLIGHT_PER_SLOT` tạo broker-native backpressure: Kafka bounded poll, Redis bounded read/claim,
+  JetStream bounded local tasks và RabbitMQ QoS/prefetch.
+- Phase 7 processor chỉ chấp nhận JSON cố định `{ "to": "...", "parameter": {...} }`, compile/cache placeholder
+  theo immutable template snapshot, escape HTML rồi trả typed status cho suite settlement.
+- `MAIL_STREAM_PROCESSOR_CONCURRENCY` giới hạn render/JMAP inflight toàn pod, độc lập với số broker slot.
+- Kafka commit highest contiguous terminal offset; Redis dùng PEL/XAUTOCLAIM/XACK; JetStream dùng
+  Progress/double-ACK/Term; RabbitMQ dùng ACK/reject và bắt buộc stable AMQP `message_id`.
+- `MAIL_STREAM_DELIVERY_ENABLED` vẫn mặc định `false` cho tới khi bốn suite vượt staging TLS/failure/rebalance E2E gates.
 - Slot health nằm tại `AURORA_ZONE_HEALTH/mail.runtime.{consumer_id}.{slot}` và dùng fencing token để writer cũ không overwrite generation mới.
 
 ## 6. Recovery và failure semantics
@@ -113,7 +120,10 @@ slot kết thúc hoặc đến retry window.
 
 - `src/infra/zone_kv.rs`: bucket bootstrap, CAS metadata và fenced/rotating lease.
 - `src/job_lifecycle/consumer.rs`: fail-closed ingestion và lease acquisition.
-- `src/executor/mail/stream_supervisor.rs`: generic slot supervisor, AES-GCM envelope boundary và Kafka Phase-6 adapter.
+- `src/executor/mail/stream_supervisor.rs`: desired slot scheduling, jitter và Zone lease/fencing.
+- `src/executor/mail/stream_dispatcher.rs`: match stream type đúng một lần.
+- `src/executor/mail/stream/`: common encrypted-envelope/fence/health và bốn broker suites độc lập.
+- `src/executor/mail/stream_processor.rs`: fixed envelope, lazy template render và typed JMAP result.
 - `src/job_lifecycle/runner.rs`: execution, result/XACK và RAII cleanup.
 - `src/workerpool/watchdog.rs`: timeout và bounded-concurrent lease renewal.
 - `src/observability/resource.rs`: per-node health snapshot.

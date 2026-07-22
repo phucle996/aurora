@@ -1,6 +1,7 @@
 use super::runtime_proto::{
-    KafkaStreamPayloadV1, MailConsumerUpsertV1, MailMessageMappingV1, MailStreamSourceV1,
-    MailStreamType, MailTemplateVersionPublishedV1,
+    KafkaStreamPayloadV1, MailConsumerUpsertV1, MailStreamSourceV1, MailStreamType,
+    MailTemplateVersionPublishedV1, NatsJetStreamPayloadV1, RabbitMqPayloadV1,
+    RedisStreamPayloadV1,
 };
 use crate::config::Config;
 use crate::infra::zone_kv::{ConsumerConfigHead, TemplateConfigHead, ZoneKvStore};
@@ -110,14 +111,6 @@ pub struct RuntimeStreamSource {
     pub payload: Vec<u8>,
 }
 
-#[allow(dead_code)] // [COMMENT]: Phase 7 mapper consumes these paths; Phase 5 only validates and pins them.
-#[derive(Clone, Debug)]
-pub struct RuntimeMessageMapping {
-    pub external_message_id_json_path: String,
-    pub recipient_json_path: String,
-    pub variable_json_paths: HashMap<String, String>,
-}
-
 #[allow(dead_code)] // [COMMENT]: Phase 7 renderer consumes the immutable template fields.
 #[derive(Clone, Debug)]
 pub struct RuntimeTemplateSnapshot {
@@ -127,6 +120,16 @@ pub struct RuntimeTemplateSnapshot {
     pub content_sha256: [u8; 32],
     pub subject_template: String,
     pub html_template: String,
+    /// [COMMENT]: Placeholder offsets được compile một lần lúc L1 miss; hot path không scan lại template cho từng mail.
+    pub subject_tokens: Vec<RuntimeTemplateToken>,
+    pub html_tokens: Vec<RuntimeTemplateToken>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeTemplateToken {
+    pub start: usize,
+    pub end: usize,
+    pub key: String,
 }
 
 #[allow(dead_code)] // [COMMENT]: Phase 6/7 consume the prepared immutable runtime configuration.
@@ -136,7 +139,6 @@ pub struct RuntimeConsumerConfiguration {
     pub config_version: u64,
     pub config_sha256: [u8; 32],
     pub stream: RuntimeStreamSource,
-    pub mapping: RuntimeMessageMapping,
     // [COMMENT]: Consumer chỉ pin identity/version. Template content được lazy-load đúng lúc xử lý message.
     pub template_id: String,
     pub template_version: u64,
@@ -235,6 +237,13 @@ impl MailConfigurationRuntime {
                         .len()
                         .saturating_add(template.html_template.len())
                         .saturating_add(template.template_id.len())
+                        .saturating_add(
+                            template
+                                .subject_tokens
+                                .len()
+                                .saturating_add(template.html_tokens.len())
+                                .saturating_mul(64),
+                        )
                         .saturating_add(128)
                         .min(u32::MAX as usize) as u32
                 },
@@ -251,6 +260,7 @@ impl MailConfigurationRuntime {
             scan_page_size: config.mail_config_scan_page_size,
             scan_max_pages_per_tick: config.mail_config_scan_max_pages_per_tick,
             max_consumer_entries: config.mail_consumer_l1_max_entries,
+            // [COMMENT]: Cache có tổng budget riêng; một immutable template vẫn phải nằm dưới per-message hard cap.
             max_template_bytes: config.mail_max_message_bytes,
             consumers: ArcSwap::from_pointee(HashMap::new()),
             templates,
@@ -637,13 +647,7 @@ impl MailConfigurationRuntime {
         let stream = event.stream.as_ref().ok_or_else(|| {
             ConfigurationLoadError::new("MAIL_CONFIG_STREAM_MISSING", "stream source is missing")
         })?;
-        let mapping = event.mapping.as_ref().ok_or_else(|| {
-            ConfigurationLoadError::new(
-                "MAIL_CONFIG_MAPPING_MISSING",
-                "mail message mapping is missing",
-            )
-        })?;
-        self.validate_consumer_contract(metadata.schema_version, &event, stream, mapping)?;
+        self.validate_consumer_contract(metadata.schema_version, &event, stream)?;
 
         let desired_state = if event.desired_state == 2 {
             RuntimeDesiredState::Enabled
@@ -678,11 +682,6 @@ impl MailConfigurationRuntime {
                     broker_resource_id,
                     payload: stream.payload.clone(),
                 },
-                mapping: RuntimeMessageMapping {
-                    external_message_id_json_path: mapping.external_message_id_json_path.clone(),
-                    recipient_json_path: mapping.recipient_json_path.clone(),
-                    variable_json_paths: mapping.variable_json_paths.clone(),
-                },
                 template_id: event.template_id.clone(),
                 template_version: event.template_version,
                 sender_profile_id: event.sender_profile_id.clone(),
@@ -698,7 +697,6 @@ impl MailConfigurationRuntime {
         schema_version: u32,
         event: &MailConsumerUpsertV1,
         stream: &MailStreamSourceV1,
-        mapping: &MailMessageMappingV1,
     ) -> Result<(), ConfigurationLoadError> {
         let metadata_valid = event
             .metadata
@@ -715,37 +713,72 @@ impl MailConfigurationRuntime {
             value if value == MailStreamType::Rabbitmq as i32 => Some(MailStreamType::Rabbitmq),
             _ => None,
         };
-        let kafka =
-            if stream_type == Some(MailStreamType::Kafka) && stream.payload_schema_version == 1 {
-                KafkaStreamPayloadV1::decode(stream.payload.as_slice()).ok()
-            } else {
-                None
-            };
-        let topic_valid = kafka.as_ref().is_some_and(|kafka| {
-            !kafka.topic.is_empty()
-                && kafka.topic.len() <= 249
-                && kafka
-                    .topic
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        });
-        let group_valid = kafka.as_ref().is_some_and(|kafka| {
-            !kafka.consumer_group.trim().is_empty()
-                && kafka.consumer_group.len() <= 255
-                && !kafka.consumer_group.chars().any(char::is_control)
-        });
-        let mapping_valid = mapping.recipient_json_path.starts_with('$')
-            && mapping.recipient_json_path.len() <= 512
-            && mapping.external_message_id_json_path.len() <= 512
-            && (mapping.external_message_id_json_path.is_empty()
-                || mapping.external_message_id_json_path.starts_with('$'))
-            && mapping.variable_json_paths.len() <= 256
-            && mapping.variable_json_paths.iter().all(|(name, path)| {
-                !name.trim().is_empty()
-                    && name.len() <= 128
-                    && path.starts_with('$')
-                    && path.len() <= 512
-            });
+        // [COMMENT]: Mỗi branch decode đúng adapter protobuf của chính nó; outer contract không diễn giải field broker.
+        let source_valid = match stream_type {
+            Some(MailStreamType::Kafka) if stream.payload_schema_version == 1 => {
+                KafkaStreamPayloadV1::decode(stream.payload.as_slice())
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload.source_config_envelope.len() <= 16 << 10
+                            && (event.desired_state != 2
+                                || !payload.source_config_envelope.is_empty())
+                            && !payload.topic.is_empty()
+                            && payload.topic.len() <= 249
+                            && payload.topic.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                            })
+                            && !payload.consumer_group.trim().is_empty()
+                            && payload.consumer_group.len() <= 255
+                            && !payload.consumer_group.chars().any(char::is_control)
+                    })
+            }
+            Some(MailStreamType::RedisStream) if stream.payload_schema_version == 1 => {
+                RedisStreamPayloadV1::decode(stream.payload.as_slice())
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload.source_config_envelope.len() <= 16 << 10
+                            && (event.desired_state != 2
+                                || !payload.source_config_envelope.is_empty())
+                            && !payload.stream_key.trim().is_empty()
+                            && payload.stream_key.len() <= 512
+                            && !payload.stream_key.chars().any(char::is_control)
+                            && !payload.consumer_group.trim().is_empty()
+                            && payload.consumer_group.len() <= 255
+                            && !payload.consumer_group.chars().any(char::is_control)
+                    })
+            }
+            Some(MailStreamType::NatsJetstream) if stream.payload_schema_version == 1 => {
+                NatsJetStreamPayloadV1::decode(stream.payload.as_slice())
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload.source_config_envelope.len() <= 16 << 10
+                            && (event.desired_state != 2
+                                || !payload.source_config_envelope.is_empty())
+                            && !payload.stream_name.trim().is_empty()
+                            && payload.stream_name.len() <= 255
+                            && !payload.stream_name.chars().any(char::is_control)
+                            && !payload.durable_name.trim().is_empty()
+                            && payload.durable_name.len() <= 255
+                            && !payload.durable_name.chars().any(char::is_control)
+                    })
+            }
+            Some(MailStreamType::Rabbitmq) if stream.payload_schema_version == 1 => {
+                RabbitMqPayloadV1::decode(stream.payload.as_slice())
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload.source_config_envelope.len() <= 16 << 10
+                            && (event.desired_state != 2
+                                || !payload.source_config_envelope.is_empty())
+                            && !payload.queue_name.trim().is_empty()
+                            && payload.queue_name.len() <= 255
+                            && !payload.queue_name.chars().any(char::is_control)
+                            && !payload.consumer_tag_prefix.trim().is_empty()
+                            && payload.consumer_tag_prefix.len() <= 128
+                            && !payload.consumer_tag_prefix.chars().any(char::is_control)
+                    })
+            }
+            _ => false,
+        };
         if schema_version != 1
             || !metadata_valid
             || stream_type.is_none()
@@ -754,15 +787,7 @@ impl MailConfigurationRuntime {
             || stream.broker_resource_id.len() != 16
             || stream.payload.is_empty()
             || stream.payload.len() > 32 << 10
-            // [COMMENT]: Phase 6 ship Kafka adapter; type đã biết nhưng adapter chưa ship vẫn nằm L1 và bị supervisor cô lập theo consumer.
-            || (stream_type == Some(MailStreamType::Kafka)
-                && (stream.payload_schema_version != 1
-                    || kafka.as_ref().is_some_and(|payload| payload.source_config_envelope.len() > 16 << 10)
-                    || (event.desired_state == 2
-                        && kafka.as_ref().is_none_or(|payload| payload.source_config_envelope.is_empty()))
-                    || !topic_valid
-                    || !group_valid))
-            || !mapping_valid
+            || !source_valid
             || event.template_id.trim().is_empty()
             || event.template_id.len() > 256
             || uuid::Uuid::parse_str(&event.template_id).is_err()
@@ -975,6 +1000,7 @@ async fn load_immutable_template(
         || event.template_version != key.template_version
         || event.template_revision == 0
         || event.subject_template.trim().is_empty()
+        || event.subject_template.contains(['\r', '\n'])
         || event.html_template.trim().is_empty()
         || content_bytes > max_template_bytes
         || canonical_template_sha256(&event.subject_template, &event.html_template) != event_hash
@@ -985,6 +1011,18 @@ async fn load_immutable_template(
             "template identity/version/canonical hash mismatch",
         ));
     }
+    let subject_tokens = compile_template_tokens(&event.subject_template).map_err(|_| {
+        ConfigurationLoadError::new(
+            "MAIL_TEMPLATE_SYNTAX_INVALID",
+            "template subject placeholder syntax is invalid",
+        )
+    })?;
+    let html_tokens = compile_template_tokens(&event.html_template).map_err(|_| {
+        ConfigurationLoadError::new(
+            "MAIL_TEMPLATE_SYNTAX_INVALID",
+            "template HTML placeholder syntax is invalid",
+        )
+    })?;
     Ok(Arc::new(RuntimeTemplateSnapshot {
         template_id: event.template_id,
         template_revision: event.template_revision,
@@ -992,7 +1030,52 @@ async fn load_immutable_template(
         content_sha256: event_hash,
         subject_template: event.subject_template,
         html_template: event.html_template,
+        subject_tokens,
+        html_tokens,
     }))
+}
+
+pub(crate) fn compile_template_tokens(
+    template: &str,
+) -> Result<Vec<RuntimeTemplateToken>, &'static str> {
+    let mut tokens = Vec::new();
+    let mut cursor = 0_usize;
+    while let Some(relative_open) = template[cursor..].find("{{") {
+        let start = cursor + relative_open;
+        if template[cursor..start].contains("}}") {
+            return Err("MAIL_TEMPLATE_SYNTAX_INVALID");
+        }
+        let token_start = start + 2;
+        let relative_close = template[token_start..]
+            .find("}}")
+            .ok_or("MAIL_TEMPLATE_SYNTAX_INVALID")?;
+        let close = token_start + relative_close;
+        let key = template[token_start..close].trim();
+        if key.contains(['{', '}']) || !valid_template_parameter_key(key) {
+            return Err("MAIL_TEMPLATE_SYNTAX_INVALID");
+        }
+        tokens.push(RuntimeTemplateToken {
+            start,
+            end: close + 2,
+            key: key.to_string(),
+        });
+        cursor = close + 2;
+    }
+    if template[cursor..].contains("}}") {
+        return Err("MAIL_TEMPLATE_SYNTAX_INVALID");
+    }
+    Ok(tokens)
+}
+
+fn valid_template_parameter_key(key: &str) -> bool {
+    if key.is_empty() || key.len() > 128 {
+        return false;
+    }
+    let mut bytes = key.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 #[cfg(test)]
@@ -1054,7 +1137,7 @@ fn decode_hex_sha256(value: &str) -> Option<[u8; 32]> {
     Some(output)
 }
 
-/// [COMMENT]: CP hash bỏ metadata/config_sha256 rồi deterministic-marshal protobuf; primitive này tái tạo đúng wire order, kể cả map sort.
+/// [COMMENT]: CP hash bỏ metadata/config_sha256 rồi deterministic-marshal protobuf; primitive này tái tạo đúng wire order.
 pub(crate) fn canonical_consumer_sha256(event: &MailConsumerUpsertV1) -> [u8; 32] {
     let mut bytes = Vec::new();
     push_bytes_field(&mut bytes, 2, &event.consumer_id);
@@ -1066,20 +1149,6 @@ pub(crate) fn canonical_consumer_sha256(event: &MailConsumerUpsertV1) -> [u8; 32
         push_bytes_field(&mut nested, 3, &stream.broker_resource_id);
         push_bytes_field(&mut nested, 4, &stream.payload);
         push_bytes_field(&mut bytes, 4, &nested);
-    }
-    if let Some(mapping) = &event.mapping {
-        let mut nested = Vec::new();
-        push_string_field(&mut nested, 1, &mapping.external_message_id_json_path);
-        push_string_field(&mut nested, 2, &mapping.recipient_json_path);
-        let mut variables = mapping.variable_json_paths.iter().collect::<Vec<_>>();
-        variables.sort_by(|left, right| left.0.cmp(right.0));
-        for (name, path) in variables {
-            let mut map_entry = Vec::new();
-            push_string_field(&mut map_entry, 1, name);
-            push_string_field(&mut map_entry, 2, path);
-            push_bytes_field(&mut nested, 3, &map_entry);
-        }
-        push_bytes_field(&mut bytes, 5, &nested);
     }
     push_string_field(&mut bytes, 6, &event.template_id);
     push_varint_field(&mut bytes, 7, event.template_version);
@@ -1142,9 +1211,6 @@ mod tests {
     use super::*;
 
     fn consumer_event(version: u64, hash_seed: u8) -> MailConsumerUpsertV1 {
-        let mut variables = HashMap::new();
-        variables.insert("order_code".to_string(), "$.data.order_code".to_string());
-        variables.insert("name".to_string(), "$.data.name".to_string());
         let mut event = MailConsumerUpsertV1 {
             metadata: None,
             consumer_id: [1_u8; 16].to_vec(),
@@ -1159,11 +1225,6 @@ mod tests {
                     consumer_group: "mailer".to_string(),
                 }
                 .encode_to_vec(),
-            }),
-            mapping: Some(MailMessageMappingV1 {
-                external_message_id_json_path: "$.event_id".to_string(),
-                recipient_json_path: "$.recipient".to_string(),
-                variable_json_paths: variables,
             }),
             template_id: "template-a".to_string(),
             template_version: 3,
@@ -1212,11 +1273,6 @@ mod tests {
                 }
                 .encode_to_vec(),
             },
-            mapping: RuntimeMessageMapping {
-                external_message_id_json_path: String::new(),
-                recipient_json_path: "$.recipient".to_string(),
-                variable_json_paths: HashMap::new(),
-            },
             template_id: uuid::Uuid::nil().to_string(),
             template_version: 1,
             sender_profile_id: "sender-a".to_string(),
@@ -1259,18 +1315,91 @@ mod tests {
         kafka.source_config_envelope.clear();
         stream.payload = kafka.encode_to_vec();
         let stream = event.stream.as_ref().expect("stream fixture");
-        let mapping = event.mapping.as_ref().expect("mapping fixture");
         assert!(runtime
-            .validate_consumer_contract(1, &event, stream, mapping)
+            .validate_consumer_contract(1, &event, stream)
             .is_err());
 
         // [COMMENT]: PAUSED config được phép chưa có credential để người dùng cấu hình rồi mới resume.
         event.desired_state = 1;
         let stream = event.stream.as_ref().expect("stream fixture");
-        let mapping = event.mapping.as_ref().expect("mapping fixture");
         assert!(runtime
-            .validate_consumer_contract(1, &event, stream, mapping)
+            .validate_consumer_contract(1, &event, stream)
             .is_ok());
+    }
+
+    #[test]
+    fn stream_discriminator_requires_the_matching_suite_payload() {
+        let runtime = test_runtime(10);
+        let mut event = consumer_event(1, 1);
+        event.template_id = uuid::Uuid::new_v4().to_string();
+        event.metadata = Some(super::super::runtime_proto::MailEventMetadataV1 {
+            event_id: [7; 16].to_vec(),
+            schema_version: 1,
+            occurred_at_unix_ms: 123,
+            traceparent: String::new(),
+            producer: "test".to_string(),
+        });
+        let envelope = vec![3_u8; 64];
+        let fixtures = [
+            (
+                MailStreamType::Kafka,
+                KafkaStreamPayloadV1 {
+                    source_config_envelope: envelope.clone(),
+                    topic: "orders.created".to_string(),
+                    consumer_group: "mailer".to_string(),
+                }
+                .encode_to_vec(),
+            ),
+            (
+                MailStreamType::RedisStream,
+                RedisStreamPayloadV1 {
+                    source_config_envelope: envelope.clone(),
+                    stream_key: "orders".to_string(),
+                    consumer_group: "mailer".to_string(),
+                }
+                .encode_to_vec(),
+            ),
+            (
+                MailStreamType::NatsJetstream,
+                NatsJetStreamPayloadV1 {
+                    source_config_envelope: envelope.clone(),
+                    stream_name: "ORDERS".to_string(),
+                    durable_name: "mailer".to_string(),
+                }
+                .encode_to_vec(),
+            ),
+            (
+                MailStreamType::Rabbitmq,
+                RabbitMqPayloadV1 {
+                    source_config_envelope: envelope,
+                    queue_name: "orders.mail".to_string(),
+                    consumer_tag_prefix: "aurora-mailer".to_string(),
+                }
+                .encode_to_vec(),
+            ),
+        ];
+
+        for (stream_type, payload) in fixtures {
+            let stream = event.stream.as_mut().expect("stream fixture");
+            stream.stream_type = stream_type as i32;
+            stream.payload = payload;
+            assert!(runtime
+                .validate_consumer_contract(1, &event, event.stream.as_ref().expect("stream"))
+                .is_ok());
+        }
+
+        // [COMMENT]: Outer discriminator không được decode nhầm bytes Kafka thành config Redis mặc định.
+        let stream = event.stream.as_mut().expect("stream fixture");
+        stream.stream_type = MailStreamType::RedisStream as i32;
+        stream.payload = KafkaStreamPayloadV1 {
+            source_config_envelope: vec![3; 64],
+            topic: "orders.created".to_string(),
+            consumer_group: "mailer".to_string(),
+        }
+        .encode_to_vec();
+        assert!(runtime
+            .validate_consumer_contract(1, &event, event.stream.as_ref().expect("stream"))
+            .is_err());
     }
 
     #[test]

@@ -9,7 +9,7 @@
 
 | Thuộc tính | Giá trị |
 |---|---|
-| Trạng thái | Phase 4 projection + Phase 5 L2→L1 + Phase 6 generic supervisor/Kafka adapter đã ship |
+| Trạng thái | Phase 4 projection + Phase 5 L2→L1 + Phase 6–8 fenced supervisor và bốn broker suites đã ship trong code; activation gated |
 | Authoritative source | Controlplane PostgreSQL aggregates + single `mail_outbox_records` |
 | Real-time trigger | PostgreSQL WAL/logical replication |
 | Projection transport | Redis Job Stream `jobs:<zone_id>` |
@@ -33,11 +33,11 @@ flowchart LR
     L2 -->|jittered periodic repair| DP2[DP Pod B]
     L2 -->|cold-start snapshot| DPN[DP Pod N]
 
-    K[(Customer Kafka)] -. mail data .-> DP1
+    K[(Customer broker)] -. mail data .-> DP1
     K -. mail data .-> DP2
 ```
 
-Customer Kafka payload không đi qua CP database, mail outbox hoặc Job Orchestrator.
+Customer broker payload không đi qua CP database, mail outbox hoặc Job Orchestrator.
 
 ## 2. Reliability boundaries
 
@@ -232,7 +232,7 @@ JO ack WAL sau durable `XADD`; Zone projector chỉ `XACK` command sau KV server
 5. Cold start **không preload template content**. Consumer L1 chỉ giữ đúng một pinned `template_id + version`.
 6. Khi message đầu tiên cần render, Moka L1 miss mới đọc đúng immutable template snapshot từ L2, validate hash và singleflight concurrent miss.
 7. Template dependency đến trễ làm message/partition đi bounded retry hoặc runtime `DEGRADED`; reconciler sửa revision drift, không full-hydrate mọi template.
-8. `RUNNING` phản ánh lease + Kafka readiness; template lỗi khi thực thi phải report riêng và không mutate consumer config generation.
+8. `RUNNING` phản ánh lease + broker-suite readiness; template lỗi khi thực thi phải report riêng và không mutate consumer config generation.
 
 Nếu L2 trống, DP không query CP DB. Nó yêu cầu zonal reconciliation và giữ mail broker runtime `STOPPED/STARTING` cho đến khi snapshot xuất hiện.
 
@@ -294,8 +294,8 @@ Dataplane ghi `MailConsumerRuntimeReportedV1` vào durable Zone result stream. R
 | Upsert v8 đến trước delayed delete v7 | Head v8; delete v7 bị bỏ |
 | Same version/different payload | Không last-write-wins; quarantine integrity conflict |
 | Pod bỏ lỡ revision trong một tick | Cold-start/periodic KV reconcile sửa lại |
-| Pod chết khi đang giữ runtime slot | Lease hết hạn; pod khác claim với fencing token mới rồi join cùng Kafka group |
-| Redis failover làm holder cũ tưởng còn lease | Kafka group + fencing token chặn callback/offset commit từ generation cũ |
+| Pod chết khi đang giữ runtime slot | Lease hết hạn; pod khác claim với fencing token mới rồi mở đúng broker suite |
+| Zone KV failover/stall làm holder cũ tưởng còn lease | Server fencing token + monotonic local deadline chặn submit/settlement generation cũ |
 | Consumer upsert đến trước template snapshot | Consumer binding vẫn COW; first-message lazy load fail bounded/retry, template projection hoặc reconcile unblock |
 | L2 failover mất projection mới | DB-backed snapshot reconciliation qua Redis Job rebuild |
 | CP snapshot thay đổi giữa các page | Snapshot watermark tránh destructive sweep sai |
@@ -304,9 +304,9 @@ Dataplane ghi `MailConsumerRuntimeReportedV1` vào durable Zone result stream. R
 
 ## 10. Security and data minimization
 
-- Projection payload không chứa Kafka username/password, SASL secret hoặc TLS private key.
+- Projection payload không chứa plaintext broker username/password/token/TLS private key.
 - Outbox row vẫn chỉ chứa `payload BYTEA`; bên trong `MailConsumerUpsertV1.stream` mang `stream_type`, adapter schema version, broker resource ID và adapter payload bytes.
-- `KafkaStreamPayloadV1.source_config_envelope` là opaque ciphertext tối đa 16 KiB. CP DB, outbox, JO và Zone NATS KV chỉ lưu/chuyển tiếp bytes; chỉ DP Kafka adapter giải mã bằng zone-local key material.
+- Mỗi suite payload mang `source_config_envelope` opaque tối đa 16 KiB. CP DB, outbox, JO và Zone NATS KV chỉ lưu/chuyển tiếp bytes; chỉ đúng DP suite giải mã bằng zone-local key material.
 - JO chỉ dùng `routing_scope` trong trusted outbox envelope để chọn Redis Job stream; protobuf không thể tự đổi Zone.
 - Zone projector so sánh stream/configured `zone_id`; command không thể yêu cầu ghi sang Redis của Zone khác.
 - Template body có thể chứa customer content: JetStream file-storage encryption/access policy và không log payload.

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -97,32 +98,35 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 	req.ConsumerGroup = strings.TrimSpace(req.ConsumerGroup)
 	req.TemplateID = strings.TrimSpace(req.TemplateID)
 	req.SenderProfileID = strings.TrimSpace(req.SenderProfileID)
-	req.Mapping.RecipientJSONPath = strings.TrimSpace(req.Mapping.RecipientJSONPath)
-	req.Mapping.ExternalMessageIDJSONPath = strings.TrimSpace(req.Mapping.ExternalMessageIDJSONPath)
 
-	if req.Name == "" || len(req.Name) > 255 || req.Topic == "" || len(req.Topic) > 249 ||
-		req.ConsumerGroup == "" || len(req.ConsumerGroup) > 255 ||
-		req.TemplateID == "" || len(req.TemplateID) > 128 || req.SenderProfileID == "" || len(req.SenderProfileID) > 128 {
-		apires.RespondBadRequest(c, "invalid consumer name, topic, group, template_id, or sender_profile_id")
+	if req.Name == "" || len(req.Name) > 255 || req.TemplateID == "" || len(req.TemplateID) > 128 ||
+		req.SenderProfileID == "" || len(req.SenderProfileID) > 128 {
+		apires.RespondBadRequest(c, "invalid consumer name, template_id, or sender_profile_id")
 		return
 	}
 
-	for _, brokerName := range []string{req.Topic, req.ConsumerGroup} {
-		for _, char := range brokerName {
+	// [COMMENT]: Mỗi source suite giữ validation của chính nó; không áp Kafka alphabet lên Redis key hay Rabbit queue.
+	invalidSource := req.Topic == "" || len(req.Topic) > 249 || req.ConsumerGroup == "" || len(req.ConsumerGroup) > 255
+	if req.SourceType == mailEntity.RabbitMQ && len(req.ConsumerGroup) > 128 {
+		invalidSource = true
+	}
+	for _, char := range req.Topic + req.ConsumerGroup {
+		if unicode.IsControl(char) {
+			invalidSource = true
+			break
+		}
+	}
+	if req.SourceType == mailEntity.Kafka {
+		for _, char := range req.Topic {
 			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
 				(char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-') {
-				apires.RespondBadRequest(c, "invalid characters in topic or consumer_group")
-				return
+				invalidSource = true
+				break
 			}
 		}
 	}
-
-	if !strings.HasPrefix(req.Mapping.RecipientJSONPath, "$") || len(req.Mapping.RecipientJSONPath) > 512 {
-		apires.RespondBadRequest(c, "invalid recipient_json_path")
-		return
-	}
-	if req.Mapping.ExternalMessageIDJSONPath != "" && (!strings.HasPrefix(req.Mapping.ExternalMessageIDJSONPath, "$") || len(req.Mapping.ExternalMessageIDJSONPath) > 512) {
-		apires.RespondBadRequest(c, "invalid external_message_id_json_path")
+	if invalidSource {
+		apires.RespondBadRequest(c, "invalid stream source fields")
 		return
 	}
 
@@ -131,7 +135,6 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
 		SourceConfigEnvelope: sourceConfigEnvelope,
 		Topic:                req.Topic, ConsumerGroup: req.ConsumerGroup,
-		Mapping:    mailEntity.MessageMapping{ExternalMessageIDJSONPath: req.Mapping.ExternalMessageIDJSONPath, RecipientJSONPath: req.Mapping.RecipientJSONPath, VariableJSONPaths: req.Mapping.VariableJSONPaths},
 		TemplateID: req.TemplateID, TemplateVersion: req.TemplateVersion,
 		SenderProfileID: req.SenderProfileID, SenderVersion: req.SenderVersion, Parallelism: req.Parallelism,
 	})
@@ -163,7 +166,6 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
-		"mapping":            consumer.MappingJSON,
 		"template_id":        consumer.TemplateID,
 		"template_version":   consumer.TemplateVersion,
 		"sender_profile_id":  consumer.SenderProfileID,
@@ -229,7 +231,6 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
-		"mapping":            consumer.MappingJSON,
 		"template_id":        consumer.TemplateID,
 		"template_version":   consumer.TemplateVersion,
 		"sender_profile_id":  consumer.SenderProfileID,
@@ -263,7 +264,7 @@ func (h *PersonalConsumerHandler) List(c *gin.Context) {
 	var source *mailEntity.SourceType
 	if raw := strings.TrimSpace(c.Query("source_type")); raw != "" {
 		value := mailEntity.SourceType(raw)
-		if value != mailEntity.Kafka {
+		if value != mailEntity.Kafka && value != mailEntity.RedisStream && value != mailEntity.NATSJetStream && value != mailEntity.RabbitMQ {
 			apires.RespondBadRequest(c, "invalid source_type")
 			return
 		}
@@ -336,7 +337,6 @@ func (h *PersonalConsumerHandler) List(c *gin.Context) {
 			"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 			"topic":              consumer.Topic,
 			"consumer_group":     consumer.ConsumerGroup,
-			"mapping":            consumer.MappingJSON,
 			"template_id":        consumer.TemplateID,
 			"template_version":   consumer.TemplateVersion,
 			"sender_profile_id":  consumer.SenderProfileID,
@@ -413,29 +413,41 @@ func (h *PersonalConsumerHandler) Update(c *gin.Context) {
 	req.ConsumerGroup = strings.TrimSpace(req.ConsumerGroup)
 	req.TemplateID = strings.TrimSpace(req.TemplateID)
 	req.SenderProfileID = strings.TrimSpace(req.SenderProfileID)
-	req.Mapping.RecipientJSONPath = strings.TrimSpace(req.Mapping.RecipientJSONPath)
-	req.Mapping.ExternalMessageIDJSONPath = strings.TrimSpace(req.Mapping.ExternalMessageIDJSONPath)
 
-	if req.Name == "" || len(req.Name) > 255 || req.Topic == "" || len(req.Topic) > 249 ||
-		req.ConsumerGroup == "" || len(req.ConsumerGroup) > 255 ||
-		req.TemplateID == "" || len(req.TemplateID) > 128 || req.SenderProfileID == "" || len(req.SenderProfileID) > 128 ||
+	if req.Name == "" || len(req.Name) > 255 || req.TemplateID == "" || len(req.TemplateID) > 128 ||
+		req.SenderProfileID == "" || len(req.SenderProfileID) > 128 ||
 		req.ExpectedConfigVersion == 0 {
 		apires.RespondBadRequest(c, "invalid consumer update parameters")
 		return
 	}
-	// [COMMENT]: Mapping syntax thuộc HTTP input contract, không đẩy validation xuống service/repository.
-	if !strings.HasPrefix(req.Mapping.RecipientJSONPath, "$") || len(req.Mapping.RecipientJSONPath) > 512 ||
-		(req.Mapping.ExternalMessageIDJSONPath != "" && (!strings.HasPrefix(req.Mapping.ExternalMessageIDJSONPath, "$") || len(req.Mapping.ExternalMessageIDJSONPath) > 512)) {
-		apires.RespondBadRequest(c, "invalid consumer mapping")
+	invalidSource := req.Topic == "" || len(req.Topic) > 249 || req.ConsumerGroup == "" || len(req.ConsumerGroup) > 255
+	if req.SourceType == mailEntity.RabbitMQ && len(req.ConsumerGroup) > 128 {
+		invalidSource = true
+	}
+	for _, char := range req.Topic + req.ConsumerGroup {
+		if unicode.IsControl(char) {
+			invalidSource = true
+			break
+		}
+	}
+	if req.SourceType == mailEntity.Kafka {
+		for _, char := range req.Topic {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == '.' || char == '_' || char == '-') {
+				invalidSource = true
+				break
+			}
+		}
+	}
+	if invalidSource {
+		apires.RespondBadRequest(c, "invalid stream source fields")
 		return
 	}
-
 	consumer, err := h.svc.UpdateConsumer(ctx, &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID,
 		ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, Name: req.Name,
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
 		SourceConfigEnvelope: sourceConfigEnvelope,
 		Topic:                req.Topic, ConsumerGroup: req.ConsumerGroup,
-		Mapping:    mailEntity.MessageMapping{ExternalMessageIDJSONPath: req.Mapping.ExternalMessageIDJSONPath, RecipientJSONPath: req.Mapping.RecipientJSONPath, VariableJSONPaths: req.Mapping.VariableJSONPaths},
 		TemplateID: req.TemplateID, TemplateVersion: req.TemplateVersion,
 		SenderProfileID: req.SenderProfileID, SenderVersion: req.SenderVersion,
 		DesiredState: req.DesiredState, Parallelism: req.Parallelism,
@@ -468,7 +480,6 @@ func (h *PersonalConsumerHandler) Update(c *gin.Context) {
 		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
-		"mapping":            consumer.MappingJSON,
 		"template_id":        consumer.TemplateID,
 		"template_version":   consumer.TemplateVersion,
 		"sender_profile_id":  consumer.SenderProfileID,
@@ -559,7 +570,6 @@ func (h *PersonalConsumerHandler) changeState(c *gin.Context, desiredState mailE
 		"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
 		"topic":              consumer.Topic,
 		"consumer_group":     consumer.ConsumerGroup,
-		"mapping":            consumer.MappingJSON,
 		"template_id":        consumer.TemplateID,
 		"template_version":   consumer.TemplateVersion,
 		"sender_profile_id":  consumer.SenderProfileID,

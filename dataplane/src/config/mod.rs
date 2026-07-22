@@ -89,11 +89,16 @@ pub struct Config {
     /// [COMMENT]: Phase-6 dùng một supervisor timer chung; lease TTL phải dài hơn nhiều lần chu kỳ reconcile.
     pub mail_stream_supervisor_interval_ms: u64,
     pub mail_stream_slot_lease_ttl_seconds: u64,
-    pub mail_stream_ingress_capacity: usize,
+    /// [COMMENT]: Mỗi broker suite tự áp backpressure bằng hard cap inflight trên từng claimed slot.
+    pub mail_stream_max_inflight_per_slot: usize,
     pub mail_stream_max_slots_per_pod: usize,
+    /// [COMMENT]: Phase 7 chỉ được activate khi Phase 8 settlement consumer đã được wire; mặc định false để không gửi rồi mất ACK boundary.
+    pub mail_stream_delivery_enabled: bool,
+    /// [COMMENT]: Render/JMAP inflight là giới hạn riêng, không nhân nhầm theo số broker connection `parallelism`.
+    pub mail_stream_processor_concurrency: usize,
     /// [COMMENT]: Zone-local KEK 32-byte dạng hex; chỉ DP có, CP/JO/Zone KV không được log hoặc giải mã envelope.
     pub mail_stream_envelope_key_hex: String,
-    /// [COMMENT]: Optional Zone CA path là trusted deployment config, không nhận filesystem path từ customer payload.
+    /// [COMMENT]: Optional Kafka Zone CA path là trusted deployment config, không nhận filesystem path từ customer payload.
     pub mail_stream_ca_cert_path: Option<String>,
 
     /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
@@ -298,8 +303,8 @@ impl Config {
                 30_u64,
             )
             .clamp(15, 300),
-            mail_stream_ingress_capacity: parse_env(
-                "MAIL_STREAM_INGRESS_CAPACITY",
+            mail_stream_max_inflight_per_slot: parse_env(
+                "MAIL_STREAM_MAX_INFLIGHT_PER_SLOT",
                 256_usize,
             )
             .clamp(16, 10_000),
@@ -308,6 +313,13 @@ impl Config {
                 256_usize,
             )
             .clamp(1, 10_000),
+            mail_stream_delivery_enabled: env::var("MAIL_STREAM_DELIVERY_ENABLED")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
+            mail_stream_processor_concurrency: parse_env(
+                "MAIL_STREAM_PROCESSOR_CONCURRENCY",
+                64_usize,
+            )
+            .clamp(1, 1_000),
             mail_stream_envelope_key_hex: env::var("MAIL_STREAM_ENVELOPE_KEY_HEX")
                 .unwrap_or_default(),
             mail_stream_ca_cert_path: env::var("MAIL_STREAM_CA_CERT_PATH")

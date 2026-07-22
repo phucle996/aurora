@@ -1,7 +1,8 @@
 use super::runtime_proto::{
     KafkaStreamPayloadV1, MailConsumerDeleteV1, MailConsumerUpsertV1,
     MailProjectionReconcileCompletedV1, MailStreamType, MailTemplateDeletedV1,
-    MailTemplateVersionPublishedV1,
+    MailTemplateVersionPublishedV1, NatsJetStreamPayloadV1, RabbitMqPayloadV1,
+    RedisStreamPayloadV1,
 };
 use crate::executor::{ExecutionResult, ExecutorError};
 use crate::infra::zone_kv::{ConsumerConfigHead, TemplateConfigHead, ZoneKvStore};
@@ -138,7 +139,6 @@ pub async fn apply_mail_consumer_upsert(
         || stream.broker_resource_id.len() != 16
         || stream.payload.len() > 32 << 10
         || (event.desired_state == 2 && stream.payload.is_empty())
-        || event.mapping.is_none()
         || event.template_id.trim().is_empty()
         || uuid::Uuid::parse_str(&event.template_id).is_err()
         || event.template_version == 0
@@ -151,20 +151,78 @@ pub async fn apply_mail_consumer_upsert(
             "MAIL_CONSUMER_UPSERT_INVALID".to_string(),
         ));
     }
-    if stream.stream_type == MailStreamType::Kafka as i32 {
-        let kafka = KafkaStreamPayloadV1::decode(stream.payload.as_slice()).map_err(|_| {
-            ExecutorError::ExecutionFailed("MAIL_KAFKA_STREAM_PAYLOAD_INVALID".to_string())
-        })?;
-        if stream.payload_schema_version != 1
-            || kafka.source_config_envelope.len() > 16 << 10
-            || (event.desired_state == 2 && kafka.source_config_envelope.is_empty())
-            || kafka.topic.is_empty()
-            || kafka.consumer_group.trim().is_empty()
-        {
-            return Err(ExecutorError::ExecutionFailed(
-                "MAIL_KAFKA_STREAM_PAYLOAD_INVALID".to_string(),
-            ));
+    // [COMMENT]: Projection validate đúng protobuf của suite trước khi ghi immutable KV; không để payload lỗi chờ tới hot path mới phát hiện.
+    let source_valid = match stream.stream_type {
+        value if value == MailStreamType::Kafka as i32 && stream.payload_schema_version == 1 => {
+            KafkaStreamPayloadV1::decode(stream.payload.as_slice())
+                .ok()
+                .is_some_and(|payload| {
+                    payload.source_config_envelope.len() <= 16 << 10
+                        && (event.desired_state != 2 || !payload.source_config_envelope.is_empty())
+                        && !payload.topic.is_empty()
+                        && payload.topic.len() <= 249
+                        && payload.topic.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                        })
+                        && !payload.consumer_group.trim().is_empty()
+                        && payload.consumer_group.len() <= 255
+                        && !payload.consumer_group.chars().any(char::is_control)
+                })
         }
+        value
+            if value == MailStreamType::RedisStream as i32
+                && stream.payload_schema_version == 1 =>
+        {
+            RedisStreamPayloadV1::decode(stream.payload.as_slice())
+                .ok()
+                .is_some_and(|payload| {
+                    payload.source_config_envelope.len() <= 16 << 10
+                        && (event.desired_state != 2 || !payload.source_config_envelope.is_empty())
+                        && !payload.stream_key.trim().is_empty()
+                        && payload.stream_key.len() <= 512
+                        && !payload.stream_key.chars().any(char::is_control)
+                        && !payload.consumer_group.trim().is_empty()
+                        && payload.consumer_group.len() <= 255
+                        && !payload.consumer_group.chars().any(char::is_control)
+                })
+        }
+        value
+            if value == MailStreamType::NatsJetstream as i32
+                && stream.payload_schema_version == 1 =>
+        {
+            NatsJetStreamPayloadV1::decode(stream.payload.as_slice())
+                .ok()
+                .is_some_and(|payload| {
+                    payload.source_config_envelope.len() <= 16 << 10
+                        && (event.desired_state != 2 || !payload.source_config_envelope.is_empty())
+                        && !payload.stream_name.trim().is_empty()
+                        && payload.stream_name.len() <= 255
+                        && !payload.stream_name.chars().any(char::is_control)
+                        && !payload.durable_name.trim().is_empty()
+                        && payload.durable_name.len() <= 255
+                        && !payload.durable_name.chars().any(char::is_control)
+                })
+        }
+        value if value == MailStreamType::Rabbitmq as i32 && stream.payload_schema_version == 1 => {
+            RabbitMqPayloadV1::decode(stream.payload.as_slice())
+                .ok()
+                .is_some_and(|payload| {
+                    payload.source_config_envelope.len() <= 16 << 10
+                        && (event.desired_state != 2 || !payload.source_config_envelope.is_empty())
+                        && !payload.queue_name.trim().is_empty()
+                        && payload.queue_name.len() <= 255
+                        && !payload.queue_name.chars().any(char::is_control)
+                        && !payload.consumer_tag_prefix.trim().is_empty()
+                        && payload.consumer_tag_prefix.len() <= 128
+                        && !payload.consumer_tag_prefix.chars().any(char::is_control)
+                })
+        }
+        _ => false,
+    };
+    if !source_valid {
+        return Err(ExecutorError::ExecutionFailed(
+            "MAIL_CONSUMER_STREAM_PAYLOAD_INVALID".to_string(),
+        ));
     }
 
     let consumer_id = uuid::Uuid::from_slice(&event.consumer_id)

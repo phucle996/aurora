@@ -1,7 +1,6 @@
 package mailEntity
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +19,6 @@ type PersonalConsumer struct {
 	SourceConfigEnvelope  []byte
 	Topic                 string
 	ConsumerGroup         string
-	MappingJSON           json.RawMessage
 	TemplateID            string
 	TemplateVersion       uint64
 	SenderProfileID       string
@@ -39,5 +37,4 @@ type PersonalConsumer struct {
 	Reason                string
 	AfterID               *uuid.UUID
 	Limit                 uint32
-	Mapping               MessageMapping
 }

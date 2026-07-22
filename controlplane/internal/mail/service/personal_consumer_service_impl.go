@@ -3,7 +3,6 @@ package mailSvcImpl
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -33,13 +32,8 @@ func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepositor
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal command.
 func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, command *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
 	// [COMMENT]: Handler đã normalize/validate; service bắt đầu trực tiếp từ business payload.
-	if command.SourceType != mailEntity.Kafka || len(command.SourceConfigEnvelope) > 16<<10 {
+	if (command.SourceType != mailEntity.Kafka && command.SourceType != mailEntity.RedisStream && command.SourceType != mailEntity.NATSJetStream && command.SourceType != mailEntity.RabbitMQ) || len(command.SourceConfigEnvelope) > 16<<10 {
 		return nil, mailTaxonomy.ErrInvalidArgument
-	}
-
-	mappingJSON, err := json.Marshal(command.Mapping)
-	if err != nil {
-		return nil, fmt.Errorf("mail personal consumer service: marshal mapping: %w", err)
 	}
 
 	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; code có thể được dùng lại sau soft-delete mà không va PK cũ.
@@ -60,7 +54,6 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 		SourceConfigEnvelope: append([]byte(nil), command.SourceConfigEnvelope...),
 		Topic:                command.Topic,
 		ConsumerGroup:        command.ConsumerGroup,
-		MappingJSON:          mappingJSON,
 		TemplateID:           command.TemplateID,
 		TemplateVersion:      command.TemplateVersion,
 		SenderProfileID:      command.SenderProfileID,
@@ -74,29 +67,36 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 		UpdatedAt:            now,
 	}
 
-	// [COMMENT]: Adapter payload nằm sau generic stream discriminator; outbox row chỉ cần giữ một protobuf BYTEA.
-	kafkaPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.KafkaStreamPayloadV1{
-		SourceConfigEnvelope: consumer.SourceConfigEnvelope,
-		Topic:                consumer.Topic,
-		ConsumerGroup:        consumer.ConsumerGroup,
-	})
+	// [COMMENT]: Match một lần tại producer rồi đóng gói adapter protobuf riêng; JO/outbox không hiểu field của broker.
+	var streamType mailproto.MailStreamType
+	var streamPayload []byte
+	var err error
+	switch consumer.SourceType {
+	case mailEntity.Kafka:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.KafkaStreamPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, Topic: consumer.Topic, ConsumerGroup: consumer.ConsumerGroup})
+	case mailEntity.RedisStream:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_REDIS_STREAM
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.RedisStreamPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, StreamKey: consumer.Topic, ConsumerGroup: consumer.ConsumerGroup})
+	case mailEntity.NATSJetStream:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_NATS_JETSTREAM
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.NatsJetStreamPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, StreamName: consumer.Topic, DurableName: consumer.ConsumerGroup})
+	case mailEntity.RabbitMQ:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_RABBITMQ
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.RabbitMqPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, QueueName: consumer.Topic, ConsumerTagPrefix: consumer.ConsumerGroup})
+	}
 	if err != nil {
-		return nil, fmt.Errorf("mail personal consumer service: marshal Kafka stream payload: %w", err)
+		return nil, fmt.Errorf("mail personal consumer service: marshal stream payload: %w", err)
 	}
 
 	upsert := &mailproto.MailConsumerUpsertV1{
 		ConsumerId:    consumer.ID[:],
 		ConfigVersion: 1,
 		Stream: &mailproto.MailStreamSourceV1{
-			StreamType:           mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA,
+			StreamType:           streamType,
 			PayloadSchemaVersion: 1,
 			BrokerResourceId:     consumer.BrokerResourceID[:],
-			Payload:              kafkaPayload,
-		},
-		Mapping: &mailproto.MailMessageMappingV1{
-			ExternalMessageIdJsonPath: command.Mapping.ExternalMessageIDJSONPath,
-			RecipientJsonPath:         command.Mapping.RecipientJSONPath,
-			VariableJsonPaths:         command.Mapping.VariableJSONPaths,
+			Payload:              streamPayload,
 		},
 		TemplateId:      consumer.TemplateID,
 		TemplateVersion: consumer.TemplateVersion,
@@ -169,7 +169,7 @@ func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, command
 
 // UpdateConsumer cap nhat thong tin consumer voi optimistic version check va tao outbox event.
 func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, command *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
-	if command.SourceType != mailEntity.Kafka {
+	if command.SourceType != mailEntity.Kafka && command.SourceType != mailEntity.RedisStream && command.SourceType != mailEntity.NATSJetStream && command.SourceType != mailEntity.RabbitMQ {
 		return nil, mailTaxonomy.ErrInvalidArgument
 	}
 	// [COMMENT]: API không bao giờ đọc trả ciphertext; envelope rỗng trong full update vì vậy mang nghĩa
@@ -180,6 +180,10 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 	}
 	sourceConfigEnvelope := append([]byte(nil), command.SourceConfigEnvelope...)
 	if len(sourceConfigEnvelope) == 0 {
+		// [COMMENT]: Envelope AAD bind cả stream type và broker resource; giữ ciphertext cũ sau khi đổi một trong hai sẽ tạo config chắc chắn không decrypt được.
+		if command.SourceType != current.SourceType || command.BrokerResourceID != current.BrokerResourceID {
+			return nil, mailTaxonomy.ErrInvalidArgument
+		}
 		sourceConfigEnvelope = append([]byte(nil), current.SourceConfigEnvelope...)
 	}
 	if len(sourceConfigEnvelope) > 16<<10 || (command.DesiredState == mailEntity.ConsumerEnabled && len(sourceConfigEnvelope) == 0) {
@@ -187,11 +191,6 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 	}
 
 	// [COMMENT]: Optimistic config_version ở repository đóng race giữa lần đọc giữ envelope và UPDATE.
-	mappingJSON, err := json.Marshal(command.Mapping)
-	if err != nil {
-		return nil, fmt.Errorf("mail personal consumer service: marshal update mapping: %w", err)
-	}
-
 	now := time.Now().UTC()
 	actor := command.ActorUserID
 
@@ -206,7 +205,6 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 		SourceConfigEnvelope:  sourceConfigEnvelope,
 		Topic:                 command.Topic,
 		ConsumerGroup:         command.ConsumerGroup,
-		MappingJSON:           mappingJSON,
 		TemplateID:            command.TemplateID,
 		TemplateVersion:       command.TemplateVersion,
 		SenderProfileID:       command.SenderProfileID,
@@ -224,29 +222,35 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 		desiredState = mailproto.MailConsumerDesiredState_MAIL_CONSUMER_DESIRED_STATE_ENABLED
 	}
 
-	// [COMMENT]: Mỗi config generation tự chứa adapter bytes immutable; JO không cần hiểu Kafka fields.
-	kafkaPayload, err := proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.KafkaStreamPayloadV1{
-		SourceConfigEnvelope: consumer.SourceConfigEnvelope,
-		Topic:                consumer.Topic,
-		ConsumerGroup:        consumer.ConsumerGroup,
-	})
+	// [COMMENT]: Update giữ nguyên nguyên tắc mỗi suite một payload; không có generic map hoặc JSON mapper ở giữa.
+	var streamType mailproto.MailStreamType
+	var streamPayload []byte
+	switch consumer.SourceType {
+	case mailEntity.Kafka:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.KafkaStreamPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, Topic: consumer.Topic, ConsumerGroup: consumer.ConsumerGroup})
+	case mailEntity.RedisStream:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_REDIS_STREAM
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.RedisStreamPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, StreamKey: consumer.Topic, ConsumerGroup: consumer.ConsumerGroup})
+	case mailEntity.NATSJetStream:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_NATS_JETSTREAM
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.NatsJetStreamPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, StreamName: consumer.Topic, DurableName: consumer.ConsumerGroup})
+	case mailEntity.RabbitMQ:
+		streamType = mailproto.MailStreamType_MAIL_STREAM_TYPE_RABBITMQ
+		streamPayload, err = proto.MarshalOptions{Deterministic: true}.Marshal(&mailproto.RabbitMqPayloadV1{SourceConfigEnvelope: consumer.SourceConfigEnvelope, QueueName: consumer.Topic, ConsumerTagPrefix: consumer.ConsumerGroup})
+	}
 	if err != nil {
-		return nil, fmt.Errorf("mail personal consumer service: marshal Kafka stream payload: %w", err)
+		return nil, fmt.Errorf("mail personal consumer service: marshal stream payload: %w", err)
 	}
 
 	upsert := &mailproto.MailConsumerUpsertV1{
 		ConsumerId:    consumer.ID[:],
 		ConfigVersion: consumer.ConfigVersion,
 		Stream: &mailproto.MailStreamSourceV1{
-			StreamType:           mailproto.MailStreamType_MAIL_STREAM_TYPE_KAFKA,
+			StreamType:           streamType,
 			PayloadSchemaVersion: 1,
 			BrokerResourceId:     consumer.BrokerResourceID[:],
-			Payload:              kafkaPayload,
-		},
-		Mapping: &mailproto.MailMessageMappingV1{
-			ExternalMessageIdJsonPath: command.Mapping.ExternalMessageIDJSONPath,
-			RecipientJsonPath:         command.Mapping.RecipientJSONPath,
-			VariableJsonPaths:         command.Mapping.VariableJSONPaths,
+			Payload:              streamPayload,
 		},
 		TemplateId:      consumer.TemplateID,
 		TemplateVersion: consumer.TemplateVersion,
@@ -319,12 +323,6 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, c
 		return nil, mailTaxonomy.ErrVersionConflict
 	}
 
-	// [COMMENT]: Decode JSON string payload thanh structure MessageMapping
-	var mapping mailEntity.MessageMapping
-	if err = json.Unmarshal(consumer.MappingJSON, &mapping); err != nil {
-		return nil, err
-	}
-
 	// [COMMENT]: Goi UpdateConsumer de thuc hien update trang thai va phat outbox event
 	return s.UpdateConsumer(ctx, &mailEntity.PersonalConsumer{
 		ActorUserID:           command.ActorUserID,
@@ -337,7 +335,6 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, c
 		BrokerResourceID:      consumer.BrokerResourceID,
 		Topic:                 consumer.Topic,
 		ConsumerGroup:         consumer.ConsumerGroup,
-		Mapping:               mapping,
 		TemplateID:            consumer.TemplateID,
 		TemplateVersion:       consumer.TemplateVersion,
 		SenderProfileID:       consumer.SenderProfileID,

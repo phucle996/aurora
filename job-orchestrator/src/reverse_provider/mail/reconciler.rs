@@ -1,13 +1,13 @@
 use super::runtime_proto::{
     KafkaStreamPayloadV1, MailConsumerDeleteV1, MailConsumerDesiredState, MailConsumerUpsertV1,
-    MailEventMetadataV1, MailMessageMappingV1, MailProjectionReconcileCompletedV1,
-    MailStreamSourceV1, MailStreamType, MailTemplateDeletedV1, MailTemplateVersionPublishedV1,
+    MailEventMetadataV1, MailProjectionReconcileCompletedV1, MailStreamSourceV1, MailStreamType,
+    MailTemplateDeletedV1, MailTemplateVersionPublishedV1, NatsJetStreamPayloadV1,
+    RabbitMqPayloadV1, RedisStreamPayloadV1,
 };
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use chrono::{DateTime, Utc};
 use prost::Message;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,15 +19,6 @@ const CONSUMER_EVENT_NAMESPACE: &str = "43de31a4-0c86-54e9-8384-47b33f541c28";
 const PERSONAL_TEMPLATE_EVENT_NAMESPACE: &str = "9314352a-19ba-5808-b8e2-14e06df7b791";
 const TENANT_TEMPLATE_EVENT_NAMESPACE: &str = "92712973-d86b-5e59-9a86-9bf5726c9981";
 const RECONCILE_COMPLETION_NAMESPACE: &str = "e295a8c6-c04f-56f3-9577-f53521006bb9";
-
-#[derive(Deserialize)]
-struct StoredMessageMapping {
-    #[serde(default)]
-    external_message_id_json_path: String,
-    recipient_json_path: String,
-    #[serde(default)]
-    variable_json_paths: HashMap<String, String>,
-}
 
 // [COMMENT]: Đây là transport primitive duy nhất được dùng chung; business query/encode vẫn tách theo từng flow.
 async fn xadd_mail_projection_command(
@@ -541,9 +532,9 @@ async fn reconcile_personal_consumers(
     generation: u64,
 ) -> Result<(usize, String, i64), Box<dyn std::error::Error + Send + Sync>> {
     let rows = pg.query(
-        "SELECT c.id,c.broker_resource_id,c.source_config_envelope,c.topic,c.consumer_group,c.mapping_json::text,\
+        "SELECT c.id,c.broker_resource_id,c.source_config_envelope,c.topic,c.consumer_group,\
                 c.template_id,c.template_version,c.sender_profile_id,c.sender_version,c.desired_state::text,\
-                c.parallelism,c.config_version,c.config_sha256,c.updated_at \
+                c.parallelism,c.config_version,c.config_sha256,c.updated_at,c.source_type::text \
          FROM mail.mail_consumers c JOIN hierarchy.personal_workspaces w ON w.id=c.workspace_id \
          WHERE w.zone_id=$1 AND c.id::text > $2 ORDER BY c.id LIMIT $3",
         &[&zone_id, &cursor_id, &limit],
@@ -552,9 +543,9 @@ async fn reconcile_personal_consumers(
     let mut last_id = String::new();
     for row in &rows {
         let consumer_id: Uuid = row.get(0);
-        let config_version: i64 = row.get(12);
-        let desired_state: String = row.get(10);
-        let updated_at: DateTime<Utc> = row.get(14);
+        let config_version: i64 = row.get(11);
+        let desired_state: String = row.get(9);
+        let updated_at: DateTime<Utc> = row.get(13);
         let (event_id, topic, payload) =
             if desired_state == "deleted" || desired_state == "deleting" {
                 let event_id = Uuid::new_v5(
@@ -576,19 +567,56 @@ async fn reconcile_personal_consumers(
                 };
                 (event_id, "mail.consumer.delete", event.encode_to_vec())
             } else {
-                let mapping: StoredMessageMapping = serde_json::from_str(&row.get::<_, String>(5))?;
                 let event_id = Uuid::new_v5(
                     &namespace,
                     format!("consumer:{consumer_id}:{config_version}:upsert:{zone_id}").as_bytes(),
                 );
                 let broker_resource_id: Uuid = row.get(1);
-                // [COMMENT]: Reconciler tái tạo adapter protobuf rồi đặt vào generic stream bytes; không giải mã envelope.
-                let stream_payload = KafkaStreamPayloadV1 {
-                    source_config_envelope: row.get::<_, Vec<u8>>(2),
-                    topic: row.get(3),
-                    consumer_group: row.get(4),
-                }
-                .encode_to_vec();
+                let source_config_envelope = row.get::<_, Vec<u8>>(2);
+                let source_name = row.get::<_, String>(3);
+                let consumer_name = row.get::<_, String>(4);
+                // [COMMENT]: Reconciler match discriminator một lần và tái tạo đúng payload suite; ciphertext vẫn opaque với JO.
+                let (stream_type, stream_payload) = match row.get::<_, String>(14).as_str() {
+                    "kafka" => (
+                        MailStreamType::Kafka,
+                        KafkaStreamPayloadV1 {
+                            source_config_envelope,
+                            topic: source_name,
+                            consumer_group: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    "redis_stream" => (
+                        MailStreamType::RedisStream,
+                        RedisStreamPayloadV1 {
+                            source_config_envelope,
+                            stream_key: source_name,
+                            consumer_group: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    "nats_jetstream" => (
+                        MailStreamType::NatsJetstream,
+                        NatsJetStreamPayloadV1 {
+                            source_config_envelope,
+                            stream_name: source_name,
+                            durable_name: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    "rabbitmq" => (
+                        MailStreamType::Rabbitmq,
+                        RabbitMqPayloadV1 {
+                            source_config_envelope,
+                            queue_name: source_name,
+                            consumer_tag_prefix: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    source_type => {
+                        return Err(format!("unsupported mail source_type: {source_type}").into());
+                    }
+                };
                 let event = MailConsumerUpsertV1 {
                     metadata: Some(MailEventMetadataV1 {
                         event_id: event_id.as_bytes().to_vec(),
@@ -600,27 +628,22 @@ async fn reconcile_personal_consumers(
                     consumer_id: consumer_id.as_bytes().to_vec(),
                     config_version: config_version as u64,
                     stream: Some(MailStreamSourceV1 {
-                        stream_type: MailStreamType::Kafka as i32,
+                        stream_type: stream_type as i32,
                         payload_schema_version: 1,
                         broker_resource_id: broker_resource_id.as_bytes().to_vec(),
                         payload: stream_payload,
                     }),
-                    mapping: Some(MailMessageMappingV1 {
-                        external_message_id_json_path: mapping.external_message_id_json_path,
-                        recipient_json_path: mapping.recipient_json_path,
-                        variable_json_paths: mapping.variable_json_paths,
-                    }),
-                    template_id: row.get(6),
-                    template_version: row.get::<_, i64>(7) as u64,
-                    sender_profile_id: row.get(8),
-                    sender_version: row.get::<_, i64>(9) as u64,
+                    template_id: row.get(5),
+                    template_version: row.get::<_, i64>(6) as u64,
+                    sender_profile_id: row.get(7),
+                    sender_version: row.get::<_, i64>(8) as u64,
                     desired_state: if desired_state == "enabled" {
                         MailConsumerDesiredState::Enabled as i32
                     } else {
                         MailConsumerDesiredState::Paused as i32
                     },
-                    parallelism: row.get::<_, i32>(11) as u32,
-                    config_sha256: row.get(13),
+                    parallelism: row.get::<_, i32>(10) as u32,
+                    config_sha256: row.get(12),
                 };
                 (event_id, "mail.consumer.upsert", event.encode_to_vec())
             };
@@ -648,9 +671,9 @@ async fn reconcile_tenant_consumers(
     generation: u64,
 ) -> Result<(usize, String, i64), Box<dyn std::error::Error + Send + Sync>> {
     let rows = pg.query(
-        "SELECT c.id,c.broker_resource_id,c.source_config_envelope,c.topic,c.consumer_group,c.mapping_json::text,\
+        "SELECT c.id,c.broker_resource_id,c.source_config_envelope,c.topic,c.consumer_group,\
                 c.template_id,c.template_version,c.sender_profile_id,c.sender_version,c.desired_state::text,\
-                c.parallelism,c.config_version,c.config_sha256,c.updated_at \
+                c.parallelism,c.config_version,c.config_sha256,c.updated_at,c.source_type::text \
          FROM mail.mail_consumers c JOIN hierarchy.tenant_workspaces w ON w.id=c.workspace_id \
          WHERE w.zone_id=$1 AND c.id::text > $2 ORDER BY c.id LIMIT $3",
         &[&zone_id, &cursor_id, &limit],
@@ -659,9 +682,9 @@ async fn reconcile_tenant_consumers(
     let mut last_id = String::new();
     for row in &rows {
         let consumer_id: Uuid = row.get(0);
-        let config_version: i64 = row.get(12);
-        let desired_state: String = row.get(10);
-        let updated_at: DateTime<Utc> = row.get(14);
+        let config_version: i64 = row.get(11);
+        let desired_state: String = row.get(9);
+        let updated_at: DateTime<Utc> = row.get(13);
         let (event_id, topic, payload) =
             if desired_state == "deleted" || desired_state == "deleting" {
                 let event_id = Uuid::new_v5(
@@ -683,19 +706,56 @@ async fn reconcile_tenant_consumers(
                 };
                 (event_id, "mail.consumer.delete", event.encode_to_vec())
             } else {
-                let mapping: StoredMessageMapping = serde_json::from_str(&row.get::<_, String>(5))?;
                 let event_id = Uuid::new_v5(
                     &namespace,
                     format!("consumer:{consumer_id}:{config_version}:upsert:{zone_id}").as_bytes(),
                 );
                 let broker_resource_id: Uuid = row.get(1);
-                // [COMMENT]: Tenant giữ cùng outer discriminator; adapter bytes vẫn opaque với routing layer.
-                let stream_payload = KafkaStreamPayloadV1 {
-                    source_config_envelope: row.get::<_, Vec<u8>>(2),
-                    topic: row.get(3),
-                    consumer_group: row.get(4),
-                }
-                .encode_to_vec();
+                let source_config_envelope = row.get::<_, Vec<u8>>(2);
+                let source_name = row.get::<_, String>(3);
+                let consumer_name = row.get::<_, String>(4);
+                // [COMMENT]: Tenant flow cố ý viết rõ đủ bốn branch; JO không dùng helper che business mapping.
+                let (stream_type, stream_payload) = match row.get::<_, String>(14).as_str() {
+                    "kafka" => (
+                        MailStreamType::Kafka,
+                        KafkaStreamPayloadV1 {
+                            source_config_envelope,
+                            topic: source_name,
+                            consumer_group: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    "redis_stream" => (
+                        MailStreamType::RedisStream,
+                        RedisStreamPayloadV1 {
+                            source_config_envelope,
+                            stream_key: source_name,
+                            consumer_group: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    "nats_jetstream" => (
+                        MailStreamType::NatsJetstream,
+                        NatsJetStreamPayloadV1 {
+                            source_config_envelope,
+                            stream_name: source_name,
+                            durable_name: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    "rabbitmq" => (
+                        MailStreamType::Rabbitmq,
+                        RabbitMqPayloadV1 {
+                            source_config_envelope,
+                            queue_name: source_name,
+                            consumer_tag_prefix: consumer_name,
+                        }
+                        .encode_to_vec(),
+                    ),
+                    source_type => {
+                        return Err(format!("unsupported mail source_type: {source_type}").into());
+                    }
+                };
                 let event = MailConsumerUpsertV1 {
                     metadata: Some(MailEventMetadataV1 {
                         event_id: event_id.as_bytes().to_vec(),
@@ -707,27 +767,22 @@ async fn reconcile_tenant_consumers(
                     consumer_id: consumer_id.as_bytes().to_vec(),
                     config_version: config_version as u64,
                     stream: Some(MailStreamSourceV1 {
-                        stream_type: MailStreamType::Kafka as i32,
+                        stream_type: stream_type as i32,
                         payload_schema_version: 1,
                         broker_resource_id: broker_resource_id.as_bytes().to_vec(),
                         payload: stream_payload,
                     }),
-                    mapping: Some(MailMessageMappingV1 {
-                        external_message_id_json_path: mapping.external_message_id_json_path,
-                        recipient_json_path: mapping.recipient_json_path,
-                        variable_json_paths: mapping.variable_json_paths,
-                    }),
-                    template_id: row.get(6),
-                    template_version: row.get::<_, i64>(7) as u64,
-                    sender_profile_id: row.get(8),
-                    sender_version: row.get::<_, i64>(9) as u64,
+                    template_id: row.get(5),
+                    template_version: row.get::<_, i64>(6) as u64,
+                    sender_profile_id: row.get(7),
+                    sender_version: row.get::<_, i64>(8) as u64,
                     desired_state: if desired_state == "enabled" {
                         MailConsumerDesiredState::Enabled as i32
                     } else {
                         MailConsumerDesiredState::Paused as i32
                     },
-                    parallelism: row.get::<_, i32>(11) as u32,
-                    config_sha256: row.get(13),
+                    parallelism: row.get::<_, i32>(10) as u32,
+                    config_sha256: row.get(12),
                 };
                 (event_id, "mail.consumer.upsert", event.encode_to_vec())
             };

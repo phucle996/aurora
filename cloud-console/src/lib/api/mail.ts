@@ -1,24 +1,18 @@
 import { fetchJSON } from "./fetcher";
 
 export type MailDesiredState = "paused" | "enabled" | "deleting";
-
-export type MailMessageMapping = {
-  external_message_id_json_path: string;
-  recipient_json_path: string;
-  variable_json_paths: Record<string, string>;
-};
+export type MailSourceType = "kafka" | "redis_stream" | "nats_jetstream" | "rabbitmq";
 
 export type MailConsumer = {
   id: string;
   workspace_id: string;
   code: string;
   name: string;
-  source_type: "kafka";
+  source_type: MailSourceType;
   broker_resource_id: string;
   source_configured: boolean;
   topic: string;
   consumer_group: string;
-  mapping: MailMessageMapping;
   template_id: string;
   template_version: number;
   sender_profile_id: string;
@@ -58,11 +52,10 @@ export type MailTemplateDetail = {
 
 export type ConsumerWrite = {
   name: string;
-  source_type: "kafka";
+  source_type: MailSourceType;
   broker_resource_id: string;
   topic: string;
   consumer_group: string;
-  mapping: MailMessageMapping;
   template_id: string;
   template_version: number;
   sender_profile_id: string;
@@ -78,57 +71,41 @@ export type TemplateContentWrite = {
 type DataEnvelope<T> = { data?: T };
 type CursorPage<T> = { items: T[]; next_cursor: string | number };
 
-// [COMMENT]: Go hiện encode json.RawMessage trong consumer response thành base64; adapter này
-// cô lập transport quirk để component luôn nhận một mapping object ổn định.
-function normalizeConsumer(consumer: Omit<MailConsumer, "mapping"> & { mapping: MailMessageMapping | string }): MailConsumer {
-  if (typeof consumer.mapping !== "string") return consumer as MailConsumer;
-  try {
-    const binary = atob(consumer.mapping);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    return { ...consumer, mapping: JSON.parse(new TextDecoder().decode(bytes)) as MailMessageMapping };
-  } catch {
-    return {
-      ...consumer,
-      mapping: { external_message_id_json_path: "", recipient_json_path: "", variable_json_paths: {} },
-    };
-  }
-}
-
 function requireData<T>(response: DataEnvelope<T>, message: string): T {
   if (response.data === undefined) throw new Error(message);
   return response.data;
 }
 
 export async function listMailConsumers(signal?: AbortSignal): Promise<MailConsumer[]> {
-  const response = await fetchJSON<DataEnvelope<CursorPage<Omit<MailConsumer, "mapping"> & { mapping: MailMessageMapping | string }>>>(
+  const response = await fetchJSON<DataEnvelope<CursorPage<MailConsumer>>>(
     "/api/v1/mail/consumers?limit=200",
     { signal },
   );
-  return requireData(response, "Mail consumers response is missing data").items.map(normalizeConsumer);
+  return requireData(response, "Mail consumers response is missing data").items;
 }
 
 export async function createMailConsumer(input: ConsumerWrite & { code: string }): Promise<MailConsumer> {
-  const response = await fetchJSON<DataEnvelope<Omit<MailConsumer, "mapping"> & { mapping: MailMessageMapping | string }>>(
+  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
     "/api/v1/mail/consumers",
     { method: "POST", body: input },
   );
-  return normalizeConsumer(requireData(response, "Created mail consumer is missing"));
+  return requireData(response, "Created mail consumer is missing");
 }
 
 export async function updateMailConsumer(id: string, input: ConsumerWrite & { desired_state: MailDesiredState; expected_config_version: number }): Promise<MailConsumer> {
-  const response = await fetchJSON<DataEnvelope<Omit<MailConsumer, "mapping"> & { mapping: MailMessageMapping | string }>>(
+  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
     `/api/v1/mail/consumers/${encodeURIComponent(id)}`,
     { method: "PATCH", body: input },
   );
-  return normalizeConsumer(requireData(response, "Updated mail consumer is missing"));
+  return requireData(response, "Updated mail consumer is missing");
 }
 
 export async function changeMailConsumerState(id: string, action: "pause" | "resume", expectedConfigVersion: number): Promise<MailConsumer> {
-  const response = await fetchJSON<DataEnvelope<Omit<MailConsumer, "mapping"> & { mapping: MailMessageMapping | string }>>(
+  const response = await fetchJSON<DataEnvelope<MailConsumer>>(
     `/api/v1/mail/consumers/${encodeURIComponent(id)}/${action}`,
     { method: "POST", body: { expected_config_version: expectedConfigVersion } },
   );
-  return normalizeConsumer(requireData(response, "Updated mail consumer state is missing"));
+  return requireData(response, "Updated mail consumer state is missing");
 }
 
 export async function deleteMailConsumer(id: string, expectedConfigVersion: number): Promise<void> {

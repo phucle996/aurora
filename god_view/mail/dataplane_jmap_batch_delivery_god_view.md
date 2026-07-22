@@ -3,7 +3,7 @@
 > **IMPORTANT — SINGLE SOURCE OF TRUTH**
 > Tài liệu này là nguồn chuẩn cho đoạn workflow từ mail job transport đến khi Stalwart chấp nhận JMAP EmailSubmission. Mọi thay đổi về mail protobuf, sender binding, batching, JMAP request, retry, backpressure, health hoặc shutdown phải cập nhật tài liệu này trong cùng change-set.
 >
-> Broker-driven target flow (Kafka connection, JSON mapping, DP rendering và offset commit) được khóa
+> Broker-driven flow (bốn stream suites, fixed-envelope decode, DP rendering và native settlement) được khóa
 > riêng tại `dataplane_broker_mail_execution_god_view.md`; flow đó tái sử dụng JMAP batcher trong tài liệu này.
 
 ## 0. Control header
@@ -19,8 +19,9 @@
 | Delivery semantics | Best-effort; success nghĩa Stalwart accepted submission, không nghĩa recipient đã nhận |
 | Runtime durability | Redis Stream/job outbox ở upstream; batch buffer là bounded memory |
 | Removed transport | LMTP client và connection pool tự viết đã bị xóa |
-| Future scope | Broker runtime theo `dataplane_broker_mail_execution_god_view.md`; sender verification/projection |
-| Verified against | Working tree, 2026-07-19 |
+| Broker reuse | Kafka/Redis Stream/JetStream/RabbitMQ suites gọi cùng batcher qua `MailStreamProcessor` |
+| Future scope | Sender verification/projection và durable delivery history |
+| Verified against | Working tree, 2026-07-21 |
 
 ### 0.1 Invariants
 

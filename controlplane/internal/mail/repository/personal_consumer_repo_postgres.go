@@ -52,15 +52,15 @@ func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mai
 	tag, err := tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s.mail_consumers (
 			id, workspace_id, code, name, source_type, broker_resource_id, source_config_envelope, topic,
-			consumer_group, mapping_json, template_id, template_version, sender_profile_id, sender_version,
+			consumer_group, template_id, template_version, sender_profile_id, sender_version,
 			desired_state, parallelism, config_version, config_sha256, created_by, updated_by, created_at, updated_at
 		)
-		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22
-		WHERE EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id=$2 AND zone_id=$23 AND owner_id=$19)
-		  AND EXISTS (SELECT 1 FROM %s.personal_mail_templates t JOIN %s.personal_mail_template_versions v ON v.template_id=t.id AND v.version=$12 WHERE t.id=$11 AND t.workspace_id=$2)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+		WHERE EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id=$2 AND zone_id=$22 AND owner_id=$18)
+		  AND EXISTS (SELECT 1 FROM %s.personal_mail_templates t JOIN %s.personal_mail_template_versions v ON v.template_id=t.id AND v.version=$11 WHERE t.id=$10 AND t.workspace_id=$2)
 	`, r.mailSchema, r.hierarchySchema, r.mailSchema, r.mailSchema),
 		consumer.ID, consumer.WorkspaceID, consumer.Code, consumer.Name, consumer.SourceType, consumer.BrokerResourceID,
-		consumer.SourceConfigEnvelope, consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
+		consumer.SourceConfigEnvelope, consumer.Topic, consumer.ConsumerGroup, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState, consumer.Parallelism,
 		consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedBy, consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID)
 	if err != nil {
@@ -98,7 +98,7 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 	// [COMMENT]: Inline scan kết quả QueryRow trực tiếp vào các trường dữ liệu của struct Consumer
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
-		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
+		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.config_sha256, c.deleted_at,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
@@ -118,7 +118,6 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		&consumer.SourceConfigEnvelope,
 		&consumer.Topic,
 		&consumer.ConsumerGroup,
-		&consumer.MappingJSON,
 		&consumer.TemplateID,
 		&consumer.TemplateVersion,
 		&consumer.SenderProfileID,
@@ -155,7 +154,7 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
-		       c.topic, c.consumer_group, c.mapping_json, c.template_id, c.template_version,
+		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.config_sha256, c.deleted_at,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
@@ -189,7 +188,6 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 			&consumer.SourceConfigEnvelope,
 			&consumer.Topic,
 			&consumer.ConsumerGroup,
-			&consumer.MappingJSON,
 			&consumer.TemplateID,
 			&consumer.TemplateVersion,
 			&consumer.SenderProfileID,
@@ -224,19 +222,19 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 		WITH authorized AS (
 			SELECT 1
 			FROM %s.personal_workspaces
-			WHERE id = $19 AND zone_id = $20 AND owner_id = $16
+			WHERE id = $18 AND zone_id = $19 AND owner_id = $15
 		), template_available AS (
 			SELECT 1
 			FROM %s.personal_mail_templates AS t
 			JOIN %s.personal_mail_template_versions AS v
-			  ON v.template_id = t.id AND v.version = $9
-			WHERE t.id = $8
-			  AND t.workspace_id = $19
+			  ON v.template_id = t.id AND v.version = $8
+			WHERE t.id = $7
+			  AND t.workspace_id = $18
 			FOR KEY SHARE OF t
 		), target AS (
 			SELECT config_version
 			FROM %s.mail_consumers
-			WHERE id = $18 AND workspace_id = $19 AND deleted_at IS NULL
+			WHERE id = $17 AND workspace_id = $18 AND deleted_at IS NULL
 			  AND EXISTS (SELECT 1 FROM authorized)
 		), updated AS (
 			UPDATE %s.mail_consumers
@@ -246,18 +244,17 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			    source_config_envelope = $4,
 			    topic = $5,
 			    consumer_group = $6,
-			    mapping_json = $7,
-			    template_id = $8,
-			    template_version = $9,
-			    sender_profile_id = $10,
-			    sender_version = $11,
-			    desired_state = $12,
-			    parallelism = $13,
-			    config_version = $14,
-			    config_sha256 = $15,
-			    updated_by = $16,
-			    updated_at = $17
-			WHERE id = $18 AND workspace_id = $19 AND config_version = $21 AND deleted_at IS NULL
+			    template_id = $7,
+			    template_version = $8,
+			    sender_profile_id = $9,
+			    sender_version = $10,
+			    desired_state = $11,
+			    parallelism = $12,
+			    config_version = $13,
+			    config_sha256 = $14,
+			    updated_by = $15,
+			    updated_at = $16
+			WHERE id = $17 AND workspace_id = $18 AND config_version = $20 AND deleted_at IS NULL
 			  AND EXISTS (SELECT 1 FROM authorized)
 			  AND EXISTS (SELECT 1 FROM template_available)
 			RETURNING id
@@ -266,7 +263,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 				event_id, routing_scope, job_topic, payload, actor_user_id, status,
 				job_version, resource_id, payload_schema_version, trace_id, idle
 			)
-			SELECT $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+			SELECT $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
 			FROM updated
 			RETURNING id
 		)
@@ -278,7 +275,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
 		consumer.Name, consumer.SourceType, consumer.BrokerResourceID, consumer.SourceConfigEnvelope,
-		consumer.Topic, consumer.ConsumerGroup, consumer.MappingJSON, consumer.TemplateID,
+		consumer.Topic, consumer.ConsumerGroup, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion,
 		consumer.DesiredState, consumer.Parallelism, consumer.ConfigVersion, consumer.ConfigSHA256,
 		consumer.ActorUserID, consumer.UpdatedAt, consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ExpectedConfigVersion,

@@ -1,52 +1,65 @@
 # Dataplane Broker Mail Execution — God View (Master SoT)
 
 > [!IMPORTANT]
-> Đây là Source of Truth cho mail data path tại Dataplane: giữ broker connection trong cùng Zone,
-> consume customer JSON, mapping, validate, render immutable template, batch JMAP và quản lý offset.
-> Controlplane chỉ cấp desired state/snapshot; không tham gia runtime path này.
+> Đây là Source of Truth cho customer broker → Dataplane → JMAP. Controlplane quản lý business config;
+> Job Orchestrator chuyển projection; Dataplane trong đúng Zone mới giữ connection, consume, render và settlement.
 
 ## 0. Control header
 
-| Thuộc tính | Giá trị |
+| Thuộc tính | Giá trị AS-IS |
 |---|---|
-| Trạng thái | Phase 5 + Phase 6 đã ship — generic stream contract, fenced supervisor và Kafka adapter; Phase 7–8 còn pending |
-| Stream contract | `KAFKA`, `REDIS_STREAM`, `NATS_JETSTREAM`, `RABBITMQ`; Kafka adapter đã ship, ba adapter còn lại fail-isolated |
-| Runtime owner | Dataplane mail consumer supervisor |
-| Template SoT runtime | Versioned Zone NATS JetStream KV → bounded Dataplane L1 |
-| Rendering | Dataplane, restricted template engine |
-| Delivery | Shared JMAP batcher, tối đa 50 mail hoặc 1000ms/byte cap |
-| Settlement semantics | Phase 8 phải chốt riêng; Phase 6 tắt Kafka auto-commit và không ACK record |
-| History | Deferred; DP không phát execution-history event |
-| Existing delivery SoT | `dataplane_jmap_batch_delivery_god_view.md` |
+| Trạng thái | Phase 5–8 đã ship trong code; production activation vẫn gated |
+| Stream suites | Kafka, Redis Stream, NATS JetStream, RabbitMQ |
+| Runtime entry | `MailStreamSupervisor::run_slot` → `dispatch_stream_runtime` |
+| Không phải runtime entry | `dispatch_mail_job`; hàm này chỉ xử lý Redis Job nội bộ/projection/direct system mail |
+| Config L2 | Zone-local NATS JetStream KV |
+| Config L1 | Immutable `ArcSwap` consumer registry + byte-bounded Moka template cache |
+| Rendering | Fixed JSON envelope + restricted placeholder renderer tại Dataplane |
+| Delivery | Shared JMAP batcher, tối đa 50 mail hoặc 1000 ms/byte cap |
+| Semantics | Best-effort bulk mail; không tuyên bố exactly-once |
+| History | Deferred; không có mail history/event ledger trong phase này |
+| Activation | `MAIL_STREAM_DELIVERY_ENABLED=false` mặc định |
 
-## 1. Runtime topology
+## 1. End-to-end topology
 
 ```mermaid
 flowchart LR
-    L2[(Zone NATS KV<br/>Heads + snapshots + leases)] --> SUP[Mail Consumer Supervisor]
-    SUP --> C1[Kafka Runtime A]
-    SUP --> C2[Kafka Runtime B]
+    CP[Controlplane Mail CRUD] --> O[(mail_outbox_records)]
+    O --> JO[Job Orchestrator relay/reconciler]
+    JO --> RJ[(Redis Job<br/>mail projection command)]
+    RJ --> PJ[dispatch_mail_job<br/>projection only]
+    PJ --> KV[(Zone NATS KV<br/>consumer/template snapshot)]
 
-    K[(Customer Kafka<br/>same Zone private network)] --> C1
-    K --> C2
+    KV --> SUP[MailStreamSupervisor]
+    SUP --> DISP{stream_dispatcher}
+    DISP --> K[Kafka suite]
+    DISP --> R[Redis Stream suite]
+    DISP --> N[NATS JetStream suite]
+    DISP --> Q[RabbitMQ suite]
 
-    C1 --> MAP[JSON Mapping + Schema Validation]
-    C2 --> MAP
-    MAP --> TL1[Moka Template L1<br/>key=id+version]
-    TL1 --> REN[Restricted Renderer]
-    REN --> MB[Shared keyed JMAP Batcher]
-    MB --> SW[Stalwart JMAP]
-    SW --> TERM[Per-job JMAP result]
-    TERM --> OC[Partition Offset Coordinator]
+    K --> P[Fixed-envelope processor]
+    R --> P
+    N --> P
+    Q --> P
+    P --> TL1[Moka template L1]
+    TL1 --> B[Shared JMAP batcher]
+    B --> S[Stalwart]
 ```
 
-Mọi Dataplane pod trong Zone có thể quan sát cùng registry, nhưng chỉ pod claim được runtime slot lease mới
-mở Kafka connection tương ứng. Kafka consumer group phân partition giữa các slot; CP không chọn pod và số
-connection không tăng theo `pod_count × consumer_count`.
+Hai đường thực thi phải giữ tách biệt:
 
-### 1.1 Generic stream contract trong outbox payload
+1. `dispatch_mail_job` nhận Aurora Redis Job. Với `mail.consumer.upsert/delete` và template events, nó ghi
+   desired snapshot vào Zone KV. Với direct system mail, nó gọi mail executor hiện hữu.
+2. `MailStreamSupervisor` quan sát L1 desired registry, claim một Zone lease cho từng logical slot rồi gọi
+   `dispatch_stream_runtime`. Chỉ dispatcher này match `stream_type` và mở customer broker connection.
 
-`mail_outbox_records` không thêm discriminator column. Row vẫn giữ đúng một `payload BYTEA`; bytes đó decode thành:
+Không được cho `dispatch_mail_job` mở Kafka/Redis/NATS/Rabbit connection: một projection retry khi đó có thể
+tạo thêm consumer session, phá lease ownership và nhân connection theo số job.
+
+## 2. Projection contract
+
+Outbox vẫn có một `payload BYTEA`. Business field hay thay đổi nằm trong protobuf, không thêm broker-specific
+column vào outbox:
 
 ```proto
 message MailStreamSourceV1 {
@@ -55,356 +68,305 @@ message MailStreamSourceV1 {
   bytes broker_resource_id = 3;
   bytes payload = 4;
 }
+
+message KafkaStreamPayloadV1 {
+  bytes source_config_envelope = 1;
+  string topic = 2;
+  string consumer_group = 3;
+}
+
+message RedisStreamPayloadV1 {
+  bytes source_config_envelope = 1;
+  string stream_key = 4;
+  string consumer_group = 5;
+}
+
+message NatsJetStreamPayloadV1 {
+  bytes source_config_envelope = 1;
+  string stream_name = 6;
+  string durable_name = 7;
+}
+
+message RabbitMqPayloadV1 {
+  bytes source_config_envelope = 1;
+  string queue_name = 8;
+  string consumer_tag_prefix = 9;
+}
 ```
 
-- `stream_type` nằm **bên trong protobuf payload** nên snapshot/outbox là self-describing và replay được.
-- `payload` là adapter protobuf opaque đối với outbox relay, JO, Redis Job và Zone KV.
-- CP business row vẫn giữ `source_type` queryable; runtime không suy type từ topic/string convention.
-- Unknown type/version chỉ làm consumer đó `ERROR`; không panic projection, supervisor hoặc pod.
-- Tên `NATS_JETSTREAM` là bắt buộc; không dùng `NATS` mơ hồ vì NATS Core trung tâm không phải durable customer stream.
+Invariants:
 
-Phase 6 hiện decode `KafkaStreamPayloadV1` từ `MailStreamSourceV1.payload`. Redis Stream,
-NATS JetStream và RabbitMQ đã có stable enum/dispatch boundary nhưng network adapter chưa ship; supervisor ghi
-`MAIL_STREAM_ADAPTER_UNSUPPORTED` cho consumer tương ứng.
+- CP create/update và JO periodic reconciler đều match `source_type` một lần rồi encode đúng payload suite.
+- JO/outbox/Redis Job/Zone KV không giải mã `source_config_envelope`.
+- Projection Dataplane decode và bounded-validate đúng suite trước khi commit immutable snapshot vào KV.
+- Runtime không suy broker type từ `topic`, URI hay convention string.
+- Các suite dùng wire field tags khác nhau; payload của suite A gắn nhầm discriminator B fail validation thay vì decode thành chuỗi có nghĩa khác.
+- Unknown type/version làm consumer đó fail-isolated; không panic projection/supervisor/pod.
+- `NATS_JETSTREAM` là customer durable stream. Nó không phải NATS Core trung tâm và không dùng Zone KV
+  như message queue của khách hàng.
 
-## 2. Runtime component ownership
+## 3. Runtime ownership
 
-| Component | Owns | Không owns |
+| Component | Sở hữu | Không sở hữu |
 |---|---|---|
-| Config listener | Version/hash validation, L1 COW | CP authorization |
-| Consumer supervisor | Generic runtime registry, lifecycle, slot lease, fencing | Adapter-specific ACK |
-| Kafka adapter | TLS/SASL-PLAIN-over-TLS connect, group join, bounded poll | Commit trước terminal Phase 8 |
-| Mapper | Extract recipient/external ID/variables theo configured JSONPath | Chọn sender/template từ payload |
-| Template runtime | Immutable snapshot compile/cache/render | Query CP PostgreSQL |
-| JMAP batcher | Count/time/byte batching, per-mail result | Kafka offset commit |
-| Offset coordinator | Contiguous terminal watermark per partition | Gửi email |
+| Config runtime | Bounded KV scan, hash/version validation, COW L1 | Customer broker socket |
+| Supervisor | Desired slot set, jitter, Zone lease, generation fence | Broker ACK/commit |
+| Stream dispatcher | Match `stream_type` đúng một lần | Generic ACK abstraction |
+| Kafka suite | Group, rebalance epoch, poll, retry, contiguous offset commit | Redis/NATS/Rabbit settlement |
+| Redis Stream suite | Group, PEL, `XAUTOCLAIM`, `XACK` | Kafka offsets |
+| JetStream suite | Existing stream/durable pull consumer, Progress/Ack/Term | Zone NATS KV ledger |
+| RabbitMQ suite | Channel, QoS/prefetch, delivery ACK/reject | Generic delivery-tag storage |
+| Mail processor | Fixed envelope, template load/render, typed JMAP result | Broker coordinate |
+| JMAP batcher | Count/time/byte batching, per-item result | Durable dedupe/history |
 
-### 2.1 Registry discovery và anti-entropy
+Việc lặp connect/consume/retry/close giữa bốn suite là chủ ý. Không gom chúng vào một interface settlement
+giả vì Kafka offset, Redis PEL, JetStream ACK state và AMQP delivery tag có vòng đời khác nhau.
 
-- `mail.consumer.head.*` là danh mục NATS KV; cold start/restart hydrate bounded slice consumer binding nhỏ, không preload template content.
-- Một central Tokio task điều khiển ticker, timer, jitter và reconcile; không spawn timer riêng cho mỗi consumer.
-- Periodic KV reconcile dùng bounded page và jitter để lệch pha giữa pod; không mở Redis PubSub listener.
-- NATS KV error giữ last-known-good L1; không overwrite generation đang chạy bằng state thiếu/corrupt.
-- `parallelism=N` tạo N logical slot leases `mail.consumer.slot.{consumer_id}.{slot}`. Lease chứa stable owner và fencing token tăng đơn điệu.
-- Pod mất lease phải fence generation và ngừng poll/commit; pod khác chỉ start sau khi claim token mới.
-- Supervisor chỉ full-reconcile khi COW pointer đổi, slot task kết thúc hoặc đến bounded retry window; không query KV mỗi 500 ms.
-- Initial per-pod jitter và per-slot jitter làm lệch pha các replica trước CAS claim; mỗi pod có hard cap runtime slots.
+## 4. HA scheduling, leases và COW
 
-## 3. Consumer runtime state machine
-
-State machine dưới đây là **per Dataplane instance**. CP aggregate reported health từ nhiều fresh instance reports.
-
-```mermaid
-stateDiagram-v2
-    [*] --> STOPPED
-    STOPPED --> STARTING: desired ENABLED + valid snapshot
-    STARTING --> RUNNING: Kafka joined group/readiness
-    STARTING --> ERROR: auth/config/network permanent failure
-    RUNNING --> DRAINING: pause/delete/config COW/shutdown
-    DRAINING --> PAUSED: desired PAUSED
-    DRAINING --> STOPPED: delete/shutdown
-    DRAINING --> STARTING: newer ENABLED config ready
-    ERROR --> STARTING: newer config or bounded recovery retry
-    PAUSED --> STARTING: desired ENABLED
-```
-
-### 3.1 Runtime generation fencing
-
-- Mỗi pod giữ `runtime_generation` tăng dần cho từng consumer và `report_sequence` tăng trong generation.
-- Kafka callbacks, offset commits và result completion đều mang captured generation.
-- Callback từ generation cũ sau COW swap bị bỏ; không được commit offset hoặc đổi reported state.
-- `runtime_generation` chỉ so sánh trong cùng `instance_id`, không so sánh giữa các pod.
-
-## 4. Config apply and COW swap
-
-### 4.1 Upsert
-
-```mermaid
-sequenceDiagram
-    participant L2 as Zone NATS KV
-    participant S as Supervisor
-    participant Old as Runtime generation N
-    participant K as Kafka
-
-    L2-->>S: Invalidate consumer config v8
-    S->>L2: GET immutable snapshot v8
-    S->>S: Validate UUID/version/hash và pinned template/sender identity
-    alt processing-only update (mapping/template/sender/limits)
-        S->>Old: Pause partitions + drain current config
-        S->>S: Fence N; atomically swap immutable processing config to N+1
-        S->>Old: Resume same Kafka session under N+1
-        S-->>L2: RuntimeReported RUNNING v8
-    else source update (broker/topic/group/credential)
-        S->>Old: Fence + pause + drain + commit eligible offsets
-        Old->>K: Leave group and close connection
-        S->>S: Construct generation N+1 only after old is fenced
-        S->>S: Decrypt encrypted source envelope bằng zone-local key
-        S->>K: Join new group
-        alt new source ready
-            S-->>L2: RuntimeReported RUNNING v8
-        else new source failed
-            S-->>L2: RuntimeReported ERROR observed v8
-        end
-    end
-```
-
-Không chạy old/new Kafka consumer chồng nhau để “test readiness”: member mới join cùng group có thể kích hoạt
-rebalance trước khi generation cũ bị fence. Processing-only update tái sử dụng session; source update chấp nhận
-một khoảng dừng ngắn để bảo toàn offset/config boundary. Config snapshot phải validate hoàn toàn trước khi pause old runtime.
-
-### 4.2 Delete tombstone
-
-1. Fence generation hiện tại.
-2. Pause assigned partitions và ngừng poll message mới.
-3. Drain outstanding đến timeout.
-4. Commit highest contiguous offsets đã có durable terminal result.
-5. Outstanding chưa terminal không commit, để Kafka redeliver.
-6. Leave group, close connection, giữ tombstone version và report `STOPPED`.
-
-## 5. Kafka message contract and mapping
-
-Phase đầu: một Kafka message tạo đúng một mail/recipient.
-
-### 5.0 Phase-6 encrypted connection envelope
-
-`KafkaStreamPayloadV1.source_config_envelope` dùng binary envelope:
+Mỗi enabled consumer có `parallelism=N` logical slots:
 
 ```text
-"AMS1" | version=1 (1 byte) | AES-GCM nonce (12 bytes) | ciphertext+tag
+mail.consumer.slot.{consumer_id}.{slot}
 ```
 
-- KEK là `MAIL_STREAM_ENVELOPE_KEY_HEX`, đúng 32-byte hex, inject riêng vào workload của Zone.
-- AES-GCM AAD bind `zone_id + broker_resource_id + stream_type`; copy ciphertext sang Zone/broker type khác sẽ fail authentication.
-- Plaintext V1 là bounded JSON `bootstrap_servers`, `security_protocol`, `username`, `password`; unknown field bị reject.
-- Phase 6 chỉ cho `ssl` hoặc `sasl_plain_ssl`, luôn verify certificate bằng native roots và optional deployment-owned `MAIL_STREAM_CA_CERT_PATH`; không có TLS-insecure switch và customer payload không được chọn filesystem path.
-- Kafka adapter thuần Rust hiện yêu cầu broker Apache Kafka `3.9+`; broker cũ hơn bị coi là unsupported thay vì âm thầm hạ protocol/security.
-- Plaintext/credential được zeroize khi rời scope và không xuất hiện trong log, metric, KV health hoặc job result.
-- NetworkPolicy vẫn là lớp bắt buộc để chặn bootstrap/advertised broker thoát private Zone network.
+Flow của một slot:
 
-Ví dụ customer payload:
+1. Supervisor dùng initial jitter và deterministic per-slot jitter để các pod không CAS cùng nhịp.
+2. Pod claim `AURORA_ZONE_COORDINATION` lease; value có owner và fencing token tăng đơn điệu.
+3. Fencing token trở thành `runtime_generation` của slot.
+4. Supervisor tạo `RuntimeGenerationFence`, ghi health `STARTING`, rồi gọi stream dispatcher.
+5. Suite renew lease mỗi `TTL/3`. Renew fail thì ngừng intake, fence JMAP submit và không settlement từ owner cũ.
+6. Config version/hash đổi, pause/delete hoặc shutdown làm cancel generation cũ. Slot mới chỉ chạy từ immutable
+   snapshot mới sau khi task cũ rời supervisor registry.
+
+Supervisor không query KV mỗi 500 ms. Config runtime có central bounded scanner; supervisor chỉ reconcile khi
+`ArcSwap` snapshot đổi hoặc bounded retry window tới hạn. Slot connect/claim fail giữ cooldown 5–7 giây có
+per-instance jitter, nên task kết thúc không biến central tick thành CAS loop. `MAIL_STREAM_MAX_SLOTS_PER_POD`
+chặn một pod claim vô hạn connection.
+
+### 4.1 Generation fence
+
+`RuntimeGenerationFence` có hai nhiệm vụ Aurora-only:
+
+- Ngừng nhận JMAP submission mới ngay khi generation stale/mất lease.
+- Chờ mọi request đã vào submit critical section nhận typed JMAP result trước khi generation đóng.
+- Giữ monotonic local lease deadline; nếu executor/event loop stall quá TTL thì submit/settlement fail-closed
+  trước cả khi renew tick kế tiếp kịp quan sát server lease đã hết.
+
+Fence không thay thế broker settlement. Sau fence, từng suite tự quyết định để message redeliver hay settlement
+dựa trên lease/rebalance state của chính broker.
+
+## 5. Encrypted connection boundary
+
+Mọi suite dùng envelope:
+
+```text
+"AMS1" | version=1 | AES-GCM nonce 12 bytes | ciphertext + tag
+```
+
+- KEK là `MAIL_STREAM_ENVELOPE_KEY_HEX`, đúng 32-byte hex, chỉ inject vào Dataplane Zone workload.
+- AAD bind `zone_id + broker_resource_id + stream_type`; copy ciphertext sang Zone/resource/type khác fail auth.
+- Ciphertext tối đa 16 KiB; plaintext sau decrypt cũng bị bound và deserialize bằng `deny_unknown_fields`.
+- Plaintext credential được zeroize khi rời scope; không ghi vào log, metric, KV health hoặc job result.
+- Connect/bootstrap/subscribe operations có bounded timeout 10–15 giây để config COW và pod shutdown không kẹt vô hạn trên customer endpoint.
+- Customer không được truyền CA filesystem path. Optional Kafka `MAIL_STREAM_CA_CERT_PATH` thuộc trusted deployment;
+  ba suite còn lại hiện dùng system trust roots và cần staging gate riêng nếu Zone dùng private CA.
+- NetworkPolicy/egress allow-list theo broker resource vẫn là lớp bắt buộc để ngăn SSRF tới control network.
+
+Connection config V1:
+
+| Suite | Plaintext fields | Transport rule |
+|---|---|---|
+| Kafka | `bootstrap_servers`, `security_protocol`, optional user/password | chỉ `ssl` hoặc `sasl_plain_ssl` |
+| Redis Stream | `url` | bắt buộc `rediss://` |
+| NATS JetStream | `servers`, `auth_type`, token hoặc user/password | mọi server bắt buộc `tls://` |
+| RabbitMQ | `uri` | bắt buộc `amqps://` |
+
+## 6. Fixed customer message contract
+
+Mọi suite đưa nguyên broker payload bytes vào cùng processor. V1 chỉ chấp nhận:
 
 ```json
 {
-  "event_id": "order-019",
-  "recipient": "alice@example.com",
-  "data": {
+  "to": "alice@example.com",
+  "parameter": {
     "customer_name": "Alice",
-    "order_code": "A001"
+    "order_code": "A001",
+    "amount": 123,
+    "paid": true
   }
 }
 ```
-
-Consumer mapping snapshot:
-
-```json
-{
-  "external_message_id_json_path": "$.event_id",
-  "recipient_json_path": "$.recipient",
-  "variable_json_paths": {
-    "customer_name": "$.data.customer_name",
-    "order_code": "$.data.order_code"
-  }
-}
-```
-
-### 5.1 Trust boundary
-
-Kafka payload được xem là untrusted customer input:
-
-- Không đọc `sender_profile_id`, template ID/version, workspace hoặc Zone từ message.
-- Recipient chỉ lấy từ configured JSONPath và parse/canonicalize.
-- Variable map chỉ gồm keys đã khai báo trong consumer mapping và template schema.
-- External message ID chỉ dùng audit; dedupe authority là Kafka coordinate.
-- Raw JSON không được log hoặc đưa vào metric label.
-
-### 5.2 Bounded validation
-
-Trước render phải giới hạn:
-
-- Kafka record byte size.
-- JSON nesting depth/token count.
-- Số variable và độ dài key/value.
-- JSONPath complexity/evaluation result count.
-- Recipient count đúng một.
-- Template rendered subject/body byte size.
-
-Object/array bị reject; phase đầu normalize variables thành scalar strings và renderer tự đối chiếu các token `{{...}}` xuất hiện trong subject/HTML.
-
-## 6. Immutable template runtime
-
-Template ID là globally unique; cache key chỉ cần identity + immutable version:
-
-```text
-mail.template.snapshot.{template_id}.v{version}
-```
-
-Flow:
-
-1. Consumer config pin đúng một `template_id + template_version`; payload không thể chọn template khác.
-2. L1 hit trả compiled immutable template.
-3. L1 miss đọc đúng version snapshot từ Zone L2.
-4. Validate content hash; detect placeholder trong subject/HTML và yêu cầu message cung cấp đủ scalar variables.
-5. Compile/coalesce concurrent miss rồi insert bounded Moka L1.
-6. Render subject/text/HTML tại DP.
 
 Rules:
 
-- Subject renderer không HTML escape nhưng output cấm CR/LF.
-- HTML variable phải context-safe; restricted engine không có file/network/function execution.
-- Missing required variable là `REJECTED`, không thay bằng empty string.
-- Template hard-delete bị CP từ chối khi consumer active còn tham chiếu; immutable snapshot đang được reader giữ bằng `Arc` không bị mutate.
-- DP không gọi CP template service trong hot path.
+- Top-level có đúng `to` và `parameter`; unknown/duplicate field bị permanent reject.
+- `to` là đúng một mailbox, không có recipient array.
+- `parameter` là flat object; value chỉ string, finite number hoặc boolean.
+- Key theo identifier `^[A-Za-z_][A-Za-z0-9_]*$`; số key và byte key/value/tổng đều có hard cap.
+- Không có JSONPath mapper. Sender/template/workspace/Zone không được lấy từ customer message.
+- Consumer config pin đúng một `template_id + template_version` và verified sender identity/version.
+- Missing hoặc thừa parameter đều reject; HTML variable luôn escape; subject cấm control character.
+- Raw recipient/payload/template parameter không được log hoặc dùng làm metric label.
 
-## 7. End-to-end execution sequence
+Stable submission identity được derive bằng UUIDv5:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant K as Kafka
-    participant DP as DP Consumer Runtime
-    participant L2 as Zone NATS KV
-    participant R as Template Renderer
-    participant B as JMAP Batcher
-    participant S as Stalwart
-    participant O as Offset Coordinator
+| Suite | Identity input |
+|---|---|
+| Kafka | consumer + topic + partition + offset |
+| Redis Stream | consumer + stream key + entry ID |
+| NATS JetStream | consumer + stream + stream sequence |
+| RabbitMQ | consumer + AMQP `message_id` |
 
-    K-->>DP: record(topic, partition, offset, JSON)
-    DP->>DP: Capture config version + runtime generation
-    DP->>DP: UUIDv5 submission_id from Kafka coordinate
-    DP->>L2: Check terminal idempotency state
-    alt already terminal
-        L2-->>DP: terminal result exists
-        DP->>O: Mark offset terminal without resending
-    else new/non-terminal
-        DP->>DP: Parse bounded JSON + configured mapping
-        DP->>L2: Load pinned template version on L1 miss
-        DP->>R: Validate schema + render
-        R-->>DP: PreparedMail + content hash
-        DP->>B: Submit with per-mail oneshot
-        B->>S: Shared keyed batch, max 50/1000ms/bytes
-        S-->>B: created/notCreated per mail
-        B-->>DP: typed per-mail result
-        DP->>L2: Atomic terminal state + XADD result event
-        L2-->>DP: durable write acknowledged
-        DP->>O: Mark partition/offset terminal
-        O->>K: Commit highest contiguous terminal offset
-    end
-```
+UUIDv5 giúp request retry dùng cùng client-side ID, nhưng Stalwart/JMAP không được coi là durable global
+idempotency ledger. Crash sau accept nhưng trước broker settlement vẫn có thể gửi trùng.
 
-## 8. JMAP batch partitioning
+## 7. Suite-specific runtime và settlement
 
-Existing JMAP runtime phase hiện tại có một static sender. Multi-consumer implementation phải key batch theo ít nhất:
+### 7.1 Kafka suite
+
+1. Join group với stable instance ID theo consumer/slot; auto-commit tắt.
+2. Poll bounded records; capture rebalance epoch trên từng work item.
+3. Processor retry tối đa 5 lần với exponential backoff + jitter cho typed retryable result.
+4. Accepted, permanent reject, ambiguous hoặc retry exhausted là terminal theo bulk-mail policy.
+5. Per partition giữ ordered terminal set và chỉ advance highest contiguous watermark.
+6. Commit `next_offset` kèm generation/fencing metadata mỗi bounded tick.
+7. Rebalance đổi epoch xóa settlement state cũ; completion epoch cũ không commit.
+8. Mất Zone lease cấm final commit. Clean cancel chỉ commit terminal contiguous work của assignment còn hiệu lực.
+
+### 7.2 Redis Stream suite
+
+1. Dùng customer Redis riêng qua `rediss://`; tạo group idempotent bằng `XGROUP CREATE ... 0 MKSTREAM`.
+2. New entry đọc bằng `XREADGROUP`; fixed transport field phải tên `payload`.
+3. Mỗi 30 giây dùng bounded `XAUTOCLAIM` để nhận PEL của consumer chết.
+4. Work đang sống reset PEL idle bằng `XCLAIM ... JUSTID` mỗi 15 giây trong cả thời gian chờ semaphore/JMAP;
+   `XAUTOCLAIM` không được lấy cùng entry chỉ vì processing lâu.
+5. Retryable result được retry local tối đa 5 lần.
+6. Mọi terminal result dùng `XACK`; entry thiếu/sai field `payload` cũng terminal-ACK để không tạo poison PEL.
+7. Generation fenced thì không `XACK`; entry ở PEL để owner mới reclaim.
+
+### 7.3 NATS JetStream suite
+
+1. Kết nối customer NATS qua TLS; attach existing stream và existing durable pull consumer.
+2. Không tự tạo/mutate customer stream hoặc durable policy.
+3. Trong lúc chờ semaphore/JMAP, task gửi `Progress` mỗi 5 giây; retry dài không để AckWait redeliver song song.
+4. Accepted dùng confirmed `double_ack`.
+5. Permanent reject, ambiguous hoặc retry exhausted dùng `Term` theo best-effort no-duplicate policy.
+6. Generation fenced thì không ACK/Term; durable consumer redeliver theo policy của khách hàng.
+
+### 7.4 RabbitMQ suite
+
+1. Kết nối `amqps://`, tạo channel, đặt QoS/prefetch bằng max inflight của slot.
+2. Consume existing queue bằng tag prefix + consumer ID + slot.
+3. Message bắt buộc có AMQP `message_id`; delivery tag không được dùng làm stable identity qua reconnect.
+4. Thiếu `message_id` bị reject không requeue.
+5. Accepted dùng ACK; permanent reject, ambiguous hoặc retry exhausted dùng reject `requeue=false`.
+6. Generation fenced thì không ACK/reject; broker redeliver sau channel/connection close.
+
+## 8. Common processor và JMAP result taxonomy
+
+Processor chỉ trả một trong bốn trạng thái, không mang broker coordinate:
+
+| Status | Ý nghĩa |
+|---|---|
+| `Accepted` | Stalwart đã accept EmailSubmission; chưa nghĩa recipient nhận mail |
+| `PermanentRejected` | Envelope/recipient/template/result bị reject ổn định |
+| `Retryable` | Config dependency/JMAP lỗi có thể hồi phục |
+| `Ambiguous` | Timeout/transport/response invalid sau khi side effect có thể đã xảy ra |
+
+Mỗi suite tự map taxonomy vào native settlement. Policy hiện tại ưu tiên không gửi lại hàng loạt vô hạn:
+ambiguous và exhausted retry đều terminal khi generation vẫn current. Đây là best-effort; muốn đảm bảo mạnh hơn
+phải thiết kế durable submission ledger/history riêng, không nhét state vào Zone KV health.
+
+ACK/Term/reject/XACK lỗi không bị nuốt: task trả low-cardinality error về suite loop, slot ghi `ERROR`, đóng
+connection và chỉ retry sau supervisor cooldown. Kafka giữ dirty contiguous watermark khi commit lỗi và retry 2 lần/giây.
+
+## 9. Backpressure và bounded resources
+
+- `MAIL_STREAM_MAX_INFLIGHT_PER_SLOT` giới hạn broker work của từng claimed slot.
+- Kafka poll/fetch bytes, Redis read/claim count, Rabbit prefetch và local `JoinSet` đều bounded.
+- `MAIL_STREAM_PROCESSOR_CONCURRENCY` là semaphore toàn pod cho render/JMAP; không nhân theo số connection.
+- JMAP batcher tiếp tục có bounded ingress/batch queue/count/time/byte caps.
+- `MAIL_STREAM_MAX_SLOTS_PER_POD` giới hạn tổng slot connection trên một pod.
+- Không có unbounded per-consumer ticker; suite chỉ tạo timer trong task của slot đang thực sự owned.
+
+## 10. Race and failure matrix
+
+| Tình huống | Guard | Outcome |
+|---|---|---|
+| Hai pod claim cùng slot | Zone KV CAS lease + fencing token | Một owner current |
+| Owner cũ resume sau pause/GC | Server fencing token + local monotonic lease deadline | Không overwrite health/settlement mới |
+| Config COW lúc JMAP đang submit | Generation write fence chờ read permit | Request cũ nhận typed result trước close |
+| Kafka completion sau rebalance | Captured assignment epoch | Không commit stale offset |
+| Kafka offset N+1 xong trước N | Per-partition ordered terminal set | Chỉ commit watermark contiguous |
+| Redis pod chết với PEL | `XAUTOCLAIM` | Entry được node khác lấy lại |
+| JetStream/Rabbit task bị fence | Không ACK sau fence | Broker chịu trách nhiệm redelivery |
+| JMAP accepted, pod chết trước settlement | Không có durable submission ledger | Có thể duplicate; đã công bố best-effort |
+| Invalid config từ projection | Suite-specific decode trước KV + runtime validation | Consumer fail-isolated |
+| Broker/Zone KV tạm lỗi | Health error + supervisor bounded retry | Không crash pod, L1 last-known-good được giữ |
+
+## 11. Shutdown order
+
+1. Cancel supervisor intake.
+2. Mỗi suite ngừng poll/pull/consume và fence generation.
+3. JMAP request đã vào critical section nhận result.
+4. Suite settlement chỉ khi lease/assignment/generation còn hợp lệ.
+5. Kafka close group; Redis tasks dừng để PEL giữ work; JetStream/Rabbit bỏ ACK sau fence rồi close transport.
+6. Config listener dừng.
+7. Shared JMAP batcher flush/drain theo God View JMAP.
+
+Không abort JMAP request rồi ACK broker. Không final-commit Kafka sau mất Zone lease.
+
+## 12. Health and observability
+
+Mỗi slot ghi snapshot fenced:
 
 ```text
-zone + sender_profile_id + sender_version + Stalwart account_id + identity_id
+AURORA_ZONE_HEALTH/mail.runtime.{consumer_id}.{slot}
 ```
 
-Không trộn hai sender/account/identity trong cùng `Email/set`/`EmailSubmission/set`. Mỗi mail vẫn nhận result riêng để offset coordinator xử lý partial batch success.
+Snapshot gồm state, consumer/config version, runtime generation, slot, fencing token, heartbeat và low-cardinality
+error code. Metric processor chỉ label `zone_id + status + taxonomy code`; không label topic/queue/recipient/template.
+Config runtime có apply/error/scan/L1 metrics. Broker-specific lag/rebalance/PEL/redelivery dashboards còn là deployment
+gate, không được giả là đã có chỉ vì suite đã compile.
 
-Chi tiết HTTP construction, retry, byte cap và shutdown nằm tại `dataplane_jmap_batch_delivery_god_view.md`.
+## 13. Production gates
 
-## 9. Job result boundary hiện tại
+Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường staging hoàn tất:
 
-JMAP batcher trả accepted/rejected theo từng job cho Redis Job lifecycle. Không ghi `mail_submissions`, delivery attempts, execution-result stream hay CP history. Kafka offset/idempotency cho broker consumer thuộc Phase 8 và phải được thiết kế riêng trước khi bật runtime; không được tuyên bố exactly-once dựa trên JMAP submission ID.
+1. E2E thật cho từng broker với TLS và credential envelope của Zone.
+2. Kill pod ở ba điểm: trước JMAP, sau JMAP accepted, trước ACK/commit.
+3. Kafka rebalance test với nhiều pod/partition và config COW đồng thời.
+4. Redis PEL/XAUTOCLAIM, JetStream AckWait/redelivery và Rabbit channel-close tests.
+5. NetworkPolicy egress chỉ tới broker resource đã authorize và Stalwart.
+6. Alert cho slot `ERROR`, stale heartbeat, lease churn, retry/ambiguous rate và JMAP saturation.
+7. Capacity test theo `max slots × inflight × max message bytes`; không chỉ benchmark happy path.
 
-## 10. Error policy
+## 14. Code map
 
-- Error code phải taxonomy + sanitize + bound; không nhét endpoint, credential, recipient hay raw customer JSON.
-- JMAP accepted chỉ có nghĩa Stalwart nhận submission, không có nghĩa delivered.
-- Delivery/bounce/history là workflow tương lai, không được phát event giả trong runtime hiện tại.
-
-## 11. Partition offset coordinator
-
-Mỗi `(consumer_id, topic, partition, runtime_generation)` có coordinator riêng:
-
-```text
-committed watermark = 100
-results completed: 101, 103, 104
-commit eligible     = 101
-
-when 102 terminal:
-commit eligible     = 104
-```
-
-- Completion có thể out-of-order do batch/concurrency.
-- Chỉ commit highest contiguous terminal offset.
-- Retryable result giữ gap và gây backpressure/pause partition nếu vượt bounded window.
-- Generation cũ không được commit sau rebalance/COW.
-- Permanent validation rejection được ghi durable rồi coi terminal để poison message không khóa partition.
-
-## 12. Rebalance and shutdown
-
-### Partition revoke
-
-1. Stop accepting new records cho partitions bị revoke.
-2. Fence callbacks không thuộc generation/assignment hiện hành.
-3. Drain bounded outstanding đến rebalance deadline.
-4. Commit contiguous terminal watermark.
-5. Không commit gaps; broker member mới sẽ redeliver.
-6. Release assignment/resources.
-
-### Pod shutdown
-
-1. Stop config and Kafka intake.
-2. Pause partitions.
-3. Drain mapper/renderer/JMAP batcher.
-4. Persist terminal results.
-5. Commit eligible offsets.
-6. Report runtime stop best-effort; CP heartbeat expiry vẫn sửa reported state nếu report mất.
-7. Close Kafka/JMAP/Redis resources.
-
-## 13. Reported state aggregation at CP
-
-Mỗi pod report theo `(consumer_id, instance_id, config_version, runtime_generation)` và heartbeat timestamp. CP giữ per-instance rows rồi derive aggregate:
-
-| Condition trên fresh reports của desired version | Aggregate reported state |
+| Trách nhiệm | File |
 |---|---|
-| Tất cả fresh members `RUNNING` | `RUNNING` |
-| Có `RUNNING` nhưng cũng có member `ERROR`/stale assignment | `DEGRADED` |
-| Không running, có `STARTING` | `STARTING` |
-| Tất cả đang drain | `DRAINING` |
-| Desired paused và không member running | `PAUSED` |
-| Desired enabled nhưng tất cả fresh reports error/stale | `ERROR` |
+| Slot scheduling/lease | `dataplane/src/executor/mail/stream_supervisor.rs` |
+| One-time type dispatch | `dataplane/src/executor/mail/stream_dispatcher.rs` |
+| Common fence/envelope/health | `dataplane/src/executor/mail/stream/mod.rs` |
+| Kafka suite | `dataplane/src/executor/mail/stream/kafka.rs` |
+| Redis Stream suite | `dataplane/src/executor/mail/stream/redis_stream.rs` |
+| NATS JetStream suite | `dataplane/src/executor/mail/stream/nats_jetstream.rs` |
+| RabbitMQ suite | `dataplane/src/executor/mail/stream/rabbitmq.rs` |
+| Fixed envelope/render/JMAP taxonomy | `dataplane/src/executor/mail/stream_processor.rs` |
+| Config COW/lazy template | `dataplane/src/executor/mail/runtime_configuration.rs` |
+| Redis Job projection entry | `dataplane/src/executor/mail/executor.rs` |
+| JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler.rs` |
 
-Generation không so sánh giữa hai instance khác nhau. Expired heartbeat bị loại khỏi aggregation.
+## 15. Phase status
 
-## 14. Security in same-Zone networking
-
-Mạng nội bộ không được xem là trusted:
-
-- DP resolve broker từ authorized resource ID, không từ message/customer host tùy ý.
-- NetworkPolicy chỉ cho Mail runtime gọi broker cùng Zone, Zone NATS và Stalwart; zone-local decryption key được workload nhận qua platform secret injection, không gọi Vault.
-- Kafka dùng per-consumer/resource ACL và SASL/mTLS theo platform policy.
-- Validate resolved/advertised broker endpoints vẫn thuộc allowed private Zone ranges.
-- NATS KV chỉ giữ encrypted source envelope. Plaintext chỉ tồn tại trong runtime memory cần thiết và không đi vào L1 config dump, log, trace hoặc result.
-- Template/recipient/body không xuất hiện trong metrics.
-
-## 15. Observability
-
-Low-cardinality metrics:
-
-- Active runtimes by state and Zone.
-- Kafka assigned partitions, aggregate lag, rebalance count.
-- Paused duration/backpressure count.
-- Mapping/schema/render failure taxonomy.
-- Template L1 hit/miss/hash failure.
-- JMAP batch size/wait/latency/partial failures.
-- Offset commit latency/gap window.
-- Terminal result stream lag and ambiguous count.
-
-Consumer ID/topic/workspace/recipient không dùng làm metric labels. Trace/log correlation dùng internal submission ID và sampled structured fields.
-
-## 16. Phase implementation map
-
-| Phase | Dataplane responsibility |
+| Phase | Status |
 |---|---|
-| 5 | L2 snapshots, L1 cache, config listener, COW registry — **implemented tại `dataplane/src/executor/mail/runtime_configuration.rs`** |
-| 6 | **Implemented**: generic stream source, central supervisor, jitter, slot lease/fencing, Kafka TLS adapter, bounded ingress, no auto-commit |
-| 7 | JSON mapping + strict renderer + PreparedMail integration |
-| 8 | Offset coordinator + idempotency boundary (cần thiết kế riêng) |
-| 9 | Delivery history (future, chưa triển khai) |
-| 10–11 | Security, observability, chaos/load/E2E gates |
+| 0–4 | CP aggregate/outbox, projection và Zone KV path đã ship |
+| 5 | Bounded config COW + lazy template L1 đã ship |
+| 6 | Fenced supervisor + generic stream source đã ship |
+| 7 | Fixed envelope + restricted render + shared JMAP processor đã ship |
+| 8 | Bốn broker suites và native settlement đã ship, activation gated |
 
-Phase 6 đã mở Kafka connection và poll record vào bounded internal ingress nhưng chưa gửi mail. Cho đến khi
-Phase 7–8 hoàn tất, không được tuyên bố broker-to-mail end-to-end đã production-ready: ingress chưa có
-mapper/renderer consumer và Kafka offset chưa có durable terminal coordinator.
+Phase 8 hoàn tất ở code không đồng nghĩa production gate đã mở. Trước live E2E, runtime phải giữ disabled theo mặc định.

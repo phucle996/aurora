@@ -85,7 +85,6 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     source_config_envelope BYTEA NOT NULL DEFAULT ''::bytea,
     topic VARCHAR(249) NOT NULL,
     consumer_group VARCHAR(255) NOT NULL,
-    mapping_json JSONB NOT NULL,
     template_id VARCHAR(128) NOT NULL,
     template_version BIGINT NOT NULL CHECK (template_version > 0),
     sender_profile_id VARCHAR(128) NOT NULL,
@@ -99,7 +98,6 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     updated_by UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_mail_consumer_mapping_object CHECK (jsonb_typeof(mapping_json) = 'object'),
     CONSTRAINT ck_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
     CONSTRAINT ck_mail_consumer_source_config_envelope CHECK (octet_length(source_config_envelope) <= 16384),
     CONSTRAINT ck_mail_consumer_enabled_source_config CHECK (
