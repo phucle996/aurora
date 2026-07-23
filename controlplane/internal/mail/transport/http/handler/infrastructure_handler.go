@@ -3,16 +3,15 @@ package mailHandler
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	mailSvcInterface "controlplane/internal/mail/domain/service"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
 	apires "controlplane/pkg/apires"
+	pkgcontext "controlplane/pkg/context"
 	"controlplane/pkg/logger"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type InfrastructureHandler struct {
@@ -24,15 +23,20 @@ func NewInfrastructureHandler(svc mailSvcInterface.InfrastructureService) *Infra
 }
 
 func (h *InfrastructureHandler) GetByZoneID(c *gin.Context) {
+	// [COMMENT]: Gán operation tag chuẩn cho luồng truy vấn hạ tầng mail của admin
 	const op = "mail.admin.infrastructure.get"
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	
+	// [COMMENT]: Khởi tạo context với timeout 5 giây để bảo vệ handler khỏi bị nghẽn DB
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	zoneID, err := uuid.Parse(strings.TrimSpace(c.Param("zone_id")))
-	if err != nil {
-		apires.RespondBadRequest(c, "invalid zone_id")
+	// [COMMENT]: Trích xuất zone_id từ Gin Context (được middleware Gateway/Envoy parse từ Header X-Zone-Id)
+	// Tự động ghi warning log và phản hồi HTTP 400 Bad Request chuẩn hóa nếu không tìm thấy hoặc sai định dạng.
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
 		return
 	}
+	// [COMMENT]: Gọi domain service để lấy dữ liệu báo cáo hạ tầng mail theo zone_id
 	result, err := h.svc.GetByZoneID(ctx, zoneID)
 	if err != nil {
 		switch {

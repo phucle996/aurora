@@ -106,11 +106,11 @@ scope mismatch, không được tự tạo desired-state row bằng UPSERT.
 ## 6. Admin read API
 
 ```text
-GET /admin/mail/zones/{zone_id}/infrastructure
+GET /admin/mail/infrastructure
 ```
 
 Response gồm desired/actual state, freshness, generation, pressure, probe node, sanitized Dataplane nodes,
-Stalwart registry và truncation/error taxonomy. Không có infrastructure POST/PATCH/DELETE.
+Stalwart registry và truncation/error taxonomy. Zone ID được trích xuất tự động từ Header context (`X-Zone-Id`). Không có infrastructure POST/PATCH/DELETE.
 
 ## 7. Failure and race matrix
 

@@ -45,10 +45,10 @@ func RegisterRoutes(router *gin.Engine, module *Module) {
 		tenant.DELETE("/templates/:id", module.TenantTemplateHandler.Delete)
 	}
 
-	// [COMMENT]: SRE/Admin chỉ đọc actual infrastructure; enable/disable Mail vẫn đi qua
-	// hierarchy zone_services critical route và không có write endpoint trong Mail module.
+	// [COMMENT]: SRE/Admin chỉ đọc actual infrastructure; zone_id được nhận dạng qua Header X-Zone-Id context.
+	// Enable/disable Mail vẫn đi qua hierarchy zone_services critical route và không có write endpoint trong Mail module.
 	admin := router.Group("/admin/mail")
 	{
-		admin.GET("/zones/:zone_id/infrastructure", module.InfrastructureHandler.GetByZoneID)
+		admin.GET("/infrastructure", module.InfrastructureHandler.GetByZoneID)
 	}
 }

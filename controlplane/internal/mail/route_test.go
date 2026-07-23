@@ -29,9 +29,10 @@ func TestRegisterRoutesUsesRewrittenPersonalAndTenantPrefixes(t *testing.T) {
 		if route.Path == "/api/v1/mail" {
 			t.Fatalf("legacy or malformed route registered: %s %s", route.Method, route.Path)
 		}
+		// [COMMENT]: Kiểm tra đường dẫn route admin infrastructure khớp với định dạng mới không còn route param
 		if !strings.HasPrefix(route.Path, "/api/v1/personal/mail") &&
 			!strings.HasPrefix(route.Path, "/api/v1/tenant/mail") &&
-			route.Path != "/admin/mail/zones/:zone_id/infrastructure" {
+			route.Path != "/admin/mail/infrastructure" {
 			t.Fatalf("route is outside rewritten scope: %s %s", route.Method, route.Path)
 		}
 	}
