@@ -9,7 +9,6 @@ import {
   MapPin,
   HardDrive,
   LifeBuoy,
-  Mail,
   Network,
   ReceiptText,
   Server,
@@ -43,7 +42,6 @@ const primaryItems: NavItem[] = [
 
 const infraItems: NavItem[] = [
   { label: 'Hypervisor', to: '/hypervisor', icon: Server },
-  { label: 'Email Delivery', to: '/mail', icon: Mail },
   { label: 'Resources', to: '/resource-platform', icon: Database },
   { label: 'Storage', icon: HardDrive },
   { label: 'Kubernetes', icon: Boxes },

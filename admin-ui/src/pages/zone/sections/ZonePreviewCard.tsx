@@ -86,7 +86,7 @@ export default function ZonePreviewCard({
               <span className="text-slate-500 dark:text-slate-400">Services</span>
               <div className="flex flex-wrap gap-2">
                 {Object.entries(services)
-                  .filter(([_, enabled]) => enabled)
+                  .filter(([, enabled]) => enabled)
                   .map(([key]) => {
                     const Icon = serviceIcons[key as ServiceKey]
                     if (!Icon) return null

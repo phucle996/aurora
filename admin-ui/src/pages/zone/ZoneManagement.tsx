@@ -158,15 +158,20 @@ function augmentZoneRow(item: ZoneRow): ZoneRow {
 /**
  * Chuẩn hóa dữ liệu thô của từng Zone từ API trước khi hiển thị để tránh lỗi render.
  */
-function normalizeZoneRow(item: any): ZoneRow {
+function normalizeZoneRow(item: Record<string, unknown>): ZoneRow {
+  const loc = typeof item.location === 'string' && item.location ? item.location : 'dont have location'
+  const desc = typeof item.description === 'string' && item.description ? item.description : 'dont have description'
+  const statusStr = typeof item.status === 'string' ? item.status : ''
+  const updatedAt = typeof item.updated_at === 'string' ? item.updated_at : (typeof item.updatedAt === 'string' ? item.updatedAt : undefined)
+
   return {
-    id: item.id,
-    code: item.code,
-    name: item.name,
-    location: item.location || 'dont have location',
-    description: item.description || 'dont have description',
-    status: normalizeZoneStatus(item.status),
-    updated_at: item.updated_at || item.updatedAt
+    id: String(item.id || ''),
+    code: String(item.code || ''),
+    name: String(item.name || ''),
+    location: loc,
+    description: desc,
+    status: normalizeZoneStatus(statusStr),
+    updated_at: updatedAt,
   }
 }
 

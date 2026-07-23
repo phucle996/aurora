@@ -14,7 +14,7 @@
       }
     ]
   },
-  "description": "[COMMENT] Read-only Mail infrastructure view. Dataplane publishes bounded operational metrics; customer resource lifecycle remains outside this dashboard.",
+  "description": "[COMMENT] Local Zone Mail Infrastructure Health & Performance View. Each Zone deploys its own observer and Grafana dashboard instance.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -31,7 +31,7 @@
       },
       "id": 1,
       "panels": [],
-      "title": "Zone health",
+      "title": "Local Zone Health & Status Overview",
       "type": "row"
     },
     {
@@ -39,7 +39,7 @@
         "type": "prometheus",
         "uid": "victoriametrics"
       },
-      "description": "0=down, 1=degraded, 2=healthy. The rotating observer is the only writer for a Zone observation cycle.",
+      "description": "0=Down, 1=Degraded, 2=Healthy. The rotating observer is the single writer per observation cycle.",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -65,7 +65,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red"
+                "color": "red",
+                "value": null
               },
               {
                 "color": "orange",
@@ -81,7 +82,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 4,
         "w": 6,
         "x": 0,
         "y": 1
@@ -107,12 +108,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id) (mail_service_health_state{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "{{zone_id}}",
+          "expr": "max(mail_service_health_state and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "Mail Service State",
           "refId": "A"
         }
       ],
-      "title": "Mail service state",
+      "title": "Local Service State",
       "type": "stat"
     },
     {
@@ -120,7 +121,7 @@
         "type": "prometheus",
         "uid": "victoriametrics"
       },
-      "description": "Available queue capacity derived from fresh Dataplane node snapshots.",
+      "description": "Available queue capacity derived from fresh Dataplane node snapshots in the local Zone.",
       "fieldConfig": {
         "defaults": {
           "max": 100,
@@ -129,15 +130,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red"
+                "color": "red",
+                "value": null
               },
               {
                 "color": "orange",
-                "value": 20
+                "value": 25
               },
               {
                 "color": "green",
-                "value": 50
+                "value": 60
               }
             ]
           },
@@ -146,7 +148,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 4,
         "w": 6,
         "x": 6,
         "y": 1
@@ -172,12 +174,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id) (mail_service_capacity_percent{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "{{zone_id}}",
+          "expr": "max(mail_service_capacity_percent and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "Capacity",
           "refId": "A"
         }
       ],
-      "title": "Available capacity",
+      "title": "Available Capacity",
       "type": "stat"
     },
     {
@@ -185,7 +187,7 @@
         "type": "prometheus",
         "uid": "victoriametrics"
       },
-      "description": "Latest JMAP probe result per Zone.",
+      "description": "Latest JMAP delivery probe status in local Zone (0=Failed, 1=Reachable).",
       "fieldConfig": {
         "defaults": {
           "mappings": [
@@ -207,7 +209,8 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red"
+                "color": "red",
+                "value": null
               },
               {
                 "color": "green",
@@ -219,7 +222,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 4,
         "w": 6,
         "x": 12,
         "y": 1
@@ -245,12 +248,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id) (mail_jmap_probe_success{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "{{zone_id}}",
+          "expr": "max(mail_jmap_probe_success and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "JMAP Status",
           "refId": "A"
         }
       ],
-      "title": "JMAP probe",
+      "title": "JMAP Probe Reachability",
       "type": "stat"
     },
     {
@@ -258,14 +261,15 @@
         "type": "prometheus",
         "uid": "victoriametrics"
       },
-      "description": "Age of the newest rotating observer snapshot. This exposes a dead observer even while an older holder series is still inside the metrics lookback window.",
+      "description": "Age of newest observer snapshot. Exposes dead observer when lookback window holds stale series.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green"
+                "color": "green",
+                "value": null
               },
               {
                 "color": "orange",
@@ -282,7 +286,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 4,
         "w": 6,
         "x": 18,
         "y": 1
@@ -308,12 +312,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "clamp_min(time() - max by (zone_id) (mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}), 0)",
-          "legendFormat": "{{zone_id}}",
+          "expr": "clamp_min(time() - max(mail_operational_observed_unix_seconds), 0)",
+          "legendFormat": "Age",
           "refId": "A"
         }
       ],
-      "title": "Operational snapshot age",
+      "title": "Snapshot Age",
       "type": "stat"
     },
     {
@@ -322,11 +326,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 5
       },
-      "id": 6,
+      "id": 14,
       "panels": [],
-      "title": "Runtime pressure",
+      "title": "JMAP Probe Latency & Performance",
       "type": "row"
     },
     {
@@ -334,7 +338,157 @@
         "type": "prometheus",
         "uid": "victoriametrics"
       },
-      "description": "Queue pressure and batches already handed to JMAP.",
+      "description": "Local JMAP delivery probe response latency percentiles (p50, p90, p99).",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 16,
+        "x": 0,
+        "y": 6
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(mail_jmap_probe_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 Latency",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(mail_jmap_probe_duration_seconds_bucket[5m])))",
+          "legendFormat": "p90 Latency",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(mail_jmap_probe_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 Latency",
+          "refId": "C"
+        }
+      ],
+      "title": "JMAP Probe Response Time (p50 / p90 / p99)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "description": "Seconds since the last successful JMAP health probe.",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 60
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "id": 16,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "expr": "clamp_min(time() - max(mail_jmap_probe_last_success_unix_seconds), 0)",
+          "legendFormat": "Last Success Age",
+          "refId": "A"
+        }
+      ],
+      "title": "Time Since Last Successful Probe",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 6,
+      "panels": [],
+      "title": "Runtime Backpressure & Consumer Slots",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "description": "Pending queue items and in-flight batches handed over to JMAP delivery engine.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -357,7 +511,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 7
+        "y": 14
       },
       "id": 7,
       "options": {
@@ -380,8 +534,8 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id) (mail_pending_items{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "pending {{zone_id}}",
+          "expr": "max(mail_pending_items and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "Pending Items",
           "refId": "A"
         },
         {
@@ -389,12 +543,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id) (mail_in_flight_batches{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "in-flight {{zone_id}}",
+          "expr": "max(mail_in_flight_batches and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "In-Flight Batches",
           "refId": "B"
         }
       ],
-      "title": "Queue and in-flight batches",
+      "title": "Pending Queue & In-Flight Batches",
       "type": "timeseries"
     },
     {
@@ -402,7 +556,7 @@
         "type": "prometheus",
         "uid": "victoriametrics"
       },
-      "description": "Fresh, fenced consumer slots observed in Zone KV.",
+      "description": "Fresh, lease-fenced consumer slots observed in Zone KV.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -425,7 +579,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 7
+        "y": 14
       },
       "id": 8,
       "options": {
@@ -448,12 +602,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id) (mail_active_consumer_slots{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "{{zone_id}}",
+          "expr": "max(mail_active_consumer_slots and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "Active Slots",
           "refId": "A"
         }
       ],
-      "title": "Active consumer slots",
+      "title": "Active Consumer Slots",
       "type": "timeseries"
     },
     {
@@ -462,11 +616,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 22
       },
       "id": 9,
       "panels": [],
-      "title": "Physical inventory",
+      "title": "Physical Node Inventory & Observation Errors",
       "type": "row"
     },
     {
@@ -497,7 +651,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 16
+        "y": 23
       },
       "id": 10,
       "options": {
@@ -519,12 +673,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id, state) (mail_dataplane_nodes{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "{{zone_id}} / {{state}}",
+          "expr": "sum by (state) (mail_dataplane_nodes and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "{{state}}",
           "refId": "A"
         }
       ],
-      "title": "Dataplane nodes",
+      "title": "Dataplane Nodes Inventory",
       "type": "timeseries"
     },
     {
@@ -555,7 +709,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 16
+        "y": 23
       },
       "id": 11,
       "options": {
@@ -577,12 +731,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "max by (zone_id, state) (mail_stalwart_nodes{zone_id=~\"$zone_id\"} and on (zone_id, hostname) topk by (zone_id) (1, mail_operational_observed_unix_seconds{zone_id=~\"$zone_id\"}))",
-          "legendFormat": "{{zone_id}} / {{state}}",
+          "expr": "sum by (state) (mail_stalwart_nodes and on (hostname) topk(1, mail_operational_observed_unix_seconds))",
+          "legendFormat": "{{state}}",
           "refId": "A"
         }
       ],
-      "title": "Stalwart nodes",
+      "title": "Stalwart Mail Server Nodes",
       "type": "timeseries"
     },
     {
@@ -613,7 +767,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 16
+        "y": 23
       },
       "id": 12,
       "options": {
@@ -636,12 +790,12 @@
             "type": "prometheus",
             "uid": "victoriametrics"
           },
-          "expr": "sum by (zone_id, error_code) (rate(mail_operational_observation_error_total{zone_id=~\"$zone_id\"}[5m]))",
-          "legendFormat": "{{zone_id}} / {{error_code}}",
+          "expr": "sum by (error_code) (rate(mail_operational_observation_error_total[5m]))",
+          "legendFormat": "{{error_code}}",
           "refId": "A"
         }
       ],
-      "title": "Observation errors / second",
+      "title": "Observation Errors / sec",
       "type": "timeseries"
     }
   ],
@@ -655,35 +809,7 @@
     "zone"
   ],
   "templating": {
-    "list": [
-      {
-        "allValue": ".*",
-        "current": {
-          "selected": false,
-          "text": "All",
-          "value": "$__all"
-        },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "victoriametrics"
-        },
-        "definition": "label_values(mail_service_health_state, zone_id)",
-        "hide": 0,
-        "includeAll": true,
-        "label": "Zone",
-        "multi": true,
-        "name": "zone_id",
-        "options": [],
-        "query": {
-          "query": "label_values(mail_service_health_state, zone_id)",
-          "refId": "VariableQuery"
-        },
-        "refresh": 1,
-        "regex": "",
-        "sort": 1,
-        "type": "query"
-      }
-    ]
+    "list": []
   },
   "time": {
     "from": "now-30m",
@@ -693,5 +819,5 @@
   "timezone": "browser",
   "title": "Mail Operational Health",
   "uid": "aurora-mail-operational-health",
-  "version": 1
+  "version": 3
 }

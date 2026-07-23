@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 import { useEffect, useRef, useState } from 'react'
 import { Loader2, MapPin } from 'lucide-react'
 
@@ -86,15 +87,17 @@ type LocationAutocompleteProps = {
 
 export function LocationAutocomplete({ value, onSelect, className }: LocationAutocompleteProps) {
   const [inputValue, setInputValue] = useState(value)
+  const [prevValue, setPrevValue] = useState(value)
   const [searchResults, setSearchResults] = useState<ZoneLocation[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  // sync external value changes (e.g. form reset)
-  useEffect(() => {
+  // sync external value changes during render
+  if (value !== prevValue) {
+    setPrevValue(value)
     setInputValue(value)
-  }, [value])
+  }
 
   // close dropdown on outside click
   useEffect(() => {
@@ -127,8 +130,8 @@ export function LocationAutocomplete({ value, onSelect, className }: LocationAut
         .then((places: NominatimPlace[]) => {
           setSearchResults(places.map(mapPlaceToLocation))
         })
-        .catch((err: Error) => {
-          if (err.name !== 'AbortError') setSearchResults([])
+        .catch((err: unknown) => {
+          if (err instanceof Error && err.name !== 'AbortError') setSearchResults([])
         })
         .finally(() => {
           if (!controller.signal.aborted) setIsSearching(false)

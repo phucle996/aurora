@@ -156,8 +156,32 @@ export default function HypervisorPage() {
   }, [activeZone])
 
   useEffect(() => {
-    void loadNodes()
-  }, [loadNodes])
+    let ignore = false
+
+    fetchHypervisorNodes()
+      .then((nodeList) => {
+        if (!ignore) {
+          setNodes(nodeList)
+          setCurrentPage(1)
+        }
+      })
+      .catch((err) => {
+        if (!ignore) {
+          setError(err instanceof Error ? err.message : 'Cannot load hypervisor nodes')
+          setNodes([])
+        }
+      })
+      .finally(() => {
+        if (!ignore) {
+          setLoading(false)
+          setRefreshing(false)
+        }
+      })
+
+    return () => {
+      ignore = true
+    }
+  }, [activeZone])
 
   // Trình xử lý thủ công reload
   const handleRefresh = () => {

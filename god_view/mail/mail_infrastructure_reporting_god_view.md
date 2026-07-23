@@ -133,3 +133,10 @@ lifecycle không bị health writer thay đổi.
 
 Không được tái tạo `mail:infra:reports`, `mail_infrastructure_reports`, `/admin/mail/infrastructure` hoặc
 `email:infrastructure:read`. Operational history thuộc metrics backend retention, không thuộc business database.
+
+## 9. Implementation Status
+
+- **Admin UI Navigation**: `admin-ui` không đăng ký các route `/mail`, `/mail/delivery-attempts`, `/mail/runtime-status` hay sidebar navigation.
+- **Operational Mail Observability**: Operational Mail status được định tuyến độc quyền qua OpenTelemetry & Grafana (`aurora-mail-operational-health`).
+- **Customer Mail Management**: Quản lý consumer và template thuộc sở hữu độc quyền của `cloud-console`.
+- **Infrastructure API**: Không có Admin HTTP aggregation API hay delivery-attempt history API cho Mail infrastructure.

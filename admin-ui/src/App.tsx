@@ -21,9 +21,6 @@ const AdminAPIKeyLoginPage = lazy(() => import('@/pages/auth/Login'))
 const DashboardPage = lazy(() => import('@/pages/dashboard/Dashboard'))
 const HypervisorPage = lazy(() => import('@/pages/hypervisor/Hypervisor'))
 const DetailHypervisorPage = lazy(() => import('@/pages/hypervisor/DetailHypervisor'))
-const MailPage = lazy(() => import('@/pages/mail/MailPage'))
-const DeliveryAttemptsPage = lazy(() => import('@/pages/mail/DeliveryAttempts'))
-const RuntimeStatusPage = lazy(() => import('@/pages/mail/RuntimeStatus'))
 const ZoneManagementPage = lazy(() => import('@/pages/zone/ZoneManagement'))
 const NewZonePage = lazy(() => import('@/pages/zone/NewZone'))
 const ZoneDetailPage = lazy(() => import('@/pages/zone/ZoneDetail'))
@@ -238,25 +235,6 @@ const detailHypervisorRoute = createRoute({
   component: withAdminSession(DetailHypervisorPage),
 })
 
-const mailRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/mail',
-  component: withAdminSession(MailPage),
-})
-
-
-const deliveryAttemptsRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/mail/delivery-attempts',
-  component: withAdminSession(DeliveryAttemptsPage),
-})
-
-const runtimeStatusRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/mail/runtime-status',
-  component: withAdminSession(RuntimeStatusPage),
-})
-
 const resourcePlatformRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/resource-platform',
@@ -278,9 +256,6 @@ const routeTree = rootRoute.addChildren([
   newZoneRoute,
   hypervisorRoute,
   detailHypervisorRoute,
-  mailRoute,
-  deliveryAttemptsRoute,
-  runtimeStatusRoute,
   resourcePlatformRoute,
   adminLoginRoute,
 ])

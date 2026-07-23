@@ -241,7 +241,21 @@ function JobsTab() {
     resourcePlatformAdminApi.listJobs().then((j) => setJobs(j ?? [])).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    let ignore = false
+    resourcePlatformAdminApi
+      .listJobs()
+      .then((j) => {
+        if (!ignore) setJobs(j ?? [])
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!ignore) setLoading(false)
+      })
+    return () => {
+      ignore = true
+    }
+  }, [])
 
   const showLogs = async (job: RPJob) => {
     setSelectedJob(job)

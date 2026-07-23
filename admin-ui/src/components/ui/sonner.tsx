@@ -25,8 +25,6 @@ const Toaster = ({ ...props }: ToasterProps) => {
       attributeFilter: ['class'],
     })
 
-    setTheme(detectTheme())
-
     return () => {
       observer.disconnect()
     }

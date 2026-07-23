@@ -86,10 +86,10 @@ export const useZoneStore = create<ZoneState>((set, get) => ({
         if (!resp.ok) throw new Error('Cannot load zones.')
         const body = await resp.json()
         const rawItems = Array.isArray(body) ? body : (body.data?.items || [])
-        const items: Zone[] = rawItems.map((item: any) => ({
-          id: item.id || item.code,
-          code: item.code,
-          name: item.name
+        const items: Zone[] = rawItems.map((item: Record<string, unknown>) => ({
+          id: (item.id as string) || (item.code as string),
+          code: item.code as string,
+          name: item.name as string
         }))
 
         set({
