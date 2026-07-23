@@ -1,0 +1,30 @@
+# [COMMENT]: Argo CD Root Application Manifest điều phối toàn bộ chu trình Deploy cho Hạ Tầng & Microservices
+# Tự động đồng bộ các tài nguyên theo thứ tự Sync Wave được định nghĩa sẵn.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: aurora-system
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: 'https://github.com/phucle996/aurora.git'
+    targetRevision: HEAD
+    path: k8s
+    directory:
+      recurse: true
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: controlplane
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

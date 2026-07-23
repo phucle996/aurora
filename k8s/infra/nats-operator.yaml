@@ -1,0 +1,35 @@
+# [COMMENT]: NATS Operator Manifest cho NATS HA Cluster với JetStream (Argo CD Sync Wave "-3")
+# Quản lý 3 nút NATS Cluster và JetStream File Storage Replication cho Domain Events
+
+apiVersion: nats.io/v1alpha2
+kind: NatsCluster
+metadata:
+  name: nats
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/component: event-bus
+spec:
+  # [COMMENT]: 3 Nút NATS để đạt chuẩn Quorum HA cho JetStream
+  size: 3
+  version: "2.10-alpine"
+  
+  # [COMMENT]: Cấu hình Bật JetStream với PVC Storage Class
+  jetstream:
+    fileStorage:
+      storageDirectory: /data/jetstream
+      size: 20Gi
+
+  template:
+    spec:
+      containers:
+        - name: nats
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

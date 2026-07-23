@@ -1,0 +1,202 @@
+# [COMMENT]: Deployment manifest sản xuất cho Cost Manager API phục vụ môi trường Cloud Native & HA
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cost-manager
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: cost-manager
+    app.kubernetes.io/component: billing-api
+    app.kubernetes.io/part-of: aurora-billing
+spec:
+  # [COMMENT]: Khởi tạo 3 replicas để duy trì tính sẵn sàng cao (HA) qua các rack/zone
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cost-manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cost-manager
+        app.kubernetes.io/component: billing-api
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      # [COMMENT]: Rải Pods đều giữa các Availability Zone và Host Node
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cost-manager
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cost-manager
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cost-manager
+          image: aurora/cost-manager:v1.0.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 8084
+              protocol: TCP
+            - name: grpc
+              containerPort: 9094
+              protocol: TCP
+          env:
+            - name: TZ
+              value: "Asia/Ho_Chi_Minh"
+            - name: HTTP_PORT
+              value: "8084"
+            - name: GRPC_PORT
+              value: "9094"
+            # [COMMENT]: Database PostgreSQL Billing riêng biệt
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cost-manager-secrets
+                  key: database-url
+            - name: CLICKHOUSE_URL
+              value: "http://clickhouse-server.controlplane.svc.cluster.local:8123"
+            # [COMMENT]: Cost chỉ kết nối L2 Cache/Business Cache, không kết nối Redis Security-State của ACR
+            - name: CACHE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cost-manager-secrets
+                  key: cache-redis-url
+            - name: NATS_URL
+              value: "nats://controlplane-nats.controlplane.svc.cluster.local:4222"
+          resources:
+            requests:
+              cpu: 150m
+              memory: 192Mi
+            limits:
+              cpu: 800m
+              memory: 384Mi
+          # [COMMENT]: Liveness probe lặp lại kiểm tra sức khỏe qua HTTP endpoint
+          livenessProbe:
+            httpGet:
+              path: /api/v1/billing/plans
+              port: 8084
+              httpHeaders:
+                - name: x-user-id
+                  value: "00000000-0000-0000-0000-000000000001"
+                - name: x-zone-id
+                  value: "00000000-0000-0000-0000-000000000001"
+                - name: x-user-name
+                  value: "probe"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/billing/plans
+              port: 8084
+              httpHeaders:
+                - name: x-user-id
+                  value: "00000000-0000-0000-0000-000000000001"
+                - name: x-zone-id
+                  value: "00000000-0000-0000-0000-000000000001"
+                - name: x-user-name
+                  value: "probe"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 32Mi
+
+---
+# [COMMENT]: Service đại diện cho Cost Manager
+apiVersion: v1
+kind: Service
+metadata:
+  name: cost-manager
+  namespace: controlplane
+  labels:
+    app.kubernetes.io/name: cost-manager
+    app.kubernetes.io/component: billing-api
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8084
+      targetPort: 8084
+      protocol: TCP
+    - name: grpc
+      port: 9094
+      targetPort: 9094
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: cost-manager
+
+---
+# [COMMENT]: PodDisruptionBudget bảo vệ uptime của Cost Manager
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cost-manager-pdb
+  namespace: controlplane
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cost-manager
+
+---
+# [COMMENT]: HPA tự động điều chỉnh số lượng Pods theo tải công việc thực tế
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: cost-manager-hpa
+  namespace: controlplane
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cost-manager
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

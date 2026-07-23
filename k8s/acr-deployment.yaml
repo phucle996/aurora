@@ -1,0 +1,201 @@
+# [COMMENT]: Deployment manifest sản xuất cho ACR (Access & Credentials Router) phục vụ môi trường Cloud Native & HA
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: acr
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: acr
+    app.kubernetes.io/component: auth-gateway
+    app.kubernetes.io/part-of: aurora-security
+spec:
+  # [COMMENT]: Thiết lập tối thiểu 3 replicas để đạt chuẩn HA (High Availability) trên các Availability Zones (AZ)
+  replicas: 3
+  # [COMMENT]: Chiến lược RollingUpdate đảm bảo 0-downtime khi deploy phiên bản mới
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: acr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: acr
+        app.kubernetes.io/component: auth-gateway
+    spec:
+      # [COMMENT]: Tắt tự động mount ServiceAccount token không cần thiết để tuân thủ nguyên tắc Least Privilege (Security)
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      # [COMMENT]: TopologySpreadConstraints đảm bảo các Pods được phân bổ đồng đều qua các Nodes/AZs, tránh single point of failure
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: acr
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: acr
+      # [COMMENT]: SecurityContext cấp Pod thực thi nguyên tắc không chạy dưới quyền root (Non-Root User)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: acr
+          # [COMMENT]: Image ứng dụng ACR biên dịch tĩnh từ Rust
+          image: aurora/acr:v1.0.0
+          imagePullPolicy: IfNotPresent
+          # [COMMENT]: SecurityContext cấp Container giới hạn tối đa quyền truy cập hệ thống tệp và capabilities
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+          env:
+            - name: TZ
+              value: "Asia/Ho_Chi_Minh"
+            - name: ACR_GRPC_PORT
+              value: "50051"
+            # [COMMENT]: Kết nối Redis Security-State duy trì phiên làm việc và Challenge Ed25519
+            - name: AUTH_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: acr-secrets
+                  key: auth-redis-url
+            # [COMMENT]: Kết nối Redis Cache tầng L2
+            - name: CACHE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: acr-secrets
+                  key: cache-redis-url
+            # [COMMENT]: Kết nối Vault KMS để thực hiện ký Token qua Transit Engine
+            - name: VAULT_ADDR
+              value: "http://vault.controlplane.svc.cluster.local:8200"
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: acr-secrets
+                  key: vault-token
+            - name: NATS_ADDR
+              value: "nats://controlplane-nats.controlplane.svc.cluster.local:4222"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.controlplane.svc.cluster.local:4317"
+            - name: BILLING_CONSOLE_ORIGIN
+              value: "https://cost-manager.aurora.local"
+          # [COMMENT]: Resource limits & requests chuẩn hóa giúp K8s scheduler phân bổ CPU/RAM tối ưu
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          # [COMMENT]: LivenessProbe giúp K8s tự động restart container nếu gRPC server bị deadlock/hang
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # [COMMENT]: ReadinessProbe đảm bảo Pod chỉ nhận traffic khi gRPC service thực sự sẵn sàng
+          readinessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          volumeMounts:
+            # [COMMENT]: Mount thư mục tạm ghi log/cache với ReadOnlyRootFilesystem
+            - name: tmp
+              mountPath: /tmp
+            - name: tls-certs
+              mountPath: /etc/acr/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tls-certs
+          secret:
+            secretName: acr-tls-certs
+
+---
+# [COMMENT]: Service gRPC ClusterIP cho ACR
+apiVersion: v1
+kind: Service
+metadata:
+  name: acr
+  namespace: controlplane
+  labels:
+    app.kubernetes.io/name: acr
+    app.kubernetes.io/component: auth-gateway
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: acr
+
+---
+# [COMMENT]: PodDisruptionBudget đảm bảo luôn có ít nhất 2 replicas chạy khi Node maintenance/drain
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: acr-pdb
+  namespace: controlplane
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: acr
+
+---
+# [COMMENT]: HorizontalPodAutoscaler tự động scale Pod từ 3 lên 10 dựa trên tải CPU & Memory
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: acr-hpa
+  namespace: controlplane
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: acr
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

@@ -1,0 +1,134 @@
+# [COMMENT]: CloudNativePG (CNPG) Operator Manifest cho 2 PostgreSQL Clusters riêng biệt (Argo CD Sync Wave "-5" & "-3")
+# Cluster 1: Controlplane DB Cluster (IAM, Hierarchy, Mail, Storage) + Dedicated PgBouncer Pooler
+# Cluster 2: Billing DB Cluster (Cost Manager, Pricing, Subscriptions) + Dedicated PgBouncer Pooler
+
+# ==============================================================================
+# 1. CNPG PostgreSQL Cluster cho Controlplane DB (3 Instances HA: 1 Primary + 2 Standbys)
+# Sync Wave: "-5"
+# ==============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: psql-cluster
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  labels:
+    app.kubernetes.io/name: psql-cluster
+    app.kubernetes.io/component: primary-db-cluster
+    app.kubernetes.io/part-of: aurora-controlplane
+spec:
+  # [COMMENT]: 3 Replicas đảm bảo Quorum cho bầu cử Primary tự động khi có sự cố Node/AZ
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.2
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  storage:
+    size: 50Gi
+
+  # [COMMENT]: Bật WAL Level Logical cho Debezium / Outbox CDC Replication
+  postgresConfiguration:
+    parameters:
+      wal_level: "logical"
+      max_wal_senders: "10"
+      max_replication_slots: "10"
+      shared_buffers: "128MB"
+      work_mem: "16MB"
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: topology.kubernetes.io/zone
+
+---
+# [COMMENT]: Dedicated CNPG PgBouncer Pooler cho Controlplane DB Cluster (Argo CD Sync Wave "-3")
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pbouncer
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  labels:
+    app.kubernetes.io/name: pbouncer
+    app.kubernetes.io/component: db-pooler
+spec:
+  cluster:
+    name: psql-cluster
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "20"
+
+---
+# ==============================================================================
+# 2. CNPG PostgreSQL Cluster cho Billing DB (Cost Manager) (3 Instances HA)
+# Sync Wave: "-5"
+# ==============================================================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: billing-psql-cluster
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  labels:
+    app.kubernetes.io/name: billing-psql-cluster
+    app.kubernetes.io/component: billing-db-cluster
+    app.kubernetes.io/part-of: aurora-billing
+spec:
+  # [COMMENT]: 3 Replicas độc lập hoàn toàn với Controlplane DB Cluster
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.2
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  storage:
+    size: 50Gi
+
+  postgresConfiguration:
+    parameters:
+      shared_buffers: "128MB"
+      work_mem: "16MB"
+
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: topology.kubernetes.io/zone
+
+---
+# [COMMENT]: Dedicated CNPG PgBouncer Pooler cho Billing DB Cluster (Argo CD Sync Wave "-3")
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: billing-pbouncer
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  labels:
+    app.kubernetes.io/name: billing-pbouncer
+    app.kubernetes.io/component: billing-db-pooler
+spec:
+  cluster:
+    name: billing-psql-cluster
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "20"

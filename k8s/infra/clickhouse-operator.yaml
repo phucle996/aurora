@@ -1,0 +1,46 @@
+# [COMMENT]: Altinity ClickHouse Operator Manifest cho ClickHouse OLAP Cluster (Argo CD Sync Wave "-5")
+# Quản lý ClickHouse Installation với 2 Replicas High Availability & Persistent Volume Claims
+
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: clickhouse-cluster
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/component: olap-engine
+spec:
+  defaults:
+    templates:
+      podTemplate: pod-template
+      volumeClaimTemplate: data-volume-template
+  configuration:
+    clusters:
+      - name: aurora-olap-cluster
+        layout:
+          shardsCount: 1
+          replicasCount: 2
+  templates:
+    podTemplates:
+      - name: pod-template
+        spec:
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:latest
+              resources:
+                requests:
+                  cpu: 300m
+                  memory: 512Mi
+                limits:
+                  cpu: 2000m
+                  memory: 2Gi
+    volumeClaimTemplates:
+      - name: data-volume-template
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 50Gi

@@ -1,0 +1,73 @@
+# [COMMENT]: NetworkPolicy sản xuất bảo vệ Controlplane API
+# Thực thi mô hình Zero-Trust: Chỉ cho phép Ingress gRPC từ Envoy Edge Gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: controlplane-network-policy
+  namespace: controlplane
+  labels:
+    app.kubernetes.io/name: controlplane
+    app.kubernetes.io/component: security-boundary
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: controlplane
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # [COMMENT]: Ingress Rule: Khóa chặt đầu vào gRPC chỉ cho phép Envoy Gateway truy cập.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+      ports:
+        - protocol: TCP
+          port: 9090
+
+  # [COMMENT]: Egress Rule: Chỉ cho phép Controlplane kết nối ra DB, Cache, NATS, OTel Collector và DNS.
+  egress:
+    # 1. DNS Resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. PgBouncer / PostgreSQL Controlplane DB (Port 6432 / 5432)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pbouncer
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: psql
+      ports:
+        - protocol: TCP
+          port: 6432
+        - protocol: TCP
+          port: 5432
+    # 3. Controlplane L2 Cache Redis (Port 6379)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-l2
+      ports:
+        - protocol: TCP
+          port: 6379
+    # 4. NATS Event Bus (Port 4222)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - protocol: TCP
+          port: 4222
+    # 5. OpenTelemetry Collector (Port 4317)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317

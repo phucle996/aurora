@@ -1,0 +1,184 @@
+# [COMMENT]: Deployment manifest sản xuất cho Controlplane API dịch vụ lõi quản lý IAM/Hierarchy/Storage
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controlplane
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  labels:
+    app.kubernetes.io/name: controlplane
+    app.kubernetes.io/component: core-api
+    app.kubernetes.io/part-of: aurora-controlplane
+spec:
+  # [COMMENT]: Duy trì ít nhất 3 replicas chuẩn HA
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: controlplane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: controlplane
+        app.kubernetes.io/component: core-api
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      # [COMMENT]: Phân bổ Pods đồng đều qua Topology Zone và Node hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: controlplane
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: controlplane
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10003
+        runAsGroup: 10003
+        fsGroup: 10003
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controlplane
+          image: aurora/controlplane:v1.0.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: grpc
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: TZ
+              value: "Asia/Ho_Chi_Minh"
+            - name: GRPC_PORT
+              value: "9090"
+            - name: GRPC_TLS_CERT
+              value: "/etc/controlplane/tls/grpc-server.crt"
+            - name: GRPC_TLS_KEY
+              value: "/etc/controlplane/tls/grpc-server.key"
+            - name: GRPC_CLIENT_CA
+              value: "/etc/controlplane/tls/ca.crt"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-secrets
+                  key: database-url
+            - name: CACHE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-secrets
+                  key: cache-redis-url
+            - name: NATS_URL
+              value: "nats://controlplane-nats.controlplane.svc.cluster.local:4222"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          livenessProbe:
+            grpc:
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            grpc:
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls-certs
+              mountPath: /etc/controlplane/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tls-certs
+          secret:
+            secretName: controlplane-tls-certs
+
+---
+# [COMMENT]: Service ClusterIP của Controlplane gRPC
+apiVersion: v1
+kind: Service
+metadata:
+  name: controlplane
+  namespace: controlplane
+  labels:
+    app.kubernetes.io/name: controlplane
+    app.kubernetes.io/component: core-api
+spec:
+  type: ClusterIP
+  ports:
+    - name: grpc
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: controlplane
+
+---
+# [COMMENT]: PodDisruptionBudget cho Controlplane
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: controlplane-pdb
+  namespace: controlplane
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: controlplane
+
+---
+# [COMMENT]: HPA cho Controlplane
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: controlplane-hpa
+  namespace: controlplane
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: controlplane
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

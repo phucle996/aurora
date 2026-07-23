@@ -1,0 +1,119 @@
+# [COMMENT]: Redis Operator Manifest cho 3 Cụm Redis Cluster HA độc lập (Argo CD Sync Wave "-5")
+# OT-Container-Kit Redis Operator (redis.redis.opstreelabs.in/v1beta1)
+# Cụm 1: redis-session (ACR Security-State / Session Store — Persistence AOF)
+# Cụm 2: redis-l2 (Controlplane & Billing L2 Business Cache — LRU Eviction)
+# Cụm 3: redis-job (Job Orchestrator Queue — Persistence AOF)
+
+# ==============================================================================
+# 1. Cụm Redis 1: redis-session (Session & Security-State Store cho ACR Gateway)
+# Sync Wave: "-5" (3 Cluster Nodes HA, AOF Sync Everysec, Persistence PVC)
+# ==============================================================================
+apiVersion: redis.redis.opstreelabs.in/v1beta1
+kind: RedisCluster
+metadata:
+  name: redis-session
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  labels:
+    app.kubernetes.io/name: redis-session
+    app.kubernetes.io/component: security-session-store
+    app.kubernetes.io/part-of: aurora-infrastructure
+spec:
+  # [COMMENT]: 3 Nút Master-Replica HA đảm bảo Failover và tính sẵn sàng cao
+  clusterSize: 3
+  kubernetesConfig:
+    image: redis:8.8.0-alpine
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 150m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+  redisConfig:
+    additionalRedisConfig: |
+      appendonly yes
+      appendfsync everysec
+
+---
+# ==============================================================================
+# 2. Cụm Redis 2: redis-l2 (L2 Business Cache cho Controlplane & Cost Manager)
+# Sync Wave: "-5" (3 Cluster Nodes HA, Maxmemory 256MB, Eviction Policy allkeys-lru)
+# ==============================================================================
+apiVersion: redis.redis.opstreelabs.in/v1beta1
+kind: RedisCluster
+metadata:
+  name: redis-l2
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  labels:
+    app.kubernetes.io/name: redis-l2
+    app.kubernetes.io/component: l2-business-cache
+    app.kubernetes.io/part-of: aurora-infrastructure
+spec:
+  # [COMMENT]: 3 Nút Cluster HA cho tầng Cache
+  clusterSize: 3
+  kubernetesConfig:
+    image: redis:8.8.0-alpine
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+  redisConfig:
+    additionalRedisConfig: |
+      maxmemory 256mb
+      maxmemory-policy allkeys-lru
+
+---
+# ==============================================================================
+# 3. Cụm Redis 3: redis-job (Job Queue Store cho Job Orchestrator & Workers)
+# Sync Wave: "-5" (3 Cluster Nodes HA, AOF Persistence)
+# ==============================================================================
+apiVersion: redis.redis.opstreelabs.in/v1beta1
+kind: RedisCluster
+metadata:
+  name: redis-job
+  namespace: controlplane
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+  labels:
+    app.kubernetes.io/name: redis-job
+    app.kubernetes.io/component: job-queue-store
+    app.kubernetes.io/part-of: aurora-infrastructure
+spec:
+  # [COMMENT]: 3 Nút Cluster HA cho hàng đợi Jobs
+  clusterSize: 3
+  kubernetesConfig:
+    image: redis:8.8.0-alpine
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 150m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+  redisConfig:
+    additionalRedisConfig: |
+      appendonly yes

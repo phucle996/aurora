@@ -1,0 +1,64 @@
+# [COMMENT]: NetworkPolicy sản xuất bảo vệ ACR (Access & Credentials Router)
+# Thực thi mô hình Zero-Trust: Default Deny Ingress & chỉ chấp nhận truy cập gRPC từ Envoy Edge Gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: acr-network-policy
+  namespace: controlplane
+  labels:
+    app.kubernetes.io/name: acr
+    app.kubernetes.io/component: security-boundary
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: acr
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # [COMMENT]: Ingress Rule: Chỉ cho phép Envoy Pods gọi gRPC vào cổng 50051 của ACR.
+  # Ngăn chặn hoàn toàn mọi workload nội bộ khác trong cluster truy cập trực tiếp ACR ext_authz.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+      ports:
+        - protocol: TCP
+          port: 50051
+
+  # [COMMENT]: Egress Rule: Chỉ cho phép ACR kết nối ra ngoài đến DNS, Redis, Vault và NATS.
+  egress:
+    # 1. Cho phép DNS Resolution (UDP/TCP 53)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 2. Kết nối đến Redis Session (Security-State) & Redis L2 Cache (Port 6379)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-session
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis-l2
+      ports:
+        - protocol: TCP
+          port: 6379
+    # 3. Kết nối đến Vault Transit Engine cho JWT signing (Port 8200)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vault
+      ports:
+        - protocol: TCP
+          port: 8200
+    # 4. Kết nối đến NATS Bus (Port 4222)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - protocol: TCP
+          port: 4222
