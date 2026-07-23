@@ -13,4 +13,8 @@ var (
 	ErrTemplateInUse       = errors.New("mail: template is used by an active consumer")
 	ErrTemplateSyntax      = errors.New("mail: template syntax error")
 	ErrInternal            = errors.New("mail: internal server error")
+	// [COMMENT]: Fail-close zstd/UTF-8 — không bao giờ fallback raw bytes khi gặp các lỗi này.
+	ErrHTMLDecompressFailed       = errors.New("mail: html template zstd decompression failed")
+	ErrHTMLDecompressSizeExceeded = errors.New("mail: html template decompressed size exceeded limit")
+	ErrHTMLUTF8Invalid            = errors.New("mail: html template contains invalid UTF-8 bytes")
 )

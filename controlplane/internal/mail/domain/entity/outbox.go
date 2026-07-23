@@ -24,6 +24,8 @@ const (
 )
 
 // MailOutboxRecord định nghĩa routing envelope bền vững dùng cho CDC.
+// [COMMENT]: ActorUserID là uuid.UUID cụ thể — không bao giờ nil vì outbox record BẮT BUỘC phải có actor.
+// Caller (service layer) phải cung cấp actor trước khi tạo outbox record.
 type MailOutboxRecord struct {
 	// ID: Khóa chính tự tăng (BIGSERIAL) giúp tối ưu đánh chỉ mục vật lý và xác định thứ tự tuần tự trong Postgres
 	ID int64
@@ -36,7 +38,8 @@ type MailOutboxRecord struct {
 	// Payload: Nội dung nhị phân (Protobuf) chứa tham số cấu hình hoặc dữ liệu chi tiết của công việc
 	Payload []byte
 	// ActorUserID: Caller tạo configuration intent; là audit actor và không phải billing owner.
-	ActorUserID *uuid.UUID
+	// [COMMENT]: Bắt buộc — không pointer vì không có khả năng nil trong bất kỳ luồng nào.
+	ActorUserID uuid.UUID
 	// Status: Trạng thái xử lý sự kiện (PENDING, PROCESSING, SUCCEEDED, FAILED)
 	Status OutboxStatus
 	// CompletedAt: Thời điểm công việc hoàn tất xử lý (succeeded hoặc failed)

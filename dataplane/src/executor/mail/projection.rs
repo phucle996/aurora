@@ -434,13 +434,31 @@ pub async fn apply_mail_template_version_published(
         ExecutorError::ExecutionFailed("MAIL_EVENT_METADATA_REQUIRED".to_string())
     })?;
     let event_id = event_id(&payload, metadata)?;
+    // [COMMENT]: Fail-close khi zstd decode lỗi, vượt giới hạn size (streaming take), hoặc HTML không phải UTF-8 hợp lệ; không fallback raw text.
+    use std::io::Read;
+    let decoder = zstd::Decoder::new(event.html_template.as_slice())
+        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_TEMPLATE_ZSTD_DECODE_FAILED".to_string()))?;
+    let mut limited = decoder.take((3 << 20) + 1);
+    let mut decompressed_html = Vec::new();
+    limited.read_to_end(&mut decompressed_html)
+        .map_err(|_| ExecutorError::ExecutionFailed("MAIL_TEMPLATE_ZSTD_DECODE_FAILED".to_string()))?;
+    if decompressed_html.len() > 3 << 20 {
+        return Err(ExecutorError::ExecutionFailed(
+            "MAIL_TEMPLATE_DECOMPRESSED_SIZE_EXCEEDED".to_string(),
+        ));
+    }
+    if std::str::from_utf8(&decompressed_html).is_err() {
+        return Err(ExecutorError::ExecutionFailed(
+            "MAIL_TEMPLATE_UTF8_INVALID".to_string(),
+        ));
+    }
     if payload.payload_schema_version != 1
         || event.template_id.trim().is_empty()
         || uuid::Uuid::parse_str(&event.template_id).is_err()
         || event.template_revision == 0
         || event.template_version == 0
         || event.subject_template.trim().is_empty()
-        || event.html_template.trim().is_empty()
+        || event.html_template.is_empty()
         || event.content_sha256.len() != 32
     {
         return Err(ExecutorError::ExecutionFailed(
@@ -458,7 +476,7 @@ pub async fn apply_mail_template_version_published(
         })?;
     if super::runtime::configuration::canonical_template_sha256(
         &event.subject_template,
-        &event.html_template,
+        &decompressed_html,
     ) != event_hash
     {
         return Err(ExecutorError::ExecutionFailed(

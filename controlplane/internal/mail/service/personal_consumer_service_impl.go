@@ -29,37 +29,32 @@ func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepositor
 	return &personalConsumerServiceImpl{repo: repo}
 }
 
-// CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal command.
-func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, command *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
-	// [COMMENT]: Handler đã normalize/validate; service bắt đầu trực tiếp từ business payload.
-	if (command.SourceType != mailEntity.Kafka && command.SourceType != mailEntity.RedisStream && command.SourceType != mailEntity.NATSJetStream && command.SourceType != mailEntity.RabbitMQ) || len(command.SourceConfigEnvelope) > 16<<10 {
-		return nil, mailTaxonomy.ErrInvalidArgument
-	}
-
+// CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal.
+// [COMMENT]: Handler/DTO layer đã validate va normalize input payload; service tap trung vao domain logic.
+func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
 	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; hard-delete giải phóng code nhưng không cho tái sử dụng identity cũ.
 	consumerID := uuid.New()
 	now := time.Now().UTC()
-	actor := command.ActorUserID
+	actor := req.ActorUserID
 
 	consumer := &mailEntity.PersonalConsumer{
-		ActorUserID:      command.ActorUserID,
-		ZoneID:           command.ZoneID,
-		ID:               consumerID,
-		WorkspaceID:      command.WorkspaceID,
-		Code:             command.Code,
-		Name:             command.Name,
-		SourceType:       command.SourceType,
-		BrokerResourceID: command.BrokerResourceID,
-		// [COMMENT]: Consumer CRUD không tự sinh Vault locator; envelope mã hóa do broker-resource flow cấp.
-		SourceConfigEnvelope: append([]byte(nil), command.SourceConfigEnvelope...),
-		Topic:                command.Topic,
-		ConsumerGroup:        command.ConsumerGroup,
-		TemplateID:           command.TemplateID,
-		TemplateVersion:      command.TemplateVersion,
-		SenderProfileID:      command.SenderProfileID,
-		SenderVersion:        command.SenderVersion,
+		ActorUserID:          req.ActorUserID,
+		ZoneID:               req.ZoneID,
+		ID:                   consumerID,
+		WorkspaceID:          req.WorkspaceID,
+		Code:                 req.Code,
+		Name:                 req.Name,
+		SourceType:           req.SourceType,
+		BrokerResourceID:     req.BrokerResourceID,
+		SourceConfigEnvelope: append([]byte(nil), req.SourceConfigEnvelope...),
+		Topic:                req.Topic,
+		ConsumerGroup:        req.ConsumerGroup,
+		TemplateID:           req.TemplateID,
+		TemplateVersion:      req.TemplateVersion,
+		SenderProfileID:      req.SenderProfileID,
+		SenderVersion:        req.SenderVersion,
 		DesiredState:         mailEntity.ConsumerPaused,
-		Parallelism:          command.Parallelism,
+		Parallelism:          req.Parallelism,
 		ConfigVersion:        1,
 		CreatedBy:            &actor,
 		UpdatedBy:            &actor,
@@ -113,10 +108,9 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 
 	configHash := sha256.Sum256(canonicalConfig)
 	consumer.ConfigSHA256 = append([]byte(nil), configHash[:]...)
-
 	upsert.ConfigSha256 = consumer.ConfigSHA256
 
-	eventID := uuid.NewSHA1(personalMailConsumerEventNamespace, []byte("consumer:"+consumer.ID.String()+":1:upsert:"+command.ZoneID.String()))
+	eventID := uuid.NewSHA1(personalMailConsumerEventNamespace, []byte("consumer:"+consumer.ID.String()+":1:upsert:"+req.ZoneID.String()))
 	upsert.Metadata = &mailproto.MailEventMetadataV1{
 		EventId:          eventID[:],
 		SchemaVersion:    1,
@@ -138,10 +132,10 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 
 	outbox := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		ZoneID:               command.ZoneID,
+		ZoneID:               req.ZoneID,
 		JobTopic:             "mail.consumer.upsert",
 		Payload:              payload,
-		ActorUserID:          &actor,
+		ActorUserID:          actor,
 		Status:               mailEntity.OutboxStatusPending,
 		JobVersion:           1,
 		ResourceID:           consumer.ID.String(),
@@ -162,65 +156,61 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, comman
 	return created, nil
 }
 
-// GetConsumer lay thong tin consumer theo ID va Personal command.
-func (s *personalConsumerServiceImpl) GetConsumer(ctx context.Context, command *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
-	return s.repo.GetByID(ctx, command)
+// GetConsumer lay thong tin consumer theo ID va Personal request.
+func (s *personalConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+	return s.repo.GetByID(ctx, req)
 }
 
 // ListConsumers danh sach consumer theo dieu kien loc va pagination.
-func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, command *mailEntity.PersonalConsumer) ([]*mailEntity.PersonalConsumer, error) {
-	return s.repo.List(ctx, command)
+func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.PersonalConsumer) ([]*mailEntity.PersonalConsumer, error) {
+	return s.repo.List(ctx, req)
 }
 
 // UpdateConsumer cap nhat thong tin consumer voi optimistic version check va tao outbox event.
-func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, command *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
-	if command.SourceType != mailEntity.Kafka && command.SourceType != mailEntity.RedisStream && command.SourceType != mailEntity.NATSJetStream && command.SourceType != mailEntity.RabbitMQ {
-		return nil, mailTaxonomy.ErrInvalidArgument
-	}
-	// [COMMENT]: API không bao giờ đọc trả ciphertext; envelope rỗng trong full update vì vậy mang nghĩa
-	// giữ credential hiện tại, không phải xóa ngầm credential khỏi consumer.
-	current, err := s.repo.GetByID(ctx, command)
+func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+	// [COMMENT]: API không bao giờ đọc trả ciphertext; envelope rỗng trong full update giữ nguyên cấu hình broker hiện tại.
+	current, err := s.repo.GetByID(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	sourceConfigEnvelope := append([]byte(nil), command.SourceConfigEnvelope...)
+	sourceConfigEnvelope := append([]byte(nil), req.SourceConfigEnvelope...)
 	if len(sourceConfigEnvelope) == 0 {
 		// [COMMENT]: Envelope AAD bind cả stream type và broker resource; giữ ciphertext cũ sau khi đổi một trong hai sẽ tạo config chắc chắn không decrypt được.
-		if command.SourceType != current.SourceType || command.BrokerResourceID != current.BrokerResourceID {
+		if req.SourceType != current.SourceType || req.BrokerResourceID != current.BrokerResourceID {
 			return nil, mailTaxonomy.ErrInvalidArgument
 		}
 		sourceConfigEnvelope = append([]byte(nil), current.SourceConfigEnvelope...)
 	}
-	if len(sourceConfigEnvelope) > 16<<10 || (command.DesiredState == mailEntity.ConsumerEnabled && len(sourceConfigEnvelope) == 0) {
+	if len(sourceConfigEnvelope) > 16<<10 || (req.DesiredState == mailEntity.ConsumerEnabled && len(sourceConfigEnvelope) == 0) {
 		return nil, mailTaxonomy.ErrInvalidArgument
 	}
 
 	// [COMMENT]: Optimistic config_version ở repository đóng race giữa lần đọc giữ envelope và UPDATE.
 	now := time.Now().UTC()
-	actor := command.ActorUserID
+	actor := req.ActorUserID
 
 	consumer := &mailEntity.PersonalConsumer{
-		ActorUserID:          command.ActorUserID,
-		ZoneID:               command.ZoneID,
-		ID:                   command.ID,
-		WorkspaceID:          command.WorkspaceID,
+		ActorUserID:          req.ActorUserID,
+		ZoneID:               req.ZoneID,
+		ID:                   req.ID,
+		WorkspaceID:          req.WorkspaceID,
 		Code:                 current.Code,
-		Name:                 command.Name,
-		SourceType:           command.SourceType,
-		BrokerResourceID:     command.BrokerResourceID,
+		Name:                 req.Name,
+		SourceType:           req.SourceType,
+		BrokerResourceID:     req.BrokerResourceID,
 		SourceConfigEnvelope: sourceConfigEnvelope,
-		Topic:                command.Topic,
-		ConsumerGroup:        command.ConsumerGroup,
-		TemplateID:           command.TemplateID,
-		TemplateVersion:      command.TemplateVersion,
-		SenderProfileID:      command.SenderProfileID,
-		SenderVersion:        command.SenderVersion,
-		DesiredState:         command.DesiredState,
-		Parallelism:          command.Parallelism,
+		Topic:                req.Topic,
+		ConsumerGroup:        req.ConsumerGroup,
+		TemplateID:           req.TemplateID,
+		TemplateVersion:      req.TemplateVersion,
+		SenderProfileID:      req.SenderProfileID,
+		SenderVersion:        req.SenderVersion,
+		DesiredState:         req.DesiredState,
+		Parallelism:          req.Parallelism,
 		// [COMMENT]: Candidate lấy monotonic sequence của aggregate; version FAILED không được tái sử dụng.
 		ConfigVersion:         current.NextConfigVersion,
 		NextConfigVersion:     current.NextConfigVersion + 1,
-		ExpectedConfigVersion: command.ExpectedConfigVersion,
+		ExpectedConfigVersion: req.ExpectedConfigVersion,
 		CreatedBy:             current.CreatedBy,
 		UpdatedBy:             &actor,
 		CreatedAt:             current.CreatedAt,
@@ -279,7 +269,7 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 	consumer.ConfigSHA256 = append([]byte(nil), configHash[:]...)
 	upsert.ConfigSha256 = consumer.ConfigSHA256
 
-	eventID := uuid.NewSHA1(personalMailConsumerEventNamespace, fmt.Appendf(nil, "consumer:%s:%d:upsert:%s", consumer.ID, consumer.ConfigVersion, command.ZoneID))
+	eventID := uuid.NewSHA1(personalMailConsumerEventNamespace, fmt.Appendf(nil, "consumer:%s:%d:upsert:%s", consumer.ID, consumer.ConfigVersion, req.ZoneID))
 	upsert.Metadata = &mailproto.MailEventMetadataV1{
 		EventId:          eventID[:],
 		SchemaVersion:    1,
@@ -301,10 +291,10 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 
 	outbox := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		ZoneID:               command.ZoneID,
+		ZoneID:               req.ZoneID,
 		JobTopic:             "mail.consumer.upsert",
 		Payload:              payload,
-		ActorUserID:          &actor,
+		ActorUserID:          actor,
 		Status:               mailEntity.OutboxStatusPending,
 		JobVersion:           1,
 		ResourceID:           consumer.ID.String(),
@@ -322,25 +312,25 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, comman
 }
 
 // ChangeConsumerState thay doi trang thai pause/resume cua consumer.
-func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, command *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
 	// [COMMENT]: Lay consumer hien tai tu repository
-	consumer, err := s.repo.GetByID(ctx, command)
+	consumer, err := s.repo.GetByID(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
 	// [COMMENT]: Kiem tra phien ban cau hinh hien tai so voi phien ban ky vọng
-	if consumer.ConfigVersion != command.ExpectedConfigVersion {
+	if consumer.ConfigVersion != req.ExpectedConfigVersion {
 		return nil, mailTaxonomy.ErrVersionConflict
 	}
 
 	// [COMMENT]: Goi UpdateConsumer de thuc hien update trang thai va phat outbox event
 	return s.UpdateConsumer(ctx, &mailEntity.PersonalConsumer{
-		ActorUserID:           command.ActorUserID,
-		ZoneID:                command.ZoneID,
-		WorkspaceID:           command.WorkspaceID,
+		ActorUserID:           req.ActorUserID,
+		ZoneID:                req.ZoneID,
+		WorkspaceID:           req.WorkspaceID,
 		ID:                    consumer.ID,
-		ExpectedConfigVersion: command.ExpectedConfigVersion,
+		ExpectedConfigVersion: req.ExpectedConfigVersion,
 		Name:                  consumer.Name,
 		SourceType:            consumer.SourceType,
 		BrokerResourceID:      consumer.BrokerResourceID,
@@ -350,19 +340,19 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, c
 		TemplateVersion:       consumer.TemplateVersion,
 		SenderProfileID:       consumer.SenderProfileID,
 		SenderVersion:         consumer.SenderVersion,
-		DesiredState:          command.DesiredState,
+		DesiredState:          req.DesiredState,
 		Parallelism:           consumer.Parallelism,
 	})
 }
 
 // DeleteConsumer xoa consumer va phat tombstone delete event vao outbox.
-func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, command *mailEntity.PersonalConsumer) error {
+func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) error {
 	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
-	current, err := s.repo.GetByID(ctx, command)
+	current, err := s.repo.GetByID(ctx, req)
 	if err != nil {
 		return err
 	}
-	if current.ConfigVersion != command.ExpectedConfigVersion {
+	if current.ConfigVersion != req.ExpectedConfigVersion {
 		return mailTaxonomy.ErrVersionConflict
 	}
 	// [COMMENT]: Fence lấy monotonic allocator để cao hơn cả candidate FAILED có thể từng chạm Zone.
@@ -377,10 +367,10 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, comman
 			OccurredAtUnixMs: updatedAt.UnixMilli(),
 			Producer:         "controlplane-mail",
 		},
-		ConsumerId:          command.ID[:],
+		ConsumerId:          req.ID[:],
 		ConfigVersion:       deleteFence,
-		DrainTimeoutSeconds: command.DrainTimeoutSeconds,
-		Reason:              command.Reason,
+		DrainTimeoutSeconds: req.DrainTimeoutSeconds,
+		Reason:              req.Reason,
 	}
 
 	var traceID []byte
@@ -395,26 +385,26 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, comman
 		return fmt.Errorf("mail personal consumer service: marshal delete event: %w", err)
 	}
 
-	actor := command.ActorUserID
+	actor := req.ActorUserID
 	outbox := &mailEntity.MailOutboxRecord{
 		EventID:              eventID,
-		ZoneID:               command.ZoneID,
+		ZoneID:               req.ZoneID,
 		JobTopic:             "mail.consumer.delete",
 		Payload:              payload,
-		ActorUserID:          &actor,
+		ActorUserID:          actor,
 		Status:               mailEntity.OutboxStatusPending,
 		JobVersion:           1,
-		ResourceID:           command.ID.String(),
+		ResourceID:           req.ID.String(),
 		PayloadSchemaVersion: 1,
 		TraceID:              traceID,
-		Idle:                 command.DrainTimeoutSeconds + 30,
+		Idle:                 req.DrainTimeoutSeconds + 30,
 	}
 
 	// [COMMENT]: Repository khóa aggregate và chỉ insert outbox; JO hard-delete record sau Zone ACK.
-	command.UpdatedAt = updatedAt
-	if err = s.repo.Delete(ctx, command, outbox); err != nil {
+	req.UpdatedAt = updatedAt
+	if err = s.repo.Delete(ctx, req, outbox); err != nil {
 		return err
 	}
-	command.OperationID = outbox.EventID
+	req.OperationID = outbox.EventID
 	return nil
 }

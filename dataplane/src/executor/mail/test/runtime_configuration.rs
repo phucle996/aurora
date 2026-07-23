@@ -194,11 +194,14 @@ fn stream_discriminator_requires_the_matching_suite_payload() {
 
 #[test]
 fn canonical_template_hash_matches_go_html_escaping_contract() {
-    let canonical =
-        "{\"subject\":\"A \\u003c B \\u0026 C\",\"html\":\"\\u003cp\\u003eHi\\u003c/p\\u003e\"}";
+    let mut hasher = Sha256::new();
+    hasher.update("A < B & C".as_bytes());
+    hasher.update(&[0x00]);
+    hasher.update("<p>Hi</p>".as_bytes());
+    let expected: [u8; 32] = hasher.finalize().into();
     assert_eq!(
-        canonical_template_sha256("A < B & C", "<p>Hi</p>"),
-        Sha256::digest(canonical.as_bytes()).as_slice()
+        canonical_template_sha256("A < B & C", "<p>Hi</p>".as_bytes()),
+        expected
     );
 }
 

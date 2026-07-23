@@ -1,4 +1,4 @@
--- [COMMENT]: Phase 1 chỉ khai báo trạng thái bền vững; runtime state không được trộn với desired state.
+-- [COMMENT]: Phase 1 khai báo trạng thái bền vững; runtime state không được trộn với desired state.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -14,7 +14,6 @@ BEGIN
         JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE n.nspname = current_schema() AND t.typname = 'mail_consumer_desired_state'
     ) THEN
-        -- [COMMENT]: Creating/deleting là operation UI/outbox, không phải business desired state.
         CREATE TYPE mail_consumer_desired_state AS ENUM ('paused', 'enabled');
     END IF;
 
@@ -27,5 +26,4 @@ BEGIN
             'stopped', 'starting', 'running', 'paused', 'draining', 'error', 'degraded'
         );
     END IF;
-
 END $$;

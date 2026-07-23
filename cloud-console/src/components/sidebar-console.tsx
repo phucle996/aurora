@@ -150,9 +150,12 @@ export default function SidebarConsole({
     // [COMMENT]: Tất cả items trong cloud-console đều là console items —
     // không có phân biệt "admin" vs "console". Lọc theo quyền rồi đưa vào
     // một group duy nhất.
-    const visibleItems: SidebarItem[] = allItems.filter((item) =>
-      hasAccess(item.matchKey, item.requiredAction)
-    );
+    const visibleItems: SidebarItem[] = allItems.filter((item) => {
+      if (item.id === "mail") {
+        return hasAccess("email:consumer", "read") || hasAccess("email:template", "read");
+      }
+      return hasAccess(item.matchKey, item.requiredAction);
+    });
 
     if (visibleItems.length === 0) return [];
 

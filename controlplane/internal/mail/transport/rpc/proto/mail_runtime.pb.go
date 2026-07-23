@@ -977,7 +977,7 @@ type MailTemplateVersionPublishedV1 struct {
 	// [COMMENT]: Immutable content version được consumer pin; luôn lớn hơn 0.
 	TemplateVersion uint64 `protobuf:"varint,4,opt,name=template_version,json=templateVersion,proto3" json:"template_version,omitempty"`
 	SubjectTemplate string `protobuf:"bytes,5,opt,name=subject_template,json=subjectTemplate,proto3" json:"subject_template,omitempty"`
-	HtmlTemplate    string `protobuf:"bytes,7,opt,name=html_template,json=htmlTemplate,proto3" json:"html_template,omitempty"`
+	HtmlTemplate    []byte `protobuf:"bytes,7,opt,name=html_template,json=htmlTemplate,proto3" json:"html_template,omitempty"`
 	// [COMMENT]: SHA-256 32-byte của canonical immutable template content.
 	ContentSha256 []byte `protobuf:"bytes,9,opt,name=content_sha256,json=contentSha256,proto3" json:"content_sha256,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1049,11 +1049,11 @@ func (x *MailTemplateVersionPublishedV1) GetSubjectTemplate() string {
 	return ""
 }
 
-func (x *MailTemplateVersionPublishedV1) GetHtmlTemplate() string {
+func (x *MailTemplateVersionPublishedV1) GetHtmlTemplate() []byte {
 	if x != nil {
 		return x.HtmlTemplate
 	}
-	return ""
+	return nil
 }
 
 func (x *MailTemplateVersionPublishedV1) GetContentSha256() []byte {
@@ -1276,7 +1276,7 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"\x11template_revision\x18\x03 \x01(\x04R\x10templateRevision\x12)\n" +
 	"\x10template_version\x18\x04 \x01(\x04R\x0ftemplateVersion\x12)\n" +
 	"\x10subject_template\x18\x05 \x01(\tR\x0fsubjectTemplate\x12#\n" +
-	"\rhtml_template\x18\a \x01(\tR\fhtmlTemplate\x12%\n" +
+	"\rhtml_template\x18\a \x01(\fR\fhtmlTemplate\x12%\n" +
 	"\x0econtent_sha256\x18\t \x01(\fR\rcontentSha256J\x04\b\x06\x10\aJ\x04\b\b\x10\t\"\xdd\x01\n" +
 	"\x15MailTemplateDeletedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +

@@ -197,8 +197,8 @@ personal_mail_template_versions / tenant_mail_template_versions
   created_by + created_at
 ```
 
-- `template_version` định danh immutable content.
-- `template_revision` là active optimistic concurrency clock; `next_*` là monotonic allocator không lùi khi candidate thất bại.
+- `template_version` định danh immutable content. `html_template` lưu dưới dạng zstd compressed bytes tại PostgreSQL và Protobuf; canonical hash được tính `content_sha256 = SHA256(subject || 0x00 || raw_utf8_html)`. Zstd decode hoặc UTF-8 validation lỗi phải fail-close.
+- `template_revision` là active optimistic concurrency clock; `next_*` là monotonic allocator không lùi khi candidate thất bại. Publish tạo candidate version/revision và chỉ promote thành current head sau Zone ACK.
 - Không có cột `scope`: table Personal/Tenant là authorization namespace vật lý. Verification mail dùng ordinary root-owned Personal template/consumer, không có system-template namespace.
 - Personal template không lưu `created_by/updated_by`; Tenant template và version giữ actor audit.
 - Version không bị UPDATE riêng lẻ. Hard-delete hợp lệ xóa toàn bộ identity + versions trong một transaction có explicit session-scoped bypass.

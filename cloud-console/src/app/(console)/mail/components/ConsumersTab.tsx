@@ -89,10 +89,12 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     },
     onSuccess: async (result) => {
       // [COMMENT]: Header activity là local-only; cùng operation_id sẽ được realtime result ghi đè.
-      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
-        id: result.operation_id, title: editing ? "Updating mail consumer" : "Creating mail consumer",
-        message: `${result.name} is being applied in the selected zone.`, type: "processing",
-      } }));
+      window.dispatchEvent(new CustomEvent("local-notification:add", {
+        detail: {
+          id: result.operation_id, title: editing ? "Updating mail consumer" : "Creating mail consumer",
+          message: `${result.name} is being applied in the selected zone.`, type: "processing",
+        }
+      }));
       await queryClient.invalidateQueries({ queryKey });
       toast.success(editing ? "Consumer update scheduled" : "Consumer creation scheduled");
       setEditing(null); setForm(emptyForm); setFormOpen(false);
@@ -103,10 +105,12 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   const stateChange = useMutation({
     mutationFn: ({ consumer, action }: { consumer: MailConsumer; action: "pause" | "resume" }) => changeMailConsumerState(consumer.id, action, consumer.config_version),
     onSuccess: async (result) => {
-      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
-        id: result.operation_id, title: "Applying mail consumer state",
-        message: `${result.name} is being applied in the selected zone.`, type: "processing",
-      } }));
+      window.dispatchEvent(new CustomEvent("local-notification:add", {
+        detail: {
+          id: result.operation_id, title: "Applying mail consumer state",
+          message: `${result.name} is being applied in the selected zone.`, type: "processing",
+        }
+      }));
       await queryClient.invalidateQueries({ queryKey }); toast.success("Consumer state change scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),
@@ -114,10 +118,12 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
   const remove = useMutation({
     mutationFn: (consumer: MailConsumer) => deleteMailConsumer(consumer.id, consumer.config_version),
     onSuccess: (result, consumer) => {
-      window.dispatchEvent(new CustomEvent("local-notification:add", { detail: {
-        id: result.operation_id, title: "Deleting mail consumer",
-        message: `${consumer.name} is being deleted from the selected zone.`, type: "processing",
-      } }));
+      window.dispatchEvent(new CustomEvent("local-notification:add", {
+        detail: {
+          id: result.operation_id, title: "Deleting mail consumer",
+          message: `${consumer.name} is being deleted from the selected zone.`, type: "processing",
+        }
+      }));
       toast.success("Consumer deletion scheduled");
     },
     onError: (error) => toast.error(errorMessage(error)),

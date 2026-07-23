@@ -990,10 +990,38 @@ async fn load_immutable_template(
             "template snapshot SHA-256 length is invalid",
         )
     })?;
+    // [COMMENT]: Fail-close khi zstd decode lỗi, vượt giới hạn size (streaming take), hoặc HTML không chứa UTF-8 hợp lệ; không fallback raw.
+    use std::io::Read;
+    let decoder = zstd::Decoder::new(event.html_template.as_slice()).map_err(|_| {
+        ConfigurationLoadError::new(
+            "MAIL_TEMPLATE_ZSTD_DECODE_FAILED",
+            "template html zstd decompression failed",
+        )
+    })?;
+    let mut limited = decoder.take(max_template_bytes as u64 + 1);
+    let mut decompressed_html = Vec::new();
+    limited.read_to_end(&mut decompressed_html).map_err(|_| {
+        ConfigurationLoadError::new(
+            "MAIL_TEMPLATE_ZSTD_DECODE_FAILED",
+            "template html zstd decompression failed",
+        )
+    })?;
+    if decompressed_html.len() > max_template_bytes {
+        return Err(ConfigurationLoadError::new(
+            "MAIL_TEMPLATE_SIZE_EXCEEDED",
+            "decompressed template HTML exceeds max template bytes cap",
+        ));
+    }
+    let html_str = String::from_utf8(decompressed_html.clone()).map_err(|_| {
+        ConfigurationLoadError::new(
+            "MAIL_TEMPLATE_UTF8_INVALID",
+            "decompressed html template contains invalid UTF-8 bytes",
+        )
+    })?;
     let content_bytes = event
         .subject_template
         .len()
-        .saturating_add(event.html_template.len());
+        .saturating_add(decompressed_html.len());
     if !metadata_valid
         || uuid::Uuid::parse_str(&event.template_id).is_err()
         || event.template_id != key.template_id
@@ -1001,9 +1029,9 @@ async fn load_immutable_template(
         || event.template_revision == 0
         || event.subject_template.trim().is_empty()
         || event.subject_template.contains(['\r', '\n'])
-        || event.html_template.trim().is_empty()
+        || event.html_template.is_empty()
         || content_bytes > max_template_bytes
-        || canonical_template_sha256(&event.subject_template, &event.html_template) != event_hash
+        || canonical_template_sha256(&event.subject_template, &decompressed_html) != event_hash
         || expected_current_hash.is_some_and(|hash| hash != event_hash)
     {
         return Err(ConfigurationLoadError::new(
@@ -1017,7 +1045,7 @@ async fn load_immutable_template(
             "template subject placeholder syntax is invalid",
         )
     })?;
-    let html_tokens = compile_template_tokens(&event.html_template).map_err(|_| {
+    let html_tokens = compile_template_tokens(&html_str).map_err(|_| {
         ConfigurationLoadError::new(
             "MAIL_TEMPLATE_SYNTAX_INVALID",
             "template HTML placeholder syntax is invalid",
@@ -1029,7 +1057,7 @@ async fn load_immutable_template(
         template_version: event.template_version,
         content_sha256: event_hash,
         subject_template: event.subject_template,
-        html_template: event.html_template,
+        html_template: html_str,
         subject_tokens,
         html_tokens,
     }))
@@ -1159,21 +1187,12 @@ pub(crate) fn canonical_consumer_sha256(event: &MailConsumerUpsertV1) -> [u8; 32
     Sha256::digest(bytes).into()
 }
 
-pub(crate) fn canonical_template_sha256(subject: &str, html: &str) -> [u8; 32] {
-    // [COMMENT]: Go encoding/json escape HTML mặc định; giữ cùng canonical contract giữa CP producer và Rust consumer.
-    let subject = go_json_string(subject);
-    let html = go_json_string(html);
-    Sha256::digest(format!("{{\"subject\":{subject},\"html\":{html}}}").as_bytes()).into()
-}
-
-fn go_json_string(value: &str) -> String {
-    serde_json::to_string(value)
-        .expect("serializing a Rust string cannot fail")
-        .replace('&', "\\u0026")
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('\u{2028}', "\\u2028")
-        .replace('\u{2029}', "\\u2029")
+pub(crate) fn canonical_template_sha256(subject: &str, raw_html: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(subject.as_bytes());
+    hasher.update(&[0x00]);
+    hasher.update(raw_html);
+    hasher.finalize().into()
 }
 
 fn push_string_field(output: &mut Vec<u8>, field: u64, value: &str) {

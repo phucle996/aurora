@@ -1,2 +1,0 @@
-DROP INDEX IF EXISTS idx_mail_consumer_tombstones_zone_cursor;
-DROP TABLE IF EXISTS mail_consumer_projection_tombstones;

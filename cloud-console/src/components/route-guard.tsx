@@ -9,11 +9,12 @@ import { useUserSession } from "@/hooks/useUserSession";
 // Thiết kế thuần Render Engine, không chứa bất kỳ logic nghiệp vụ hoặc cứng hóa URL/Quyền hạn nào.
 interface RouteGuardProps {
   children: React.ReactNode;
-  requiredKey: string;
-  requiredAction: string;
+  requiredKey?: string;
+  requiredAction?: string;
+  customCheck?: (checkPermission: (key: string, action: string) => boolean) => boolean;
 }
 
-export default function RouteGuard({ children, requiredKey, requiredAction }: RouteGuardProps) {
+export default function RouteGuard({ children, requiredKey, requiredAction, customCheck }: RouteGuardProps) {
   const router = useRouter();
   const { loading, authenticated, checkPermission } = useUserSession();
   const [authorized, setAuthorized] = useState<boolean | null>(null);
@@ -28,9 +29,14 @@ export default function RouteGuard({ children, requiredKey, requiredAction }: Ro
     }
 
     // [COMMENT]: So khớp quyền hạn động sử dụng triết lý pure render engine
-    const allowed = checkPermission(requiredKey, requiredAction);
+    let allowed = false;
+    if (customCheck) {
+      allowed = customCheck(checkPermission);
+    } else if (requiredKey && requiredAction) {
+      allowed = checkPermission(requiredKey, requiredAction);
+    }
     setAuthorized(allowed);
-  }, [loading, authenticated, requiredKey, requiredAction, checkPermission, router]);
+  }, [loading, authenticated, requiredKey, requiredAction, customCheck, checkPermission, router]);
 
   // [COMMENT]: Giao diện chờ kiểm tra quyền hạn mượt mà
   if (loading || authorized === null) {

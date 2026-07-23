@@ -2,14 +2,16 @@ package mailSvcInterface
 
 import (
 	"context"
+
 	mailEntity "controlplane/internal/mail/domain/entity"
+	"github.com/google/uuid"
 )
 
 type PersonalTemplateService interface {
-	CreateTemplate(context.Context, *mailEntity.PersonalTemplate) (*mailEntity.PersonalTemplate, error)
-	GetTemplate(context.Context, *mailEntity.PersonalTemplate) (*mailEntity.PersonalTemplate, error)
-	ListTemplates(context.Context, *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error)
-	ListTemplateVersions(context.Context, *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error)
-	PublishTemplateVersion(context.Context, *mailEntity.PersonalTemplate) (*mailEntity.PersonalTemplate, error)
-	DeleteTemplate(context.Context, *mailEntity.PersonalTemplate) error
+	CreateTemplate(ctx context.Context, req *mailEntity.CreatePersonalTemplateRequest) (*mailEntity.CreatePersonalTemplateResponse, error)
+	GetTemplate(ctx context.Context, req *mailEntity.GetPersonalTemplateRequest) (*mailEntity.GetPersonalTemplateResponse, error)
+	ListTemplates(ctx context.Context, req *mailEntity.ListPersonalTemplatesRequest) ([]*mailEntity.PersonalTemplateItem, error)
+	ListTemplateVersions(ctx context.Context, req *mailEntity.ListPersonalTemplateVersionsRequest) ([]*mailEntity.PersonalTemplateVersionItem, error)
+	PublishTemplateVersion(ctx context.Context, req *mailEntity.PublishPersonalTemplateVersionRequest) (*mailEntity.PublishPersonalTemplateVersionResponse, error)
+	DeleteTemplate(ctx context.Context, req *mailEntity.DeletePersonalTemplateRequest) (uuid.UUID, error)
 }

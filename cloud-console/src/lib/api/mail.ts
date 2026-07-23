@@ -182,3 +182,33 @@ export async function deleteMailTemplate(id: string, expectedRevision: number): 
   });
   return requireData(response, "Mail template delete operation is missing");
 }
+
+export type MailConsumersSummary = {
+  total: number;
+  enabled: number;
+  paused: number;
+  needs_credentials: number;
+  running: number;
+  degraded: number;
+  error: number;
+  without_fresh_runtime: number;
+  active_logical_slots: number;
+};
+
+export type MailTemplatesSummary = {
+  total: number;
+  in_use: number;
+  unused: number;
+  total_immutable_versions: number;
+  recently_updated: number;
+};
+
+export async function getMailConsumersSummary(signal?: AbortSignal): Promise<MailConsumersSummary> {
+  const response = await fetchJSON<DataEnvelope<MailConsumersSummary>>("/api/v1/mail/consumers/summary", { signal });
+  return requireData(response, "Mail consumers summary is missing data");
+}
+
+export async function getMailTemplatesSummary(signal?: AbortSignal): Promise<MailTemplatesSummary> {
+  const response = await fetchJSON<DataEnvelope<MailTemplatesSummary>>("/api/v1/mail/templates/summary", { signal });
+  return requireData(response, "Mail templates summary is missing data");
+}

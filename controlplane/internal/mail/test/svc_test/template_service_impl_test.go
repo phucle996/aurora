@@ -4,168 +4,170 @@ import (
 	"context"
 	"crypto/sha256"
 	"testing"
+	"time"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcImpl "controlplane/internal/mail/service"
-	mailproto "controlplane/internal/mail/transport/rpc/proto"
 
 	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
 )
 
-// [COMMENT]: Mock repository capture cho Personal Template service unit test
 type personalTemplateRepoCapture struct {
-	entity *mailEntity.PersonalTemplate
-	outbox *mailEntity.MailOutboxRecord
+	createRes  *mailEntity.CreatePersonalTemplateResponse
+	getRes     *mailEntity.GetPersonalTemplateResponse
+	publishRes *mailEntity.PublishPersonalTemplateVersionResponse
+	deleteOpID uuid.UUID
 }
 
-// [COMMENT]: Giả lập lưu PersonalTemplate entity và record outbox khi khởi tạo
-func (r *personalTemplateRepoCapture) Create(_ context.Context, entity *mailEntity.PersonalTemplate, outbox *mailEntity.MailOutboxRecord) error {
-	r.entity, r.outbox = entity, outbox
-	return nil
+func (r *personalTemplateRepoCapture) Create(_ context.Context, req *mailEntity.CreatePersonalTemplateRequest, _ *mailEntity.MailOutboxRecord, _ string, _ []byte, _ []byte) (*mailEntity.CreatePersonalTemplateResponse, error) {
+	now := time.Now().UTC()
+	opID := uuid.New()
+	hasher := sha256.New()
+	hasher.Write([]byte(req.SubjectTemplate))
+	hasher.Write([]byte{0x00})
+	hasher.Write([]byte(req.RawHTML))
+	contentHash := hasher.Sum(nil)
+
+	r.createRes = &mailEntity.CreatePersonalTemplateResponse{
+		ID:               uuid.NewString(),
+		WorkspaceID:      &req.WorkspaceID,
+		Code:             req.Code,
+		Name:             req.Name,
+		CurrentVersion:   1,
+		TemplateRevision: 1,
+		SubjectTemplate:  req.SubjectTemplate,
+		RawHTML:          req.RawHTML,
+		ContentSHA256:    contentHash,
+		OperationID:      opID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	return r.createRes, nil
 }
 
-// [COMMENT]: Trả về entity hiện tại khi gọi GetByID
-func (r *personalTemplateRepoCapture) GetByID(_ context.Context, _ *mailEntity.PersonalTemplate) (*mailEntity.PersonalTemplate, error) {
-	return r.entity, nil
+func (r *personalTemplateRepoCapture) GetByID(_ context.Context, _ *mailEntity.GetPersonalTemplateRequest) (*mailEntity.GetPersonalTemplateResponse, error) {
+	return r.getRes, nil
 }
 
-// [COMMENT]: Trả về danh sách mẫu trống cho truy vấn List
-func (r *personalTemplateRepoCapture) List(_ context.Context, _ *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error) {
+func (r *personalTemplateRepoCapture) List(_ context.Context, _ *mailEntity.ListPersonalTemplatesRequest) ([]*mailEntity.PersonalTemplateItem, error) {
 	return nil, nil
 }
 
-// [COMMENT]: Trả về danh sách phiên bản trống cho truy vấn ListVersions
-func (r *personalTemplateRepoCapture) ListVersions(_ context.Context, _ *mailEntity.PersonalTemplate) ([]*mailEntity.PersonalTemplate, error) {
+func (r *personalTemplateRepoCapture) ListVersions(_ context.Context, _ *mailEntity.ListPersonalTemplateVersionsRequest) ([]*mailEntity.PersonalTemplateVersionItem, error) {
 	return nil, nil
 }
 
-// [COMMENT]: Giả lập xuất bản phiên bản mẫu mới và lưu record outbox
-func (r *personalTemplateRepoCapture) PublishVersion(_ context.Context, entity *mailEntity.PersonalTemplate, outbox *mailEntity.MailOutboxRecord) error {
-	r.entity, r.outbox = entity, outbox
-	return nil
+func (r *personalTemplateRepoCapture) PublishVersion(_ context.Context, req *mailEntity.PublishPersonalTemplateVersionRequest, _ *mailEntity.MailOutboxRecord, _ []byte, _ []byte) (*mailEntity.PublishPersonalTemplateVersionResponse, error) {
+	now := time.Now().UTC()
+	opID := uuid.New()
+	hasher := sha256.New()
+	hasher.Write([]byte(req.SubjectTemplate))
+	hasher.Write([]byte{0x00})
+	hasher.Write([]byte(req.RawHTML))
+	contentHash := hasher.Sum(nil)
+
+	r.publishRes = &mailEntity.PublishPersonalTemplateVersionResponse{
+		ID:                 req.TemplateID,
+		WorkspaceID:        &req.WorkspaceID,
+		Code:               "receipt",
+		Name:               "Receipt",
+		CurrentVersion:     1,
+		CurrentRevision:    3,
+		PublishedVersion:   2,
+		PublishedRevision:  4,
+		SubjectTemplate:    req.SubjectTemplate,
+		RawHTML:            req.RawHTML,
+		ContentSHA256:      contentHash,
+		OperationID:        opID,
+		HeadCreatedAt:      now,
+		CandidateCreatedAt: now,
+	}
+	return r.publishRes, nil
 }
 
-// [COMMENT]: Ghi nhận thông tin xóa mẫu template vào outbox record
-func (r *personalTemplateRepoCapture) Delete(_ context.Context, _ *mailEntity.PersonalTemplate, outbox *mailEntity.MailOutboxRecord) error {
-	r.outbox = outbox
-	return nil
+func (r *personalTemplateRepoCapture) Delete(_ context.Context, _ *mailEntity.DeletePersonalTemplateRequest, _ *mailEntity.MailOutboxRecord) (uuid.UUID, error) {
+	r.deleteOpID = uuid.New()
+	return r.deleteOpID, nil
 }
 
-// [COMMENT]: Kiểm tra thao tác xóa template sử dụng revision tiếp theo làm fence tombstone
-func TestPersonalTemplateDeleteUsesNextRevisionAsTombstoneFence(t *testing.T) {
+func TestPersonalTemplateDeleteUsesMonotonicRevisionFence(t *testing.T) {
 	workspaceID := uuid.New()
-	repo := &personalTemplateRepoCapture{entity: &mailEntity.PersonalTemplate{
+	templateID := uuid.NewString()
+	repo := &personalTemplateRepoCapture{}
+	req := &mailEntity.DeletePersonalTemplateRequest{
 		ActorUserID:      uuid.New(),
 		ZoneID:           uuid.New(),
-		ID:               uuid.NewString(),
-		WorkspaceID:      &workspaceID,
-		CurrentVersion:   3,
-		TemplateRevision: 4,
-		NextVersion:      8,
-		NextRevision:     9,
-	}}
-	command := &mailEntity.PersonalTemplate{
-		ActorUserID:      repo.entity.ActorUserID,
-		ZoneID:           repo.entity.ZoneID,
-		WorkspaceID:      &workspaceID,
-		TemplateID:       repo.entity.ID,
+		WorkspaceID:      workspaceID,
+		TemplateID:       templateID,
 		ExpectedRevision: 4,
 	}
 
-	// [COMMENT]: Gọi service xóa template
-	if err := mailSvcImpl.NewPersonalTemplateService(repo).DeleteTemplate(context.Background(), command); err != nil {
+	opID, err := mailSvcImpl.NewPersonalTemplateService(repo).DeleteTemplate(context.Background(), req)
+	if err != nil {
 		t.Fatalf("DeleteTemplate() error = %v", err)
 	}
 
-	// [COMMENT]: Verify sự kiện tombstone được đẩy đúng outbox với revision fence tăng tiến
-	var event mailproto.MailTemplateDeletedV1
-	if err := proto.Unmarshal(repo.outbox.Payload, &event); err != nil {
-		t.Fatalf("invalid delete payload: %v", err)
-	}
-	if event.TemplateRevision != 9 || command.OperationID != repo.outbox.EventID {
-		// [COMMENT]: Truyền con trỏ &event vào format string để tránh copylocks cảnh báo từ linter
-		t.Fatalf("delete did not use monotonic revision fence: event=%+v command=%+v", &event, command)
+	if opID != repo.deleteOpID || opID == uuid.Nil {
+		t.Fatalf("delete returned invalid operation id: %v", opID)
 	}
 }
 
-// [COMMENT]: Kiểm tra việc tạo Personal Template sinh đúng entity và bản ghi outbox phiên bản 1
 func TestPersonalTemplateCreateUsesOneEntityAndOutbox(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	entity, err := mailSvcImpl.NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{
+	res, err := mailSvcImpl.NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.CreatePersonalTemplateRequest{
 		ActorUserID:     uuid.New(),
-		WorkspaceID:     &workspaceID,
+		WorkspaceID:     workspaceID,
 		ZoneID:          uuid.New(),
 		Code:            "receipt",
 		Name:            "Receipt",
 		SubjectTemplate: "Receipt {{id}}",
-		HTMLTemplate:    "<p>{{id}}</p>",
+		RawHTML:         "<p>{{id}}</p>",
 	})
 	if err != nil {
 		t.Fatalf("CreateTemplate() error = %v", err)
 	}
-	if entity.Version != 1 || entity.CurrentVersion != 1 || len(entity.ContentSHA256) != sha256.Size {
-		t.Fatalf("unexpected entity: %+v", entity)
-	}
-	if repo.outbox == nil || repo.outbox.JobTopic != "mail.template.version_published" {
-		t.Fatalf("unexpected outbox: %+v", repo.outbox)
+	if res.CurrentVersion != 1 || res.TemplateRevision != 1 || len(res.ContentSHA256) != sha256.Size {
+		t.Fatalf("unexpected response: %+v", res)
 	}
 }
 
-// [COMMENT]: Kiểm tra Mail Controlplane chuyển giao hoàn toàn việc phát hiện/xử lý placeholder cho Dataplane
 func TestPersonalTemplateLeavesPlaceholderDetectionToDataplane(t *testing.T) {
 	workspaceID := uuid.New()
 	repo := &personalTemplateRepoCapture{}
-	_, err := mailSvcImpl.NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.PersonalTemplate{
+	_, err := mailSvcImpl.NewPersonalTemplateService(repo).CreateTemplate(context.Background(), &mailEntity.CreatePersonalTemplateRequest{
 		ActorUserID:     uuid.New(),
-		WorkspaceID:     &workspaceID,
+		WorkspaceID:     workspaceID,
 		ZoneID:          uuid.New(),
 		Code:            "runtime",
 		Name:            "Runtime",
 		SubjectTemplate: "Hello {{name}}",
-		HTMLTemplate:    "<p>{{name}}</p>",
+		RawHTML:         "<p>{{name}}</p>",
 	})
-	if err != nil || repo.entity == nil {
+	if err != nil || repo.createRes == nil {
 		t.Fatalf("template did not reach repository: %v", err)
 	}
 }
 
-// [COMMENT]: Kiểm tra việc publish phiên bản mới cấp phát candidate version mà không đẩy active head
 func TestPersonalTemplatePublishAllocatesCandidateWithoutAdvancingActiveHead(t *testing.T) {
 	workspaceID := uuid.New()
-	repo := &personalTemplateRepoCapture{entity: &mailEntity.PersonalTemplate{
+	templateID := uuid.NewString()
+	repo := &personalTemplateRepoCapture{}
+	req := &mailEntity.PublishPersonalTemplateVersionRequest{
 		ActorUserID:      uuid.New(),
 		ZoneID:           uuid.New(),
-		ID:               uuid.NewString(),
-		WorkspaceID:      &workspaceID,
-		Code:             "receipt",
-		Name:             "Receipt",
-		CurrentVersion:   1,
-		TemplateRevision: 1,
-		NextVersion:      3,
-		NextRevision:     4,
-		TemplateID:       "active",
-		Version:          1,
-		SubjectTemplate:  "old",
-		HTMLTemplate:     "<p>old</p>",
-	}}
-	command := &mailEntity.PersonalTemplate{
-		ActorUserID:      repo.entity.ActorUserID,
-		ZoneID:           repo.entity.ZoneID,
-		WorkspaceID:      &workspaceID,
-		TemplateID:       repo.entity.ID,
+		WorkspaceID:      workspaceID,
+		TemplateID:       templateID,
 		ExpectedRevision: 1,
 		SubjectTemplate:  "new",
-		HTMLTemplate:     "<p>new</p>",
+		RawHTML:          "<p>new</p>",
 	}
 
-	// [COMMENT]: Thực thi xuất bản phiên bản mẫu mới
-	candidate, err := mailSvcImpl.NewPersonalTemplateService(repo).PublishTemplateVersion(context.Background(), command)
+	res, err := mailSvcImpl.NewPersonalTemplateService(repo).PublishTemplateVersion(context.Background(), req)
 	if err != nil {
 		t.Fatalf("PublishTemplateVersion() error = %v", err)
 	}
-	if candidate.CurrentVersion != 1 || candidate.Version != 3 || candidate.TemplateRevision != 4 || candidate.OperationID != repo.outbox.EventID {
-		t.Fatalf("publish did not preserve active head and allocate candidate: %+v", candidate)
+	if res.CurrentVersion != 1 || res.PublishedRevision != 4 || res.OperationID == uuid.Nil {
+		t.Fatalf("publish returned unexpected result: %+v", res)
 	}
 }

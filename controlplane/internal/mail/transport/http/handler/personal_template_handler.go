@@ -49,7 +49,6 @@ func (h *PersonalTemplateHandler) Create(c *gin.Context) {
 	}
 
 	var req mailReq.CreateTemplateRequest
-	// [COMMENT]: Inline bind JSON request body với maxBytes limit và strict DisallowUnknownFields check
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 3<<20)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -85,8 +84,9 @@ func (h *PersonalTemplateHandler) Create(c *gin.Context) {
 		return
 	}
 
-	template, err := h.svc.CreateTemplate(ctx, &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, Code: req.Code, Name: req.Name, SubjectTemplate: req.SubjectTemplate, HTMLTemplate: req.HTMLTemplate})
-	version := template
+	res, err := h.svc.CreateTemplate(ctx, &mailEntity.CreatePersonalTemplateRequest{
+		ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, Code: req.Code, Name: req.Name, SubjectTemplate: req.SubjectTemplate, RawHTML: req.HTMLTemplate,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -106,24 +106,24 @@ func (h *PersonalTemplateHandler) Create(c *gin.Context) {
 	}
 
 	apires.RespondAccepted(c, gin.H{
-		"operation_id": template.OperationID.String(),
+		"operation_id": res.OperationID.String(),
 		"template": gin.H{
-			"id":                template.ID,
-			"workspace_id":      template.WorkspaceID,
-			"code":              template.Code,
-			"name":              template.Name,
-			"current_version":   template.CurrentVersion,
-			"template_revision": template.TemplateRevision,
-			"created_at":        template.CreatedAt,
-			"updated_at":        template.UpdatedAt,
+			"id":                res.ID,
+			"workspace_id":      res.WorkspaceID,
+			"code":              res.Code,
+			"name":              res.Name,
+			"current_version":   res.CurrentVersion,
+			"template_revision": res.TemplateRevision,
+			"created_at":        res.CreatedAt,
+			"updated_at":        res.UpdatedAt,
 		},
 		"current_version": gin.H{
-			"template_id":      version.TemplateID,
-			"version":          version.Version,
-			"subject_template": version.SubjectTemplate,
-			"html_template":    version.HTMLTemplate,
-			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
-			"created_at":       version.VersionCreatedAt,
+			"template_id":      res.ID,
+			"version":          res.CurrentVersion,
+			"subject_template": res.SubjectTemplate,
+			"html_template":    res.RawHTML,
+			"content_sha256":   hex.EncodeToString(res.ContentSHA256),
+			"created_at":       res.CreatedAt,
 		},
 	}, "mail template creation scheduled")
 }
@@ -151,8 +151,9 @@ func (h *PersonalTemplateHandler) Get(c *gin.Context) {
 		return
 	}
 
-	template, err := h.svc.GetTemplate(ctx, &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, ID: templateID})
-	version := template
+	res, err := h.svc.GetTemplate(ctx, &mailEntity.GetPersonalTemplateRequest{
+		ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, TemplateID: templateID,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -173,22 +174,22 @@ func (h *PersonalTemplateHandler) Get(c *gin.Context) {
 
 	apires.RespondSuccess(c, gin.H{
 		"template": gin.H{
-			"id":                template.ID,
-			"workspace_id":      template.WorkspaceID,
-			"code":              template.Code,
-			"name":              template.Name,
-			"current_version":   template.CurrentVersion,
-			"template_revision": template.TemplateRevision,
-			"created_at":        template.CreatedAt,
-			"updated_at":        template.UpdatedAt,
+			"id":                res.ID,
+			"workspace_id":      res.WorkspaceID,
+			"code":              res.Code,
+			"name":              res.Name,
+			"current_version":   res.CurrentVersion,
+			"template_revision": res.TemplateRevision,
+			"created_at":        res.CreatedAt,
+			"updated_at":        res.UpdatedAt,
 		},
 		"current_version": gin.H{
-			"template_id":      version.TemplateID,
-			"version":          version.Version,
-			"subject_template": version.SubjectTemplate,
-			"html_template":    version.HTMLTemplate,
-			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
-			"created_at":       version.VersionCreatedAt,
+			"template_id":      res.ID,
+			"version":          res.CurrentVersion,
+			"subject_template": res.SubjectTemplate,
+			"html_template":    res.RawHTML,
+			"content_sha256":   hex.EncodeToString(res.ContentSHA256),
+			"created_at":       res.CreatedAt,
 		},
 	}, "mail template loaded")
 }
@@ -218,7 +219,10 @@ func (h *PersonalTemplateHandler) List(c *gin.Context) {
 		}
 		limit = value
 	}
-	templates, err := h.svc.ListTemplates(ctx, &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, AfterID: strings.TrimSpace(c.Query("cursor")), Limit: uint32(limit)})
+
+	items, err := h.svc.ListTemplates(ctx, &mailEntity.ListPersonalTemplatesRequest{
+		ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, AfterID: strings.TrimSpace(c.Query("cursor")), Limit: uint32(limit),
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -236,24 +240,24 @@ func (h *PersonalTemplateHandler) List(c *gin.Context) {
 		}
 		return
 	}
-	items := make([]gin.H, 0, len(templates))
-	for _, template := range templates {
-		items = append(items, gin.H{
-			"id":                template.ID,
-			"workspace_id":      template.WorkspaceID,
-			"code":              template.Code,
-			"name":              template.Name,
-			"current_version":   template.CurrentVersion,
-			"template_revision": template.TemplateRevision,
-			"created_at":        template.CreatedAt,
-			"updated_at":        template.UpdatedAt,
+	list := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		list = append(list, gin.H{
+			"id":                item.ID,
+			"workspace_id":      item.WorkspaceID,
+			"code":              item.Code,
+			"name":              item.Name,
+			"current_version":   item.CurrentVersion,
+			"template_revision": item.TemplateRevision,
+			"created_at":        item.CreatedAt,
+			"updated_at":        item.UpdatedAt,
 		})
 	}
 	nextCursor := ""
-	if len(templates) == int(limit) {
-		nextCursor = templates[len(templates)-1].ID
+	if len(items) == int(limit) {
+		nextCursor = items[len(items)-1].ID
 	}
-	apires.RespondSuccess(c, gin.H{"items": items, "next_cursor": nextCursor}, "mail templates loaded")
+	apires.RespondSuccess(c, gin.H{"items": list, "next_cursor": nextCursor}, "mail templates loaded")
 }
 
 func (h *PersonalTemplateHandler) ListVersions(c *gin.Context) {
@@ -297,7 +301,10 @@ func (h *PersonalTemplateHandler) ListVersions(c *gin.Context) {
 		}
 		limit = value
 	}
-	versions, err := h.svc.ListTemplateVersions(ctx, &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, ID: templateID, BeforeVersion: beforeVersion, Limit: uint32(limit)})
+
+	items, err := h.svc.ListTemplateVersions(ctx, &mailEntity.ListPersonalTemplateVersionsRequest{
+		ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, TemplateID: templateID, BeforeVersion: beforeVersion, Limit: uint32(limit),
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -315,22 +322,22 @@ func (h *PersonalTemplateHandler) ListVersions(c *gin.Context) {
 		}
 		return
 	}
-	items := make([]gin.H, 0, len(versions))
-	for _, version := range versions {
-		items = append(items, gin.H{
-			"template_id":      version.TemplateID,
-			"version":          version.Version,
-			"subject_template": version.SubjectTemplate,
-			"html_template":    version.HTMLTemplate,
-			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
-			"created_at":       version.VersionCreatedAt,
+	list := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		list = append(list, gin.H{
+			"template_id":      item.TemplateID,
+			"version":          item.Version,
+			"subject_template": item.SubjectTemplate,
+			"html_template":    item.RawHTML,
+			"content_sha256":   hex.EncodeToString(item.ContentSHA256),
+			"created_at":       item.CreatedAt,
 		})
 	}
 	nextCursor := uint64(0)
-	if len(versions) == int(limit) {
-		nextCursor = versions[len(versions)-1].Version
+	if len(items) == int(limit) {
+		nextCursor = items[len(items)-1].Version
 	}
-	apires.RespondSuccess(c, gin.H{"items": items, "next_cursor": nextCursor}, "mail template versions loaded")
+	apires.RespondSuccess(c, gin.H{"items": list, "next_cursor": nextCursor}, "mail template versions loaded")
 }
 
 func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
@@ -355,7 +362,6 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 		return
 	}
 	var req mailReq.PublishTemplateVersionRequest
-	// [COMMENT]: Inline bind JSON request body với maxBytes limit và strict DisallowUnknownFields check
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 3<<20)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -372,7 +378,6 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 		return
 	}
 
-	// [COMMENT]: HTTP boundary normalize và chặn payload quá lớn/header injection trước khi vào service compiler.
 	req.SubjectTemplate = strings.TrimSpace(req.SubjectTemplate)
 	if req.ExpectedRevision == 0 || req.SubjectTemplate == "" || len(req.SubjectTemplate) > 998 ||
 		strings.ContainsAny(req.SubjectTemplate, "\r\n") ||
@@ -381,8 +386,9 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 		return
 	}
 
-	template, err := h.svc.PublishTemplateVersion(ctx, &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision, SubjectTemplate: req.SubjectTemplate, HTMLTemplate: req.HTMLTemplate})
-	version := template
+	res, err := h.svc.PublishTemplateVersion(ctx, &mailEntity.PublishPersonalTemplateVersionRequest{
+		ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision, SubjectTemplate: req.SubjectTemplate, RawHTML: req.HTMLTemplate,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -401,25 +407,27 @@ func (h *PersonalTemplateHandler) PublishVersion(c *gin.Context) {
 		return
 	}
 
+	// [COMMENT]: template.current_revision = active head revision (chưa thay đổi);
+	// published_version.revision = candidate revision vừa được ghi — phân biệt rõ để JO có thể promote đúng.
 	apires.RespondAccepted(c, gin.H{
-		"operation_id": template.OperationID.String(),
+		"operation_id": res.OperationID.String(),
 		"template": gin.H{
-			"id":                template.ID,
-			"workspace_id":      template.WorkspaceID,
-			"code":              template.Code,
-			"name":              template.Name,
-			"current_version":   template.CurrentVersion,
-			"template_revision": template.ExpectedRevision,
-			"created_at":        template.CreatedAt,
-			"updated_at":        template.UpdatedAt,
+			"id":               res.ID,
+			"workspace_id":     res.WorkspaceID,
+			"code":             res.Code,
+			"name":             res.Name,
+			"current_version":  res.CurrentVersion,
+			"current_revision": res.CurrentRevision,
+			"created_at":       res.HeadCreatedAt,
 		},
 		"published_version": gin.H{
-			"template_id":      version.TemplateID,
-			"version":          version.Version,
-			"subject_template": version.SubjectTemplate,
-			"html_template":    version.HTMLTemplate,
-			"content_sha256":   hex.EncodeToString(version.ContentSHA256),
-			"created_at":       version.VersionCreatedAt,
+			"template_id":      res.ID,
+			"version":          res.PublishedVersion,
+			"revision":         res.PublishedRevision,
+			"subject_template": res.SubjectTemplate,
+			"html_template":    res.RawHTML,
+			"content_sha256":   hex.EncodeToString(res.ContentSHA256),
+			"created_at":       res.CandidateCreatedAt,
 		},
 	}, "mail template publish scheduled")
 }
@@ -446,7 +454,6 @@ func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
 		return
 	}
 	var req mailReq.DeleteTemplateRequest
-	// [COMMENT]: Inline bind JSON request body với maxBytes limit và strict DisallowUnknownFields check
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -468,8 +475,9 @@ func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	command := &mailEntity.PersonalTemplate{ActorUserID: actorID, WorkspaceID: &workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision}
-	err := h.svc.DeleteTemplate(ctx, command)
+	operationID, err := h.svc.DeleteTemplate(ctx, &mailEntity.DeletePersonalTemplateRequest{
+		ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, TemplateID: templateID, ExpectedRevision: req.ExpectedRevision,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -489,5 +497,5 @@ func (h *PersonalTemplateHandler) Delete(c *gin.Context) {
 		}
 		return
 	}
-	apires.RespondAccepted(c, gin.H{"template_id": templateID, "operation_id": command.OperationID.String()}, "mail template deletion scheduled")
+	apires.RespondAccepted(c, gin.H{"template_id": templateID, "operation_id": operationID.String()}, "mail template deletion scheduled")
 }

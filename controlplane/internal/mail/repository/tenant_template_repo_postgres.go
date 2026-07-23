@@ -5,24 +5,33 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"controlplane/internal/config"
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailTaxonomy "controlplane/internal/mail/taxonomy"
+	mailproto "controlplane/internal/mail/transport/rpc/proto"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/protobuf/proto"
 )
 
+var tenantMailTemplateEventNamespace = uuid.MustParse("0a2b5357-19d2-5a98-8422-441639d67b2d")
+
+// [COMMENT]: tenantTemplateRepoPostgres chỉ thực hiện: authorization (SELECT JOIN workspace + membership),
+// advisory lock (FOR UPDATE), và atomic aggregate + outbox INSERT trong CTE duy nhất.
+// Service đã chuẩn bị outbox entity và staging values (compressedHTML, contentHash, templateID) trước khi gọi repo.
 type tenantTemplateRepoPostgres struct {
 	db              *pgxpool.Pool
 	mailSchema      string
 	hierarchySchema string
 }
 
-// NewTenantTemplateRepository khoi tao repository quan ly Tenant Mail Template
 func NewTenantTemplateRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoInterface.TenantTemplateRepository {
 	return &tenantTemplateRepoPostgres{
 		db:              db,
@@ -31,11 +40,13 @@ func NewTenantTemplateRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoI
 	}
 }
 
-func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, template *mailEntity.TenantTemplate, outbox *mailEntity.MailOutboxRecord) error {
-	// [COMMENT]: Template projection phải dùng đúng Zone đã đi qua tenant/workspace guard.
-	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
-		return mailTaxonomy.ErrInvalidArgument
-	}
+// [COMMENT]: Create tạo mới Tenant Template và outbox record nguyên tử.
+// templateID, compressedHTML, contentHash do service tính và truyền riêng — không embed vào req entity.
+// outbox.ActorUserID là uuid.UUID cụ thể (không pointer) — đảm bảo tại compile time.
+func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, req *mailEntity.CreateTenantTemplateRequest, outbox *mailEntity.MailOutboxRecord, templateID string, compressedHTML []byte, contentHash []byte) (*mailEntity.CreateTenantTemplateResponse, error) {
+	now := time.Now().UTC()
+	actor := req.ActorUserID
+
 	var authorized, versionInserted bool
 	var insertedID, existingID string
 	var outboxID sql.NullInt64
@@ -85,10 +96,11 @@ func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, template *mailE
 			EXISTS (SELECT 1 FROM version_inserted),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		template.ID, template.WorkspaceID, template.Code, template.Name, template.CurrentVersion, template.TemplateRevision,
-		template.ZoneID, template.ActorUserID, template.CreatedAt, template.UpdatedAt,
-		template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt,
-		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, template.TenantID,
+		templateID, req.WorkspaceID, req.Code, req.Name, 1, 1,
+		req.ZoneID, req.ActorUserID, now, now,
+		templateID, 1, req.SubjectTemplate, compressedHTML, contentHash, now,
+		outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle,
+		req.TenantID,
 	).Scan(
 		&authorized,
 		&insertedID,
@@ -100,53 +112,51 @@ func (r *tenantTemplateRepoPostgres) Create(ctx context.Context, template *mailE
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return mailTaxonomy.ErrAlreadyExists
+			return nil, mailTaxonomy.ErrAlreadyExists
 		}
-		return fmt.Errorf("mail tenant template repo: atomic create: %w", err)
+		return nil, fmt.Errorf("mail tenant template repo: atomic create: %w", err)
 	}
 
 	if !authorized {
-		return mailTaxonomy.ErrWorkspaceNotFound
+		return nil, mailTaxonomy.ErrWorkspaceNotFound
 	}
-
 	if insertedID == "" {
-		return mailTaxonomy.ErrAlreadyExists
+		return nil, mailTaxonomy.ErrAlreadyExists
 	}
-
 	if !versionInserted || !outboxID.Valid {
-		return fmt.Errorf("mail tenant template repo: create CTE incomplete: %w", mailTaxonomy.ErrInternal)
+		return nil, fmt.Errorf("mail tenant template repo: create CTE incomplete: %w", mailTaxonomy.ErrInternal)
 	}
 
-	outbox.ID = outboxID.Int64
-	return nil
+	return &mailEntity.CreateTenantTemplateResponse{
+		ID: templateID, WorkspaceID: &req.WorkspaceID, Code: req.Code, Name: req.Name,
+		CurrentVersion: 1, TemplateRevision: 1, SubjectTemplate: req.SubjectTemplate,
+		RawHTML: req.RawHTML, ContentSHA256: contentHash, CreatedBy: &actor, UpdatedBy: &actor,
+		OperationID: outbox.EventID, CreatedAt: now, UpdatedAt: now,
+	}, nil
 }
 
-func (r *tenantTemplateRepoPostgres) GetByID(ctx context.Context, query *mailEntity.TenantTemplate) (*mailEntity.TenantTemplate, error) {
-	template := &mailEntity.TenantTemplate{}
+// [COMMENT]: GetByID truy vấn thông tin mẫu Tenant Template.
+// Zstd fail-close: nếu decompression lỗi → trả lỗi, không fallback raw bytes.
+func (r *tenantTemplateRepoPostgres) GetByID(ctx context.Context, req *mailEntity.GetTenantTemplateRequest) (*mailEntity.GetTenantTemplateResponse, error) {
+	res := &mailEntity.GetTenantTemplateResponse{}
+	var compressedHTML []byte
 
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT t.id, t.workspace_id, t.code, t.name, t.current_version, t.template_revision,
-		       t.next_version, t.next_template_revision,
 		       t.created_by, t.updated_by, t.created_at, t.updated_at,
-		       v.template_id, v.version, v.subject_template, v.html_template, v.content_sha256, v.created_by, v.created_at
+		       v.subject_template, v.html_template, v.content_sha256
 		FROM %s.tenant_mail_templates AS t
 		JOIN %s.tenant_mail_template_versions AS v
 		  ON v.template_id = t.id AND v.version = t.current_version
-		WHERE t.id = $1 AND t.workspace_id = $2
-		  AND EXISTS (
-		      SELECT 1
-		      FROM %s.tenant_workspaces AS w
-		      JOIN %s.tenant_memberships AS m
-		        ON m.tenant_id = w.tenant_id AND m.user_id = $4 AND m.status = 'active'
-		      WHERE w.id = $2 AND w.zone_id = $3 AND w.tenant_id = $5
-		  )
+		JOIN %s.tenant_workspaces AS w ON w.id = t.workspace_id
+		JOIN %s.tenant_memberships AS m ON m.tenant_id = w.tenant_id AND m.user_id = $4 AND m.status = 'active'
+		WHERE t.id = $1 AND t.workspace_id = $2 AND w.zone_id = $3 AND w.tenant_id = $5
 	`, r.mailSchema, r.mailSchema, r.hierarchySchema, r.hierarchySchema),
-		query.ID, query.WorkspaceID, query.ZoneID, query.ActorUserID, query.TenantID,
+		req.TemplateID, req.WorkspaceID, req.ZoneID, req.ActorUserID, req.TenantID,
 	).Scan(
-		&template.ID, &template.WorkspaceID, &template.Code, &template.Name, &template.CurrentVersion, &template.TemplateRevision,
-		&template.NextVersion, &template.NextRevision,
-		&template.CreatedBy, &template.UpdatedBy, &template.CreatedAt, &template.UpdatedAt,
-		&template.TemplateID, &template.Version, &template.SubjectTemplate, &template.HTMLTemplate, &template.ContentSHA256, &template.VersionCreatedBy, &template.VersionCreatedAt,
+		&res.ID, &res.WorkspaceID, &res.Code, &res.Name, &res.CurrentVersion, &res.TemplateRevision,
+		&res.CreatedBy, &res.UpdatedBy, &res.CreatedAt, &res.UpdatedAt,
+		&res.SubjectTemplate, &compressedHTML, &res.ContentSHA256,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -156,38 +166,41 @@ func (r *tenantTemplateRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 		return nil, fmt.Errorf("mail tenant template repo: get: %w", err)
 	}
 
-	return template, nil
+	// [COMMENT]: Fail-close: nếu zstd decode thất bại → trả integrity error, không fallback raw.
+	if len(compressedHTML) > 0 {
+		html, dErr := decompressStreamingFailClose(compressedHTML)
+		if dErr != nil {
+			return nil, fmt.Errorf("mail tenant template repo: get decompress html: %w", dErr)
+		}
+		res.RawHTML = html
+	}
+
+	return res, nil
 }
 
-func (r *tenantTemplateRepoPostgres) List(ctx context.Context, query *mailEntity.TenantTemplate) ([]*mailEntity.TenantTemplate, error) {
+// [COMMENT]: List truy vấn danh sách Tenant Template phẳng theo phân trang cursor.
+func (r *tenantTemplateRepoPostgres) List(ctx context.Context, req *mailEntity.ListTenantTemplatesRequest) ([]*mailEntity.TenantTemplateItem, error) {
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT t.id, t.workspace_id, t.code, t.name, t.current_version, t.template_revision,
-		       t.next_version, t.next_template_revision,
 		       t.created_by, t.updated_by, t.created_at, t.updated_at
 		FROM %s.tenant_mail_templates AS t
-		WHERE t.workspace_id = $1 AND ($4 = '' OR t.id > $4)
-		  AND EXISTS (
-		      SELECT 1
-		      FROM %s.tenant_workspaces AS w
-		      JOIN %s.tenant_memberships AS m
-		        ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
-		      WHERE w.id = $1 AND w.zone_id = $2 AND w.tenant_id = $6
-		  )
+		JOIN %s.tenant_workspaces AS w ON w.id = t.workspace_id
+		JOIN %s.tenant_memberships AS m ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
+		WHERE t.workspace_id = $1 AND w.zone_id = $2 AND w.tenant_id = $6 AND ($4 = '' OR t.id > $4)
 		ORDER BY t.id ASC LIMIT $5
 	`, r.mailSchema, r.hierarchySchema, r.hierarchySchema),
-		query.WorkspaceID, query.ZoneID, query.ActorUserID, query.AfterID, query.Limit, query.TenantID,
+		req.WorkspaceID, req.ZoneID, req.ActorUserID, req.AfterID, req.Limit, req.TenantID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant template repo: list: %w", err)
 	}
 	defer rows.Close()
 
-	items := make([]*mailEntity.TenantTemplate, 0, query.Limit)
+	items := make([]*mailEntity.TenantTemplateItem, 0, req.Limit)
 	for rows.Next() {
-		t := &mailEntity.TenantTemplate{}
+		t := &mailEntity.TenantTemplateItem{}
 		if err = rows.Scan(
 			&t.ID, &t.WorkspaceID, &t.Code, &t.Name, &t.CurrentVersion, &t.TemplateRevision,
-			&t.NextVersion, &t.NextRevision,
 			&t.CreatedBy, &t.UpdatedBy, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("mail tenant template repo: scan list: %w", err)
@@ -201,37 +214,43 @@ func (r *tenantTemplateRepoPostgres) List(ctx context.Context, query *mailEntity
 	return items, nil
 }
 
-func (r *tenantTemplateRepoPostgres) ListVersions(ctx context.Context, query *mailEntity.TenantTemplate) ([]*mailEntity.TenantTemplate, error) {
+// [COMMENT]: ListVersions truy vấn lịch sử phiên bản Tenant Template.
+// Zstd fail-close per row; không fallback raw khi lỗi.
+func (r *tenantTemplateRepoPostgres) ListVersions(ctx context.Context, req *mailEntity.ListTenantTemplateVersionsRequest) ([]*mailEntity.TenantTemplateVersionItem, error) {
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
 		SELECT v.template_id, v.version, v.subject_template, v.html_template, v.content_sha256, v.created_by, v.created_at
 		FROM %s.tenant_mail_template_versions AS v
 		JOIN %s.tenant_mail_templates AS t ON t.id = v.template_id
-		WHERE v.template_id = $1 AND t.workspace_id = $2
+		JOIN %s.tenant_workspaces AS w ON w.id = t.workspace_id
+		JOIN %s.tenant_memberships AS m ON m.tenant_id = w.tenant_id AND m.user_id = $4 AND m.status = 'active'
+		WHERE v.template_id = $1 AND t.workspace_id = $2 AND w.zone_id = $3 AND w.tenant_id = $7
 		  AND v.version <= t.current_version
 		  AND ($5::bigint = 0 OR v.version < $5)
-		  AND EXISTS (
-		      SELECT 1
-		      FROM %s.tenant_workspaces AS w
-		      JOIN %s.tenant_memberships AS m
-		        ON m.tenant_id = w.tenant_id AND m.user_id = $4 AND m.status = 'active'
-		      WHERE w.id = $2 AND w.zone_id = $3 AND w.tenant_id = $7
-		  )
 		ORDER BY v.version DESC LIMIT $6
 	`, r.mailSchema, r.mailSchema, r.hierarchySchema, r.hierarchySchema),
-		query.ID, query.WorkspaceID, query.ZoneID, query.ActorUserID, query.BeforeVersion, query.Limit, query.TenantID,
+		req.TemplateID, req.WorkspaceID, req.ZoneID, req.ActorUserID, req.BeforeVersion, req.Limit, req.TenantID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("mail tenant template repo: list versions: %w", err)
 	}
 	defer rows.Close()
 
-	items := make([]*mailEntity.TenantTemplate, 0, query.Limit)
+	items := make([]*mailEntity.TenantTemplateVersionItem, 0, req.Limit)
 	for rows.Next() {
-		v := &mailEntity.TenantTemplate{}
+		v := &mailEntity.TenantTemplateVersionItem{}
+		var compressedHTML []byte
 		if err = rows.Scan(
-			&v.TemplateID, &v.Version, &v.SubjectTemplate, &v.HTMLTemplate, &v.ContentSHA256, &v.VersionCreatedBy, &v.VersionCreatedAt,
+			&v.TemplateID, &v.Version, &v.SubjectTemplate, &compressedHTML, &v.ContentSHA256, &v.CreatedBy, &v.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("mail tenant template repo: scan version: %w", err)
+		}
+		// [COMMENT]: Fail-close per row; lỗi decompress = integrity error, không fallback raw.
+		if len(compressedHTML) > 0 {
+			html, dErr := decompressStreamingFailClose(compressedHTML)
+			if dErr != nil {
+				return nil, fmt.Errorf("mail tenant template repo: version %d decompress html: %w", v.Version, dErr)
+			}
+			v.RawHTML = html
 		}
 		items = append(items, v)
 	}
@@ -240,7 +259,7 @@ func (r *tenantTemplateRepoPostgres) ListVersions(ctx context.Context, query *ma
 		return nil, fmt.Errorf("mail tenant template repo: iterate versions: %w", err)
 	}
 	if len(items) == 0 {
-		if _, err = r.GetByID(ctx, query); err != nil {
+		if _, err = r.GetByID(ctx, &mailEntity.GetTenantTemplateRequest{ActorUserID: req.ActorUserID, TenantID: req.TenantID, ZoneID: req.ZoneID, WorkspaceID: req.WorkspaceID, TemplateID: req.TemplateID}); err != nil {
 			return nil, err
 		}
 	}
@@ -248,43 +267,79 @@ func (r *tenantTemplateRepoPostgres) ListVersions(ctx context.Context, query *ma
 	return items, nil
 }
 
-func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, template *mailEntity.TenantTemplate, outbox *mailEntity.MailOutboxRecord) error {
-	// [COMMENT]: Version event không được route lệch khỏi Zone của aggregate đã authorize.
-	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
-		return mailTaxonomy.ErrInvalidArgument
-	}
+// [COMMENT]: PublishVersion nạp phiên bản mới cho Tenant Template.
+// Repo thực hiện: authorization, lock FOR UPDATE, optimistic revision check, chặn live operation,
+// CTE INSERT version + UPDATE counter + INSERT outbox.
+// outbox.EventID và payload proto được finalize tại repo vì chỉ repo biết nextRevision sau lock.
+// compressedHTML và contentHash đã được service tính và truyền riêng.
+func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, req *mailEntity.PublishTenantTemplateVersionRequest, outbox *mailEntity.MailOutboxRecord, compressedHTML []byte, contentHash []byte) (*mailEntity.PublishTenantTemplateVersionResponse, error) {
+	now := time.Now().UTC()
+
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("mail tenant template repo: begin publish: %w", err)
+		return nil, fmt.Errorf("mail tenant template repo: begin publish: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// [COMMENT]: Lock và live-operation read tách statement để snapshot sau lock nhìn thấy delete/publish vừa commit.
-	var lockedTemplateID string
-	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT t.id FROM %s.tenant_mail_templates t JOIN %s.tenant_workspaces w ON w.id=t.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE t.id=$1 AND t.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF t`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), template.ID, template.WorkspaceID, template.ZoneID, template.ActorUserID, template.TenantID).Scan(&lockedTemplateID)
+	var code, name string
+	var currentVersion, currentRevision, nextVersion, nextRevision uint64
+
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
+		SELECT t.code, t.name, t.current_version, t.template_revision, t.next_version, t.next_template_revision
+		FROM %s.tenant_mail_templates t
+		JOIN %s.tenant_workspaces w ON w.id=t.workspace_id
+		JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active'
+		WHERE t.id=$1 AND t.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5
+		FOR UPDATE OF t
+	`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), req.TemplateID, req.WorkspaceID, req.ZoneID, req.ActorUserID, req.TenantID).Scan(
+		&code, &name, &currentVersion, &currentRevision, &nextVersion, &nextRevision,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return mailTaxonomy.ErrTemplateNotFound
+		return nil, mailTaxonomy.ErrTemplateNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("mail tenant template repo: lock publish target: %w", err)
+		return nil, fmt.Errorf("mail tenant template repo: lock publish target: %w", err)
 	}
+
+	if currentRevision != req.ExpectedRevision {
+		return nil, mailTaxonomy.ErrVersionConflict
+	}
+
 	var lockedOperation bool
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), template.ID).Scan(&lockedOperation); err != nil {
-		return fmt.Errorf("mail tenant template repo: check publish operation: %w", err)
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), req.TemplateID).Scan(&lockedOperation); err != nil {
+		return nil, fmt.Errorf("mail tenant template repo: check publish operation: %w", err)
 	}
 	if lockedOperation {
-		return mailTaxonomy.ErrOperationInProgress
+		return nil, mailTaxonomy.ErrOperationInProgress
 	}
-	var authorized, liveOperation, versionInserted bool
-	var currentVersion, currentRevision, nextVersion, nextRevision uint64
+
+	// [COMMENT]: Finalize outbox eventID và build payload proto với nextRevision đúng — chỉ repo mới biết nextRevision.
+	eventID := uuid.NewSHA1(tenantMailTemplateEventNamespace, fmt.Appendf(nil, "template:%s:%d:publish:%s", req.TemplateID, nextRevision, req.ZoneID))
+	event := &mailproto.MailTemplateVersionPublishedV1{
+		Metadata:        &mailproto.MailEventMetadataV1{EventId: eventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"},
+		TemplateId:      req.TemplateID, TemplateRevision: nextRevision, TemplateVersion: nextVersion,
+		SubjectTemplate: req.SubjectTemplate, HtmlTemplate: compressedHTML, ContentSha256: contentHash,
+	}
+	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		event.Metadata.Traceparent = "00-" + spanContext.TraceID().String() + "-" + spanContext.SpanID().String() + "-" + fmt.Sprintf("%02x", byte(spanContext.TraceFlags()))
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
+	if err != nil {
+		return nil, fmt.Errorf("mail tenant template repo: marshal publish event: %w", err)
+	}
+
+	// [COMMENT]: Finalize outbox fields sau lock; TraceID đã được service extract từ ctx và truyền vào outbox.
+	outbox.EventID = eventID
+	outbox.Payload = payload
+
+	var authorized, versionInserted bool
 	var outboxID sql.NullInt64
 
 	err = tx.QueryRow(ctx, fmt.Sprintf(`
 		WITH authorized AS (
 			SELECT 1
 			FROM %s.tenant_workspaces AS w
-			JOIN %s.tenant_memberships AS m
-			  ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
+			JOIN %s.tenant_memberships AS m ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
 			WHERE w.id = $1 AND w.zone_id = $2 AND w.tenant_id = $24
 		), target AS MATERIALIZED (
 			SELECT current_version, template_revision, next_version, next_template_revision
@@ -309,7 +364,7 @@ func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, templat
 			RETURNING template_id
 		), counter_updated AS (
 			UPDATE %s.tenant_mail_templates
-			SET next_version=$6+1, next_template_revision=$12+1
+			SET next_version=$6+1, next_template_revision=$12+1, updated_by=$3, updated_at=$10
 			WHERE id = $4 AND workspace_id = $1 AND template_revision = $11
 			  AND next_version=$6 AND next_template_revision=$12
 			  AND EXISTS (SELECT 1 FROM version_inserted)
@@ -325,81 +380,81 @@ func (r *tenantTemplateRepoPostgres) PublishVersion(ctx context.Context, templat
 		)
 		SELECT
 			EXISTS (SELECT 1 FROM authorized),
-			COALESCE((SELECT current_version FROM target), 0),
-			COALESCE((SELECT template_revision FROM target), 0),
-			COALESCE((SELECT next_version FROM target), 0),
-			COALESCE((SELECT next_template_revision FROM target), 0),
-			EXISTS (SELECT 1 FROM live_operation),
 			EXISTS (SELECT 1 FROM version_inserted),
 			(SELECT id FROM outbox_inserted)
 	`, r.hierarchySchema, r.hierarchySchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema, r.mailSchema),
-		template.WorkspaceID, template.ZoneID, template.ActorUserID, template.ID, template.TemplateID, template.Version, template.SubjectTemplate, template.HTMLTemplate, template.ContentSHA256, template.VersionCreatedAt, template.ExpectedRevision, template.TemplateRevision, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, template.TenantID,
+		req.WorkspaceID, req.ZoneID, req.ActorUserID, req.TemplateID, req.TemplateID, nextVersion, req.SubjectTemplate, compressedHTML, contentHash, now, req.ExpectedRevision, nextRevision, outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle, req.TenantID,
 	).Scan(
 		&authorized,
-		&currentVersion,
-		&currentRevision,
-		&nextVersion,
-		&nextRevision,
-		&liveOperation,
 		&versionInserted,
 		&outboxID,
 	)
 
 	if err != nil {
-		return fmt.Errorf("mail tenant template repo: atomic publish: %w", err)
+		return nil, fmt.Errorf("mail tenant template repo: atomic publish: %w", err)
 	}
 
-	if !authorized || currentRevision == 0 {
-		return mailTaxonomy.ErrTemplateNotFound
+	if !authorized {
+		return nil, mailTaxonomy.ErrTemplateNotFound
 	}
-	if liveOperation {
-		return mailTaxonomy.ErrOperationInProgress
-	}
-	if currentRevision != template.ExpectedRevision || template.Version != nextVersion || template.TemplateRevision != nextRevision || !versionInserted {
-		return mailTaxonomy.ErrVersionConflict
-	}
-	if !outboxID.Valid {
-		return fmt.Errorf("mail tenant template repo: publish outbox missing: %w", mailTaxonomy.ErrInternal)
+	if !versionInserted || !outboxID.Valid {
+		return nil, mailTaxonomy.ErrVersionConflict
 	}
 
-	outbox.ID = outboxID.Int64
 	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("mail tenant template repo: commit publish: %w", err)
+		return nil, fmt.Errorf("mail tenant template repo: commit publish: %w", err)
 	}
-	return nil
+
+	actor := req.ActorUserID
+	// [COMMENT]: CurrentRevision = active head revision không đổi; PublishedRevision = nextRevision vừa được ghi.
+	return &mailEntity.PublishTenantTemplateVersionResponse{
+		ID: req.TemplateID, WorkspaceID: &req.WorkspaceID, Code: code, Name: name,
+		CurrentVersion: currentVersion, CurrentRevision: currentRevision,
+		PublishedVersion: nextVersion, PublishedRevision: nextRevision,
+		SubjectTemplate: req.SubjectTemplate, RawHTML: req.RawHTML, ContentSHA256: contentHash,
+		UpdatedBy: &actor, OperationID: eventID,
+		HeadCreatedAt: now, CandidateCreatedAt: now,
+	}, nil
 }
 
-func (r *tenantTemplateRepoPostgres) Delete(ctx context.Context, template *mailEntity.TenantTemplate, outbox *mailEntity.MailOutboxRecord) error {
-	// [COMMENT]: Hard-delete tombstone phải route đúng Zone của guarded tenant workspace.
-	if template == nil || outbox == nil || outbox.ZoneID != template.ZoneID {
-		return mailTaxonomy.ErrInvalidArgument
-	}
+// [COMMENT]: Delete xóa Tenant Template bằng tombstone outbox.
+// Repo finalize payload proto với revision đúng sau khi lock và đọc nextRevision.
+func (r *tenantTemplateRepoPostgres) Delete(ctx context.Context, req *mailEntity.DeleteTenantTemplateRequest, outbox *mailEntity.MailOutboxRecord) (uuid.UUID, error) {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("mail tenant template repo: begin delete: %w", err)
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: begin delete: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	var revision uint64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT t.template_revision FROM %s.tenant_mail_templates t JOIN %s.tenant_workspaces w ON w.id=t.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE t.id=$1 AND t.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF t`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), template.ID, template.WorkspaceID, template.ZoneID, template.ActorUserID, template.TenantID).Scan(&revision)
+
+	var currentVersion, revision, nextRevision uint64
+	err = tx.QueryRow(ctx, fmt.Sprintf(`
+		SELECT t.current_version, t.template_revision, t.next_template_revision
+		FROM %s.tenant_mail_templates t
+		JOIN %s.tenant_workspaces w ON w.id=t.workspace_id
+		JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active'
+		WHERE t.id=$1 AND t.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5
+		FOR UPDATE OF t
+	`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), req.TemplateID, req.WorkspaceID, req.ZoneID, req.ActorUserID, req.TenantID).Scan(&currentVersion, &revision, &nextRevision)
+
 	if errors.Is(err, pgx.ErrNoRows) {
-		return mailTaxonomy.ErrTemplateNotFound
+		return uuid.Nil, mailTaxonomy.ErrTemplateNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("mail tenant template repo: lock delete target: %w", err)
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: lock delete target: %w", err)
 	}
-	if revision != template.ExpectedRevision {
-		return mailTaxonomy.ErrVersionConflict
+	if revision != req.ExpectedRevision {
+		return uuid.Nil, mailTaxonomy.ErrVersionConflict
 	}
+
 	var liveOperation bool
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), template.ID).Scan(&liveOperation); err != nil {
-		return fmt.Errorf("mail tenant template repo: check live operation: %w", err)
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s.mail_outbox_records WHERE resource_id=$1 AND status IN ('PENDING','PROCESSING'))`, r.mailSchema), req.TemplateID).Scan(&liveOperation); err != nil {
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: check live operation: %w", err)
 	}
 	if liveOperation {
-		return mailTaxonomy.ErrOperationInProgress
+		return uuid.Nil, mailTaxonomy.ErrOperationInProgress
 	}
+
 	var inUse bool
-	// [COMMENT]: Guard cả candidate consumer chưa promote; history cũ không block vì version
-	// của nó không còn lớn hơn active config_version.
 	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (
 		SELECT 1 FROM %s.mail_consumers c
 		WHERE c.workspace_id=$1 AND c.template_id=$2
@@ -408,18 +463,36 @@ func (r *tenantTemplateRepoPostgres) Delete(ctx context.Context, template *mailE
 		JOIN %s.mail_consumers active ON active.id=candidate.consumer_id
 		WHERE active.workspace_id=$1 AND candidate.template_id=$2
 		  AND candidate.config_version > active.config_version
-	)`, r.mailSchema, r.mailSchema, r.mailSchema), template.WorkspaceID, template.ID).Scan(&inUse); err != nil {
-		return fmt.Errorf("mail tenant template repo: check template usage: %w", err)
+	)`, r.mailSchema, r.mailSchema, r.mailSchema), req.WorkspaceID, req.TemplateID).Scan(&inUse); err != nil {
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: check template usage: %w", err)
 	}
 	if inUse {
-		return mailTaxonomy.ErrTemplateInUse
+		return uuid.Nil, mailTaxonomy.ErrTemplateInUse
 	}
-	// [COMMENT]: CP giữ nguyên identity/version; JO chỉ hard-delete aggregate sau khi Zone xác nhận hạ tầng đã xóa.
-	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&outbox.ID); err != nil {
-		return fmt.Errorf("mail tenant template repo: insert delete outbox: %w", err)
+
+	now := time.Now().UTC()
+	// [COMMENT]: Finalize proto event delete dengan revision đúng — chỉ repo biết nextRevision sau lock.
+	event := &mailproto.MailTemplateDeletedV1{
+		Metadata:             &mailproto.MailEventMetadataV1{EventId: outbox.EventID[:], SchemaVersion: 1, OccurredAtUnixMs: now.UnixMilli(), Producer: "controlplane-mail"},
+		TemplateId:           req.TemplateID, TemplateRevision: nextRevision, LastPublishedVersion: currentVersion,
 	}
+	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		event.Metadata.Traceparent = "00-" + spanContext.TraceID().String() + "-" + spanContext.SpanID().String() + "-" + fmt.Sprintf("%02x", byte(spanContext.TraceFlags()))
+	}
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(event)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: marshal delete event: %w", err)
+	}
+	outbox.Payload = payload
+
+	var deletedID sql.NullInt64
+	if err = tx.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %s.mail_outbox_records (event_id,zone_id,job_topic,payload,actor_user_id,status,job_version,resource_id,payload_schema_version,trace_id,idle) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, r.mailSchema), outbox.EventID, outbox.ZoneID, outbox.JobTopic, outbox.Payload, outbox.ActorUserID, outbox.Status, outbox.JobVersion, outbox.ResourceID, outbox.PayloadSchemaVersion, outbox.TraceID, outbox.Idle).Scan(&deletedID); err != nil {
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: insert delete outbox: %w", err)
+	}
+
 	if err = tx.Commit(ctx); err != nil {
-		return fmt.Errorf("mail tenant template repo: commit delete: %w", err)
+		return uuid.Nil, fmt.Errorf("mail tenant template repo: commit delete: %w", err)
 	}
-	return nil
+
+	return outbox.EventID, nil
 }

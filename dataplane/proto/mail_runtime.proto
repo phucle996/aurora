@@ -159,7 +159,7 @@ message MailTemplateVersionPublishedV1 {
   uint64 template_version = 4;
   string subject_template = 5;
   reserved 6;
-  string html_template = 7;
+  bytes html_template = 7;
   reserved 8;
   // [COMMENT]: SHA-256 32-byte của canonical immutable template content.
   bytes content_sha256 = 9;
