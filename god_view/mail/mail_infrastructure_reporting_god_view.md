@@ -8,7 +8,7 @@
 
 | Luồng | Đích | Mục đích | Không được chứa |
 |---|---|---|---|
-| Consumer runtime watch | Dataplane memory → Redis Job → JO Redis snapshot → NATS Core/Centrifugo | Consumer Detail đang mở | Recipient, rendered body, credential, physical pod identity |
+| Consumer runtime watch | Dataplane memory → shared Cache Redis → JO TTL snapshot → NATS Core/Centrifugo | Consumer Detail đang mở | Recipient, rendered body, credential, physical pod identity |
 | Operational health | Zone NATS KV chỉ cho health/state-machine; runtime workload đi thẳng OTLP | Zone decision, Grafana, Alertmanager | Customer/workspace/consumer/template ID, lag, payload, credential |
 
 `hierarchy.zone_services.desired_state` vẫn là Controlplane business/control state. Grafana không ghi
@@ -20,7 +20,7 @@ bằng timestamp fence; không có Mail infrastructure Admin UI/API.
 ```mermaid
 flowchart LR
     UI[Consumer Detail] -->|POST runtime/watch, renew| CP[Controlplane]
-    CP -->|30s lease + watcher ZSET| RJ[(Central Redis Job)]
+    CP -->|30s lease + watcher ZSET| RJ[(Shared Cache Redis)]
     SLOT[Dataplane slot] --> MEM[Pod-local runtime memory]
     MEM --> REP[Reporter on every pod]
     REP -->|MGET active leases| RJ

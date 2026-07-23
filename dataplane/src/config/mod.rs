@@ -26,19 +26,24 @@ impl FromStr for RedisTlsMode {
 #[derive(Clone)]
 pub struct Config {
     /// Định danh phân vùng địa lý (Zone ID) mà Dataplane này được cấp phát để phục vụ.
-    /// Ví dụ: "zone-asia-southeast". Dataplane chỉ consume stream tương ứng `jobs:<zone_id>`.
+    /// Ví dụ: "zone-asia-southeast". Dataplane chỉ consume Kafka topic gắn đúng Zone ID.
     pub zone_id: String,
 
-    /// Địa chỉ kết nối đến cụm Redis phục vụ Job Queue Stream.
-    pub redis_job_url: String,
-    /// Chế độ bảo mật TLS cho Job Redis.
-    pub redis_job_tls_mode: RedisTlsMode,
-    /// Đường dẫn file chứng chỉ CA cho Job Redis.
-    pub redis_job_ca_cert: Option<String>,
-    /// Đường dẫn file chứng chỉ Client phục vụ mTLS cho Job Redis.
-    pub redis_job_client_cert: Option<String>,
-    /// Đường dẫn file khóa riêng Client phục vụ mTLS cho Job Redis.
-    pub redis_job_client_key: Option<String>,
+    /// [COMMENT]: Redis cache dùng riêng cho runtime watch/report ngắn hạn; không còn giữ durable Job Queue.
+    pub runtime_redis_url: String,
+    pub runtime_redis_tls_mode: RedisTlsMode,
+    pub runtime_redis_ca_cert: Option<String>,
+    pub runtime_redis_client_cert: Option<String>,
+    pub runtime_redis_client_key: Option<String>,
+
+    /// [COMMENT]: Kafka trung tâm thay Redis Job; production dùng nhiều broker và topic được provision trước.
+    pub kafka_bootstrap_servers: String,
+    pub kafka_security_protocol: String,
+    pub kafka_username: Option<String>,
+    pub kafka_password: Option<String>,
+    pub kafka_ca_cert: Option<String>,
+    pub kafka_topic_prefix: String,
+    pub kafka_max_job_attempts: u32,
 
     /// [COMMENT]: Endpoint JetStream riêng của Zone; tuyệt đối không trỏ sang NATS Core trung tâm.
     pub nats_zone_url: String,
@@ -103,6 +108,8 @@ pub struct Config {
     pub mail_stream_envelope_key_hex: String,
     /// [COMMENT]: Optional Kafka Zone CA path là trusted deployment config, không nhận filesystem path từ customer payload.
     pub mail_stream_ca_cert_path: Option<String>,
+    /// [COMMENT]: Plaintext customer/internal Kafka chỉ bật rõ ràng trong isolated dev.
+    pub mail_stream_allow_plaintext_kafka: bool,
     /// [COMMENT]: Consumer reverse report và local health observation có cadence độc lập.
     pub mail_consumer_report_interval_ms: u64,
     pub mail_health_observe_interval_ms: u64,
@@ -156,8 +163,7 @@ impl Config {
             // ============================================================================
             // 🚀 CẤU HÌNH CHUNG
             // ============================================================================
-            // Zone ID cấu hình - để xử lí đúng stream key tại "jobs:{zone_id}"
-            // nếu sai lệch thì sẽ xử lí nhầm zone hoặc không nhận được job
+            // Zone ID cấu hình dùng để chọn đúng Kafka command topic và khóa lease Zone-local.
             zone_id: env::var("ZONE_ID").unwrap_or_else(|err| {
                 crate::observability::logger::Logger::sys_error(
                     "system.bootstrap",
@@ -178,17 +184,28 @@ impl Config {
             }),
 
             // ============================================================================
-            // 🚀 CẤU HÌNH REDIS JOB QUEUE CLIENT
+            // 🚀 CẤU HÌNH CACHE REDIS VÀ KAFKA TRANSPORT
             // ============================================================================
-            redis_job_url: env::var("REDIS_JOB_URL")
+            runtime_redis_url: env::var("RUNTIME_REDIS_URL")
                 .unwrap_or_else(|_| "redis://controlplane-redis:6379/0".to_string()),
-            redis_job_tls_mode: env::var("REDIS_JOB_TLS_ENABLED")
+            runtime_redis_tls_mode: env::var("RUNTIME_REDIS_TLS_ENABLED")
                 .unwrap_or_else(|_| "disable".to_string())
                 .parse::<RedisTlsMode>()
                 .unwrap_or(RedisTlsMode::Disable),
-            redis_job_ca_cert: env::var("REDIS_JOB_CA_CERT").ok(),
-            redis_job_client_cert: env::var("REDIS_JOB_CLIENT_CERT").ok(),
-            redis_job_client_key: env::var("REDIS_JOB_CLIENT_KEY").ok(),
+            runtime_redis_ca_cert: env::var("RUNTIME_REDIS_CA_CERT").ok(),
+            runtime_redis_client_cert: env::var("RUNTIME_REDIS_CLIENT_CERT").ok(),
+            runtime_redis_client_key: env::var("RUNTIME_REDIS_CLIENT_KEY").ok(),
+            kafka_bootstrap_servers: env::var("KAFKA_BOOTSTRAP_SERVERS")
+                .unwrap_or_else(|_| "kafka-1:9092,kafka-2:9092,kafka-3:9092".to_string()),
+            kafka_security_protocol: env::var("KAFKA_SECURITY_PROTOCOL")
+                .unwrap_or_else(|_| "plaintext".to_string())
+                .to_ascii_lowercase(),
+            kafka_username: env::var("KAFKA_USERNAME").ok(),
+            kafka_password: env::var("KAFKA_PASSWORD").ok(),
+            kafka_ca_cert: env::var("KAFKA_CA_CERT").ok(),
+            kafka_topic_prefix: env::var("KAFKA_TOPIC_PREFIX")
+                .unwrap_or_else(|_| "aurora".to_string()),
+            kafka_max_job_attempts: parse_env("KAFKA_MAX_JOB_ATTEMPTS", 5_u32),
 
             nats_zone_url: {
                 // [COMMENT]: Không fallback NATS_URL vì đó là Core bus trung tâm; cross-wire sẽ phá isolation của Zone.
@@ -356,6 +373,10 @@ impl Config {
             mail_stream_ca_cert_path: env::var("MAIL_STREAM_CA_CERT_PATH")
                 .ok()
                 .filter(|path| !path.trim().is_empty()),
+            mail_stream_allow_plaintext_kafka: env::var(
+                "MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA",
+            )
+            .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
             mail_consumer_report_interval_ms: parse_env(
                 "MAIL_CONSUMER_REPORT_INTERVAL_MS",
                 5_000_u64,

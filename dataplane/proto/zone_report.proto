@@ -8,6 +8,10 @@ message DataplaneCluster {
     double avg_ram_usage = 3;
     int64 total_active_workers = 4;
     int64 total_max_workers = 5;
+    // [COMMENT]: Kafka consumer lag được Dataplane đo tại source; JO không cần
+    // query broker bằng credential xuyên Zone để chạy Decision Engine.
+    int64 job_queue_lag = 6;
+    bool job_queue_lag_stale = 7;
 }
 
 message MailWorkload {

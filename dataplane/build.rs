@@ -4,6 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &[
             // [COMMENT]: Contract versioned cho CP desired state ↔ DP broker/runtime/result.
             "proto/mail_runtime.proto",
+            "proto/platform_transport.proto",
             "proto/job_result.proto",
             "proto/zone_report.proto",
             "proto/storage_job.proto",

@@ -2,10 +2,15 @@ pub mod parser;
 pub mod setup;
 pub mod utils;
 use crate::config::Config;
+use crate::infra::kafka::transport_proto::{
+    JobCommandV1, ZoneMetadataSnapshotV1, ZoneServiceDesiredStateV1,
+};
+use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
 use pgwire_replication::{Lsn, ReplicationClient, ReplicationConfig, ReplicationEvent};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use parser::{
     parse_insert_message, parse_relation_message, parse_update_message, read_u32, PgOutputRelation,
@@ -15,7 +20,7 @@ use utils::parse_pg_config;
 /// CdcStreamer chịu trách nhiệm kết nối và duy trì luồng stream logical replication từ PostgreSQL.
 pub struct CdcStreamer {
     config: Config,
-    redis_client: redis::Client,
+    kafka: Arc<KafkaTransport>,
     /// [COMMENT]: Cache desired_state của từng (zone_id, service_type) — dùng để phát hiện thay đổi thực sự.
     /// Persist qua các lần reconnect (không reset khi replication stream ngắt/reconnect).
     /// Key: (zone_id, service_type), Value: desired_state hiện tại (true = enabled).
@@ -27,7 +32,7 @@ impl CdcStreamer {
     /// Đảm bảo CDC không publish spurious events cho các service đã ở trạng thái đúng khi startup.
     pub async fn new(
         config: Config,
-        redis_client: redis::Client,
+        kafka: Arc<KafkaTransport>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // [COMMENT]: Bootstrap snapshot từ DB để khởi tạo cache trước khi nhận WAL events.
         // Tránh publish false-positive khi JO restart và WAL replay các event cũ.
@@ -55,7 +60,7 @@ impl CdcStreamer {
 
         Ok(Self {
             config,
-            redis_client,
+            kafka,
             desired_state_cache: std::sync::Mutex::new(cache),
         })
     }
@@ -109,7 +114,6 @@ impl CdcStreamer {
         };
 
         let mut client = ReplicationClient::connect(config).await?;
-        let mut redis_conn = self.redis_client.get_multiplexed_tokio_connection().await?;
         let mut relation_map: HashMap<u32, PgOutputRelation> = HashMap::new();
 
         Logger::sys_info(
@@ -185,17 +189,12 @@ impl CdcStreamer {
                                                     self.process_zone_config_change(
                                                         &fields,
                                                         &rel.relation_name,
-                                                        &mut redis_conn,
                                                     )
                                                     .await?;
                                                 } else if tag == b'I' {
                                                     // [COMMENT]: Source schema là CDC metadata; không suy diễn owner domain từ job_topic.
-                                                    self.process_insert(
-                                                        &fields,
-                                                        &rel.schema_name,
-                                                        &mut redis_conn,
-                                                    )
-                                                    .await?;
+                                                    self.process_insert(&fields, &rel.schema_name)
+                                                        .await?;
                                                 }
                                             }
                                             Err(err) => {
@@ -239,12 +238,11 @@ impl CdcStreamer {
         Ok(())
     }
 
-    /// Xử lý sự kiện INSERT đã giải mã, định tuyến và push sang Redis Stream
+    /// Xử lý sự kiện INSERT đã giải mã, định tuyến và publish Protobuf sang Kafka.
     async fn process_insert(
         &self,
         fields: &HashMap<String, String>,
         source_domain: &str,
-        redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let event_id = fields.get("event_id").cloned().unwrap_or_default();
         // [COMMENT]: Mail dùng UUID typed trực tiếp; Storage giữ routing_scope theo contract riêng của resource jobs.
@@ -340,17 +338,20 @@ impl CdcStreamer {
                     idle_str_clone.parse::<u32>().ok()
                 };
 
-                let (stream_key, target_zone_id) = if source_domain_clone == "MAIL" {
-                    // [COMMENT]: PostgreSQL UUID column đã loại string scope; nil UUID vẫn bị chặn để tránh jobs:0000...
+                let (topic, target_zone_id) = if source_domain_clone == "MAIL" {
+                    // [COMMENT]: PostgreSQL UUID column đã loại string scope; nil UUID vẫn bị chặn trước khi tạo topic.
                     let parsed_zone_id = uuid::Uuid::parse_str(&mail_zone_id_clone)
                         .map_err(|error| format!("invalid mail zone_id: {error}"))?;
                     if parsed_zone_id.is_nil() {
                         return Err("invalid mail zone_id: nil UUID".into());
                     }
                     let canonical_zone_id = parsed_zone_id.to_string();
-                    (format!("jobs:{canonical_zone_id}"), canonical_zone_id)
+                    (
+                        self.kafka.zone_command_topic(&canonical_zone_id),
+                        canonical_zone_id,
+                    )
                 } else if routing_scope_clone == "platform" || routing_scope_clone == "global" {
-                    ("jobs:platform".to_string(), "platform".to_string())
+                    (self.kafka.platform_command_topic(), "platform".to_string())
                 } else {
                     let zone_id = if routing_scope_clone.starts_with("zone:") {
                         routing_scope_clone
@@ -360,47 +361,49 @@ impl CdcStreamer {
                     } else {
                         routing_scope_clone.clone()
                     };
-                    (format!("jobs:{}", zone_id), zone_id)
+                    (self.kafka.zone_command_topic(&zone_id), zone_id)
                 };
 
-                span.set_attribute(opentelemetry::KeyValue::new("zone_id", target_zone_id));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "zone_id",
+                    target_zone_id.clone(),
+                ));
+                let event_uuid = uuid::Uuid::parse_str(&event_id_clone)
+                    .map_err(|error| format!("invalid outbox event_id: {error}"))?;
+                let command = JobCommandV1 {
+                    job_id: event_uuid.as_bytes().to_vec(),
+                    job_version,
+                    attempt: 0,
+                    job_topic: job_topic_clone.clone(),
+                    source_domain: source_domain_clone.clone(),
+                    resource_id: resource_id_clone,
+                    payload_schema_version,
+                    payload: payload_bytes,
+                    trace_id: trace_id_bytes,
+                    idle_seconds: idle,
+                    reconcile_generation: None,
+                    target_zone_id,
+                    transport_schema_version: 1,
+                };
 
-                let mut cmd = redis::cmd("XADD");
-                cmd.arg(&stream_key).arg("*");
-                cmd.arg("job_id").arg(&event_id_clone);
-                cmd.arg("job_version").arg(job_version.to_string());
-                cmd.arg("attempt").arg("0");
-                cmd.arg("job_topic").arg(&job_topic_clone);
-                // [COMMENT]: Dataplane echo field này trong mọi result để JO update đúng outbox nguồn.
-                cmd.arg("source_domain").arg(&source_domain_clone);
-                cmd.arg("resource_id").arg(&resource_id_clone);
-                cmd.arg("payload_schema_version")
-                    .arg(payload_schema_version.to_string());
-                cmd.arg("payload").arg(&payload_bytes);
-                cmd.arg("trace_id").arg(&trace_id_bytes);
-                if let Some(idle_val) = idle {
-                    cmd.arg("idle").arg(idle_val.to_string());
-                }
-
-                let xadd_res: Result<String, redis::RedisError> = cmd.query_async(redis_conn).await;
-
-                match xadd_res {
-                    Ok(_) => {
+                match self
+                    .kafka
+                    .publish_message(&topic, event_uuid.as_bytes(), &command)
+                    .await
+                {
+                    Ok(()) => {
                         Logger::job_log(
                             &event_id_clone,
                             &job_topic_clone,
                             0,
                             "cdc.push_success",
-                            &format!(
-                                "CdcStreamer: Đã đẩy thành công job vào Redis Stream {}",
-                                stream_key
-                            ),
+                            &format!("CdcStreamer: Đã publish job Protobuf vào Kafka {topic}"),
                         );
                         crate::observability::metrics::MetricsManager::inc_stream_jobs_pushed();
                     }
-                    Err(e) => {
-                        span.record_error(&e);
-                        return Err(Box::new(e) as Box<dyn std::error::Error>);
+                    Err(error) => {
+                        span.record_error(&std::io::Error::other(error.clone()));
+                        return Err(std::io::Error::other(error).into());
                     }
                 }
 
@@ -418,99 +421,71 @@ impl CdcStreamer {
         &self,
         fields: &HashMap<String, String>,
         table_name: &str,
-        redis_conn: &mut redis::aio::MultiplexedConnection,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut zone_id = String::new();
-        let mut event_payload = serde_json::Value::Null;
-
-        if table_name == "zones" {
-            // [COMMENT]: zone_status thay đổi → luôn publish (không cần cache so sánh
-            // vì zone_status không bị ghi thường xuyên như actual_state của service).
-            zone_id = fields.get("id").cloned().unwrap_or_default();
-            let status = fields.get("status").cloned().unwrap_or_default();
-            if !zone_id.is_empty() && !status.is_empty() {
-                event_payload = serde_json::json!({
-                    "event_type": "zone_status_changed",
-                    "zone_id": zone_id,
-                    "status": status
-                });
-            }
-        } else if table_name == "zone_services" {
-            zone_id = fields.get("zone_id").cloned().unwrap_or_default();
-            let service_type = fields.get("service_type").cloned().unwrap_or_default();
-            let desired_state_raw = fields.get("desired_state").cloned().unwrap_or_default();
-
-            if !zone_id.is_empty() && !service_type.is_empty() {
-                let new_enabled = desired_state_raw == "t" || desired_state_raw == "true";
-                let cache_key = (zone_id.clone(), service_type.clone());
-
-                // [COMMENT]: So sánh desired_state mới với giá trị đang cache.
-                // Chỉ publish khi thực sự thay đổi — bất kể WAL event đến từ SRE hay JO.
-                // JO chỉ UPDATE actual_state (pure UPDATE) nhưng WAL vẫn chứa desired_state row hiện tại.
-                // Vì desired_state không đổi → so sánh == cached → bỏ qua → không spam.
-                let should_publish = {
-                    let cache = self.desired_state_cache.lock().unwrap();
-                    match cache.get(&cache_key) {
-                        // [COMMENT]: Nếu cache chưa có entry (zone mới tạo sau bootstrap) → publish lần đầu
-                        None => true,
-                        // [COMMENT]: Chỉ publish khi desired_state thực sự khác cached value
-                        Some(&cached_enabled) => cached_enabled != new_enabled,
-                    }
-                };
-
-                if should_publish {
-                    // [COMMENT]: Cập nhật cache TRƯỚC khi publish để tránh double-publish
-                    // nếu publish thất bại và được retry (idempotent cache update).
-                    {
-                        let mut cache = self.desired_state_cache.lock().unwrap();
-                        cache.insert(cache_key, new_enabled);
-                    }
-
-                    event_payload = serde_json::json!({
-                        "event_type": "service_status_changed",
-                        "zone_id": zone_id,
-                        "service": service_type,
-                        "enabled": new_enabled
-                    });
-                } else {
-                    // [COMMENT]: desired_state không đổi → bỏ qua silently.
-                    // Đây là trường hợp JO ghi actual_state → WAL chứa desired_state giống cache.
-                    return Ok(());
-                }
-            }
+        let zone_id = if table_name == "zones" {
+            fields.get("id").cloned().unwrap_or_default()
+        } else {
+            fields.get("zone_id").cloned().unwrap_or_default()
+        };
+        if uuid::Uuid::parse_str(&zone_id).is_err() {
+            return Ok(());
         }
 
-        if !zone_id.is_empty() && !event_payload.is_null() {
-            let channel = format!("zone:event:metadata:{}", zone_id);
-            if let Ok(payload_bin) = serde_json::to_vec(&event_payload) {
-                let publish_res: Result<(), redis::RedisError> = redis::cmd("PUBLISH")
-                    .arg(&channel)
-                    .arg(&payload_bin[..])
-                    .query_async(redis_conn)
-                    .await;
-
-                match publish_res {
-                    Ok(_) => {
-                        Logger::sys_info(
-                            "cdc.publish_zone_config",
-                            &format!(
-                                "CdcStreamer: Publish CDC zone_services thay đổi trên kênh {} — desired_state changed",
-                                channel
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        Logger::sys_error(
-                            "cdc.publish_zone_config_error",
-                            &format!(
-                                "Thất bại khi gửi CDC cập nhật cấu hình cho zone {}",
-                                zone_id
-                            ),
-                            &e.to_string(),
-                        );
-                    }
-                }
+        let mut cache_update = None;
+        if table_name == "zone_services" {
+            let service_type = fields.get("service_type").cloned().unwrap_or_default();
+            let enabled = fields
+                .get("desired_state")
+                .is_some_and(|value| value == "t" || value == "true");
+            let key = (zone_id.clone(), service_type.clone());
+            if self
+                .desired_state_cache
+                .lock()
+                .unwrap()
+                .get(&key)
+                .is_some_and(|cached| *cached == enabled)
+            {
+                return Ok(());
             }
+            cache_update = Some((key, enabled));
+        }
+
+        // [COMMENT]: Luôn publish full snapshot; compacted topic không phụ thuộc thứ tự delta khi pod cold-start.
+        let (status, services) = crate::reverse_provider::zone::db::query_zone_metadata(
+            &self.config.database_url,
+            &zone_id,
+        )
+        .await?;
+        let event_id = uuid::Uuid::new_v4();
+        let snapshot = ZoneMetadataSnapshotV1 {
+            event_id: event_id.as_bytes().to_vec(),
+            zone_id: uuid::Uuid::parse_str(&zone_id)?.as_bytes().to_vec(),
+            status,
+            services: services
+                .into_iter()
+                .map(|(service_type, enabled)| ZoneServiceDesiredStateV1 {
+                    service_type,
+                    enabled,
+                })
+                .collect(),
+            observed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+            schema_version: 1,
+        };
+        self.kafka
+            .publish_message(
+                &self.kafka.metadata_topic(&zone_id),
+                zone_id.as_bytes(),
+                &snapshot,
+            )
+            .await
+            .map_err(std::io::Error::other)?;
+
+        // [COMMENT]: Cache chỉ tiến sau acks=all; publish lỗi sẽ để WAL replay thử lại.
+        if let Some((key, enabled)) = cache_update {
+            self.desired_state_cache
+                .lock()
+                .unwrap()
+                .insert(key, enabled);
         }
 
         Ok(())

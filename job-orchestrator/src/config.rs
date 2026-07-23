@@ -6,17 +6,22 @@ pub struct Config {
     /// Chuỗi kết nối Postgres (phải bật wal_level = logical)
     pub database_url: String,
 
-    /// Chuỗi kết nối Redis (đẩy job vào Stream)
-    pub redis_url: String,
+    /// [COMMENT]: Redis cache chỉ giữ mail watch/report và reconciler lock/checkpoint có TTL.
+    pub cache_redis_url: String,
+
+    /// [COMMENT]: Kafka trung tâm là durable transport cho job/result/metadata/report.
+    pub kafka_bootstrap_servers: String,
+    pub kafka_security_protocol: String,
+    pub kafka_username: Option<String>,
+    pub kafka_password: Option<String>,
+    pub kafka_ca_cert: Option<String>,
+    pub kafka_topic_prefix: String,
 
     /// Tên Logical Replication Slot đã tạo trong Postgres
     pub slot_name: String,
 
     /// Tên Publication đã đăng ký trong Postgres
     pub publication_name: String,
-
-    /// Tên Stream nhận kết quả xử lý từ Dataplane
-    pub result_stream_name: String,
 
     /// Cấu hình OpenTelemetry exporter (gửi traces/metrics đến OTel Collector)
     pub env_nats_url: String,
@@ -52,16 +57,24 @@ impl Config {
         let database_url =
             env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set".to_string())?;
 
-        let redis_url = env::var("REDIS_URL").map_err(|_| "REDIS_URL must be set".to_string())?;
+        let cache_redis_url =
+            env::var("CACHE_REDIS_URL").map_err(|_| "CACHE_REDIS_URL must be set".to_string())?;
+        let kafka_bootstrap_servers = env::var("KAFKA_BOOTSTRAP_SERVERS")
+            .map_err(|_| "KAFKA_BOOTSTRAP_SERVERS must be set".to_string())?;
+        let kafka_security_protocol = env::var("KAFKA_SECURITY_PROTOCOL")
+            .unwrap_or_else(|_| "plaintext".to_string())
+            .to_ascii_lowercase();
+        let kafka_username = env::var("KAFKA_USERNAME").ok();
+        let kafka_password = env::var("KAFKA_PASSWORD").ok();
+        let kafka_ca_cert = env::var("KAFKA_CA_CERT").ok();
+        let kafka_topic_prefix =
+            env::var("KAFKA_TOPIC_PREFIX").unwrap_or_else(|_| "aurora".to_string());
 
         let slot_name =
             env::var("REPLICATION_SLOT_NAME").unwrap_or_else(|_| "outbox_slot".to_string());
 
         let publication_name =
             env::var("PUBLICATION_NAME").unwrap_or_else(|_| "outbox_pub".to_string());
-
-        let result_stream_name =
-            env::var("RESULT_STREAM_NAME").unwrap_or_else(|_| "job_results_stream".to_string());
 
         // [COMMENT]: Đọc NATS_URL từ biến môi trường bắt buộc (Fail-fast, không fallback URL hạ tầng)
         let env_nats_url = env::var("NATS_URL").map_err(|_| "NATS_URL must be set".to_string())?;
@@ -135,10 +148,15 @@ impl Config {
             .clamp(5_000, 300_000);
         Ok(Self {
             database_url,
-            redis_url,
+            cache_redis_url,
+            kafka_bootstrap_servers,
+            kafka_security_protocol,
+            kafka_username,
+            kafka_password,
+            kafka_ca_cert,
+            kafka_topic_prefix,
             slot_name,
             publication_name,
-            result_stream_name,
             env_nats_url,
             otel_exporter_otlp_endpoint,
             zone_id,

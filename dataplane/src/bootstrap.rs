@@ -16,7 +16,7 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Nạp các tệp cấu hình môi trường (.env), logger hệ thống.
-///   - Mở các kết nối hạ tầng cốt lõi (Redis Job và NATS JetStream KV) dạng fail-fast.
+///   - Mở Kafka transport, Redis runtime cache và NATS JetStream KV dạng fail-fast.
 ///   - Trả về đồ thị tài nguyên `BootstrapResult` để dựng AppContainer.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
@@ -24,11 +24,12 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 /// 🔒 RANH GIỚI BẢO MẬT (PRIVACY BOUNDARY):
 ///   - Kiểm soát tính hợp lệ của cấu hình hệ thống ngay khi boot.
-///   - Nếu Redis Job hoặc Zone KV lỗi, bootstrap thất bại trước khi nhận workload.
+///   - Nếu Kafka, Redis runtime hoặc Zone KV lỗi, bootstrap thất bại trước khi nhận workload.
 ///
 pub struct BootstrapResult {
     pub config: Arc<Config>,
-    pub redis_job: Arc<RedisClientManager>,
+    pub runtime_redis: Arc<RedisClientManager>,
+    pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã loại bỏ trường policy_engine trong BootstrapResult
     pub worker_pool: Arc<WorkerLifecycleManager>,
@@ -56,19 +57,19 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
         ),
     );
 
-    // 5. Initialize Job Queue Redis connection pool
-    let redis_job = match RedisClientManager::new(
-        &cfg.redis_job_url,
-        cfg.redis_job_tls_mode,
-        &cfg.redis_job_ca_cert,
-        &cfg.redis_job_client_cert,
-        &cfg.redis_job_client_key,
+    // [COMMENT]: Redis này chỉ giữ runtime lease/snapshot có TTL; durable job đã chuyển sang Kafka.
+    let runtime_redis = match RedisClientManager::new(
+        &cfg.runtime_redis_url,
+        cfg.runtime_redis_tls_mode,
+        &cfg.runtime_redis_ca_cert,
+        &cfg.runtime_redis_client_cert,
+        &cfg.runtime_redis_client_key,
     ) {
         Ok(r) => r,
         Err(err) => {
             Logger::sys_error(
                 "system.bootstrap",
-                "CRITICAL: Failed to initialize Job Queue Redis client connection pool",
+                "CRITICAL: Failed to initialize runtime Cache Redis client connection pool",
                 &err,
             );
             std::io::stdout().flush().ok();
@@ -76,6 +77,11 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
             std::process::exit(1);
         }
     };
+
+    // [COMMENT]: Kafka fail-fast để pod không nhận workload khi chưa có durable result/retry transport.
+    let kafka = crate::infra::kafka::KafkaTransport::connect(&cfg)
+        .await
+        .map_err(|error| format!("initialize Kafka transport failed: {error}"))?;
 
     // [COMMENT]: Toàn bộ shared Zone state/lease nằm trong JetStream KV; Dataplane không bootstrap Internal Redis.
     let zone_kv =
@@ -94,7 +100,8 @@ pub async fn run_actions() -> Result<BootstrapResult, Box<dyn Error>> {
 
     Ok(BootstrapResult {
         config: Arc::new(cfg),
-        redis_job: Arc::new(redis_job),
+        runtime_redis: Arc::new(runtime_redis),
+        kafka,
         zone_kv,
         worker_pool,
         worker_signal_rx,

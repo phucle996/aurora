@@ -1,205 +1,124 @@
 use super::l1_dispatcher;
 use crate::config::Config;
+use crate::infra::kafka::transport_proto::DeadLetterRecordV1;
+use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
+use prost::Message;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio_postgres::NoTls;
 
-// [COMMENT]: JobResultConsumer tiêu thụ kết quả công việc từ Redis Stream, giải mã và định tuyến DB update.
+/// [COMMENT]: Kết quả Kafka chỉ commit sau khi L2 transaction DB và realtime notification hoàn tất.
 pub struct JobResultConsumer {
     config: Config,
-    redis_client: redis::Client,
+    kafka: Arc<KafkaTransport>,
     nats_client: async_nats::Client,
 }
 
 impl JobResultConsumer {
-    // [COMMENT]: Khởi tạo một JobResultConsumer mới
     pub fn new(
         config: Config,
-        redis_client: redis::Client,
+        kafka: Arc<KafkaTransport>,
         nats_client: async_nats::Client,
     ) -> Self {
         Self {
             config,
-            redis_client,
+            kafka,
             nats_client,
         }
     }
 
-    // [COMMENT]: Khởi chạy luồng chặn đọc Redis Stream nhận kết quả từ Dataplane và update outbox (HA design)
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        Logger::sys_info(
-            "job_result.run",
-            "JobResultConsumer: Bắt đầu kết nối tới PostgreSQL...",
-        );
         let (mut client, connection) =
             tokio_postgres::connect(&self.config.database_url, NoTls).await?;
-
         tokio::spawn(async move {
-            if let Err(e) = connection.await {
+            if let Err(error) = connection.await {
                 Logger::sys_error(
                     "job_result.postgres",
-                    "JobResultConsumer: Lỗi kết nối PostgreSQL",
-                    &e.to_string(),
+                    "JobResultConsumer PostgreSQL connection failed",
+                    &error.to_string(),
                 );
             }
         });
 
-        Logger::sys_info("job_result.run", "JobResultConsumer: Kết nối tới Redis...");
-        let mut redis_conn = self.redis_client.get_multiplexed_tokio_connection().await?;
-
-        let stream_key = &self.config.result_stream_name;
-        let group_name = "job-proxy-group";
-
-        let _: redis::RedisResult<()> = redis::cmd("XGROUP")
-            .arg("CREATE")
-            .arg(stream_key)
-            .arg(group_name)
-            // [COMMENT]: First deployment phải đọc cả result đã durable trước khi group tồn tại.
-            .arg("0")
-            .arg("MKSTREAM")
-            .query_async(&mut redis_conn)
-            .await;
-
-        let consumer_id = format!(
-            "job-proxy-{}-{}",
-            crate::config::get_node_hostname(),
-            std::process::id()
-        );
-        Logger::sys_info(
-            "job_result.run",
-            &format!("JobResultConsumer: Đang lắng nghe kết quả từ Redis Stream: {} (Group: {}, Consumer: {})...", stream_key, group_name, consumer_id)
-        );
-
+        let topic = self.kafka.result_topic();
+        let consumer = self
+            .kafka
+            .consumer("aurora-job-orchestrator-results-v1", &topic)
+            .await
+            .map_err(std::io::Error::other)?;
         loop {
-            // [COMMENT]: Reclaim result bị pod cũ giữ trong PEL trước khi block chờ result mới.
-            let claimed: redis::Value = match redis::cmd("XAUTOCLAIM")
-                .arg(stream_key)
-                .arg(group_name)
-                .arg(&consumer_id)
-                .arg(30_000)
-                .arg("0-0")
-                .arg("COUNT")
-                .arg(1)
-                .query_async(&mut redis_conn)
+            let records = consumer.poll(Duration::from_secs(1)).await?;
+            for record in records {
+                let payload = record.value.unwrap_or_default();
+                let valid_result =
+                    l1_dispatcher::job_proto::JobExecutionResultProto::decode(payload.as_ref())
+                        .is_ok_and(|result| {
+                            result.job_id.len() == 16
+                                && !result.job_topic.trim().is_empty()
+                                && matches!(result.source_domain.as_str(), "MAIL" | "STORAGE")
+                                && matches!(
+                                    result.result_status.as_str(),
+                                    "PROCESSING" | "SUCCEEDED" | "FAILED"
+                                )
+                        });
+                if !valid_result {
+                    // [COMMENT]: Poison result phải được ghi DLQ bằng acks=all trước khi commit offset gốc.
+                    let dlq = DeadLetterRecordV1 {
+                        event_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                        source_topic: record.topic.clone(),
+                        source_partition: record.partition,
+                        source_offset: record.offset,
+                        error_code: "JOB_RESULT_PROTO_INVALID".to_string(),
+                        error_message: "JobExecutionResultProto failed strict validation"
+                            .to_string(),
+                        original_payload: payload.to_vec(),
+                        failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+                        schema_version: 1,
+                    };
+                    let key = dlq.event_id.clone();
+                    self.kafka
+                        .publish_message(&self.kafka.dead_letter_topic(), &key, &dlq)
+                        .await
+                        .map_err(std::io::Error::other)?;
+                    self.kafka
+                        .commit(
+                            &consumer,
+                            &record.topic,
+                            record.partition,
+                            record.offset + 1,
+                        )
+                        .await
+                        .map_err(std::io::Error::other)?;
+                    continue;
+                };
+                match l1_dispatcher::dispatch_result(
+                    payload.as_ref(),
+                    &mut client,
+                    &self.nats_client,
+                )
                 .await
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    Logger::sys_error(
-                        "job_result.claim",
-                        "Lỗi claim pending result từ Redis Stream",
-                        &error.to_string(),
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    continue;
-                }
-            };
-            let reply = if let redis::Value::Bulk(parts) = claimed {
-                if let Some(redis::Value::Bulk(entries)) = parts.get(1) {
-                    if !entries.is_empty() {
-                        redis::Value::Bulk(vec![redis::Value::Bulk(vec![
-                            redis::Value::Data(stream_key.as_bytes().to_vec()),
-                            redis::Value::Bulk(entries.clone()),
-                        ])])
-                    } else {
-                        match redis::cmd("XREADGROUP")
-                            .arg("GROUP")
-                            .arg(group_name)
-                            .arg(&consumer_id)
-                            .arg("BLOCK")
-                            .arg(2000)
-                            .arg("COUNT")
-                            .arg(1)
-                            .arg("STREAMS")
-                            .arg(stream_key)
-                            .arg(">")
-                            .query_async(&mut redis_conn)
+                {
+                    Ok(()) => {
+                        self.kafka
+                            .commit(
+                                &consumer,
+                                &record.topic,
+                                record.partition,
+                                record.offset + 1,
+                            )
                             .await
-                        {
-                            Ok(value) => value,
-                            Err(error) => {
-                                Logger::sys_error(
-                                    "job_result.read",
-                                    "Lỗi đọc từ Redis Stream",
-                                    &error.to_string(),
-                                );
-                                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                                continue;
-                            }
-                        }
+                            .map_err(std::io::Error::other)?;
                     }
-                } else {
-                    redis::Value::Nil
-                }
-            } else {
-                redis::Value::Nil
-            };
-
-            if let redis::Value::Bulk(streams) = reply {
-                if streams.is_empty() {
-                    continue;
-                }
-                if let redis::Value::Bulk(ref stream_data) = streams[0] {
-                    if stream_data.len() >= 2 {
-                        if let redis::Value::Bulk(ref messages) = stream_data[1] {
-                            for message in messages {
-                                if let redis::Value::Bulk(ref msg_parts) = message {
-                                    if msg_parts.len() >= 2 {
-                                        let msg_id = match &msg_parts[0] {
-                                            redis::Value::Data(bytes) => {
-                                                String::from_utf8_lossy(bytes).into_owned()
-                                            }
-                                            _ => continue,
-                                        };
-
-                                        if let redis::Value::Bulk(ref fields) = msg_parts[1] {
-                                            let mut payload_bytes = None;
-                                            for i in (0..fields.len()).step_by(2) {
-                                                let key = match &fields[i] {
-                                                    redis::Value::Data(bytes) => {
-                                                        String::from_utf8_lossy(bytes).into_owned()
-                                                    }
-                                                    _ => continue,
-                                                };
-                                                if key == "payload" && i + 1 < fields.len() {
-                                                    if let redis::Value::Data(bytes) =
-                                                        &fields[i + 1]
-                                                    {
-                                                        payload_bytes = Some(bytes.clone());
-                                                    }
-                                                }
-                                            }
-
-                                            if let Some(payload) = payload_bytes {
-                                                match l1_dispatcher::dispatch_result(
-                                                    &payload,
-                                                    &mut client,
-                                                    &self.nats_client,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(_) => {
-                                                        let _: redis::RedisResult<i32> =
-                                                            redis::cmd("XACK")
-                                                                .arg(stream_key)
-                                                                .arg(group_name)
-                                                                .arg(&msg_id)
-                                                                .query_async(&mut redis_conn)
-                                                                .await;
-                                                    }
-                                                    Err(err) => {
-                                                        Logger::sys_error(
-                                                            "job_result.process",
-                                                            "Lỗi xử lý kết quả",
-                                                            &err.to_string(),
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    Err(error) => {
+                        Logger::sys_error(
+                            "job_result.process",
+                            "Kafka result xử lý thất bại; offset chưa commit",
+                            &error.to_string(),
+                        );
+                        // [COMMENT]: Dừng consumer trước khi record offset cao hơn được commit;
+                        // Kubernetes restart sẽ replay từ offset durable cuối cùng.
+                        return Err(error);
                     }
                 }
             }

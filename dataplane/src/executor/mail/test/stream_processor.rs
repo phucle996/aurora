@@ -41,6 +41,54 @@ fn fixed_envelope_accepts_optional_expiry_and_rejects_duplicate_expiry() {
 }
 
 #[test]
+fn fixed_envelope_decodes_internal_protobuf_and_preserves_event_id() {
+    let event_id = uuid::Uuid::new_v4();
+    let payload = MailDispatchEnvelopeV1 {
+        event_id: event_id.as_bytes().to_vec(),
+        schema_version: 1,
+        to: "alice@example.com".to_string(),
+        parameter: HashMap::from([("username".to_string(), "alice".to_string())]),
+        not_after_unix_ms: 4_102_444_800_000,
+    }
+    .encode_to_vec();
+
+    let envelope = decode_fixed_envelope(&payload).expect("valid protobuf envelope");
+    assert_eq!(envelope.event_id, Some(*event_id.as_bytes()));
+    assert_eq!(envelope.to, "alice@example.com");
+    assert_eq!(envelope.parameter["username"], "alice");
+    assert_eq!(envelope.not_after_unix_ms, Some(4_102_444_800_000));
+}
+
+#[test]
+fn fixed_envelope_rejects_invalid_internal_protobuf_contract() {
+    for envelope in [
+        MailDispatchEnvelopeV1 {
+            event_id: vec![0; 15],
+            schema_version: 1,
+            to: "alice@example.com".to_string(),
+            parameter: HashMap::new(),
+            not_after_unix_ms: 4_102_444_800_000,
+        },
+        MailDispatchEnvelopeV1 {
+            event_id: vec![0; 16],
+            schema_version: 2,
+            to: "alice@example.com".to_string(),
+            parameter: HashMap::new(),
+            not_after_unix_ms: 4_102_444_800_000,
+        },
+        MailDispatchEnvelopeV1 {
+            event_id: vec![0; 16],
+            schema_version: 1,
+            to: "alice@example.com".to_string(),
+            parameter: HashMap::new(),
+            not_after_unix_ms: 0,
+        },
+    ] {
+        assert!(decode_fixed_envelope(&envelope.encode_to_vec()).is_err());
+    }
+}
+
+#[test]
 fn fixed_envelope_rejects_legacy_shape_nested_values_and_duplicates() {
     for payload in [
         br#"{"recipient":"alice@example.com","data":{}}"#.as_slice(),

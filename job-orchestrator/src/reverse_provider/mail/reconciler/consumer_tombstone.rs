@@ -1,4 +1,5 @@
-use super::xadd_mail_projection_command;
+use super::publish_mail_projection_command;
+use crate::infra::kafka::KafkaTransport;
 use crate::reverse_provider::mail::runtime_proto::{MailConsumerDeleteV1, MailEventMetadataV1};
 use chrono::{DateTime, Utc};
 use prost::Message;
@@ -7,6 +8,7 @@ use uuid::Uuid;
 pub(super) async fn reconcile_personal_consumer_tombstones(
     pg: &tokio_postgres::Client,
     redis_conn: &mut redis::aio::MultiplexedConnection,
+    kafka: &KafkaTransport,
     zone_id: Uuid,
     cursor_id: &str,
     limit: i64,
@@ -42,8 +44,9 @@ pub(super) async fn reconcile_personal_consumer_tombstones(
         };
         // [COMMENT]: Business row đã hard-delete; durable tombstone là nguồn duy nhất có quyền
         // fence Zone KV sau khi outbox gốc hết retention.
-        xadd_mail_projection_command(
+        publish_mail_projection_command(
             redis_conn,
+            kafka,
             zone_id,
             event_id,
             "mail.consumer.delete",
@@ -60,6 +63,7 @@ pub(super) async fn reconcile_personal_consumer_tombstones(
 pub(super) async fn reconcile_tenant_consumer_tombstones(
     pg: &tokio_postgres::Client,
     redis_conn: &mut redis::aio::MultiplexedConnection,
+    kafka: &KafkaTransport,
     zone_id: Uuid,
     cursor_id: &str,
     limit: i64,
@@ -94,8 +98,9 @@ pub(super) async fn reconcile_tenant_consumer_tombstones(
             drain_timeout_seconds: 0,
             reason: "hard-delete-reconciliation".to_string(),
         };
-        xadd_mail_projection_command(
+        publish_mail_projection_command(
             redis_conn,
+            kafka,
             zone_id,
             event_id,
             "mail.consumer.delete",

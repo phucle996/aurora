@@ -1,87 +1,154 @@
-use futures_util::StreamExt;
+use prost::Message;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::infra::redis::RedisClientManager;
+use crate::infra::kafka::transport_proto::ZoneMetadataSnapshotV1;
+use crate::infra::kafka::{KafkaSettlement, KafkaTransport};
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 
-/// [COMMENT]: Redis Job PubSub chỉ là transport; event hợp lệ được merge vào durable Zone metadata bằng KV CAS.
-#[allow(deprecated)]
+/// [COMMENT]: Metadata topic là compacted per-Zone; cold start đọc snapshot mới nhất rồi project vào Zone NATS KV.
 pub fn start_metadata_event_listener(
     zone_kv: Arc<ZoneKvStore>,
-    redis_job: Arc<RedisClientManager>,
+    kafka: Arc<KafkaTransport>,
     config: Arc<Config>,
 ) {
     tokio::spawn(async move {
-        let channel = format!("zone:event:metadata:{}", config.zone_id);
+        let topic = kafka.metadata_topic(&config.zone_id);
+        let (consumer, fence) = match kafka
+            .consumer(
+                format!("aurora-zone-metadata-{}-v1", config.zone_id),
+                &topic,
+                8,
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                Logger::sys_error(
+                    "zone_gateway.metadata",
+                    "Không thể khởi tạo Kafka metadata consumer",
+                    &error,
+                );
+                return;
+            }
+        };
+        let settlement = KafkaSettlement::new(consumer.clone(), fence.clone());
+
         loop {
-            match redis_job.client().get_async_connection().await {
-                Ok(connection) => {
-                    let mut pubsub = connection.into_pubsub();
-                    if let Err(error) = pubsub.subscribe(&channel).await {
-                        Logger::sys_error(
-                            "zone_gateway.cdc_listener",
-                            "Không thể subscribe metadata event",
-                            &error.to_string(),
-                        );
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
-                    }
-                    let mut messages = pubsub.on_message();
-                    while let Some(message) = messages.next().await {
-                        let payload: Vec<u8> = message.get_payload().unwrap_or_default();
-                        let Ok(event) = serde_json::from_slice::<serde_json::Value>(&payload)
-                        else {
-                            continue;
-                        };
-                        let result = match event
-                            .get("event_type")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                        {
-                            "zone_status_changed" => {
-                                let status = event
-                                    .get("status")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("inactive");
-                                zone_kv.update_zone_metadata(Some(status), None).await
-                            }
-                            "service_status_changed" => {
-                                let service = event
-                                    .get("service")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or_default();
-                                if service.is_empty() {
-                                    continue;
-                                }
-                                let enabled = event
-                                    .get("enabled")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false);
-                                zone_kv
-                                    .update_zone_metadata(None, Some((service, enabled)))
-                                    .await
-                            }
-                            _ => continue,
-                        };
-                        if let Err(error) = result {
-                            Logger::sys_error(
-                                "zone_gateway.cdc_listener",
-                                "Không thể merge metadata event vào Zone KV",
-                                &error,
-                            );
-                        }
-                    }
-                }
+            let records = match consumer.poll(Duration::from_secs(1)).await {
+                Ok(records) => records,
                 Err(error) => {
                     Logger::sys_error(
-                        "zone_gateway.cdc_listener",
-                        "Mất Redis Job metadata transport",
+                        "zone_gateway.metadata",
+                        "Kafka metadata poll thất bại",
                         &error.to_string(),
                     );
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+            let epoch = fence.epoch();
+            for record in records {
+                settlement
+                    .register(epoch, &record.topic, record.partition, record.offset)
+                    .await;
+                let Some(value) = record.value else {
+                    let dlq = crate::infra::kafka::transport_proto::DeadLetterRecordV1 {
+                        event_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                        source_topic: record.topic.clone(),
+                        source_partition: record.partition,
+                        source_offset: record.offset,
+                        error_code: "ZONE_METADATA_TOMBSTONE_UNEXPECTED".to_string(),
+                        error_message: "metadata snapshot topic received tombstone".to_string(),
+                        original_payload: Vec::new(),
+                        failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+                        schema_version: 1,
+                    };
+                    let key = dlq.event_id.clone();
+                    if kafka
+                        .publish_message(&kafka.dead_letter_topic(), &key, &dlq)
+                        .await
+                        .is_ok()
+                    {
+                        let delivery = crate::infra::kafka::KafkaDelivery::new(
+                            record.topic,
+                            record.partition,
+                            record.offset,
+                            epoch,
+                            settlement.clone(),
+                        );
+                        let _ = delivery.settle().await;
+                    }
+                    continue;
+                };
+                let snapshot = match ZoneMetadataSnapshotV1::decode(value.as_ref()) {
+                    Ok(snapshot)
+                        if snapshot.schema_version == 1
+                            && snapshot.zone_id
+                                == uuid::Uuid::parse_str(&config.zone_id)
+                                    .map(|value| value.as_bytes().to_vec())
+                                    .unwrap_or_default() =>
+                    {
+                        snapshot
+                    }
+                    _ => {
+                        // [COMMENT]: Poison metadata được DLQ bền vững để compacted partition không kẹt vĩnh viễn.
+                        let dlq = crate::infra::kafka::transport_proto::DeadLetterRecordV1 {
+                            event_id: uuid::Uuid::new_v4().as_bytes().to_vec(),
+                            source_topic: record.topic.clone(),
+                            source_partition: record.partition,
+                            source_offset: record.offset,
+                            error_code: "ZONE_METADATA_PROTO_INVALID".to_string(),
+                            error_message: "ZoneMetadataSnapshotV1 failed strict Zone validation"
+                                .to_string(),
+                            original_payload: value.to_vec(),
+                            failed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+                            schema_version: 1,
+                        };
+                        let key = dlq.event_id.clone();
+                        if kafka
+                            .publish_message(&kafka.dead_letter_topic(), &key, &dlq)
+                            .await
+                            .is_ok()
+                        {
+                            let delivery = crate::infra::kafka::KafkaDelivery::new(
+                                record.topic,
+                                record.partition,
+                                record.offset,
+                                epoch,
+                                settlement.clone(),
+                            );
+                            let _ = delivery.settle().await;
+                        }
+                        continue;
+                    }
+                };
+
+                let mut applied = zone_kv
+                    .update_zone_metadata(Some(&snapshot.status), None)
+                    .await
+                    .is_ok();
+                for service in snapshot.services {
+                    applied = applied
+                        && zone_kv
+                            .update_zone_metadata(
+                                None,
+                                Some((&service.service_type, service.enabled)),
+                            )
+                            .await
+                            .is_ok();
+                }
+                if applied {
+                    let delivery = crate::infra::kafka::KafkaDelivery::new(
+                        record.topic,
+                        record.partition,
+                        record.offset,
+                        epoch,
+                        settlement.clone(),
+                    );
+                    let _ = delivery.settle().await;
                 }
             }
         }

@@ -6,14 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"controlplane/internal/cacheengine"
-	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
@@ -24,9 +22,7 @@ import (
 	"controlplane/pkg/logger"
 
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
-
 	"github.com/google/uuid"
-	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -38,19 +34,18 @@ type AuthService struct {
 	deviceSvc             iamSvcInterface.DeviceSelfService // [COMMENT]: Sử dụng DeviceSelfService phục vụ quản trị thiết bị cá nhân
 	registry              *cacheengine.CacheRegistry
 	ott                   iamSvcInterface.OneTimeTokenService
-	verificationBroker    *goredis.Client
+	verificationPublisher iamSvcInterface.AccountVerificationPublisher
 	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier
-	cfg                   *config.Config
 	acrClient             iamproto.SessionServiceClient
 }
 
-func NewAuthService(cfg *config.Config,
+func NewAuthService(
 	repo iamRepoInterface.AuthRepository,
 	refreshSvc iamSvcInterface.SessionRefreshService,
 	deviceSvc iamSvcInterface.DeviceSelfService,
 	registry *cacheengine.CacheRegistry,
 	ott iamSvcInterface.OneTimeTokenService,
-	verificationBroker *goredis.Client,
+	verificationPublisher iamSvcInterface.AccountVerificationPublisher,
 	billingOutboxNotifier iamSvcInterface.BillingOutboxNotifier,
 	acrClient iamproto.SessionServiceClient,
 ) iamSvcInterface.AuthService {
@@ -60,9 +55,8 @@ func NewAuthService(cfg *config.Config,
 		deviceSvc:             deviceSvc,
 		registry:              registry,
 		ott:                   ott,
-		verificationBroker:    verificationBroker,
+		verificationPublisher: verificationPublisher,
 		billingOutboxNotifier: billingOutboxNotifier,
-		cfg:                   cfg,
 		acrClient:             acrClient,
 	}
 }
@@ -195,18 +189,9 @@ func (s *AuthService) VerifyAccount(ctx context.Context, userID, eventID uuid.UU
 	return nil
 }
 
-// [COMMENT]: Script giữ dedupe key và stream append trong cùng Redis atomic boundary trên cùng hash slot.
-const publishAccountVerificationScript = `
-if not redis.call("SET", KEYS[2], "1", "NX", "EX", ARGV[1]) then
-  return 0
-end
-redis.call("XADD", KEYS[1], "MAXLEN", "~", ARGV[2], "*", "event_id", ARGV[3], "payload", ARGV[4])
-return 1
-`
-
 // [COMMENT]: publishAccountVerification phát fixed mail envelope; IAM không biết Zone, consumer hay template runtime.
 func (s *AuthService) publishAccountVerification(ctx context.Context, userID uuid.UUID, username, email string) error {
-	if s.ott == nil || s.verificationBroker == nil {
+	if s.ott == nil || s.verificationPublisher == nil {
 		return apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamMetrics.OutcomeFailureUnknown)
 	}
 
@@ -219,36 +204,19 @@ func (s *AuthService) publishAccountVerification(ctx context.Context, userID uui
 		return fmt.Errorf("issue verification token: %w", issueErr)
 	}
 
-	// [COMMENT]: Parameter giữ scalar phẳng để ordinary template engine render mà không cần IAM-specific decoder.
-	payloadBytes, marshalErr := json.Marshal(struct {
-		To                string            `json:"to"`
-		Parameter         map[string]string `json:"parameter"`
-		NotAfterUnixMilli int64             `json:"not_after_unix_ms"`
-	}{
-		To: email,
+	// [COMMENT]: Service chỉ tạo parameter nghiệp vụ; transport adapter tự encode Protobuf và chọn Kafka topic.
+	dispatch := iamEntity.AccountVerificationDispatch{
+		EventID:   eventID,
+		Recipient: email,
 		Parameter: map[string]string{
 			"username":     username,
 			"user_id":      userID.String(),
 			"event_id":     eventID.String(),
 			"verify_token": verificationToken,
 		},
-		NotAfterUnixMilli: expiresAt.UnixMilli(),
-	})
-	if marshalErr != nil {
-		return fmt.Errorf("marshal verification mail envelope: %w", marshalErr)
+		ExpiresAt: expiresAt,
 	}
-
-	streamKey := "{iam-account-verification-v1}:messages"
-	dedupeKey := "{iam-account-verification-v1}:event:" + eventID.String()
-	if _, publishErr := s.verificationBroker.Eval(
-		ctx,
-		publishAccountVerificationScript,
-		[]string{streamKey, dedupeKey},
-		int64((7*24*time.Hour)/time.Second),
-		1_000_000,
-		eventID.String(),
-		payloadBytes,
-	).Result(); publishErr != nil {
+	if publishErr := s.verificationPublisher.PublishAccountVerification(ctx, dispatch); publishErr != nil {
 		return fmt.Errorf("publish verification message: %w", publishErr)
 	}
 
@@ -310,7 +278,7 @@ func (s *AuthService) VerifyUserCredentials(ctx context.Context, req iamEntity.L
 	switch user.Status {
 	case iamEntity.UserStatusPendingActive:
 		// [COMMENT]: Password đã đúng; nhánh pending tự sở hữu cooldown và direct broker resend.
-		if s.verificationBroker == nil {
+		if s.verificationPublisher == nil {
 			loginOutcome = iamMetrics.OutcomeFailureUnknown
 			return nil, apperr.Wrap(iamTaxonomy.ErrAuthenticationUnavailable, nil, iamMetrics.OutcomeFailureUnknown)
 		}

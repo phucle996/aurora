@@ -1,4 +1,3 @@
-use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -8,55 +7,28 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::executor::storage::core::client::MinioClient;
-use crate::infra::redis::RedisClientManager;
+use crate::infra::kafka::transport_proto::{BucketSizeV1, StorageBucketSizesSnapshotV1};
+use crate::infra::kafka::KafkaTransport;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
-
-// [COMMENT]: Định nghĩa cấu trúc tin nhắn gửi lên Redis PubSub
-#[derive(Serialize)]
-pub struct SyncBucketSizesMsg {
-    pub sizes: HashMap<String, i64>,
-}
 
 pub struct StorageSizesSyncer;
 
 impl StorageSizesSyncer {
     // [COMMENT]: Khởi chạy luồng giám sát và quét dung lượng bucket định kỳ mỗi 15 giây
-    pub fn start(
-        _config: Arc<Config>,
-        zone_kv: Arc<ZoneKvStore>,
-        redis_job: Arc<RedisClientManager>,
-    ) {
+    pub fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, kafka: Arc<KafkaTransport>) {
         tokio::spawn(async move {
             Logger::sys_info(
                 "storage_syncer.start",
                 "StorageSizesSyncer: Khởi chạy luồng nền quét dung lượng bucket mỗi 15s...",
             );
 
-            let mut conn_job_opt = None;
             let instance_id = std::env::var("HOSTNAME")
                 .unwrap_or_else(|_| format!("dataplane-{}", std::process::id()));
 
             loop {
                 // [COMMENT]: Chu kỳ 15 giây
                 sleep(Duration::from_secs(15)).await;
-
-                // [COMMENT]: Đảm bảo kết nối Redis Job (Pub/Sub broker)
-                if conn_job_opt.is_none() {
-                    match redis_job.client().get_multiplexed_tokio_connection().await {
-                        Ok(conn) => conn_job_opt = Some(conn),
-                        Err(e) => {
-                            Logger::sys_error(
-                                "storage_syncer.redis_job_connect_error",
-                                "Không thể kết nối tới Redis Job để publish dung lượng",
-                                &e.to_string(),
-                            );
-                            continue;
-                        }
-                    }
-                }
-
-                let mut conn_job = conn_job_opt.clone().unwrap();
 
                 let (zone_active, storage_enabled) = match zone_kv.read_zone_metadata().await {
                     Ok(metadata) => (
@@ -222,63 +194,37 @@ impl StorageSizesSyncer {
                         .await
                         .unwrap_or(false);
 
-                // [COMMENT]: 4. Gửi kết quả dung lượng quét được lên Redis Stream và báo Pub/Sub
+                // [COMMENT]: Một compact Protobuf snapshot thay hai Redis Stream; key Zone giữ thứ tự theo Zone.
                 if !bucket_sizes.is_empty() && may_publish {
-                    let msg = SyncBucketSizesMsg {
-                        sizes: bucket_sizes,
+                    let event_id = uuid::Uuid::new_v4();
+                    let snapshot = StorageBucketSizesSnapshotV1 {
+                        event_id: event_id.as_bytes().to_vec(),
+                        zone_id: uuid::Uuid::parse_str(&config.zone_id)
+                            .map(|value| value.as_bytes().to_vec())
+                            .unwrap_or_default(),
+                        observed_at_unix_ms: chrono::Utc::now().timestamp_millis(),
+                        buckets: bucket_sizes
+                            .into_iter()
+                            .map(|(bucket_name, size_bytes)| BucketSizeV1 {
+                                bucket_name,
+                                size_bytes,
+                            })
+                            .collect(),
+                        schema_version: 1,
                     };
-                    if let Ok(payload) = serde_json::to_string(&msg) {
-                        let stream_key = format!("sizes:{}", _config.zone_id);
-
-                        // [COMMENT]: XADD với MAXLEN ~ 2 để chỉ lưu 2 chu kỳ gần nhất
-                        let xadd_res: Result<(), redis::RedisError> = redis::cmd("XADD")
-                            .arg(&stream_key)
-                            .arg("MAXLEN")
-                            .arg("~")
-                            .arg("2")
-                            .arg("*")
-                            .arg("payload")
-                            .arg(&payload)
-                            .query_async(&mut conn_job)
-                            .await;
-
-                        match xadd_res {
-                            Ok(_) => {
-                                // [COMMENT]: Bắn tín hiệu vào Stream thông báo chung sizes:event-stream
-                                let publish_res: Result<(), redis::RedisError> = redis::cmd("XADD")
-                                    .arg("sizes:event-stream")
-                                    .arg("MAXLEN")
-                                    .arg("~")
-                                    .arg("1000") // Giới hạn tối đa 1000 bản ghi lịch sử sự kiện
-                                    .arg("*")
-                                    .arg("zone_id")
-                                    .arg(&_config.zone_id)
-                                    .query_async(&mut conn_job)
-                                    .await;
-
-                                if let Err(e) = publish_res {
-                                    Logger::sys_error(
-                                        "storage_syncer.event_stream_fail",
-                                        "Lỗi khi XADD vào sizes:event-stream",
-                                        &e.to_string(),
-                                    );
-                                    conn_job_opt = None;
-                                } else {
-                                    Logger::sys_info(
-                                        "storage_syncer.sync_success",
-                                        &format!("Đã ghi nhận dung lượng và gửi sự kiện lên sizes:event-stream cho zone '{}'.", _config.zone_id),
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                Logger::sys_error(
-                                    "storage_syncer.xadd_fail",
-                                    &format!("Lỗi khi XADD lên Redis Stream '{}'", stream_key),
-                                    &e.to_string(),
-                                );
-                                conn_job_opt = None; // Reset conn
-                            }
-                        }
+                    if let Err(error) = kafka
+                        .publish_message(
+                            &kafka.storage_sizes_topic(),
+                            config.zone_id.as_bytes(),
+                            &snapshot,
+                        )
+                        .await
+                    {
+                        Logger::sys_error(
+                            "storage_syncer.kafka_publish_failed",
+                            "Không thể publish storage size snapshot",
+                            &error,
+                        );
                     }
                 } else if !may_publish {
                     Logger::sys_warn(

@@ -1,4 +1,4 @@
-use crate::infra::redis::RedisClientManager;
+use crate::infra::kafka::{KafkaDelivery, KafkaTransport};
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
 use crate::observability::logger::Logger;
 use futures_util::{stream, StreamExt};
@@ -24,6 +24,7 @@ pub struct ActiveLockInfo {
     pub source_domain: String,
     pub trace_id: String,
     pub lease: ZoneLease,
+    pub kafka_delivery: Option<KafkaDelivery>,
 }
 
 /// Registry luồng an toàn (Thread-Safe) lưu trữ các lock key đang hoạt động
@@ -54,6 +55,7 @@ impl ActiveLockRegistry {
         source_domain: String,
         trace_id: String,
         lease: ZoneLease,
+        kafka_delivery: Option<KafkaDelivery>,
     ) {
         if let Ok(mut w) = self.locks.write() {
             w.insert(
@@ -69,6 +71,7 @@ impl ActiveLockRegistry {
                     source_domain,
                     trace_id,
                     lease,
+                    kafka_delivery,
                 },
             );
         } else {
@@ -109,7 +112,7 @@ impl ActiveLockRegistry {
 pub async fn start_watchdog_loop(
     registry: Arc<ActiveLockRegistry>,
     zone_kv: Arc<ZoneKvStore>,
-    redis_job: Arc<RedisClientManager>,
+    kafka: Arc<KafkaTransport>,
     ttl_secs: u64,
     interval_duration: Duration,
 ) {
@@ -149,8 +152,8 @@ pub async fn start_watchdog_loop(
                 // 2. Đồng bộ xóa ra khỏi Registry
                 registry.deregister(&lock_key);
 
-                // 3. Khởi chạy tác vụ gửi báo cáo lỗi timeout lên Redis Job Stream (durable) cho Job-Proxy
-                let client_clone = redis_job.client().clone();
+                // [COMMENT]: Timeout result phải durable trên Kafka rồi mới settle command gốc.
+                let kafka = kafka.clone();
                 tokio::spawn(async move {
                     let timeout_report = JobExecutionResult {
                         job_id: info.job_id,
@@ -163,7 +166,14 @@ pub async fn start_watchdog_loop(
                         source_domain: info.source_domain,
                         trace_id: info.trace_id,
                     };
-                    let _ = JobResultReporter::report_outcome(&client_clone, &timeout_report).await;
+                    if JobResultReporter::report_outcome(&kafka, &timeout_report)
+                        .await
+                        .is_ok()
+                    {
+                        if let Some(delivery) = info.kafka_delivery {
+                            let _ = delivery.settle().await;
+                        }
+                    }
                 });
             } else {
                 renewals.push((lock_key, info.abort_handle, info.job_id, info.lease));
@@ -226,6 +236,7 @@ mod tests {
                 owner_id: "pod-a".to_string(),
                 fencing_token: 7,
             },
+            None,
         );
         let active = registry.get_all_active_locks();
         assert_eq!(active.len(), 1);

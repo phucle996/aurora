@@ -19,7 +19,7 @@ pub async fn dispatch_result(
         Err(e) => {
             Logger::sys_error(
                 "job_result.decode",
-                "Không thể giải mã Protobuf payload từ Redis Stream",
+                "Không thể giải mã Protobuf payload từ Kafka",
                 &e.to_string(),
             );
             return Err(Box::new(e));

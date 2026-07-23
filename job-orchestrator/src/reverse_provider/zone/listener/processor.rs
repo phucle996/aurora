@@ -10,23 +10,22 @@ use super::super::super::decision::DecisionEngine;
 // [COMMENT]: Import hypervisor DB ops từ provider riêng biệt
 use super::super::super::hypervisor::db as hypervisor_db;
 
-/// [COMMENT]: Xử lý nghiệp vụ chính cho một ZoneReport nhận từ Redis Stream L1.
+/// [COMMENT]: Xử lý nghiệp vụ chính cho một ZoneReport nhận từ Kafka.
 /// Bao gồm: decode Protobuf, đo queue, đồng bộ cache từ DB, chạy Decision Engine,
 /// ghi DB theo kết quả, cập nhật throttle metrics, upsert hypervisor nodes.
 ///
 /// NGUYÊN TẮC ENABLED-ONLY: DecisionEngine chỉ nhận enabled_services từ zone_heartbeats cache.
 /// Service disabled không tham gia vào bất kỳ quyết định trạng thái nào.
 ///
-/// Trả về void — toàn bộ side effects ghi vào zone_heartbeats và DB.
+/// Chỉ trả Ok khi toàn bộ side effect cần thiết hoàn tất để listener được commit Kafka offset.
 pub async fn process_report(
     config: &Config,
-    conn: &mut redis::aio::MultiplexedConnection,
     zone_id: String,
     payload_bytes: Vec<u8>,
     zone_heartbeats: &mut HashMap<String, (Instant, String, bool, bool)>,
     service_metrics_cache: &mut HashMap<(String, String), (String, i32, Instant)>,
     node_heartbeats: &mut HashMap<(String, String), Instant>,
-) {
+) -> Result<(), String> {
     // [COMMENT]: 1. Decode Protobuf binary payload nhận từ Dataplane
     // Giải mã trực tiếp sang struct ZoneReport tự động sinh ra bởi prost.
     let payload: zone_proto::ZoneReport = match zone_proto::ZoneReport::decode(&payload_bytes[..]) {
@@ -37,7 +36,7 @@ pub async fn process_report(
                 "Thất bại khi decode Protobuf payload từ Stream L1",
                 &e.to_string(),
             );
-            return;
+            return Err(format!("decode ZoneReport failed: {e}"));
         }
     };
 
@@ -56,7 +55,7 @@ pub async fn process_report(
             "Zone report envelope or observation timestamp is invalid",
             "ZONE_REPORT_SCOPE_OR_TIME_INVALID",
         );
-        return;
+        return Err("zone report scope or timestamp is invalid".to_string());
     }
 
     let cluster = payload.dataplane_cluster.clone().unwrap_or_default();
@@ -73,33 +72,9 @@ pub async fn process_report(
     let storage_status = storage_workload.status.clone();
     let storage_capacity = storage_workload.capacity as usize;
 
-    // [COMMENT]: 2. Đo đạc độ ứ đọng hàng đợi hiện tại trong Platform Redis
-    let stream_key_jobs = format!("jobs:{}", zone_id);
-    let queue_len: i64 = redis::cmd("XLEN")
-        .arg(&stream_key_jobs)
-        .query_async(conn)
-        .await
-        .unwrap_or(0);
-
-    let pending_res: Result<Vec<redis::Value>, redis::RedisError> = redis::cmd("XPENDING")
-        .arg(&stream_key_jobs)
-        .arg("dataplane_group")
-        .query_async(conn)
-        .await;
-
-    let pending_len: i64 = match pending_res {
-        Ok(values) => {
-            if !values.is_empty() {
-                match &values[0] {
-                    redis::Value::Int(n) => *n,
-                    _ => 0,
-                }
-            } else {
-                0
-            }
-        }
-        Err(_) => 0,
-    };
+    // [COMMENT]: Dataplane đo Kafka lag bằng chính group credential; JO không cross-query broker theo Zone.
+    let queue_len = cluster.job_queue_lag.max(0);
+    let pending_len = 0;
 
     // [COMMENT]: 3. Truy xuất trạng thái hiện tại từ cache hoặc query DB SoT (Cold Start / Fallback).
     // zone_heartbeats cache đóng vai trò EnabledServicesMap in-memory — giữ cả mail_enabled lẫn storage_enabled.
@@ -126,8 +101,7 @@ pub async fn process_report(
                             ),
                             &e.to_string(),
                         );
-                        // [COMMENT]: Nếu DB lỗi, mặc định coi tất cả disabled để tránh false draining trigger
-                        std::collections::HashMap::new()
+                        return Err(format!("load Zone services failed: {e}"));
                     }
                 };
 
@@ -140,7 +114,9 @@ pub async fn process_report(
                 .await
                 {
                     Ok(v) => v,
-                    Err(_) => ("active".to_string(), false),
+                    Err(error) => {
+                        return Err(format!("load current Zone state failed: {error}"));
+                    }
                 };
 
                 let mail_en = fallback_services.get("mail").copied().unwrap_or(false);
@@ -161,19 +137,24 @@ pub async fn process_report(
     // [COMMENT]: 4. Chạy Decision Engine — enabled-only evaluation.
     // Chỉ pass vào enabled services. DecisionEngine chỉ trả về target_zone_status.
     // Decision Engine KHÔNG tự toggle desired_state của service — đó là quyền của SRE.
-    let target_status = DecisionEngine::evaluate(
-        queue_len,
-        pending_len,
-        avg_cpu,
-        avg_ram,
-        &mail_status,
-        mail_capacity,
-        current_mail_enabled,
-        &storage_status,
-        storage_capacity,
-        current_storage_enabled,
-        &current_status,
-    );
+    let target_status = if cluster.job_queue_lag_stale {
+        // [COMMENT]: Stale lag không được tự động chuyển state; giữ DB state đến report tin cậy kế tiếp.
+        current_status.clone()
+    } else {
+        DecisionEngine::evaluate(
+            queue_len,
+            pending_len,
+            avg_cpu,
+            avg_ram,
+            &mail_status,
+            mail_capacity,
+            current_mail_enabled,
+            &storage_status,
+            storage_capacity,
+            current_storage_enabled,
+            &current_status,
+        )
+    };
 
     // [COMMENT]: 5. Thực hiện cập nhật trực tiếp Postgres DB nếu zone_status thay đổi.
     // Chuyển Error sang String để vượt ranh giới async Send trait của Rust.
@@ -220,6 +201,7 @@ pub async fn process_report(
                     "Thất bại khi cập nhật trực tiếp status của Zone",
                     &err_msg,
                 );
+                return Err(err_msg);
             }
         }
     }
@@ -258,11 +240,14 @@ pub async fn process_report(
                     );
                 }
                 Ok(false) => {}
-                Err(error) => Logger::sys_error(
-                    "backpressure_listener.metrics_db_error",
-                    "Failed to update Mail service health",
-                    &error.to_string(),
-                ),
+                Err(error) => {
+                    Logger::sys_error(
+                        "backpressure_listener.metrics_db_error",
+                        "Failed to update Mail service health",
+                        &error.to_string(),
+                    );
+                    return Err(error.to_string());
+                }
             }
         }
     }
@@ -294,11 +279,14 @@ pub async fn process_report(
                     );
                 }
                 Ok(false) => {}
-                Err(error) => Logger::sys_error(
-                    "backpressure_listener.metrics_db_error",
-                    "Thất bại khi cập nhật metrics Service storage vào DB",
-                    &error.to_string(),
-                ),
+                Err(error) => {
+                    Logger::sys_error(
+                        "backpressure_listener.metrics_db_error",
+                        "Thất bại khi cập nhật metrics Service storage vào DB",
+                        &error.to_string(),
+                    );
+                    return Err(error.to_string());
+                }
             }
         }
     }
@@ -348,11 +336,13 @@ pub async fn process_report(
                 ),
                 &e.to_string(),
             );
+            return Err(e.to_string());
         }
 
         // [COMMENT]: Cập nhật node heartbeat cache (Dead Man's Switch node-level 45s)
         node_heartbeats.insert((zone_id.clone(), node_code.clone()), Instant::now());
     }
+    Ok(())
 }
 
 /// [COMMENT]: Kiểm tra xem có cần ghi metrics xuống DB không (Throttle Guard).

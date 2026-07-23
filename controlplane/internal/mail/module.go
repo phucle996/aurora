@@ -1,5 +1,5 @@
 // Mail module chỉ wire bốn luồng rõ ràng:
-// Personal/Tenant × Consumer/Template. PostgreSQL giữ business data; Redis Job chỉ giữ runtime
+// Personal/Tenant × Consumer/Template. PostgreSQL giữ business data; Cache Redis chỉ giữ runtime
 // watch soft state. CDC/job-proxy đọc outbox bằng logical replication và không poll DB trong process này.
 
 package mail
@@ -68,9 +68,9 @@ func NewDegradedModule(err error) *Module {
 
 // NewModule constructs the dependency graph for the Mail module.
 // CacheRegistry is shared with IAM so route authorization follows the same L1/L2 permission snapshot.
-func NewModule(cfg *config.Config, db *pgxpool.Pool, redisJob *goredis.Client, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
-	if cfg == nil || db == nil || redisJob == nil || cacheEngine == nil {
-		return nil, errors.New("mail module: config, postgres pool, redis job, and cache registry are required")
+func NewModule(cfg *config.Config, db *pgxpool.Pool, runtimeRedis *goredis.Client, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
+	if cfg == nil || db == nil || runtimeRedis == nil || cacheEngine == nil {
+		return nil, errors.New("mail module: config, postgres pool, runtime redis, and cache registry are required")
 	}
 
 	// [COMMENT]: Repository được tách ngay tại DI boundary; không có generic repo tự chọn scope lúc runtime.
@@ -82,10 +82,10 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool, redisJob *goredis.Client, c
 		return nil, errors.New("mail module: failed to construct scoped repositories")
 	}
 
-	// [COMMENT]: Redis Job chỉ giữ watch lease và runtime snapshot có TTL; cấu hình business
+	// [COMMENT]: Cache Redis chỉ giữ watch lease và runtime snapshot có TTL; cấu hình business
 	// vẫn nằm trong PostgreSQL và runtime động không đi qua Zone NATS KV.
-	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, redisJob)
-	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, redisJob)
+	personalConsumerSvc := mailSvcImpl.NewPersonalConsumerService(personalConsumerRepo, runtimeRedis)
+	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo, runtimeRedis)
 	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo)
 	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo)
 	personalConsumerHandler := mailHandler.NewPersonalConsumerHandler(personalConsumerSvc)

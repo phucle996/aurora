@@ -99,7 +99,7 @@ pub struct StreamRuntimeContext {
     // runtime_generation vẫn là fence riêng của logical slot.
     report_sequence: AtomicU64,
     // [COMMENT]: Lag/state/heartbeat là pod-local soft state. Không ghi Zone NATS KV vì
-    // snapshot theo customer chỉ được xuất sang Redis Job khi Controlplane có watch lease.
+    // snapshot theo customer chỉ được xuất sang runtime Redis khi Controlplane có watch lease.
     runtime_snapshots: StdRwLock<HashMap<(String, u32), RuntimeHealthSnapshot>>,
     envelope_key: Option<Arc<Zeroizing<[u8; 32]>>>,
 }
@@ -249,7 +249,7 @@ impl StreamRuntimeContext {
                 .fetch_add(1, Ordering::AcqRel)
                 .saturating_add(1),
             // [COMMENT]: Suite-specific lag sampler chưa được triển khai; 0 hiện là protobuf V1 default,
-            // không được dùng một giá trị ước lượng hoặc đọc lag của Redis Job thay cho customer broker.
+            // không được dùng một giá trị ước lượng hoặc Kafka platform lag thay cho customer broker.
             consumer_lag: 0,
             error_code: error_code.to_string(),
             runtime_node_id: self.instance_id.clone(),

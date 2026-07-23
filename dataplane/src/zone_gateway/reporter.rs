@@ -1,4 +1,3 @@
-use prost::Message;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -7,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::reconciler;
 use super::zone_proto;
 use crate::config::Config;
-use crate::infra::redis::RedisClientManager;
+use crate::infra::kafka::KafkaTransport;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 
@@ -45,7 +44,7 @@ struct HypervisorSnapshot {
 /// [COMMENT]: Chỉ lease holder tổng hợp snapshot Zone; replica khác không cùng XADD một chu kỳ.
 pub fn start_zone_gateway(
     zone_kv: Arc<ZoneKvStore>,
-    redis_job: Arc<RedisClientManager>,
+    kafka: Arc<KafkaTransport>,
     config: Arc<Config>,
 ) {
     tokio::spawn(async move {
@@ -56,11 +55,10 @@ pub fn start_zone_gateway(
             if counter >= 720 {
                 counter = 0;
                 let zone_kv = zone_kv.clone();
-                let redis_job = redis_job.clone();
+                let kafka = kafka.clone();
                 let config = config.clone();
                 tokio::spawn(async move {
-                    if let Err(error) =
-                        reconciler::sync_zone_metadata(zone_kv, redis_job, config).await
+                    if let Err(error) = reconciler::sync_zone_metadata(zone_kv, kafka, config).await
                     {
                         Logger::sys_error(
                             "zone_gateway.sync_metadata",
@@ -163,6 +161,7 @@ pub fn start_zone_gateway(
                 })
                 .unwrap_or_default();
 
+            let (job_queue_lag, job_queue_lag_stale) = kafka.job_lag_snapshot();
             let report = zone_proto::ZoneReport {
                 zone_id: config.zone_id.clone(),
                 timestamp: now as i64,
@@ -180,6 +179,8 @@ pub fn start_zone_gateway(
                     },
                     total_active_workers: total_active_workers as i64,
                     total_max_workers: (config.max_workers * alive_nodes.max(1)) as i64,
+                    job_queue_lag: job_queue_lag.min(i64::MAX as u64) as i64,
+                    job_queue_lag_stale,
                 }),
                 workloads: Some(zone_proto::Workloads {
                     mail: Some(zone_proto::MailWorkload {
@@ -193,29 +194,19 @@ pub fn start_zone_gateway(
                     }),
                 }),
             };
-            let mut payload = Vec::new();
-            // [COMMENT]: Aggregate cũ hết lease không được XADD sau khi reporter mới đã takeover.
+            // [COMMENT]: Aggregate cũ hết lease không được publish sau khi reporter mới đã takeover.
             let may_publish = zone_kv
                 .renew_lease(&lease, Duration::from_secs(15))
                 .await
                 .unwrap_or(false);
-            if may_publish && report.encode(&mut payload).is_ok() {
-                if let Ok(mut connection) =
-                    redis_job.client().get_multiplexed_tokio_connection().await
-                {
-                    let _zone_published: redis::RedisResult<String> = redis::cmd("XADD")
-                        .arg("zone:backpressure:reports")
-                        .arg("MAXLEN")
-                        .arg("~")
-                        .arg("1000")
-                        .arg("*")
-                        .arg("zone_id")
-                        .arg(&config.zone_id)
-                        .arg("payload")
-                        .arg(payload)
-                        .query_async(&mut connection)
-                        .await;
-                }
+            if may_publish {
+                let _ = kafka
+                    .publish_message(
+                        &kafka.zone_report_topic(),
+                        config.zone_id.as_bytes(),
+                        &report,
+                    )
+                    .await;
             }
             let _ = zone_kv.release_lease(&lease).await;
             tokio::time::sleep(Duration::from_millis(4_500 + rand::random::<u64>() % 1_000)).await;

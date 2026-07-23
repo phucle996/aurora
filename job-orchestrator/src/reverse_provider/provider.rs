@@ -1,11 +1,14 @@
 use super::{mail, storage, zone};
 use crate::config::Config;
+use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
+use std::sync::Arc;
 
 /// [COMMENT]: ReverseProvider chịu trách nhiệm lắng nghe và phản hồi các yêu cầu truy vấn ngược tài nguyên từ Dataplane.
 pub struct ReverseProvider {
     config: Config,
-    redis_client: redis::Client,
+    cache_redis: redis::Client,
+    kafka: Arc<KafkaTransport>,
     nats_client: async_nats::Client,
 }
 
@@ -13,12 +16,14 @@ impl ReverseProvider {
     /// Khởi tạo một ReverseProvider mới
     pub fn new(
         config: Config,
-        redis_client: redis::Client,
+        cache_redis: redis::Client,
+        kafka: Arc<KafkaTransport>,
         nats_client: async_nats::Client,
     ) -> Self {
         Self {
             config,
-            redis_client,
+            cache_redis,
+            kafka,
             nats_client,
         }
     }
@@ -31,17 +36,17 @@ impl ReverseProvider {
         );
 
         let config_bp = self.config.clone();
-        let redis_client_bp = self.redis_client.clone();
+        let kafka_bp = self.kafka.clone();
 
         let config_md = self.config.clone();
-        let redis_client_md = self.redis_client.clone();
+        let kafka_md = self.kafka.clone();
 
         let config_st = self.config.clone();
-        let redis_client_st = self.redis_client.clone();
+        let kafka_st = self.kafka.clone();
         let nats_client_st = self.nats_client.clone();
 
         let config_mail_consumer = self.config.clone();
-        let redis_client_mail_consumer = self.redis_client.clone();
+        let cache_redis_mail_consumer = self.cache_redis.clone();
         let nats_client_mail_consumer = self.nats_client.clone();
 
         // [COMMENT]: Chạy song song các listener độc lập; mail runtime reverse path dùng blocking
@@ -50,7 +55,7 @@ impl ReverseProvider {
             res = tokio::spawn(async move {
                 loop {
                     {
-                        let run_res = zone::listener::run_backpressure_listener(&config_bp, &redis_client_bp).await;
+                        let run_res = zone::listener::run_backpressure_listener(&config_bp, kafka_bp.clone()).await;
                         if let Err(e) = run_res {
                             let err_msg = e.to_string();
                             Logger::sys_error(
@@ -68,7 +73,7 @@ impl ReverseProvider {
             res = tokio::spawn(async move {
                 loop {
                     {
-                        let run_res = zone::listener::run_metadata_query_listener(&config_md, &redis_client_md).await;
+                        let run_res = zone::listener::run_metadata_query_listener(&config_md, kafka_md.clone()).await;
                         if let Err(e) = run_res {
                             let err_msg = e.to_string();
                             Logger::sys_error(
@@ -86,7 +91,7 @@ impl ReverseProvider {
             res = tokio::spawn(async move {
                 loop {
                     {
-                        let run_res = storage::listener::run_bucket_sizes_listener(&config_st, &redis_client_st, &nats_client_st).await;
+                        let run_res = storage::listener::run_bucket_sizes_listener(&config_st, kafka_st.clone(), &nats_client_st).await;
                         if let Err(e) = run_res {
                             let err_msg = e.to_string();
                             Logger::sys_error(
@@ -106,7 +111,7 @@ impl ReverseProvider {
                     {
                         let run_res = mail::reporter::consumer::run_consumer_report_listener(
                             &config_mail_consumer,
-                            &redis_client_mail_consumer,
+                            &cache_redis_mail_consumer,
                             &nats_client_mail_consumer,
                         ).await;
                         if let Err(error) = run_res {

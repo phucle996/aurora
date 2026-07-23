@@ -13,12 +13,12 @@ static EXEC_LATENCY: OnceLock<Histogram<f64>> = OnceLock::new();
 static ACTIVE_CONNECTIONS: OnceLock<Gauge<f64>> = OnceLock::new();
 static JOBS_PROCESSED: OnceLock<Counter<u64>> = OnceLock::new();
 
-/// Khởi tạo hoặc lấy metric đo lường độ trễ (lag) của Redis Stream.
+/// Khởi tạo hoặc lấy metric consumer lag của Kafka.
 fn stream_lag() -> &'static Gauge<f64> {
     STREAM_LAG.get_or_init(|| {
         global::meter("aurora-dataplane")
-            .f64_gauge("dataplane_stream_lag")
-            .with_description("Do lech (lag) doc tu Redis Stream cua tung Zone")
+            .f64_gauge("dataplane_kafka_consumer_lag")
+            .with_description("Kafka consumer lag cua tung Zone")
             .init()
     })
 }
@@ -55,8 +55,10 @@ fn jobs_processed() -> &'static Counter<u64> {
 
 #[derive(Clone, Debug)]
 pub enum MetricsType {
-    /// Độ lệch (lag) giữa vị trí đọc hiện tại và đầu cuối của Redis Stream.
-    RedisStreamLag { zone_id: String, lag: u64 },
+    KafkaConsumerLag {
+        zone_id: String,
+        lag: u64,
+    },
 
     /// Thời gian xử lý thực tế của một Job nghiệp vụ (tính bằng mili-giây).
     HandlerLatencyMs {
@@ -67,7 +69,10 @@ pub enum MetricsType {
     },
 
     /// Số lượng kết nối mạng/luồng xử lý đang hoạt động đồng thời.
-    ActiveConnectionsCount { zone_id: String, count: usize },
+    ActiveConnectionsCount {
+        zone_id: String,
+        count: usize,
+    },
 }
 
 pub struct WorkerMetricsManager;
@@ -84,7 +89,7 @@ impl WorkerMetricsManager {
     /// Báo cáo và ghi nhận số liệu đo đạc dựa theo loại chỉ số được truyền vào.
     pub fn record_metrics(metrics: MetricsType) {
         match metrics {
-            MetricsType::RedisStreamLag { zone_id, lag } => {
+            MetricsType::KafkaConsumerLag { zone_id, lag } => {
                 stream_lag().record(lag as f64, &[KeyValue::new("zone_id", zone_id)]);
             }
             MetricsType::HandlerLatencyMs {

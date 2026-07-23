@@ -168,7 +168,7 @@ RECEIVED
 sequenceDiagram
     autonumber
     participant DP as Dataplane
-    participant Redis as Redis job_results
+    participant Redis as Kafka aurora.jobs.results.v1
     participant JO as Job Orchestrator (ResultConsumer)
     participant CPDB as Controlplane DB
     participant Relay as Lifecycle Relay (JO)
@@ -176,9 +176,9 @@ sequenceDiagram
     participant CM as Cost Manager (LifecycleConsumer)
     participant BDB as Billing DB
 
-    DP->>Redis: XADD job_results * {job_id, SUCCEEDED}
-    JO->>Redis: XREADGROUP
-    Redis-->>JO: job result
+    DP->>Redis: PRODUCE Protobuf {job_id, SUCCEEDED}, acks=all
+    JO->>Redis: manual poll
+    Redis-->>JO: job result record
 
     Note over JO,CPDB: Single atomic transaction
     JO->>CPDB: BEGIN TX
@@ -187,7 +187,7 @@ sequenceDiagram
     JO->>CPDB: INSERT storage.resource_lifecycle_events (status='UNPUBLISHED', payload=Protobuf)
     JO->>CPDB: COMMIT TX
 
-    JO->>Redis: XACK job_results
+    JO->>Redis: COMMIT offset after DB transaction
     JO-->>JO: wakeRelay(event_id) [optional fast path]
 
     Note over Relay,JS: Relay runs separately (background task)

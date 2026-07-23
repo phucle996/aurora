@@ -1,53 +1,52 @@
 # Zone Metadata Sync và Dataplane State Machine — God View
 
 > [!IMPORTANT]
-> Đây là Source of Truth cho việc đưa `hierarchy.zones.status` và `hierarchy.zone_services.desired_state` xuống runtime của một Zone. Redis Job chỉ là transport; current Zone state được lưu bền vững trong NATS JetStream KV. Không được khôi phục Redis riêng cho Zone runtime.
+> Đây là Source of Truth cho `hierarchy.zones.status` và
+> `hierarchy.zone_services.desired_state` tại runtime. PostgreSQL là authoritative SoT,
+> Central Kafka là durable transport, NATS JetStream KV riêng Zone là runtime snapshot.
 
 ## 0. Control header
 
-| Thuộc tính | Giá trị |
+| Thuộc tính | Contract |
 |---|---|
 | Authoritative SoT | Controlplane PostgreSQL |
-| Real-time trigger | PostgreSQL WAL → JO CDC → Redis Job PubSub |
-| Repair path | Cold-start và khoảng một giờ/lần qua JO query/reply |
-| Runtime snapshot | `AURORA_ZONE_CONFIG/zone.metadata` |
+| Trigger | WAL → JO CDC → compacted Kafka per-Zone topic |
+| Repair | DP cold-start/periodic query topic → JO full snapshot response |
+| Wire | `ZoneMetadataQueryV1`, `ZoneMetadataSnapshotV1` |
+| Runtime key | `AURORA_ZONE_CONFIG/zone.metadata` |
 | Coordination | `AURORA_ZONE_COORDINATION/lease.gateway.metadata_sync` |
-| Physical boundary | NATS JetStream cluster riêng của từng Zone; không dùng NATS Core trung tâm |
-| Apply semantics | JSON aggregate + optimistic CAS |
-| Failure mode | Fail-closed: metadata thiếu/hỏng/KV unavailable thì dừng ingestion |
+| Apply | Full aggregate + CAS |
+| Failure | Missing/corrupt/unavailable metadata → fail-closed ingestion |
 
-## 1. Kiến trúc
+## 1. Architecture
 
 ```mermaid
 flowchart LR
     SRE[SRE/API] --> CP[Controlplane]
     CP --> PG[(PostgreSQL SoT)]
-    PG -->|WAL| JO[Job Orchestrator CDC]
-    JO -->|zone:event:metadata:zone_id| RJ[(Redis Job PubSub)]
-    RJ --> DPL[DP metadata listener]
-    DPL -->|CAS merge| CFG[(AURORA_ZONE_CONFIG)]
+    PG -->|WAL| JO[JO CDC]
+    JO -->|full snapshot| KT[(Kafka metadata Zone topic)]
+    KT --> DPL[DP metadata listener]
+    DPL -->|CAS full aggregate| CFG[(AURORA_ZONE_CONFIG)]
 
-    DPR[DP reconciler] -->|CAS fenced lease| COORD[(AURORA_ZONE_COORDINATION)]
-    DPR -->|zone:query:metadata| RJ
-    RJ --> JOQ[JO metadata query listener]
+    DPR[DP reconciler] -->|fenced lease| COORD[(AURORA_ZONE_COORDINATION)]
+    DPR -->|ZoneMetadataQueryV1| KQ[(Kafka query topic)]
+    KQ --> JOQ[JO query listener]
     JOQ --> PG
-    JOQ -->|reply channel| RJ
-    RJ --> DPR
-    DPR -->|CAS replace fields| CFG
+    JOQ -->|ZoneMetadataSnapshotV1| KT
 
     CFG --> JC[JobConsumer]
-    CFG --> MM[Mail monitor]
-    CFG --> SM[Storage monitor]
-    CFG --> HM[Hypervisor monitor]
+    CFG --> MM[Mail runtime]
+    CFG --> SM[Storage runtime]
+    CFG --> HM[Hypervisor runtime]
 ```
 
-Mọi DP pod đều có thể nhận real-time PubSub event. CAS trên revision bảo toàn thay đổi đồng thời giữa `status` và từng service: loser đọc revision mới rồi retry, không blind overwrite aggregate.
+JO không truy cập Zone KV. DP không truy cập PostgreSQL. `NATS_ZONE_URL` không được fallback sang
+Central NATS. Kafka topic, `snapshot.zone_id` và configured `ZONE_ID` phải trùng.
 
-NATS Core trung tâm và Zone NATS là hai deployment/credential boundary độc lập. Core phục vụ CP/JO/IAM/Notification; Zone JetStream phục vụ KV database cho Dataplane. `NATS_ZONE_URL` bắt buộc trỏ tới endpoint nội bộ của Zone và không được fallback sang biến kết nối Core.
+## 2. Snapshot contract
 
-## 2. Zone metadata contract
-
-Key `zone.metadata` chứa một JSON value:
+Logical value trong KV:
 
 ```json
 {
@@ -61,129 +60,142 @@ Key `zone.metadata` chứa một JSON value:
 }
 ```
 
-Rules:
+Kafka dùng full aggregate `ZoneMetadataSnapshotV1`, không phát field delta:
 
-- `status` chưa được hydrate mặc định là `inactive`, không phải `active`.
-- Event `zone_status_changed` chỉ đổi `status`.
-- Event `service_status_changed` chỉ đổi một entry trong `services`.
-- Mỗi mutation đọc current entry, merge field, rồi `update(expected_revision)`; tối đa 5 lần tranh chấp trước khi báo lỗi.
-- Config bucket dùng file storage, history `1`, không TTL và replica factor `3/5` ở production.
-- Payload malformed/corrupt không được thay bằng default active.
+- `event_id`: 16 bytes;
+- `zone_id`: 16 bytes;
+- `status`;
+- repeated `{service_type, enabled}`;
+- observation time;
+- `schema_version=1`.
 
-## 3. Real-time path
+Full snapshot tránh lost update giữa status và desired services. Per-Zone topic có một partition,
+key là Zone UUID và `cleanup.policy=compact`, nên cold start có thể đọc authoritative snapshot gần nhất.
+
+## 3. WAL real-time path
 
 ```mermaid
 sequenceDiagram
-    autonumber
     participant PG as PostgreSQL
     participant JO as JO CDC
-    participant RJ as Redis Job PubSub
-    participant DPA as DP Pod A
-    participant DPB as DP Pod B
+    participant K as Kafka metadata topic
+    participant DP as Dataplane
     participant KV as Zone Config KV
 
-    PG->>JO: WAL zones / zone_services
-    JO->>RJ: PUBLISH zone:event:metadata:zone_id
-    par subscriber A
-        RJ->>DPA: JSON event
-        DPA->>KV: read entry + CAS merge
-    and subscriber B
-        RJ->>DPB: same JSON event
-        DPB->>KV: read entry + CAS merge
-    end
-    Note over DPA,KV: Một CAS thắng; replica còn lại retry/no-op với cùng desired value
+    PG-->>JO: zones/zone_services WAL
+    JO->>PG: read full Zone aggregate when required
+    JO->>K: key=zone_id, full snapshot, acks=all
+    K-->>JO: durable ISR ACK
+    JO->>PG: advance LSN
+    K-->>DP: manual poll
+    DP->>DP: validate schema + exact Zone
+    DP->>KV: CAS replace aggregate
+    DP->>K: commit contiguous offset
 ```
 
-Redis PubSub không phải durability boundary. Sự kiện có thể mất khi subscriber disconnect; vì vậy real-time path chỉ giảm convergence latency, còn reconciler mới là repair boundary.
+- Duplicate WAL replay produces same logical snapshot.
+- Invalid/cross-Zone snapshot được durable DLQ trước commit.
+- KV failure giữ offset chưa settle.
+- Rebalance epoch fence chặn completion của owner cũ commit assignment mới.
 
-## 4. Cold-start và periodic reconciliation
+## 4. Cold-start và periodic repair
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant DPA as DP Pod A
-    participant DPB as DP Pod B
-    participant CKV as Coordination KV
-    participant RJ as Redis Job
-    participant JO as JO Query Listener
+    participant A as DP Pod A
+    participant B as DP Pod B
+    participant C as Coordination KV
+    participant KQ as Kafka metadata queries
+    participant JO as JO query listener
     participant PG as PostgreSQL
-    participant CFG as Config KV
+    participant KS as Kafka Zone snapshot
+    participant KV as Config KV
 
     par lease race
-        DPA->>CKV: CAS acquire lease.gateway.metadata_sync, 10s
-        CKV-->>DPA: owner + fencing token
+        A->>C: CAS acquire metadata-sync lease
     and
-        DPB->>CKV: CAS acquire same lease
-        CKV-->>DPB: not acquired
+        B->>C: CAS acquire same lease
     end
-    DPA->>RJ: SUBSCRIBE unique reply channel
-    DPA->>RJ: PUBLISH zone:query:metadata
-    RJ->>JO: request
-    JO->>PG: SELECT status + desired services
-    PG-->>JO: authoritative snapshot
-    JO->>RJ: PUBLISH reply
-    RJ-->>DPA: response, timeout 5s
-    DPA->>CFG: CAS merge status/services
-    DPA->>CKV: release only when owner+fencing match
+    C-->>A: owner + fencing token
+    C-->>B: not acquired
+    A->>KQ: ZoneMetadataQueryV1, acks=all
+    KQ-->>JO: manual poll
+    JO->>PG: SELECT full status + desired services
+    JO->>KS: ZoneMetadataSnapshotV1, acks=all
+    JO->>KQ: commit query offset
+    KS-->>A: full snapshot
+    A->>KV: CAS replace aggregate
+    A->>KS: commit snapshot offset
+    A->>C: release only if owner/fence still match
 ```
 
-- `counter=720` làm lần đầu chạy ngay khi process boot; sau đó khoảng 720 gateway cycle, tương đương xấp xỉ một giờ.
-- Mỗi request dùng reply channel có UUID để không ăn nhầm response.
-- Lease release không xóa key; nó CAS value sang released state, giữ fencing token đơn điệu.
-- Timeout/lỗi không thay metadata thành active. Lease hết hạn cho phép replica khác repair ở chu kỳ sau.
+- Query không dùng unique reply channel hay Redis PubSub.
+- Query topic durable; JO commit chỉ sau snapshot Kafka ACK.
+- Compacted response topic là shared recovery log cho toàn bộ pod trong đúng Zone.
+- Reconciler có startup run, periodic timer, deterministic jitter và no-spin lease.
+- Timeout/lỗi không suy diễn Zone thành active.
 
-## 5. State machine tại Dataplane
+## 5. Dataplane state machine
 
-| Zone status | Job ingestion | Health probes |
+| Zone status | Kafka ingestion | Health probes |
 |---|---|---|
-| `active` | Cho phép Redis Job fetch khi admission còn capacity | Probe service được enable và ghi current snapshot |
-| `planned` | Dừng job mới, sleep 1 giây | Vẫn probe để SRE thấy readiness trước activation |
-| `maintenance` | Dừng job mới; job đã chạy tiếp tục theo lifecycle riêng | Vẫn probe service được enable |
-| `draining` | Dừng job mới | Vẫn probe để quan sát drain/recovery |
-| `disabled` | Dừng job mới | Mail/storage ghi `down`; service disabled không được coi healthy |
-| `inactive`, missing, corrupt, KV error | Dừng job mới theo fail-closed | Không được suy diễn Zone active |
+| `active` | Poll/dispatch khi admission còn capacity | Probe service enabled |
+| `planned` | Không dispatch job mới | Probe readiness |
+| `maintenance` | Dừng job mới; in-flight tự hoàn tất | Vẫn probe |
+| `draining` | Dừng job mới | Quan sát drain |
+| `disabled` | Dừng job mới | Service disabled không được báo healthy |
+| `inactive`, missing, corrupt, KV error | Fail-closed | Không suy diễn active |
 
-Service flag mặc định `true` chỉ khi metadata aggregate đã đọc thành công nhưng chưa có entry tương ứng; migration/bootstrap phải hydrate đầy đủ service catalogue để tránh ambiguity này.
+Service absent trong authoritative aggregate phải được coi disabled/invalid theo catalog contract; bootstrap
+phải hydrate đầy đủ desired service catalogue.
 
-## 6. Health và coordination buckets
+## 6. Health/report separation
 
-| Bucket/key | Writer | Nội dung |
+| State | Store/path |
+|---|---|
+| Desired Zone/service state | PostgreSQL → Kafka → `AURORA_ZONE_CONFIG` |
+| Node/service current health | `AURORA_ZONE_HEALTH` |
+| Lease/fencing | `AURORA_ZONE_COORDINATION` |
+| Aggregate Zone report | DP → `aurora.zone.reports.v1` → JO |
+| Dynamic consumer runtime watch | Pod memory → shared Cache Redis TTL |
+| Metrics/traces/logs | OTel/Grafana |
+
+Zone reporter dùng rotating lease để một node tổng hợp mỗi cycle. Report chứa Kafka lag được đo bởi chính
+Dataplane consumer; JO không cross-query broker bằng Zone credential. Nếu lag stale, Decision Engine giữ state
+hiện tại thay vì tự động chuyển Zone.
+
+## 7. Race/failure matrix
+
+| Case | Guard | Result |
 |---|---|---|
-| `AURORA_ZONE_HEALTH/zone.node.<node_id>` | Mỗi DP pod | CPU, RAM, active workers, `updated_at` |
-| `.../zone.service.mail` | Mail health observer rotating lease holder | JMAP health, capacity, queue pressure, probe node, fencing token |
-| `.../zone.service.storage` | Rotating lease holder | MinIO health/capacity, probe node, fencing token |
-| `.../zone.service.hypervisor` | Rotating lease holder | Proxmox nodes snapshot, probe node, fencing token |
-| `AURORA_ZONE_COORDINATION/lease.health.*` | Health monitors | Stable pod owner, fencing, expiry, last owner |
-| `.../lease.gateway.report` | Zone reporter | Một aggregate report mỗi cycle |
-| `.../lease.mail.health.observe` | Mail health observers | Một JMAP/Stalwart probe + OTel/KV observation mỗi cycle |
+| WAL duplicate | Full snapshot + stable key | Idempotent apply |
+| Query duplicate | request ID + full snapshot | Safe replay |
+| Metadata topic poison | Strict validation + durable DLQ | Commit sau DLQ ACK |
+| Pod A complete sau rebalance | Assignment epoch | Không commit owner mới |
+| N pod cold start | Zone KV lease/fencing | Một query winner mỗi cycle |
+| Pod A release lease của B | owner + fencing compare | Reject stale release |
+| Kafka quorum loss | `acks=all`, min ISR | Không ACK/commit |
+| Zone KV unavailable | No Kafka settle | Replay sau recovery |
+| Stale lag report | `job_queue_lag_stale` | Không auto-transition |
+| Clock skew | bounded report timestamp + fencing | Reject/quarantine + alert |
 
-Mail consumer runtime không dùng coordination lease hoặc Zone Health KV. Mỗi pod chỉ giữ slot snapshot
-trong memory và tự đẩy bounded delta sang Central Redis khi consumer có watch lease.
+## 8. Security
 
-Health bucket history là `1`, max age 24 giờ. Gateway bỏ node snapshot cũ hơn 15 giây. Service monitors dùng stable pod ID và same-owner cooldown: sau khi release, pod khác được ưu tiên; cụm một pod vẫn probe lại sau cooldown.
+- Production Kafka dùng TLS/mTLS hoặc SASL over TLS và topic/group ACL theo Zone.
+- Dataplane Zone A không được subscribe metadata/command topic Zone B.
+- NATS credential chỉ cho ba KV bucket của chính Zone.
+- JO/Controlplane không được có endpoint/credential Zone KV.
+- Metadata không mang secret, owner hoặc customer broker configuration.
+- Missing/malformed payload fail-close; không fallback default active.
 
-## 7. HA, race và security guardrails
+## 9. Code map
 
-| Case | Guard | Kết quả |
-|---|---|---|
-| Hai event sửa hai field cùng lúc | KV expected revision + retry | Không lost update |
-| Pod A release sau khi lease đã sang Pod B | Owner + fencing comparison | A không release được lease B |
-| N pod cold-start cùng lúc | CAS coordination lease | Chỉ một pod query JO/DB |
-| Redis PubSub mất event | Periodic authoritative reconciliation | Eventual repair |
-| NATS KV mất kết nối | Ingestion fail-closed | Không chạy job với desired state không xác định |
-| Bucket cấu hình sai replica/storage/history | Bootstrap validation | Pod fail-fast |
-| Health writer bị kẹt | Lease expiry + rotating owner | Replica khác tiếp quản |
-| Probe cũ trả kết quả sau takeover | Renew trước side effect + health CAS theo fencing token | Token thấp không overwrite snapshot mới |
-| Clock skew | Node time phải được NTP đồng bộ; fencing/CAS chặn stale release | Alert nếu skew vượt lease safety margin |
-
-NATS credential của Zone phải chỉ có quyền trên ba bucket của chính Zone. NetworkPolicy không cho endpoint Zone JetStream từ controlplane namespace. JO không có credential truy cập Zone KV; JO chỉ dùng CP PostgreSQL, Redis Job và NATS Core cho các luồng trung tâm khác.
-
-## 8. Code map
-
-- `dataplane/src/infra/zone_kv.rs`: buckets, metadata CAS, fenced/rotating lease.
-- `dataplane/src/zone_gateway/listener.rs`: real-time PubSub apply.
-- `dataplane/src/zone_gateway/reconciler.rs`: cold-start/periodic repair.
+- `job-orchestrator/src/cdc/mod.rs`: full metadata snapshot publisher.
+- `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: durable query consumer.
+- `job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs`: Zone report consumer.
+- `dataplane/src/zone_gateway/listener.rs`: compacted snapshot listener/projector.
+- `dataplane/src/zone_gateway/reconciler.rs`: cold-start/periodic query publisher.
+- `dataplane/src/zone_gateway/reporter.rs`: report aggregation.
 - `dataplane/src/job_lifecycle/consumer.rs`: fail-closed state reaction.
-- `dataplane/src/zone_gateway/reporter.rs`: health aggregation và report lease.
-- `job-orchestrator/src/cdc/mod.rs`: zone/service CDC publisher.
-- `job-orchestrator/src/reverse_provider/zone/listener/query.rs`: metadata query responder.
+- `dataplane/src/infra/zone_kv.rs`: KV CAS and fencing.
+- `dataplane/src/infra/kafka.rs`: manual consumer and contiguous settlement.

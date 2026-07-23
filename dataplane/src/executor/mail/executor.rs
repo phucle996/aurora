@@ -8,7 +8,7 @@ pub async fn dispatch_mail_job(
     action: &str,
     payload: JobPayload,
     worker_pool: Arc<WorkerLifecycleManager>,
-    _redis_job: Arc<RedisClientManager>,
+    _runtime_redis: Arc<RedisClientManager>,
     _zone_id: &str,
 ) -> Result<ExecutionResult, ExecutorError> {
     // [COMMENT]: Projection là control path riêng; delivery payload chỉ được broker runtime xử lý.
@@ -73,7 +73,7 @@ pub async fn dispatch_mail_job(
         .await;
     }
 
-    // [COMMENT]: Delivery mail chỉ chạy qua ordinary broker consumer runtime; Redis Job không còn direct/system mail action.
+    // [COMMENT]: Delivery mail chỉ chạy qua ordinary broker consumer runtime; Kafka internal không direct-send system mail.
     Err(failed(format!("unsupported mail action: {action}")))
 }
 

@@ -39,7 +39,7 @@ struct ConsumerRuntimeSnapshot<'a> {
 }
 
 /// [COMMENT]: Reverse path chỉ xác minh business scope/config trong PostgreSQL. Dynamic runtime
-/// được fence + aggregate trong Redis Job khi watch lease còn sống; không ghi business DB/NATS KV.
+/// được fence + aggregate trong Cache Redis khi watch lease còn sống; không ghi business DB/NATS KV.
 pub async fn run_consumer_report_listener(
     config: &Config,
     redis_client: &redis::Client,

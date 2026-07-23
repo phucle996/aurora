@@ -24,6 +24,8 @@ services:
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
       GRPC_PORT: "9090"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -33,8 +35,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-      redis-job:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       victoriametrics:
         condition: service_started
       victorialogs:
@@ -66,6 +68,8 @@ services:
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
       GRPC_PORT: "9090"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -75,8 +79,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-      redis-job:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       victoriametrics:
         condition: service_started
       victorialogs:
@@ -108,6 +112,8 @@ services:
       GRPC_TLS_KEY: /etc/controlplane/tls/grpc-server.key
       GRPC_CLIENT_CA: /etc/controlplane/tls/ca.crt
       GRPC_PORT: "9090"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      KAFKA_IAM_VERIFICATION_TOPIC: "aurora.iam.account-verification.v1"
     depends_on:
       pbouncer:
         condition: service_healthy
@@ -117,8 +123,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-      redis-job:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       victoriametrics:
         condition: service_started
       victorialogs:
@@ -325,8 +331,6 @@ services:
     depends_on:
       acr-redis:
         condition: service_healthy
-      redis-job:
-        condition: service_healthy
     restart: unless-stopped
 
   acr-redis:
@@ -376,6 +380,154 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # [COMMENT]: Ba combined broker/controller chạy KRaft; replication=3 và min ISR=2
+  # giữ durable job transport hoạt động khi một broker tạm thời mất kết nối.
+  kafka-1:
+    image: apache/kafka:3.9.0
+    container_name: aurora-kafka-1
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093"
+      KAFKA_LISTENERS: "INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:19092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka-1:9092,EXTERNAL://localhost:19092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "2"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: "3"
+      KAFKA_MIN_INSYNC_REPLICAS: "2"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+    ports:
+      - "19092:19092"
+    volumes:
+      - controlplane_kafka_1_data:/var/lib/kafka/data
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-2:
+    image: apache/kafka:3.9.0
+    container_name: aurora-kafka-2
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: "2"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093"
+      KAFKA_LISTENERS: "INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:29092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka-2:9092,EXTERNAL://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "2"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: "3"
+      KAFKA_MIN_INSYNC_REPLICAS: "2"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+    ports:
+      - "29092:29092"
+    volumes:
+      - controlplane_kafka_2_data:/var/lib/kafka/data
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  kafka-3:
+    image: apache/kafka:3.9.0
+    container_name: aurora-kafka-3
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: "3"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093"
+      KAFKA_LISTENERS: "INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:39092"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka-3:9092,EXTERNAL://localhost:39092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "2"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: "3"
+      KAFKA_MIN_INSYNC_REPLICAS: "2"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+    ports:
+      - "39092:39092"
+    volumes:
+      - controlplane_kafka_3_data:/var/lib/kafka/data
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  # [COMMENT]: Topic provisioning tách khỏi application; auto-create bị khóa để typo không sinh queue mới.
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: aurora-kafka-init
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        BOOTSTRAP="kafka-1:9092,kafka-2:9092,kafka-3:9092"
+        create_topic() {
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" \
+            --create --if-not-exists --topic "$$1" --partitions "$$2" --replication-factor 3 \
+            --config min.insync.replicas=2
+        }
+        create_topic aurora.jobs.commands.zone.019f3d3e-997d-7894-9236-c5122634cb4f.v1 6
+        create_topic aurora.jobs.commands.platform.v1 6
+        create_topic aurora.jobs.results.v1 12
+        create_topic aurora.jobs.dlq.v1 6
+        create_topic aurora.zone.metadata.queries.v1 6
+        create_topic aurora.zone.reports.v1 6
+        create_topic aurora.storage.sizes.v1 6
+        create_topic aurora.iam.account-verification.v1 6
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" \
+          --create --if-not-exists \
+          --topic aurora.zone.metadata.019f3d3e-997d-7894-9236-c5122634cb4f.v1 \
+          --partitions 1 --replication-factor 3 \
+          --config cleanup.policy=compact --config min.insync.replicas=2
+    restart: "no"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: aurora-kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "aurora-dev"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
+      KAFKA_CLUSTERS_0_READONLY: "true"
+    ports:
+      - "18080:8080"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   nats-zone-z1:
     image: nats:2.10-alpine
     container_name: dataplane-zone-z1-nats
@@ -393,21 +545,6 @@ services:
       retries: 5
     restart: unless-stopped
 
-  redis-job:
-    image: redis:8.8.0
-    container_name: controlplane-redis-job
-    command: [ "redis-server", "--appendonly", "yes" ]
-    ports:
-      - "6380:6379"
-    volumes:
-      - controlplane_redis_job_data:/data
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
   dataplane-vn-n1:
     build:
       context: ../dataplane
@@ -420,7 +557,8 @@ services:
     init: true
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
+      RUNTIME_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       NATS_ZONE_URL: "nats://nats-zone-z1:4222"
       NATS_ZONE_KV_REPLICAS: "1"
       # Policy file path khớp với volume mount /etc/dataplane/policy.yaml.
@@ -442,11 +580,14 @@ services:
       STALWART_JMAP_USERNAME: "admin@example.org"
       STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
       MAIL_SENDER_ADDRESS: "admin@example.org"
+      MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA: "true"
     depends_on:
       controlplane1:
         condition: service_started
-      redis-job:
+      cp-redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       nats-zone-z1:
         condition: service_healthy
       otel-collector:
@@ -473,7 +614,8 @@ services:
     init: true
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
+      RUNTIME_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       NATS_ZONE_URL: "nats://nats-zone-z1:4222"
       NATS_ZONE_KV_REPLICAS: "1"
       APP_LOG_LEVEL: "info"
@@ -492,11 +634,14 @@ services:
       STALWART_JMAP_USERNAME: "admin@example.org"
       STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
       MAIL_SENDER_ADDRESS: "admin@example.org"
+      MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA: "true"
     depends_on:
       controlplane2:
         condition: service_started
-      redis-job:
+      cp-redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       nats-zone-z1:
         condition: service_healthy
       otel-collector:
@@ -515,7 +660,8 @@ services:
     init: true
     environment:
       ZONE_ID: "019f3d3e-997d-7894-9236-c5122634cb4f"
-      REDIS_JOB_URL: "redis://controlplane-redis-job:6379/0"
+      RUNTIME_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       NATS_ZONE_URL: "nats://nats-zone-z1:4222"
       NATS_ZONE_KV_REPLICAS: "1"
       APP_LOG_LEVEL: "info"
@@ -534,11 +680,14 @@ services:
       STALWART_JMAP_USERNAME: "admin@example.org"
       STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
       MAIL_SENDER_ADDRESS: "admin@example.org"
+      MAIL_STREAM_ALLOW_PLAINTEXT_KAFKA: "true"
     depends_on:
       controlplane3:
         condition: service_started
-      redis-job:
+      cp-redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       nats-zone-z1:
         condition: service_healthy
       otel-collector:
@@ -680,11 +829,11 @@ services:
       - ./dev/tls:/etc/job-orchestrator/tls:ro
     environment:
       DATABASE_URL: "postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable"
-      REDIS_URL: "redis://controlplane-redis-job:6379/0"
+      CACHE_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-1:9092,kafka-2:9092,kafka-3:9092"
       REPLICATION_SLOT_NAME: "outbox_slot"
       PUBLICATION_NAME: "outbox_pub"
-      RESULT_STREAM_NAME: "job_results_stream"
-      # [COMMENT]: Current runtime read model; JO vẫn block trên Redis Stream và chỉ reclaim PEL sau 30s.
+      # [COMMENT]: Runtime report request/response tạm dùng Cache Redis; durable job/result đã chuyển sang Kafka.
       MAIL_RUNTIME_REPORT_TTL_SECS: "180"
       MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
       APP_LOG_LEVEL: "debug"
@@ -698,8 +847,10 @@ services:
     depends_on:
       psql:
         condition: service_healthy
-      redis-job:
+      cp-redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       nats:
         condition: service_healthy
       otel-collector:
@@ -723,8 +874,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://controlplane-otel-collector:4318
       - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
     depends_on:
-      redis-job:
-        condition: service_healthy
       otel-collector:
         condition: service_started
     restart: unless-stopped
@@ -788,8 +937,6 @@ services:
     depends_on:
       centrifugo:
         condition: service_started
-      redis-job:
-        condition: service_healthy
       otel-collector:
         condition: service_started
     restart: unless-stopped
@@ -863,7 +1010,9 @@ volumes:
   controlplane_vlogs_data: # Bộ đệm dữ liệu logs của VictoriaLogs
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
   admin_ui_node_modules:
-  controlplane_redis_job_data:
+  controlplane_kafka_1_data:
+  controlplane_kafka_2_data:
+  controlplane_kafka_3_data:
   controlplane_nats_data:
   dataplane_zone_z1_nats_data:
   dataplane_cargo_target_z1:

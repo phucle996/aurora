@@ -6,10 +6,12 @@ use crate::executor::mail::runtime::configuration::{
     RuntimeTemplateSnapshot, RuntimeTemplateToken,
 };
 use crate::executor::mail::runtime::context::RuntimeGenerationFence;
+use crate::executor::mail::runtime_proto::MailDispatchEnvelopeV1;
 use crate::infra::zone_kv::ZoneKvStore;
 use bytes::Bytes;
 use opentelemetry::metrics::Counter;
 use opentelemetry::{global, KeyValue};
+use prost::Message;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::{HashMap, HashSet};
@@ -43,6 +45,7 @@ pub enum MailProcessingStatus {
 
 #[derive(Debug)]
 struct FixedMailEnvelope {
+    event_id: Option<[u8; 16]>,
     to: String,
     parameter: HashMap<String, String>,
     // [COMMENT]: Optional broker-level expiry prevents delayed verification/reset mail from being sent after token TTL.
@@ -211,6 +214,7 @@ impl<'de> Deserialize<'de> for FixedMailEnvelope {
                     }
                 }
                 Ok(FixedMailEnvelope {
+                    event_id: None,
                     to: to.ok_or_else(|| de::Error::missing_field("to"))?,
                     parameter: parameter.ok_or_else(|| de::Error::missing_field("parameter"))?,
                     not_after_unix_ms,
@@ -324,6 +328,12 @@ impl MailMessageProcessor {
             Ok(recipient) => recipient,
             Err(_) => return rejected("MAIL_RECIPIENT_INVALID"),
         };
+        // [COMMENT]: Internal Protobuf event_id thắng broker coordinate để JMAP submission retry giữ cùng idempotency key.
+        let submission_id = envelope
+            .event_id
+            .map(uuid::Uuid::from_bytes)
+            .map(|event_id| event_id.to_string())
+            .unwrap_or(submission_id);
 
         let template = match self
             .configuration
@@ -430,13 +440,47 @@ impl MailMessageProcessor {
 }
 
 fn decode_fixed_envelope(payload: &[u8]) -> Result<FixedMailEnvelope, &'static str> {
-    let mut deserializer = serde_json::Deserializer::from_slice(payload);
-    let envelope = FixedMailEnvelope::deserialize(&mut deserializer)
+    if payload.first() == Some(&b'{') {
+        let mut deserializer = serde_json::Deserializer::from_slice(payload);
+        let envelope = FixedMailEnvelope::deserialize(&mut deserializer)
+            .map_err(|_| "MAIL_MESSAGE_ENVELOPE_INVALID")?;
+        deserializer
+            .end()
+            .map_err(|_| "MAIL_MESSAGE_ENVELOPE_INVALID")?;
+        return Ok(envelope);
+    }
+
+    let envelope =
+        MailDispatchEnvelopeV1::decode(payload).map_err(|_| "MAIL_MESSAGE_ENVELOPE_INVALID")?;
+    if envelope.schema_version != 1
+        || envelope.event_id.len() != 16
+        || envelope.not_after_unix_ms <= 0
+        || envelope.parameter.len() > MAX_PARAMETER_COUNT
+    {
+        return Err("MAIL_MESSAGE_ENVELOPE_INVALID");
+    }
+    let mut total_bytes = 0_usize;
+    for (key, value) in &envelope.parameter {
+        if !valid_parameter_key(key) || value.len() > MAX_PARAMETER_VALUE_BYTES {
+            return Err("MAIL_MESSAGE_ENVELOPE_INVALID");
+        }
+        total_bytes = total_bytes
+            .saturating_add(key.len())
+            .saturating_add(value.len());
+        if total_bytes > MAX_PARAMETER_TOTAL_BYTES {
+            return Err("MAIL_MESSAGE_ENVELOPE_INVALID");
+        }
+    }
+    let event_id: [u8; 16] = envelope
+        .event_id
+        .try_into()
         .map_err(|_| "MAIL_MESSAGE_ENVELOPE_INVALID")?;
-    deserializer
-        .end()
-        .map_err(|_| "MAIL_MESSAGE_ENVELOPE_INVALID")?;
-    Ok(envelope)
+    Ok(FixedMailEnvelope {
+        event_id: Some(event_id),
+        to: envelope.to,
+        parameter: envelope.parameter,
+        not_after_unix_ms: Some(envelope.not_after_unix_ms as u64),
+    })
 }
 
 fn valid_parameter_key(key: &str) -> bool {

@@ -3,7 +3,8 @@ pub mod reconciler;
 pub mod reporter;
 pub mod service;
 
-// [COMMENT]: JO chỉ encode snapshot command rồi XADD Redis Job; module này không có Zone Redis client.
+// [COMMENT]: JO encode snapshot command lên Kafka; Cache Redis chỉ giữ reconciler/runtime soft state.
+#[allow(dead_code)]
 pub mod runtime_proto {
     include!(concat!(env!("OUT_DIR"), "/mail.runtime.v1.rs"));
 }

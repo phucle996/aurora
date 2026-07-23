@@ -27,10 +27,10 @@ impl MailWorkloadSupervisor {
     pub fn start(
         config: Arc<Config>,
         zone_kv: Arc<ZoneKvStore>,
-        redis_job: Arc<RedisClientManager>,
+        runtime_redis: Arc<RedisClientManager>,
         runtime: Arc<MailRuntime>,
     ) {
         health_observer::start(config.clone(), zone_kv, runtime.clone());
-        consumer_reporter::start(config, redis_job, runtime);
+        consumer_reporter::start(config, runtime_redis, runtime);
     }
 }

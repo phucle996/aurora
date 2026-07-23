@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Đóng gói kết quả đầu ra sau khi Executor thực thi xong một Job nghiệp vụ.
-///   - Báo cáo kết quả qua Redis Stream (durable) để Job-Proxy cập nhật outbox table trong PostgreSQL.
+///   - Báo cáo kết quả Protobuf qua Kafka để Job Orchestrator cập nhật outbox PostgreSQL.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
 ///   - Trạng thái kết quả cuối cùng (Final outcome status) được quyết định bởi luồng thực thi của Executor.
@@ -16,13 +16,11 @@ use serde::{Deserialize, Serialize};
 ///   - TUYỆT ĐỐI KHÔNG chứa dữ liệu Tenant ID hay thông tin cá nhân khách hàng.
 ///
 /// 🔄 CALLSITE FLOW:
-///   - Được gọi bởi Worker (`runner.rs`) và Watchdog (`watchdog.rs`) để đẩy kết quả vào Redis Stream.
-///   - Job-Proxy đọc stream → cập nhật `outbox_records` trong PostgreSQL → XACK.
+///   - Được gọi bởi Worker (`runner.rs`) và Watchdog (`watchdog.rs`) để đẩy kết quả vào Kafka.
+///   - Job Orchestrator commit offset chỉ sau transaction cập nhật outbox hoàn tất.
 ///
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
-///   - Sử dụng Redis Stream thay vì Pub/Sub để đảm bảo durability:
-///     + Job-Proxy restart → resume từ last ACK, không mất message.
-///     + Exactly-once delivery với XACK consumer group.
+///   - Kafka dùng replication + manual commit; business side-effect vẫn phải idempotent theo job_id/version.
 ///
 pub mod job_proto {
     include!(concat!(env!("OUT_DIR"), "/job_lifecycle.rs"));
@@ -122,10 +120,6 @@ impl JobExecutionResult {
     }
 }
 
-/// Tên stream mặc định để gửi kết quả xử lý Job cho Job-Proxy đọc.
-/// Job-Proxy sẽ XREADGROUP từ stream này và cập nhật outbox table trong PSQL.
-const DEFAULT_RESULT_STREAM: &str = "job_results_stream";
-
 // Helper giải mã chuỗi hex sang mảng byte nhị phân thô
 fn decode_hex(s: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -147,16 +141,11 @@ fn hex_chars_to_byte(c1: char, c2: char) -> Option<u8> {
 pub struct JobResultReporter;
 
 impl JobResultReporter {
-    /// Đẩy kết quả xử lý Job vào Redis Stream dưới dạng Protobuf nhị phân tối ưu.
-    ///
-    /// Stream key: `job_results_stream` (cấu hình chung, Job-Proxy đọc từ cùng key).
-    /// Payload: Protobuf serialized `JobExecutionResultProto` được lưu trong field `payload`.
+    /// [COMMENT]: Kafka producer chạy idempotent + acks=all; caller chỉ settle command sau khi hàm này thành công.
     pub async fn report_outcome(
-        redis_client: &redis::Client,
+        kafka: &crate::infra::kafka::KafkaTransport,
         result: &JobExecutionResult,
     ) -> Result<(), String> {
-        use prost::Message;
-
         // Parse UUID string thành 16 bytes nhị phân
         let job_id_bytes = uuid::Uuid::parse_str(&result.job_id)
             .map(|u| u.as_bytes().to_vec())
@@ -182,37 +171,16 @@ impl JobResultReporter {
             source_domain: result.source_domain.clone(),
         };
 
-        let mut buf = Vec::new();
-        proto_msg
-            .encode(&mut buf)
-            .map_err(|e| format!("Failed to serialize job result to Protobuf: {}", e))?;
-
-        // Đẩy vào Redis Stream bằng XADD (durable, persistent trên disk)
-        let mut conn = redis_client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| format!("Failed to get Redis connection for result stream: {}", e))?;
-
-        // Dùng field "payload" để truyền tải array bytes nhị phân trực tiếp
-        let _: String = redis::cmd("XADD")
-            .arg(DEFAULT_RESULT_STREAM)
-            .arg("*") // Auto-generate message ID
-            .arg("payload")
-            .arg(&buf)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| {
-                format!(
-                    "Failed to XADD Protobuf result to stream '{}': {}",
-                    DEFAULT_RESULT_STREAM, e
-                )
-            })?;
+        let key = proto_msg.job_id.clone();
+        kafka
+            .publish_message(&kafka.result_topic(), &key, &proto_msg)
+            .await?;
 
         crate::observability::logger::Logger::sys_info(
             "job.result",
             &format!(
-                "Job Result Reporter (Protobuf): XADD payload to stream '{}' for job {} [status={}]",
-                DEFAULT_RESULT_STREAM, result.job_id, result.result_status
+                "Kafka result published for job {} [status={}]",
+                result.job_id, result.result_status
             ),
         );
 

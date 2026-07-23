@@ -3,7 +3,7 @@ pub mod reconciler;
 pub mod reporter;
 
 use crate::config::Config;
-use crate::infra::redis::RedisClientManager;
+use crate::infra::kafka::KafkaTransport;
 use crate::infra::zone_kv::ZoneKvStore;
 use std::sync::Arc;
 
@@ -17,21 +17,21 @@ pub mod zone_proto {
 pub struct ZoneStatusGateway;
 
 impl ZoneStatusGateway {
-    /// [COMMENT]: Khởi chạy task tổng hợp tài nguyên của cả cụm Dataplane và đẩy lên Platform Redis L1 (HA & Self-Healing Sync)
+    /// [COMMENT]: Khởi chạy task tổng hợp tài nguyên của cả cụm Dataplane và đẩy lên Kafka.
     pub fn start_zone_gateway(
         zone_kv: Arc<ZoneKvStore>,
-        redis_job: Arc<RedisClientManager>,
+        kafka: Arc<KafkaTransport>,
         config: Arc<Config>,
     ) {
-        reporter::start_zone_gateway(zone_kv, redis_job, config);
+        reporter::start_zone_gateway(zone_kv, kafka, config);
     }
 
     /// [COMMENT]: Lắng nghe các sự kiện cập nhật cấu hình thời gian thực (CDC events) từ Platform L1
     pub fn start_metadata_event_listener(
         zone_kv: Arc<ZoneKvStore>,
-        redis_job: Arc<RedisClientManager>,
+        kafka: Arc<KafkaTransport>,
         config: Arc<Config>,
     ) {
-        listener::start_metadata_event_listener(zone_kv, redis_job, config);
+        listener::start_metadata_event_listener(zone_kv, kafka, config);
     }
 }

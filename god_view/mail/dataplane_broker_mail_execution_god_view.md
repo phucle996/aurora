@@ -11,7 +11,7 @@
 | Trạng thái | Phase 5–9 đã ship trong code; production activation vẫn gated |
 | Stream suites | Kafka, Redis Stream, NATS JetStream, RabbitMQ |
 | Runtime entry | `MailConsumerSupervisor::run_slot` → `runtime::dispatcher::dispatch_stream_runtime` |
-| Không phải delivery entry | `dispatch_mail_job`; hàm này chỉ xử lý Redis Job projection commands |
+| Không phải delivery entry | `dispatch_mail_job`; hàm này chỉ xử lý Kafka platform projection commands |
 | Config L2 | Zone-local NATS JetStream KV |
 | Config L1 | Immutable `ArcSwap` consumer registry + byte-bounded Moka template cache |
 | Rendering | Fixed JSON envelope + restricted placeholder renderer tại Dataplane |
@@ -26,7 +26,7 @@
 flowchart LR
     CP[Controlplane Mail CRUD] --> O[(mail_outbox_records)]
     O --> JO[Job Orchestrator relay/reconciler]
-    JO --> RJ[(Redis Job<br/>mail projection command)]
+    JO --> RJ[(Central Kafka<br/>mail projection command)]
     RJ --> PJ[dispatch_mail_job<br/>projection only]
     PJ --> KV[(Zone NATS KV<br/>consumer/template snapshot)]
 
@@ -48,7 +48,7 @@ flowchart LR
 
 Hai đường thực thi phải giữ tách biệt:
 
-1. `dispatch_mail_job` nhận Aurora Redis Job. Với `mail.consumer.upsert/delete` và template events, nó ghi
+1. `dispatch_mail_job` nhận Aurora Kafka `JobCommandV1`. Với `mail.consumer.upsert/delete` và template events, nó ghi
    desired snapshot vào Zone KV; mọi direct/system mail action đều bị reject.
 2. `MailConsumerSupervisor` quan sát L1 desired registry, claim một Zone lease cho từng logical slot rồi gọi
    `dispatch_stream_runtime`. Chỉ dispatcher này match `stream_type` và mở customer broker connection.
@@ -97,7 +97,7 @@ message RabbitMqPayloadV1 {
 Invariants:
 
 - CP create/update và JO periodic reconciler đều match `source_type` một lần rồi encode đúng payload suite.
-- JO/outbox/Redis Job/Zone KV không giải mã `source_config_envelope`.
+- JO/outbox/Central Kafka/Zone KV không giải mã `source_config_envelope`.
 - Projection Dataplane decode và bounded-validate đúng suite trước khi commit immutable snapshot vào KV.
 - Runtime không suy broker type từ `topic`, URI hay convention string.
 - Các suite dùng wire field tags khác nhau; payload của suite A gắn nhầm discriminator B fail validation thay vì decode thành chuỗi có nghĩa khác.
@@ -361,7 +361,7 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | RabbitMQ suite | `dataplane/src/executor/mail/runtime/rabbitmq.rs` |
 | Fixed envelope/render/JMAP taxonomy | `dataplane/src/executor/mail/processor/stream.rs` |
 | Config COW/lazy template | `dataplane/src/executor/mail/runtime/configuration.rs` |
-| Redis Job projection entry | `dataplane/src/executor/mail/executor.rs` |
+| Kafka platform projection entry | `dataplane/src/executor/mail/executor.rs` |
 | JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
 | JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/l2_dispatcher.rs` |
 | JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
@@ -379,6 +379,6 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | 6 | Fenced supervisor + generic stream source đã ship |
 | 7 | Fixed envelope + restricted render + shared JMAP processor đã ship |
 | 8 | Bốn broker suites và native settlement đã ship, activation gated |
-| 9 | Zone health delta → Redis Job → guarded CP runtime read model + Consumer Detail đã ship |
+| 9 | Watched runtime delta → shared Cache Redis → guarded CP runtime read model + Consumer Detail đã ship |
 
 Phase 9 hoàn tất ở code không đồng nghĩa production gate đã mở. Trước live E2E, runtime phải giữ disabled theo mặc định.

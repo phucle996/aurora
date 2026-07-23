@@ -173,6 +173,9 @@ pub async fn run(
         tls = tls.with_ca_cert(ca_path);
     }
     builder = match connection.security_protocol.as_str() {
+        "plaintext" if crate::config::Config::get_global().mail_stream_allow_plaintext_kafka => {
+            builder
+        }
         "ssl" => builder.auth(AuthConfig::ssl(tls)),
         "sasl_plain_ssl" => {
             let (Some(username), Some(password)) =

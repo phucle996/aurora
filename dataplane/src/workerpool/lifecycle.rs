@@ -86,12 +86,13 @@ impl WorkerLifecycleManager {
     }
 
     /// Cấp phát và khởi chạy một Worker (Luồng Worker xử lý Job từ channel) song song thực sự.
-    #[allow(clippy::too_many_arguments)] // [COMMENT]: Worker wiring giữ explicit để audit ownership của Redis Job và Zone KV.
+    #[allow(clippy::too_many_arguments)] // [COMMENT]: Worker wiring giữ explicit để audit Kafka, runtime Redis và Zone KV.
     pub async fn spawn_worker(
         self: &Arc<Self>,
         worker_id: usize,
         config: Arc<crate::config::Config>,
-        redis_job: Arc<crate::infra::redis::RedisClientManager>,
+        runtime_redis: Arc<crate::infra::redis::RedisClientManager>,
+        kafka: Arc<crate::infra::kafka::KafkaTransport>,
         zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
         rx: Arc<
@@ -115,7 +116,7 @@ impl WorkerLifecycleManager {
 
         let rx = rx.clone();
         let active_jobs = active_jobs.clone();
-        let stream_key = format!("jobs:{}", config.zone_id);
+        let zone_id = config.zone_id.clone();
 
         tokio::spawn(async move {
             let _guard = guard; // Giữ guard cho luồng worker
@@ -144,11 +145,12 @@ impl WorkerLifecycleManager {
                         crate::job_lifecycle::runner::JobRunner::run_job(
                             payload,
                             self_clone.clone(),
-                            redis_job.clone(),
+                            runtime_redis.clone(),
+                            kafka.clone(),
                             zone_kv.clone(),
                             active_lock_registry.clone(),
                             active_jobs.clone(),
-                            stream_key.clone(),
+                            zone_id.clone(),
                         );
                     }
                     None => {

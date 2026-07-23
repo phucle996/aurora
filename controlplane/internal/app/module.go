@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	kafkainfra "controlplane/infra/kafka"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	"controlplane/internal/hierarchy"
@@ -46,7 +47,7 @@ type Modules struct {
 func NewGlobalModules(cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	rdsJob *goredis.Client,
+	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
 	otel *observability.OTel,
@@ -97,7 +98,7 @@ func NewGlobalModules(cfg *config.Config,
 	}
 
 	// 5) IAM module bootstrap phụ thuộc l1 cache registry.
-	iamModule, err := iam.NewModule(cfg, db, rds, rdsJob, cacheEngine, natsConn, otel)
+	iamModule, err := iam.NewModule(cfg, db, rds, kafkaProducer, cacheEngine, natsConn, otel)
 	if err != nil {
 		return nil, fmt.Errorf("app: init critical iam module: %w", err)
 	}
@@ -121,7 +122,7 @@ func NewGlobalModules(cfg *config.Config,
 
 	// SRE HA Warning: Lỗi kết nối, lỗi mạng hay lỗi cấu hình của phân hệ gửi mail Mail
 	// tuyệt đối không được phép kéo sập ứng dụng. Bắt lỗi tại biên và degrade mượt mà.
-	mailModule, err := mail.NewModule(cfg, db, rdsJob, cacheEngine)
+	mailModule, err := mail.NewModule(cfg, db, rds, cacheEngine)
 	if err != nil {
 		logger.SysError("graceful.degradation.mail", fmt.Sprintf("Failed to initialize mail module: %v. Running in degraded mode.", err))
 		mailModule = mail.NewDegradedModule(err)

@@ -9,8 +9,9 @@ use super::tenant_consumer::reconcile_tenant_consumers;
 use super::tenant_template::{
     reconcile_tenant_template_tombstones, reconcile_tenant_template_versions,
 };
-use super::{xadd_mail_projection_command, RECONCILE_COMPLETION_NAMESPACE};
+use super::{publish_mail_projection_command, RECONCILE_COMPLETION_NAMESPACE};
 use crate::config::Config;
+use crate::infra::kafka::KafkaTransport;
 use crate::observability::logger::Logger;
 use crate::reverse_provider::mail::runtime_proto::{
     MailEventMetadataV1, MailProjectionReconcileCompletedV1,
@@ -19,12 +20,17 @@ use chrono::Utc;
 use prost::Message;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::MissedTickBehavior;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
-pub async fn run_periodic_mail_reconciliation(config: Config, redis_client: redis::Client) {
+pub async fn run_periodic_mail_reconciliation(
+    config: Config,
+    redis_client: redis::Client,
+    kafka: Arc<KafkaTransport>,
+) {
     // [COMMENT]: Một jitter cấp instance làm các JO replica không thức và tranh toàn bộ Zone cùng thời điểm.
     let instance_id = crate::config::get_node_hostname();
     let mut initial_hasher = std::collections::hash_map::DefaultHasher::new();
@@ -107,7 +113,7 @@ pub async fn run_periodic_mail_reconciliation(config: Config, redis_client: redi
                 Err(error) => {
                     Logger::sys_error(
                         "mail.reconcile.redis",
-                        "Không thể kết nối Redis Job",
+                        "Không thể kết nối Cache Redis",
                         &error.to_string(),
                     );
                     break;
@@ -183,6 +189,7 @@ return token
                         reconcile_personal_template_versions(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             cursor_version,
@@ -195,6 +202,7 @@ return token
                         reconcile_tenant_template_versions(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             cursor_version,
@@ -207,6 +215,7 @@ return token
                         reconcile_personal_consumers(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             config.mail_reconcile_page_size,
@@ -218,6 +227,7 @@ return token
                         reconcile_tenant_consumers(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             config.mail_reconcile_page_size,
@@ -229,6 +239,7 @@ return token
                         reconcile_personal_consumer_tombstones(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             config.mail_reconcile_page_size,
@@ -240,6 +251,7 @@ return token
                         reconcile_tenant_consumer_tombstones(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             config.mail_reconcile_page_size,
@@ -251,6 +263,7 @@ return token
                         reconcile_personal_template_tombstones(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             config.mail_reconcile_page_size,
@@ -262,6 +275,7 @@ return token
                         reconcile_tenant_template_tombstones(
                             &pg_client,
                             &mut redis_conn,
+                            &kafka,
                             zone_id,
                             &cursor_id,
                             config.mail_reconcile_page_size,
@@ -315,8 +329,9 @@ return token
                                 reconcile_generation: generation as u64,
                                 completed_at_unix_ms: completed_at,
                             };
-                            if let Err(error) = xadd_mail_projection_command(
+                            if let Err(error) = publish_mail_projection_command(
                                 &mut redis_conn,
+                                &kafka,
                                 zone_id,
                                 completion_id,
                                 "mail.projection.reconcile_completed",

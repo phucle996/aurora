@@ -1,4 +1,5 @@
-use super::xadd_mail_projection_command;
+use super::publish_mail_projection_command;
+use crate::infra::kafka::KafkaTransport;
 use crate::reverse_provider::mail::runtime_proto::{
     MailEventMetadataV1, MailTemplateDeletedV1, MailTemplateVersionPublishedV1,
 };
@@ -9,6 +10,7 @@ use uuid::Uuid;
 pub(super) async fn reconcile_tenant_template_versions(
     pg: &tokio_postgres::Client,
     redis_conn: &mut redis::aio::MultiplexedConnection,
+    kafka: &KafkaTransport,
     zone_id: Uuid,
     cursor_id: &str,
     cursor_version: i64,
@@ -51,8 +53,9 @@ pub(super) async fn reconcile_tenant_template_versions(
             html_template: row.get(5),
             content_sha256: row.get(6),
         };
-        xadd_mail_projection_command(
+        publish_mail_projection_command(
             redis_conn,
+            kafka,
             zone_id,
             event_id,
             "mail.template.version_published",
@@ -70,6 +73,7 @@ pub(super) async fn reconcile_tenant_template_versions(
 pub(super) async fn reconcile_tenant_template_tombstones(
     pg: &tokio_postgres::Client,
     redis_conn: &mut redis::aio::MultiplexedConnection,
+    kafka: &KafkaTransport,
     zone_id: Uuid,
     cursor_id: &str,
     limit: i64,
@@ -100,8 +104,9 @@ pub(super) async fn reconcile_tenant_template_tombstones(
             template_revision: revision as u64,
             last_published_version: row.get::<_, i64>(2) as u64,
         };
-        xadd_mail_projection_command(
+        publish_mail_projection_command(
             redis_conn,
+            kafka,
             zone_id,
             event_id,
             "mail.template.deleted",

@@ -29,7 +29,7 @@ type Config struct {
 	Security  SecurityCfg
 	Psql      PsqlCfg
 	Redis     RedisCfg
-	RedisJob  RedisCfg
+	Kafka     KafkaCfg
 	NATS      NATSCfg
 	GRPC      GRPCCfg
 	OTel      OTelCfg
@@ -116,6 +116,19 @@ type RedisCfg struct {
 	PingTimeout   time.Duration
 	MaxRetries    int
 	RetryInterval time.Duration
+}
+
+// KafkaCfg là durable platform transport; Redis chính không được dùng làm Job Queue.
+type KafkaCfg struct {
+	Brokers              []string
+	ClientID             string
+	SecurityProtocol     string
+	Username             string
+	Password             string
+	CACertPath           string
+	CertPath             string
+	KeyPath              string
+	IAMVerificationTopic string
 }
 
 // NATSCfg chứa thông số kết nối NATS Core hỗ trợ TLS/mTLS.
@@ -225,22 +238,16 @@ func LoadConfig() *Config {
 			MaxRetries:    5,
 			RetryInterval: 1 * time.Second,
 		},
-		RedisJob: RedisCfg{
-			Addr:          getEnv("REDIS_JOB_ADDR", "localhost:6380"),
-			Password:      getEnv("REDIS_JOB_PASSWORD", ""),
-			DB:            getEnvAsInt("REDIS_JOB_DB", 0),
-			TLSEnabled:    getEnvAsBool("REDIS_JOB_TLS_ENABLED", false),
-			CACertPath:    getEnv("REDIS_JOB_TLS_CA", ""),
-			CertPath:      getEnv("REDIS_JOB_TLS_CERT", ""),
-			KeyPath:       getEnv("REDIS_JOB_TLS_KEY", ""),
-			DialTimeout:   2 * time.Second,
-			ReadTimeout:   500 * time.Millisecond,
-			WriteTimeout:  500 * time.Millisecond,
-			PoolSize:      100,
-			MinIdleConns:  10,
-			PingTimeout:   2 * time.Second,
-			MaxRetries:    5,
-			RetryInterval: 1 * time.Second,
+		Kafka: KafkaCfg{
+			Brokers:              getEnvAsCSV("KAFKA_BOOTSTRAP_SERVERS", []string{"localhost:19092", "localhost:29092", "localhost:39092"}),
+			ClientID:             appName,
+			SecurityProtocol:     strings.ToLower(getEnv("KAFKA_SECURITY_PROTOCOL", "plaintext")),
+			Username:             getEnv("KAFKA_USERNAME", ""),
+			Password:             getEnv("KAFKA_PASSWORD", ""),
+			CACertPath:           getEnv("KAFKA_TLS_CA", ""),
+			CertPath:             getEnv("KAFKA_TLS_CERT", ""),
+			KeyPath:              getEnv("KAFKA_TLS_KEY", ""),
+			IAMVerificationTopic: getEnv("KAFKA_IAM_VERIFICATION_TOPIC", "aurora.iam.account-verification.v1"),
 		},
 		GRPC: GRPCCfg{
 			Port:             getEnv("GRPC_PORT", "9443"),

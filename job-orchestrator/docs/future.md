@@ -17,7 +17,7 @@ Postgres DB (mail_outbox_records)
       ↓ (WAL logical replication - pgoutput push)
 CDC Worker (job-proxy - Rust)
       ↓ (Push job via XADD)
-Redis Stream (jobs:<zone_id>)
+Central Kafka (`aurora.jobs.commands.zone.<zone_id>.v1`)
       ↓ (XREADGROUP)
 Dataplane (Rust Nodes)
 ```

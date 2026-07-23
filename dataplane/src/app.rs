@@ -27,7 +27,8 @@ use crate::workerpool::lifecycle::{WorkerLifecycleManager, WorkerSignal};
 ///
 pub struct AppContainer {
     pub config: Arc<Config>,
-    pub redis_job: Arc<RedisClientManager>,
+    pub runtime_redis: Arc<RedisClientManager>,
+    pub kafka: Arc<crate::infra::kafka::KafkaTransport>,
     pub zone_kv: Arc<crate::infra::zone_kv::ZoneKvStore>,
     // Đã lược bỏ policy_engine khỏi AppContainer
     pub worker_pool: Arc<WorkerLifecycleManager>,
@@ -40,7 +41,8 @@ impl AppContainer {
         (
             Self {
                 config: boot.config,
-                redis_job: boot.redis_job,
+                runtime_redis: boot.runtime_redis,
+                kafka: boot.kafka,
                 zone_kv: boot.zone_kv,
                 worker_pool: boot.worker_pool,
                 active_lock_registry: Arc::new(
@@ -68,7 +70,7 @@ impl AppContainer {
         crate::executor::mail::supervisor::MailWorkloadSupervisor::start(
             self.config.clone(),
             self.zone_kv.clone(),
-            self.redis_job.clone(),
+            self.runtime_redis.clone(),
             self.worker_pool.mail_runtime.clone(),
         );
 
@@ -82,7 +84,7 @@ impl AppContainer {
         crate::executor::storage::StorageSizesSyncer::start(
             self.config.clone(),
             self.zone_kv.clone(),
-            self.redis_job.clone(),
+            self.kafka.clone(),
         );
 
         // Sinh node_id độc nhất cho instance Dataplane này (dùng hostname hoặc uuid làm fallback)
@@ -105,29 +107,29 @@ impl AppContainer {
             self.zone_kv.clone(),
         );
 
-        // Khởi động Zone Gateway tổng hợp snapshot KV và đẩy report qua Redis Job transport.
+        // Khởi động Zone Gateway tổng hợp snapshot KV và đẩy report Protobuf qua Kafka.
         crate::zone_gateway::ZoneStatusGateway::start_zone_gateway(
             self.zone_kv.clone(),
-            self.redis_job.clone(),
+            self.kafka.clone(),
             self.config.clone(),
         );
 
         // Khởi động CDC Metadata Event Listener lắng nghe các sự kiện cập nhật cấu hình thời gian thực
         crate::zone_gateway::ZoneStatusGateway::start_metadata_event_listener(
             self.zone_kv.clone(),
-            self.redis_job.clone(),
+            self.kafka.clone(),
             self.config.clone(),
         );
 
         // 0c. Khởi chạy luồng tự động gia hạn distributed lease lock (Watchdog Monitor) định kỳ 10 giây
         let registry = self.active_lock_registry.clone();
         let zone_kv_watchdog = self.zone_kv.clone();
-        let redis_job_watchdog = self.redis_job.clone();
+        let kafka_watchdog = self.kafka.clone();
         tokio::spawn(async move {
             crate::workerpool::watchdog::start_watchdog_loop(
                 registry,
                 zone_kv_watchdog,
-                redis_job_watchdog,
+                kafka_watchdog,
                 30,                      // TTL Zone KV lease là 30 giây
                 Duration::from_secs(10), // Quét gia hạn định kỳ mỗi 10 giây
             )
@@ -141,29 +143,30 @@ impl AppContainer {
 
         // 0c. [COMMENT]: Khởi chạy dual persistent IngestionDaemons: một cho Zone, một cho Platform
         let config_ingest_zone = self.config.clone();
-        let redis_job_ingest_zone = self.redis_job.clone();
+        let kafka_ingest_zone = self.kafka.clone();
         let zone_kv_ingest_zone = self.zone_kv.clone();
         let tx_ingest_zone = tx.clone();
         let active_jobs_ingest_zone = active_jobs.clone();
         let cancel_token_zone = self.worker_pool.cancel_token();
-        let zone_stream = format!("jobs:{}", config_ingest_zone.zone_id);
+        let zone_topic = kafka_ingest_zone.zone_command_topic(&config_ingest_zone.zone_id);
+        let zone_group = format!("aurora-dataplane-zone-{}-v1", config_ingest_zone.zone_id);
 
         tokio::spawn(async move {
             crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
                 config_ingest_zone,
-                redis_job_ingest_zone,
+                kafka_ingest_zone,
                 zone_kv_ingest_zone,
                 tx_ingest_zone,
                 cancel_token_zone,
                 active_jobs_ingest_zone,
-                zone_stream,
-                "dataplane-group".to_string(),
+                zone_topic,
+                zone_group,
             )
             .await;
         });
 
         let config_ingest_plat = self.config.clone();
-        let redis_job_ingest_plat = self.redis_job.clone();
+        let kafka_ingest_plat = self.kafka.clone();
         let zone_kv_ingest_plat = self.zone_kv.clone();
         let tx_ingest_plat = tx;
         let active_jobs_ingest_plat = active_jobs.clone();
@@ -172,13 +175,13 @@ impl AppContainer {
         tokio::spawn(async move {
             crate::job_lifecycle::consumer::JobConsumer::start_ingestion(
                 config_ingest_plat,
-                redis_job_ingest_plat,
+                kafka_ingest_plat.clone(),
                 zone_kv_ingest_plat,
                 tx_ingest_plat,
                 cancel_token_plat,
                 active_jobs_ingest_plat,
-                "jobs:platform".to_string(),
-                "dataplane-platform-group".to_string(),
+                kafka_ingest_plat.platform_command_topic(),
+                "aurora-dataplane-platform-v1".to_string(),
             )
             .await;
         });
@@ -188,7 +191,8 @@ impl AppContainer {
             .spawn_worker(
                 1,
                 self.config.clone(),
-                self.redis_job.clone(),
+                self.runtime_redis.clone(),
+                self.kafka.clone(),
                 self.zone_kv.clone(),
                 self.active_lock_registry.clone(),
                 rx_shared.clone(),
@@ -199,7 +203,8 @@ impl AppContainer {
         // 0e. Khởi chạy luồng giám sát co giãn tự động động (AutoScaleWatcher) định kỳ 5 giây
         let config_scale = self.config.clone();
         let worker_pool_scale = self.worker_pool.clone();
-        let redis_job_scale = self.redis_job.clone();
+        let runtime_redis_scale = self.runtime_redis.clone();
+        let kafka_scale = self.kafka.clone();
         let zone_kv_scale = self.zone_kv.clone();
         let active_lock_registry_scale = self.active_lock_registry.clone();
         let rx_scale = rx_shared.clone();
@@ -217,25 +222,15 @@ impl AppContainer {
                 let auto_scaler =
                     crate::workerpool::auto_scale::AutoScaleEngine::new(min_workers, max_workers);
 
-                // 2. Thu thập chỉ số hàng đợi thực tế từ Redis
-                let stream_key = format!("jobs:{}", config_scale.zone_id);
-                let lag = crate::infra::redis::query::query_stream_lag(
-                    redis_job_scale.client(),
-                    &stream_key,
-                )
-                .await
-                .unwrap_or(0);
-                let latency = crate::infra::redis::query::query_stream_latency_ms(
-                    redis_job_scale.client(),
-                    &stream_key,
-                )
-                .await
-                .unwrap_or(0.0);
+                // [COMMENT]: Lag đến từ Kafka consumer state; stale snapshot không được dùng để scale-up mù.
+                let (kafka_lag, lag_stale) = kafka_scale.job_lag_snapshot();
+                let lag = if lag_stale { 0 } else { kafka_lag };
+                let latency = 0.0;
                 let active_conns = 0; // Thống kê kết nối giả lập
 
                 // Ghi nhận các chỉ số đo đạc thu được vào OpenTelemetry Registry phục vụ giám sát HA
                 crate::workerpool::metrics::WorkerMetricsManager::record_metrics(
-                    crate::workerpool::metrics::MetricsType::RedisStreamLag {
+                    crate::workerpool::metrics::MetricsType::KafkaConsumerLag {
                         zone_id: config_scale.zone_id.clone(),
                         lag,
                     },
@@ -275,7 +270,8 @@ impl AppContainer {
                                 .spawn_worker(
                                     i,
                                     config_scale.clone(),
-                                    redis_job_scale.clone(),
+                                    runtime_redis_scale.clone(),
+                                    kafka_scale.clone(),
                                     zone_kv_scale.clone(),
                                     active_lock_registry_scale.clone(),
                                     rx_scale.clone(),

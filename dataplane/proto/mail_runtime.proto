@@ -182,3 +182,14 @@ message MailProjectionReconcileCompletedV1 {
   uint64 reconcile_generation = 2;
   int64 completed_at_unix_ms = 3;
 }
+
+// [COMMENT]: Platform producer như IAM dùng Protobuf để không đưa JSON vào
+// Kafka nội bộ. Ordinary customer brokers vẫn có thể gửi fixed JSON envelope;
+// processor phân biệt bằng decode fail-close và cùng validation limits.
+message MailDispatchEnvelopeV1 {
+  bytes event_id = 1;
+  uint32 schema_version = 2;
+  string to = 3;
+  map<string, string> parameter = 4;
+  int64 not_after_unix_ms = 5;
+}

@@ -1203,6 +1203,85 @@ func (x *MailProjectionReconcileCompletedV1) GetCompletedAtUnixMs() int64 {
 	return 0
 }
 
+// [COMMENT]: Platform producer như IAM dùng Protobuf để không đưa JSON vào
+// Kafka nội bộ. Ordinary customer brokers vẫn có thể gửi fixed JSON envelope;
+// processor phân biệt bằng decode fail-close và cùng validation limits.
+type MailDispatchEnvelopeV1 struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	EventId        []byte                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	SchemaVersion  uint32                 `protobuf:"varint,2,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	To             string                 `protobuf:"bytes,3,opt,name=to,proto3" json:"to,omitempty"`
+	Parameter      map[string]string      `protobuf:"bytes,4,rep,name=parameter,proto3" json:"parameter,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	NotAfterUnixMs int64                  `protobuf:"varint,5,opt,name=not_after_unix_ms,json=notAfterUnixMs,proto3" json:"not_after_unix_ms,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *MailDispatchEnvelopeV1) Reset() {
+	*x = MailDispatchEnvelopeV1{}
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MailDispatchEnvelopeV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailDispatchEnvelopeV1) ProtoMessage() {}
+
+func (x *MailDispatchEnvelopeV1) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailDispatchEnvelopeV1.ProtoReflect.Descriptor instead.
+func (*MailDispatchEnvelopeV1) Descriptor() ([]byte, []int) {
+	return file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *MailDispatchEnvelopeV1) GetEventId() []byte {
+	if x != nil {
+		return x.EventId
+	}
+	return nil
+}
+
+func (x *MailDispatchEnvelopeV1) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *MailDispatchEnvelopeV1) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *MailDispatchEnvelopeV1) GetParameter() map[string]string {
+	if x != nil {
+		return x.Parameter
+	}
+	return nil
+}
+
+func (x *MailDispatchEnvelopeV1) GetNotAfterUnixMs() int64 {
+	if x != nil {
+		return x.NotAfterUnixMs
+	}
+	return 0
+}
+
 var File_internal_mail_transport_rpc_proto_mail_runtime_proto protoreflect.FileDescriptor
 
 const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
@@ -1297,7 +1376,16 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"\"MailProjectionReconcileCompletedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x121\n" +
 	"\x14reconcile_generation\x18\x02 \x01(\x04R\x13reconcileGeneration\x12/\n" +
-	"\x14completed_at_unix_ms\x18\x03 \x01(\x03R\x11completedAtUnixMs*\x98\x01\n" +
+	"\x14completed_at_unix_ms\x18\x03 \x01(\x03R\x11completedAtUnixMs\"\xa9\x02\n" +
+	"\x16MailDispatchEnvelopeV1\x12\x19\n" +
+	"\bevent_id\x18\x01 \x01(\fR\aeventId\x12%\n" +
+	"\x0eschema_version\x18\x02 \x01(\rR\rschemaVersion\x12\x0e\n" +
+	"\x02to\x18\x03 \x01(\tR\x02to\x12T\n" +
+	"\tparameter\x18\x04 \x03(\v26.mail.runtime.v1.MailDispatchEnvelopeV1.ParameterEntryR\tparameter\x12)\n" +
+	"\x11not_after_unix_ms\x18\x05 \x01(\x03R\x0enotAfterUnixMs\x1a<\n" +
+	"\x0eParameterEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x98\x01\n" +
 	"\x18MailConsumerDesiredState\x12+\n" +
 	"'MAIL_CONSUMER_DESIRED_STATE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"MAIL_CONSUMER_DESIRED_STATE_PAUSED\x10\x01\x12'\n" +
@@ -1331,7 +1419,7 @@ func file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDescGZIP() []b
 }
 
 var file_internal_mail_transport_rpc_proto_mail_runtime_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_internal_mail_transport_rpc_proto_mail_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes = []any{
 	(MailConsumerDesiredState)(0),              // 0: mail.runtime.v1.MailConsumerDesiredState
 	(MailConsumerRuntimeState)(0),              // 1: mail.runtime.v1.MailConsumerRuntimeState
@@ -1349,6 +1437,8 @@ var file_internal_mail_transport_rpc_proto_mail_runtime_proto_goTypes = []any{
 	(*MailTemplateVersionPublishedV1)(nil),     // 13: mail.runtime.v1.MailTemplateVersionPublishedV1
 	(*MailTemplateDeletedV1)(nil),              // 14: mail.runtime.v1.MailTemplateDeletedV1
 	(*MailProjectionReconcileCompletedV1)(nil), // 15: mail.runtime.v1.MailProjectionReconcileCompletedV1
+	(*MailDispatchEnvelopeV1)(nil),             // 16: mail.runtime.v1.MailDispatchEnvelopeV1
+	nil,                                        // 17: mail.runtime.v1.MailDispatchEnvelopeV1.ParameterEntry
 }
 var file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs = []int32{
 	2,  // 0: mail.runtime.v1.MailStreamSourceV1.stream_type:type_name -> mail.runtime.v1.MailStreamType
@@ -1362,11 +1452,12 @@ var file_internal_mail_transport_rpc_proto_mail_runtime_proto_depIdxs = []int32{
 	3,  // 8: mail.runtime.v1.MailTemplateVersionPublishedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	3,  // 9: mail.runtime.v1.MailTemplateDeletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
 	3,  // 10: mail.runtime.v1.MailProjectionReconcileCompletedV1.metadata:type_name -> mail.runtime.v1.MailEventMetadataV1
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	17, // 11: mail.runtime.v1.MailDispatchEnvelopeV1.parameter:type_name -> mail.runtime.v1.MailDispatchEnvelopeV1.ParameterEntry
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_internal_mail_transport_rpc_proto_mail_runtime_proto_init() }
@@ -1380,7 +1471,7 @@ func file_internal_mail_transport_rpc_proto_mail_runtime_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc), len(file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

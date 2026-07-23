@@ -4,7 +4,7 @@
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Độc lập quản trị và thiết lập kết nối (Client) tập trung đến cụm Redis Server.
-///   - Khai báo phân hệ con `query` chứa toàn bộ các thao tác nghiệp vụ và giám sát động.
+///   - Chỉ cung cấp client cho runtime cache có TTL; không chứa Job Queue command.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
 ///   - Hệ thống lưu trữ khóa-giá trị động và kênh truyền tin (Redis DB).
@@ -14,14 +14,12 @@
 ///
 /// 🔄 CALLSITE FLOW:
 ///   - Được khởi tạo tại `main.rs` khi bắt đầu bootstrap hệ thống.
-///   - Cung cấp phương thức `client()` để các cuộc gọi nghiệp vụ bên ngoài trực tiếp gọi đến `query::*`.
+///   - Cung cấp phương thức `client()` cho mail runtime watch/report và reconcile marker.
 ///
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION (CONTRACTS):
-///   - Đã tách biệt hoàn toàn phần khởi tạo kết nối tĩnh và phần truy vấn động (`query.rs`).
+///   - Durable transport nằm ở Kafka; không được thêm Redis Stream job query trở lại module này.
 ///
 use crate::config::RedisTlsMode;
-
-pub mod query;
 
 pub struct RedisClientManager {
     client: redis::Client,

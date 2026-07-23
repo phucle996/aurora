@@ -1,5 +1,6 @@
 mod cdc;
 mod config;
+mod infra;
 mod job_result;
 mod lifecycle_relay;
 mod observability;
@@ -43,17 +44,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info(
         "main.init",
         &format!(
-            "Cấu hình được nạp thành công: PG Slot={}, PG Publication={}, Result Stream={}",
-            config.slot_name, config.publication_name, config.result_stream_name
+            "Cấu hình được nạp thành công: PG Slot={}, PG Publication={}, Kafka={}",
+            config.slot_name, config.publication_name, config.kafka_bootstrap_servers
         ),
     );
 
     // 2. Khởi tạo và kiểm tra hạ tầng Logical Replication (Chạy một lần duy nhất lúc khởi động app, tự động reconnect)
     cdc::setup::setup_replication_infrastructure(&config).await?;
 
-    // 3. Khởi tạo kết nối Redis & NATS
-    let redis_client = redis::Client::open(config.redis_url.clone())?;
-    Logger::sys_info("main.init", "Đã khởi tạo Redis Client thành công.");
+    // [COMMENT]: Cache Redis không còn chở Job; chỉ giữ reconciler/runtime soft state.
+    let cache_redis = redis::Client::open(config.cache_redis_url.clone())?;
+    let kafka = infra::kafka::KafkaTransport::connect(&config)
+        .await
+        .map_err(std::io::Error::other)?;
+    Logger::sys_info("main.init", "Đã khởi tạo Kafka transport và Cache Redis.");
 
     let nats_client = async_nats::connect(&config.env_nats_url).await?;
     Logger::sys_info(
@@ -67,14 +71,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. Khởi tạo các cấu phần proxy 2 chiều
     // [COMMENT]: CdcStreamer::new là async — bootstrap desired_state_cache từ DB trước khi run.
     // map_err để chuyển Box<dyn Error + Send + Sync> → Box<dyn Error> cho ? operator của main().
-    let streamer = CdcStreamer::new(config.clone(), redis_client.clone())
+    let streamer = CdcStreamer::new(config.clone(), kafka.clone())
         .await
         .map_err(|e| -> Box<dyn std::error::Error> {
             format!("CDC bootstrap thất bại: {}", e).into()
         })?;
-    let consumer =
-        JobResultConsumer::new(config.clone(), redis_client.clone(), nats_client.clone());
-    let reverse_provider = ReverseProvider::new(config.clone(), redis_client.clone(), nats_client);
+    let consumer = JobResultConsumer::new(config.clone(), kafka.clone(), nats_client.clone());
+    let reverse_provider = ReverseProvider::new(
+        config.clone(),
+        cache_redis.clone(),
+        kafka.clone(),
+        nats_client,
+    );
 
     let db_url = config.database_url.clone();
     let nats_url = config.env_nats_url.clone();
@@ -104,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
         _ = reverse_provider::mail::reconciler::run_periodic_mail_reconciliation(
-            config.clone(), redis_client.clone()
+            config.clone(), cache_redis.clone(), kafka.clone()
         ) => {
             Logger::sys_error("main.run", "Mail DB-backed Reconciler dừng đột ngột", "");
             std::process::exit(1);

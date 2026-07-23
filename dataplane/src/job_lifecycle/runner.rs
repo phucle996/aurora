@@ -1,3 +1,4 @@
+use crate::infra::kafka::{transport_proto::JobCommandV1, KafkaTransport};
 use crate::infra::redis::RedisClientManager;
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
 // Sử dụng các module nội bộ từ job_lifecycle mới đổi tên
@@ -47,11 +48,12 @@ impl JobRunner {
     pub fn run_job(
         payload: JobPayload,
         worker_pool: Arc<WorkerLifecycleManager>,
-        redis_job: Arc<RedisClientManager>,
+        runtime_redis: Arc<RedisClientManager>,
+        kafka: Arc<KafkaTransport>,
         zone_kv: Arc<ZoneKvStore>,
         active_lock_registry: Arc<crate::workerpool::watchdog::ActiveLockRegistry>,
         active_jobs: Arc<AtomicUsize>,
-        stream_key: String,
+        zone_id: String,
     ) {
         let Some(zone_lease) = payload.zone_lease.clone() else {
             Logger::sys_error(
@@ -79,6 +81,7 @@ impl JobRunner {
         let source_domain_for_registry = payload.source_domain.clone();
         let trace_id_for_registry = payload.trace_id.clone();
         let zone_lease_for_task = zone_lease.clone();
+        let kafka_delivery_for_registry = payload.kafka_delivery.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
@@ -91,7 +94,7 @@ impl JobRunner {
             let _ = rx.await;
 
             let trace_id = payload.trace_id.clone();
-            let stream_key_clone = stream_key.clone();
+            let zone_id = zone_id.clone();
 
             crate::observability::otel::CURRENT_TRACE_ID.scope(trace_id, async move {
                 use opentelemetry::trace::Span;
@@ -138,7 +141,7 @@ impl JobRunner {
                         trace_id: payload.trace_id.clone(),
                     };
                     let _ = JobResultReporter::report_outcome(
-                        redis_job.client(),
+                        &kafka,
                         &processing_report,
                     )
                     .await;
@@ -150,21 +153,19 @@ impl JobRunner {
                 // Thực thi định tuyến và gọi Executor nghiệp vụ, được giám sát bởi Watchdog bên ngoài
                 let payload_dispatch = payload.clone();
                 let worker_pool_dispatch = worker_pool.clone();
-                let redis_job_dispatch = redis_job.clone();
-                let zone_id = stream_key_clone.strip_prefix("jobs:").unwrap_or(&stream_key_clone).to_string();
+                let runtime_redis_dispatch = runtime_redis.clone();
 
                 let exec_res = Ok(JobConsumer::dispatch_workload(
                     payload_dispatch,
                     worker_pool_dispatch,
-                    redis_job_dispatch,
+                    runtime_redis_dispatch,
                     &zone_id,
                 ).await);
 
                 let duration_ms = start_time.elapsed().as_secs_f64() * 1000.0;
-                let zone_id = stream_key_clone.strip_prefix("jobs:").unwrap_or(&stream_key_clone).to_string();
 
                 // Phân loại kết quả thực thi
-                let report = JobExecutionResult::from_outcome(
+                let mut report = JobExecutionResult::from_outcome(
                     job_id.clone(),
                     payload.job_version,
                     payload.attempt,
@@ -178,7 +179,7 @@ impl JobRunner {
                 if report.result_status == "FAILED" {
                     if let Some(generation) = payload.reconcile_generation {
                         // [COMMENT]: Completion marker của generation lỗi phải fail-close dù failed command đã XACK.
-                        match redis_job
+                        match runtime_redis
                             .client()
                             .get_multiplexed_async_connection()
                             .await
@@ -235,7 +236,53 @@ impl JobRunner {
                     );
                 }
 
-                let terminal_result_durable = if payload.reconcile_generation.is_some()
+                let mut retry_requeued_durable = false;
+                if report.result_status == "RETRYABLE" {
+                    if payload.attempt.saturating_add(1)
+                        >= crate::config::Config::get_global().kafka_max_job_attempts
+                    {
+                        report.result_status = "FAILED".to_string();
+                        report.error_code = Some("RETRY_EXHAUSTED".to_string());
+                    } else if let Some(delivery) = payload.kafka_delivery.as_ref() {
+                        // [COMMENT]: Kafka không có PEL; retry là record mới durable trước khi commit record hiện tại.
+                        let backoff_ms = 100_u64
+                            .saturating_mul(1_u64 << payload.attempt.min(8))
+                            .min(30_000)
+                            .saturating_add(rand::random::<u64>() % 250);
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        let command = JobCommandV1 {
+                            job_id: uuid::Uuid::parse_str(&payload.job_id)
+                                .map(|value| value.as_bytes().to_vec())
+                                .unwrap_or_default(),
+                            job_version: payload.job_version,
+                            attempt: payload.attempt.saturating_add(1),
+                            job_topic: payload.job_topic.clone(),
+                            source_domain: payload.source_domain.clone(),
+                            resource_id: payload.resource_id.clone(),
+                            payload_schema_version: payload.payload_schema_version,
+                            payload: payload.payload.clone(),
+                            trace_id: (0..payload.trace_id.len())
+                                .step_by(2)
+                                .filter_map(|index| {
+                                    payload.trace_id.get(index..index.saturating_add(2))
+                                })
+                                .filter_map(|pair| u8::from_str_radix(pair, 16).ok())
+                                .collect(),
+                            idle_seconds: payload.idle,
+                            reconcile_generation: payload.reconcile_generation,
+                            target_zone_id: payload.target_zone_id.clone(),
+                            transport_schema_version: 1,
+                        };
+                        retry_requeued_durable = kafka
+                            .publish_message(&delivery.topic, &command.job_id, &command)
+                            .await
+                            .is_ok();
+                    }
+                }
+
+                let terminal_result_durable = if retry_requeued_durable {
+                    true
+                } else if payload.reconcile_generation.is_some()
                     && report.result_status != "RETRYABLE"
                 {
                     // [COMMENT]: Reconcile success đã durable ở Zone KV; failure durable qua generation error marker.
@@ -243,7 +290,7 @@ impl JobRunner {
                 } else if report.result_status != "RETRYABLE" {
                     // [COMMENT]: Chỉ terminal result mới quay về JO; transient lỗi giữ command trong PEL.
                     match JobResultReporter::report_outcome(
-                        redis_job.client(),
+                        &kafka,
                         &report,
                     )
                     .await
@@ -253,7 +300,7 @@ impl JobRunner {
                             Logger::sys_error(
                                 "job.runner",
                                 &format!("Không thể ghi terminal result cho job {}: {}", job_id, error),
-                                "RESULT_STREAM_NOT_DURABLE",
+                                "KAFKA_RESULT_NOT_DURABLE",
                             );
                             false
                         }
@@ -262,31 +309,33 @@ impl JobRunner {
                     false
                 };
 
-                // [COMMENT]: Xác nhận giải phóng tin nhắn (XACK) trên Stream bằng group_name động tương ứng của payload
-                if (report.result_status == "SUCCEEDED" || report.result_status == "FAILED")
+                // [COMMENT]: Commit Kafka offset chỉ sau terminal result hoặc retry record đã acks=all.
+                if (report.result_status == "SUCCEEDED"
+                    || report.result_status == "FAILED"
+                    || retry_requeued_durable)
                     && terminal_result_durable
                     && reconcile_failure_durable
                 {
-                    let ack_id = payload.redis_msg_id.as_deref().unwrap_or(&payload.job_id);
-                    let group_name = payload.redis_group_name.as_deref().unwrap_or("dataplane-group");
-                    let _ = crate::infra::redis::query::acknowledge_message(
-                        redis_job.client(),
-                        &stream_key_clone,
-                        group_name,
-                        ack_id,
-                    )
-                    .await;
+                    if let Some(delivery) = payload.kafka_delivery.as_ref() {
+                        if let Err(error) = delivery.settle().await {
+                            Logger::sys_warn(
+                                "job.runner",
+                                &format!("Kafka offset remains uncommitted for {}: {error}", job_id),
+                                "KAFKA_OFFSET_COMMIT_DEFERRED",
+                            );
+                        }
+                    }
                 } else if report.result_status == "RETRYABLE" {
                     Logger::sys_warn(
                         "job.runner",
-                        &format!("Job {} giữ trong Redis PEL để retry: {}", job_id, report.message),
-                        "RETRYABLE_JOB_LEFT_PENDING",
+                        &format!("Job {} retry chưa durable trên Kafka: {}", job_id, report.message),
+                        "KAFKA_RETRY_NOT_DURABLE",
                     );
                 } else if !terminal_result_durable {
-                    // [COMMENT]: Apply có thể đã xong; replay sau PEL idle sẽ trả DUPLICATE rồi ghi lại result.
+                    // [COMMENT]: Apply có thể đã xong; Kafka replay trả DUPLICATE rồi ghi lại result.
                     Logger::sys_warn(
                         "job.runner",
-                        &format!("Job {} giữ trong Redis PEL vì terminal result chưa durable", job_id),
+                        &format!("Job {} giữ Kafka offset vì terminal result chưa durable", job_id),
                         "TERMINAL_RESULT_LEFT_PENDING",
                     );
                 }
@@ -306,6 +355,7 @@ impl JobRunner {
             source_domain_for_registry,
             trace_id_for_registry,
             zone_lease,
+            kafka_delivery_for_registry,
         );
 
         // Kích hoạt tác vụ chạy sau khi đã đăng ký thành công

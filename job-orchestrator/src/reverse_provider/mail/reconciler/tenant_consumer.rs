@@ -1,4 +1,5 @@
-use super::{xadd_mail_projection_command, CONSUMER_EVENT_NAMESPACE};
+use super::{publish_mail_projection_command, CONSUMER_EVENT_NAMESPACE};
+use crate::infra::kafka::KafkaTransport;
 use crate::reverse_provider::mail::runtime_proto::{
     KafkaStreamPayloadV1, MailConsumerDesiredState, MailConsumerUpsertV1, MailEventMetadataV1,
     MailStreamSourceV1, MailStreamType, NatsJetStreamPayloadV1, RabbitMqPayloadV1,
@@ -11,6 +12,7 @@ use uuid::Uuid;
 pub(super) async fn reconcile_tenant_consumers(
     pg: &tokio_postgres::Client,
     redis_conn: &mut redis::aio::MultiplexedConnection,
+    kafka: &KafkaTransport,
     zone_id: Uuid,
     cursor_id: &str,
     limit: i64,
@@ -112,8 +114,9 @@ pub(super) async fn reconcile_tenant_consumers(
             };
             (event_id, "mail.consumer.upsert", event.encode_to_vec())
         };
-        xadd_mail_projection_command(
+        publish_mail_projection_command(
             redis_conn,
+            kafka,
             zone_id,
             event_id,
             topic,

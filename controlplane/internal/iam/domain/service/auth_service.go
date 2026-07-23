@@ -24,3 +24,9 @@ type AuthService interface {
 type BillingOutboxNotifier interface {
 	Notify()
 }
+
+// AccountVerificationPublisher là outbound port của IAM cho mail xác minh.
+// Adapter hạ tầng tự chịu trách nhiệm chọn transport và encode wire contract.
+type AccountVerificationPublisher interface {
+	PublishAccountVerification(ctx context.Context, dispatch iamEntity.AccountVerificationDispatch) error
+}

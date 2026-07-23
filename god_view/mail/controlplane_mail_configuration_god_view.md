@@ -31,7 +31,7 @@
 8. Một broker message tương ứng một recipient ở phase đầu.
 9. Delivery history chưa thuộc scope hiện tại; hot path chỉ trả JMAP accepted/rejected cho job lifecycle.
 10. Client không được tự khai ownership/routing trong body; handler chỉ đọc Zone UUID đã được edge đưa vào authenticated context.
-11. Mail module có đúng một `mail_outbox_records`; `zone_id UUID` chọn Redis Job stream và `job_topic` chọn dispatcher.
+11. Mail module có đúng một `mail_outbox_records`; `zone_id UUID` chọn Kafka Zone command topic và `job_topic` chọn dispatcher.
 12. Mail outbox giữ đúng transport shape chung; aggregate/version/hash và lifecycle data nằm trong protobuf `payload`, không thêm cột theo từng event type.
 
 ## 2. Component ownership

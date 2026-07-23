@@ -1,6 +1,7 @@
 package iam
 
 import (
+	kafkainfra "controlplane/infra/kafka"
 	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	iamRepoInterface "controlplane/internal/iam/domain/repo"
@@ -8,6 +9,7 @@ import (
 	iamRepoImpl "controlplane/internal/iam/repository"
 	iamSvcImpl "controlplane/internal/iam/service"
 	iamHandler "controlplane/internal/iam/transport/http/handler"
+	iamPubsub "controlplane/internal/iam/transport/pubsub"
 	"controlplane/internal/observability"
 	"errors"
 
@@ -52,7 +54,7 @@ func NewModule(
 	cfg *config.Config,
 	db *pgxpool.Pool,
 	rds *goredis.Client,
-	rdsJob *goredis.Client,
+	kafkaProducer *kafkainfra.Producer,
 	cacheEngine *cacheengine.CacheRegistry,
 	natsConn *nats.Conn,
 	otel *observability.OTel,
@@ -74,8 +76,8 @@ func NewModule(
 	if rds == nil {
 		return nil, errors.New("iam module: redis cluster client (rds) is nil (check redis sentinel/cluster endpoint)")
 	}
-	if rdsJob == nil {
-		return nil, errors.New("iam module: redis job broker client is nil")
+	if kafkaProducer == nil {
+		return nil, errors.New("iam module: kafka producer is nil")
 	}
 
 	if cacheEngine == nil {
@@ -177,10 +179,17 @@ func NewModule(
 	if err != nil {
 		return nil, err
 	}
+	verificationPublisher, err := iamPubsub.NewAccountVerificationPublisher(
+		kafkaProducer,
+		cfg.Kafka.IAMVerificationTopic,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	authSvc := iamSvcImpl.NewAuthService(
-		cfg, authRepo, refreshSvc, deviceSelfSvc,
-		cacheEngine, oneTimeTokenSvc, rdsJob,
+		authRepo, refreshSvc, deviceSelfSvc,
+		cacheEngine, oneTimeTokenSvc, verificationPublisher,
 		billingOutboxRelay,
 		nil,
 	)

@@ -16,7 +16,7 @@ use uuid::Uuid;
 /// Zone NATS KV; Central Redis chỉ nhận consumer đang có watch lease ngắn do UI mở Detail.
 pub(super) fn start(
     config: Arc<Config>,
-    redis_job: Arc<RedisClientManager>,
+    runtime_redis: Arc<RedisClientManager>,
     runtime: Arc<MailRuntime>,
 ) {
     tokio::spawn(async move {
@@ -32,7 +32,7 @@ pub(super) fn start(
             let snapshots = runtime.runtime_snapshots();
 
             if redis_connection.is_none() {
-                redis_connection = redis_job
+                redis_connection = runtime_redis
                     .client()
                     .get_multiplexed_tokio_connection()
                     .await

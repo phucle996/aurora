@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// 📌 VAI TRÒ (ROLE):
 ///   - Khai báo cấu trúc dữ liệu `JobPayload` đại diện cho các Job nghiệp vụ được đẩy vào Dataplane.
-///   - Cung cấp hàm giải mã JSON (Deserializer) thô lấy từ Redis Stream.
+///   - Ánh xạ Protobuf `JobCommandV1` lấy từ Kafka sang entity thực thi nội bộ.
 ///
 /// 🎯 SOURCE OF TRUTH (SoT):
-///   - Message được đẩy vào Redis Stream (`jobs:<zone_id>`) do Controlplane xuất bản.
+///   - Message được đẩy vào Kafka topic theo Zone hoặc Platform bởi Job Orchestrator.
 ///
 /// 🔒 RANH GIỚI BẢO MẬT NGHIÊM NGẶT (CRITICAL PRIVACY BOUNDARY):
 ///   - TUYỆT ĐỐI CẤM chứa trường `tenant_id` hoặc bất kỳ dữ liệu định danh khách hàng nào trực tiếp trong Payload.
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 ///   - Ranh giới này đảm bảo Dataplane tuân thủ tuyệt đối chuẩn bảo mật, không có thông tin định danh người dùng.
 ///
 /// 🔄 CALLSITE FLOW:
-///   - Được gọi bởi `job-receiver/consumer.rs` sau khi đọc thành công tin nhắn thô từ Redis Stream.
+///   - Được gọi bởi `job_lifecycle/consumer.rs` sau khi decode Protobuf Kafka.
 ///   - Được truyền vào `executor/mod.rs` để thực thi nghiệp vụ cụ thể.
 ///
 /// 🚀 LƯU Ý VẬN HÀNH TRÊN PRODUCTION:
@@ -62,15 +62,15 @@ pub struct JobPayload {
     #[serde(default)]
     pub reconcile_generation: Option<u64>,
 
-    /// [COMMENT]: Tên Consumer Group của Redis Stream mà tin nhắn này được đọc ra (để XACK chính xác group)
+    /// [COMMENT]: Zone đích được ký trong envelope; consumer Zone fail-close nếu không khớp Zone hiện tại.
     #[serde(default)]
-    pub redis_group_name: Option<String>,
+    pub target_zone_id: String,
 
-    /// Mã tin nhắn Redis Stream thực tế (Redis Message ID).
-    #[serde(default)]
-    pub redis_msg_id: Option<String>,
+    /// [COMMENT]: Kafka delivery metadata chỉ sinh lúc consume, không được serialize vào domain payload.
+    #[serde(skip)]
+    pub kafka_delivery: Option<crate::infra::kafka::KafkaDelivery>,
 
-    /// [COMMENT]: Lease runtime chỉ sinh sau khi consume; không phải field của Redis Job envelope.
+    /// [COMMENT]: Lease runtime chỉ sinh sau khi consume; không phải field của Kafka envelope.
     #[serde(skip)]
     pub zone_lease: Option<crate::infra::zone_kv::ZoneLease>,
 }

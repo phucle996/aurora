@@ -11,7 +11,7 @@
 Hệ thống quản lý Hypervisor triển khai theo mô hình **Decoupled Architecture**:
 1. **Dataplane Agent** đóng vai trò là bên duy nhất lưu trữ cấu hình kết nối vật lý và trực tiếp giữ kết nối tới Proxmox Cluster thông qua biến môi trường.
 2. **Controlplane (Platform Level)** hoàn toàn không lưu thông tin nhạy cảm (như API endpoint, API tokens của Proxmox) nhằm giảm thiểu tối đa rủi ro bảo mật (Blast Radius). Controlplane chỉ đóng vai trò tracking trạng thái logic của hạ tầng được report từ Dataplane.
-3. Luồng đồng bộ trạng thái tái sử dụng hoàn chỉnh mô hình **Zone Status Gateway** của phân hệ Mail Workload hiện tại qua stream **`zone:backpressure:reports`**.
+3. Luồng đồng bộ trạng thái tái sử dụng **Zone Status Gateway** và Kafka topic **`aurora.zone.reports.v1`**.
 
 ### 🌐 Sơ đồ Điều Phối Request & Trạng Thái (System Dataflow)
 
@@ -29,7 +29,7 @@ graph TD
     CP["🚀 Controlplane Go (hypervisor module)"]:::backend
     DB["💾 PostgreSQL SoT (hypervisor schema)"]:::storage
     ZoneKV["🗄️ NATS Zone KV (Health + Coordination)"]:::storage
-    RedisL1["⚡ Redis Platform L1 (Stream)"]:::storage
+    RedisL1["⚡ Central Kafka"]:::storage
     JO["🚀 job-orchestrator (Rust Listener)"]:::backend
     DP["💻 Dataplane Agent (Rust)"]:::dataplane
     PVE["🖥️ Proxmox Cluster"]:::dataplane
@@ -48,10 +48,10 @@ graph TD
     
     %% Gateway Gom & Sync L1 (ZoneStatusGateway)
     ZoneKV -- "c. Read zone.service.* snapshots" --> DP
-    DP -- "d. XADD zone:backpressure:reports" --> RedisL1
+    DP -- "d. PRODUCE aurora.zone.reports.v1" --> RedisL1
     
     %% Platform listener consume & write DB
-    RedisL1 -- "e. XREADGROUP reports" --> JO
+    RedisL1 -- "e. Manual Kafka poll" --> JO
     JO -- "f. UPSERT Dynamic Nodes" --> DB
 ```
 
@@ -207,7 +207,7 @@ sequenceDiagram
     participant PVE as 🖥️ Proxmox Cluster
     participant DP as 💻 Dataplane Agent (Rust)
     participant KV as 🗄️ NATS Zone KV
-    participant L1 as ⚡ Redis Platform L1
+    participant L1 as ⚡ Central Kafka
     participant JO as 🚀 job-orchestrator (Rust)
     participant DB as 💾 PostgreSQL (hypervisor schema)
 
@@ -228,17 +228,17 @@ sequenceDiagram
     DP->>KV: GET zone.service.mail + zone.service.hypervisor
     KV-->>DP: Trả về current workload snapshots
     DP->>DP: Gom dữ liệu workloads
-    DP->>L1: XADD zone:backpressure:reports * zone_id <zone_id> payload <JSON_string>
+    DP->>L1: PRODUCE ZoneReport Protobuf, key=zone_id, acks=all
     
-    Note over JO: job-orchestrator consume stream (XREADGROUP)
-    L1-->>JO: Nhận được tin nhắn từ stream
+    Note over JO: job-orchestrator manual-consume Kafka report topic
+    L1-->>JO: Nhận ZoneReport record
     Note over JO: Trích xuất workloads.hypervisors từ payload
     alt Node chưa tồn tại trong DB
         JO->>DB: INSERT INTO hypervisor.nodes (New UUIDv7, zone_id, node_code, metrics, status)
     else Node đã tồn tại
         JO->>DB: UPDATE hypervisor.nodes SET metrics, status, last_active_at<br/>WHERE zone_id, node_code AND last_active_at < sent_at
     end
-    JO->>L1: XACK zone:backpressure:reports job-proxy-backpressure-group <msg_id>
+    JO->>L1: COMMIT offset sau DB side effects
 ```
 
 ---
@@ -275,5 +275,5 @@ sequenceDiagram
 
 ### 3. Tự Phục Hồi & Phát Hiện Node Chết (Dead Man's Switch)
 * **Giải pháp**:
-  - `job-orchestrator` kế thừa cơ chế **Dead Man's Switch** của `listener.rs`. Nếu cả zone quá 30 giây không gửi report lên stream `zone:backpressure:reports`, hệ thống sẽ tự động chuyển trạng thái của Zone sang `inactive` và toàn bộ hypervisors của zone đó sang `disconnected`.
+  - `job-orchestrator` kế thừa **Dead Man's Switch** của Zone report listener. Nếu cả Zone quá 30 giây không có Kafka report mới, current health bị hạ theo observation fence; desired/lifecycle state vẫn thuộc SRE.
   - Nếu zone vẫn gửi report nhưng một node cụ thể biến mất hoặc không được cập nhật trong `zone.service.hypervisor` quá 45 giây, `job-orchestrator` đánh dấu node đó là `disconnected`.

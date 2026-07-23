@@ -39,12 +39,12 @@ Hệ thống chia rõ ràng làm **3 lớp tương tác** trong vòng đời Zon
 [Envoy] → forward → [Controlplane REST]
 [Controlplane] → INSERT/UPDATE → [PostgreSQL SoT]
 [PostgreSQL WAL] → Logical Replication → [Job Orchestrator CdcStreamer]
-[JO] → PUBLISH zone:event:metadata:{zone_id} → [Redis L1 PubSub]
-[Redis L1] → broadcast → [Dataplane start_metadata_event_listener()]
+[JO] → PRODUCE full ZoneMetadataSnapshotV1 → [Kafka compacted per-Zone topic]
+[Kafka] → manual consume → [Dataplane start_metadata_event_listener()]
 [Dataplane] → CAS zone.metadata → [NATS Zone Config KV]
 [Dataplane monitors] → rotating lease + current snapshots → [NATS Zone Health/Coordination KV]
-[ZoneStatusGateway 5s] → XADD zone:backpressure:reports (Protobuf) → [Redis L1 Stream]
-[JO backpressure_listener] → XREADGROUP → decode → DecisionEngine.evaluate()
+[ZoneStatusGateway] → PRODUCE ZoneReport (Protobuf) → [Kafka zone reports]
+[JO backpressure_listener] → manual poll → decode → DecisionEngine.evaluate()
 [JO] → Throttled UPSERT actual_state → [PostgreSQL]
 [JO] → UPSERT hypervisor.nodes → [PostgreSQL]
 ```
@@ -231,7 +231,7 @@ sequenceDiagram
     participant Service as 🚀 Service (zone_service.go)
     participant Repo as 🚀 Repo (zone_repo.go)
     participant DB as 💾 PostgreSQL (SoT)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Shared Cache Redis
 
     Envoy->>Router: POST /admin/critical/core/zones (Forwarded request)
     Router->>Midd: Chạy qua chuỗi Global Middlewares
@@ -328,28 +328,28 @@ sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
     participant JO_CDC as ⚙️ JO (CdcStreamer)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Central Kafka
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant KV as 🗄️ NATS Zone KV
     participant JO_Back as ⚙️ JO (BackpressureListener)
 
     Note over DB,DP_Gate: 1. CONFIG DESIRED STATE SYNC (CDC PATH)
     DB->>JO_CDC: WAL b'I'/b'U' (zones / zone_services change)
-    JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (binary JSON)
-    L1->>DP_Gate: PubSub event received (start_metadata_event_listener)
-    DP_Gate->>KV: CAS merge zone.metadata (status / desired services)
+    JO_CDC->>L1: PRODUCE full ZoneMetadataSnapshotV1 (acks=all)
+    L1->>DP_Gate: Poll compacted per-Zone topic
+    DP_Gate->>KV: CAS replace zone.metadata aggregate
 
     Note over DP_Gate,DB: 2. TELEMETRY WRITE-BACK PIPELINE
     loop Every 5 seconds
         DP_Gate->>KV: GET zone.service.* / zone.node.* snapshots
         KV-->>DP_Gate: Current telemetry values
         DP_Gate->>DP_Gate: Pack Protobuf ZoneReport
-        DP_Gate->>L1: XADD zone:backpressure:reports * payload {ZoneReport}
+        DP_Gate->>L1: PRODUCE aurora.zone.reports.v1 {ZoneReport}
     end
 
-    loop XREADGROUP cycle
-        JO_Back->>L1: XREADGROUP zone:backpressure:reports
-        L1-->>JO_Back: ZoneReport entry
+    loop Kafka poll cycle
+        JO_Back->>L1: manual poll aurora.zone.reports.v1
+        L1-->>JO_Back: ZoneReport record
         JO_Back->>JO_Back: Decode Protobuf & DecisionEngine::evaluate()
         alt Decision Engine signals metric write-back (Throttled)
             JO_Back->>DB: update_zone_service_metrics() -> update actual_state
@@ -357,19 +357,19 @@ sequenceDiagram
         alt Hypervisor nodes report
             JO_Back->>DB: upsert_hypervisor_node() (with race guard check)
         end
-        JO_Back->>L1: XACK zone:backpressure:reports group {msg_id}
+        JO_Back->>L1: COMMIT offset after DB side effects
     end
 ```
 
 1. **CDC Metadata Event**:
    * PostgreSQL WAL ghi nhận hành động ghi của Phase 2 và stream trực tiếp tới JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs).
-   * JO bắt sự kiện thay đổi trên các bảng metadata và publish event lên Redis L1 `zone:event:metadata:{zone_id}`.
-   * DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) subscribe kênh này và CAS-merge cấu hình mong muốn vào `AURORA_ZONE_CONFIG/zone.metadata`.
+   * JO đọc full aggregate và publish `ZoneMetadataSnapshotV1` vào Kafka compacted topic riêng Zone.
+   * DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) consume topic và CAS-apply vào `AURORA_ZONE_CONFIG/zone.metadata`.
 2. **Telemetry Pack & Report**:
-   * Dataplane [`ZoneStatusGateway`](../../dataplane/src/zone_gateway/reporter.rs) dùng rotating coordination lease, tổng hợp snapshot từ health KV rồi đẩy report qua Redis Job Stream.
-   * Gateway đóng gói dữ liệu dạng Protobuf và push vào Redis L1 stream `zone:backpressure:reports`.
+   * Dataplane [`ZoneStatusGateway`](../../dataplane/src/zone_gateway/reporter.rs) dùng rotating coordination lease, tổng hợp snapshot từ health KV rồi publish Kafka `aurora.zone.reports.v1`.
+   * Gateway đóng gói `ZoneReport` Protobuf, dùng Zone ID làm record key và `acks=all`.
 3. **Write-back DB SoT**:
-   * JO [`run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L15) đọc stream L1, decode Protobuf.
+   * JO [`run_backpressure_listener()`](../../job-orchestrator/src/reverse_provider/zone/listener/backpressure.rs) manual-consume Kafka, decode Protobuf và commit sau side effects.
    * Gọi [`DecisionEngine::evaluate()`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L7) tính toán và tự động cập nhật `actual_state` vào bảng `zone_services` thông qua [`db.rs#update_zone_service_metrics()`](../../job-orchestrator/src/reverse_provider/zone/db.rs#L197) (sử dụng cơ chế Throttled Write để chống spam IOPS).
 
 ---
@@ -431,7 +431,7 @@ sequenceDiagram
     participant Service as 🚀 Service (zone_service.go)
     participant Repo as 🚀 Repo (zone_repo.go)
     participant DB as 💾 PostgreSQL (SoT)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Kafka Zone reports
 
     Envoy->>Router: PATCH /admin/critical/core/zones/{zone_id}/status
     Router->>Midd: Chạy qua chuỗi Global Middlewares
@@ -478,16 +478,16 @@ sequenceDiagram
     autonumber
     participant DB as 💾 PostgreSQL (SoT)
     participant JO_CDC as ⚙️ JO (CdcStreamer)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Kafka metadata topic
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant KV as 🗄️ NATS Zone Config KV
     participant Consumer as 💻 consumer.rs (JobConsumer)
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
 
     DB->>JO_CDC: WAL b'U' (zones status updated)
-    JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (zone_status_changed)
-    L1->>DP_Gate: PubSub event received (start_metadata_event_listener)
-    DP_Gate->>KV: CAS merge zone.metadata.status={target_status}
+    JO_CDC->>L1: PRODUCE full ZoneMetadataSnapshotV1, acks=all
+    L1->>DP_Gate: Poll compacted per-Zone topic
+    DP_Gate->>KV: CAS replace full zone.metadata aggregate
     
     Note over Consumer,Monitor: Dataplane State Machine phản ứng
     Consumer->>KV: GET zone.metadata
@@ -501,8 +501,8 @@ sequenceDiagram
     end
 ```
 
-1. **CDC Broadcast**: Sự kiện update bảng `zones` được stream từ WAL Postgres đến JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) và được publish lên kênh Redis L1 `zone:event:metadata:{zone_id}`.
-2. **Dataplane KV Sync**: DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) merge trạng thái mới vào `AURORA_ZONE_CONFIG/zone.metadata` bằng expected revision.
+1. **CDC Snapshot**: Sự kiện update bảng `zones` được stream từ WAL tới JO; JO đọc/publish full aggregate vào Kafka compacted topic riêng Zone.
+2. **Dataplane KV Sync**: DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) validate Zone rồi CAS-apply full `AURORA_ZONE_CONFIG/zone.metadata`.
 3. **State Machine Reaction**:
    * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
    * **Mail Health Observer**: [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs) tiếp tục ghi fenced Zone health và OTel metrics; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
@@ -602,16 +602,15 @@ sequenceDiagram
     participant DB as 💾 PostgreSQL (SoT)
     participant JO_CDC as ⚙️ JO (CdcStreamer)
     participant JO_RAM as 🧠 JO (EnabledServicesMap — In-Memory)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Kafka metadata topic
     participant DP_Gate as 💻 DP (ZoneStatusGateway)
     participant KV as 🗄️ NATS Zone KV
     participant Monitor as 💻 monitor.rs (WorkloadMonitor)
 
     DB->>JO_CDC: WAL b'U' (zone_services desired_state updated)
-    JO_CDC->>JO_RAM: Cập nhật EnabledServicesMap[zone_id][service_type] = enabled/disabled
-    JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (service_status_changed)
-    L1->>DP_Gate: PubSub event received
-    DP_Gate->>KV: CAS merge zone.metadata.services[type]
+    JO_CDC->>L1: PRODUCE full ZoneMetadataSnapshotV1, acks=all
+    L1->>DP_Gate: Poll compacted per-Zone topic
+    DP_Gate->>KV: CAS replace full desired aggregate
     
     loop Every monitor cycle
         Monitor->>KV: GET zone.metadata
@@ -625,8 +624,8 @@ sequenceDiagram
     end
 ```
 
-1. **CDC Event & RAM Update**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services` → cập nhật ngay **`EnabledServicesMap`** trong RAM của JO (SOT điều phối health check) → PUBLISH sự kiện `service_status_changed` lên Redis L1.
-2. **DP Listener**: [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) hứng event và CAS-merge `desired_state` vào `AURORA_ZONE_CONFIG/zone.metadata`.
+1. **CDC Snapshot**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện update trên `zone_services`, đọc full aggregate và publish Kafka bằng Zone ID key.
+2. **DP Listener**: [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) consume full snapshot và CAS-apply `AURORA_ZONE_CONFIG/zone.metadata`.
 3. **Monitor Reaction**: Mail/storage/hypervisor monitor đọc `services[type]`. Nếu `false`, monitor không gọi backend nhưng ghi current snapshot `down/0` hoặc empty/down để xóa trạng thái khỏe cũ; DecisionEngine filter service disabled trước khi đánh giá. Nếu `true`, monitor thực hiện health check đầy đủ.
 4. **Fallback khi miss RAM**: Nếu `EnabledServicesMap` trong JO không có entry cho zone_id+service (ví dụ sau khi JO restart), JO **đọc trực tiếp từ PostgreSQL** (`zone_services` table) để lấy `desired_state` hiện tại và nạp lại vào RAM trước khi ra quyết định.
 
@@ -681,7 +680,7 @@ sequenceDiagram
     participant Service as 🚀 Service (zone_service.go)
     participant Repo as 🚀 Repo (zone_repo.go)
     participant DB as 💾 PostgreSQL (SoT)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Kafka metadata topic
 
     Envoy->>Router: DELETE /admin/critical/core/zones/{zone_id}
     Router->>Midd: Chạy qua chuỗi Global Middlewares
@@ -730,13 +729,12 @@ sequenceDiagram
     participant JO_Back as ⚙️ JO (BackpressureListener)
 
     DB->>JO_CDC: WAL b'D' (zones deleted)
-    JO_CDC->>L1: PUBLISH zone:event:metadata:{zone_id} (zone_status_changed status=null)
-    L1->>DP_Gate: PubSub event received -> detach / log warning
-    JO_CDC->>L1: Invalidate stream / clear state
+    JO_CDC->>L1: PRODUCE terminal metadata/tombstone contract
+    L1->>DP_Gate: Poll terminal snapshot -> detach / fail-closed
     JO_Back->>JO_Back: Dừng track heartbeats và xóa cache zone_id khỏi RAM
 ```
 
-1. **CDC Broadcast**: JO [`CdcStreamer`](../../job-orchestrator/src/cdc/mod.rs) phát hiện sự kiện DELETE (`b'D'`) -> PUBLISH sự kiện `zone_status_changed` với payload status null lên L1.
+1. **CDC Broadcast**: JO phát hiện DELETE và phải phát terminal metadata contract bền vững trên Kafka; không dùng ephemeral PubSub.
 2. **DP Detach**: DP [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) ghi nhận và đưa agent về trạng thái treo/dừng hoạt động đồng bộ.
 3. **JO Cleanup**: JO Backpressure Listener [`listener.rs`](../../job-orchestrator/src/reverse_provider/zone/listener.rs#L15) dừng tracking heartbeat của zone và dọn dẹp các cache vùng nhớ tạm trên RAM.
 
@@ -749,8 +747,8 @@ Cơ chế tự phục hồi cấu hình (Self-Healing) giúp đảm bảo Datapl
 ---
 
 ### 9.1 Lý Do Cần Thiết
-* **Tính chất phi trạng thái của Redis PubSub**: Redis PubSub không lưu trữ lịch sử tin nhắn. Nếu kết nối mạng giữa Dataplane và Redis L1 bị mất lúc Controlplane phát sự kiện CDC, Dataplane sẽ bỏ lỡ cấu hình mới (packet loss).
-* **Self-Healing Fallback**: Polling hoạt động như một chốt chặn cuối cùng để tự động vá lỗi lệch cấu hình (desynchronization) giữa desired_state ở Database và actual_state chạy thực tế tại Dataplane.
+* **Compacted snapshot có thể stale hoặc bị apply lỗi**: Kafka giữ snapshot bền vững nhưng không thay authoritative PostgreSQL reconciliation.
+* **Self-Healing Fallback**: Durable query yêu cầu JO đọc full aggregate từ DB và republish snapshot để vá drift.
 
 ---
 
@@ -770,7 +768,7 @@ sequenceDiagram
     participant DP_Node as 💻 Dataplane Node
     participant CKV as 🗄️ Coordination KV
     participant CFG as 🗄️ Config KV
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Central Kafka
     participant JO as ⚙️ Job Orchestrator
     participant DB as 💾 PostgreSQL (SoT)
 
@@ -782,16 +780,13 @@ sequenceDiagram
         Note over DP_Node: Hủy bỏ chu kỳ reconciliation hiện tại
     else Node tranh chấp Lock thành công
         CKV-->>DP_Node: owner + fencing token
-        DP_Node->>L1: SUBSCRIBE zone:reply:metadata:{zone_id}:{uuid}
-        DP_Node->>L1: PUBLISH zone:query:metadata {zone_id, reply_channel}
-        
-        L1->>JO: Tin nhắn gởi qua kênh PubSub
+        DP_Node->>L1: PRODUCE ZoneMetadataQueryV1, acks=all
+        L1->>JO: Manual consume query topic
         JO->>DB: Đọc cấu hình mong muốn (status, desired_state)
         DB-->>JO: Kết quả database SoT
-        JO->>L1: PUBLISH zone:reply:metadata:{zone_id}:{uuid} {status, services}
-        
-        L1-->>DP_Node: Nhận phản hồi cấu hình (timeout 5s)
-        DP_Node->>CFG: CAS merge zone.metadata
+        JO->>L1: PRODUCE full snapshot vào compacted Zone topic
+        L1-->>DP_Node: Consume ZoneMetadataSnapshotV1
+        DP_Node->>CFG: CAS apply full zone.metadata
         
         DP_Node->>CKV: CAS release nếu owner + fencing còn khớp
         CKV-->>DP_Node: Lease released
@@ -1021,12 +1016,12 @@ sequenceDiagram
     autonumber
     participant JO as ⚙️ JO (listener.rs loop)
     participant RAM as 🧠 EnabledServicesMap (In-Memory)
-    participant L1 as ⚡ Redis L1
+    participant L1 as ⚡ Kafka Zone reports
     participant DE as 🧠 Decision Engine (decision.rs)
     participant DB as 💾 PostgreSQL (SoT)
 
-    Note over JO: Giai đoạn XREADGROUP (chu kỳ 2s)
-    JO->>L1: Lấy thông tin ZoneReport & độ dài hàng đợi
+    Note over JO: Giai đoạn manual Kafka poll
+    JO->>L1: Lấy ZoneReport; Kafka lag đã được Dataplane đo tại source
     L1-->>JO: queue_len, pending_len, avg_cpu, avg_ram, mail_metrics, storage_metrics
 
     JO->>RAM: Đọc EnabledServicesMap[zone_id]
@@ -1111,7 +1106,7 @@ sequenceDiagram
     participant Cache as 🧠 RAM cache (zone_heartbeats)
     participant DB as 💾 PostgreSQL (SoT)
 
-    loop Every 2 seconds (XREADGROUP cycle)
+    loop Every 2 seconds (Kafka poll/dead-man cycle)
         JO_Loop->>Cache: Đọc last_report của các active zones
         alt now - last_report > 30s (DP Node crash / Mất mạng)
             JO_Loop->>DB: update Mail/Storage actual health with newer observation fence
@@ -1179,19 +1174,16 @@ sequenceDiagram
 
 ## 15. Runtime Store Registry
 
-### Platform Redis (L1) — Shared
+### Shared Cache Redis và Central Kafka
 
 | Key Pattern | Type | TTL | Nội Dung | Owner |
 |:---|:---|:---|:---|:---|
-| `zone:code:{code}` | String | 24h | `"{uuid}:{status}"` | CP after CREATE/UPDATE |
-| `zone:event:metadata:{zone_id}` | PubSub channel | N/A | Binary JSON event | JO CDC |
-| `zone:query:metadata` | PubSub channel | N/A | Binary JSON request | DP Reconciliation |
-| `zone:reply:metadata:{zone_id}:{uuid}` | PubSub channel | N/A | Binary JSON response | JO reply |
-| `zone:backpressure:reports` | Stream | MAXLEN ~1000 | Protobuf ZoneReport | DP push, JO read |
-| `jobs:{zone_id}` | Stream | N/A | Job entries (outbox) | CP |
-| `jobs:platform` | Stream | N/A | Platform job entries | CP |
-| `iam:admin_access_session:{access_key}` | Hash | Session TTL | `{device_public_key, ash, user_id, role}` | IAM module |
-| `iam:nonce:{nonce}` | String | 120s | `"1"` | ACR Replay prevention |
+| `zone:code:{code}` | Cache string | bounded TTL | Rebuildable routing cache | CP |
+| `aurora.zone.metadata.<zone_id>.v1` | Kafka compacted topic | Broker policy | Full ZoneMetadataSnapshotV1 | JO → DP |
+| `aurora.zone.metadata.queries.v1` | Kafka topic | Broker policy | Durable ZoneMetadataQueryV1 | DP → JO |
+| `aurora.zone.reports.v1` | Kafka topic | Broker policy | Protobuf ZoneReport | DP → JO |
+| `aurora.jobs.commands.zone.<zone_id>.v1` | Kafka topic | Broker policy | JobCommandV1 | JO → DP |
+| `aurora.jobs.commands.platform.v1` | Kafka topic | Broker policy | Platform JobCommandV1 | JO → DP |
 
 ### NATS JetStream KV — Per-Zone Internal
 

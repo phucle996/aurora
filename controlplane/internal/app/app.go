@@ -16,7 +16,8 @@
 //   [FAIL-CLOSE] Security - RuntimeMasterKey:     Bắt buộc, không có thì hệ thống không start.
 //   [FAIL-CLOSE] Infrastructure - PostgreSQL:     Bắt buộc, mất DB thì toàn bộ nghiệp vụ tê liệt.
 //   [FAIL-CLOSE] Infrastructure - Redis:          Bắt buộc, mất Redis thì session/cache mất hoàn toàn.
-//   [FAIL-CLOSE] Infrastructure - Redis Job:      Bắt buộc, mất Job Redis thì pipeline xử lý job tê liệt.
+//   [FAIL-CLOSE] Infrastructure - Kafka config:   Client/config bắt buộc; broker outage fail theo publish,
+//                                                 không làm bootstrap loop vì pending-login có recovery.
 //   [FAIL-CLOSE] Schema Migrations:               Bắt buộc, schema sai thì data corruption ngay lập tức.
 //   [FAIL-CLOSE] Policy Engine:                   Bắt buộc, không có policy thì không thể điều phối runtime.
 //   [FAIL-OPEN / FAIL-CLOSE] OTel Tracing:        Được điều khiển bởi FailStrategy trong Policy Engine
@@ -43,6 +44,7 @@ package app
 
 import (
 	"context"
+	kafkainfra "controlplane/infra/kafka"
 	natsinfra "controlplane/infra/nats"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
@@ -77,7 +79,7 @@ type App struct {
 	grpc       *bootstrap.GRPC
 	psql       *pgxpool.Pool
 	rds        *goredis.Client
-	rdsJob     *goredis.Client
+	kafka      *kafkainfra.Producer
 	natsConn   *nats.Conn
 	// [COMMENT]: Vault client phục vụ kết nối quản lý khóa an toàn
 	vault *vaultapi.Client
@@ -119,16 +121,17 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: redis client is required")
 	}
 
-	// [COMMENT]: Redis Job là broker tách biệt với Redis session/cache; IAM chỉ ghi mail intent vào stream này.
-	rdsJob, err := redisinfra.NewRedis(ctx, &cfg.RedisJob)
+	// [COMMENT]: Chỉ fail-fast cấu hình Kafka/client; broker outage được xử lý tại publish để
+	// luồng mail best-effort không kéo sập toàn bộ Controlplane.
+	kafkaProducer, err := kafkainfra.NewProducer(ctx, &cfg.Kafka)
 	if err != nil {
 		app.Stop()
-		return nil, fmt.Errorf("bootstrap: redis job init failed: %w", err)
+		return nil, fmt.Errorf("bootstrap: kafka init failed: %w", err)
 	}
-	app.rdsJob = rdsJob
-	if rdsJob == nil {
+	app.kafka = kafkaProducer
+	if kafkaProducer == nil {
 		app.Stop()
-		return nil, fmt.Errorf("bootstrap: redis job client is required")
+		return nil, fmt.Errorf("bootstrap: kafka producer is required")
 	}
 
 	// [COMMENT]: Khởi tạo NATS Core Client từ infra connector hỗ trợ TLS/mTLS và retry
@@ -238,7 +241,7 @@ func NewApplication(cfg *config.Config) (*App, error) {
 	// Lỗi ở đây ảnh hưởng cross-module (IAM, Core security provider, middleware auth) -> abort.
 	// --------------------------------------------------------------------
 
-	modules, err := NewGlobalModules(cfg, db, rds, rdsJob, cacheEngine, app.natsConn, app.otel)
+	modules, err := NewGlobalModules(cfg, db, rds, kafkaProducer, cacheEngine, app.natsConn, app.otel)
 	if err != nil {
 		app.Stop()
 		return nil, err
@@ -366,8 +369,8 @@ func (a *App) Stop() {
 	if a.rds != nil {
 		_ = a.rds.Close()
 	}
-	if a.rdsJob != nil {
-		_ = a.rdsJob.Close()
+	if a.kafka != nil {
+		a.kafka.Close()
 	}
 	if a.natsConn != nil {
 		a.natsConn.Close()
