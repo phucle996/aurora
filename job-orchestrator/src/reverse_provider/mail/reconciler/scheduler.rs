@@ -1,4 +1,6 @@
-use super::consumer_tombstone::reconcile_consumer_tombstones;
+use super::consumer_tombstone::{
+    reconcile_personal_consumer_tombstones, reconcile_tenant_consumer_tombstones,
+};
 use super::personal_consumer::reconcile_personal_consumers;
 use super::personal_template::{
     reconcile_personal_template_tombstones, reconcile_personal_template_versions,
@@ -223,8 +225,19 @@ return token
                         )
                         .await
                     }
-                    "consumer_tombstones" => {
-                        reconcile_consumer_tombstones(
+                    "personal_consumer_tombstones" => {
+                        reconcile_personal_consumer_tombstones(
+                            &pg_client,
+                            &mut redis_conn,
+                            zone_id,
+                            &cursor_id,
+                            config.mail_reconcile_page_size,
+                            generation as u64,
+                        )
+                        .await
+                    }
+                    "tenant_consumer_tombstones" => {
+                        reconcile_tenant_consumer_tombstones(
                             &pg_client,
                             &mut redis_conn,
                             zone_id,
@@ -281,8 +294,9 @@ return token
                         "personal_template_versions" => "tenant_template_versions".to_string(),
                         "tenant_template_versions" => "personal_consumers".to_string(),
                         "personal_consumers" => "tenant_consumers".to_string(),
-                        "tenant_consumers" => "consumer_tombstones".to_string(),
-                        "consumer_tombstones" => "personal_template_tombstones".to_string(),
+                        "tenant_consumers" => "personal_consumer_tombstones".to_string(),
+                        "personal_consumer_tombstones" => "tenant_consumer_tombstones".to_string(),
+                        "tenant_consumer_tombstones" => "personal_template_tombstones".to_string(),
                         "personal_template_tombstones" => "tenant_template_tombstones".to_string(),
                         "tenant_template_tombstones" => {
                             let completion_id = Uuid::new_v5(

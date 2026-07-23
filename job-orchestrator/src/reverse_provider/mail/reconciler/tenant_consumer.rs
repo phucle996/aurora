@@ -20,7 +20,7 @@ pub(super) async fn reconcile_tenant_consumers(
         "SELECT c.id,c.broker_resource_id,c.source_config_envelope,c.topic,c.consumer_group,\
                 c.template_id,c.template_version,c.sender_profile_id,c.sender_version,c.desired_state::text,\
                 c.parallelism,c.config_version,c.config_sha256,c.updated_at,c.source_type::text \
-         FROM mail.mail_consumers c JOIN hierarchy.tenant_workspaces w ON w.id=c.workspace_id \
+         FROM mail.tenant_mail_consumers c JOIN hierarchy.tenant_workspaces w ON w.id=c.workspace_id \
          WHERE w.zone_id=$1 AND c.id::text > $2 ORDER BY c.id LIMIT $3",
         &[&zone_id, &cursor_id, &limit],
     ).await?;

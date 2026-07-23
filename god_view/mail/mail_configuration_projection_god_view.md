@@ -178,7 +178,9 @@ business hash; protobuf envelope có thể khác metadata giữa WAL event và r
 - Tombstone không được xóa ngay để upsert cũ không hồi sinh consumer.
 - Re-create phải dùng consumer ID mới; không reset version về 1 trên ID cũ.
 - Controlplane business table không có `deleted_at` hay desired state `deleting`: CP giữ active row trong lúc delete operation chạy; JO hard-delete theo resource ID sau Dataplane success,
-  còn `mail_consumer_projection_tombstones` giữ rebuild authority độc lập với business row.
+  còn `personal_mail_consumer_projection_tombstones` hoặc
+  `tenant_mail_consumer_projection_tombstones` giữ rebuild authority độc lập với business row.
+  JO resolve đúng một physical namespace bằng consumer UUID dưới row lock; zero hoặc hai match đều fail-close.
 - JO khóa outbox theo `event_id + job_topic` và dùng `result_attempt` để chặn PROCESSING/FAILED đến sai thứ tự.
   Mọi `FAILED` là terminal cho operation ID; upsert/publish cleanup candidate, còn delete giữ aggregate và retry phát operation ID mới với cùng `next_*` fence.
 

@@ -16,41 +16,43 @@ import (
 
 // [COMMENT]: Mock repository capture hỗ trợ kiểm tra thao tác tạo/sửa/xóa Personal Consumer và lưu vệt outbox
 type personalConsumerRepoCapture struct {
-	created *mailEntity.PersonalConsumer
+	created *mailEntity.CreatePersonalConsumer
+	current *mailEntity.GetPersonalConsumer
+	updated *mailEntity.UpdatePersonalConsumer
 	outbox  *mailEntity.MailOutboxRecord
 }
 
 // [COMMENT]: Giả lập lưu PersonalConsumer entity và record outbox tương ứng khi tạo mới
-func (r *personalConsumerRepoCapture) Create(_ context.Context, entity *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *personalConsumerRepoCapture) Create(_ context.Context, entity *mailEntity.CreatePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	r.created, r.outbox = entity, outbox
 	return nil
 }
 
 // [COMMENT]: Trả về entity đã lưu để phục vụ kiểm tra truy vấn theo ID
-func (r *personalConsumerRepoCapture) GetByID(_ context.Context, _ *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
-	return r.created, nil
+func (r *personalConsumerRepoCapture) GetByID(_ context.Context, _ *mailEntity.GetPersonalConsumer) (*mailEntity.GetPersonalConsumer, error) {
+	return r.current, nil
 }
 
 // [COMMENT]: Trả về danh sách trống cho hàm List trong mock repo
-func (r *personalConsumerRepoCapture) List(_ context.Context, _ *mailEntity.PersonalConsumer) ([]*mailEntity.PersonalConsumer, error) {
+func (r *personalConsumerRepoCapture) List(_ context.Context, _ *mailEntity.ListPersonalConsumer) ([]*mailEntity.ListPersonalConsumer, error) {
 	return nil, nil
 }
 
 // [COMMENT]: Cập nhật thông tin PersonalConsumer entity và ghi nhận record outbox mới
-func (r *personalConsumerRepoCapture) Update(_ context.Context, entity *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
-	r.created, r.outbox = entity, outbox
+func (r *personalConsumerRepoCapture) Update(_ context.Context, entity *mailEntity.UpdatePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+	r.updated, r.outbox = entity, outbox
 	return nil
 }
 
 // [COMMENT]: Ghi nhận record outbox đánh dấu thao tác xóa Consumer
-func (r *personalConsumerRepoCapture) Delete(_ context.Context, _ *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *personalConsumerRepoCapture) Delete(_ context.Context, _ *mailEntity.DeletePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	r.outbox = outbox
 	return nil
 }
 
 // [COMMENT]: Helper khởi tạo fixture PersonalConsumer đã qua bước normalize và validate
-func validPersonalConsumer() *mailEntity.PersonalConsumer {
-	return &mailEntity.PersonalConsumer{
+func validPersonalConsumer() *mailEntity.CreatePersonalConsumer {
+	return &mailEntity.CreatePersonalConsumer{
 		ActorUserID:          uuid.New(),
 		WorkspaceID:          uuid.New(),
 		ZoneID:               uuid.New(),
@@ -69,23 +71,36 @@ func validPersonalConsumer() *mailEntity.PersonalConsumer {
 	}
 }
 
+// [COMMENT]: Update fixture được khai báo phẳng, không nhúng Create entity vào command.
+func validPersonalConsumerUpdate(current *mailEntity.GetPersonalConsumer) *mailEntity.UpdatePersonalConsumer {
+	return &mailEntity.UpdatePersonalConsumer{
+		ActorUserID: current.ActorUserID, WorkspaceID: current.WorkspaceID, ZoneID: current.ZoneID,
+		ID: current.ID, ExpectedConfigVersion: current.ConfigVersion,
+		Name: current.Name, SourceType: current.SourceType, BrokerResourceID: current.BrokerResourceID,
+		Topic: current.Topic, ConsumerGroup: current.ConsumerGroup,
+		TemplateID: current.TemplateID, TemplateVersion: current.TemplateVersion,
+		SenderProfileID: current.SenderProfileID, SenderVersion: current.SenderVersion,
+		DesiredState: mailEntity.ConsumerEnabled, Parallelism: current.Parallelism,
+	}
+}
+
 // [COMMENT]: Kiểm tra việc giữ nguyên ciphertext cấu hình khi bản ghi update không truyền lại envelope mới
 func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
-	current := validPersonalConsumer()
-	current.ID = uuid.New()
-	current.ConfigVersion = 4
-	current.NextConfigVersion = 5
-	current.SourceConfigEnvelope = []byte{7, 8, 9}
-	repo := &personalConsumerRepoCapture{created: current}
-
-	command := *current
-	command.ExpectedConfigVersion = 4
-	command.ConfigVersion = 0
-	command.SourceConfigEnvelope = nil
-	command.DesiredState = mailEntity.ConsumerEnabled
+	fixture := validPersonalConsumer()
+	current := &mailEntity.GetPersonalConsumer{
+		ActorUserID: fixture.ActorUserID, WorkspaceID: fixture.WorkspaceID, ZoneID: fixture.ZoneID,
+		ID: uuid.New(), Code: fixture.Code, Name: fixture.Name, SourceType: fixture.SourceType,
+		BrokerResourceID: fixture.BrokerResourceID, SourceConfigEnvelope: []byte{7, 8, 9},
+		Topic: fixture.Topic, ConsumerGroup: fixture.ConsumerGroup, TemplateID: fixture.TemplateID,
+		TemplateVersion: fixture.TemplateVersion, SenderProfileID: fixture.SenderProfileID,
+		SenderVersion: fixture.SenderVersion, DesiredState: mailEntity.ConsumerPaused,
+		Parallelism: fixture.Parallelism, ConfigVersion: 4, NextConfigVersion: 5,
+	}
+	repo := &personalConsumerRepoCapture{current: current}
+	command := validPersonalConsumerUpdate(current)
 
 	// [COMMENT]: Gọi service thực thi lệnh cập nhật consumer
-	updated, err := mailSvcImpl.NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), &command)
+	updated, err := mailSvcImpl.NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("UpdateConsumer() error = %v", err)
 	}
@@ -116,24 +131,27 @@ func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
 
 // [COMMENT]: Kiểm tra yêu cầu bắt buộc phải có envelope mới khi thông tin danh tính AAD thay đổi
 func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T) {
-	current := validPersonalConsumer()
-	current.ID = uuid.New()
-	current.ConfigVersion = 4
-	current.NextConfigVersion = 5
-	current.SourceConfigEnvelope = []byte{7, 8, 9}
-	repo := &personalConsumerRepoCapture{created: current}
+	fixture := validPersonalConsumer()
+	current := &mailEntity.GetPersonalConsumer{
+		ActorUserID: fixture.ActorUserID, WorkspaceID: fixture.WorkspaceID, ZoneID: fixture.ZoneID,
+		ID: uuid.New(), SourceType: fixture.SourceType, BrokerResourceID: fixture.BrokerResourceID,
+		SourceConfigEnvelope: []byte{7, 8, 9}, ConfigVersion: 4, NextConfigVersion: 5,
+		Name: fixture.Name, Topic: fixture.Topic, ConsumerGroup: fixture.ConsumerGroup,
+		TemplateID: fixture.TemplateID, TemplateVersion: fixture.TemplateVersion,
+		SenderProfileID: fixture.SenderProfileID, SenderVersion: fixture.SenderVersion,
+		Parallelism: fixture.Parallelism,
+	}
+	repo := &personalConsumerRepoCapture{current: current}
 
-	for _, mutate := range []func(*mailEntity.PersonalConsumer){
-		func(command *mailEntity.PersonalConsumer) { command.SourceType = mailEntity.RedisStream },
-		func(command *mailEntity.PersonalConsumer) { command.BrokerResourceID = uuid.New() },
+	for _, mutate := range []func(*mailEntity.UpdatePersonalConsumer){
+		func(command *mailEntity.UpdatePersonalConsumer) { command.SourceType = mailEntity.RedisStream },
+		func(command *mailEntity.UpdatePersonalConsumer) { command.BrokerResourceID = uuid.New() },
 	} {
-		command := *current
-		command.ExpectedConfigVersion = current.ConfigVersion
-		command.SourceConfigEnvelope = nil
+		command := validPersonalConsumerUpdate(current)
 		command.DesiredState = mailEntity.ConsumerPaused
-		mutate(&command)
+		mutate(command)
 		// [COMMENT]: Kiểm tra service trả về lỗi do thay đổi AAD identity mà không có ciphertext mới
-		if _, err := mailSvcImpl.NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), &command); err == nil {
+		if _, err := mailSvcImpl.NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), command); err == nil {
 			t.Fatal("AAD identity changed without a replacement encrypted envelope")
 		}
 	}
@@ -181,12 +199,13 @@ func TestPersonalCreateUsesFreshRuntimeIdentity(t *testing.T) {
 
 // [COMMENT]: Kiểm tra việc xóa Consumer sử dụng monotonic fence để tránh race condition
 func TestPersonalDeleteUsesNextAllocatorAsTombstoneFence(t *testing.T) {
-	current := validPersonalConsumer()
-	current.ID = uuid.New()
-	current.ConfigVersion = 4
-	current.NextConfigVersion = 9
-	repo := &personalConsumerRepoCapture{created: current}
-	command := &mailEntity.PersonalConsumer{
+	fixture := validPersonalConsumer()
+	current := &mailEntity.GetPersonalConsumer{
+		ActorUserID: fixture.ActorUserID, WorkspaceID: fixture.WorkspaceID, ZoneID: fixture.ZoneID,
+		ID: uuid.New(), ConfigVersion: 4, NextConfigVersion: 9,
+	}
+	repo := &personalConsumerRepoCapture{current: current}
+	command := &mailEntity.DeletePersonalConsumer{
 		ActorUserID:           current.ActorUserID,
 		WorkspaceID:           current.WorkspaceID,
 		ZoneID:                current.ZoneID,

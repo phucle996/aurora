@@ -31,13 +31,13 @@ func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepositor
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal.
 // [COMMENT]: Handler/DTO layer đã validate va normalize input payload; service tap trung vao domain logic.
-func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.CreatePersonalConsumer) (*mailEntity.CreatePersonalConsumer, error) {
 	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; hard-delete giải phóng code nhưng không cho tái sử dụng identity cũ.
 	consumerID := uuid.New()
 	now := time.Now().UTC()
 	actor := req.ActorUserID
 
-	consumer := &mailEntity.PersonalConsumer{
+	consumer := &mailEntity.CreatePersonalConsumer{
 		ActorUserID:          req.ActorUserID,
 		ZoneID:               req.ZoneID,
 		ID:                   consumerID,
@@ -56,8 +56,7 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *m
 		DesiredState:         mailEntity.ConsumerPaused,
 		Parallelism:          req.Parallelism,
 		ConfigVersion:        1,
-		CreatedBy:            &actor,
-		UpdatedBy:            &actor,
+		NextConfigVersion:    2,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -148,28 +147,29 @@ func (s *personalConsumerServiceImpl) CreateConsumer(ctx context.Context, req *m
 	if err = s.repo.Create(ctx, consumer, outbox); err != nil {
 		return nil, err
 	}
-	created, err := s.repo.GetByID(ctx, consumer)
-	if err != nil {
-		return nil, err
-	}
-	created.OperationID = outbox.EventID
-	return created, nil
+	consumer.OperationID = outbox.EventID
+	return consumer, nil
 }
 
 // GetConsumer lay thong tin consumer theo ID va Personal request.
-func (s *personalConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.GetPersonalConsumer) (*mailEntity.GetPersonalConsumer, error) {
 	return s.repo.GetByID(ctx, req)
 }
 
 // ListConsumers danh sach consumer theo dieu kien loc va pagination.
-func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.PersonalConsumer) ([]*mailEntity.PersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.ListPersonalConsumer) ([]*mailEntity.ListPersonalConsumer, error) {
 	return s.repo.List(ctx, req)
 }
 
 // UpdateConsumer cap nhat thong tin consumer voi optimistic version check va tao outbox event.
-func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.UpdatePersonalConsumer) (*mailEntity.UpdatePersonalConsumer, error) {
 	// [COMMENT]: API không bao giờ đọc trả ciphertext; envelope rỗng trong full update giữ nguyên cấu hình broker hiện tại.
-	current, err := s.repo.GetByID(ctx, req)
+	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
+		ActorUserID: req.ActorUserID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 	now := time.Now().UTC()
 	actor := req.ActorUserID
 
-	consumer := &mailEntity.PersonalConsumer{
+	consumer := &mailEntity.UpdatePersonalConsumer{
 		ActorUserID:          req.ActorUserID,
 		ZoneID:               req.ZoneID,
 		ID:                   req.ID,
@@ -211,8 +211,6 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 		ConfigVersion:         current.NextConfigVersion,
 		NextConfigVersion:     current.NextConfigVersion + 1,
 		ExpectedConfigVersion: req.ExpectedConfigVersion,
-		CreatedBy:             current.CreatedBy,
-		UpdatedBy:             &actor,
 		CreatedAt:             current.CreatedAt,
 		UpdatedAt:             now,
 	}
@@ -312,9 +310,14 @@ func (s *personalConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *m
 }
 
 // ChangeConsumerState thay doi trang thai pause/resume cua consumer.
-func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
+func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.ChangePersonalConsumerState) (*mailEntity.ChangePersonalConsumerState, error) {
 	// [COMMENT]: Lay consumer hien tai tu repository
-	consumer, err := s.repo.GetByID(ctx, req)
+	consumer, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
+		ActorUserID: req.ActorUserID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +328,7 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, r
 	}
 
 	// [COMMENT]: Goi UpdateConsumer de thuc hien update trang thai va phat outbox event
-	return s.UpdateConsumer(ctx, &mailEntity.PersonalConsumer{
+	updated, err := s.UpdateConsumer(ctx, &mailEntity.UpdatePersonalConsumer{
 		ActorUserID:           req.ActorUserID,
 		ZoneID:                req.ZoneID,
 		WorkspaceID:           req.WorkspaceID,
@@ -343,12 +346,38 @@ func (s *personalConsumerServiceImpl) ChangeConsumerState(ctx context.Context, r
 		DesiredState:          req.DesiredState,
 		Parallelism:           consumer.Parallelism,
 	})
+	if err != nil {
+		return nil, err
+	}
+	req.OperationID = updated.OperationID
+	req.ConfigVersion = updated.ConfigVersion
+	req.UpdatedAt = updated.UpdatedAt
+	req.Code = updated.Code
+	req.Name = updated.Name
+	req.SourceType = updated.SourceType
+	req.BrokerResourceID = updated.BrokerResourceID
+	req.SourceConfigEnvelope = append([]byte(nil), updated.SourceConfigEnvelope...)
+	req.Topic = updated.Topic
+	req.ConsumerGroup = updated.ConsumerGroup
+	req.TemplateID = updated.TemplateID
+	req.TemplateVersion = updated.TemplateVersion
+	req.SenderProfileID = updated.SenderProfileID
+	req.SenderVersion = updated.SenderVersion
+	req.Parallelism = updated.Parallelism
+	req.ConfigSHA256 = append([]byte(nil), updated.ConfigSHA256...)
+	req.CreatedAt = updated.CreatedAt
+	return req, nil
 }
 
 // DeleteConsumer xoa consumer va phat tombstone delete event vao outbox.
-func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.PersonalConsumer) error {
+func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.DeletePersonalConsumer) error {
 	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
-	current, err := s.repo.GetByID(ctx, req)
+	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
+		ActorUserID: req.ActorUserID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
 	if err != nil {
 		return err
 	}

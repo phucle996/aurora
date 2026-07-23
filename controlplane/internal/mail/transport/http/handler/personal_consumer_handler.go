@@ -130,7 +130,7 @@ func (h *PersonalConsumerHandler) Create(c *gin.Context) {
 		return
 	}
 
-	consumer, err := h.svc.CreateConsumer(ctx, &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID,
+	consumer, err := h.svc.CreateConsumer(ctx, &mailEntity.CreatePersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID,
 		Code: req.Code, Name: req.Name,
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
 		SourceConfigEnvelope: sourceConfigEnvelope,
@@ -203,7 +203,7 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 		return
 	}
 
-	consumer, err := h.svc.GetConsumer(ctx, &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID})
+	consumer, err := h.svc.GetConsumer(ctx, &mailEntity.GetPersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -223,18 +223,18 @@ func (h *PersonalConsumerHandler) Get(c *gin.Context) {
 	}
 
 	var runtime any
-	if consumer.Runtime != nil {
+	if consumer.RuntimeObserved {
 		// [COMMENT]: API chỉ lộ aggregate operational state; instance hostname nội bộ và từng
 		// recipient/render result không thuộc Consumer Detail contract.
 		runtime = gin.H{
-			"state":            consumer.Runtime.State,
-			"config_version":   consumer.Runtime.ConfigVersion,
-			"active_instances": consumer.Runtime.ActiveInstances,
-			"consumer_lag":     consumer.Runtime.ConsumerLag,
-			"error_code":       consumer.Runtime.ErrorCode,
-			"error_message":    consumer.Runtime.ErrorMessage,
-			"reported_at":      consumer.Runtime.ReportedAt,
-			"next_expiry_at":   consumer.Runtime.NextExpiryAt,
+			"state":            consumer.RuntimeState,
+			"config_version":   consumer.RuntimeConfigVersion,
+			"active_instances": consumer.RuntimeActiveInstances,
+			"consumer_lag":     consumer.RuntimeConsumerLag,
+			"error_code":       consumer.RuntimeErrorCode,
+			"error_message":    consumer.RuntimeErrorMessage,
+			"reported_at":      consumer.RuntimeReportedAt,
+			"next_expiry_at":   consumer.RuntimeNextExpiryAt,
 		}
 	}
 	apires.RespondSuccess(c, gin.H{
@@ -315,8 +315,8 @@ func (h *PersonalConsumerHandler) List(c *gin.Context) {
 		limit = value
 	}
 
-	consumers, err := func() ([]*mailEntity.PersonalConsumer, error) {
-		query := &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, AfterID: afterID, Limit: uint32(limit)}
+	consumers, err := func() ([]*mailEntity.ListPersonalConsumer, error) {
+		query := &mailEntity.ListPersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, AfterID: afterID, Limit: uint32(limit)}
 		if source != nil {
 			query.SourceType = *source
 		}
@@ -351,7 +351,7 @@ func (h *PersonalConsumerHandler) List(c *gin.Context) {
 			"name":               consumer.Name,
 			"source_type":        consumer.SourceType,
 			"broker_resource_id": consumer.BrokerResourceID.String(),
-			"source_configured":  len(consumer.SourceConfigEnvelope) > 0,
+			"source_configured":  consumer.SourceConfigured,
 			"topic":              consumer.Topic,
 			"consumer_group":     consumer.ConsumerGroup,
 			"template_id":        consumer.TemplateID,
@@ -460,7 +460,7 @@ func (h *PersonalConsumerHandler) Update(c *gin.Context) {
 		apires.RespondBadRequest(c, "invalid stream source fields")
 		return
 	}
-	consumer, err := h.svc.UpdateConsumer(ctx, &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID,
+	consumer, err := h.svc.UpdateConsumer(ctx, &mailEntity.UpdatePersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID,
 		ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, Name: req.Name,
 		SourceType: req.SourceType, BrokerResourceID: brokerID,
 		SourceConfigEnvelope: sourceConfigEnvelope,
@@ -560,7 +560,7 @@ func (h *PersonalConsumerHandler) changeState(c *gin.Context, desiredState mailE
 		apires.RespondBadRequest(c, "expected_config_version is required")
 		return
 	}
-	consumer, err := h.svc.ChangeConsumerState(ctx, &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DesiredState: desiredState})
+	consumer, err := h.svc.ChangeConsumerState(ctx, &mailEntity.ChangePersonalConsumerState{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DesiredState: desiredState})
 	if err != nil {
 		switch {
 		case errors.Is(err, mailTaxonomy.ErrInvalidArgument), errors.Is(err, mailTaxonomy.ErrTemplateSyntax):
@@ -648,7 +648,7 @@ func (h *PersonalConsumerHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	command := &mailEntity.PersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DrainTimeoutSeconds: req.DrainTimeoutSeconds, Reason: req.Reason}
+	command := &mailEntity.DeletePersonalConsumer{ActorUserID: actorID, WorkspaceID: workspaceID, ZoneID: zoneID, ID: consumerID, ExpectedConfigVersion: req.ExpectedConfigVersion, DrainTimeoutSeconds: req.DrainTimeoutSeconds, Reason: req.Reason}
 	err = h.svc.DeleteConsumer(ctx, command)
 	if err != nil {
 		switch {

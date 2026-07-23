@@ -117,8 +117,8 @@ template chỉ được lazy-load khi message cần render và dependency đến
 > [!NOTE]
 > AS-IS Phase 2-3 không dùng generic repository tự chọn scope. Personal repository chỉ JOIN
 > `personal_workspaces.owner_id`; Tenant repository bắt buộc `tenant_id` + active membership + Workspace Zone.
-> Mỗi nhánh dùng đúng một entity xuyên handler → service → repository: `PersonalConsumer`,
-> `TenantConsumer`, `PersonalTemplate`, hoặc `TenantTemplate`. Service chỉ nhận entity của nhánh đó;
+> Mỗi operation Consumer dùng entity phẳng riêng (`Create/Get/List/Update/ChangeState/Delete`)
+> và tách tiếp theo Personal/Tenant; không embed một runtime/base struct dùng chung. Service chỉ nhận entity đúng operation;
 > mutation repository nhận thêm `MailOutboxRecord` do service tạo và commit aggregate + outbox trong cùng PostgreSQL transaction.
 > API nhận `source_config_envelope` dạng base64, tối đa 16 KiB, do broker-resource flow đã mã hóa;
 > API đọc không bao giờ echo ciphertext mà chỉ trả `source_configured`. Update không gửi envelope sẽ giữ nguyên
@@ -147,7 +147,11 @@ stateDiagram-v2
 - `SUCCEEDED` promote candidate vào active row; `FAILED` hard-delete đúng candidate nhưng không lùi counter, vì vậy result cũ không va vào version mới.
 - Delete request chỉ insert outbox với fence lấy từ monotonic `next_config_version`, nên lớn hơn cả active và mọi candidate FAILED có thể từng chạm Zone; không tăng version, không đổi desired state và không xóa business row trước Zone.
 - JO chỉ hard-delete theo `resource_id` sau khi Dataplane trả `SUCCEEDED`; `FAILED` giữ nguyên business row để retry.
-- `mail_consumers` không có `deleted_at` hoặc desired state `DELETED`. Durable projection tombstone nằm ở bảng riêng
+- `personal_mail_consumers` và `tenant_mail_consumers` là hai aggregate vật lý độc lập; candidate,
+  runtime report và projection tombstone cũng tách theo cùng scope để mọi FK đều typed.
+- Personal row/candidate không lưu `created_by` hoặc `updated_by`: actor chỉ dùng cho authorization và notification outbox.
+  Tenant vẫn lưu actor audit vì nhiều membership có thể mutation cùng resource.
+- Hai bảng Consumer không có `deleted_at` hoặc desired state `DELETED`. Durable projection tombstone nằm ở bảng riêng
   để reconciler không hồi sinh Zone KV sau khi outbox hết retention.
 - Create nhận `code` chuẩn hóa dạng kebab-case. Unique index `(workspace_id, code)` chặn trùng code;
   hard-delete thành công giải phóng code, lần create sau bắt buộc dùng UUID runtime mới.

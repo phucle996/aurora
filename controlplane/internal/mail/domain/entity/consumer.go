@@ -1,7 +1,5 @@
 package mailEntity
 
-import "time"
-
 type SourceType string
 
 const (
@@ -24,26 +22,9 @@ const (
 	ConsumerRuntimeDegraded ConsumerRuntimeState = "degraded"
 )
 
-// ConsumerRuntimeSummary là current operational read model dùng chung cho Personal/Tenant detail.
-// Nó không chứa recipient, rendered payload hay lịch sử từng email.
-type ConsumerRuntimeSummary struct {
-	State           ConsumerRuntimeState
-	ConfigVersion   uint64
-	ActiveInstances uint32
-	ConsumerLag     uint64
-	ErrorCode       string
-	ErrorMessage    string
-	ReportedAt      time.Time
-	NextExpiryAt    time.Time
-}
-
 type ConsumerDesiredState string
 
 const (
 	ConsumerPaused  ConsumerDesiredState = "paused"
 	ConsumerEnabled ConsumerDesiredState = "enabled"
 )
-
-// PersonalConsumer là entity duy nhất đi xuyên handler -> service -> Personal repository.
-
-// TenantConsumer tách biệt hoàn toàn với Personal và luôn mang TenantID đã được ACR xác minh.

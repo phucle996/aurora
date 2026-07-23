@@ -8,7 +8,7 @@
 
 | Luồng | Đích | Mục đích | Không được chứa |
 |---|---|---|---|
-| Consumer runtime report | Central Redis → JO → `mail_consumer_runtime_reports` | Customer Consumer Detail, config/generation diagnostics | Recipient, rendered body, credential, physical pod identity |
+| Consumer runtime report | Central Redis → JO → `personal_mail_consumer_runtime_reports` / `tenant_mail_consumer_runtime_reports` | Customer Consumer Detail, config/generation diagnostics | Recipient, rendered body, credential, physical pod identity |
 | Operational health | Zone NATS KV + OTLP metrics | Zone decision, Grafana, Alertmanager | Customer/workspace/consumer/template ID, payload, credential |
 
 `hierarchy.zone_services.desired_state` vẫn là Controlplane business/control state. Grafana không ghi desired
@@ -22,7 +22,7 @@ flowchart LR
     SLOT[mail.runtime consumer slot KV] --> CR[rotating consumer_reporter]
     CR --> CRS[mail:consumer:reports]
     CRS --> CJ[JO consumer listener]
-    CJ --> CRT[(mail_consumer_runtime_reports)]
+    CJ --> CRT[(Personal/Tenant runtime report tables)]
     CRT --> DETAIL[Customer Consumer Detail]
 
     POD[Every Mail Dataplane pod] --> LOCAL[mail.health.node pod snapshot]

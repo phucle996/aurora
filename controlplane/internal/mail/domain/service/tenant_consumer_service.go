@@ -6,10 +6,10 @@ import (
 )
 
 type TenantConsumerService interface {
-	CreateConsumer(context.Context, *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error)
-	GetConsumer(context.Context, *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error)
-	ListConsumers(context.Context, *mailEntity.TenantConsumer) ([]*mailEntity.TenantConsumer, error)
-	UpdateConsumer(context.Context, *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error)
-	ChangeConsumerState(context.Context, *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error)
-	DeleteConsumer(context.Context, *mailEntity.TenantConsumer) error
+	CreateConsumer(context.Context, *mailEntity.CreateTenantConsumer) (*mailEntity.CreateTenantConsumer, error)
+	GetConsumer(context.Context, *mailEntity.GetTenantConsumer) (*mailEntity.GetTenantConsumer, error)
+	ListConsumers(context.Context, *mailEntity.ListTenantConsumer) ([]*mailEntity.ListTenantConsumer, error)
+	UpdateConsumer(context.Context, *mailEntity.UpdateTenantConsumer) (*mailEntity.UpdateTenantConsumer, error)
+	ChangeConsumerState(context.Context, *mailEntity.ChangeTenantConsumerState) (*mailEntity.ChangeTenantConsumerState, error)
+	DeleteConsumer(context.Context, *mailEntity.DeleteTenantConsumer) error
 }

@@ -521,11 +521,11 @@ func (r *personalTemplateRepoPostgres) Delete(ctx context.Context, req *mailEnti
 
 	var inUse bool
 	if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT EXISTS (
-		SELECT 1 FROM %s.mail_consumers c
+		SELECT 1 FROM %s.personal_mail_consumers c
 		WHERE c.workspace_id=$1 AND c.template_id=$2
 		UNION ALL
-		SELECT 1 FROM %s.mail_consumer_update_versions candidate
-		JOIN %s.mail_consumers active ON active.id=candidate.consumer_id
+		SELECT 1 FROM %s.personal_mail_consumer_update_versions candidate
+		JOIN %s.personal_mail_consumers active ON active.id=candidate.consumer_id
 		WHERE active.workspace_id=$1 AND candidate.template_id=$2
 		  AND candidate.config_version > active.config_version
 	)`, r.mailSchema, r.mailSchema, r.mailSchema), req.WorkspaceID, req.TemplateID).Scan(&inUse); err != nil {

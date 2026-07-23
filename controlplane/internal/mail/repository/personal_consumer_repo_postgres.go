@@ -31,7 +31,7 @@ func NewPersonalConsumerRepository(db *pgxpool.Pool, cfg *config.Config) mailRep
 	}
 }
 
-func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.CreatePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	// [COMMENT]: Outbox route phải chính là Zone đã được aggregate authorization guard kiểm tra; mismatch fail closed.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -62,19 +62,19 @@ func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mai
 
 	// [COMMENT]: Guarded INSERT vừa kiểm tra trusted workspace ownership vừa kiểm tra template version tồn tại.
 	tag, err := tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.mail_consumers (
+		INSERT INTO %s.personal_mail_consumers (
 			id, workspace_id, code, name, source_type, broker_resource_id, source_config_envelope, topic,
 			consumer_group, template_id, template_version, sender_profile_id, sender_version,
-			desired_state, parallelism, config_version, config_sha256, created_by, updated_by, created_at, updated_at
+			desired_state, parallelism, config_version, config_sha256, created_at, updated_at
 		)
-		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
-		WHERE EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id=$2 AND zone_id=$22 AND owner_id=$18)
+		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+		WHERE EXISTS (SELECT 1 FROM %s.personal_workspaces WHERE id=$2 AND zone_id=$20 AND owner_id=$21)
 		  AND EXISTS (SELECT 1 FROM %s.personal_mail_templates t JOIN %s.personal_mail_template_versions v ON v.template_id=t.id AND v.version=$11 WHERE t.id=$10 AND t.workspace_id=$2)
 	`, r.mailSchema, r.hierarchySchema, r.mailSchema, r.mailSchema),
 		consumer.ID, consumer.WorkspaceID, consumer.Code, consumer.Name, consumer.SourceType, consumer.BrokerResourceID,
 		consumer.SourceConfigEnvelope, consumer.Topic, consumer.ConsumerGroup, consumer.TemplateID,
 		consumer.TemplateVersion, consumer.SenderProfileID, consumer.SenderVersion, consumer.DesiredState, consumer.Parallelism,
-		consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedBy, consumer.UpdatedBy, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID)
+		consumer.ConfigVersion, consumer.ConfigSHA256, consumer.CreatedAt, consumer.UpdatedAt, consumer.ZoneID, consumer.ActorUserID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -104,17 +104,16 @@ func (r *personalConsumerRepoPostgres) Create(ctx context.Context, consumer *mai
 	return nil
 }
 
-func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error) {
-	consumer := &mailEntity.PersonalConsumer{}
+func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEntity.GetPersonalConsumer) (*mailEntity.GetPersonalConsumer, error) {
+	consumer := &mailEntity.GetPersonalConsumer{}
 
 	// [COMMENT]: Inline scan kết quả QueryRow trực tiếp vào các trường dữ liệu của struct Consumer
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.next_config_version, c.config_sha256,
-		       c.created_by, c.updated_by, c.created_at, c.updated_at
-		FROM %s.mail_consumers AS c
+		       c.next_config_version, c.config_sha256, c.created_at, c.updated_at
+		FROM %s.personal_mail_consumers AS c
 		JOIN %s.personal_workspaces AS w ON w.id = c.workspace_id
 		WHERE c.id = $1 AND c.workspace_id = $2
 		  AND w.zone_id = $3 AND w.owner_id = $4
@@ -139,8 +138,6 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		&consumer.ConfigVersion,
 		&consumer.NextConfigVersion,
 		&consumer.ConfigSHA256,
-		&consumer.CreatedBy,
-		&consumer.UpdatedBy,
 		&consumer.CreatedAt,
 		&consumer.UpdatedAt,
 	)
@@ -154,13 +151,12 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 
 	// [COMMENT]: Detail chỉ aggregate heartbeat còn lease-like TTL và đúng desired config hiện tại;
 	// report version cũ vẫn có thể tồn tại để diagnostics nhưng không được làm UI báo RUNNING sai.
-	runtime := &mailEntity.ConsumerRuntimeSummary{}
 	var activeInstances int64
 	var consumerLag int64
 	err = r.db.QueryRow(ctx, fmt.Sprintf(`
 		WITH live AS (
 			SELECT runtime_state, consumer_lag, error_code, error_message, reported_at, expires_at
-			FROM %s.mail_consumer_runtime_reports
+			FROM %s.personal_mail_consumer_runtime_reports
 			WHERE consumer_id = $1 AND config_version = $2 AND expires_at > now()
 		), ranked AS (
 			SELECT *, row_number() OVER (
@@ -181,24 +177,24 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		FROM ranked AS r CROSS JOIN aggregate AS a
 		WHERE r.priority = 1
 	`, r.mailSchema), consumer.ID, consumer.ConfigVersion).Scan(
-		&runtime.State,
-		&runtime.ConfigVersion,
+		&consumer.RuntimeState,
+		&consumer.RuntimeConfigVersion,
 		&activeInstances,
 		&consumerLag,
-		&runtime.ErrorCode,
-		&runtime.ErrorMessage,
-		&runtime.ReportedAt,
-		&runtime.NextExpiryAt,
+		&consumer.RuntimeErrorCode,
+		&consumer.RuntimeErrorMessage,
+		&consumer.RuntimeReportedAt,
+		&consumer.RuntimeNextExpiryAt,
 	)
 	if err == nil {
-		runtime.ActiveInstances = uint32(activeInstances)
-		runtime.ConsumerLag = uint64(consumerLag)
-		if consumer.DesiredState == mailEntity.ConsumerEnabled && runtime.ActiveInstances < consumer.Parallelism && runtime.State == mailEntity.ConsumerRuntimeRunning {
+		consumer.RuntimeObserved = true
+		consumer.RuntimeActiveInstances = uint32(activeInstances)
+		consumer.RuntimeConsumerLag = uint64(consumerLag)
+		if consumer.DesiredState == mailEntity.ConsumerEnabled && consumer.RuntimeActiveInstances < consumer.Parallelism && consumer.RuntimeState == mailEntity.ConsumerRuntimeRunning {
 			// [COMMENT]: Một slot RUNNING không được che việc desired parallelism chưa đủ coverage.
-			runtime.State = mailEntity.ConsumerRuntimeDegraded
-			runtime.ErrorCode = "MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL"
+			consumer.RuntimeState = mailEntity.ConsumerRuntimeDegraded
+			consumer.RuntimeErrorCode = "MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL"
 		}
-		consumer.Runtime = runtime
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("mail personal consumer repo: get runtime summary: %w", err)
 	}
@@ -206,7 +202,7 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 	return consumer, nil
 }
 
-func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEntity.PersonalConsumer) ([]*mailEntity.PersonalConsumer, error) {
+func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEntity.ListPersonalConsumer) ([]*mailEntity.ListPersonalConsumer, error) {
 	var sourceFilter, stateFilter any
 	if query.SourceType != "" {
 		sourceFilter = string(query.SourceType)
@@ -216,12 +212,12 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 	}
 
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
-		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id,
+		       octet_length(c.source_config_envelope) > 0,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.next_config_version, c.config_sha256,
-		       c.created_by, c.updated_by, c.created_at, c.updated_at
-		FROM %s.mail_consumers AS c
+		       c.config_sha256, c.created_at, c.updated_at
+		FROM %s.personal_mail_consumers AS c
 		JOIN %s.personal_workspaces AS w ON w.id = c.workspace_id
 		WHERE c.workspace_id = $1
 		  AND w.zone_id = $2 AND w.owner_id = $3
@@ -237,9 +233,9 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 	}
 	defer rows.Close()
 
-	consumers := make([]*mailEntity.PersonalConsumer, 0, query.Limit)
+	consumers := make([]*mailEntity.ListPersonalConsumer, 0, query.Limit)
 	for rows.Next() {
-		consumer := &mailEntity.PersonalConsumer{}
+		consumer := &mailEntity.ListPersonalConsumer{}
 		// [COMMENT]: Inline scan từng cột dữ liệu trong kết quả rows.Next() vào struct Consumer
 		if err = rows.Scan(
 			&consumer.ID,
@@ -248,7 +244,7 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 			&consumer.Name,
 			&consumer.SourceType,
 			&consumer.BrokerResourceID,
-			&consumer.SourceConfigEnvelope,
+			&consumer.SourceConfigured,
 			&consumer.Topic,
 			&consumer.ConsumerGroup,
 			&consumer.TemplateID,
@@ -258,10 +254,7 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 			&consumer.DesiredState,
 			&consumer.Parallelism,
 			&consumer.ConfigVersion,
-			&consumer.NextConfigVersion,
 			&consumer.ConfigSHA256,
-			&consumer.CreatedBy,
-			&consumer.UpdatedBy,
 			&consumer.CreatedAt,
 			&consumer.UpdatedAt,
 		); err != nil {
@@ -276,7 +269,7 @@ func (r *personalConsumerRepoPostgres) List(ctx context.Context, query *mailEnti
 	return consumers, nil
 }
 
-func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mailEntity.UpdatePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	// [COMMENT]: Không cho service bug chuyển projection sang Zone khác aggregate đã authorize.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -305,7 +298,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 		return mailTaxonomy.ErrOperationInProgress
 	}
 	var lockedConsumerVersion uint64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.mail_consumers c JOIN %s.personal_workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.owner_id=$4 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID).Scan(&lockedConsumerVersion)
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.personal_mail_consumers c JOIN %s.personal_workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.owner_id=$4 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID).Scan(&lockedConsumerVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
@@ -344,7 +337,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			WHERE resource_id=$7 AND status IN ('PENDING','PROCESSING') LIMIT 1
 		), target AS MATERIALIZED (
 			SELECT config_version, next_config_version
-			FROM %s.mail_consumers
+			FROM %s.personal_mail_consumers
 			WHERE id = $17 AND workspace_id = $18
 			  AND EXISTS (SELECT 1 FROM authorized)
 			FOR UPDATE
@@ -353,13 +346,12 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			WHERE resource_id = $17::text AND status IN ('PENDING','PROCESSING')
 			LIMIT 1
 		), version_inserted AS (
-			INSERT INTO %s.mail_consumer_update_versions (
+			INSERT INTO %s.personal_mail_consumer_update_versions (
 				consumer_id,config_version,event_id,name,source_type,broker_resource_id,
 				source_config_envelope,topic,consumer_group,template_id,template_version,
-				sender_profile_id,sender_version,desired_state,parallelism,config_sha256,
-				updated_by,created_at
+				sender_profile_id,sender_version,desired_state,parallelism,config_sha256,created_at
 			)
-			SELECT $17,$13,$21,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$14,$15,$16
+			SELECT $17,$13,$21,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$14,$16
 			FROM target
 			WHERE config_version=$20 AND next_config_version=$13
 			  AND NOT EXISTS (SELECT 1 FROM live_operation)
@@ -368,7 +360,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 			ON CONFLICT DO NOTHING
 			RETURNING consumer_id
 		), counter_updated AS (
-			UPDATE %s.mail_consumers
+			UPDATE %s.personal_mail_consumers
 			SET next_config_version=$13+1
 			WHERE id=$17 AND workspace_id=$18 AND config_version=$20
 			  AND next_config_version=$13 AND EXISTS (SELECT 1 FROM version_inserted)
@@ -444,7 +436,7 @@ func (r *personalConsumerRepoPostgres) Update(ctx context.Context, consumer *mai
 	return nil
 }
 
-func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailEntity.PersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailEntity.DeletePersonalConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	// [COMMENT]: Tombstone phải đi đúng Zone của guarded workspace mutation.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -455,7 +447,7 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 	}
 	defer tx.Rollback(ctx)
 	var lockedVersion uint64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.mail_consumers c JOIN %s.personal_workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.owner_id=$4 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID).Scan(&lockedVersion)
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.personal_mail_consumers c JOIN %s.personal_workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.owner_id=$4 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID).Scan(&lockedVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
@@ -483,7 +475,7 @@ func (r *personalConsumerRepoPostgres) Delete(ctx context.Context, consumer *mai
 			WHERE id = $1 AND zone_id = $2 AND owner_id = $3
 		), target AS MATERIALIZED (
 			SELECT config_version
-			FROM %s.mail_consumers
+			FROM %s.personal_mail_consumers
 			WHERE id = $4 AND workspace_id = $1
 			  AND EXISTS (SELECT 1 FROM authorized)
 			FOR UPDATE

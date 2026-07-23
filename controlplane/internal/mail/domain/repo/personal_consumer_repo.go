@@ -6,9 +6,9 @@ import (
 )
 
 type PersonalConsumerRepository interface {
-	Create(context.Context, *mailEntity.PersonalConsumer, *mailEntity.MailOutboxRecord) error
-	GetByID(context.Context, *mailEntity.PersonalConsumer) (*mailEntity.PersonalConsumer, error)
-	List(context.Context, *mailEntity.PersonalConsumer) ([]*mailEntity.PersonalConsumer, error)
-	Update(context.Context, *mailEntity.PersonalConsumer, *mailEntity.MailOutboxRecord) error
-	Delete(context.Context, *mailEntity.PersonalConsumer, *mailEntity.MailOutboxRecord) error
+	Create(context.Context, *mailEntity.CreatePersonalConsumer, *mailEntity.MailOutboxRecord) error
+	GetByID(context.Context, *mailEntity.GetPersonalConsumer) (*mailEntity.GetPersonalConsumer, error)
+	List(context.Context, *mailEntity.ListPersonalConsumer) ([]*mailEntity.ListPersonalConsumer, error)
+	Update(context.Context, *mailEntity.UpdatePersonalConsumer, *mailEntity.MailOutboxRecord) error
+	Delete(context.Context, *mailEntity.DeletePersonalConsumer, *mailEntity.MailOutboxRecord) error
 }

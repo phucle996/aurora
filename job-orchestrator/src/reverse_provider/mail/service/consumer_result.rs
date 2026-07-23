@@ -70,59 +70,125 @@ pub async fn apply_upsert_result(
 
     let config_version = i64::try_from(command.config_version)
         .map_err(|_| "Mail consumer upsert config_version exceeds BIGINT")?;
+    // [COMMENT]: Consumer UUID không mang scope trên wire. JO khóa và xác định đúng một namespace;
+    // zero hoặc hai match đều fail-close thay vì ghi nhầm Personal/Tenant.
+    let scope = transaction
+        .query_one(
+            "SELECT \
+                 EXISTS(SELECT 1 FROM mail.personal_mail_consumers WHERE id=$1 FOR UPDATE), \
+                 EXISTS(SELECT 1 FROM mail.tenant_mail_consumers WHERE id=$1 FOR UPDATE)",
+            &[&resource_id],
+        )
+        .await?;
+    let personal_exists: bool = scope.get(0);
+    let tenant_exists: bool = scope.get(1);
+    if personal_exists == tenant_exists {
+        return Err("Mail consumer upsert result cannot resolve exactly one scope".into());
+    }
+
     if status == "FAILED" {
         let cleaned = if command.config_version == 1 {
             // [COMMENT]: Create chưa có historical generation; terminal failure trả business state về trước create.
-            transaction
-                .execute(
-                    "DELETE FROM mail.mail_consumers WHERE id=$1 AND config_version=1",
-                    &[&resource_id],
-                )
-                .await?
+            if personal_exists {
+                transaction
+                    .execute(
+                        "DELETE FROM mail.personal_mail_consumers WHERE id=$1 AND config_version=1",
+                        &[&resource_id],
+                    )
+                    .await?
+            } else {
+                transaction
+                    .execute(
+                        "DELETE FROM mail.tenant_mail_consumers WHERE id=$1 AND config_version=1",
+                        &[&resource_id],
+                    )
+                    .await?
+            }
         } else {
             // [COMMENT]: Candidate FAILED bị xóa chính xác theo event/version; sequence trên head không lùi.
-            transaction
-                .execute(
-                    "DELETE FROM mail.mail_consumer_update_versions \
-                     WHERE consumer_id=$1 AND config_version=$2 AND event_id=$3",
-                    &[&resource_id, &config_version, &event_id],
-                )
-                .await?
+            if personal_exists {
+                transaction
+                    .execute(
+                        "DELETE FROM mail.personal_mail_consumer_update_versions \
+                         WHERE consumer_id=$1 AND config_version=$2 AND event_id=$3",
+                        &[&resource_id, &config_version, &event_id],
+                    )
+                    .await?
+            } else {
+                transaction
+                    .execute(
+                        "DELETE FROM mail.tenant_mail_consumer_update_versions \
+                         WHERE consumer_id=$1 AND config_version=$2 AND event_id=$3",
+                        &[&resource_id, &config_version, &event_id],
+                    )
+                    .await?
+            }
         };
         if cleaned != 1 {
             return Err("Mail consumer FAILED result has no exact generation to clean".into());
         }
     } else if status == "SUCCEEDED" && command.config_version > 1 {
         // [COMMENT]: Zone đã apply thành công mới được promote candidate thành active business row.
-        let promoted = transaction
-			.execute(
-                "UPDATE mail.mail_consumers AS active SET \
-                     name=candidate.name,source_type=candidate.source_type, \
-                     broker_resource_id=candidate.broker_resource_id, \
-                     source_config_envelope=candidate.source_config_envelope,topic=candidate.topic, \
-                     consumer_group=candidate.consumer_group,template_id=candidate.template_id, \
-                     template_version=candidate.template_version,sender_profile_id=candidate.sender_profile_id, \
-                     sender_version=candidate.sender_version,desired_state=candidate.desired_state, \
-                     parallelism=candidate.parallelism,config_version=candidate.config_version, \
-                     config_sha256=candidate.config_sha256,updated_by=candidate.updated_by, \
-                     updated_at=candidate.created_at \
-                 FROM mail.mail_consumer_update_versions AS candidate \
-                 WHERE active.id=$1 AND candidate.consumer_id=active.id \
-                   AND candidate.config_version=$2 AND candidate.event_id=$3 \
-                   AND active.config_version < candidate.config_version",
-                &[&resource_id, &config_version, &event_id],
-			)
-			.await?;
+        let promoted = if personal_exists {
+            // [COMMENT]: Personal promotion không có actor audit column.
+            transaction
+                .execute(
+                    "UPDATE mail.personal_mail_consumers AS active SET \
+                         name=candidate.name,source_type=candidate.source_type, \
+                         broker_resource_id=candidate.broker_resource_id, \
+                         source_config_envelope=candidate.source_config_envelope,topic=candidate.topic, \
+                         consumer_group=candidate.consumer_group,template_id=candidate.template_id, \
+                         template_version=candidate.template_version,sender_profile_id=candidate.sender_profile_id, \
+                         sender_version=candidate.sender_version,desired_state=candidate.desired_state, \
+                         parallelism=candidate.parallelism,config_version=candidate.config_version, \
+                         config_sha256=candidate.config_sha256,updated_at=candidate.created_at \
+                     FROM mail.personal_mail_consumer_update_versions AS candidate \
+                     WHERE active.id=$1 AND candidate.consumer_id=active.id \
+                       AND candidate.config_version=$2 AND candidate.event_id=$3 \
+                       AND active.config_version < candidate.config_version",
+                    &[&resource_id, &config_version, &event_id],
+                )
+                .await?
+        } else {
+            transaction
+                .execute(
+                    "UPDATE mail.tenant_mail_consumers AS active SET \
+                         name=candidate.name,source_type=candidate.source_type, \
+                         broker_resource_id=candidate.broker_resource_id, \
+                         source_config_envelope=candidate.source_config_envelope,topic=candidate.topic, \
+                         consumer_group=candidate.consumer_group,template_id=candidate.template_id, \
+                         template_version=candidate.template_version,sender_profile_id=candidate.sender_profile_id, \
+                         sender_version=candidate.sender_version,desired_state=candidate.desired_state, \
+                         parallelism=candidate.parallelism,config_version=candidate.config_version, \
+                         config_sha256=candidate.config_sha256,updated_by=candidate.updated_by, \
+                         updated_at=candidate.created_at \
+                     FROM mail.tenant_mail_consumer_update_versions AS candidate \
+                     WHERE active.id=$1 AND candidate.consumer_id=active.id \
+                       AND candidate.config_version=$2 AND candidate.event_id=$3 \
+                       AND active.config_version < candidate.config_version",
+                    &[&resource_id, &config_version, &event_id],
+                )
+                .await?
+        };
         if promoted != 1 {
             return Err("Mail consumer update ACK has no exact candidate to promote".into());
         }
     } else if status == "SUCCEEDED" {
-        let exists = transaction
-            .query_opt(
-                "SELECT 1 FROM mail.mail_consumers WHERE id=$1 AND config_version=1 FOR UPDATE",
-                &[&resource_id],
-            )
-            .await?;
+        let exists = if personal_exists {
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM mail.personal_mail_consumers WHERE id=$1 AND config_version=1 FOR UPDATE",
+                    &[&resource_id],
+                )
+                .await?
+        } else {
+            transaction
+                .query_opt(
+                    "SELECT 1 FROM mail.tenant_mail_consumers WHERE id=$1 AND config_version=1 FOR UPDATE",
+                    &[&resource_id],
+                )
+                .await?
+        };
         if exists.is_none() {
             return Err("Mail consumer create ACK has no V1 aggregate".into());
         }
@@ -213,39 +279,86 @@ pub async fn apply_delete_result(
     if status == "SUCCEEDED" {
         let config_version = i64::try_from(command.config_version)
             .map_err(|_| "Mail consumer delete config_version exceeds BIGINT")?;
-        let target = transaction
-            .query_opt(
-                "SELECT config_version FROM mail.mail_consumers WHERE id=$1 FOR UPDATE",
+        // [COMMENT]: Delete ACK cũng phải resolve đúng một physical namespace trước khi tạo tombstone.
+        let scope = transaction
+            .query_one(
+                "SELECT \
+                     EXISTS(SELECT 1 FROM mail.personal_mail_consumers WHERE id=$1 FOR UPDATE), \
+                     EXISTS(SELECT 1 FROM mail.tenant_mail_consumers WHERE id=$1 FOR UPDATE)",
                 &[&resource_id],
             )
-            .await?
-            .ok_or("Mail consumer delete ACK has no aggregate")?;
+            .await?;
+        let personal_exists: bool = scope.get(0);
+        let tenant_exists: bool = scope.get(1);
+        if personal_exists == tenant_exists {
+            return Err("Mail consumer delete result cannot resolve exactly one scope".into());
+        }
+        let target = if personal_exists {
+            transaction
+                .query_opt(
+                    "SELECT config_version FROM mail.personal_mail_consumers WHERE id=$1 FOR UPDATE",
+                    &[&resource_id],
+                )
+                .await?
+        } else {
+            transaction
+                .query_opt(
+                    "SELECT config_version FROM mail.tenant_mail_consumers WHERE id=$1 FOR UPDATE",
+                    &[&resource_id],
+                )
+                .await?
+        }
+        .ok_or("Mail consumer delete ACK has no aggregate")?;
         let active_version: i64 = target.get(0);
         if active_version >= config_version {
             return Err("Mail consumer delete fence is not newer than active version".into());
         }
         // [COMMENT]: Tombstone là rebuild authority; command fence phải lớn hơn active version.
-        let tombstoned = transaction
-            .execute(
-                "INSERT INTO mail.mail_consumer_projection_tombstones( \
-                     consumer_id,zone_id,config_version,delete_event_id,tombstoned_at \
-                 ) VALUES ($1,$2,$3,$4,NOW()) \
-                 ON CONFLICT (consumer_id) DO UPDATE SET \
-                     zone_id=EXCLUDED.zone_id,config_version=EXCLUDED.config_version, \
-                     delete_event_id=EXCLUDED.delete_event_id,tombstoned_at=EXCLUDED.tombstoned_at \
-                 WHERE EXCLUDED.config_version > mail_consumer_projection_tombstones.config_version",
-                &[&resource_id, &zone_id, &config_version, &event_id],
-            )
-            .await?;
+        let tombstoned = if personal_exists {
+            transaction
+                .execute(
+                    "INSERT INTO mail.personal_mail_consumer_projection_tombstones( \
+                         consumer_id,zone_id,config_version,delete_event_id,tombstoned_at \
+                     ) VALUES ($1,$2,$3,$4,NOW()) \
+                     ON CONFLICT (consumer_id) DO UPDATE SET \
+                         zone_id=EXCLUDED.zone_id,config_version=EXCLUDED.config_version, \
+                         delete_event_id=EXCLUDED.delete_event_id,tombstoned_at=EXCLUDED.tombstoned_at \
+                     WHERE EXCLUDED.config_version > personal_mail_consumer_projection_tombstones.config_version",
+                    &[&resource_id, &zone_id, &config_version, &event_id],
+                )
+                .await?
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO mail.tenant_mail_consumer_projection_tombstones( \
+                         consumer_id,zone_id,config_version,delete_event_id,tombstoned_at \
+                     ) VALUES ($1,$2,$3,$4,NOW()) \
+                     ON CONFLICT (consumer_id) DO UPDATE SET \
+                         zone_id=EXCLUDED.zone_id,config_version=EXCLUDED.config_version, \
+                         delete_event_id=EXCLUDED.delete_event_id,tombstoned_at=EXCLUDED.tombstoned_at \
+                     WHERE EXCLUDED.config_version > tenant_mail_consumer_projection_tombstones.config_version",
+                    &[&resource_id, &zone_id, &config_version, &event_id],
+                )
+                .await?
+        };
         if tombstoned != 1 {
             return Err("Mail consumer delete ACK did not advance projection tombstone".into());
         }
-        let deleted = transaction
-            .execute(
-                "DELETE FROM mail.mail_consumers WHERE id=$1 AND config_version < $2",
-                &[&resource_id, &config_version],
-            )
-            .await?;
+        let deleted = if personal_exists {
+            transaction
+                .execute(
+                    "DELETE FROM mail.personal_mail_consumers WHERE id=$1 AND config_version < $2",
+                    &[&resource_id, &config_version],
+                )
+                .await?
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM mail.tenant_mail_consumers WHERE id=$1 AND config_version < $2",
+                    &[&resource_id, &config_version],
+                )
+                .await?
+        };
         if deleted != 1 {
             return Err("Mail consumer delete ACK did not remove aggregate".into());
         }

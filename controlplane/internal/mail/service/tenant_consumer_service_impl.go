@@ -31,13 +31,13 @@ func NewTenantConsumerService(repo mailRepoInterface.TenantConsumerRepository) m
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Tenant.
 // [COMMENT]: Handler/DTO layer đã validate va normalize input payload; service tap trung vao domain logic.
-func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
+func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mailEntity.CreateTenantConsumer) (*mailEntity.CreateTenantConsumer, error) {
 	// [COMMENT]: UUID là runtime identity mới cho mỗi lần create; hard-delete giải phóng code nhưng không cho tái sử dụng identity cũ.
 	consumerID := uuid.New()
 	now := time.Now().UTC()
 	actor := req.ActorUserID
 
-	consumer := &mailEntity.TenantConsumer{
+	consumer := &mailEntity.CreateTenantConsumer{
 		ActorUserID:          req.ActorUserID,
 		TenantID:             req.TenantID,
 		ZoneID:               req.ZoneID,
@@ -57,8 +57,9 @@ func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mai
 		DesiredState:         mailEntity.ConsumerPaused,
 		Parallelism:          req.Parallelism,
 		ConfigVersion:        1,
-		CreatedBy:            &actor,
-		UpdatedBy:            &actor,
+		NextConfigVersion:    2,
+		CreatedBy:            actor,
+		UpdatedBy:            actor,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}
@@ -150,28 +151,30 @@ func (s *tenantConsumerServiceImpl) CreateConsumer(ctx context.Context, req *mai
 	if err = s.repo.Create(ctx, consumer, outbox); err != nil {
 		return nil, err
 	}
-	created, err := s.repo.GetByID(ctx, consumer)
-	if err != nil {
-		return nil, err
-	}
-	created.OperationID = outbox.EventID
-	return created, nil
+	consumer.OperationID = outbox.EventID
+	return consumer, nil
 }
 
 // GetConsumer lay thong tin consumer theo ID va Tenant request.
-func (s *tenantConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
+func (s *tenantConsumerServiceImpl) GetConsumer(ctx context.Context, req *mailEntity.GetTenantConsumer) (*mailEntity.GetTenantConsumer, error) {
 	return s.repo.GetByID(ctx, req)
 }
 
 // ListConsumers danh sach consumer theo dieu kien loc va pagination.
-func (s *tenantConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.TenantConsumer) ([]*mailEntity.TenantConsumer, error) {
+func (s *tenantConsumerServiceImpl) ListConsumers(ctx context.Context, req *mailEntity.ListTenantConsumer) ([]*mailEntity.ListTenantConsumer, error) {
 	return s.repo.List(ctx, req)
 }
 
 // UpdateConsumer cap nhat thong tin consumer voi optimistic version check va tao outbox event.
-func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
+func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mailEntity.UpdateTenantConsumer) (*mailEntity.UpdateTenantConsumer, error) {
 	// [COMMENT]: API không bao giờ đọc trả ciphertext; envelope rỗng trong full update giữ nguyên cấu hình broker hiện tại.
-	current, err := s.repo.GetByID(ctx, req)
+	current, err := s.repo.GetByID(ctx, &mailEntity.GetTenantConsumer{
+		ActorUserID: req.ActorUserID,
+		TenantID:    req.TenantID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +194,7 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mai
 	now := time.Now().UTC()
 	actor := req.ActorUserID
 
-	consumer := &mailEntity.TenantConsumer{
+	consumer := &mailEntity.UpdateTenantConsumer{
 		ActorUserID:          req.ActorUserID,
 		TenantID:             req.TenantID,
 		ZoneID:               req.ZoneID,
@@ -215,7 +218,7 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mai
 		NextConfigVersion:     current.NextConfigVersion + 1,
 		ExpectedConfigVersion: req.ExpectedConfigVersion,
 		CreatedBy:             current.CreatedBy,
-		UpdatedBy:             &actor,
+		UpdatedBy:             actor,
 		CreatedAt:             current.CreatedAt,
 		UpdatedAt:             now,
 	}
@@ -315,9 +318,15 @@ func (s *tenantConsumerServiceImpl) UpdateConsumer(ctx context.Context, req *mai
 }
 
 // ChangeConsumerState thay doi trang thai pause/resume cua consumer.
-func (s *tenantConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
+func (s *tenantConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req *mailEntity.ChangeTenantConsumerState) (*mailEntity.ChangeTenantConsumerState, error) {
 	// [COMMENT]: Lay consumer hien tai tu repository
-	consumer, err := s.repo.GetByID(ctx, req)
+	consumer, err := s.repo.GetByID(ctx, &mailEntity.GetTenantConsumer{
+		ActorUserID: req.ActorUserID,
+		TenantID:    req.TenantID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +337,7 @@ func (s *tenantConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req
 	}
 
 	// [COMMENT]: Goi UpdateConsumer de thuc hien update trang thai va phat outbox event
-	return s.UpdateConsumer(ctx, &mailEntity.TenantConsumer{
+	updated, err := s.UpdateConsumer(ctx, &mailEntity.UpdateTenantConsumer{
 		ActorUserID:           req.ActorUserID,
 		TenantID:              req.TenantID,
 		ZoneID:                req.ZoneID,
@@ -347,12 +356,39 @@ func (s *tenantConsumerServiceImpl) ChangeConsumerState(ctx context.Context, req
 		DesiredState:          req.DesiredState,
 		Parallelism:           consumer.Parallelism,
 	})
+	if err != nil {
+		return nil, err
+	}
+	req.OperationID = updated.OperationID
+	req.ConfigVersion = updated.ConfigVersion
+	req.UpdatedAt = updated.UpdatedAt
+	req.Code = updated.Code
+	req.Name = updated.Name
+	req.SourceType = updated.SourceType
+	req.BrokerResourceID = updated.BrokerResourceID
+	req.SourceConfigEnvelope = append([]byte(nil), updated.SourceConfigEnvelope...)
+	req.Topic = updated.Topic
+	req.ConsumerGroup = updated.ConsumerGroup
+	req.TemplateID = updated.TemplateID
+	req.TemplateVersion = updated.TemplateVersion
+	req.SenderProfileID = updated.SenderProfileID
+	req.SenderVersion = updated.SenderVersion
+	req.Parallelism = updated.Parallelism
+	req.ConfigSHA256 = append([]byte(nil), updated.ConfigSHA256...)
+	req.CreatedAt = updated.CreatedAt
+	return req, nil
 }
 
 // DeleteConsumer xoa consumer va phat tombstone delete event vao outbox.
-func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.TenantConsumer) error {
+func (s *tenantConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *mailEntity.DeleteTenantConsumer) error {
 	// [COMMENT]: Delete chỉ phát command với fence lớn hơn active version; CP không đổi aggregate trước Zone.
-	current, err := s.repo.GetByID(ctx, req)
+	current, err := s.repo.GetByID(ctx, &mailEntity.GetTenantConsumer{
+		ActorUserID: req.ActorUserID,
+		TenantID:    req.TenantID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
 	if err != nil {
 		return err
 	}

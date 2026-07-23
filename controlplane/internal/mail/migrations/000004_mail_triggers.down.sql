@@ -1,0 +1,3 @@
+DROP TRIGGER IF EXISTS trg_tenant_mail_template_versions_immutable ON tenant_mail_template_versions CASCADE;
+DROP TRIGGER IF EXISTS trg_personal_mail_template_versions_immutable ON personal_mail_template_versions CASCADE;
+DROP FUNCTION IF EXISTS reject_mail_template_version_mutation CASCADE;

@@ -58,32 +58,9 @@ CREATE TABLE IF NOT EXISTS tenant_mail_template_versions (
     PRIMARY KEY (template_id, version)
 );
 
--- [COMMENT]: COW là invariant tại database.
-CREATE OR REPLACE FUNCTION reject_mail_template_version_mutation()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF current_setting('mail.allow_template_version_mutation', true) = 'on' THEN
-        IF TG_OP = 'DELETE' THEN
-            RETURN OLD;
-        END IF;
-        RETURN NEW;
-    END IF;
-    RAISE EXCEPTION '% is immutable; publish a new version', TG_TABLE_NAME
-        USING ERRCODE = '55000';
-END;
-$$ LANGUAGE plpgsql;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_personal_mail_template_versions_immutable' AND NOT tgisinternal) THEN
-        CREATE TRIGGER trg_personal_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON personal_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_tenant_mail_template_versions_immutable' AND NOT tgisinternal) THEN
-        CREATE TRIGGER trg_tenant_mail_template_versions_immutable BEFORE UPDATE OR DELETE ON tenant_mail_template_versions FOR EACH ROW EXECUTE FUNCTION reject_mail_template_version_mutation();
-    END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS mail_consumers (
+-- [COMMENT]: Personal Consumer có namespace vật lý riêng và không lưu actor audit;
+-- ownership được chứng minh qua personal workspace trong từng transaction.
+CREATE TABLE IF NOT EXISTS personal_mail_consumers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
     code VARCHAR(63) NOT NULL,
@@ -102,20 +79,18 @@ CREATE TABLE IF NOT EXISTS mail_consumers (
     config_version BIGINT NOT NULL DEFAULT 1 CHECK (config_version > 0),
     next_config_version BIGINT NOT NULL DEFAULT 2 CHECK (next_config_version > config_version),
     config_sha256 BYTEA NOT NULL,
-    created_by UUID NULL,
-    updated_by UUID NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT ck_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
-    CONSTRAINT ck_mail_consumer_source_config_envelope CHECK (octet_length(source_config_envelope) <= 16384),
-    CONSTRAINT ck_mail_consumer_enabled_source_config CHECK (
+    CONSTRAINT ck_personal_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
+    CONSTRAINT ck_personal_mail_consumer_source_config_envelope CHECK (octet_length(source_config_envelope) <= 16384),
+    CONSTRAINT ck_personal_mail_consumer_enabled_source_config CHECK (
         desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
     ),
-    CONSTRAINT ck_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
+    CONSTRAINT ck_personal_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 );
 
-CREATE TABLE IF NOT EXISTS mail_consumer_update_versions (
-    consumer_id UUID NOT NULL REFERENCES mail_consumers(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS personal_mail_consumer_update_versions (
+    consumer_id UUID NOT NULL REFERENCES personal_mail_consumers(id) ON DELETE CASCADE,
     config_version BIGINT NOT NULL CHECK (config_version > 1),
     event_id UUID NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,
@@ -131,17 +106,16 @@ CREATE TABLE IF NOT EXISTS mail_consumer_update_versions (
     desired_state mail_consumer_desired_state NOT NULL,
     parallelism INTEGER NOT NULL CHECK (parallelism BETWEEN 1 AND 256),
     config_sha256 BYTEA NOT NULL CHECK (octet_length(config_sha256) = 32),
-    updated_by UUID,
     created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (consumer_id, config_version),
-    CONSTRAINT ck_mail_consumer_update_envelope CHECK (octet_length(source_config_envelope) <= 16384),
-    CONSTRAINT ck_mail_consumer_update_enabled_envelope CHECK (
+    CONSTRAINT ck_personal_mail_consumer_update_envelope CHECK (octet_length(source_config_envelope) <= 16384),
+    CONSTRAINT ck_personal_mail_consumer_update_enabled_envelope CHECK (
         desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
     )
 );
 
-CREATE TABLE IF NOT EXISTS mail_consumer_runtime_reports (
-    consumer_id UUID NOT NULL REFERENCES mail_consumers(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS personal_mail_consumer_runtime_reports (
+    consumer_id UUID NOT NULL REFERENCES personal_mail_consumers(id) ON DELETE CASCADE,
     event_id UUID NOT NULL,
     instance_id VARCHAR(255) NOT NULL,
     config_version BIGINT NOT NULL CHECK (config_version > 0),
@@ -154,7 +128,82 @@ CREATE TABLE IF NOT EXISTS mail_consumer_runtime_reports (
     reported_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (consumer_id, instance_id),
-    CONSTRAINT ck_mail_runtime_expiry CHECK (expires_at > reported_at)
+    CONSTRAINT ck_personal_mail_runtime_expiry CHECK (expires_at > reported_at)
+);
+
+-- [COMMENT]: Tenant Consumer giữ actor audit vì mutation diễn ra qua membership dùng chung.
+CREATE TABLE IF NOT EXISTS tenant_mail_consumers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL,
+    code VARCHAR(63) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    source_type mail_source_type NOT NULL,
+    broker_resource_id UUID NOT NULL,
+    source_config_envelope BYTEA NOT NULL DEFAULT ''::bytea,
+    topic VARCHAR(249) NOT NULL,
+    consumer_group VARCHAR(255) NOT NULL,
+    template_id VARCHAR(128) NOT NULL,
+    template_version BIGINT NOT NULL CHECK (template_version > 0),
+    sender_profile_id VARCHAR(128) NOT NULL,
+    sender_version BIGINT NOT NULL CHECK (sender_version > 0),
+    desired_state mail_consumer_desired_state NOT NULL DEFAULT 'paused',
+    parallelism INTEGER NOT NULL DEFAULT 1 CHECK (parallelism BETWEEN 1 AND 256),
+    config_version BIGINT NOT NULL DEFAULT 1 CHECK (config_version > 0),
+    next_config_version BIGINT NOT NULL DEFAULT 2 CHECK (next_config_version > config_version),
+    config_sha256 BYTEA NOT NULL,
+    created_by UUID NOT NULL,
+    updated_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_tenant_mail_consumer_config_hash CHECK (octet_length(config_sha256) = 32),
+    CONSTRAINT ck_tenant_mail_consumer_source_config_envelope CHECK (octet_length(source_config_envelope) <= 16384),
+    CONSTRAINT ck_tenant_mail_consumer_enabled_source_config CHECK (
+        desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
+    ),
+    CONSTRAINT ck_tenant_mail_consumer_code CHECK (code ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
+);
+
+CREATE TABLE IF NOT EXISTS tenant_mail_consumer_update_versions (
+    consumer_id UUID NOT NULL REFERENCES tenant_mail_consumers(id) ON DELETE CASCADE,
+    config_version BIGINT NOT NULL CHECK (config_version > 1),
+    event_id UUID NOT NULL UNIQUE,
+    name VARCHAR(255) NOT NULL,
+    source_type mail_source_type NOT NULL,
+    broker_resource_id UUID NOT NULL,
+    source_config_envelope BYTEA NOT NULL,
+    topic VARCHAR(249) NOT NULL,
+    consumer_group VARCHAR(255) NOT NULL,
+    template_id VARCHAR(128) NOT NULL,
+    template_version BIGINT NOT NULL CHECK (template_version > 0),
+    sender_profile_id VARCHAR(128) NOT NULL,
+    sender_version BIGINT NOT NULL CHECK (sender_version > 0),
+    desired_state mail_consumer_desired_state NOT NULL,
+    parallelism INTEGER NOT NULL CHECK (parallelism BETWEEN 1 AND 256),
+    config_sha256 BYTEA NOT NULL CHECK (octet_length(config_sha256) = 32),
+    updated_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (consumer_id, config_version),
+    CONSTRAINT ck_tenant_mail_consumer_update_envelope CHECK (octet_length(source_config_envelope) <= 16384),
+    CONSTRAINT ck_tenant_mail_consumer_update_enabled_envelope CHECK (
+        desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
+    )
+);
+
+CREATE TABLE IF NOT EXISTS tenant_mail_consumer_runtime_reports (
+    consumer_id UUID NOT NULL REFERENCES tenant_mail_consumers(id) ON DELETE CASCADE,
+    event_id UUID NOT NULL,
+    instance_id VARCHAR(255) NOT NULL,
+    config_version BIGINT NOT NULL CHECK (config_version > 0),
+    runtime_state mail_consumer_runtime_state NOT NULL,
+    runtime_generation BIGINT NOT NULL CHECK (runtime_generation > 0),
+    report_sequence BIGINT NOT NULL CHECK (report_sequence > 0),
+    consumer_lag BIGINT NOT NULL DEFAULT 0 CHECK (consumer_lag >= 0),
+    error_code VARCHAR(100) NULL,
+    error_message VARCHAR(1024) NULL,
+    reported_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (consumer_id, instance_id),
+    CONSTRAINT ck_tenant_mail_runtime_expiry CHECK (expires_at > reported_at)
 );
 
 CREATE TABLE IF NOT EXISTS mail_outbox_records (
@@ -197,9 +246,19 @@ CREATE TABLE IF NOT EXISTS tenant_mail_template_projection_tombstones (
     deleted_at TIMESTAMPTZ NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS mail_consumer_projection_tombstones (
+CREATE TABLE IF NOT EXISTS personal_mail_consumer_projection_tombstones (
     consumer_id UUID PRIMARY KEY,
-    zone_id UUID NOT NULL REFERENCES hierarchy.zones(id) ON DELETE CASCADE,
+    -- [COMMENT]: zone_id là routing snapshot; không FK cascade để không mất delete intent.
+    zone_id UUID NOT NULL,
+    config_version BIGINT NOT NULL CHECK (config_version > 0),
+    delete_event_id UUID UNIQUE NOT NULL,
+    tombstoned_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tenant_mail_consumer_projection_tombstones (
+    consumer_id UUID PRIMARY KEY,
+    -- [COMMENT]: Tombstone phải sống độc lập với lifecycle của hierarchy zone.
+    zone_id UUID NOT NULL,
     config_version BIGINT NOT NULL CHECK (config_version > 0),
     delete_event_id UUID UNIQUE NOT NULL,
     tombstoned_at TIMESTAMPTZ NOT NULL

@@ -36,22 +36,45 @@ pub async fn run_consumer_report_listener(
     // PostgreSQL parse lại cùng statement cho từng logical slot.
     let apply_consumer_report = pg_client
         .prepare(
-            "WITH target AS MATERIALIZED ( \
+            "WITH personal_target AS MATERIALIZED ( \
                  SELECT c.config_version \
-                 FROM mail.mail_consumers AS c \
+                 FROM mail.personal_mail_consumers AS c \
                  WHERE c.id=$1 AND $5 <= c.config_version \
                    AND $14 >= 0 AND $14 < c.parallelism \
-                   AND ( \
-                     EXISTS (SELECT 1 FROM hierarchy.personal_workspaces AS w WHERE w.id=c.workspace_id AND w.zone_id=$2) \
-                     OR EXISTS (SELECT 1 FROM hierarchy.tenant_workspaces AS w WHERE w.id=c.workspace_id AND w.zone_id=$2) \
-                   ) \
-             ), applied AS ( \
-                 INSERT INTO mail.mail_consumer_runtime_reports AS current( \
+                   AND EXISTS (SELECT 1 FROM hierarchy.personal_workspaces AS w WHERE w.id=c.workspace_id AND w.zone_id=$2) \
+             ), tenant_target AS MATERIALIZED ( \
+                 SELECT c.config_version \
+                 FROM mail.tenant_mail_consumers AS c \
+                 WHERE c.id=$1 AND $5 <= c.config_version \
+                   AND $14 >= 0 AND $14 < c.parallelism \
+                   AND EXISTS (SELECT 1 FROM hierarchy.tenant_workspaces AS w WHERE w.id=c.workspace_id AND w.zone_id=$2) \
+             ), personal_applied AS ( \
+                 INSERT INTO mail.personal_mail_consumer_runtime_reports AS current( \
                      consumer_id,event_id,instance_id,config_version,runtime_state, \
                      runtime_generation,report_sequence,consumer_lag,error_code,error_message,reported_at,expires_at \
                  ) \
                  SELECT $1,$3,$4,$5,$6::text::mail.mail_consumer_runtime_state,$7,$8,$9,$10,$11,$12,$13 \
-                 FROM target \
+                 FROM personal_target WHERE NOT EXISTS(SELECT 1 FROM tenant_target) \
+                 ON CONFLICT (consumer_id,instance_id) DO UPDATE SET \
+                     event_id=EXCLUDED.event_id, config_version=EXCLUDED.config_version, \
+                     runtime_state=EXCLUDED.runtime_state, runtime_generation=EXCLUDED.runtime_generation, \
+                     report_sequence=EXCLUDED.report_sequence, consumer_lag=EXCLUDED.consumer_lag, \
+                     error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, \
+                     reported_at=EXCLUDED.reported_at, expires_at=EXCLUDED.expires_at \
+                 WHERE EXCLUDED.config_version > current.config_version \
+                    OR (EXCLUDED.config_version = current.config_version \
+                        AND EXCLUDED.runtime_generation > current.runtime_generation) \
+                    OR (EXCLUDED.config_version = current.config_version \
+                        AND EXCLUDED.runtime_generation = current.runtime_generation \
+                        AND EXCLUDED.report_sequence > current.report_sequence) \
+                 RETURNING 1 \
+             ), tenant_applied AS ( \
+                 INSERT INTO mail.tenant_mail_consumer_runtime_reports AS current( \
+                     consumer_id,event_id,instance_id,config_version,runtime_state, \
+                     runtime_generation,report_sequence,consumer_lag,error_code,error_message,reported_at,expires_at \
+                 ) \
+                 SELECT $1,$3,$4,$5,$6::text::mail.mail_consumer_runtime_state,$7,$8,$9,$10,$11,$12,$13 \
+                 FROM tenant_target WHERE NOT EXISTS(SELECT 1 FROM personal_target) \
                  ON CONFLICT (consumer_id,instance_id) DO UPDATE SET \
                      event_id=EXCLUDED.event_id, config_version=EXCLUDED.config_version, \
                      runtime_state=EXCLUDED.runtime_state, runtime_generation=EXCLUDED.runtime_generation, \
@@ -66,7 +89,9 @@ pub async fn run_consumer_report_listener(
                         AND EXCLUDED.report_sequence > current.report_sequence) \
                  RETURNING 1 \
              ) \
-             SELECT EXISTS(SELECT 1 FROM target), EXISTS(SELECT 1 FROM applied)",
+             SELECT \
+                 (SELECT count(*) FROM personal_target) + (SELECT count(*) FROM tenant_target) = 1, \
+                 EXISTS(SELECT 1 FROM personal_applied) OR EXISTS(SELECT 1 FROM tenant_applied)",
         )
         .await?;
 

@@ -31,7 +31,7 @@ func NewTenantConsumerRepository(db *pgxpool.Pool, cfg *config.Config) mailRepoI
 	}
 }
 
-func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.TenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailEntity.CreateTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	// [COMMENT]: Outbox route phải chính là Zone đã được tenant/workspace guard kiểm tra; mismatch fail closed.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -62,7 +62,7 @@ func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailE
 
 	// [COMMENT]: Tenant membership, workspace routing scope và template version đều được kiểm tra trong INSERT.
 	tag, err := tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.mail_consumers (id,workspace_id,code,name,source_type,broker_resource_id,source_config_envelope,topic,consumer_group,template_id,template_version,sender_profile_id,sender_version,desired_state,parallelism,config_version,config_sha256,created_by,updated_by,created_at,updated_at)
+		INSERT INTO %s.tenant_mail_consumers (id,workspace_id,code,name,source_type,broker_resource_id,source_config_envelope,topic,consumer_group,template_id,template_version,sender_profile_id,sender_version,desired_state,parallelism,config_version,config_sha256,created_by,updated_by,created_at,updated_at)
 		SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
 		WHERE EXISTS (SELECT 1 FROM %s.tenant_workspaces w JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$18 AND m.status='active' WHERE w.id=$2 AND w.zone_id=$22 AND w.tenant_id=$23)
 		  AND EXISTS (SELECT 1 FROM %s.tenant_mail_templates t JOIN %s.tenant_mail_template_versions v ON v.template_id=t.id AND v.version=$11 WHERE t.id=$10 AND t.workspace_id=$2)
@@ -96,8 +96,8 @@ func (r *tenantConsumerRepoPostgres) Create(ctx context.Context, consumer *mailE
 	return nil
 }
 
-func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEntity.TenantConsumer) (*mailEntity.TenantConsumer, error) {
-	consumer := &mailEntity.TenantConsumer{}
+func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEntity.GetTenantConsumer) (*mailEntity.GetTenantConsumer, error) {
+	consumer := &mailEntity.GetTenantConsumer{}
 
 	// [COMMENT]: Inline scan kết quả QueryRow trực tiếp vào các trường dữ liệu của Consumer struct cho Tenant scope
 	err := r.db.QueryRow(ctx, fmt.Sprintf(`
@@ -106,7 +106,7 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
 		       c.next_config_version, c.config_sha256,
 		       c.created_by, c.updated_by, c.created_at, c.updated_at
-		FROM %s.mail_consumers AS c
+		FROM %s.tenant_mail_consumers AS c
 		JOIN %s.tenant_workspaces AS w ON w.id = c.workspace_id
 		JOIN %s.tenant_memberships AS m
 		  ON m.tenant_id = w.tenant_id AND m.user_id = $4 AND m.status = 'active'
@@ -148,13 +148,12 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 
 	// [COMMENT]: Scope đã fail-close ở query aggregate phía trên; runtime read model chỉ đọc đúng
 	// consumer/config vừa được authorize và bỏ toàn bộ heartbeat hết hạn.
-	runtime := &mailEntity.ConsumerRuntimeSummary{}
 	var activeInstances int64
 	var consumerLag int64
 	err = r.db.QueryRow(ctx, fmt.Sprintf(`
 		WITH live AS (
 			SELECT runtime_state, consumer_lag, error_code, error_message, reported_at, expires_at
-			FROM %s.mail_consumer_runtime_reports
+			FROM %s.tenant_mail_consumer_runtime_reports
 			WHERE consumer_id = $1 AND config_version = $2 AND expires_at > now()
 		), ranked AS (
 			SELECT *, row_number() OVER (
@@ -175,24 +174,24 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 		FROM ranked AS r CROSS JOIN aggregate AS a
 		WHERE r.priority = 1
 	`, r.mailSchema), consumer.ID, consumer.ConfigVersion).Scan(
-		&runtime.State,
-		&runtime.ConfigVersion,
+		&consumer.RuntimeState,
+		&consumer.RuntimeConfigVersion,
 		&activeInstances,
 		&consumerLag,
-		&runtime.ErrorCode,
-		&runtime.ErrorMessage,
-		&runtime.ReportedAt,
-		&runtime.NextExpiryAt,
+		&consumer.RuntimeErrorCode,
+		&consumer.RuntimeErrorMessage,
+		&consumer.RuntimeReportedAt,
+		&consumer.RuntimeNextExpiryAt,
 	)
 	if err == nil {
-		runtime.ActiveInstances = uint32(activeInstances)
-		runtime.ConsumerLag = uint64(consumerLag)
-		if consumer.DesiredState == mailEntity.ConsumerEnabled && runtime.ActiveInstances < consumer.Parallelism && runtime.State == mailEntity.ConsumerRuntimeRunning {
+		consumer.RuntimeObserved = true
+		consumer.RuntimeActiveInstances = uint32(activeInstances)
+		consumer.RuntimeConsumerLag = uint64(consumerLag)
+		if consumer.DesiredState == mailEntity.ConsumerEnabled && consumer.RuntimeActiveInstances < consumer.Parallelism && consumer.RuntimeState == mailEntity.ConsumerRuntimeRunning {
 			// [COMMENT]: Aggregate Tenant cũng fail-visible khi chỉ một phần logical slots còn fresh.
-			runtime.State = mailEntity.ConsumerRuntimeDegraded
-			runtime.ErrorCode = "MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL"
+			consumer.RuntimeState = mailEntity.ConsumerRuntimeDegraded
+			consumer.RuntimeErrorCode = "MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL"
 		}
-		consumer.Runtime = runtime
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("mail tenant consumer repo: get runtime summary: %w", err)
 	}
@@ -200,7 +199,7 @@ func (r *tenantConsumerRepoPostgres) GetByID(ctx context.Context, query *mailEnt
 	return consumer, nil
 }
 
-func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity.TenantConsumer) ([]*mailEntity.TenantConsumer, error) {
+func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity.ListTenantConsumer) ([]*mailEntity.ListTenantConsumer, error) {
 	var sourceFilter, stateFilter any
 	if query.SourceType != "" {
 		sourceFilter = string(query.SourceType)
@@ -210,12 +209,12 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 	}
 
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`
-		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id, c.source_config_envelope,
+		SELECT c.id, c.workspace_id, c.code, c.name, c.source_type, c.broker_resource_id,
+		       octet_length(c.source_config_envelope) > 0,
 		       c.topic, c.consumer_group, c.template_id, c.template_version,
 		       c.sender_profile_id, c.sender_version, c.desired_state, c.parallelism, c.config_version,
-		       c.next_config_version, c.config_sha256,
-		       c.created_by, c.updated_by, c.created_at, c.updated_at
-		FROM %s.mail_consumers AS c
+		       c.config_sha256, c.created_by, c.updated_by, c.created_at, c.updated_at
+		FROM %s.tenant_mail_consumers AS c
 		JOIN %s.tenant_workspaces AS w ON w.id = c.workspace_id
 		JOIN %s.tenant_memberships AS m
 		  ON m.tenant_id = w.tenant_id AND m.user_id = $3 AND m.status = 'active'
@@ -232,9 +231,9 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 	}
 	defer rows.Close()
 
-	consumers := make([]*mailEntity.TenantConsumer, 0, query.Limit)
+	consumers := make([]*mailEntity.ListTenantConsumer, 0, query.Limit)
 	for rows.Next() {
-		consumer := &mailEntity.TenantConsumer{}
+		consumer := &mailEntity.ListTenantConsumer{}
 		// [COMMENT]: Inline scan từng dòng dữ liệu trong rows.Next() vào struct Consumer cho Tenant scope
 		if err = rows.Scan(
 			&consumer.ID,
@@ -243,7 +242,7 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 			&consumer.Name,
 			&consumer.SourceType,
 			&consumer.BrokerResourceID,
-			&consumer.SourceConfigEnvelope,
+			&consumer.SourceConfigured,
 			&consumer.Topic,
 			&consumer.ConsumerGroup,
 			&consumer.TemplateID,
@@ -253,7 +252,6 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 			&consumer.DesiredState,
 			&consumer.Parallelism,
 			&consumer.ConfigVersion,
-			&consumer.NextConfigVersion,
 			&consumer.ConfigSHA256,
 			&consumer.CreatedBy,
 			&consumer.UpdatedBy,
@@ -271,7 +269,7 @@ func (r *tenantConsumerRepoPostgres) List(ctx context.Context, query *mailEntity
 	return consumers, nil
 }
 
-func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailEntity.TenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailEntity.UpdateTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	// [COMMENT]: Không cho service bug chuyển projection sang Zone khác aggregate đã authorize.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -300,7 +298,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 		return mailTaxonomy.ErrOperationInProgress
 	}
 	var lockedConsumerVersion uint64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedConsumerVersion)
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.tenant_mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedConsumerVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
@@ -341,7 +339,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			WHERE resource_id=$7 AND status IN ('PENDING','PROCESSING') LIMIT 1
 		), target AS MATERIALIZED (
 			SELECT config_version, next_config_version
-			FROM %s.mail_consumers
+			FROM %s.tenant_mail_consumers
 			WHERE id = $17 AND workspace_id = $18
 			  AND EXISTS (SELECT 1 FROM authorized)
 			FOR UPDATE
@@ -350,7 +348,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			WHERE resource_id=$17::text AND status IN ('PENDING','PROCESSING')
 			LIMIT 1
 		), version_inserted AS (
-			INSERT INTO %s.mail_consumer_update_versions (
+			INSERT INTO %s.tenant_mail_consumer_update_versions (
 				consumer_id,config_version,event_id,name,source_type,broker_resource_id,
 				source_config_envelope,topic,consumer_group,template_id,template_version,
 				sender_profile_id,sender_version,desired_state,parallelism,config_sha256,
@@ -365,7 +363,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 			ON CONFLICT DO NOTHING
 			RETURNING consumer_id
 		), counter_updated AS (
-			UPDATE %s.mail_consumers SET next_config_version=$13+1
+			UPDATE %s.tenant_mail_consumers SET next_config_version=$13+1
 			WHERE id=$17 AND workspace_id=$18 AND config_version=$20
 			  AND next_config_version=$13 AND EXISTS (SELECT 1 FROM version_inserted)
 			RETURNING id
@@ -441,7 +439,7 @@ func (r *tenantConsumerRepoPostgres) Update(ctx context.Context, consumer *mailE
 	return nil
 }
 
-func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailEntity.TenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
+func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailEntity.DeleteTenantConsumer, outbox *mailEntity.MailOutboxRecord) error {
 	// [COMMENT]: Tombstone phải đi đúng Zone của guarded tenant workspace mutation.
 	if consumer == nil || outbox == nil || outbox.ZoneID != consumer.ZoneID {
 		return mailTaxonomy.ErrInvalidArgument
@@ -452,7 +450,7 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 	}
 	defer tx.Rollback(ctx)
 	var lockedVersion uint64
-	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedVersion)
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT c.config_version FROM %s.tenant_mail_consumers c JOIN %s.tenant_workspaces w ON w.id=c.workspace_id JOIN %s.tenant_memberships m ON m.tenant_id=w.tenant_id AND m.user_id=$4 AND m.status='active' WHERE c.id=$1 AND c.workspace_id=$2 AND w.zone_id=$3 AND w.tenant_id=$5 FOR UPDATE OF c`, r.mailSchema, r.hierarchySchema, r.hierarchySchema), consumer.ID, consumer.WorkspaceID, consumer.ZoneID, consumer.ActorUserID, consumer.TenantID).Scan(&lockedVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return mailTaxonomy.ErrConsumerNotFound
 	}
@@ -482,7 +480,7 @@ func (r *tenantConsumerRepoPostgres) Delete(ctx context.Context, consumer *mailE
 			WHERE w.id = $1 AND w.zone_id = $2 AND w.tenant_id = $17
 		), target AS MATERIALIZED (
 			SELECT config_version
-			FROM %s.mail_consumers
+			FROM %s.tenant_mail_consumers
 			WHERE id = $4 AND workspace_id = $1
 			  AND EXISTS (SELECT 1 FROM authorized)
 			FOR UPDATE
