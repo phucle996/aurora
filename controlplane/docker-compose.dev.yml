@@ -354,6 +354,7 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter:v1.85.0
     container_name: controlplane-redis-exporter
+    command: ["-redis.addr=redis://controlplane-cp-redis:6379"]
     environment:
       # [COMMENT]: Exporter chỉ scrape rebuildable Shared L2; không được cấp credential Auth Redis.
       - REDIS_ADDR=redis://controlplane-cp-redis:6379
@@ -740,6 +741,10 @@ services:
       - ./dev/otel/otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
       # Gắn thư mục chứa logs của Docker container để filelog đọc trực tiếp log file
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # [COMMENT]: Mount thư mục symlink chứa tên container thực sự (controlplane-dev-1, dataplane-vn-n1...) phục vụ phân giải nhãn Grafana
+      - /var/lib/docker/containers_by_name:/var/lib/docker/containers_by_name:ro
+      # [COMMENT]: Mount docker.sock để OpenTelemetry Collector giao tiếp với Docker Daemon truy vấn container metadata.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "14317:4317" # Cổng nhận OpenTelemetry gRPC Traces & Metrics
       - "14318:4318" # Cổng nhận OpenTelemetry HTTP Traces & Metrics

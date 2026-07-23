@@ -29,10 +29,10 @@ impl DecisionEngine {
         current_zone_status: &str,
     ) -> String {
         // [COMMENT]: 2. Logic quyết định trạng thái tổng thể của Zone (State Machine Transition).
-        // Chỉ tự động đánh giá và phục hồi đối với các trạng thái active, congested, draining.
+        // Chỉ tự động đánh giá và phục hồi đối với các trạng thái active, draining.
         // Các trạng thái cấu hình thủ công của SRE (planned, maintenance, disabled) được bảo toàn tuyệt đối.
         match current_zone_status {
-            "active" | "congested" | "draining" => {
+            "active" | "draining" => {
                 // [COMMENT]: ENABLED-ONLY draining trigger.
                 // Chỉ kéo zone về draining khi service ĐANG ĐƯỢC BẬT bị sập hoặc capacity quá thấp.
                 // Service bị tắt (mail_enabled=false) hoàn toàn không ảnh hưởng quyết định này.
@@ -44,7 +44,7 @@ impl DecisionEngine {
                     return "draining".to_string();
                 }
 
-                // [COMMENT]: Ngưỡng quá tải (Congested Thresholds) - Hysteresis để tránh flapping trạng thái
+                // [COMMENT]: Ngưỡng quá tải (Overload Thresholds) - Kéo zone sang draining để xả việc
                 let is_overloaded =
                     queue_len > 5000 || pending_len > 500 || avg_cpu > 0.90 || avg_ram > 0.90;
 
@@ -55,17 +55,12 @@ impl DecisionEngine {
                 match current_zone_status {
                     "active" => {
                         if is_overloaded {
-                            return "congested".to_string();
-                        }
-                    }
-                    "congested" => {
-                        if is_recovered {
-                            return "active".to_string();
+                            return "draining".to_string();
                         }
                     }
                     "draining" => {
                         // [COMMENT]: ENABLED-ONLY recovery condition.
-                        // Zone thoát draining khi tất cả SERVICE ĐANG BẬT đều healthy.
+                        // Zone thoát draining và tự về active khi tất cả SERVICE ĐANG BẬT đều healthy và các chỉ số tài nguyên đã hồi phục.
                         // Service disabled được coi là "OK" theo phép toán: !enabled || (healthy && cap>=50).
                         // Ví dụ: zone chỉ có storage enabled → chỉ cần storage healthy là đủ.
                         let mail_ok =

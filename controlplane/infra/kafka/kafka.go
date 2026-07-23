@@ -31,7 +31,6 @@ func NewProducer(ctx context.Context, cfg *config.KafkaCfg) (*Producer, error) {
 		kgo.ProducerBatchCompression(kgo.ZstdCompression()),
 		kgo.ProducerLinger(5 * time.Millisecond),
 		kgo.ProducerBatchMaxBytes(64 * 1024),
-		kgo.MaxProduceRequestsInflightPerBroker(5),
 		kgo.RecordRetries(10),
 		kgo.RecordDeliveryTimeout(60 * time.Second),
 	}

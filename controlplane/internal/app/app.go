@@ -48,7 +48,6 @@ import (
 	natsinfra "controlplane/infra/nats"
 	"controlplane/infra/psql"
 	redisinfra "controlplane/infra/redis"
-	"controlplane/infra/vault"
 	"controlplane/internal/app/bootstrap"
 	"controlplane/internal/config"
 	"controlplane/internal/http/middleware"
@@ -59,7 +58,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	vaultapi "github.com/hashicorp/vault/api"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	goredis "github.com/redis/go-redis/v9"
@@ -82,9 +80,7 @@ type App struct {
 	authRds    *goredis.Client
 	kafka      *kafkainfra.Producer
 	natsConn   *nats.Conn
-	// [COMMENT]: Vault client phục vụ kết nối quản lý khóa an toàn
-	vault *vaultapi.Client
-	ready bool
+	ready      bool
 }
 
 // NewApplication khởi tạo toàn bộ runtime dependency theo thứ tự đã định và trả về App sẵn sàng Start().
@@ -153,17 +149,6 @@ func NewApplication(cfg *config.Config) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: nats init failed: %w", err)
 	}
 	app.natsConn = nc
-
-	// --------------------------------------------------------------------
-	// [FAIL-CLOSE] Infrastructure bootstrap: HashiCorp Vault.
-	// Khởi tạo client kết nối tới Vault phục vụ cho Key Management.
-	// --------------------------------------------------------------------
-	vaultClient, err := vault.NewVaultClient(ctx, &cfg.Vault)
-	if err != nil {
-		app.Stop()
-		return nil, fmt.Errorf("bootstrap: vault init failed: %w", err)
-	}
-	app.vault = vaultClient
 
 	// --------------------------------------------------------------------
 	// [FAIL-CLOSE] Schema bootstrap: Database migrations bắt buộc chạy trước khi modules dùng DB.

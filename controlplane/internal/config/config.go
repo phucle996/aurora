@@ -36,8 +36,6 @@ type Config struct {
 	GRPC      GRPCCfg
 	OTel      OTelCfg
 	SchemaSQL SchemaSQLCfg
-	// [COMMENT]: Cấu hình kết nối tới HashiCorp Vault phục vụ quản lý khóa an toàn
-	Vault VaultCfg
 }
 
 // OTelCfg lưu trữ cấu hình tĩnh cho OpenTelemetry.
@@ -165,17 +163,6 @@ type SchemaSQLCfg struct {
 	Mail       string
 	Hypervisor string // [NEW COMMENT]: Tên SQL schema lưu trữ thông tin của phân hệ Hypervisor Nodes
 	Storage    string // [COMMENT]: Tên SQL schema dành riêng cho phân hệ Object Storage (MinIO)
-}
-
-// [COMMENT]: VaultCfg chứa thông tin kết nối và quản lý định danh khóa trong Vault Transit
-type VaultCfg struct {
-	Addr           string
-	Token          string
-	RoleID         string
-	SecretID       string
-	TransitKeyName string
-	Timeout        time.Duration
-	MaxRetries     int
 }
 
 // LoadConfig đọc cấu hình từ environment variables của hệ thống.
@@ -313,15 +300,6 @@ func LoadConfig() *Config {
 			Mail:       "mail",
 			Hypervisor: "hypervisor", // [NEW COMMENT]: Khởi tạo giá trị mặc định là schema 'hypervisor'
 			Storage:    "storage",    // [COMMENT]: Khởi tạo tên schema mặc định cho Object Storage là 'storage'
-		},
-		Vault: VaultCfg{
-			Addr:           getEnv("VAULT_ADDR", "http://localhost:8200"),
-			Token:          getEnv("VAULT_TOKEN", ""),
-			RoleID:         getEnv("VAULT_ROLE_ID", ""),
-			SecretID:       getEnv("VAULT_SECRET_ID", ""),
-			TransitKeyName: getEnv("VAULT_TRANSIT_KEY_NAME", "jwt-signer"),
-			Timeout:        getEnvAsDuration("VAULT_TIMEOUT", 5*time.Second),
-			MaxRetries:     getEnvAsInt("VAULT_MAX_RETRIES", 3),
 		},
 		NATS: NATSCfg{
 			Addr:          getEnv("NATS_ADDR", "nats://localhost:4222"),

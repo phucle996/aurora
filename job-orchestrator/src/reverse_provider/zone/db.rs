@@ -22,7 +22,7 @@ pub async fn update_zone_status(
     });
 
     // [COMMENT]: Thực thi lệnh UPDATE kèm ràng buộc State Machine (hierarchy.zone_status enum).
-    // Chỉ cho phép chuyển giữa active/congested/draining với nhau, và chuyển sang disabled từ mọi trạng thái vận hành.
+    // Chỉ cho phép chuyển giữa active/draining với nhau, và chuyển sang disabled từ mọi trạng thái vận hành.
     // Các trạng thái SRE-owned (planned, maintenance) không được tự động chuyển.
     let rows_affected = pg_client
         .execute(
@@ -31,9 +31,9 @@ pub async fn update_zone_status(
              WHERE id = $2::text::uuid \
                AND status != $1::text::hierarchy.zone_status \
                AND ( \
-                   ($1::text IN ('active', 'congested', 'draining') AND status::text IN ('active', 'congested', 'draining')) \
+                   ($1::text IN ('active', 'draining') AND status::text IN ('active', 'draining')) \
                    OR \
-                   ($1::text = 'disabled' AND status::text IN ('active', 'congested', 'draining', 'maintenance')) \
+                   ($1::text = 'disabled' AND status::text IN ('active', 'draining', 'maintenance')) \
                )",
             &[&status, &zone_id],
         )
@@ -186,14 +186,15 @@ pub async fn update_zone_service_metrics(
     // [COMMENT]: Observation timestamp fence ngăn nhiều JO replica apply report cũ sau report mới.
     // Pure UPDATE chỉ ghi actual_state: nếu row không tồn tại (zone_services chưa được tạo) thì bỏ qua.
     // zone_services luôn được tạo sẵn khi khởi tạo zone → safe để dùng UPDATE-only.
+    // [COMMENT]: Cast $4::bigint rõ ràng để tokio-postgres serialize i64 từ Rust sang BIGINT (OID 20) trước khi PostgreSQL đổi sang double precision cho to_timestamp.
     let rows_affected = pg_client
         .execute(
             "UPDATE hierarchy.zone_services \
              SET actual_state = $1::text::hierarchy.zone_service_status, \
-                 actual_observed_at = to_timestamp($4), updated_at = NOW() \
+                 actual_observed_at = to_timestamp($4::bigint), updated_at = NOW() \
              WHERE zone_id = $2::text::uuid \
                AND service_type = $3::text::hierarchy.zone_service_type \
-               AND (actual_observed_at IS NULL OR actual_observed_at < to_timestamp($4))",
+               AND (actual_observed_at IS NULL OR actual_observed_at < to_timestamp($4::bigint))",
             &[&status, &zone_id, &service_type, &observed_at_unix_seconds],
         )
         .await?;

@@ -49,7 +49,7 @@ pub async fn upsert_hypervisor_node(
               cpu_cores_total, cpu_cores_used, ram_mb_total, ram_mb_used, \
               storage_gb_total, storage_gb_used, last_active_at, created_at, updated_at) \
              VALUES ($1::text::uuid, $2::text::uuid, $3, $3, $4, $5, $6, $7, $8, $9, $10, \
-                     to_timestamp($11), NOW(), NOW()) \
+                     to_timestamp($11::bigint), NOW(), NOW()) \
              ON CONFLICT (zone_id, node_code) DO UPDATE \
              SET status               = EXCLUDED.status, \
                  cpu_cores_total      = EXCLUDED.cpu_cores_total, \

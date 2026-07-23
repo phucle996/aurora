@@ -1,3 +1,8 @@
+extensions:
+  # [COMMENT]: Khai báo docker_observer để giám sát các container thông qua unix:///var/run/docker.sock
+  docker_observer:
+    endpoint: unix:///var/run/docker.sock
+
 receivers:
   otlp:
     protocols:
@@ -41,9 +46,10 @@ receivers:
   # filelog đọc trực tiếp từ đĩa của Docker host mà không cần gọi qua docker.sock (bảo mật hơn)
   filelog:
     include:
+      - /var/lib/docker/containers_by_name/*.log
       - /var/lib/docker/containers/*/*-json.log
     exclude:
-      # Loại trừ chính log của container otel-collector này để tránh loop log (HOSTNAME là short container ID mặc định do Docker cấp)
+      - /var/lib/docker/containers_by_name/controlplane-otel-collector.log
       - /var/lib/docker/containers/${env:HOSTNAME}*/*
     include_file_path: true
     operators:
@@ -77,7 +83,13 @@ receivers:
         from: attributes.msg
         to: body
         on_error: send_quiet
-      # 5. Trích xuất container_id từ đường dẫn file log của container
+      # 5. Trích xuất container_name thực sự từ tên file symlink containers_by_name
+      - type: regex_parser
+        id: extract_container_name
+        regex: '^/var/lib/docker/containers_by_name/(?P<container_name>[^/]+)\.log$'
+        parse_from: attributes["log.file.path"]
+        on_error: send_quiet
+      # 5b. Fallback: Trích xuất container_id nếu không khớp đường dẫn symlink
       - type: regex_parser
         id: extract_container_id
         regex: '^/var/lib/docker/containers/(?P<container_id>[a-f0-9]+)/'
@@ -105,13 +117,52 @@ processors:
         # Chỉ loại bỏ log "login attempt" phát sinh từ localhost (127.0.0.1) của chính container pbouncer.
         - IsMatch(body, "login attempt:") and IsMatch(body, "@127\\.0\\.0\\.1")
 
-  # transform processor ánh xạ container_id sang container_name và dọn dẹp các trường log thừa
+  # transform processor ánh xạ container_id sang container_name thực tế và dọn dẹp các trường log thừa
   transform:
     error_mode: ignore
     log_statements:
       - context: log
         statements:
-          - set(attributes["container_name"], attributes["container_id"])
+          # [COMMENT]: Ánh xạ container_name trực tiếp theo tên thực tế dựa trên container_id prefix
+          - set(attributes["container_name"], "admin-ui-nginx") where IsMatch(attributes["container_id"], "^42eca33b4987")
+          - set(attributes["container_name"], "aurora-acr") where IsMatch(attributes["container_id"], "^2b5f8445e46e")
+          - set(attributes["container_name"], "aurora-centrifugo") where IsMatch(attributes["container_id"], "^73df715e7d6c")
+          - set(attributes["container_name"], "aurora-job-orchestrator") where IsMatch(attributes["container_id"], "^32f7088da814")
+          - set(attributes["container_name"], "aurora-kafka-1") where IsMatch(attributes["container_id"], "^f66012f8d9d2")
+          - set(attributes["container_name"], "aurora-kafka-2") where IsMatch(attributes["container_id"], "^e991a07056ee")
+          - set(attributes["container_name"], "aurora-kafka-3") where IsMatch(attributes["container_id"], "^4ea19e979588")
+          - set(attributes["container_name"], "aurora-kafka-ui") where IsMatch(attributes["container_id"], "^9a7822958f41")
+          - set(attributes["container_name"], "aurora-notification-service") where IsMatch(attributes["container_id"], "^d05acd18d716")
+          - set(attributes["container_name"], "billing-psql") where IsMatch(attributes["container_id"], "^bd3f7252f059")
+          - set(attributes["container_name"], "clickhouse-server") where IsMatch(attributes["container_id"], "^b649dec551d6")
+          - set(attributes["container_name"], "cloud-console-dev") where IsMatch(attributes["container_id"], "^82c5fcf1393b")
+          - set(attributes["container_name"], "controlplane-acr-redis") where IsMatch(attributes["container_id"], "^0df83601df85")
+          - set(attributes["container_name"], "controlplane-cp-redis") where IsMatch(attributes["container_id"], "^0ed3c9a37c56")
+          - set(attributes["container_name"], "controlplane-dev-1") where IsMatch(attributes["container_id"], "^3c84167b5202")
+          - set(attributes["container_name"], "controlplane-dev-2") where IsMatch(attributes["container_id"], "^ae9d865ee5bf")
+          - set(attributes["container_name"], "controlplane-dev-3") where IsMatch(attributes["container_id"], "^7dc4f18fd476")
+          - set(attributes["container_name"], "controlplane-envoy") where IsMatch(attributes["container_id"], "^c661beafdbb4")
+          - set(attributes["container_name"], "controlplane-grafana") where IsMatch(attributes["container_id"], "^0f5ec008ada4")
+          - set(attributes["container_name"], "controlplane-nats") where IsMatch(attributes["container_id"], "^727bd0dce525")
+          - set(attributes["container_name"], "controlplane-pbouncer") where IsMatch(attributes["container_id"], "^aed6e35d9f75")
+          - set(attributes["container_name"], "controlplane-psql") where IsMatch(attributes["container_id"], "^5f548d0ffbd7")
+          - set(attributes["container_name"], "controlplane-psql-exporter") where IsMatch(attributes["container_id"], "^c5c255cbaf57")
+          - set(attributes["container_name"], "controlplane-redis-exporter") where IsMatch(attributes["container_id"], "^782d368ba475")
+          - set(attributes["container_name"], "controlplane-vault-1") where IsMatch(attributes["container_id"], "^693c30475941")
+          - set(attributes["container_name"], "controlplane-victorialogs") where IsMatch(attributes["container_id"], "^624d58be0e90")
+          - set(attributes["container_name"], "controlplane-victoriametrics") where IsMatch(attributes["container_id"], "^d3fb10661abe")
+          - set(attributes["container_name"], "controlplane-victoriatraces") where IsMatch(attributes["container_id"], "^369532ced466")
+          - set(attributes["container_name"], "cost-console-nginx") where IsMatch(attributes["container_id"], "^425356df2ddf")
+          - set(attributes["container_name"], "cost-manager") where IsMatch(attributes["container_id"], "^faa400b8472c")
+          - set(attributes["container_name"], "dataplane-vn-n1") where IsMatch(attributes["container_id"], "^4653fa82f037")
+          - set(attributes["container_name"], "dataplane-vn-n2") where IsMatch(attributes["container_id"], "^c4b1bf9f8113")
+          - set(attributes["container_name"], "dataplane-vn-n3") where IsMatch(attributes["container_id"], "^49ac1f110b26")
+          - set(attributes["container_name"], "dataplane-zone-z1-nats") where IsMatch(attributes["container_id"], "^e1660272af97")
+          - set(attributes["container_name"], "minio") where IsMatch(attributes["container_id"], "^613eb1bbd2c5")
+          - set(attributes["container_name"], "stalwart") where IsMatch(attributes["container_id"], "^227967eb4fab")
+          - set(attributes["container_name"], "storage-envoy") where IsMatch(attributes["container_id"], "^f3bd0f67d164")
+          # [COMMENT]: Nếu container_name chưa có (fallback), gán ngắn theo short container_id (12 ký tự)
+          - set(attributes["container_name"], Substring(attributes["container_id"], 0, 12)) where attributes["container_name"] == nil and attributes["container_id"] != nil
           # Xóa các thuộc tính siêu dữ liệu dư thừa từ filelog receiver và Docker để giữ log sạch
           - delete_key(attributes, "log.file.name")
           - delete_key(attributes, "log.file.path")
@@ -171,6 +222,7 @@ exporters:
       insecure: true
 
 service:
+  extensions: [docker_observer]
   pipelines:
     # Pipeline traces nhận log qua OTLP gRPC/HTTP và xuất sang VictoriaTraces
     # [VictoriaTraces Integration]: Nhận traceparent phân tán từ các microservices
