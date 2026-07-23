@@ -150,12 +150,12 @@ Service flag mặc định `true` chỉ khi metadata aggregate đã đọc thàn
 | Bucket/key | Writer | Nội dung |
 |---|---|---|
 | `AURORA_ZONE_HEALTH/zone.node.<node_id>` | Mỗi DP pod | CPU, RAM, active workers, `updated_at` |
-| `.../zone.service.mail` | Mail infra reporter rotating lease holder | JMAP health, capacity, queue pressure, probe node, fencing token |
+| `.../zone.service.mail` | Mail health observer rotating lease holder | JMAP health, capacity, queue pressure, probe node, fencing token |
 | `.../zone.service.storage` | Rotating lease holder | MinIO health/capacity, probe node, fencing token |
 | `.../zone.service.hypervisor` | Rotating lease holder | Proxmox nodes snapshot, probe node, fencing token |
 | `AURORA_ZONE_COORDINATION/lease.health.*` | Health monitors | Stable pod owner, fencing, expiry, last owner |
 | `.../lease.gateway.report` | Zone reporter | Một aggregate report mỗi cycle |
-| `.../lease.mail.infra.report` | Mail infra reporters | Một Stalwart probe + infra report mỗi cycle |
+| `.../lease.mail.health.observe` | Mail health observers | Một JMAP/Stalwart probe + OTel/KV observation mỗi cycle |
 | `.../lease.mail.consumer.report` | Mail consumer reporters | Một bounded consumer delta relay mỗi cycle |
 
 Health bucket history là `1`, max age 24 giờ. Gateway bỏ node snapshot cũ hơn 15 giây. Service monitors dùng stable pod ID và same-owner cooldown: sau khi release, pod khác được ưu tiên; cụm một pod vẫn probe lại sau cooldown.

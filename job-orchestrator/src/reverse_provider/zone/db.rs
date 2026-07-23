@@ -164,6 +164,7 @@ pub async fn update_zone_service_metrics(
     service_type: &str,
     status: &str,
     capacity: i32,
+    observed_at_unix_seconds: i64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let (pg_client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
 
@@ -182,15 +183,18 @@ pub async fn update_zone_service_metrics(
     // desired_state. CDC Streamer đọc desired_state từ WAL → publish service_status_changed lên Redis
     // → Dataplane nhận và log spam mỗi 5 giây dù desired_state không thực sự thay đổi.
     //
+    // [COMMENT]: Observation timestamp fence ngăn nhiều JO replica apply report cũ sau report mới.
     // Pure UPDATE chỉ ghi actual_state: nếu row không tồn tại (zone_services chưa được tạo) thì bỏ qua.
     // zone_services luôn được tạo sẵn khi khởi tạo zone → safe để dùng UPDATE-only.
     let rows_affected = pg_client
         .execute(
             "UPDATE hierarchy.zone_services \
-             SET actual_state = $1::text::hierarchy.zone_service_status, updated_at = NOW() \
+             SET actual_state = $1::text::hierarchy.zone_service_status, \
+                 actual_observed_at = to_timestamp($4), updated_at = NOW() \
              WHERE zone_id = $2::text::uuid \
-               AND service_type = $3::text::hierarchy.zone_service_type",
-            &[&status, &zone_id, &service_type],
+               AND service_type = $3::text::hierarchy.zone_service_type \
+               AND (actual_observed_at IS NULL OR actual_observed_at < to_timestamp($4))",
+            &[&status, &zone_id, &service_type, &observed_at_unix_seconds],
         )
         .await?;
 

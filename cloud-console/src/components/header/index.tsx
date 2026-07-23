@@ -51,20 +51,25 @@ export default function HeaderConsole({
     }
   }, [clearSession, router]);
 
-  // [COMMENT]: Bản đồ ánh xạ Breadcrumb dựa theo Active ID từ Sidebar
+  // [COMMENT]: Bản đồ ánh xạ Breadcrumb chuẩn xác dựa theo Active ID từ Sidebar
+  // Loại bỏ các tiền tố trùng lặp (ví dụ Workspaces Workspaces) và chuẩn hóa phân nhóm điều hướng.
   const getBreadcrumb = () => {
     const mapping: Record<string, string[]> = {
-      overview: ["Overview"],
+      overview: ["Console", "Overview"],
+      workspaces: ["Console", "Workspaces"],
+      storage: ["Console", "Object Storage"],
+      mail: ["Console", "Email Delivery"],
+      users: ["Console", "User Directory"],
+      rbac: ["Console", "Access Control"],
+      role: ["Console", "Access Control"],
       zones: ["Infrastructure", "Zones"],
       hypervisors: ["Infrastructure", "Hypervisors"],
-      storage: ["Infrastructure", "Storage"],
       networks: ["Infrastructure", "Networks"],
       "load-balancers": ["Infrastructure", "Load Balancers"],
       kubernetes: ["Platform", "Kubernetes"],
       resources: ["Platform", "Resources"],
       templates: ["Platform", "Templates"],
       tenants: ["Workspaces", "Tenants"],
-      workspaces: ["Workspaces", "Workspaces"],
       vms: ["Workspaces", "Virtual Machines"],
       vault: ["Security", "Vault"],
       iam: ["Security", "Identity & Access"],
@@ -72,11 +77,10 @@ export default function HeaderConsole({
       monitoring: ["Operations", "Monitoring"],
       incidents: ["Operations", "Incidents"],
       activity: ["Operations", "Activity"],
-      users: ["Administration", "Users"],
       settings: ["Administration", "Settings"]
     };
 
-    return mapping[activeId] || ["Overview"];
+    return mapping[activeId] || ["Console", "Overview"];
   };
 
   const breadcrumbs = getBreadcrumb();

@@ -16,7 +16,7 @@
     "password": "Password",
     "confirmPassword": "Confirm Password",
     "forgotPassword": "Forgot password?",
-    "trustDevice": "Trust device in 30 days",
+    "trustDevice": "Remember me",
     "btnSignIn": "Sign In",
     "btnSigningIn": "Signing in…",
     "btnRegister": "Register Account",

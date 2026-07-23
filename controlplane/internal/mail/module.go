@@ -6,6 +6,7 @@ package mail
 
 import (
 	"context"
+	"controlplane/internal/cacheengine"
 	"controlplane/internal/config"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
 	mailSvcInterface "controlplane/internal/mail/domain/service"
@@ -20,27 +21,26 @@ import (
 type Module struct {
 	enabled bool
 	err     error
+	// [COMMENT]: Mail routes dùng chung RBAC L1/L2 registry; repository ownership guard vẫn là lớp bảo vệ thứ hai.
+	L1Registry *cacheengine.CacheRegistry
 
 	// 1) Repositories
 	PersonalConsumerRepo mailRepoInterface.PersonalConsumerRepository
 	TenantConsumerRepo   mailRepoInterface.TenantConsumerRepository
 	PersonalTemplateRepo mailRepoInterface.PersonalTemplateRepository
 	TenantTemplateRepo   mailRepoInterface.TenantTemplateRepository
-	InfrastructureRepo   mailRepoInterface.InfrastructureRepository
 
 	// 2) Services
 	PersonalConsumerService mailSvcInterface.PersonalConsumerService
 	TenantConsumerService   mailSvcInterface.TenantConsumerService
 	PersonalTemplateService mailSvcInterface.PersonalTemplateService
 	TenantTemplateService   mailSvcInterface.TenantTemplateService
-	InfrastructureService   mailSvcInterface.InfrastructureService
 
 	// 3) Handlers
 	PersonalConsumerHandler *mailHandler.PersonalConsumerHandler
 	TenantConsumerHandler   *mailHandler.TenantConsumerHandler
 	PersonalTemplateHandler *mailHandler.PersonalTemplateHandler
 	TenantTemplateHandler   *mailHandler.TenantTemplateHandler
-	InfrastructureHandler   *mailHandler.InfrastructureHandler
 }
 
 // IsEnabled returns true if the module was successfully initialized and is ready to serve.
@@ -65,11 +65,11 @@ func NewDegradedModule(err error) *Module {
 	}
 }
 
-// NewModule constructs the Dependency Graph for the Mail Module.
-// coreModule is required to resolve cross-module dependencies (e.g. ZoneService for endpoint zone resolution).
-func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
-	if cfg == nil || db == nil {
-		return nil, errors.New("mail module: config and postgres pool are required")
+// NewModule constructs the dependency graph for the Mail module.
+// CacheRegistry is shared with IAM so route authorization follows the same L1/L2 permission snapshot.
+func NewModule(cfg *config.Config, db *pgxpool.Pool, cacheEngine *cacheengine.CacheRegistry) (*Module, error) {
+	if cfg == nil || db == nil || cacheEngine == nil {
+		return nil, errors.New("mail module: config, postgres pool, and cache registry are required")
 	}
 
 	// [COMMENT]: Repository được tách ngay tại DI boundary; không có generic repo tự chọn scope lúc runtime.
@@ -77,8 +77,7 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
 	tenantConsumerRepo := mailRepoImpl.NewTenantConsumerRepository(db, cfg)
 	personalTemplateRepo := mailRepoImpl.NewPersonalTemplateRepository(db, cfg)
 	tenantTemplateRepo := mailRepoImpl.NewTenantTemplateRepository(db, cfg)
-	infrastructureRepo := mailRepoImpl.NewInfrastructureRepository(db, cfg)
-	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil || infrastructureRepo == nil {
+	if personalConsumerRepo == nil || tenantConsumerRepo == nil || personalTemplateRepo == nil || tenantTemplateRepo == nil {
 		return nil, errors.New("mail module: failed to construct scoped repositories")
 	}
 
@@ -86,30 +85,26 @@ func NewModule(cfg *config.Config, db *pgxpool.Pool) (*Module, error) {
 	tenantConsumerSvc := mailSvcImpl.NewTenantConsumerService(tenantConsumerRepo)
 	personalTemplateSvc := mailSvcImpl.NewPersonalTemplateService(personalTemplateRepo)
 	tenantTemplateSvc := mailSvcImpl.NewTenantTemplateService(tenantTemplateRepo)
-	infrastructureSvc := mailSvcImpl.NewInfrastructureService(infrastructureRepo)
 	personalConsumerHandler := mailHandler.NewPersonalConsumerHandler(personalConsumerSvc)
 	tenantConsumerHandler := mailHandler.NewTenantConsumerHandler(tenantConsumerSvc)
 	personalTemplateHandler := mailHandler.NewPersonalTemplateHandler(personalTemplateSvc)
 	tenantTemplateHandler := mailHandler.NewTenantTemplateHandler(tenantTemplateSvc)
-	infrastructureHandler := mailHandler.NewInfrastructureHandler(infrastructureSvc)
 
 	return &Module{
 		enabled:                 true,
+		L1Registry:              cacheEngine,
 		PersonalConsumerRepo:    personalConsumerRepo,
 		TenantConsumerRepo:      tenantConsumerRepo,
 		PersonalTemplateRepo:    personalTemplateRepo,
 		TenantTemplateRepo:      tenantTemplateRepo,
-		InfrastructureRepo:      infrastructureRepo,
 		PersonalConsumerService: personalConsumerSvc,
 		TenantConsumerService:   tenantConsumerSvc,
 		PersonalTemplateService: personalTemplateSvc,
 		TenantTemplateService:   tenantTemplateSvc,
-		InfrastructureService:   infrastructureSvc,
 		PersonalConsumerHandler: personalConsumerHandler,
 		TenantConsumerHandler:   tenantConsumerHandler,
 		PersonalTemplateHandler: personalTemplateHandler,
 		TenantTemplateHandler:   tenantTemplateHandler,
-		InfrastructureHandler:   infrastructureHandler,
 	}, nil
 }
 

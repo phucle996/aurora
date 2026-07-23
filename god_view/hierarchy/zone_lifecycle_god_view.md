@@ -81,11 +81,11 @@ stateDiagram-v2
 
 | Trạng thái | Ý nghĩa | Code / Reference quan trọng |
 |:---|:---|:---|
-| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80). Mail infrastructure reporter vẫn ghi snapshot node và probe JMAP để SRE quan sát trước khi activate: [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs). |
-| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ Platform L1: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103). Mail infrastructure reporter tổng hợp node, consumer pressure và Stalwart health: [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs). |
+| **`planned`** | Zone mới tạo, chưa chạy | Khởi tạo mặc định: [`zone_service.go`](../../controlplane/internal/hierarchy/service/zone_service.go#L80) / [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219).<br/>Dataplane chặn kéo job: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80). Mail health observer vẫn probe JMAP và xuất OTel/Grafana trước khi activate: [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs). |
+| **`active`** | Zone hoạt động bình thường | Cho phép kéo Job từ Platform L1: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L103). Mail health observer tổng hợp queue pressure, JMAP và Stalwart health vào Zone KV/OTel: [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs). |
 | **`draining`** | Zone xả tải, ngưng nhận job | Chặn kéo Job mới: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Tự động kích hoạt khi service down hoặc capacity < 10: [`decision.rs`](../../job-orchestrator/src/reverse_provider/zone/decision.rs#L29). |
 | **`maintenance`** | Zone bảo trì | Chặn kéo Job mới, chạy nốt worker pool: [`consumer.rs`](../../dataplane/src/job_lifecycle/consumer.rs#L80).<br/>Cho phép SRE update service toggle desired_state: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L434). |
-| **`disabled`** | Vô hiệu hóa hoàn toàn | Dataplane không kéo job mới; infrastructure reporter vẫn có thể báo snapshot để SRE phân biệt disabled có chủ đích với mất kết nối. Dead-man không tự đổi lifecycle hoặc `desired_state`.<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
+| **`disabled`** | Vô hiệu hóa hoàn toàn | Dataplane không kéo job mới; health observer vẫn xuất OTel nhưng fenced `zone.service.mail` quảng cáo `down/0`. Dead-man không tự đổi lifecycle hoặc `desired_state`.<br/>Điều kiện bắt buộc để chạy DELETE zone: [`zone_repo.go`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L372). |
 
 **Ràng buộc & Kiểm tra chuyển đổi:**
 * **Kiểm tra nghiệp vụ (Go Map)**: Được xác định qua bảng ánh xạ `allowed` map tại [`zone_service.go#UpdateZoneStatus()`](../../controlplane/internal/hierarchy/service/zone_service.go#L141).
@@ -119,10 +119,10 @@ Trạng thái đo đạc và phản ánh sức khỏe thực tế (actual_state)
 | Trạng thái | Ý nghĩa | Điều kiện chuyển dịch / Telemetry Source | Code / Reference cập nhật vào DB SoT |
 |:---|:---|:---|:---|
 | **`unknown`** | Chưa nhận được báo cáo tài nguyên | Giá trị mặc định khi khởi tạo hoặc chưa có report push về. | [`zone_repo.go#CreateZone()`](../../controlplane/internal/hierarchy/repository/zone_repo.go#L219) |
-| **`healthy`** | Hoạt động bình thường, ổn định | Fresh successful JMAP probe và batch queue còn capacity. | Dedicated [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs) → [`infra_report.rs`](../../job-orchestrator/src/reverse_provider/mail/infra_report.rs) |
-| **`degraded`** | Gặp sự cố hiệu năng hoặc nghẽn | Một phần Dataplane probe lỗi, queue pressure cao hoặc inventory bị truncate. | Dedicated Mail infra projection |
-| **`unhealthy`** | Lỗi logic / probe chưa đủ bằng chứng | Physical node chưa có fresh probe hoặc current snapshot không hoàn chỉnh. | Dedicated Mail infra projection |
-| **`down`** | Offline hoàn toàn | Không còn fresh successful JMAP probe hoặc service bị disable. | Dedicated Mail infra projection |
+| **`healthy`** | Hoạt động bình thường, ổn định | Fresh successful JMAP probe và batch queue còn capacity. | [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs) → `zone.service.mail` → generic Zone reporter |
+| **`degraded`** | Gặp sự cố hiệu năng hoặc nghẽn | Một phần Dataplane probe lỗi, queue pressure cao hoặc inventory bị truncate. | Generic Zone report với `actual_observed_at` fence |
+| **`unhealthy`** | Lỗi logic / probe chưa đủ bằng chứng | Reserved status cho monitor khác; Mail observer hiện derive healthy/degraded/down. | Generic Zone report với `actual_observed_at` fence |
+| **`down`** | Offline hoàn toàn | Không còn fresh successful JMAP probe, service disabled hoặc generic dead-man timeout. | Generic Zone report với `actual_observed_at` fence |
 
 ---
 
@@ -313,8 +313,8 @@ sequenceDiagram
 
 1. **Khởi chạy container**: Tiến trình Dataplane bootstrap tại [`app.rs#AppContainer::start()`](../../dataplane/src/app.rs#L55).
 2. **Ingestion Loop (Job Consumer)**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) đọc `zone.metadata` từ `AURORA_ZONE_CONFIG`. Vì trạng thái là `planned`, consumer ngắt kéo Job mới và sleep 1s. Metadata thiếu/hỏng hoặc KV unavailable cũng dừng ingestion theo fail-closed.
-3. **Mail Infrastructure Report**:
-   * [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs) dùng JMAP health cùng local pending/in-flight batch pressure để báo cáo capacity; không còn LMTP socket probe.
+3. **Mail Health Observation**:
+   * [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs) dùng JMAP health cùng local pending/in-flight batch pressure cho Zone KV và OTel/Grafana; không có CP infrastructure projection.
    * Node Resource Monitor ghi snapshot từng pod vào `AURORA_ZONE_HEALTH/zone.node.<node_id>`; Gateway bỏ snapshot cũ hơn 15 giây.
 
 ---
@@ -505,7 +505,7 @@ sequenceDiagram
 2. **Dataplane KV Sync**: DP Node [`start_metadata_event_listener()`](../../dataplane/src/zone_gateway/listener.rs) merge trạng thái mới vào `AURORA_ZONE_CONFIG/zone.metadata` bằng expected revision.
 3. **State Machine Reaction**:
    * **Job Consumer**: [`consumer.rs#start_ingestion()`](../../dataplane/src/job_lifecycle/consumer.rs) chỉ kéo job khi đọc được `active`. `disabled`, `maintenance`, `draining`, `planned`, metadata thiếu/hỏng hoặc KV error đều ngừng job mới.
-   * **Mail Infrastructure Reporter**: [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs) tiếp tục ghi nhận actual state và freshness ở mọi lifecycle; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
+   * **Mail Health Observer**: [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs) tiếp tục ghi fenced Zone health và OTel metrics; quyết định bật/tắt vẫn thuộc SRE qua `desired_state` và zone lifecycle.
 
 ---
 
@@ -841,19 +841,19 @@ Cụm Dataplane dùng rotating lease trong `AURORA_ZONE_COORDINATION` để mỗ
 
 ---
 
-### 11.1 Infrastructure Reporter (Mail / Stalwart)
+### 11.1 Health Observer (Mail / Stalwart)
 
-Báo cáo trạng thái Mail JMAP, local batch pressure, Dataplane node và Stalwart registry. Triển khai tại [`infra_reporter.rs`](../../dataplane/src/executor/mail/supervisor/infra_reporter.rs).
+Ghi fenced Zone health và OTel metrics cho Mail JMAP, local batch pressure, Dataplane node và Stalwart registry. Triển khai tại [`health_observer.rs`](../../dataplane/src/executor/mail/supervisor/health_observer.rs).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant DP as 💻 DP (Mail infra reporter)
+    participant DP as 💻 DP (Mail health observer)
     participant KV as 🗄️ NATS Zone KV
     participant SW as 📧 Stalwart JMAP HTTP
 
     Note over DP: Định kỳ 5s
-    DP->>KV: CAS acquire lease.mail.infra.report
+    DP->>KV: CAS acquire lease.mail.health.observe
     DP->>KV: GET zone.metadata
     KV-->>DP: {status, services.mail}
 
@@ -875,7 +875,7 @@ sequenceDiagram
     end
 ```
 
-* **Khi chưa setup Stalwart hoặc auth sai**: JMAP health thất bại → ghi `down`, `capacity = 0` vào health KV.
+* **Khi JMAP health thất bại**: ghi `down`, `capacity = 0` vào health KV. Stalwart inventory auth là read-only integration riêng; lỗi inventory chỉ phát bounded OTel error.
 
 ---
 
@@ -1101,8 +1101,8 @@ Lớp bảo vệ hạ actual operational health nếu mất heartbeat. Nó khôn
 ### 13.1 Zone-Level (30 giây)
 
 Nếu một phân vùng không gửi generic ZoneReport sau 30 giây, Orchestrator giữ nguyên Zone status và desired
-service flags, chỉ hạ actual health của workload do generic reporter sở hữu. Mail actual health thuộc dedicated
-`mail:infra:reports` projection, không được ghi từ dead-man generic.
+service flags, chỉ hạ Mail/Storage actual health do generic reporter sở hữu. Dead-man dùng observation timestamp
+hiện tại để report cũ đang in-flight không thể resurrect service.
 
 ```mermaid
 sequenceDiagram
@@ -1114,7 +1114,7 @@ sequenceDiagram
     loop Every 2 seconds (XREADGROUP cycle)
         JO_Loop->>Cache: Đọc last_report của các active zones
         alt now - last_report > 30s (DP Node crash / Mất mạng)
-            JO_Loop->>DB: update owned generic service actual health only
+            JO_Loop->>DB: update Mail/Storage actual health with newer observation fence
             JO_Loop->>Cache: Reset timeout; preserve lifecycle + desired flags
             Note over JO_Loop, Cache: SRE ownership không bị reporter vượt quyền
         else Hoạt động bình thường (now - last_report <= 30s)
@@ -1163,6 +1163,7 @@ sequenceDiagram
 | 6 | **Clock Skew Attack** (timestamp cũ để bypass) | `|now - ts| ≤ 120s` check | `signature.rs#L56-L71` |
 | 7 | **Out-of-order Hypervisor heartbeat** | `WHERE last_active_at < sent_at` trong UPSERT | `db.rs#L312` |
 | 8 | **actual_state IOPS spam** (ghi mỗi 5s) | Throttle: 3 điều kiện (status / delta>10 / >120s) | `listener.rs#L242-L258` |
+| 9 | **HA out-of-order Zone report** | `zone_services.actual_observed_at` chỉ nhận timestamp mới hơn | `reverse_provider/zone/db.rs` |
 | 9 | **Zone flapping** (active↔congested) | Hysteresis: overload threshold > recovery threshold | `decision.rs#L33-L38` |
 | 10 | **Miss CDC khi cold start** | `counter = 720` → reconciliation chạy ngay; metadata chưa có thì ingestion fail-closed | `dataplane/src/zone_gateway/reporter.rs` |
 | 11 | **Zombie generic Zone report** | Dead Man's Switch hạ owned actual health; lifecycle/desired chỉ SRE được sửa | `reverse_provider/zone/listener/deadman.rs` |
@@ -1197,8 +1198,8 @@ sequenceDiagram
 | Bucket / Key | Type | Retention | Nội Dung | Owner |
 |:---|:---|:---|:---|:---|
 | `AURORA_ZONE_CONFIG/zone.metadata` | JSON KV | Persistent, history 1 | `{status, services, updated_at}` | DP CDC/Reconciliation |
-| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | Mail infra reporter |
-| `AURORA_ZONE_HEALTH/mail.infra.node.<node_id>` | JSON KV | Max age 24h; logical stale by report TTL | Per-process Mail pressure/probe snapshot | Every Dataplane Mail pod |
+| `AURORA_ZONE_HEALTH/zone.service.mail` | JSON KV | Max age 24h, history 1 | JMAP status/capacity/queue/cycle | Mail health observer |
+| `AURORA_ZONE_HEALTH/mail.health.node.<node_id>` | JSON KV | Max age 24h; logical stale by observer interval | Per-process Mail pressure/probe snapshot | Every Dataplane Mail pod |
 | `AURORA_ZONE_HEALTH/zone.service.storage` | JSON KV | Max age 24h, history 1 | MinIO status/capacity/fencing | StorageWorkloadMonitor |
 | `AURORA_ZONE_HEALTH/zone.service.hypervisor` | JSON KV | Max age 24h, history 1 | Hypervisor node snapshot/fencing | HypervisorMonitor |
 | `AURORA_ZONE_HEALTH/zone.node.<node_id>` | JSON KV | Max age 24h; logical stale 15s | CPU, RAM, workers, updated_at | ResourceMonitor |

@@ -40,7 +40,7 @@ pub async fn run_consumer_report_listener(
                  SELECT c.config_version \
                  FROM mail.mail_consumers AS c \
                  WHERE c.id=$1 AND $5 <= c.config_version \
-                   AND $16 >= 0 AND $16 < c.parallelism \
+                   AND $14 >= 0 AND $14 < c.parallelism \
                    AND ( \
                      EXISTS (SELECT 1 FROM hierarchy.personal_workspaces AS w WHERE w.id=c.workspace_id AND w.zone_id=$2) \
                      OR EXISTS (SELECT 1 FROM hierarchy.tenant_workspaces AS w WHERE w.id=c.workspace_id AND w.zone_id=$2) \
@@ -48,18 +48,16 @@ pub async fn run_consumer_report_listener(
              ), applied AS ( \
                  INSERT INTO mail.mail_consumer_runtime_reports AS current( \
                      consumer_id,event_id,instance_id,config_version,runtime_state, \
-                     runtime_generation,report_sequence,consumer_lag,error_code,error_message,reported_at,expires_at, \
-                     runtime_node_id,runtime_boot_id \
+                     runtime_generation,report_sequence,consumer_lag,error_code,error_message,reported_at,expires_at \
                  ) \
-                 SELECT $1,$3,$4,$5,$6::text::mail.mail_consumer_runtime_state,$7,$8,$9,$10,$11,$12,$13,$14,$15 \
+                 SELECT $1,$3,$4,$5,$6::text::mail.mail_consumer_runtime_state,$7,$8,$9,$10,$11,$12,$13 \
                  FROM target \
                  ON CONFLICT (consumer_id,instance_id) DO UPDATE SET \
                      event_id=EXCLUDED.event_id, config_version=EXCLUDED.config_version, \
                      runtime_state=EXCLUDED.runtime_state, runtime_generation=EXCLUDED.runtime_generation, \
                      report_sequence=EXCLUDED.report_sequence, consumer_lag=EXCLUDED.consumer_lag, \
                      error_code=EXCLUDED.error_code, error_message=EXCLUDED.error_message, \
-                     reported_at=EXCLUDED.reported_at, expires_at=EXCLUDED.expires_at, \
-                     runtime_node_id=EXCLUDED.runtime_node_id, runtime_boot_id=EXCLUDED.runtime_boot_id \
+                     reported_at=EXCLUDED.reported_at, expires_at=EXCLUDED.expires_at \
                  WHERE EXCLUDED.config_version > current.config_version \
                     OR (EXCLUDED.config_version = current.config_version \
                         AND EXCLUDED.runtime_generation > current.runtime_generation) \
@@ -201,7 +199,6 @@ pub async fn run_consumer_report_listener(
                     let event_id =
                         metadata.and_then(|value| Uuid::from_slice(&value.event_id).ok());
                     let consumer_id = Uuid::from_slice(&report.consumer_id).ok();
-                    let runtime_boot_id = Uuid::from_slice(&report.runtime_boot_id).ok();
                     let runtime_state =
                         MailConsumerRuntimeState::try_from(report.runtime_state).ok();
                     let occurred_at = metadata.and_then(|value| {
@@ -214,7 +211,6 @@ pub async fn run_consumer_report_listener(
                         .and_then(|slot| slot.parse::<i32>().ok());
                     let contract_valid = event_id.is_some()
                         && consumer_id.is_some()
-                        && runtime_boot_id.is_some()
                         && runtime_state
                             .is_some_and(|value| value != MailConsumerRuntimeState::Unspecified)
                         && metadata.is_some_and(|value| {
@@ -227,9 +223,6 @@ pub async fn run_consumer_report_listener(
                                 && value >= now - ChronoDuration::hours(24)
                         })
                         && runtime_slot.is_some_and(|slot| (0..256).contains(&slot))
-                        && !report.runtime_node_id.is_empty()
-                        && report.runtime_node_id.len() <= 255
-                        && !report.runtime_node_id.chars().any(char::is_control)
                         && report.error_code.len() <= 100
                         && report.error_code.bytes().all(|byte| {
                             byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
@@ -262,7 +255,6 @@ pub async fn run_consumer_report_listener(
                     };
                     let event_id = event_id.expect("validated event id");
                     let consumer_id = consumer_id.expect("validated consumer id");
-                    let runtime_boot_id = runtime_boot_id.expect("validated boot id");
                     let occurred_at = occurred_at.expect("validated occurred at");
                     let runtime_slot = runtime_slot.expect("validated runtime slot");
                     let expires_at = occurred_at
@@ -288,8 +280,6 @@ pub async fn run_consumer_report_listener(
                                 &error_message,
                                 &occurred_at,
                                 &expires_at,
-                                &report.runtime_node_id,
-                                &runtime_boot_id,
                                 &runtime_slot,
                             ],
                         )

@@ -1,0 +1,219 @@
+# [COMMENT]: File cấu hình RDS DiscoveryResponse chứa RouteConfiguration tổng thể cho Envoy HTTPS Listener
+version_info: "1"
+resources:
+  - "@type": type.googleapis.com/envoy.config.route.v3.RouteConfiguration
+    name: ingress_https_routes
+
+    # [COMMENT]: Header bảo mật phản hồi HTTP chuẩn hóa
+    response_headers_to_add:
+      - header:
+          key: strict-transport-security
+          value: max-age=31536000; includeSubDomains
+      - header:
+          key: x-content-type-options
+          value: nosniff
+      - header:
+          key: x-frame-options
+          value: DENY
+      - header:
+          key: referrer-policy
+          value: strict-origin-when-cross-origin
+    response_headers_to_remove:
+      - "traceparent"
+
+    # [COMMENT]: Danh sách Virtual Hosts phân nhóm theo miền ứng dụng (Controlplane, Admin UI, Cloud Console, Cost Manager)
+    virtual_hosts:
+      # 1. Nhóm Route Controlplane API (controlplane.aurora.local)
+      - name: controlplane_vhost
+        domains:
+          - "controlplane.aurora.local"
+          - "controlplane.aurora.local:443"
+          - "envoy"
+          - "envoy:8443"
+        typed_per_filter_config:
+          envoy.filters.http.cors:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+            allow_origin_string_match:
+              - safe_regex:
+                  regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+              - exact: "http://localhost:5173"
+            allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_credentials:
+              value: true
+            max_age: "86400"
+        routes:
+          - match:
+              path: "/api/v1/health/readiness"
+            route:
+              cluster: controlplane_cluster
+              timeout: 2s
+              retry_policy:
+                retry_on: "5xx,connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 1s
+          - match: { prefix: "/" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 10s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 3s
+
+      # 2. Nhóm Route Admin UI (adminui.aurora.local)
+      - name: adminui_vhost
+        domains:
+          - "adminui.aurora.local"
+          - "adminui.aurora.local:443"
+        typed_per_filter_config:
+          envoy.filters.http.cors:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+            allow_origin_string_match:
+              - safe_regex:
+                  regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+              - exact: "http://localhost:5173"
+            allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_credentials:
+              value: true
+            max_age: "86400"
+        routes:
+          - match: { prefix: "/admin/" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 10s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 3s
+          - match: { prefix: "/api/" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 10s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 3s
+          - match: { prefix: "/" }
+            route:
+              cluster: admin_ui_cluster
+              timeout: 15s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 5s
+            typed_per_filter_config:
+              envoy.filters.http.ext_authz:
+                "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                disabled: true
+
+      # 3. Nhóm Route Cloud Console & Realtime WSS (cloud.aurora.local)
+      - name: cloud_vhost
+        domains:
+          - "cloud.aurora.local"
+          - "cloud.aurora.local:443"
+        typed_per_filter_config:
+          envoy.filters.http.cors:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+            allow_origin_string_match:
+              - safe_regex:
+                  regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+              - exact: "http://localhost:3000"
+            allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_credentials:
+              value: true
+            max_age: "86400"
+        routes:
+          - match: { prefix: "/connection/" }
+            route:
+              cluster: centrifugo_cluster
+              timeout: 0s
+              upgrade_configs:
+                - upgrade_type: websocket
+          - match: { prefix: "/api/" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 10s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 3s
+          - match: { prefix: "/" }
+            route:
+              cluster: cloud_ui_cluster
+              timeout: 15s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 5s
+            typed_per_filter_config:
+              envoy.filters.http.ext_authz:
+                "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                disabled: true
+
+      # 4. Nhóm Route Cost Manager (cost-manager.aurora.local)
+      - name: cost_manager_vhost
+        domains:
+          - "cost-manager.aurora.local"
+          - "cost-manager.aurora.local:443"
+        typed_per_filter_config:
+          envoy.filters.http.cors:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+            allow_origin_string_match:
+              - safe_regex:
+                  regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+            allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With"
+            allow_credentials:
+              value: true
+            max_age: "86400"
+        routes:
+          - match: { prefix: "/api/" }
+            route:
+              cluster: cost_manager_cluster
+              timeout: 15s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 5s
+          - match: { prefix: "/" }
+            route:
+              cluster: cost_console_cluster
+              timeout: 15s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 5s
+            typed_per_filter_config:
+              envoy.filters.http.ext_authz:
+                "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                disabled: true
+
+      # 5. Nhóm Route Localhost Fallback (localhost)
+      - name: localhost_fallback
+        domains:
+          - "localhost"
+          - "localhost:443"
+        typed_per_filter_config:
+          envoy.filters.http.cors:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+            allow_origin_string_match:
+              - safe_regex:
+                  regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+              - exact: "http://localhost:5173"
+            allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+            allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+            allow_credentials:
+              value: true
+            max_age: "86400"
+        routes:
+          - match: { prefix: "/" }
+            route:
+              cluster: controlplane_cluster
+              timeout: 10s
+              retry_policy:
+                retry_on: "connect-failure,refused-stream,reset"
+                num_retries: 1
+                per_try_timeout: 3s

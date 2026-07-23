@@ -16,7 +16,7 @@
     "password": "パスワード",
     "confirmPassword": "パスワードの確認",
     "forgotPassword": "パスワードをお忘れですか？",
-    "trustDevice": "30日間このデバイスを信頼する",
+    "trustDevice": "ログイン状態を保持する",
     "btnSignIn": "サインイン",
     "btnSigningIn": "サインイン中…",
     "btnRegister": "アカウント登録",

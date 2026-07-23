@@ -91,7 +91,6 @@ commit. Outbox row được giữ theo retention policy sau terminal state; khô
 | `MailTemplateVersionPublishedV1` | CP → Zone | `template_revision` | Store immutable version + update catalog head |
 | `MailTemplateDeletedV1` | CP → Zone | `template_revision` | Store durable tombstone; hard-delete identity cannot be resurrected |
 | `MailConsumerRuntimeReportBatchV1` | DP → CP | config version + runtime generation | Bounded consumer delta batch |
-| `MailInfrastructureSnapshotReportedV1` | DP → CP | infra lease generation + sequence | Atomic Admin/SRE current snapshot |
 
 ### 3.1 Event identity
 
@@ -140,7 +139,7 @@ mail.template.snapshot.{template_id}.v{template_version}
 zone.service.mail
   current health snapshot
 
-lease.mail.infra.report
+lease.mail.health.observe
   CAS lease owner/fencing_token/expires_at/last_owner
 ```
 
@@ -377,7 +376,7 @@ Không dùng consumer ID, workspace ID, topic hoặc template ID làm metric lab
 | DB-backed zonal snapshot reconciler | Phase 4, Job Orchestrator → Redis Job |
 | Mail result L2 + transactional hard-delete | Job Orchestrator `reverse_provider/mail/{l2_dispatcher,service}` |
 | Consumer report reverse relay + CP Consumer Detail read model | Phase 9 — implemented |
-| Infrastructure snapshot + Admin read model | Mail infrastructure reporting God View — implemented |
+| Zone health + OTel/Grafana | Mail operational observability God View — implemented without CP projection |
 
 ### 12.1 Code-shape invariant
 

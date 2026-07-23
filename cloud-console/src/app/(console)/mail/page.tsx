@@ -26,7 +26,7 @@ function MailConsoleContent() {
             <Mail className="size-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Mail</h1>
+            <h1 className="text-xl font-bold tracking-tight">Email Delivery</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Configure Kafka consumers and immutable email templates for this workspace.
             </p>
@@ -51,18 +51,18 @@ function MailConsoleContent() {
             <ConsumersTab
               enabled={Boolean(activeWorkspaceID)}
               scopeKey={scopeKey}
-              canCreate={checkPermission("mail:mail", "create")}
-              canUpdate={checkPermission("mail:mail", "update")}
-              canDelete={checkPermission("mail:mail", "delete")}
+              canCreate={checkPermission("email:consumer", "create")}
+              canUpdate={checkPermission("email:consumer", "update")}
+              canDelete={checkPermission("email:consumer", "delete")}
             />
           </TabsContent>
           <TabsContent value="templates" className="pt-4">
             <TemplatesTab
               enabled={Boolean(activeWorkspaceID)}
               scopeKey={scopeKey}
-              canCreate={checkPermission("mail:mail", "create")}
-              canUpdate={checkPermission("mail:mail", "update")}
-              canDelete={checkPermission("mail:mail", "delete")}
+              canCreate={checkPermission("email:template", "create")}
+              canUpdate={checkPermission("email:template", "publish")}
+              canDelete={checkPermission("email:template", "delete")}
             />
           </TabsContent>
         </Tabs>
@@ -73,7 +73,7 @@ function MailConsoleContent() {
 
 export default function MailConsolePage() {
   return (
-    <RouteGuard requiredKey="mail:mail" requiredAction="read">
+    <RouteGuard requiredKey="email:consumer" requiredAction="read">
       <MailConsoleContent />
     </RouteGuard>
   );

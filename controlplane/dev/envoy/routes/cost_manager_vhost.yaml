@@ -1,0 +1,39 @@
+# [COMMENT]: Cấu hình VirtualHost cho nhóm Route Cost Manager Backend & Cost Console (cost-manager.aurora.local)
+name: cost_manager_vhost
+domains:
+  - "cost-manager.aurora.local"
+  - "cost-manager.aurora.local:443"
+typed_per_filter_config:
+  envoy.filters.http.cors:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+    allow_origin_string_match:
+      - safe_regex:
+          regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+    allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+    allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With"
+    allow_credentials:
+      value: true
+    max_age: "86400"
+routes:
+  # [COMMENT]: Route chuyển tiếp API quản lý chi phí tới Cost Manager Cluster
+  - match: { prefix: "/api/" }
+    route:
+      cluster: cost_manager_cluster
+      timeout: 15s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 5s
+  # [COMMENT]: Route giao diện Cost Console Frontend
+  - match: { prefix: "/" }
+    route:
+      cluster: cost_console_cluster
+      timeout: 15s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 5s
+    typed_per_filter_config:
+      envoy.filters.http.ext_authz:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+        disabled: true

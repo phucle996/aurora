@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::observability::logger::Logger;
 use prost::Message;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::zone_proto;
 // [COMMENT]: Import cross-cutting coordinator từ tầng reverse_provider
@@ -40,6 +40,24 @@ pub async fn process_report(
             return;
         }
     };
+
+    // [COMMENT]: Stream envelope và payload phải cùng Zone; timestamp bounded mới được làm DB fence.
+    let now_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or_default();
+    if payload.zone_id != zone_id
+        || payload.timestamp <= 0
+        || payload.timestamp > now_unix_seconds.saturating_add(300)
+        || payload.timestamp < now_unix_seconds.saturating_sub(86_400)
+    {
+        Logger::sys_warn(
+            "backpressure_listener.report_scope",
+            "Zone report envelope or observation timestamp is invalid",
+            "ZONE_REPORT_SCOPE_OR_TIME_INVALID",
+        );
+        return;
+    }
 
     let cluster = payload.dataplane_cluster.clone().unwrap_or_default();
     let avg_cpu = cluster.avg_cpu_usage;
@@ -211,8 +229,43 @@ pub async fn process_report(
     // Lưu ý: chỉ ghi metrics cho service đang ENABLED. Service disabled không có actual_state đáng tin cậy.
     let now_instant = Instant::now();
 
-    // [COMMENT]: Mail actual_state không còn được ghi từ generic Zone aggregate. Dedicated
-    // mail:infra:reports guarded projection là writer duy nhất, tránh hai stream đến sai thứ tự rollback nhau.
+    // [COMMENT]: Generic Zone report là writer duy nhất của Mail actual_state. DB timestamp fence
+    // chặn hai JO replica xử lý Redis entries sai thứ tự làm rollback health mới.
+    if current_mail_enabled {
+        let should_update_mail = check_metrics_dirty(
+            service_metrics_cache,
+            &zone_id,
+            "mail",
+            &mail_status,
+            mail_capacity as i32,
+            now_instant,
+        );
+        if should_update_mail {
+            match super::super::db::update_zone_service_metrics(
+                &config.database_url,
+                &zone_id,
+                "mail",
+                &mail_status,
+                mail_capacity as i32,
+                payload.timestamp,
+            )
+            .await
+            {
+                Ok(true) => {
+                    service_metrics_cache.insert(
+                        (zone_id.clone(), "mail".to_string()),
+                        (mail_status.clone(), mail_capacity as i32, now_instant),
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => Logger::sys_error(
+                    "backpressure_listener.metrics_db_error",
+                    "Failed to update Mail service health",
+                    &error.to_string(),
+                ),
+            }
+        }
+    }
 
     if current_storage_enabled {
         let should_update_storage = check_metrics_dirty(
@@ -224,25 +277,28 @@ pub async fn process_report(
             now_instant,
         );
         if should_update_storage {
-            if let Err(e) = super::super::db::update_zone_service_metrics(
+            match super::super::db::update_zone_service_metrics(
                 &config.database_url,
                 &zone_id,
                 "storage",
                 &storage_status,
                 storage_capacity as i32,
+                payload.timestamp,
             )
             .await
             {
-                Logger::sys_error(
+                Ok(true) => {
+                    service_metrics_cache.insert(
+                        (zone_id.clone(), "storage".to_string()),
+                        (storage_status.clone(), storage_capacity as i32, now_instant),
+                    );
+                }
+                Ok(false) => {}
+                Err(error) => Logger::sys_error(
                     "backpressure_listener.metrics_db_error",
                     "Thất bại khi cập nhật metrics Service storage vào DB",
-                    &e.to_string(),
-                );
-            } else {
-                service_metrics_cache.insert(
-                    (zone_id.clone(), "storage".to_string()),
-                    (storage_status.clone(), storage_capacity as i32, now_instant),
-                );
+                    &error.to_string(),
+                ),
             }
         }
     }

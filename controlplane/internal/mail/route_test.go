@@ -17,22 +17,19 @@ func TestRegisterRoutesUsesRewrittenPersonalAndTenantPrefixes(t *testing.T) {
 		TenantConsumerHandler:   mailHandler.NewTenantConsumerHandler(nil),
 		PersonalTemplateHandler: mailHandler.NewPersonalTemplateHandler(nil),
 		TenantTemplateHandler:   mailHandler.NewTenantTemplateHandler(nil),
-		InfrastructureHandler:   mailHandler.NewInfrastructureHandler(nil),
 	}
 	RegisterRoutes(router, module)
 
 	routes := router.Routes()
-	if len(routes) != 27 {
-		t.Fatalf("route count = %d, want 27", len(routes))
+	if len(routes) != 26 {
+		t.Fatalf("route count = %d, want 26", len(routes))
 	}
 	for _, route := range routes {
 		if route.Path == "/api/v1/mail" {
 			t.Fatalf("legacy or malformed route registered: %s %s", route.Method, route.Path)
 		}
-		// [COMMENT]: Kiểm tra đường dẫn route admin infrastructure khớp với định dạng mới không còn route param
 		if !strings.HasPrefix(route.Path, "/api/v1/personal/mail") &&
-			!strings.HasPrefix(route.Path, "/api/v1/tenant/mail") &&
-			route.Path != "/admin/mail/infrastructure" {
+			!strings.HasPrefix(route.Path, "/api/v1/tenant/mail") {
 			t.Fatalf("route is outside rewritten scope: %s %s", route.Method, route.Path)
 		}
 	}

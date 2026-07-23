@@ -138,6 +138,7 @@ services:
     volumes:
       # Cung cấp cấu hình định tuyến tĩnh và động v3 API cho Envoy.
       - ./dev/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./dev/envoy/routes:/etc/envoy/routes:ro
       # Cung cấp chứng chỉ SSL chất lượng cao phục vụ TLS termination tại Edge.
       - ./dev/tls/grpc-server.crt:/etc/envoy/tls/tls.crt:ro
       - ./dev/tls/grpc-server.key:/etc/envoy/tls/tls.key:ro
@@ -358,11 +359,13 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: controlplane-nats
-    # [COMMENT]: Event/request-reply bus trung tâm; không bật JetStream và không chứa Zone runtime state.
-    command: [ "-m", "8222" ]
+    # [COMMENT]: Event/request-reply bus trung tâm tích hợp JetStream phục vụ Domain Events (billing ownership & lifecycle relay).
+    command: [ "-js", "-sd", "/data", "-m", "8222" ]
     ports:
       - "4222:4222" # Port client kết nối NATS
       - "8222:8222" # Port monitor NATS HTTP
+    volumes:
+      - controlplane_nats_data:/data
     healthcheck:
       test: [ "CMD", "nc", "-z", "127.0.0.1", "4222" ]
       interval: 5s
@@ -429,6 +432,13 @@ services:
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
       MINIO_PUBLIC_ENDPOINT: "https://localhost:29000"
+      STALWART_JMAP_URL: "http://stalwart:8080/jmap"
+      STALWART_JMAP_ACCOUNT_ID: "b"
+      STALWART_JMAP_IDENTITY_ID: "b"
+      STALWART_JMAP_MAILBOX_ID: "e"
+      STALWART_JMAP_USERNAME: "admin@example.org"
+      STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
+      MAIL_SENDER_ADDRESS: "admin@example.org"
     depends_on:
       controlplane1:
         condition: service_started
@@ -472,6 +482,13 @@ services:
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
       MINIO_PUBLIC_ENDPOINT: "https://localhost:29000"
+      STALWART_JMAP_URL: "http://stalwart:8080/jmap"
+      STALWART_JMAP_ACCOUNT_ID: "b"
+      STALWART_JMAP_IDENTITY_ID: "b"
+      STALWART_JMAP_MAILBOX_ID: "e"
+      STALWART_JMAP_USERNAME: "admin@example.org"
+      STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
+      MAIL_SENDER_ADDRESS: "admin@example.org"
     depends_on:
       controlplane2:
         condition: service_started
@@ -507,6 +524,13 @@ services:
       MINIO_ACCESS_KEY: "minioadmin"
       MINIO_SECRET_KEY: "minioadmin"
       MINIO_PUBLIC_ENDPOINT: "https://localhost:29000"
+      STALWART_JMAP_URL: "http://stalwart:8080/jmap"
+      STALWART_JMAP_ACCOUNT_ID: "b"
+      STALWART_JMAP_IDENTITY_ID: "b"
+      STALWART_JMAP_MAILBOX_ID: "e"
+      STALWART_JMAP_USERNAME: "admin@example.org"
+      STALWART_JMAP_PASSWORD: "oHMYg53VioLs00Sr"
+      MAIL_SENDER_ADDRESS: "admin@example.org"
     depends_on:
       controlplane3:
         condition: service_started
@@ -660,17 +684,20 @@ services:
       # [COMMENT]: Current runtime read model; JO vẫn block trên Redis Stream và chỉ reclaim PEL sau 30s.
       MAIL_RUNTIME_REPORT_TTL_SECS: "180"
       MAIL_RUNTIME_REPORT_CLAIM_IDLE_MS: "30000"
-      MAIL_INFRA_REPORT_TTL_SECS: "180"
       APP_LOG_LEVEL: "debug"
       TZ: "Asia/Ho_Chi_Minh"
       METRICS_PORT: "9102"
       CDC_SOURCES: "mail.mail_outbox_records,hierarchy.zones,hierarchy.zone_services,storage.storage_outbox_records"
+      # [COMMENT]: Kết nối NATS_URL bắt buộc tới NATS Core trung tâm (có hỗ trợ JetStream cho lifecycle events)
+      NATS_URL: "nats://controlplane-nats:4222"
       # OpenTelemetry: Kết nối tới OTel Collector để xuất traces phục vụ distributed tracing E2E
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
     depends_on:
       psql:
         condition: service_healthy
       redis-job:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -713,7 +740,7 @@ services:
       ACR_GRPC_PORT: "50051"
       REDIS_URL: "redis://controlplane-acr-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
-      VAULT_TOKEN: "hvs.GpdDZl2hfrc6qvE3ZWFzUjxV"
+      VAULT_TOKEN: "hvs.Qai76d7T5TA69r9kBQ8gkgJF"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
       VAULT_TOTP_KEY_PATH: "totp/keys/admin"
       VAULT_ADMIN_API_KEY_PATH: "secret/data/admin/api-key"
@@ -828,6 +855,7 @@ volumes:
   controlplane_grafana_data: # Cache node_modules cho các ứng dụng Front-end để tối ưu hóa hiệu suất khởi chạy
   admin_ui_node_modules:
   controlplane_redis_job_data:
+  controlplane_nats_data:
   dataplane_zone_z1_nats_data:
   dataplane_cargo_target_z1:
   dataplane_cargo_cache_z1:

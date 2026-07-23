@@ -15,7 +15,7 @@
 | Authorization scope | Personal và Tenant là hai flow tách riêng từ handler → service → repository; consumer thuộc đúng một `workspace_id` |
 | Placement | Consumer row không lưu Zone; outbox snapshot `zone_id UUID` từ authorized request context sau DB cross-check Workspace |
 | Contract | `controlplane/internal/mail/transport/rpc/proto/mail_runtime.proto` |
-| Schema | `controlplane/internal/mail/migrations/000001..000009` |
+| Schema | `controlplane/internal/mail/migrations/000001..000008` |
 | Related SoT | `mail_configuration_projection_god_view.md`, `dataplane_broker_mail_execution_god_view.md` |
 | Verified against | Working tree, 2026-07-22 |
 
@@ -286,6 +286,10 @@ vừa commit bởi transaction thắng lock dù lock order trông có vẻ đún
 
 - Envoy/ACR phải strip mọi client-supplied scope metadata rồi tạo authenticated context; direct CP ingress bị NetworkPolicy chặn.
 - Authorization luôn dựa authenticated caller + authoritative Workspace membership/ownership; consumer query luôn scope theo Workspace.
+- RBAC dùng business capability `email`, không dùng transport namespace `mail`. Consumer routes yêu cầu một trong
+  `email:consumer:{create,read,update,delete}`; Template routes yêu cầu một trong
+  `email:template:{create,read,publish,delete}`. Personal/Tenant route đều chạy `middleware.Authorize` trước handler.
+- Operational infrastructure không có Controlplane HTTP surface hoặc RBAC permission; OTel/Grafana là read path nội bộ.
 - Repository fail closed nếu `MailOutboxRecord.zone_id` khác Zone trên aggregate đã đi qua Workspace authorization guard.
 - Service tự derive exact secret-reference namespace/scope; request không nhận locator và response chỉ trả `source_configured`.
 - Dataplane chỉ thay thế placeholder `{{...}}` từ message variables; template content không mang schema/function/code executable.

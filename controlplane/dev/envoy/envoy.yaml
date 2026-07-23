@@ -1,3 +1,8 @@
+# [COMMENT]: Định danh Node và Cluster cho Envoy (bắt buộc khi dùng RDS Route Discovery Service)
+node:
+  id: controlplane-envoy-node
+  cluster: controlplane-envoy-cluster
+
 static_resources:
   listeners:
     - name: ingress_http
@@ -62,8 +67,8 @@ static_resources:
                           ts: "%START_TIME%"
                           method: "%REQ(:METHOD)%"
                           host: "%REQ(:AUTHORITY)%"
-						  # [COMMENT]: Không ghi query string để OTT/secret không đi vào centralized access logs.
-						  path: "%REQ_WITHOUT_QUERY(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                          # [COMMENT]: Đường dẫn HTTP Request Path chuẩn hóa không gặp lỗi StreamInfo parser.
+                          path: "%REQ(:PATH)%"
                           protocol: "%PROTOCOL%"
                           status: "%RESPONSE_CODE%"
                           flags: "%RESPONSE_FLAGS%"
@@ -72,218 +77,13 @@ static_resources:
                           upstream_host: "%UPSTREAM_HOST%"
                           downstream_remote: "%DOWNSTREAM_REMOTE_ADDRESS%"
                           request_id: "%REQ(X-REQUEST-ID)%"
-                route_config:
-                  name: ingress_https_routes
-                  response_headers_to_add:
-                    - header:
-                        key: strict-transport-security
-                        value: max-age=31536000; includeSubDomains
-                    - header:
-                        key: x-content-type-options
-                        value: nosniff
-                    - header:
-                        key: x-frame-options
-                        value: DENY
-                    - header:
-                        key: referrer-policy
-                        value: strict-origin-when-cross-origin
-                  response_headers_to_remove:
-                    - "traceparent"
-                  virtual_hosts:
-                    - name: controlplane_vhost
-                      domains:
-                        - "controlplane.aurora.local"
-                        - "controlplane.aurora.local:443"
-                        - "envoy"
-                        - "envoy:8443"
-                      typed_per_filter_config:
-                        envoy.filters.http.cors:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
-                          allow_origin_string_match:
-                            - safe_regex:
-                                google_re2: {}
-                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
-                            - exact: "http://localhost:5173"
-                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          allow_credentials:
-                            value: true
-                          max_age: "86400"
-                      routes:
-                        - match:
-                            path: "/api/v1/health/readiness"
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 2s
-                            retry_policy:
-                              retry_on: "5xx,connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 1s
-                        - match: { prefix: "/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
-                    - name: adminui_vhost
-                      domains:
-                        - "adminui.aurora.local"
-                        - "adminui.aurora.local:443"
-                      typed_per_filter_config:
-                        envoy.filters.http.cors:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
-                          allow_origin_string_match:
-                            - safe_regex:
-                                google_re2: {}
-                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
-                            - exact: "http://localhost:5173"
-                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          allow_credentials:
-                            value: true
-                          max_age: "86400"
-                      routes:
-                        - match: { prefix: "/admin/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
-                        - match: { prefix: "/api/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
-                        - match: { prefix: "/" }
-                          route:
-                            cluster: admin_ui_cluster
-                            timeout: 15s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 5s
-                          # [COMMENT]: Bỏ qua ext_authz cho các file tĩnh và giao diện để giảm thiểu latency
-                          typed_per_filter_config:
-                            envoy.filters.http.ext_authz:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                              disabled: true
-
-                    - name: cloud_vhost
-                      domains:
-                        - "cloud.aurora.local"
-                        - "cloud.aurora.local:443"
-                      typed_per_filter_config:
-                        envoy.filters.http.cors:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
-                          allow_origin_string_match:
-                            - safe_regex:
-                                google_re2: {}
-                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
-                            - exact: "http://localhost:3000"
-                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          allow_credentials:
-                            value: true
-                          max_age: "86400"
-                      routes:
-                        - match: { prefix: "/connection/" }
-                          route:
-                            cluster: centrifugo_cluster
-                            timeout: 0s
-                            upgrade_configs:
-                              - upgrade_type: websocket
-                        - match: { prefix: "/api/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
-                        - match: { prefix: "/" }
-                          route:
-                            cluster: cloud_ui_cluster
-                            timeout: 15s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 5s
-                          # [COMMENT]: Bỏ qua ext_authz cho các file tĩnh và giao diện Cloud UI để giảm thiểu latency
-                          typed_per_filter_config:
-                            envoy.filters.http.ext_authz:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                              disabled: true
-                    - name: cost_manager_vhost
-                      domains:
-                        - "cost-manager.aurora.local"
-                        - "cost-manager.aurora.local:443"
-                      typed_per_filter_config:
-                        envoy.filters.http.cors:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
-                          allow_origin_string_match:
-                            - safe_regex:
-                                google_re2: {}
-                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
-                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With"
-                          allow_credentials:
-                            value: true
-                          max_age: "86400"
-                      routes:
-                        - match: { prefix: "/api/" }
-                          route:
-                            cluster: cost_manager_cluster
-                            timeout: 15s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 5s
-                        - match: { prefix: "/" }
-                          route:
-                            cluster: cost_console_cluster
-                            timeout: 15s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 5s
-                          typed_per_filter_config:
-                            envoy.filters.http.ext_authz:
-                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
-                              disabled: true
-
-                    - name: localhost_fallback
-                      domains:
-                        - "localhost"
-                        - "localhost:443"
-                      typed_per_filter_config:
-                        envoy.filters.http.cors:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
-                          allow_origin_string_match:
-                            - safe_regex:
-                                google_re2: {}
-                                regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
-                            - exact: "http://localhost:5173"
-                          allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-                          allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
-                          allow_credentials:
-                            value: true
-                          max_age: "86400"
-                      routes:
-                        - match: { prefix: "/" }
-                          route:
-                            cluster: controlplane_cluster
-                            timeout: 10s
-                            retry_policy:
-                              retry_on: "connect-failure,refused-stream,reset"
-                              num_retries: 1
-                              per_try_timeout: 3s
+                # [COMMENT]: Sử dụng RDS (Route Discovery Service) để tách cấu hình định tuyến ra các file riêng biệt theo nhóm route
+                rds:
+                  route_config_name: ingress_https_routes
+                  config_source:
+                    path_config_source:
+                      path: "/etc/envoy/routes/https_routes.yaml"
+                    resource_api_version: V3
                 upgrade_configs:
                   - upgrade_type: websocket
                 http_filters:
@@ -313,17 +113,17 @@ static_resources:
                               - and_rules:
                                   rules:
                                     - not_rule:
-                                        header: { name: ":path", prefix_match: "/admin/" }
+                                        header: { name: ":path", string_match: { prefix: "/admin/" } }
                             principals:
                               - any: true
                           "allow-whitelisted-admin":
                             permissions:
-                              - header: { name: ":path", prefix_match: "/admin/" }
+                              - header: { name: ":path", string_match: { prefix: "/admin/" } }
                             principals:
-                              - source_ip: { address_prefix: 127.0.0.1, prefix_len: 32 }
-                              - source_ip: { address_prefix: 10.0.0.0, prefix_len: 8 }
-                              - source_ip: { address_prefix: 172.16.0.0, prefix_len: 12 }
-                              - source_ip: { address_prefix: 192.168.0.0, prefix_len: 16 }
+                              - direct_remote_ip: { address_prefix: 127.0.0.1, prefix_len: 32 }
+                              - direct_remote_ip: { address_prefix: 10.0.0.0, prefix_len: 8 }
+                              - direct_remote_ip: { address_prefix: 172.16.0.0, prefix_len: 12 }
+                              - direct_remote_ip: { address_prefix: 192.168.0.0, prefix_len: 16 }
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -464,7 +264,10 @@ static_resources:
                       port_value: 8000
 
 admin:
-  access_log_path: /tmp/admin_access.log
+  access_log:
+    - name: envoy.access_loggers.stdout
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
   address:
     socket_address:
       address: 127.0.0.1

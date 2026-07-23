@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS zone_services (
     service_type zone_service_type NOT NULL,
     desired_state BOOLEAN NOT NULL DEFAULT false, -- [COMMENT]: Trạng thái mong muốn (true: enable, false: disable)
     actual_state zone_service_status NOT NULL DEFAULT 'unknown', -- [COMMENT]: Trạng thái vận hành thực tế
+    actual_observed_at TIMESTAMPTZ NULL, -- [COMMENT]: Fence chống report Zone cũ rollback actual_state trong HA
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ux_zone_services_zone_service UNIQUE (zone_id, service_type)
@@ -43,6 +44,7 @@ COMMENT ON COLUMN zone_services.zone_id IS 'Foreign key to zone that owns this s
 COMMENT ON COLUMN zone_services.service_type IS 'Service type supported in zone, for example mail or hypervisor.';
 COMMENT ON COLUMN zone_services.desired_state IS 'Desired state indicating if service is enabled (true) or disabled (false) for this zone.';
 COMMENT ON COLUMN zone_services.actual_state IS 'Actual operational health state of service inside this zone.';
+COMMENT ON COLUMN zone_services.actual_observed_at IS 'Source observation timestamp; only a newer Zone report may replace actual_state.';
 COMMENT ON COLUMN zone_services.created_at IS 'Timestamp when zone service row was created.';
 COMMENT ON COLUMN zone_services.updated_at IS 'Timestamp when zone service row was last updated.';
 

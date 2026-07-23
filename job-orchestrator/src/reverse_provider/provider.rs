@@ -42,8 +42,6 @@ impl ReverseProvider {
 
         let config_mail_consumer = self.config.clone();
         let redis_client_mail_consumer = self.redis_client.clone();
-        let config_mail_infra = self.config.clone();
-        let redis_client_mail_infra = self.redis_client.clone();
 
         // [COMMENT]: Chạy song song các listener độc lập; mail runtime reverse path dùng blocking
         // Redis consumer group riêng, không chia PEL với generic job result.
@@ -113,26 +111,6 @@ impl ReverseProvider {
                             Logger::sys_error(
                                 "reverse_provider.mail_consumer_report",
                                 "Mail Consumer Report Listener failed; reconnecting after 5s",
-                                &error.to_string(),
-                            );
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                }
-            }) => {
-                let _ = res;
-            }
-            res = tokio::spawn(async move {
-                loop {
-                    {
-                        let run_res = mail::reporter::infrastructure::run_infra_report_listener(
-                            &config_mail_infra,
-                            &redis_client_mail_infra,
-                        ).await;
-                        if let Err(error) = run_res {
-                            Logger::sys_error(
-                                "reverse_provider.mail_infra_report",
-                                "Mail Infrastructure Report Listener failed; reconnecting after 5s",
                                 &error.to_string(),
                             );
                         }

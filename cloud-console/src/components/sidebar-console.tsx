@@ -126,11 +126,11 @@ export default function SidebarConsole({
       },
       {
         id: "mail",
-        name: "Mail Service",
+        name: "Email Delivery",
         icon: Mail,
         path: "/mail",
-        matchKey: "mail:mail",
-        // [COMMENT]: Chỉ render khi user có quyền read trên mail:mail
+        matchKey: "email:consumer",
+        // [COMMENT]: Sidebar dùng business capability; `mail` chỉ còn là route/wire namespace nội bộ.
         requiredAction: "read"
       }
     ];

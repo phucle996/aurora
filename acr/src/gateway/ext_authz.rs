@@ -136,14 +136,26 @@ impl Authorization for ExtAuthzService {
             }
         };
 
-        let path = client_headers
-            .get(":path")
-            .map(|s| s.as_str())
+        let http_req = req
+            .attributes
+            .as_ref()
+            .and_then(|a| a.request.as_ref())
+            .and_then(|r| r.http.as_ref());
+
+        // [COMMENT]: Trích xuất path và method chính xác từ Envoy AttributeContext (http.path & http.method)
+        // Tránh lỗi trượt đường dẫn do Envoy không truyền :path/:method dưới dạng header thông thường
+        let path_str = http_req
+            .map(|h| h.path.as_str())
+            .or_else(|| client_headers.get(":path").map(|s| s.as_str()))
             .unwrap_or("/");
-        let method = client_headers
-            .get(":method")
-            .map(|s| s.as_str())
+        let path = path_str;
+
+        let method_str = http_req
+            .map(|h| h.method.as_str())
+            .or_else(|| client_headers.get(":method").map(|s| s.as_str()))
             .unwrap_or("GET");
+        let method = method_str;
+
         let client_ip = client_headers
             .get("x-forwarded-for")
             .map(|s| s.as_str())
@@ -191,8 +203,20 @@ impl Authorization for ExtAuthzService {
             )));
         }
 
-        // [COMMENT]: Public bypass chỉ exact method + path và chỉ sau CORS/rate limit; prefix không thể mở nhầm route con.
         let path_without_query = path.split('?').next().unwrap_or(path);
+
+        // ─── Local Interceptors ───────────────────────────────────────────────
+        // [COMMENT]: Ưu tiên kiểm tra các Local Interceptors (Login Challenge, Login, Session Check...) tại tầng biên ACR trước.
+        // Tránh trường hợp is_public_route bypass nhầm các endpoint local của ACR về Controlplane (gây ra 404).
+
+        // [COMMENT]: Login challenge là endpoint local của ACR; request vẫn đã qua CORS và pre-auth rate limit.
+        if let Some(res) =
+            crate::user::login::handle_login_challenge(&self.session_mgr, method, path).await
+        {
+            return res;
+        }
+
+        // [COMMENT]: Public bypass chỉ exact method + path và chỉ sau CORS/rate limit; prefix không thể mở nhầm route con.
         let is_public_route = self.config.bypass_endpoints.iter().any(|entry| {
             if let Some((configured_method, configured_path)) = entry.split_once(' ') {
                 configured_method.eq_ignore_ascii_case(method)
@@ -221,15 +245,6 @@ impl Authorization for ExtAuthzService {
                 envoy_types::pb::envoy::service::auth::v3::OkHttpResponse::default(),
             );
             return Ok(Response::new(response));
-        }
-
-        // ─── Local Interceptors ───────────────────────────────────────────────
-
-        // [COMMENT]: Login challenge là endpoint local của ACR; request vẫn đã qua CORS và pre-auth rate limit.
-        if let Some(res) =
-            crate::user::login::handle_login_challenge(&self.session_mgr, method, path).await
-        {
-            return res;
         }
 
         // 1. User Login: POST /api/v1/auth/login
@@ -305,8 +320,22 @@ impl Authorization for ExtAuthzService {
             return res;
         }
 
-        // 2c. SRE Logout: POST /admin/auth/logout
+        // [COMMENT]: 2c. SRE Logout: POST /admin/auth/logout
         if let Some(res) = crate::sre::logout::handle_sre_logout(
+            &self.session_mgr,
+            &self.sre_token_mgr,
+            &self.config,
+            client_headers,
+            method,
+            path,
+        )
+        .await
+        {
+            return res;
+        }
+
+        // [COMMENT]: 2e. SRE Session Check: GET /admin/auth/session
+        if let Some(res) = crate::sre::verify::handle_sre_session_check(
             &self.session_mgr,
             &self.sre_token_mgr,
             &self.config,

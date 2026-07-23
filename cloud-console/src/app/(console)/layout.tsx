@@ -88,8 +88,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
   const { theme, setTheme } = useTheme();
 
   // [COMMENT]: Tự động nhận diện tab hoạt động trên Sidebar dựa theo đường dẫn hiện tại.
-  // Chỉ map các pathname thực sự thuộc cloud-console — không map /admin/* vì
-  // đó là domain của admin-ui (ứng dụng riêng biệt).
+  // Cập nhật activeId chính xác tương ứng với từng đường dẫn tính năng trong Cloud Console.
   useEffect(() => {
     if (pathname.startsWith("/workspaces")) {
       setActiveId("workspaces");
@@ -97,8 +96,12 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
       setActiveId("users");
     } else if (pathname.startsWith("/rbac")) {
       setActiveId("rbac");
+    } else if (pathname.startsWith("/storage")) {
+      setActiveId("storage");
+    } else if (pathname.startsWith("/mail")) {
+      setActiveId("mail");
     } else if (pathname === "/") {
-      setActiveId((prev) => (prev === "tenants" ? "overview" : prev));
+      setActiveId("overview");
     }
   }, [pathname]);
 

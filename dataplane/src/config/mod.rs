@@ -103,9 +103,9 @@ pub struct Config {
     pub mail_stream_envelope_key_hex: String,
     /// [COMMENT]: Optional Kafka Zone CA path là trusted deployment config, không nhận filesystem path từ customer payload.
     pub mail_stream_ca_cert_path: Option<String>,
-    /// [COMMENT]: Hai reverse reporter có cadence riêng để consumer cardinality không kéo theo infra load.
+    /// [COMMENT]: Consumer reverse report và local health observation có cadence độc lập.
     pub mail_consumer_report_interval_ms: u64,
-    pub mail_infra_report_interval_ms: u64,
+    pub mail_health_observe_interval_ms: u64,
 
     /// [COMMENT]: Địa chỉ Host kết nối cụm MinIO Cluster cục bộ (Optional)
     pub minio_host: Option<String>,
@@ -239,10 +239,31 @@ impl Config {
             // [COMMENT]: JMAP batch transport; secrets có thể được inject từ Kubernetes Secret/Vault Agent.
             stalwart_jmap_url: env::var("STALWART_JMAP_URL")
                 .unwrap_or_else(|_| "http://stalwart-mail:8080/jmap".to_string()),
-            // [COMMENT]: Đây là opaque IDs do Stalwart cấp, không đoán từ username/mailbox name.
-            stalwart_jmap_account_id: env::var("STALWART_JMAP_ACCOUNT_ID").unwrap_or_default(),
-            stalwart_jmap_identity_id: env::var("STALWART_JMAP_IDENTITY_ID").unwrap_or_default(),
-            stalwart_jmap_mailbox_id: env::var("STALWART_JMAP_MAILBOX_ID").unwrap_or_default(),
+            // [COMMENT]: Opaque IDs do Stalwart cấp; bắt buộc cấu hình từ biến môi trường (Fail-fast, không fallback hạ tầng)
+            stalwart_jmap_account_id: env::var("STALWART_JMAP_ACCOUNT_ID").unwrap_or_else(|err| {
+                crate::observability::logger::Logger::sys_error(
+                    "system.bootstrap",
+                    "CRITICAL: STALWART_JMAP_ACCOUNT_ID environment variable is required for JMAP mail runtime!",
+                    &err.to_string(),
+                );
+                std::process::abort();
+            }),
+            stalwart_jmap_identity_id: env::var("STALWART_JMAP_IDENTITY_ID").unwrap_or_else(|err| {
+                crate::observability::logger::Logger::sys_error(
+                    "system.bootstrap",
+                    "CRITICAL: STALWART_JMAP_IDENTITY_ID environment variable is required for JMAP mail runtime!",
+                    &err.to_string(),
+                );
+                std::process::abort();
+            }),
+            stalwart_jmap_mailbox_id: env::var("STALWART_JMAP_MAILBOX_ID").unwrap_or_else(|err| {
+                crate::observability::logger::Logger::sys_error(
+                    "system.bootstrap",
+                    "CRITICAL: STALWART_JMAP_MAILBOX_ID environment variable is required for JMAP mail runtime!",
+                    &err.to_string(),
+                );
+                std::process::abort();
+            }),
             stalwart_jmap_bearer_token: env::var("STALWART_JMAP_BEARER_TOKEN")
                 .unwrap_or_default(),
             stalwart_jmap_username: env::var("STALWART_JMAP_USERNAME")
@@ -340,8 +361,8 @@ impl Config {
                 5_000_u64,
             )
             .clamp(1_000, 60_000),
-            mail_infra_report_interval_ms: parse_env(
-                "MAIL_INFRA_REPORT_INTERVAL_MS",
+            mail_health_observe_interval_ms: parse_env(
+                "MAIL_HEALTH_OBSERVE_INTERVAL_MS",
                 10_000_u64,
             )
             .clamp(5_000, 120_000),

@@ -1,23 +1,16 @@
 use super::super::MailRuntime;
 use super::backpressure::MailBackpressureSnapshot;
+use super::metrics::MailOperationalMetricsSnapshot;
 use crate::config::Config;
 use crate::executor::mail::runtime::RuntimeHealthSnapshot;
-use crate::executor::mail::runtime_proto::{
-    MailDataplaneNodeSnapshotV1, MailEventMetadataV1, MailInfrastructureSnapshotReportedV1,
-    MailInfrastructureState, MailStalwartNodeSnapshotV1, MailStalwartNodeState,
-};
-use crate::infra::redis::RedisClientManager;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 use bytes::Bytes;
-use chrono::DateTime;
-use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -30,7 +23,6 @@ struct LocalMailNodeSnapshot {
     jmap_reachable: bool,
     last_probe_at_unix_ms: u64,
     observed_at_unix_ms: u64,
-    error_code: String,
 }
 
 #[derive(Serialize)]
@@ -45,19 +37,12 @@ struct ZoneMailHealthSnapshot<'a> {
     probe_node_id: &'a str,
 }
 
-/// [COMMENT]: Mỗi pod ghi local snapshot, nhưng chỉ rotating lease holder probe Stalwart,
-/// aggregate inventory, ghi fenced Zone health và publish đúng một infra snapshot mỗi chu kỳ.
-pub(super) fn start(
-    config: Arc<Config>,
-    zone_kv: Arc<ZoneKvStore>,
-    redis_job: Arc<RedisClientManager>,
-    runtime: Arc<MailRuntime>,
-) {
+/// [COMMENT]: Mỗi pod ghi local health; rotating winner probe JMAP/Stalwart, ghi fenced Zone KV
+/// và OTel aggregates. Không có reverse stream, PostgreSQL projection hoặc customer labels.
+pub(super) fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, runtime: Arc<MailRuntime>) {
     tokio::spawn(async move {
         let node_id = runtime.runtime_node_id.clone();
         let boot_id = runtime.runtime_boot_id;
-        let event_namespace = Uuid::parse_str("3b614680-15ef-47ab-a7d5-36ae3f03666a")
-            .expect("mail infrastructure report namespace must be valid");
         let management_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(5))
@@ -65,10 +50,9 @@ pub(super) fn start(
             .tcp_keepalive(Duration::from_secs(30))
             .build()
             .ok();
-        let mut redis_connection: Option<redis::aio::MultiplexedConnection> = None;
         let mut last_jmap_reachable = false;
         let mut last_probe_at_unix_ms = 0_u64;
-        let mut last_probe_error = "MAIL_JMAP_NOT_PROBED".to_string();
+        let mut last_probe_success_unix_seconds = 0_u64;
 
         loop {
             let now_ms = SystemTime::now()
@@ -86,22 +70,21 @@ pub(super) fn start(
                 jmap_reachable: last_jmap_reachable,
                 last_probe_at_unix_ms,
                 observed_at_unix_ms: now_ms,
-                error_code: last_probe_error.clone(),
             };
             if let Ok(value) = serde_json::to_vec(&local) {
-                // [COMMENT]: Mỗi physical node chỉ sở hữu key của chính nó; boot UUID làm restart visible.
+                // [COMMENT]: Physical pod chỉ ghi key của chính nó; boot UUID làm restart visible.
                 let _ = zone_kv
-                    .health_put(format!("mail.infra.node.{}", node_id), Bytes::from(value))
+                    .health_put(format!("mail.health.node.{node_id}"), Bytes::from(value))
                     .await;
             }
 
             let lease = match zone_kv
                 .acquire_rotating_lease(
-                    "lease.mail.infra.report",
+                    "lease.mail.health.observe",
                     &node_id,
                     Duration::from_secs(20),
                     Duration::from_millis(
-                        config.mail_infra_report_interval_ms.saturating_add(2_000),
+                        config.mail_health_observe_interval_ms.saturating_add(2_000),
                     ),
                 )
                 .await
@@ -109,15 +92,15 @@ pub(super) fn start(
                 Ok(Some(lease)) => lease,
                 Ok(None) => {
                     tokio::time::sleep(Duration::from_millis(
-                        config.mail_infra_report_interval_ms + rand::random::<u64>() % 2_000,
+                        config.mail_health_observe_interval_ms + rand::random::<u64>() % 2_000,
                     ))
                     .await;
                     continue;
                 }
                 Err(error) => {
                     Logger::sys_warn(
-                        "mail.supervisor.infra_reporter",
-                        "Failed to acquire Mail infrastructure report lease",
+                        "mail.supervisor.health_observer",
+                        "Failed to acquire rotating Mail health lease",
                         &error,
                     );
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -129,20 +112,21 @@ pub(super) fn start(
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
                 .unwrap_or_default();
+            let probe_started = Instant::now();
             last_jmap_reachable =
                 tokio::time::timeout(Duration::from_secs(3), runtime.healthcheck())
                     .await
                     .is_ok_and(|result| result.is_ok());
-            last_probe_error = if last_jmap_reachable {
-                String::new()
-            } else {
-                "MAIL_JMAP_UNREACHABLE".to_string()
-            };
+            let probe_duration_seconds = probe_started.elapsed().as_secs_f64();
+            if last_jmap_reachable {
+                last_probe_success_unix_seconds = last_probe_at_unix_ms / 1_000;
+            }
 
-            // [COMMENT]: Cluster registry dùng management identity riêng chỉ có query/get.
-            // Missing optional integration không làm delivery fail; Admin vẫn thấy inventory unavailable.
+            // [COMMENT]: Management identity chỉ có ClusterNode query/get; metric chỉ xuất bounded count theo state.
             let mut inventory_error = String::new();
-            let mut stalwart_nodes = Vec::<MailStalwartNodeSnapshotV1>::new();
+            let mut stalwart_active = 0_u64;
+            let mut stalwart_stale = 0_u64;
+            let mut stalwart_inactive = 0_u64;
             if config.stalwart_management_jmap_url.trim().is_empty()
                 || config.stalwart_reporter_bearer_token.trim().is_empty()
             {
@@ -189,45 +173,25 @@ pub(super) fn start(
                                             continue;
                                         };
                                         for node in nodes.iter().take(512) {
-                                            let Some(stalwart_node_id) =
-                                                node.get("nodeId").and_then(Value::as_u64)
-                                            else {
-                                                continue;
-                                            };
-                                            let hostname = node
-                                                .get("hostname")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or_default()
-                                                .trim();
-                                            if hostname.is_empty()
-                                                || hostname.len() > 255
-                                                || hostname.chars().any(char::is_control)
+                                            if node.get("nodeId").and_then(Value::as_u64).is_none()
                                             {
                                                 continue;
                                             }
-                                            let state = match node
-                                                .get("status")
-                                                .and_then(Value::as_str)
-                                            {
-                                                Some("active") => MailStalwartNodeState::Active,
-                                                Some("stale") => MailStalwartNodeState::Stale,
-                                                Some("inactive") => MailStalwartNodeState::Inactive,
-                                                _ => continue,
-                                            };
-                                            let last_renewal_unix_ms = node
-                                                .get("lastRenewal")
-                                                .and_then(Value::as_str)
-                                                .and_then(|value| {
-                                                    DateTime::parse_from_rfc3339(value).ok()
-                                                })
-                                                .map(|value| value.timestamp_millis())
-                                                .unwrap_or_default();
-                                            stalwart_nodes.push(MailStalwartNodeSnapshotV1 {
-                                                node_id: stalwart_node_id,
-                                                hostname: hostname.to_string(),
-                                                state: state as i32,
-                                                last_renewal_unix_ms,
-                                            });
+                                            match node.get("status").and_then(Value::as_str) {
+                                                Some("active") => {
+                                                    stalwart_active =
+                                                        stalwart_active.saturating_add(1)
+                                                }
+                                                Some("stale") => {
+                                                    stalwart_stale =
+                                                        stalwart_stale.saturating_add(1)
+                                                }
+                                                Some("inactive") => {
+                                                    stalwart_inactive =
+                                                        stalwart_inactive.saturating_add(1)
+                                                }
+                                                _ => {}
+                                            }
                                         }
                                         if nodes.len() > 512 {
                                             inventory_error =
@@ -235,7 +199,9 @@ pub(super) fn start(
                                         }
                                     }
                                 }
-                                if stalwart_nodes.is_empty() && inventory_error.is_empty() {
+                                if stalwart_active + stalwart_stale + stalwart_inactive == 0
+                                    && inventory_error.is_empty()
+                                {
                                     inventory_error = "MAIL_STALWART_INVENTORY_EMPTY".to_string();
                                 }
                             }
@@ -248,10 +214,9 @@ pub(super) fn start(
                     Err(_) => inventory_error = "MAIL_STALWART_INVENTORY_UNAVAILABLE".to_string(),
                 }
             } else {
-                inventory_error = "MAIL_STALWART_REPORTER_CLIENT_UNAVAILABLE".to_string();
+                inventory_error = "MAIL_STALWART_OBSERVER_CLIENT_UNAVAILABLE".to_string();
             }
 
-            // [COMMENT]: Winner refresh local probe result rồi aggregate mọi fresh physical node.
             let refreshed_local = LocalMailNodeSnapshot {
                 node_id: node_id.clone(),
                 boot_id: boot_id.to_string(),
@@ -261,11 +226,10 @@ pub(super) fn start(
                 jmap_reachable: last_jmap_reachable,
                 last_probe_at_unix_ms,
                 observed_at_unix_ms: last_probe_at_unix_ms,
-                error_code: last_probe_error.clone(),
             };
             if let Ok(value) = serde_json::to_vec(&refreshed_local) {
                 let _ = zone_kv
-                    .health_put(format!("mail.infra.node.{}", node_id), Bytes::from(value))
+                    .health_put(format!("mail.health.node.{node_id}"), Bytes::from(value))
                     .await;
             }
 
@@ -273,8 +237,8 @@ pub(super) fn start(
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
                 .unwrap_or_default();
-            let mut slot_count_by_node = HashMap::<String, u32>::new();
             let health_keys = zone_kv.health_keys().await.unwrap_or_default();
+            let mut active_consumer_slots = 0_u64;
             for key in &health_keys {
                 if !key.starts_with("mail.runtime.") {
                     continue;
@@ -296,22 +260,19 @@ pub(super) fn start(
                     && slot.runtime_generation > 0
                     && slot.runtime_generation == slot.fencing_token
                     && !slot.runtime_node_id.is_empty()
-                    && slot.runtime_node_id.len() <= 255
-                    && !slot.runtime_node_id.chars().any(char::is_control)
                     && aggregate_at_ms.saturating_sub(slot.heartbeat_unix_ms)
                         <= config
                             .mail_stream_slot_lease_ttl_seconds
                             .saturating_mul(2_000)
                 {
-                    let count = slot_count_by_node.entry(slot.runtime_node_id).or_default();
-                    *count = count.saturating_add(1);
+                    active_consumer_slots = active_consumer_slots.saturating_add(1);
                 }
             }
 
-            let freshness_ms = config.mail_infra_report_interval_ms.saturating_mul(3);
+            let freshness_ms = config.mail_health_observe_interval_ms.saturating_mul(3);
             let mut node_snapshots = Vec::<LocalMailNodeSnapshot>::new();
             for key in &health_keys {
-                if !key.starts_with("mail.infra.node.") {
+                if !key.starts_with("mail.health.node.") {
                     continue;
                 }
                 let Some(bytes) = zone_kv.health_get(key.clone()).await.ok().flatten() else {
@@ -320,7 +281,7 @@ pub(super) fn start(
                 let Ok(node) = serde_json::from_slice::<LocalMailNodeSnapshot>(&bytes) else {
                     continue;
                 };
-                if key.strip_prefix("mail.infra.node.") == Some(node.node_id.as_str())
+                if key.strip_prefix("mail.health.node.") == Some(node.node_id.as_str())
                     && aggregate_at_ms.saturating_sub(node.observed_at_unix_ms) <= freshness_ms
                     && Uuid::parse_str(&node.boot_id).is_ok()
                     && !node.node_id.is_empty()
@@ -346,8 +307,6 @@ pub(super) fn start(
             });
             let metadata = zone_kv.read_zone_metadata().await.unwrap_or_default();
             let disabled = metadata.status == "disabled"
-                // [COMMENT]: Metadata/service chưa hydrate phải fail-closed; health probe vẫn chạy
-                // để SRE quan sát nhưng snapshot không được quảng cáo capacity nhận tải.
                 || !metadata.services.get("mail").copied().unwrap_or(false);
             let reachable_nodes = node_snapshots
                 .iter()
@@ -372,83 +331,31 @@ pub(super) fn start(
                 total_pending,
                 total_queue_capacity.max(1),
             );
-            let service_state = if disabled || reachable_nodes == 0 {
-                MailInfrastructureState::Down
+            let (service_state_name, service_state_value) = if disabled || reachable_nodes == 0 {
+                ("down", 0_u64)
             } else if pressure.status == "degraded" || failed_probe_nodes > 0 || inventory_truncated
             {
-                MailInfrastructureState::Degraded
+                ("degraded", 1_u64)
             } else {
-                MailInfrastructureState::Healthy
+                ("healthy", 2_u64)
             };
-            let service_state_name = match service_state {
-                MailInfrastructureState::Healthy => "healthy",
-                MailInfrastructureState::Degraded => "degraded",
-                MailInfrastructureState::Unhealthy => "unhealthy",
-                MailInfrastructureState::Down | MailInfrastructureState::Unspecified => "down",
-            };
-            let dataplane_nodes = node_snapshots
-                .into_iter()
-                .filter_map(|node| {
-                    let parsed_boot_id = Uuid::parse_str(&node.boot_id).ok()?;
-                    let probe_fresh = node.last_probe_at_unix_ms > 0
-                        && aggregate_at_ms.saturating_sub(node.last_probe_at_unix_ms)
-                            <= freshness_ms.saturating_mul(2);
-                    let state = if node.jmap_reachable && probe_fresh {
-                        MailInfrastructureState::Healthy
-                    } else if !probe_fresh {
-                        MailInfrastructureState::Unhealthy
-                    } else {
-                        MailInfrastructureState::Degraded
-                    };
-                    let capacity = MailBackpressureSnapshot::calculate(
-                        disabled,
-                        node.jmap_reachable,
-                        node.pending_items,
-                        node.queue_capacity,
-                    )
-                    .capacity;
-                    Some(MailDataplaneNodeSnapshotV1 {
-                        node_id: node.node_id.clone(),
-                        boot_id: parsed_boot_id.as_bytes().to_vec(),
-                        state: state as i32,
-                        capacity: capacity.min(100) as u32,
-                        pending_items: node.pending_items.min(u64::MAX as usize) as u64,
-                        in_flight_batches: node.in_flight_batches.min(u64::MAX as usize) as u64,
-                        active_consumer_slots: slot_count_by_node
-                            .get(&node.node_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        jmap_reachable: node.jmap_reachable && probe_fresh,
-                        last_probe_at_unix_ms: node.last_probe_at_unix_ms.min(i64::MAX as u64)
-                            as i64,
-                        observed_at_unix_ms: node.observed_at_unix_ms.min(i64::MAX as u64) as i64,
-                        error_code: node.error_code,
-                    })
-                })
-                .collect::<Vec<_>>();
 
-            let event_name = format!("{}:{}:1", config.zone_id, lease.fencing_token);
-            let event_id = Uuid::new_v5(&event_namespace, event_name.as_bytes());
-            let report = MailInfrastructureSnapshotReportedV1 {
-                metadata: Some(MailEventMetadataV1 {
-                    event_id: event_id.as_bytes().to_vec(),
-                    schema_version: 1,
-                    occurred_at_unix_ms: aggregate_at_ms.min(i64::MAX as u64) as i64,
-                    traceparent: String::new(),
-                    producer: "dataplane-mail-infra".to_string(),
-                }),
-                report_generation: lease.fencing_token,
-                report_sequence: 1,
-                service_state: service_state as i32,
-                capacity: pressure.capacity.min(100) as u32,
-                pending_items: total_pending.min(u64::MAX as usize) as u64,
-                in_flight_batches: total_in_flight.min(u64::MAX as usize) as u64,
-                probe_node_id: node_id.clone(),
-                dataplane_nodes,
-                stalwart_nodes,
-                inventory_truncated,
-                error_code: inventory_error,
-            };
+            let mut dataplane_healthy = 0_u64;
+            let mut dataplane_degraded = 0_u64;
+            let mut dataplane_down = 0_u64;
+            for node in &node_snapshots {
+                let probe_fresh = node.last_probe_at_unix_ms > 0
+                    && aggregate_at_ms.saturating_sub(node.last_probe_at_unix_ms)
+                        <= freshness_ms.saturating_mul(2);
+                if node.jmap_reachable && probe_fresh {
+                    dataplane_healthy = dataplane_healthy.saturating_add(1);
+                } else if probe_fresh {
+                    dataplane_degraded = dataplane_degraded.saturating_add(1);
+                } else {
+                    dataplane_down = dataplane_down.saturating_add(1);
+                }
+            }
+
             let zone_health = ZoneMailHealthSnapshot {
                 status: service_state_name,
                 capacity: pressure.capacity.min(100),
@@ -460,12 +367,33 @@ pub(super) fn start(
                 probe_node_id: &node_id,
             };
 
-            // [COMMENT]: Renew sát side effects; stale lease không được ghi KV hoặc central stream.
+            // [COMMENT]: Renew sát OTel/KV side effects; holder cũ không quảng cáo health sau lease loss.
             if zone_kv
                 .renew_lease(&lease, Duration::from_secs(20))
                 .await
                 .unwrap_or(false)
             {
+                runtime.metrics.record_jmap_probe(
+                    last_jmap_reachable,
+                    probe_duration_seconds,
+                    last_probe_success_unix_seconds,
+                );
+                runtime
+                    .metrics
+                    .record_operational_snapshot(&MailOperationalMetricsSnapshot {
+                        state: service_state_value,
+                        capacity_percent: pressure.capacity.min(100) as u64,
+                        pending_items: total_pending.min(u64::MAX as usize) as u64,
+                        in_flight_batches: total_in_flight.min(u64::MAX as usize) as u64,
+                        active_consumer_slots,
+                        dataplane_nodes_healthy: dataplane_healthy,
+                        dataplane_nodes_degraded: dataplane_degraded,
+                        dataplane_nodes_down: dataplane_down,
+                        stalwart_nodes_active: stalwart_active,
+                        stalwart_nodes_stale: stalwart_stale,
+                        stalwart_nodes_inactive: stalwart_inactive,
+                    });
+                runtime.metrics.record_observation_error(&inventory_error);
                 if let Ok(value) = serde_json::to_vec(&zone_health) {
                     let _ = zone_kv
                         .health_put_fenced(
@@ -475,50 +403,11 @@ pub(super) fn start(
                         )
                         .await;
                 }
-                let mut payload = Vec::with_capacity(report.encoded_len());
-                if report.encode(&mut payload).is_ok() && payload.len() <= 1 << 20 {
-                    if redis_connection.is_none() {
-                        redis_connection = redis_job
-                            .client()
-                            .get_multiplexed_tokio_connection()
-                            .await
-                            .ok();
-                    }
-                    if zone_kv
-                        .renew_lease(&lease, Duration::from_secs(20))
-                        .await
-                        .unwrap_or(false)
-                    {
-                        if let Some(connection) = redis_connection.as_mut() {
-                            let published: redis::RedisResult<String> = redis::cmd("XADD")
-                                .arg("mail:infra:reports")
-                                .arg("MINID")
-                                .arg("~")
-                                .arg(format!("{}-0", aggregate_at_ms.saturating_sub(3_600_000)))
-                                .arg("*")
-                                .arg("zone_id")
-                                .arg(&config.zone_id)
-                                .arg("payload")
-                                .arg(payload)
-                                .query_async(connection)
-                                .await;
-                            if published.is_err() {
-                                redis_connection = None;
-                            }
-                        }
-                    }
-                } else {
-                    Logger::sys_warn(
-                        "mail.supervisor.infra_reporter",
-                        "Mail infrastructure snapshot exceeded its bounded contract",
-                        "MAIL_INFRA_REPORT_TOO_LARGE",
-                    );
-                }
             }
 
             let _ = zone_kv.release_lease(&lease).await;
             tokio::time::sleep(Duration::from_millis(
-                config.mail_infra_report_interval_ms + rand::random::<u64>() % 2_000,
+                config.mail_health_observe_interval_ms + rand::random::<u64>() % 2_000,
             ))
             .await;
         }

@@ -1,6 +1,6 @@
 mod backpressure;
 mod consumer_reporter;
-mod infra_reporter;
+mod health_observer;
 mod metrics;
 
 use super::MailRuntime;
@@ -19,7 +19,7 @@ mod backpressure_tests;
 #[path = "../test/report_contract.rs"]
 mod report_contract_tests;
 
-/// [COMMENT]: Mail tự sở hữu hai reverse path rõ nghĩa: consumer delta và infrastructure snapshot.
+/// [COMMENT]: Consumer delta đi Central Redis; operational health chỉ ở Zone KV + OTel/Grafana.
 pub struct MailWorkloadSupervisor;
 
 impl MailWorkloadSupervisor {
@@ -29,7 +29,7 @@ impl MailWorkloadSupervisor {
         redis_job: Arc<RedisClientManager>,
         runtime: Arc<MailRuntime>,
     ) {
-        infra_reporter::start(config.clone(), zone_kv.clone(), redis_job.clone(), runtime);
+        health_observer::start(config.clone(), zone_kv.clone(), runtime);
         consumer_reporter::start(config, zone_kv, redis_job);
     }
 }

@@ -163,8 +163,6 @@ pub(super) fn start(
                         // [COMMENT]: Raw customer broker exception không vượt reverse trust boundary.
                         error_message: String::new(),
                         report_sequence: snapshot.report_sequence,
-                        runtime_node_id: snapshot.runtime_node_id,
-                        runtime_boot_id: runtime_boot_id.as_bytes().to_vec(),
                     },
                 ));
             }

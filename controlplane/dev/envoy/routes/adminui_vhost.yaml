@@ -1,0 +1,49 @@
+# [COMMENT]: Cấu hình VirtualHost cho nhóm Route Admin UI & Admin API (adminui.aurora.local)
+name: adminui_vhost
+domains:
+  - "adminui.aurora.local"
+  - "adminui.aurora.local:443"
+typed_per_filter_config:
+  envoy.filters.http.cors:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+    allow_origin_string_match:
+      - safe_regex:
+          regex: "https?://.*\\.aurora\\.local(:[0-9]+)?"
+      - exact: "http://localhost:5173"
+    allow_methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+    allow_headers: "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-ID, X-Client-Device-ID, X-Admin-Signature, X-Admin-Timestamp, X-Admin-Nonce, X-Admin-StepUp-Code, X-Zone-Code, x-zone-code"
+    allow_credentials:
+      value: true
+    max_age: "86400"
+routes:
+  # [COMMENT]: Route xử lý Admin Management API chuyển tiếp tới Controlplane Cluster
+  - match: { prefix: "/admin/" }
+    route:
+      cluster: controlplane_cluster
+      timeout: 10s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 3s
+  # [COMMENT]: Route API chung cho ứng dụng Admin UI
+  - match: { prefix: "/api/" }
+    route:
+      cluster: controlplane_cluster
+      timeout: 10s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 3s
+  # [COMMENT]: Route giao diện tĩnh Admin UI Frontend (Tắt ext_authz để giảm latency cho static assets)
+  - match: { prefix: "/" }
+    route:
+      cluster: admin_ui_cluster
+      timeout: 15s
+      retry_policy:
+        retry_on: "connect-failure,refused-stream,reset"
+        num_retries: 1
+        per_try_timeout: 5s
+    typed_per_filter_config:
+      envoy.filters.http.ext_authz:
+        "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+        disabled: true

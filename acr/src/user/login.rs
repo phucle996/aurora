@@ -53,7 +53,11 @@ pub async fn handle_login_challenge(
     method: &str,
     path: &str,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
-    if !(method == "POST" && path == "/api/v1/auth/login/challenge") {
+    // [COMMENT]: Chuẩn hóa path bằng cách bỏ query string và trailing slash để tránh khớp trượt endpoint
+    let clean_path = path.split('?').next().unwrap_or(path).trim_end_matches('/');
+    if !(method.eq_ignore_ascii_case("POST")
+        && (clean_path == "/api/v1/auth/login/challenge" || path == "/api/v1/auth/login/challenge"))
+    {
         return None;
     }
     let challenge = match crate::user::session_proof::issue_login_challenge(session_mgr).await {
@@ -76,7 +80,8 @@ pub async fn handle_login_challenge(
     builder.add_header("content-type", "application/json", None, false);
     builder.set_body(body);
     let mut response = CheckResponse::new();
-    response.set_status(Status::ok("login session proof challenge issued"));
+    // [COMMENT]: Sử dụng Status::unauthenticated để Envoy coi đây là phản hồi trực tiếp tại Edge (UAEX) thay vì forward lên upstream
+    response.set_status(Status::unauthenticated("login session proof challenge issued"));
     response.set_http_response(builder);
     Some(Ok(Response::new(response)))
 }

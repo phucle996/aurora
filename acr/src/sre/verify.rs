@@ -239,3 +239,65 @@ pub async fn verify_sre_edge_session(
         cookies_to_set,
     }
 }
+
+/// [COMMENT]: Xử lý đánh chặn (intercept) kiểm tra trạng thái phiên làm việc của SRE Admin tại Edge (GET /admin/auth/session).
+/// Trả về thông tin xác thực bao gồm authenticated và access_key phù hợp với định dạng Admin UI Frontend.
+pub async fn handle_sre_session_check(
+    session_mgr: &Arc<SessionManager>,
+    token_mgr: &Arc<SreTokenManager>,
+    config: &Config,
+    client_headers: &HashMap<String, String>,
+    method: &str,
+    path: &str,
+) -> Option<Result<Response<CheckResponse>, Status>> {
+    // [COMMENT]: Chỉ đánh chặn request HTTP GET tới đúng path /admin/auth/session
+    if !(method == "GET" && path == "/admin/auth/session") {
+        return None;
+    }
+
+    Logger::sys_info(
+        "sre.session.check",
+        "Intercepted SRE admin session status check request at edge",
+    );
+
+    let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+
+    // [COMMENT]: Gọi verify_sre_edge_session dùng chung để tái sử dụng toàn bộ logic kiểm tra JWT, Redis Session và Cookie
+    let verify_res = verify_sre_edge_session(
+        session_mgr,
+        token_mgr,
+        config,
+        &cookie_header,
+        client_headers,
+        method,
+        path,
+    )
+    .await;
+
+    let mut denied_builder = DeniedHttpResponseBuilder::new();
+    denied_builder.set_http_status(HttpStatusCode::Ok);
+    denied_builder.add_header("content-type", "application/json", None, false);
+
+    // [COMMENT]: Thiết lập các Set-Cookie header nếu có thực hiện Session Rotation
+    for cookie_str in &verify_res.cookies_to_set {
+        denied_builder.add_header("set-cookie", cookie_str, None, true);
+    }
+
+    // [COMMENT]: Định dạng payload JSON khớp với kỳ vọng của getAdminSession bên Admin UI Frontend
+    if let Some(_claims) = verify_res.claims {
+        let json_body = format!(
+            r#"{{"data":{{"authenticated":true,"access_key":"{}"}}}}"#,
+            verify_res.access_key
+        );
+        denied_builder.set_body(json_body);
+    } else {
+        denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
+    }
+
+    let mut response = CheckResponse::new();
+    // [COMMENT]: Sử dụng Status::unauthenticated để Envoy phát ra trực tiếp DeniedHttpResponse tại Edge (UAEX) thay vì forward lên backend
+    response.set_status(Status::unauthenticated("SRE admin session check status"));
+    response.set_http_response(denied_builder);
+
+    Some(Ok(Response::new(response)))
+}

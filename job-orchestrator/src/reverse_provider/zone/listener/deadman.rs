@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::observability::logger::Logger;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 // [COMMENT]: Import hypervisor DB ops từ provider riêng biệt
 use super::super::super::hypervisor::db as hypervisor_db;
 
@@ -36,19 +36,36 @@ pub async fn check_zone_heartbeats(
             "Heartbeat Timeout (Dead Man's Switch Triggered)",
         );
 
-        // [COMMENT]: Dead-man report không có quyền thay Zone lifecycle hoặc desired_state;
-        // đó là SRE command boundary. Mail actual_state cũng thuộc dedicated infra projection.
-        // Generic Zone reporter chỉ được hạ actual state của workload mà nó vẫn sở hữu.
+        // [COMMENT]: Dead-man không đổi lifecycle/desired_state. Observation time hiện tại
+        // chặn report cũ đang in-flight resurrect Mail/Storage health sau timeout.
+        let observed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+            .unwrap_or_default();
+        let _ = super::super::db::update_zone_service_metrics(
+            &config.database_url,
+            &zone_id,
+            "mail",
+            "down",
+            0,
+            observed_at,
+        )
+        .await;
         let _ = super::super::db::update_zone_service_metrics(
             &config.database_url,
             &zone_id,
             "storage",
             "down",
             0,
+            observed_at,
         )
         .await;
 
         // [COMMENT]: Reset metrics cache để tránh stale data khi zone hồi phục
+        service_metrics_cache.insert(
+            (zone_id.clone(), "mail".to_string()),
+            ("down".to_string(), 0, Instant::now()),
+        );
         service_metrics_cache.insert(
             (zone_id.clone(), "storage".to_string()),
             ("down".to_string(), 0, Instant::now()),

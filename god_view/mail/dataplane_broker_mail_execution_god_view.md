@@ -368,9 +368,8 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/l2_dispatcher.rs` |
 | JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
 | Zonal consumer report relay | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
-| Zonal infrastructure reporter | `dataplane/src/executor/mail/supervisor/infra_reporter.rs` |
+| Zonal health/KV/OTel observer | `dataplane/src/executor/mail/supervisor/health_observer.rs` |
 | JO consumer report apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
-| JO infrastructure apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/infrastructure.rs` |
 | Mail runtime/processor tests | `dataplane/src/executor/mail/test/` |
 
 ## 15. Phase status

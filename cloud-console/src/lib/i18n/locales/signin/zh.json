@@ -16,7 +16,7 @@
     "password": "密码",
     "confirmPassword": "确认密码",
     "forgotPassword": "忘记密码？",
-    "trustDevice": "信任此设备30天",
+    "trustDevice": "记住我",
     "btnSignIn": "登录",
     "btnSigningIn": "正在登录…",
     "btnRegister": "注册账户",

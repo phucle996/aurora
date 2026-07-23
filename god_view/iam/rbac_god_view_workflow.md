@@ -368,9 +368,18 @@ Hệ thống đi kèm bộ khung vai trò và quyền hạn được cài đặt
 * **Tệp SQL seed mặc định:** [`000006_iam_seeds.up.sql`](../../controlplane/internal/iam/migrations/000006_iam_seeds.up.sql)
 
 ### 8.1 Hệ thống Permissions Catalog (3 cấp mặc định)
-* Phân hệ quản lý IAM: `iam:users:read`, `iam:users:manage`, `iam:role:read`, `iam:role:write`, `iam:role:assign`, `iam:role:delete`, `iam:permission:read`.
-* Phân hệ lưu trữ Storage: `storage:bucket:create`, `storage:bucket:read`, `storage:bucket:update`, `storage:bucket:delete`, `storage:credential:create`, `storage:credential:read`, `storage:credential:delete`.
-* Phân hệ quản trị phân cấp Hierarchy: `hierarchy:workspace:create`, `hierarchy:workspace:read`, `hierarchy:workspace:update`, `hierarchy:workspace:delete`.
+
+| Capability | Permission catalog |
+| :--- | :--- |
+| IAM | `iam:users:read`, `iam:users:manage`, `iam:role:read`, `iam:role:write`, `iam:role:assign`, `iam:role:delete`, `iam:permissions:read`, `iam:device:read`, `iam:mfa:view` |
+| Object Storage | `storage:bucket:read`, `storage:bucket:write`, `storage:bucket:delete`, `storage:credential:read`, `storage:credential:write`, `storage:credential:delete` |
+| Hierarchy | `hierarchy:workspace:create`, `hierarchy:workspace:read`, `hierarchy:workspace:update`, `hierarchy:workspace:delete` |
+| Email Delivery / Consumer | `email:consumer:create`, `email:consumer:read`, `email:consumer:update`, `email:consumer:delete` |
+| Email Delivery / Template | `email:template:create`, `email:template:read`, `email:template:publish`, `email:template:delete` |
+
+`email` là tên capability nghiệp vụ được hiển thị cho người dùng và dùng trong RBAC. Các path tương thích
+`/mail`, NATS subject `mail.*` và `zone_services.service_type = 'mail'` vẫn là namespace transport/hạ tầng;
+chúng không được dùng làm permission key.
 
 ### 8.2 Các System Roles được định nghĩa sẵn
 
@@ -385,6 +394,25 @@ Hệ thống đi kèm bộ khung vai trò và quyền hạn được cài đặt
 | **`tenant_manager`** | Manager | 5 | tenant | Quản lý tài nguyên nội bộ Tenant. |
 | **`tenant_member`** | Member | 6 | tenant | Thành viên thông thường của Tenant. |
 | **`tenant_viewer`** | Viewer | 7 | tenant | Chỉ có quyền xem tài nguyên trong Tenant. |
+
+### 8.3 Ma trận quyền Email Delivery
+
+| Role | Consumer | Template |
+| :--- | :--- | :--- |
+| `platform_root`, `platform_admin` | create/read/update/delete | create/read/publish/delete |
+| `platform_support_operator` | read | read |
+| `platform_user` | create/read/update/delete | create/read/publish/delete |
+| `tenant_owner`, `tenant_admin`, `tenant_manager` | create/read/update/delete | create/read/publish/delete |
+| `tenant_member`, `tenant_viewer` | read | read |
+
+Personal/Tenant Mail routes dùng `middleware.Authorize` với permission tương ứng và bỏ qua level gate bằng
+`requiredLevel = "*"`; ownership/workspace vẫn được repository kiểm tra lại trong transaction. Operational
+infrastructure đi OTel/Grafana và không tạo permission trong customer/business RBAC catalog.
+
+Bốn tài khoản bootstrap `root`, `sys_admin`, `support_operator`, `audit_viewer` lưu `RoleEntry` protobuf
+precompiled trong `user_role.list_perm`. Seed migration phải rebuild các binary này khi permission catalog đổi;
+`ON CONFLICT` cập nhật `list_perm` để chạy lại seed không giữ snapshot quyền cũ. User được activate sau đó được
+compile từ `role_permissions` tại runtime, không phụ thuộc các literal binary bootstrap.
 
 ---
 

@@ -41,8 +41,6 @@ pub struct Config {
     /// reclaim entry thật sự bị pod khác bỏ lại, không polling PostgreSQL theo chu kỳ.
     pub mail_runtime_report_ttl_secs: u64,
     pub mail_runtime_report_claim_idle_ms: u64,
-    /// [COMMENT]: Infra snapshot có TTL riêng nhưng dùng cùng blocking/reclaim transport policy.
-    pub mail_infra_report_ttl_secs: u64,
 }
 
 impl Config {
@@ -65,9 +63,8 @@ impl Config {
         let result_stream_name =
             env::var("RESULT_STREAM_NAME").unwrap_or_else(|_| "job_results_stream".to_string());
 
-        // Đọc nats_url từ biến môi trường
-        let env_nats_url =
-            env::var("NATS_URL").unwrap_or_else(|_| "nats://controlplane-nats:4222".to_string());
+        // [COMMENT]: Đọc NATS_URL từ biến môi trường bắt buộc (Fail-fast, không fallback URL hạ tầng)
+        let env_nats_url = env::var("NATS_URL").map_err(|_| "NATS_URL must be set".to_string())?;
 
         // Đọc endpoint của OpenTelemetry Collector (mặc định trỏ tới otel-collector trên cổng 4317)
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -136,12 +133,6 @@ impl Config {
             .parse::<u64>()
             .unwrap_or(30_000)
             .clamp(5_000, 300_000);
-        let mail_infra_report_ttl_secs = env::var("MAIL_INFRA_REPORT_TTL_SECS")
-            .unwrap_or_else(|_| "180".to_string())
-            .parse::<u64>()
-            .unwrap_or(180)
-            .clamp(60, 900);
-
         Ok(Self {
             database_url,
             redis_url,
@@ -162,7 +153,6 @@ impl Config {
             mail_reconcile_work_budget_secs,
             mail_runtime_report_ttl_secs,
             mail_runtime_report_claim_idle_ms,
-            mail_infra_report_ttl_secs,
         })
     }
 }
