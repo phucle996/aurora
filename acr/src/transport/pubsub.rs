@@ -2,12 +2,12 @@
 // 📂 transport/pubsub.rs — NATS Event Router
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::sre::claims::SreTokenManager;
+use crate::token::TokenManager;
 use futures_util::StreamExt;
 use std::sync::Arc;
 
@@ -18,6 +18,7 @@ pub struct NatsEventRouter {
     session_mgr: Arc<SessionManager>,
     token_mgr: Arc<TokenManager>,
     sre_token_mgr: Arc<SreTokenManager>,
+    cache_redis_client: Arc<redis::Client>,
     config: Config,
 }
 
@@ -28,6 +29,7 @@ impl NatsEventRouter {
         session_mgr: Arc<SessionManager>,
         token_mgr: Arc<TokenManager>,
         sre_token_mgr: Arc<SreTokenManager>,
+        cache_redis_client: Arc<redis::Client>,
         config: Config,
     ) -> Self {
         Self {
@@ -36,6 +38,7 @@ impl NatsEventRouter {
             session_mgr,
             token_mgr,
             sre_token_mgr,
+            cache_redis_client,
             config,
         }
     }
@@ -51,6 +54,7 @@ impl NatsEventRouter {
         let session_mgr = self.session_mgr.clone();
         let token_mgr = self.token_mgr.clone();
         let nats = self.nats.clone();
+        let cache_redis_client = self.cache_redis_client.clone();
         let config = self.config.clone();
         tokio::spawn(async move {
             let mut sub = match nc
@@ -76,6 +80,7 @@ impl NatsEventRouter {
                 let session_mgr_clone = session_mgr.clone();
                 let token_mgr_clone = token_mgr.clone();
                 let nats_clone = nats.clone();
+                let cache_redis_client_clone = cache_redis_client.clone();
                 let config_clone = config.clone();
                 tokio::spawn(async move {
                     use prost::Message;
@@ -106,6 +111,7 @@ impl NatsEventRouter {
                         &session_mgr_clone,
                         &token_mgr_clone,
                         &nats_clone,
+                        cache_redis_client_clone.as_ref(),
                         &config_clone,
                         &cookie_header,
                         &std::collections::HashMap::new(),

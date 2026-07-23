@@ -10,6 +10,7 @@ import {
   ChevronRight,
   HardDrive,
   Mail,
+  Coins,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ interface SidebarItem {
   icon: React.ComponentType<{ className?: string }>;
   badge?: number;
   path?: string;
+  externalDomain?: "billing";
 }
 
 interface SidebarGroup {
@@ -53,6 +55,7 @@ export default function SidebarConsole({
   const { renderContext } = useUserSession();
   const router = useRouter();
   const pathname = usePathname();
+  const [launchingDomain, setLaunchingDomain] = React.useState<string | null>(null);
 
   // [COMMENT]: hasAccess — console là render engine thuần túy.
   // Backend quyết định navigation nào trả về, frontend chỉ kiểm tra xem
@@ -132,6 +135,14 @@ export default function SidebarConsole({
         matchKey: "email:consumer",
         // [COMMENT]: Sidebar dùng business capability; `mail` chỉ còn là route/wire namespace nội bộ.
         requiredAction: "read"
+      },
+      {
+        id: "billing",
+        name: "Cost Management",
+        icon: Coins,
+        matchKey: "billing:tier",
+        requiredAction: "read",
+        externalDomain: "billing",
       }
     ];
 
@@ -201,7 +212,17 @@ export default function SidebarConsole({
                 // Thanh line chỉ báo active được điều chỉnh top/bottom thành 2px để ôm khít chiều cao mới.
                 const buttonContent = (
                   <button
+                    disabled={launchingDomain === item.externalDomain}
                     onClick={() => {
+                      if (item.externalDomain === "billing") {
+                        setLaunchingDomain("billing");
+                        // [COMMENT]: Cost tạo PKCE trước, sau đó quay lại Cloud để browser chứng minh IAM session host-only.
+                        const costOrigin = (
+                          process.env.NEXT_PUBLIC_COST_CONSOLE_URL || "https://cost-manager.aurora.local"
+                        ).replace(/\/+$/, "");
+                        window.location.assign(`${costOrigin}/auth/start`);
+                        return;
+                      }
                       if (item.path && item.path !== pathname) {
                         router.push(item.path);
                       } else {

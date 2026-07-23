@@ -10,11 +10,11 @@ use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
+use crate::token::TokenManager;
 
 /// [COMMENT]: Giải mã yêu cầu từ bytes, thực thi quét Redis L2 để thu hồi session thuộc thiết bị được chọn
 pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &[u8]) -> Vec<u8> {
@@ -102,6 +102,13 @@ pub async fn revoke_sessions_bytes(session_mgr: &Arc<SessionManager>, payload: &
                 &e.to_string(),
             );
         }
+
+        // [COMMENT]: Device revoke phải lan sang mọi domain alias sinh từ source access key.
+        for session_key in &access_keys {
+            if let Some(source_access_key) = session_key.rsplit(':').next() {
+                let _ = session_mgr.revoke_session_aliases(source_access_key).await;
+            }
+        }
     }
 
     Logger::sys_info(
@@ -152,6 +159,7 @@ pub async fn handle_logout(
                     &key,
                 )
                 .await;
+            let _ = session_mgr.revoke_session_aliases(&key).await;
         }
     }
 

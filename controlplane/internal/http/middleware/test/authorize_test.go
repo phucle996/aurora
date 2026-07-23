@@ -50,6 +50,8 @@ func TestAuthorize_TenantScope(t *testing.T) {
 		c.Request.Header.Set("X-Workspace-ID", workspaceID)
 		c.Next()
 	})
+	// [COMMENT]: Production route luôn chạy ContextInjector trước Authorize; test phải giữ cùng middleware order.
+	router.Use(middleware.ContextInjector())
 
 	router.DELETE("/members",
 		middleware.Authorize("hierarchy:tenant-member:delete", registry, "*"),
@@ -99,6 +101,7 @@ func TestAuthorize_PersonalScope(t *testing.T) {
 		// [COMMENT]: Không set X-Tenant-ID → middleware đi nhánh personal
 		c.Next()
 	})
+	router.Use(middleware.ContextInjector())
 
 	router.POST("/vps",
 		middleware.Authorize("hypervisor:vps:create", registry, "*"),
@@ -140,6 +143,7 @@ func TestAuthorize_MissingWorkspaceID(t *testing.T) {
 		// [COMMENT]: Không set X-Workspace-ID → phải reject
 		c.Next()
 	})
+	router.Use(middleware.ContextInjector())
 
 	router.GET("/test",
 		middleware.Authorize("iam:role:read", registry, "*"),
@@ -180,6 +184,7 @@ func TestAuthorize_UserLevelChecking(t *testing.T) {
 			}
 			c.Next()
 		})
+		r.Use(middleware.ContextInjector())
 		return r
 	}
 

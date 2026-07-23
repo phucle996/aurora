@@ -14,23 +14,27 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 type UserService struct {
 	repo     iamRepoInterface.UserRepository
 	registry *cacheengine.CacheRegistry
 	nc       *nats.Conn
+	redis    *goredis.Client
 }
 
 func NewUserService(
 	repo iamRepoInterface.UserRepository,
 	registry *cacheengine.CacheRegistry,
 	nc *nats.Conn,
+	redisClient *goredis.Client,
 ) iamSvcInterface.UserService {
 	return &UserService{
 		repo:     repo,
 		registry: registry,
 		nc:       nc,
+		redis:    redisClient,
 	}
 }
 
@@ -52,15 +56,31 @@ func (s *UserService) UpdateUserStatus(ctx context.Context, callerLevel uint8, t
 	// [COMMENT]: 2. Thu hồi cache user_role của target user trên L1 cục bộ
 	s.registry.L1.Delete("user_role:" + targetUserID.String())
 
-	// [COMMENT]: 3. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
-	if s.nc != nil {
-		err := s.nc.Publish("iam.user_role.invalidated", []byte(targetUserID.String()))
-		if err != nil {
-			return err
+	// [COMMENT]: 3. User disable/enable cũng fence Billing L2 để trạng thái cũ không được tái cache sau race.
+	var invalidationErr error
+	if s.redis != nil {
+		tag := "{iam:authz:billing:" + targetUserID.String() + "}"
+		if err := s.redis.Eval(ctx, `
+			redis.call("INCR", KEYS[1])
+			redis.call("EXPIRE", KEYS[1], ARGV[1])
+			redis.call("DEL", KEYS[2], KEYS[3])
+			return 1
+		`, []string{tag + ":generation", tag + ":data", tag + ":data_generation"}, int64(86400)).Err(); err != nil {
+			invalidationErr = fmt.Errorf("invalidate Billing authorization cache after user status update: %w", err)
 		}
 	}
 
-	return nil
+	// [COMMENT]: 4. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
+	if s.nc != nil {
+		err := s.nc.Publish("iam.user_role.invalidated", []byte(targetUserID.String()))
+		if err != nil {
+			if invalidationErr == nil {
+				invalidationErr = err
+			}
+		}
+	}
+
+	return invalidationErr
 }
 
 // [COMMENT]: GetUserProfile trả về thông tin profile hiển thị của user (fullname, avatar, v.v.)

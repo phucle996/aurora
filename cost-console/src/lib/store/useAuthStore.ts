@@ -1,10 +1,16 @@
 import { create } from 'zustand';
 import { request } from '../api/fetcher';
+import { ensureDevicePublicKey } from '../security/deviceKey';
 
 export interface UserProfile {
+  id: string;
   username: string;
-  fullname: string;
-  email: string;
+}
+
+interface BillingSessionResponse {
+  authenticated: boolean;
+  user: UserProfile;
+  zone_id: string;
 }
 
 interface AuthState {
@@ -12,7 +18,6 @@ interface AuthState {
   user: UserProfile | null;
   isLoading: boolean;
   error: string | null;
-  login: (employeeCode: string, secretKey: string) => Promise<boolean>;
   logout: () => Promise<void>;
   checkSession: () => Promise<void>;
   clearError: () => void;
@@ -26,93 +31,105 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   clearError: () => set({ error: null }),
 
-  login: async (employeeCode, secretKey) => {
-    set({ isLoading: true, error: null });
-    try {
-      // 1. Thực hiện gọi API đăng nhập đi kèm credentials để nhận HttpOnly session cookie
-      await request<void>('/billing/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({
-          employee_code: employeeCode,
-          secret_key: secretKey,
-          trust_device: true,
-          zone_code: 'edge-viet-nam-1',
-        }),
-      });
-
-      // [COMMENT]: Chỉ đánh dấu đăng nhập thành công vào store và localStorage, profile sẽ hiển thị fallback hoặc load qua session check sau.
-      localStorage.setItem('cost_console_logged_in', 'true');
-      set({
-        isAuthenticated: true,
-        user: {
-          username: employeeCode,
-          fullname: 'Kế toán trưởng',
-          email: 'finance@aurora.cloud',
-        },
-        isLoading: false,
-        error: null,
-      });
-      return true;
-    } catch (err: any) {
-      set({
-        isLoading: false,
-        error: err.message || 'Đã xảy ra lỗi không xác định',
-        isAuthenticated: false,
-        user: null,
-      });
-      return false;
-    }
-  },
-
   logout: async () => {
     set({ isLoading: true });
     try {
-      await request<void>('/billing/auth/logout', {
-        method: 'POST',
-      });
+      await request<void>('/billing/auth/logout', { method: 'POST' });
     } catch {
-      // Best-effort logout
+      // [COMMENT]: Logout local vẫn hoàn tất khi edge đang unavailable; cookie có TTL độc lập.
     } finally {
-      localStorage.removeItem('cost_console_logged_in');
-      set({
-        isAuthenticated: false,
-        user: null,
-        isLoading: false,
-        error: null,
-      });
+      sessionStorage.removeItem('billing.pkce.verifier');
+      sessionStorage.removeItem('billing.pkce.state');
+      set({ isAuthenticated: false, user: null, isLoading: false, error: null });
     }
   },
 
   checkSession: async () => {
-    set({ isLoading: true });
+    set({ isLoading: true, error: null });
     try {
-      // [COMMENT]: Gọi /billing/auth/session để biết trạng thái đăng nhập thay vì truy vấn profile bên IAM
-      const res = await request<{ authenticated: boolean }>('/billing/auth/session', {
-        method: 'GET',
-      });
-      if (res.authenticated) {
-        // [COMMENT]: Đồng bộ lại cost_console_logged_in vào localStorage khi khôi phục phiên thành công từ cookie
-        localStorage.setItem('cost_console_logged_in', 'true');
-        set({
-          isAuthenticated: true,
-          // [COMMENT]: Session API chỉ trả boolean; profile hiển thị hiện dùng dữ liệu cục bộ như sau login.
-          user: {
-            username: 'accountant',
-            fullname: 'Kế toán trưởng',
-            email: 'finance@aurora.cloud',
-          },
-          isLoading: false,
-        });
-      } else {
-        throw new Error('Unauthenticated');
+      if (window.location.pathname === '/auth/start') {
+        sessionStorage.setItem('billing.authorization.redirecting', '1');
+        const randomBase64URL = (byteLength: number) => {
+          const bytes = window.crypto.getRandomValues(new Uint8Array(byteLength));
+          let binary = '';
+          for (const byte of bytes) binary += String.fromCharCode(byte);
+          return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        };
+        const verifier = randomBase64URL(48);
+        const verifierDigest = await window.crypto.subtle.digest(
+          'SHA-256',
+          new TextEncoder().encode(verifier),
+        );
+        let challengeBinary = '';
+        for (const byte of new Uint8Array(verifierDigest)) challengeBinary += String.fromCharCode(byte);
+        const challenge = btoa(challengeBinary)
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/g, '');
+        const state = randomBase64URL(32);
+
+        // [COMMENT]: Verifier chỉ sống trong Cost origin; Cloud và ACR chỉ nhìn thấy SHA-256 challenge.
+        sessionStorage.setItem('billing.pkce.verifier', verifier);
+        sessionStorage.setItem('billing.pkce.state', state);
+        const cloudOrigin = import.meta.env.VITE_CLOUD_CONSOLE_URL || 'https://cloud.aurora.local';
+        window.location.replace(
+          `${cloudOrigin}/billing/authorize?state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(challenge)}`,
+        );
+        return;
       }
-    } catch {
-      // Offline hoặc lỗi mạng/hết hạn, làm sạch local state
-      localStorage.removeItem('cost_console_logged_in');
+
+      if (window.location.pathname === '/auth/handoff') {
+        const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+        const handoffCode = fragment.get('code');
+        const returnedState = fragment.get('state');
+        const expectedState = sessionStorage.getItem('billing.pkce.state');
+        const verifier = sessionStorage.getItem('billing.pkce.verifier');
+        // [COMMENT]: Xóa code khỏi address bar trước network để extension/screenshot không giữ credential.
+        window.history.replaceState({}, document.title, '/');
+        if (!handoffCode || !/^[0-9a-f]{64}$/.test(handoffCode)) {
+          throw new Error('Billing handoff code is missing or invalid');
+        }
+        if (!returnedState || !expectedState || returnedState !== expectedState || !verifier) {
+          throw new Error('Billing authorization state is missing or invalid');
+        }
+        await request<void>('/billing/auth/exchange', {
+          method: 'POST',
+          body: JSON.stringify({
+            handoff_code: handoffCode,
+            code_verifier: verifier,
+            device_public_key: await ensureDevicePublicKey(),
+          }),
+        });
+        sessionStorage.removeItem('billing.pkce.verifier');
+        sessionStorage.removeItem('billing.pkce.state');
+        sessionStorage.removeItem('billing.authorization.redirecting');
+      }
+
+      const session = await request<BillingSessionResponse>('/billing/auth/session', { method: 'GET' });
+      if (!session.authenticated) throw new Error('Billing session is not authenticated');
+      sessionStorage.removeItem('billing.authorization.redirecting');
+      set({
+        isAuthenticated: true,
+        user: session.user,
+        isLoading: false,
+        error: null,
+      });
+    } catch (error) {
+      if (
+        window.location.pathname !== '/auth/start' &&
+        window.location.pathname !== '/auth/handoff' &&
+        sessionStorage.getItem('billing.authorization.redirecting') !== '1'
+      ) {
+        // [COMMENT]: Alias mất/hết hạn tự khởi động PKCE đúng một lần; guard ngăn redirect loop khi Cloud IAM cũng đã hết hạn.
+        sessionStorage.setItem('billing.authorization.redirecting', '1');
+        window.location.replace('/auth/start');
+        return;
+      }
       set({
         isAuthenticated: false,
         user: null,
         isLoading: false,
+        error: error instanceof Error ? error.message : 'Billing session is unavailable',
       });
     }
   },

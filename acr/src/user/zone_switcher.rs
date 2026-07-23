@@ -2,12 +2,12 @@
 // 📂 user/zone_switcher.rs — User Zone Switch Handler (POST /api/v1/zone/go-to-zone)
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::infra::zone::resolve_code_to_id_and_status;
 use crate::observability::logger::Logger;
+use crate::token::TokenManager;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;

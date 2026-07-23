@@ -4,11 +4,11 @@
 // Đây là merge của service/tenant/tenant_resolution.rs và service/tenant/tenant_switch.rs.
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
+use crate::token::TokenManager;
 use crate::user::claims::Claims;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};

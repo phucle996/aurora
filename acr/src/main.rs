@@ -13,16 +13,17 @@ mod observability;
 pub mod pkg;
 mod rpc;
 mod sre;
+mod token;
 mod transport;
 mod user;
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::gateway::ext_authz::ExtAuthzService;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::observability::otel::OtelTracer;
 use crate::rpc::session::DeviceRpcHandler;
+use crate::token::TokenManager;
 use crate::user::device::device_proto::device_service_server::DeviceServiceServer;
 
 #[tokio::main]
@@ -38,8 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Logger::sys_info(
         "main.config",
         &format!(
-            "Loaded config: grpc_port={}, redis={}, session_ttl={}s, grace=5s (hardcoded)",
-            config.grpc_port, config.redis_url, config.session_ttl_secs
+            "Loaded config: grpc_port={}, auth_redis={}, cache_redis={}, session_ttl={}s, grace=5s (hardcoded)",
+            config.grpc_port, config.redis_url, config.cache_redis_url, config.session_ttl_secs
         ),
     );
 
@@ -51,6 +52,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Logger::sys_error(
                 "main.redis",
                 "Failed to initialize Redis client",
+                &e.to_string(),
+            );
+            std::process::exit(1);
+        }
+    };
+    let cache_redis_client = match redis::Client::open(config.cache_redis_url.clone()) {
+        Ok(client) => Arc::new(client),
+        Err(e) => {
+            Logger::sys_error(
+                "main.cache_redis",
+                "Failed to initialize shared cache Redis client",
                 &e.to_string(),
             );
             std::process::exit(1);
@@ -91,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sre_token_mgr.clone(),
         config.clone(),
         nats.clone(),
+        cache_redis_client.clone(),
     );
 
     let device_service = DeviceRpcHandler::new(session_mgr.clone());
@@ -101,6 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_mgr.clone(),
         token_mgr.clone(),
         sre_token_mgr.clone(),
+        cache_redis_client,
         config.clone(),
     );
     nats_router.start().await;

@@ -73,21 +73,7 @@ CREATE TABLE IF NOT EXISTS billing.subscriptions (
     CONSTRAINT ck_subscription_window CHECK (expires_at IS NULL OR expires_at > started_at)
 );
 
--- 6. Bảng Users (Danh sách nhân viên kiểm toán/kế toán nội bộ có quyền truy cập hệ thống billing)
-CREATE TABLE IF NOT EXISTS billing.users (
-    id              UUID PRIMARY KEY,
-    employee_code   VARCHAR(64)  NOT NULL UNIQUE, -- Mã tài khoản nhân viên dùng để xác thực đăng nhập
-    public_key      VARCHAR(256) NOT NULL,        -- Khóa công khai Ed25519 dùng kiểm tra chữ ký token
-    fullname        VARCHAR(128) NOT NULL,
-    email           VARCHAR(128) NOT NULL UNIQUE,
-    role_id         VARCHAR(64)  NOT NULL DEFAULT 'billing_auditor', -- Phân quyền vai trò: 'billing_admin' | 'billing_auditor'
-    level           INT          NOT NULL DEFAULT 2,
-    status          VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE', -- Trạng thái: 'ACTIVE' | 'DISABLED'
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
-
--- 7. Bảng tier_versions (Immutable Tier pricing versions)
+-- 6. Bảng tier_versions (Immutable Tier pricing versions)
 CREATE TABLE IF NOT EXISTS billing.tier_versions (
     id              UUID PRIMARY KEY,
     tier_id         UUID NOT NULL REFERENCES billing.tiers(id) ON DELETE RESTRICT,
@@ -106,7 +92,7 @@ CREATE TABLE IF NOT EXISTS billing.tier_versions (
     CONSTRAINT ck_tier_version_effective_window CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
 
--- 8. Bảng tier_version_ranges (Ranges cho từng pricing version)
+-- 7. Bảng tier_version_ranges (Ranges cho từng pricing version)
 CREATE TABLE IF NOT EXISTS billing.tier_version_ranges (
     id              UUID PRIMARY KEY,
     tier_version_id UUID NOT NULL REFERENCES billing.tier_versions(id) ON DELETE RESTRICT,
@@ -120,7 +106,7 @@ CREATE TABLE IF NOT EXISTS billing.tier_version_ranges (
     CONSTRAINT uq_tier_version_range_start UNIQUE (tier_version_id, range_start)
 );
 
--- 9. Bảng pricing_outbox (Outbox cho pricing updates)
+-- 8. Bảng pricing_outbox (Outbox cho pricing updates)
 CREATE TABLE IF NOT EXISTS billing.pricing_outbox (
     id              UUID PRIMARY KEY,
     event_type      VARCHAR(64) NOT NULL,
@@ -137,7 +123,7 @@ CREATE TABLE IF NOT EXISTS billing.pricing_outbox (
     CONSTRAINT ck_pricing_outbox_retry_non_negative CHECK (retry_count >= 0)
 );
 
--- 10. Bảng billing_runs (Nhật ký chu kỳ chạy cước)
+-- 9. Bảng billing_runs (Nhật ký chu kỳ chạy cước)
 CREATE TABLE IF NOT EXISTS billing.billing_runs (
     id                UUID PRIMARY KEY,
     service_type      billing.service_type NOT NULL,
@@ -154,7 +140,7 @@ CREATE TABLE IF NOT EXISTS billing.billing_runs (
     CONSTRAINT ck_billing_run_status CHECK (status IN ('RUNNING', 'RETRYING', 'COMPLETED', 'FAILED'))
 );
 
--- 11. Projection effective-dated của resource ownership. Controlplane là SoT; billing không sửa ownership.
+-- 10. Projection effective-dated của resource ownership. Controlplane là SoT; billing không sửa ownership.
 CREATE TABLE IF NOT EXISTS billing.resource_ownership_projection (
     id                UUID PRIMARY KEY,
     resource_type     VARCHAR(32) NOT NULL,
@@ -172,7 +158,7 @@ CREATE TABLE IF NOT EXISTS billing.resource_ownership_projection (
     CONSTRAINT ck_resource_ownership_window CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
 
--- 12. Binding credential phục vụ audit/reconcile; access key là identifier, không lưu secret/signature.
+-- 11. Binding credential phục vụ audit/reconcile; access key là identifier, không lưu secret/signature.
 CREATE TABLE IF NOT EXISTS billing.credential_bindings (
     id             UUID PRIMARY KEY,
     access_key     VARCHAR(255) NOT NULL,
@@ -188,7 +174,7 @@ CREATE TABLE IF NOT EXISTS billing.credential_bindings (
     CONSTRAINT ck_credential_binding_status CHECK (status IN ('ACTIVE', 'REVOKED', 'EXPIRED'))
 );
 
--- 13. Wallet tiền chính xác theo micro-unit; promo không trộn với cash để expiry/refund có thể audit.
+-- 12. Wallet tiền chính xác theo micro-unit; promo không trộn với cash để expiry/refund có thể audit.
 CREATE TABLE IF NOT EXISTS billing.wallets (
     id                    UUID PRIMARY KEY,
     owner_id              UUID NOT NULL,
@@ -208,7 +194,7 @@ CREATE TABLE IF NOT EXISTS billing.wallets (
     CONSTRAINT ck_wallet_version_positive CHECK (version > 0)
 );
 
--- 14. Campaign catalog định nghĩa grant; không seed trực tiếp wallet của customer.
+-- 13. Campaign catalog định nghĩa grant; không seed trực tiếp wallet của customer.
 CREATE TABLE IF NOT EXISTS billing.promotion_campaigns (
     id                 UUID PRIMARY KEY,
     code               VARCHAR(64) NOT NULL UNIQUE,
@@ -225,7 +211,7 @@ CREATE TABLE IF NOT EXISTS billing.promotion_campaigns (
     CONSTRAINT ck_promotion_status CHECK (status IN ('ACTIVE', 'PAUSED', 'ENDED'))
 );
 
--- 15. Grant idempotent theo campaign + owner; một retry không thể cộng tiền lần hai.
+-- 14. Grant idempotent theo campaign + owner; một retry không thể cộng tiền lần hai.
 CREATE TABLE IF NOT EXISTS billing.credit_grants (
     id                 UUID PRIMARY KEY,
     campaign_id        UUID NOT NULL REFERENCES billing.promotion_campaigns(id) ON DELETE RESTRICT,
@@ -242,7 +228,7 @@ CREATE TABLE IF NOT EXISTS billing.credit_grants (
     CONSTRAINT ck_credit_grant_amount_positive CHECK (amount_micro_units > 0)
 );
 
--- 16. Resource-plan assignment effective-dated; không tạo cross-service FK tới Controlplane resource.
+-- 15. Resource-plan assignment effective-dated; không tạo cross-service FK tới Controlplane resource.
 CREATE TABLE IF NOT EXISTS billing.resource_plan_assignments (
     id                 UUID PRIMARY KEY,
     resource_type      VARCHAR(32) NOT NULL,
@@ -257,7 +243,7 @@ CREATE TABLE IF NOT EXISTS billing.resource_plan_assignments (
     CONSTRAINT ck_resource_plan_window CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
 
--- 17. Append-only money ledger. Balance snapshots hỗ trợ reconcile mà không thay đổi lịch sử.
+-- 16. Append-only money ledger. Balance snapshots hỗ trợ reconcile mà không thay đổi lịch sử.
 CREATE TABLE IF NOT EXISTS billing.wallet_ledger_entries (
     id                       UUID PRIMARY KEY,
     wallet_id                UUID NOT NULL REFERENCES billing.wallets(id) ON DELETE RESTRICT,
@@ -284,7 +270,7 @@ CREATE TABLE IF NOT EXISTS billing.wallet_ledger_entries (
     CONSTRAINT ck_ledger_usage_pair CHECK ((usage_quantity IS NULL) = (usage_unit IS NULL))
 );
 
--- 18. Durable queue cho usage chưa rate được; checkpoint có thể tiến mà charge không bị mất.
+-- 17. Durable queue cho usage chưa rate được; checkpoint có thể tiến mà charge không bị mất.
 CREATE TABLE IF NOT EXISTS billing.unrated_usage (
     id                 UUID PRIMARY KEY,
     service_type       billing.service_type NOT NULL,
@@ -306,7 +292,7 @@ CREATE TABLE IF NOT EXISTS billing.unrated_usage (
     CONSTRAINT ck_unrated_status CHECK (status IN ('PENDING', 'PROCESSING', 'RESOLVED', 'DEAD'))
 );
 
--- 19. Inbox idempotency cho ownership lifecycle events nhận từ JetStream (chống trùng lặp event)
+-- 18. Inbox idempotency cho ownership lifecycle events nhận từ JetStream (chống trùng lặp event)
 CREATE TABLE IF NOT EXISTS billing.ownership_event_inbox (
     event_id        UUID PRIMARY KEY,                      -- UUID duy nhất của event (deterministic từ source job)
     event_type      VARCHAR(32) NOT NULL,                  -- 'RESOURCE_CREATED' hoặc 'RESOURCE_DELETED'
@@ -321,7 +307,7 @@ CREATE TABLE IF NOT EXISTS billing.ownership_event_inbox (
     CONSTRAINT ck_inbox_status CHECK (status IN ('RECEIVED', 'APPLIED', 'DEAD'))
 );
 
--- 20. Resource lifecycle head table để xử lý out-of-order delivery giữa các JetStream events
+-- 19. Resource lifecycle head table để xử lý out-of-order delivery giữa các JetStream events
 CREATE TABLE IF NOT EXISTS billing.resource_ownership_head (
     resource_id         UUID PRIMARY KEY,                  -- UUID của tài nguyên (bucket)
     last_source_version BIGINT NOT NULL,                   -- Version ownership mới nhất đã ghi nhận
@@ -330,7 +316,7 @@ CREATE TABLE IF NOT EXISTS billing.resource_ownership_head (
     CONSTRAINT ck_resource_ownership_state CHECK (resource_state IN ('ACTIVE', 'DELETED'))
 );
 
--- 21. Inbox idempotency cho personal wallet provisioning events nhận từ JetStream
+-- 20. Inbox idempotency cho personal wallet provisioning events nhận từ JetStream
 CREATE TABLE IF NOT EXISTS billing.wallet_provision_inbox (
     event_id        UUID PRIMARY KEY,
     schema_version  INT NOT NULL CHECK (schema_version = 1),
@@ -340,4 +326,3 @@ CREATE TABLE IF NOT EXISTS billing.wallet_provision_inbox (
     received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     processed_at    TIMESTAMPTZ
 );
-

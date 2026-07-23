@@ -404,9 +404,11 @@ func (r *RbacPlatformRepository) GetUserRoleDetails(ctx context.Context, userID 
 // [COMMENT]: GetUserRolePermissions lấy danh sách permissions binary của user theo user id
 func (r *RbacPlatformRepository) GetUserRolePermissions(ctx context.Context, userID uuid.UUID) ([]byte, error) {
 	query := fmt.Sprintf(`
-		SELECT list_perm FROM %s.user_role
-		WHERE user_id = $1
-	`, r.schema)
+		SELECT ur.list_perm
+		FROM %s.user_role ur
+		JOIN %s.users u ON u.id = ur.user_id AND u.status = 'active'
+		WHERE ur.user_id = $1
+	`, r.schema, r.schema)
 
 	rows, err := r.db.Query(ctx, query, userID)
 	if err != nil {

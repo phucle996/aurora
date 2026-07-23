@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 // [COMMENT]: RbacPlatformService thực thi interface quản lý vai trò và phân quyền cấp hệ thống (platform)
@@ -21,6 +22,7 @@ type RbacPlatformService struct {
 	repo        iamRepoInterface.RbacPlatformRepository
 	cacheEngine *cacheengine.CacheRegistry
 	nc          *nats.Conn
+	redis       *goredis.Client
 }
 
 // [COMMENT]: NewRbacPlatformService khởi tạo một thể hiện mới của RbacPlatformService
@@ -28,11 +30,13 @@ func NewRbacPlatformService(
 	repo iamRepoInterface.RbacPlatformRepository,
 	cacheEngine *cacheengine.CacheRegistry,
 	nc *nats.Conn,
+	redisClient *goredis.Client,
 ) iamSvcInterface.RbacPlatformService {
 	return &RbacPlatformService{
 		repo:        repo,
 		cacheEngine: cacheEngine,
 		nc:          nc,
+		redis:       redisClient,
 	}
 }
 
@@ -46,12 +50,26 @@ func (s *RbacPlatformService) AssignUserRole(ctx context.Context, callerLevel ui
 	// [COMMENT]: 2. Thu hồi cache user_role của target user trên L1 cục bộ
 	s.cacheEngine.L1.Delete("user_role:" + userID.String())
 
-	// [COMMENT]: 3. Phát tán sự kiện invalidation cache qua NATS Core đến các instances khác trong cụm HA
+	// [COMMENT]: 3. Tăng generation và xóa snapshot trong một Lua call để reader không ghi lại dữ liệu cũ sau race.
+	var invalidationErr error
+	if s.redis != nil {
+		tag := "{iam:authz:billing:" + userID.String() + "}"
+		if err := s.redis.Eval(ctx, `
+			redis.call("INCR", KEYS[1])
+			redis.call("EXPIRE", KEYS[1], ARGV[1])
+			redis.call("DEL", KEYS[2], KEYS[3])
+			return 1
+		`, []string{tag + ":generation", tag + ":data", tag + ":data_generation"}, int64(86400)).Err(); err != nil {
+			invalidationErr = fmt.Errorf("invalidate Billing authorization cache after role assignment: %w", err)
+		}
+	}
+
+	// [COMMENT]: 4. Phát tán sự kiện invalidation cache qua NATS Core đến mọi Cost/Controlplane replica.
 	if s.nc != nil {
 		_ = s.nc.Publish("iam.user_role.invalidated", []byte(userID.String()))
 	}
 
-	return nil
+	return invalidationErr
 }
 
 // [COMMENT]: AssignTenantRole gán vai trò platform cho tenant (skeleton)
@@ -175,10 +193,26 @@ func (s *RbacPlatformService) UpdateRole(ctx context.Context, callerUserID uuid.
 	}
 
 	// [COMMENT]: Thu hồi cache user_role L1 cục bộ và truyền tin invalidation qua NATS Core cho các user bị ảnh hưởng
+	var invalidationErr error
 	for _, uID := range affectedUserIDs {
 		s.cacheEngine.L1.Delete("user_role:" + uID.String())
-		_ = s.nc.Publish("iam.user_role.invalidated", []byte(uID.String()))
+		if s.redis != nil {
+			tag := "{iam:authz:billing:" + uID.String() + "}"
+			if err := s.redis.Eval(ctx, `
+				redis.call("INCR", KEYS[1])
+				redis.call("EXPIRE", KEYS[1], ARGV[1])
+				redis.call("DEL", KEYS[2], KEYS[3])
+				return 1
+			`, []string{tag + ":generation", tag + ":data", tag + ":data_generation"}, int64(86400)).Err(); err != nil {
+				if invalidationErr == nil {
+					invalidationErr = fmt.Errorf("invalidate Billing authorization cache after role update: %w", err)
+				}
+			}
+		}
+		if s.nc != nil {
+			_ = s.nc.Publish("iam.user_role.invalidated", []byte(uID.String()))
+		}
 	}
 
-	return nil
+	return invalidationErr
 }

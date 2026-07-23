@@ -115,7 +115,8 @@ func LoadConfig() *Config {
 			MaxConnIdle: getEnv("POSTGRES_MAX_CONN_IDLE", "10m"),
 		},
 		Redis: RedisCfg{
-			Addr:        getEnv("REDIS_URL", "redis://controlplane-acr-redis:6379"),
+			// [COMMENT]: Cost chỉ dùng shared rebuildable cache; Security-State Redis của ACR không được cấp credential.
+			Addr:        getEnv("CACHE_REDIS_URL", getEnv("REDIS_URL", "redis://controlplane-cp-redis:6379")),
 			Password:    getEnv("REDIS_PASSWORD", ""),
 			DB:          getEnvAsInt("REDIS_DB", 0),
 			TLSEnabled:  getEnvAsBool("REDIS_TLS_ENABLED", false),

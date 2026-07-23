@@ -2,12 +2,12 @@
 // 📂 user/rotate.rs — Handle user session rotation (sliding session)
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::error::AcrError;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
+use crate::token::TokenManager;
 use crate::user::claims::Claims;
 use crate::user::session::UserAccessSession;
 use prost::Message;

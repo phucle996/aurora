@@ -9,7 +9,6 @@
 //   4. Trả về Set-Cookie HTTP response
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::nats::auth::{
     EvictedDevicesNotification, VerifyUserCredentialsRequest, VerifyUserCredentialsResponse,
@@ -18,6 +17,7 @@ use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::COOKIE_REFRESH_TOKEN;
+use crate::token::TokenManager;
 use crate::user::claims::Claims;
 use async_nats::HeaderMap;
 use envoy_types::ext_authz::v3::pb::HttpStatusCode;
@@ -81,7 +81,9 @@ pub async fn handle_login_challenge(
     builder.set_body(body);
     let mut response = CheckResponse::new();
     // [COMMENT]: Sử dụng Status::unauthenticated để Envoy coi đây là phản hồi trực tiếp tại Edge (UAEX) thay vì forward lên upstream
-    response.set_status(Status::unauthenticated("login session proof challenge issued"));
+    response.set_status(Status::unauthenticated(
+        "login session proof challenge issued",
+    ));
     response.set_http_response(builder);
     Some(Ok(Response::new(response)))
 }

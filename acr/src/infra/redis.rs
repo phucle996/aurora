@@ -3,7 +3,7 @@
 //
 // 📌 VAI TRÒ:
 //   - Quản lý kết nối Redis L2 (HA) dùng chung cho mọi domain session.
-//   - Cung cấp get_connection() và redis_client_arc() làm entry-point cho mọi Redis op.
+//   - Cung cấp get_connection() làm entry-point cho mọi Security-State Redis op.
 //   - RecoverySessionCache: struct dùng khi session recovery thành công.
 //   - Các impl cụ thể (user, admin, billing session ops) được viết trong từng domain file.
 // ======================================================================================================
@@ -34,11 +34,6 @@ impl SessionManager {
             .get_tokio_connection()
             .await
             .map_err(|e| AcrError::RedisError(format!("Failed to get Redis connection: {}", e)))
-    }
-
-    /// [COMMENT]: Expose Arc<redis::Client> để các goroutine ngoài (heartbeat spawn, auth.rs) có thể lấy kết nối
-    pub fn redis_client_arc(&self) -> Arc<redis::Client> {
-        self.redis_client.clone()
     }
 }
 

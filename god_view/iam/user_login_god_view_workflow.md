@@ -495,7 +495,7 @@ Không dùng username/email/public key làm metric label vì cardinality và pri
 | ACR login/challenge/session issue | [`acr/src/user/login.rs`](../../acr/src/user/login.rs) |
 | ACR proof primitives | [`acr/src/user/session_proof.rs`](../../acr/src/user/session_proof.rs) |
 | ACR Redis session binary | [`acr/src/user/session.rs`](../../acr/src/user/session.rs) |
-| JWT construction, Vault sign/verify và Moka cache | [`acr/src/billing/claims.rs`](../../acr/src/billing/claims.rs) |
+| IAM JWT construction, Vault sign/verify và Moka cache | [`acr/src/user/claims.rs`](../../acr/src/user/claims.rs), [`acr/src/token.rs`](../../acr/src/token.rs) |
 | Vault AppRole, health, Transit HTTP client | [`acr/src/infra/vault.rs`](../../acr/src/infra/vault.rs) |
 | ACR Vault/TokenManager bootstrap | [`acr/src/main.rs`](../../acr/src/main.rs) |
 | NATS Protobuf contract | [`controlplane/internal/iam/transport/rpc/proto/auth.proto`](../../controlplane/internal/iam/transport/rpc/proto/auth.proto), [`acr/proto/auth.proto`](../../acr/proto/auth.proto) |

@@ -190,6 +190,9 @@ func (a *App) Stop() {
 	if a.module != nil && a.module.ReconcilerWorker != nil {
 		a.module.ReconcilerWorker.Stop()
 	}
+	if a.module != nil && a.module.AuthorizationResolver != nil {
+		a.module.AuthorizationResolver.Close()
+	}
 
 	// Terminate Rust Engine child process
 	if a.rustCmd != nil && a.rustCmd.Process != nil {

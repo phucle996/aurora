@@ -193,7 +193,7 @@ func NewModule(
 		return nil, errors.New("iam module: failed to initialize HTTP auth handler")
 	}
 
-	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, natsConn)
+	userService := iamSvcImpl.NewUserService(userRepo, cacheEngine, natsConn, rds)
 	if userService == nil {
 		return nil, errors.New("iam module: failed to construct core user service implementation")
 	}
@@ -204,7 +204,7 @@ func NewModule(
 	}
 
 	// [COMMENT]: Khởi tạo các service quản lý luồng nghiệp vụ platform/tenant RBAC
-	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine, natsConn)
+	rbacPlatformSvc := iamSvcImpl.NewRbacPlatformService(rbacPlatformRepo, cacheEngine, natsConn, rds)
 	if rbacPlatformSvc == nil {
 		return nil, errors.New("iam module: failed to construct RBAC platform service")
 	}

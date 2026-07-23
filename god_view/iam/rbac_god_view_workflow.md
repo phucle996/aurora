@@ -376,6 +376,7 @@ Hệ thống đi kèm bộ khung vai trò và quyền hạn được cài đặt
 | Hierarchy | `hierarchy:workspace:create`, `hierarchy:workspace:read`, `hierarchy:workspace:update`, `hierarchy:workspace:delete` |
 | Email Delivery / Consumer | `email:consumer:create`, `email:consumer:read`, `email:consumer:update`, `email:consumer:delete` |
 | Email Delivery / Template | `email:template:create`, `email:template:read`, `email:template:publish`, `email:template:delete` |
+| Billing | `billing:plan:read`, `billing:tier:read`, `billing:tier:publish`, `billing:wallet:read`, `billing:ledger:read`, `billing:subscription:write`, `billing:credit:adjust` |
 
 `email` là tên capability nghiệp vụ được hiển thị cho người dùng và dùng trong RBAC. Các path tương thích
 `/mail`, NATS subject `mail.*` và `zone_services.service_type = 'mail'` vẫn là namespace transport/hạ tầng;
@@ -387,6 +388,7 @@ chúng không được dùng làm permission key.
 | :--- | :--- | :--- | :--- | :--- |
 | **`platform_root`** | Root | 0 | platform | Có toàn quyền tuyệt đối trên mọi API của hệ thống. |
 | **`platform_admin`** | System Admin | 1 | platform | Quản trị viên hệ thống, có toàn quyền cấu hình và quản lý users. |
+| **`billing_admin`** | Billing Admin | 1 | platform | Chỉ có Billing catalog/financial permissions; không mặc nhiên có quyền IAM, Storage hay Email. |
 | **`platform_support_operator`** | Support Operator | 2 | platform | Nhân viên hỗ trợ hệ thống, chỉ có quyền read-only trên các module. |
 | **`platform_user`** | Platform User | 8 | platform | Quyền mặc định của một tài khoản mới đăng ký khi chưa tham gia Tenant. |
 | **`tenant_owner`** | Owner | 3 | tenant | Chủ sở hữu doanh nghiệp (Tenant), có toàn quyền trong phạm vi tenant. |
@@ -409,10 +411,28 @@ Personal/Tenant Mail routes dùng `middleware.Authorize` với permission tươn
 `requiredLevel = "*"`; ownership/workspace vẫn được repository kiểm tra lại trong transaction. Operational
 infrastructure đi OTel/Grafana và không tạo permission trong customer/business RBAC catalog.
 
-Bốn tài khoản bootstrap `root`, `sys_admin`, `support_operator`, `audit_viewer` lưu `RoleEntry` protobuf
+Năm tài khoản bootstrap `root`, `sys_admin`, `support_operator`, `audit_viewer`, `billing_admin` lưu `RoleEntry` protobuf
 precompiled trong `user_role.list_perm`. Seed migration phải rebuild các binary này khi permission catalog đổi;
 `ON CONFLICT` cập nhật `list_perm` để chạy lại seed không giữ snapshot quyền cũ. User được activate sau đó được
 compile từ `role_permissions` tại runtime, không phụ thuộc các literal binary bootstrap.
+
+### 8.4 Billing authorization projection
+
+ACR chỉ tạo opaque Cost alias và không mang role/permission. Cost resolve permission theo L1 → shared Redis L2 → NATS subject `iam.authorization.billing.get`; chỉ IAM đọc PostgreSQL RBAC.
+
+IAM subscriber:
+
+1. đọc protobuf `RoleEntry` của active user;
+2. nhận runtime platform key ba phần và bootstrap key năm phần chỉ khi workspace là `*` hoặc nil UUID;
+3. bỏ mọi năm-phần key có workspace UUID cụ thể để không nâng quyền cục bộ thành quyền Billing global;
+4. chuẩn hóa về `billing:object:behavior`, sort và deduplicate;
+5. ghi shared L2 bằng Lua generation fence rồi trả cùng protobuf bytes cho Cost;
+6. fail closed nếu không có Billing permission.
+
+`AssignUserRole`, `UpdateRole`, `UpdateUserStatus` tăng generation, xóa L2 snapshot và fan-out
+`iam.user_role.invalidated`. Cost critical route bỏ cả L1/L2 và request IAM mới. Partial unique index
+`uq_user_role_platform` vẫn bảo đảm mỗi user chỉ có một platform role. Chi tiết PKCE alias, Redis key và race
+matrix nằm ở `god_view/billing/cost_console_domain_trinity_god_view.md`.
 
 ---
 

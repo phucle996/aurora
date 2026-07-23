@@ -36,6 +36,12 @@ function AuroraLogo() {
 function AuthPageContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const requestedReturnTo = searchParams.get("return_to") || "";
+  // [COMMENT]: Chỉ chấp nhận callback nội bộ cố định; giá trị tuyệt đối/protocol-relative không thể thành open redirect.
+  const returnTo =
+    requestedReturnTo.startsWith("/billing/authorize?") && !requestedReturnTo.startsWith("//")
+      ? requestedReturnTo
+      : "/";
 
   // [COMMENT]: Kiểm tra trạng thái phiên đăng nhập hiện tại
   const { authenticated, loading } = useUserSession();
@@ -43,9 +49,9 @@ function AuthPageContent() {
   // [COMMENT]: Chuyển hướng người dùng về trang dashboard nếu đã đăng nhập thành công
   useEffect(() => {
     if (!loading && authenticated) {
-      router.push("/");
+      router.push(returnTo);
     }
-  }, [loading, authenticated, router]);
+  }, [loading, authenticated, returnTo, router]);
 
   // [COMMENT]: Móc nối dịch thuật đa ngôn ngữ toàn cục
   const { lang, setLang, t } = useTranslation();

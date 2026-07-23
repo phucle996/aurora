@@ -22,7 +22,14 @@ func (m *IAMModule) Bootstrap(ctx context.Context) error {
 	}
 	// [COMMENT]: Khởi động NATS subscriber để lắng nghe và điều phối luồng Login (Request-Reply) và bulk presence updates
 	if m.natsConn != nil {
-		authNatsHandler := pubsubHandler.NewAuthNatsHandler(m.cfg, m.AuthService, m.SessionRefreshService, m.otel)
+		authNatsHandler := pubsubHandler.NewAuthNatsHandler(
+			m.cfg,
+			m.AuthService,
+			m.SessionRefreshService,
+			m.RbacPlatformRepository,
+			m.rds,
+			m.otel,
+		)
 		subs, err := authNatsHandler.Subscribe(m.natsConn)
 		if err != nil {
 			return err

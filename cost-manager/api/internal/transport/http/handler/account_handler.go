@@ -29,7 +29,11 @@ func (h *AccountHandler) ActivatePersonalFreeTier(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
-	account, err := h.service.ActivatePersonalFreeTier(ctx, c.GetHeader("x-user-id"), c.GetHeader("idempotency-key"))
+	userID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	account, err := h.service.ActivatePersonalFreeTier(ctx, userID.String(), c.GetHeader("idempotency-key"))
 	if err != nil {
 		switch {
 		case errors.Is(err, billingTaxonomy.ErrInvalidArgument):

@@ -109,8 +109,11 @@ func (h *PlanHandler) ListPlans(c *gin.Context) {
 		cursorID = id
 	}
 
-	// Thực hiện validate và parse zone_id thành UUID tại handler
-	var filterZoneID uuid.UUID
+	// Thực hiện lấy zone_id từ context đã parse bởi ContextInjector
+	filterZoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
 	if req.ZoneID != "" {
 		parsedZoneID, err := uuid.Parse(req.ZoneID)
 		if err != nil {
@@ -118,7 +121,11 @@ func (h *PlanHandler) ListPlans(c *gin.Context) {
 			apires.RespondBadRequest(c, "Invalid zone_id format (must be UUID)")
 			return
 		}
-		filterZoneID = parsedZoneID
+		// [COMMENT]: Query chỉ được lặp lại zone đã bind; client không thể cross-zone bằng query string.
+		if parsedZoneID != filterZoneID {
+			apires.RespondForbidden(c, "requested zone does not match the billing session")
+			return
+		}
 	}
 
 	// Sử dụng entity.Plan làm điều kiện lọc

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::OnceLock;
 
 static SERVICE_STATE: OnceLock<Gauge<u64>> = OnceLock::new();
+static OPERATIONAL_OBSERVED_AT: OnceLock<Gauge<u64>> = OnceLock::new();
 static CAPACITY_PERCENT: OnceLock<Gauge<u64>> = OnceLock::new();
 static PENDING_ITEMS: OnceLock<Gauge<u64>> = OnceLock::new();
 static IN_FLIGHT_BATCHES: OnceLock<Gauge<u64>> = OnceLock::new();
@@ -20,6 +21,15 @@ fn service_state_metric() -> &'static Gauge<u64> {
         global::meter("aurora-dataplane")
             .u64_gauge("mail_service_health_state")
             .with_description("Mail service health: 0=down, 1=degraded, 2=healthy")
+            .init()
+    })
+}
+
+fn operational_observed_at_metric() -> &'static Gauge<u64> {
+    OPERATIONAL_OBSERVED_AT.get_or_init(|| {
+        global::meter("aurora-dataplane")
+            .u64_gauge("mail_operational_observed_unix_seconds")
+            .with_description("Unix timestamp fencing the most recent Mail operational snapshot")
             .init()
     })
 }
@@ -116,6 +126,7 @@ fn observation_error_metric() -> &'static Counter<u64> {
 
 /// [COMMENT]: Snapshot này chỉ mang low-cardinality operational aggregates sang OTel/Grafana.
 pub(super) struct MailOperationalMetricsSnapshot {
+    pub observed_at_unix_seconds: u64,
     pub state: u64,
     pub capacity_percent: u64,
     pub pending_items: u64,
@@ -151,6 +162,8 @@ impl MailWorkloadMetrics {
     }
 
     pub(super) fn record_operational_snapshot(&self, snapshot: &MailOperationalMetricsSnapshot) {
+        // [COMMENT]: Dashboard dùng timestamp này để bỏ chuỗi metric cũ khi rotating lease đổi holder.
+        operational_observed_at_metric().record(snapshot.observed_at_unix_seconds, &[]);
         service_state_metric().record(snapshot.state, &[]);
         capacity_metric().record(snapshot.capacity_percent, &[]);
         pending_metric().record(snapshot.pending_items, &[]);

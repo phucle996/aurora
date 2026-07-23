@@ -12,6 +12,9 @@ pub const COOKIE_TENANT_ID: &str = "tenant_id";
 pub const COOKIE_TENANT_DOMAIN: &str = "tenant_domain";
 pub const COOKIE_WORKSPACE_ID: &str = "workspace_id";
 pub const COOKIE_CLIENT_DEVICE_ID: &str = "client_device_id";
+// [COMMENT]: Cost chỉ giữ opaque alias host-only, không nhân bản IAM Trinity sang subdomain khác.
+pub const COOKIE_BILLING_SESSION_ID: &str = "__Host-billing_session";
+pub const COOKIE_BILLING_SESSION_SECRET: &str = "__Host-billing_session_secret";
 
 /// [COMMENT]: Tạo danh sách các chuỗi header Set-Cookie để xóa sạch toàn bộ cookie nhận được (ngoại trừ client_device_id)
 pub fn clear_all_cookies(cookie_header: &str, domain_str: &str, paths: &[&str]) -> Vec<String> {

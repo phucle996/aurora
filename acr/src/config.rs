@@ -27,8 +27,10 @@ pub struct VaultConfig {
 pub struct Config {
     // Port lắng nghe gRPC server (mặc định: 50051)
     pub grpc_port: u16,
-    // Địa chỉ kết nối cụm Redis L2
+    // [COMMENT]: Security-State Redis chứa session, alias, nonce, rate-limit và one-time handoff.
     pub redis_url: String,
+    // [COMMENT]: Shared cache Redis chỉ chứa zone/config catalog có thể rebuild.
+    pub cache_redis_url: String,
     // Cấu hình kết nối Vault phục vụ việc xác thực JWT
     pub vault: VaultConfig,
     // Thời gian sống tối đa của Access Session (mặc định: 1800 giây - 30 phút)
@@ -41,6 +43,8 @@ pub struct Config {
     pub bypass_endpoints: Vec<String>,
     // [COMMENT]: Domain công khai của hệ thống để gắn kết session cookie (đọc từ APP_PUBLIC_DOMAIN)
     pub app_public_domain: String,
+    // [COMMENT]: Origin đích duy nhất cho one-time Billing handoff; code không được redirect theo input client.
+    pub billing_console_origin: String,
     // [COMMENT]: Danh sách các origin được phép gọi API (đọc từ APP_ALLOWED_ORIGINS)
     pub allowed_origins: Vec<String>,
     // [COMMENT]: Địa chỉ kết nối NATS Core Client
@@ -67,8 +71,11 @@ impl Config {
                 AcrError::ConfigError("ACR_GRPC_PORT must be a valid port number".to_string())
             })?;
 
-        let redis_url =
-            env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis_url = env::var("AUTH_REDIS_URL")
+            .or_else(|_| env::var("REDIS_URL"))
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let cache_redis_url = env::var("CACHE_REDIS_URL")
+            .unwrap_or_else(|_| "redis://controlplane-cp-redis:6379".to_string());
 
         // Vault configurations
         let vault_addr =
@@ -153,6 +160,19 @@ impl Config {
         // [COMMENT]: Enforce host-only cookies by keeping app_public_domain empty to prevent cookie sharing across subdomains
         let app_public_domain = String::new();
 
+        let billing_console_origin = env::var("BILLING_CONSOLE_ORIGIN")
+            .unwrap_or_else(|_| "https://cost-manager.aurora.local".to_string())
+            .trim_end_matches('/')
+            .to_string();
+        if !(billing_console_origin.starts_with("https://")
+            || billing_console_origin.starts_with("http://localhost:"))
+        {
+            return Err(AcrError::ConfigError(
+                "BILLING_CONSOLE_ORIGIN must use https (localhost http is allowed for development)"
+                    .to_string(),
+            ));
+        }
+
         // [COMMENT]: Nạp danh sách các domain/origin được phép truy cập từ biến môi trường APP_ALLOWED_ORIGINS
         let allowed_origins = env::var("APP_ALLOWED_ORIGINS")
             .map(|s| {
@@ -166,12 +186,14 @@ impl Config {
         Ok(Config {
             grpc_port,
             redis_url,
+            cache_redis_url,
             vault,
             session_ttl_secs,
             refresh_threshold_secs,
             otel_exporter_otlp_endpoint,
             bypass_endpoints,
             app_public_domain,
+            billing_console_origin,
             allowed_origins,
             nats_url,
             nats_ca_cert,

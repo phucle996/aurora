@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Header, navigationItems } from './components/Header';
 import PlanPage from './page/plan/page';
 import DashboardPage from './page/dashboard/page';
-import LoginPage from './page/login/page';
 import { useAuthStore } from './lib/store/useAuthStore';
 import { Coins } from 'lucide-react';
 import { Toaster } from 'sonner';
@@ -66,7 +65,7 @@ function CostDashboardShell() {
 
 // AppContent quản lý trạng thái tải phiên (session) và bảo vệ route
 function AppContent() {
-  const { isAuthenticated, checkSession, isLoading } = useAuthStore();
+  const { isAuthenticated, checkSession, isLoading, error } = useAuthStore();
 
   // Kiểm tra session hiện có tại cookies khi ứng dụng khởi chạy
   useEffect(() => {
@@ -90,17 +89,28 @@ function AppContent() {
 
   return (
     <Routes>
-      {/* Route Đăng nhập công khai */}
-      <Route path="/login" element={<LoginPage />} />
-
-      {/* Bảo vệ các route nghiệp vụ khác bằng Auth Guard */}
+      {/* [COMMENT]: Cost Console không có credential form; session chỉ đến từ IAM one-time handoff. */}
       <Route
         path="/*"
         element={
           isAuthenticated ? (
             <CostDashboardShell />
           ) : (
-            <Navigate to="/login" replace />
+            <div className="min-h-screen flex items-center justify-center bg-[#020617] text-slate-300 p-6">
+              <div className="max-w-md rounded-lg border border-slate-800 bg-slate-900 p-8 text-center">
+                <h1 className="text-lg font-semibold text-white">IAM session required</h1>
+                <p className="mt-2 text-sm text-slate-400">
+                  Connect this Cost Console origin to your current Aurora IAM session.
+                </p>
+                {error && <p className="mt-3 text-xs text-rose-400">{error}</p>}
+                <a
+                  href="/auth/start"
+                  className="mt-6 inline-flex rounded bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Continue with Aurora IAM
+                </a>
+              </div>
+            </div>
           )
         }
       />

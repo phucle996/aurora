@@ -18,10 +18,10 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		t.Fatalf("read IAM bootstrap seed: %v", err)
 	}
 
-	// [COMMENT]: Chỉ bốn bootstrap RoleEntry có hex literal không rỗng; workspace seed dùng binary rỗng riêng.
+	// [COMMENT]: Năm bootstrap RoleEntry có hex literal không rỗng; workspace seed dùng binary rỗng riêng.
 	matches := regexp.MustCompile(`decode\('([0-9a-f]+)', 'hex'\)`).FindAllStringSubmatch(string(sql), -1)
-	if len(matches) != 4 {
-		t.Fatalf("expected 4 precompiled bootstrap RoleEntry values, got %d", len(matches))
+	if len(matches) != 5 {
+		t.Fatalf("expected 5 precompiled bootstrap RoleEntry values, got %d", len(matches))
 	}
 
 	allPermissions := []string{
@@ -52,6 +52,13 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		"email:template:read",
 		"email:template:publish",
 		"email:template:delete",
+		"billing:plan:read",
+		"billing:tier:read",
+		"billing:tier:publish",
+		"billing:wallet:read",
+		"billing:ledger:read",
+		"billing:subscription:write",
+		"billing:credit:adjust",
 	}
 	readOnlyPermissions := []string{
 		"iam:users:read",
@@ -64,6 +71,19 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		"iam:mfa:view",
 		"email:consumer:read",
 		"email:template:read",
+		"billing:plan:read",
+		"billing:tier:read",
+		"billing:wallet:read",
+		"billing:ledger:read",
+	}
+	billingPermissions := []string{
+		"billing:plan:read",
+		"billing:tier:read",
+		"billing:tier:publish",
+		"billing:wallet:read",
+		"billing:ledger:read",
+		"billing:subscription:write",
+		"billing:credit:adjust",
 	}
 
 	tests := []struct {
@@ -71,6 +91,7 @@ func TestBootstrapRoleEntriesMatchSeededPermissions(t *testing.T) {
 		want     []string
 	}{
 		{username: "root", want: allPermissions},
+		{username: "billing_admin", want: billingPermissions},
 		{username: "sys_admin", want: allPermissions},
 		{username: "support_operator", want: readOnlyPermissions},
 		{username: "audit_viewer", want: readOnlyPermissions},
@@ -150,5 +171,19 @@ func TestIAMSeedRollbackCoversPermissionCatalog(t *testing.T) {
 		if _, ok := downCatalog[permission]; !ok {
 			t.Errorf("rollback does not remove seeded permission %q", permission)
 		}
+	}
+}
+
+func TestIAMTablesEnforceSinglePlatformRolePerUser(t *testing.T) {
+	sql, err := Files.ReadFile("000002_iam_tables.up.sql")
+	if err != nil {
+		t.Fatalf("read IAM tables migration: %v", err)
+	}
+
+	// [COMMENT]: Partial uniqueness giữ semantics multi-role ở workspace nhưng chặn race gán hai platform role.
+	migration := string(sql)
+	if !strings.Contains(migration, "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_role_platform") ||
+		!strings.Contains(migration, "WHERE workspace_id = '00000000-0000-0000-0000-000000000000'") {
+		t.Fatal("IAM tables migration must enforce one nil-workspace platform role per user")
 	}
 }

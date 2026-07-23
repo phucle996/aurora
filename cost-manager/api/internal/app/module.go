@@ -52,6 +52,8 @@ type Module struct {
 
 	PricingOutboxRepo  billingRepoInterface.PricingOutboxRepository
 	PricingOutboxRelay *service.PricingOutboxRelay
+
+	AuthorizationResolver *service.AuthorizationResolver
 }
 
 // [COMMENT]: NewModule khởi tạo Module và thực hiện Dependency Injection kèm nil check đầy đủ sau mỗi bước.
@@ -65,7 +67,6 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	if natsConn == nil {
 		return nil, fmt.Errorf("natsConn infrastructure connection cannot be nil")
 	}
-
 	// 1. Account Domain DI
 	accountRepo := repository.NewAccountRepository(dbPool)
 	if accountRepo == nil {
@@ -129,22 +130,7 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize TierHandler: instance is nil")
 	}
 
-	// 5. Auth Domain DI & NATS Subscription
-	authRepo := repository.NewAuthRepository(dbPool)
-	if authRepo == nil {
-		return nil, fmt.Errorf("failed to initialize AuthRepository: instance is nil")
-	}
-
-	authService := service.NewAuthService(authRepo)
-	if authService == nil {
-		return nil, fmt.Errorf("failed to initialize AuthService: instance is nil")
-	}
-
-	if _, err := natsHandler.SubscribeAuth(natsConn, authService); err != nil {
-		return nil, fmt.Errorf("failed to register NATS auth subscriber: %w", err)
-	}
-
-	// 6. Reconciler Worker DI (gRPC)
+	// 5. Reconciler Worker DI (gRPC)
 	reconcilerRepo := repository.NewReconcilerRepository(dbPool)
 	if reconcilerRepo == nil {
 		return nil, fmt.Errorf("failed to initialize ReconcilerRepository: instance is nil")
@@ -160,7 +146,7 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		return nil, fmt.Errorf("failed to initialize ReconcilerWorker: instance is nil")
 	}
 
-	// 7. Resource ownership subscriber DI (NATS JetStream)
+	// 6. Resource ownership subscriber DI (NATS JetStream)
 	ownershipRepo := repository.NewResourceOwnershipRepository(dbPool)
 	if ownershipRepo == nil {
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipRepository: instance is nil")
@@ -174,6 +160,11 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 	ownershipSubscriber, err := natsHandler.NewResourceOwnershipSubscriber(natsConn, ownershipService)
 	if err != nil || ownershipSubscriber == nil {
 		return nil, fmt.Errorf("failed to initialize ResourceOwnershipSubscriber: %w", err)
+	}
+	// [COMMENT]: Tạo subscriber authorization sau cùng để init lỗi trước đó không làm rò NATS subscription.
+	authorizationResolver, err := service.NewAuthorizationResolver(redisClient, natsConn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize AuthorizationResolver: %w", err)
 	}
 
 	return &Module{
@@ -195,5 +186,6 @@ func NewModule(dbPool *pgxpool.Pool, natsConn *nats.Conn, redisClient *redis.Cli
 		ResourceOwnershipSubscriber:       ownershipSubscriber,
 		PricingOutboxRepo:                 pricingOutboxRepo,
 		PricingOutboxRelay:                pricingOutboxRelay,
+		AuthorizationResolver:             authorizationResolver,
 	}, nil
 }

@@ -2,7 +2,6 @@
 // 📂 user/recovery.rs — Phục hồi session khi JWT hết hạn (Token Recovery)
 // ======================================================================================================
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::error::AcrError;
 use crate::infra::nats::Nats;
@@ -10,6 +9,7 @@ use crate::infra::redis::{RecoverySessionCache, SessionManager};
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
+use crate::token::TokenManager;
 use crate::user::login::release_user_session;
 use crate::user::zone_resolution::resolve_zone_context;
 use std::collections::HashMap;

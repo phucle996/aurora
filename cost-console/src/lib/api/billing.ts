@@ -1,4 +1,5 @@
 import { request } from './fetcher';
+import { criticalFetcher } from './criticalFetcher';
 
 export interface PlanMetric {
   id: string;
@@ -158,11 +159,11 @@ export const billingApi = {
   // [COMMENT]: Name dùng metadata OCC riêng và không phát pricing version/outbox.
   async updateTierMetadata(payload: UpdateTierMetadataPayload): Promise<TierMetadataResult> {
     const { code, service_type, ...body } = payload;
-    return await request<TierMetadataResult>(
-      `/billing/tiers/${encodeURIComponent(service_type)}/${encodeURIComponent(code)}/metadata`,
+    return await criticalFetcher<TierMetadataResult>(
+      `/billing/critical/tiers/${encodeURIComponent(service_type)}/${encodeURIComponent(code)}/metadata`,
       {
         method: 'PATCH',
-        body: JSON.stringify(body),
+        body,
       }
     );
   },
@@ -170,11 +171,11 @@ export const billingApi = {
   // [COMMENT]: Pricing edit append immutable full snapshot; không gửi range IDs cũ để mutate lịch sử.
   async createTierVersion(payload: CreateTierVersionPayload): Promise<TierVersion> {
     const { code, service_type, ...body } = payload;
-    return await request<TierVersion>(
-      `/billing/tiers/${encodeURIComponent(service_type)}/${encodeURIComponent(code)}/versions`,
+    return await criticalFetcher<TierVersion>(
+      `/billing/critical/tiers/${encodeURIComponent(service_type)}/${encodeURIComponent(code)}/versions`,
       {
         method: 'POST',
-        body: JSON.stringify(body),
+        body,
       }
     );
   }

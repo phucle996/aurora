@@ -1,5 +1,5 @@
 // ======================================================================================================
-// 📂 billing/verify.rs — Edge session verification for Billing Auditor
+// 📂 billing/verify.rs — Fail-closed Cost alias verifier
 // ======================================================================================================
 
 use std::collections::HashMap;
@@ -10,266 +10,165 @@ use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
-use crate::billing::claims::{BillingClaims, TokenManager};
+use crate::billing::session::BillingSessionAlias;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
-use crate::pkg::cookie::*;
+use crate::pkg::cookie::{COOKIE_BILLING_SESSION_ID, COOKIE_BILLING_SESSION_SECRET};
 
 fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    format!("{:x}", hasher.finalize())
+    format!("{:x}", Sha256::digest(secret.as_bytes()))
 }
 
 fn build_denied_json(status: HttpStatusCode, message: &str) -> CheckResponse {
-    let json_body = format!(")]}}',\n{{\"error_message\":\"{}\"}}", message);
-    let mut denied_builder = DeniedHttpResponseBuilder::new();
-    denied_builder.set_http_status(status);
-    denied_builder.add_header("content-type", "application/json", None, false);
-    denied_builder.set_body(json_body);
-
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(status);
+    builder.add_header("content-type", "application/json", None, false);
+    builder.add_header("cache-control", "no-store", None, false);
+    builder.set_body(serde_json::json!({"error_message": message}).to_string());
     let mut response = CheckResponse::new();
     response.set_status(Status::unauthenticated(message));
-    response.set_http_response(denied_builder);
+    response.set_http_response(builder);
     response
 }
 
-pub struct VerifyBillingEdgeSessionResult {
-    pub claims: Option<BillingClaims>,
-    #[allow(dead_code)]
-    pub access_key: String,
+pub struct VerifyBillingAliasResult {
+    pub alias: Option<BillingSessionAlias>,
+    pub alias_id: String,
     pub denial_response: Option<Response<CheckResponse>>,
-    pub cookies_to_set: Vec<String>,
 }
 
-/// [COMMENT]: Xác thực session cho Billing Auditor từ cookies / headers.
-/// Tự động xử lý Cookie Extraction nội bộ.
-pub async fn verify_billing_edge_session(
+/// [COMMENT]: Alias hợp lệ khi secret đúng và IAM source session vẫn tồn tại với cùng proof key.
+pub async fn verify_billing_alias(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
     cookie_header: &str,
-    client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,
-) -> VerifyBillingEdgeSessionResult {
+) -> VerifyBillingAliasResult {
     use crate::gateway::ext_authz::extract_cookie_value;
 
-    let jwt_token = extract_cookie_value(cookie_header, COOKIE_ACCESS_TOKEN).or_else(|| {
-        client_headers.get("authorization").and_then(|h| {
-            if h.to_lowercase().starts_with("bearer ") {
-                Some(h[7..].trim().to_string())
-            } else {
-                None
-            }
-        })
-    });
-
-    let jwt_token = match jwt_token {
-        Some(t) => t,
-        None => {
-            return VerifyBillingEdgeSessionResult {
-                claims: None,
-                access_key: String::new(),
-                denial_response: None,
-                cookies_to_set: Vec::new(),
-            };
-        }
+    let reject = |message: &str| VerifyBillingAliasResult {
+        alias: None,
+        alias_id: String::new(),
+        denial_response: Some(Response::new(build_denied_json(
+            HttpStatusCode::Unauthorized,
+            message,
+        ))),
     };
-
-    let claims = match token_mgr.verify_billing_token(&jwt_token).await {
-        Ok(c) => c,
-        Err(e) => {
-            Logger::sys_debug(
-                "billing.verify",
-                &format!("Billing token verification failed for path {}: {}", path, e),
-            );
-            return VerifyBillingEdgeSessionResult {
-                claims: None,
-                access_key: String::new(),
-                denial_response: None,
-                cookies_to_set: Vec::new(),
-            };
-        }
+    let alias_id = match extract_cookie_value(cookie_header, COOKIE_BILLING_SESSION_ID) {
+        Some(value) if uuid::Uuid::parse_str(&value).is_ok() => value,
+        _ => return reject("Cost session alias is required"),
     };
-
-    let access_key = match extract_cookie_value(cookie_header, COOKIE_ACCESS_KEY) {
-        Some(k) => k,
-        None => {
-            Logger::authz_log(
-                &claims.sub,
-                method,
-                path,
-                "DENIED",
-                "Missing access_key cookie for billing",
-            );
-            return VerifyBillingEdgeSessionResult {
-                claims: None,
-                access_key: String::new(),
-                denial_response: Some(Response::new(build_denied_json(
-                    HttpStatusCode::Unauthorized,
-                    "Missing access_key cookie",
-                ))),
-                cookies_to_set: Vec::new(),
-            };
-        }
+    let alias_secret = match extract_cookie_value(cookie_header, COOKIE_BILLING_SESSION_SECRET) {
+        Some(value) if !value.is_empty() => value,
+        _ => return reject("Cost session alias secret is required"),
     };
-
-    if claims.access_key != access_key {
-        Logger::authz_log(
-            &claims.sub,
-            method,
-            path,
-            "DENIED",
-            &format!(
-                "Billing access key mismatch: claim={}, cookie={}",
-                claims.access_key, access_key
-            ),
-        );
-        return VerifyBillingEdgeSessionResult {
-            claims: None,
-            access_key: String::new(),
-            denial_response: Some(Response::new(build_denied_json(
-                HttpStatusCode::Unauthorized,
-                "Access Key Mismatch",
-            ))),
-            cookies_to_set: Vec::new(),
-        };
-    }
-
-    let billing_session = match session_mgr.get_billing_session(&access_key).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            Logger::authz_log(
-                &claims.sub,
-                method,
-                path,
-                "DENIED",
-                "Billing session expired or revoked in Redis L2",
-            );
-            return VerifyBillingEdgeSessionResult {
-                claims: None,
-                access_key: access_key.clone(),
-                denial_response: Some(Response::new(build_denied_json(
-                    HttpStatusCode::Unauthorized,
-                    "Billing Session Expired or Revoked",
-                ))),
-                cookies_to_set: Vec::new(),
-            };
-        }
-        Err(e) => {
+    let alias = match session_mgr.get_billing_alias(&alias_id).await {
+        Ok(Some(alias)) => alias,
+        Ok(None) => return reject("Cost session alias expired or was revoked"),
+        Err(error) => {
             Logger::sys_error(
                 "billing.verify",
-                "Redis error fetching billing session",
-                &e.to_string(),
+                "Redis Security-State alias lookup failed",
+                &error.to_string(),
             );
-            return VerifyBillingEdgeSessionResult {
-                claims: None,
-                access_key: access_key.clone(),
+            return VerifyBillingAliasResult {
+                alias: None,
+                alias_id,
                 denial_response: Some(Response::new(build_denied_json(
                     HttpStatusCode::InternalServerError,
                     "Authentication service unavailable",
                 ))),
-                cookies_to_set: Vec::new(),
             };
         }
     };
-
-    let access_secret = match extract_cookie_value(cookie_header, COOKIE_ACCESS_SECRET) {
-        Some(s) => s,
-        None => {
-            Logger::authz_log(
-                &claims.sub,
-                method,
-                path,
-                "DENIED",
-                "Missing access_secret cookie for billing",
-            );
-            return VerifyBillingEdgeSessionResult {
-                claims: None,
-                access_key: access_key.clone(),
-                denial_response: Some(Response::new(build_denied_json(
-                    HttpStatusCode::Unauthorized,
-                    "Missing access_secret cookie",
-                ))),
-                cookies_to_set: Vec::new(),
-            };
-        }
-    };
-
-    let incoming_hash = sha256_hash(&access_secret);
-    if billing_session.access_secret_hash != incoming_hash {
+    if alias.access_secret_hash != sha256_hash(&alias_secret) {
         Logger::authz_log(
-            &claims.sub,
+            &alias.user_id,
             method,
             path,
             "DENIED",
-            "Billing access secret mismatch",
+            "Cost alias secret mismatch",
         );
-        return VerifyBillingEdgeSessionResult {
-            claims: None,
-            access_key: access_key.clone(),
-            denial_response: Some(Response::new(build_denied_json(
-                HttpStatusCode::Unauthorized,
-                "Access Secret Mismatch",
-            ))),
-            cookies_to_set: Vec::new(),
-        };
+        return reject("Cost session alias binding is invalid");
     }
 
-    VerifyBillingEdgeSessionResult {
-        claims: Some(claims),
-        access_key,
-        denial_response: None,
-        cookies_to_set: Vec::new(),
+    // [COMMENT]: Recheck source mỗi request làm alias chết cùng IAM session, kể cả invalidation index bị gián đoạn.
+    match session_mgr
+        .get_session(
+            &alias.zone_id,
+            &alias.tenant_id,
+            &alias.user_id,
+            &alias.source_access_key,
+        )
+        .await
+    {
+        Ok(Some(source)) if source.client_proof_public_key == alias.source_proof_public_key => {
+            VerifyBillingAliasResult {
+                alias: Some(alias),
+                alias_id,
+                denial_response: None,
+            }
+        }
+        Ok(_) => reject("Source IAM session expired or was revoked"),
+        Err(error) => {
+            Logger::sys_error(
+                "billing.verify",
+                "Redis Security-State source lookup failed",
+                &error.to_string(),
+            );
+            VerifyBillingAliasResult {
+                alias: None,
+                alias_id,
+                denial_response: Some(Response::new(build_denied_json(
+                    HttpStatusCode::InternalServerError,
+                    "Authentication service unavailable",
+                ))),
+            }
+        }
     }
 }
 
-/// [COMMENT]: Intercept GET /api/v1/billing/auth/session — trả về 200 OK với body {"data":{"authenticated":true/false}}
+/// [COMMENT]: Session endpoint chỉ trả identity của source session; permission được Cost resolve server-side.
 pub async fn handle_billing_session_check(
     session_mgr: &Arc<SessionManager>,
-    token_mgr: &Arc<TokenManager>,
     client_headers: &HashMap<String, String>,
     method: &str,
     path: &str,
 ) -> Option<Result<Response<CheckResponse>, Status>> {
-    // [COMMENT]: Chỉ bắt GET request đến đúng /api/v1/billing/auth/session
     if !(method == "GET" && path == "/api/v1/billing/auth/session") {
         return None;
     }
-
-    Logger::sys_info(
-        "billing.session.check",
-        "Intercepted billing session status check request at edge",
-    );
-
     let cookie_header = client_headers.get("cookie").cloned().unwrap_or_default();
+    let verified = verify_billing_alias(session_mgr, &cookie_header, method, path).await;
+    let alias = match verified.alias {
+        Some(alias) => alias,
+        None => {
+            return Some(Ok(verified.denial_response.unwrap_or_else(|| {
+                Response::new(build_denied_json(
+                    HttpStatusCode::Unauthorized,
+                    "Cost session alias is required",
+                ))
+            })))
+        }
+    };
 
-    // [COMMENT]: Gọi verify_billing_edge_session dùng chung để tái sử dụng toàn bộ logic kiểm tra JWT, Redis Session, v.v.
-    let verify_res = verify_billing_edge_session(
-        session_mgr,
-        token_mgr,
-        &cookie_header,
-        client_headers,
-        method,
-        path,
-    )
-    .await;
-
-    let mut denied_builder = DeniedHttpResponseBuilder::new();
-    denied_builder.set_http_status(HttpStatusCode::Ok);
-    denied_builder.add_header("content-type", "application/json", None, false);
-
-    // [COMMENT]: Session endpoint chỉ công bố trạng thái xác thực, không làm lộ thông tin người dùng.
-    if verify_res.claims.is_some() {
-        denied_builder.set_body(r#"{"data":{"authenticated":true}}"#);
-    } else {
-        denied_builder.set_body(r#"{"data":{"authenticated":false}}"#);
-    }
-
+    let mut builder = DeniedHttpResponseBuilder::new();
+    builder.set_http_status(HttpStatusCode::Ok);
+    builder.add_header("content-type", "application/json", None, false);
+    builder.add_header("cache-control", "no-store", None, false);
+    builder.set_body(
+        serde_json::json!({
+            "data": {
+                "authenticated": true,
+                "user": {"id": alias.user_id, "username": alias.username},
+                "zone_id": alias.zone_id
+            }
+        })
+        .to_string(),
+    );
     let mut response = CheckResponse::new();
-    response.set_status(Status::unauthenticated("Billing session check status"));
-    response.set_http_response(denied_builder);
-
+    response.set_status(Status::unauthenticated("Cost session status returned"));
+    response.set_http_response(builder);
     Some(Ok(Response::new(response)))
 }

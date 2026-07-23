@@ -12,13 +12,6 @@ pub mod trinity {
     tonic::include_proto!("trinity.rpc");
 }
 
-// [COMMENT]: Sinh mã Rust từ protobuf definitions của billing_auth.proto
-#[allow(dead_code)]
-#[allow(unused_imports)]
-pub mod billing_auth {
-    tonic::include_proto!("billing.rpc");
-}
-
 // [COMMENT]: Quản lý kết nối đến NATS Core
 #[derive(Clone)]
 pub struct Nats {

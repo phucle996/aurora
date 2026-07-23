@@ -16,7 +16,6 @@ import (
 	"cost-manager/api/pkg/pkgcontext"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 // [COMMENT]: validCodeRegex đại diện cho canonical Regex format của Tier Code: bắt đầu bằng chữ hoa, tiếp theo là chữ hoa, số hoặc dấu gạch dưới, độ dài tối đa 64 ký tự.
@@ -129,11 +128,6 @@ func (h *TierHandler) UpdateTierMetadata(c *gin.Context) {
 		return
 	}
 
-	// 3. Check billing_admin đối với mutation
-	if _, ok := requireBillingAdmin(c); !ok {
-		return
-	}
-
 	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
 	defer cancel()
 
@@ -192,8 +186,8 @@ func (h *TierHandler) CreateTierVersion(c *gin.Context) {
 		return
 	}
 
-	// 3. Check billing_admin đối với mutation
-	actorID, ok := requireBillingAdmin(c)
+	// [COMMENT]: Actor UUID lấy từ context đã parse bởi middleware, không parse lại header client.
+	actorID, ok := pkgcontext.GetUserID(c, op)
 	if !ok {
 		return
 	}
@@ -260,24 +254,6 @@ func (h *TierHandler) CreateTierVersion(c *gin.Context) {
 	}
 
 	apires.RespondCreated(c, createdVersionObj, "Successfully published tier pricing version")
-}
-
-// requireBillingAdmin fail-closed cho mutation nếu ACR không inject identity hợp lệ.
-func requireBillingAdmin(c *gin.Context) (uuid.UUID, bool) {
-	roles := strings.Split(c.GetHeader("x-user-role-id"), ",")
-	isAdmin := false
-	for _, role := range roles {
-		if strings.TrimSpace(role) == "billing_admin" {
-			isAdmin = true
-			break
-		}
-	}
-	actorID, err := uuid.Parse(c.GetHeader("x-user-id"))
-	if !isAdmin || err != nil {
-		apires.RespondForbidden(c, "Billing administrator identity is required")
-		return uuid.Nil, false
-	}
-	return actorID, true
 }
 
 // [COMMENT]: ListTiers tiếp nhận kết quả Flat Entity từ service, map trực tiếp sang gin.H phẳng để trả về cho client.

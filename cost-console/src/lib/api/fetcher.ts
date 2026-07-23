@@ -6,29 +6,40 @@ if (BASE_URL === undefined) {
 
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${BASE_URL}${path}`;
+  const headers = new Headers(options?.headers);
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  headers.set('X-Requested-With', 'XMLHttpRequest');
   const response = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options?.headers || {}),
-    },
+    credentials: 'same-origin',
+    headers,
   });
 
   if (!response.ok) {
     const errorText = await response.text();
     let errorJson;
     try {
-      errorJson = JSON.parse(errorText);
+      const normalizedError = errorText.startsWith(")]}',\n")
+        ? errorText.slice(6)
+        : errorText.startsWith(")]}',") ? errorText.slice(5) : errorText;
+      errorJson = JSON.parse(normalizedError);
     } catch {
       // Ignored
     }
-    throw new Error(errorJson?.message || errorJson?.error || `HTTP error ${response.status}`);
+    throw new Error(errorJson?.message || errorJson?.error_message || errorJson?.error || `HTTP error ${response.status}`);
   }
 
   if (response.status === 204) {
     return {} as T;
   }
 
-  const resJson = await response.json();
-  return resJson.data as T;
+  // [COMMENT]: Chấp nhận XSSI prefix của edge trong khi vẫn giữ response envelope nhất quán.
+  const responseText = await response.text();
+  const normalized = responseText.startsWith(")]}',\n")
+    ? responseText.slice(6)
+    : responseText.startsWith(")]}',")
+      ? responseText.slice(5)
+      : responseText;
+  const resJson = JSON.parse(normalized);
+  return (resJson.data === undefined ? resJson : resJson.data) as T;
 }

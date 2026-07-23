@@ -1,10 +1,10 @@
 // ======================================================================================================
-// 📂 user/claims.rs — Claims JWT struct cho User thường & shared TokenManager
+// 📂 user/claims.rs — Claims JWT struct cho User thường
 //
 // 📌 VAI TRÒ:
 //   - Định nghĩa Claims struct đồng bộ 100% với JSON payload sinh bởi Go controlplane.
 //   - is_admin() phân biệt SRE (sub == "sre") khỏi user thường.
-//   - TokenManager (Vault Transit + moka L1 cache) dùng chung toàn hệ thống.
+//   - TokenManager dùng chung toàn hệ thống được đặt riêng tại crate::token.
 // ======================================================================================================
 
 use serde::{Deserialize, Serialize};

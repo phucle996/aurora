@@ -129,14 +129,14 @@ export function Header({ currency, setCurrency }: HeaderProps) {
         {/* Accountant Profile */}
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded bg-blue-50 dark:bg-blue-950/40 border border-blue-100/50 dark:border-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-xs">
-            {user ? user.fullname.substring(0, 2).toUpperCase() : 'KT'}
+            {user ? user.username.substring(0, 2).toUpperCase() : 'AU'}
           </div>
           <div className="hidden md:block">
             <p className="text-[11px] font-extrabold text-slate-800 dark:text-slate-200 leading-none">
-              {user ? user.fullname : 'Kế toán trưởng'}
+              {user ? user.username : 'Aurora User'}
             </p>
             <p className="text-[9px] text-slate-400 font-medium mt-0.5">
-              {user ? user.email : 'finance@aurora.cloud'}
+              IAM Billing Session
             </p>
           </div>
         </div>
@@ -148,7 +148,7 @@ export function Header({ currency, setCurrency }: HeaderProps) {
         <button
           onClick={async () => {
             await logout();
-            navigate('/login');
+            navigate('/');
           }}
           className="p-2 border border-slate-200 dark:border-slate-800 rounded hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/20 dark:hover:text-red-400 text-slate-400 cursor-pointer outline-none transition-colors duration-200 flex items-center justify-center"
           title="Đăng xuất"

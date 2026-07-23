@@ -69,6 +69,7 @@ queue pressure vẫn quyết định service state. Inventory vượt 512 node l
 
 | Metric | Loại | Ý nghĩa |
 |---|---|---|
+| `mail_operational_observed_unix_seconds` | gauge | Fence để Grafana chọn rotating holder mới nhất |
 | `mail_service_health_state` | gauge | `0=down`, `1=degraded`, `2=healthy` |
 | `mail_service_capacity_percent` | gauge | Capacity còn lại 0..100 |
 | `mail_pending_items` | gauge | Tổng item đang chờ trong zonal batch queues |
@@ -124,6 +125,7 @@ lifecycle không bị health writer thay đổi.
 | Consumer relay | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
 | Zonal probe/KV/OTel | `dataplane/src/executor/mail/supervisor/health_observer.rs` |
 | OTel metric instruments | `dataplane/src/executor/mail/supervisor/metrics.rs` |
+| Provisioned SRE dashboard | `controlplane/dev/grafana/provisioning/dashboards/mail-operational-health.json` |
 | Consumer reverse apply | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
 | Generic actual-state writer | `job-orchestrator/src/reverse_provider/zone/{listener,db.rs}` |
 | Consumer runtime schema | `controlplane/internal/mail/migrations/000007_mail_runtime_report_idempotency.up.sql` |

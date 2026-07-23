@@ -292,6 +292,10 @@ COMMENT ON COLUMN tenant_role.updated_at IS 'Timestamp of update.';
 -- Index phục vụ query cực nhanh ở read-path không cần JOIN
 CREATE INDEX IF NOT EXISTS idx_user_role_lookup ON user_role (user_id, workspace_id);
 CREATE INDEX IF NOT EXISTS idx_tenant_role_lookup ON tenant_role (tenant_id, workspace_id, role_id);
+-- [COMMENT]: Platform assignment là single-role; unique partial index chặn hai transaction AssignUserRole cùng chèn hai role.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_role_platform
+    ON user_role (user_id)
+    WHERE workspace_id = '00000000-0000-0000-0000-000000000000';
 
 
 CREATE TABLE IF NOT EXISTS admin_devices (

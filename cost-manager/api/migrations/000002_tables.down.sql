@@ -14,7 +14,6 @@ DROP TABLE IF EXISTS billing.billing_runs;
 DROP TABLE IF EXISTS billing.pricing_outbox;
 DROP TABLE IF EXISTS billing.tier_version_ranges;
 DROP TABLE IF EXISTS billing.tier_versions;
-DROP TABLE IF EXISTS billing.users;
 DROP TABLE IF EXISTS billing.subscriptions;
 DROP TABLE IF EXISTS billing.pack_plans;
 DROP TABLE IF EXISTS billing.plans;

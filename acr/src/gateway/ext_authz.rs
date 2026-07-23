@@ -5,7 +5,6 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::gateway::csrf::verify_csrf_protection;
 use crate::gateway::ratelimit::RateLimiter;
@@ -15,6 +14,7 @@ use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
 use crate::pkg::header::*;
 use crate::sre::claims::SreTokenManager;
+use crate::token::TokenManager;
 use crate::user::claims::Claims;
 use crate::user::revoke::handle_logout;
 use crate::user::tenant::{handle_tenant_switch, resolve_and_verify_tenant};
@@ -32,6 +32,7 @@ pub struct ExtAuthzService {
     config: Config,
     nats: Arc<Nats>,
     rate_limiter: Arc<RateLimiter>,
+    cache_redis_client: Arc<redis::Client>,
 }
 
 impl ExtAuthzService {
@@ -41,6 +42,7 @@ impl ExtAuthzService {
         sre_token_mgr: Arc<SreTokenManager>,
         config: Config,
         nats: Arc<Nats>,
+        cache_redis_client: Arc<redis::Client>,
     ) -> Self {
         let rate_limiter = Arc::new(RateLimiter::new(session_mgr.clone()));
         Self {
@@ -50,6 +52,7 @@ impl ExtAuthzService {
             config,
             nats,
             rate_limiter,
+            cache_redis_client,
         }
     }
 }
@@ -161,7 +164,8 @@ impl Authorization for ExtAuthzService {
             .map(|s| s.as_str())
             .unwrap_or("unknown");
 
-        let redis_client = self.session_mgr.redis_client_arc();
+        // [COMMENT]: Zone/config resolution chỉ dùng rebuildable cache Redis; auth/session state vẫn qua SessionManager.
+        let redis_client = self.cache_redis_client.clone();
 
         // 1. CORS Allowed Origin Check chạy cả với public route.
         if let Some(origin) = client_headers.get("origin") {
@@ -269,10 +273,25 @@ impl Authorization for ExtAuthzService {
             &self.session_mgr,
             &self.token_mgr,
             &self.nats,
+            redis_client.as_ref(),
             &self.config,
             client_headers,
             method,
             path,
+        )
+        .await
+        {
+            return res;
+        }
+
+        // [COMMENT]: Target exchange không dùng source cookie; one-time code atomic là credential duy nhất.
+        if let Some(res) = crate::billing::exchange::handle_billing_handoff_exchange(
+            &self.session_mgr,
+            &self.config,
+            client_headers,
+            &req,
+            method,
+            path_without_query,
         )
         .await
         {
@@ -296,7 +315,6 @@ impl Authorization for ExtAuthzService {
         // 2b. Billing Logout: POST /api/v1/billing/auth/logout
         if let Some(res) = crate::billing::logout::handle_billing_logout(
             &self.session_mgr,
-            &self.token_mgr,
             &self.config,
             client_headers,
             method,
@@ -310,7 +328,6 @@ impl Authorization for ExtAuthzService {
         // 2d. Billing Session Check: GET /api/v1/billing/auth/session
         if let Some(res) = crate::billing::verify::handle_billing_session_check(
             &self.session_mgr,
-            &self.token_mgr,
             client_headers,
             method,
             path,
@@ -364,23 +381,6 @@ impl Authorization for ExtAuthzService {
             return res;
         }
 
-        // 4. Billing Auditor Login: POST /api/v1/billing/auth/login
-        if let Some(res) = crate::billing::login::handle_billing_login(
-            &self.session_mgr,
-            &self.token_mgr,
-            &self.nats,
-            redis_client.as_ref(),
-            &self.config,
-            client_headers,
-            &req,
-            method,
-            path,
-        )
-        .await
-        {
-            return res;
-        }
-
         // 5. Zone Catalog Interceptors:
         // SRE Admin Zone Catalog
         if let Some(res) = crate::sre::zone_catalog::handle_admin_zone_catalog(
@@ -399,21 +399,6 @@ impl Authorization for ExtAuthzService {
 
         // User Zone Catalog
         if let Some(res) = crate::user::zone_catalog::handle_user_zone_catalog(
-            &self.nats,
-            redis_client.as_ref(),
-            client_headers,
-            method,
-            path,
-        )
-        .await
-        {
-            return res;
-        }
-
-        // Billing Zone Catalog
-        if let Some(res) = crate::billing::zone_catalog::handle_billing_zone_catalog(
-            &self.session_mgr,
-            &self.token_mgr,
             &self.nats,
             redis_client.as_ref(),
             client_headers,
@@ -481,16 +466,14 @@ impl Authorization for ExtAuthzService {
 
         let mut claims: Option<Claims> = None;
         let mut sre_claims: Option<crate::sre::claims::SreClaims> = None;
-        let mut billing_claims: Option<crate::billing::claims::BillingClaims> = None;
-        let mut access_key = String::new();
+        let mut billing_alias: Option<crate::billing::session::BillingSessionAlias> = None;
+        let access_key: String;
         let mut cookies_to_set = Vec::new();
 
         if is_billing {
-            let verify_res = crate::billing::verify::verify_billing_edge_session(
+            let verify_res = crate::billing::verify::verify_billing_alias(
                 &self.session_mgr,
-                &self.token_mgr,
                 &cookie_header,
-                client_headers,
                 method,
                 path,
             )
@@ -498,8 +481,8 @@ impl Authorization for ExtAuthzService {
             if let Some(denial) = verify_res.denial_response {
                 return Ok(denial);
             }
-            billing_claims = verify_res.claims;
-            cookies_to_set.extend(verify_res.cookies_to_set);
+            billing_alias = verify_res.alias;
+            access_key = verify_res.alias_id;
         } else {
             if is_sre {
                 let verify_res = crate::sre::verify::verify_sre_edge_session(
@@ -523,6 +506,7 @@ impl Authorization for ExtAuthzService {
                     &self.session_mgr,
                     &self.token_mgr,
                     &self.nats,
+                    redis_client.as_ref(),
                     &self.config,
                     &cookie_header,
                     client_headers,
@@ -544,7 +528,7 @@ impl Authorization for ExtAuthzService {
             .as_ref()
             .map(|c| c.uid.as_str())
             .or_else(|| sre_claims.as_ref().map(|c| c.sub.as_str()))
-            .or_else(|| billing_claims.as_ref().map(|c| c.uid.as_str()))
+            .or_else(|| billing_alias.as_ref().map(|alias| alias.user_id.as_str()))
             .unwrap_or("anonymous");
 
         if !self
@@ -558,7 +542,7 @@ impl Authorization for ExtAuthzService {
         }
 
         // CSRF Check
-        if (claims.is_some() || sre_claims.is_some() || billing_claims.is_some())
+        if (claims.is_some() || sre_claims.is_some() || billing_alias.is_some())
             && !verify_csrf_protection(method, client_headers)
         {
             Logger::authz_log("system", method, path, "DENIED", "CSRF validation failed");
@@ -571,19 +555,7 @@ impl Authorization for ExtAuthzService {
         let is_admin = sre_claims.is_some();
 
         let cookies_to_set_zone = if is_billing {
-            if let Err(res) = crate::billing::zone_resolution::resolve_and_verify_zone_billing(
-                &self.nats,
-                redis_client.as_ref(),
-                billing_claims.as_ref().and_then(|c| c.zone_id.as_deref()),
-                &cookie_header,
-                client_headers,
-                method,
-                path,
-            )
-            .await
-            {
-                return res;
-            }
+            // [COMMENT]: Billing zone đã bind khi exchange; không tin cookie/header zone do client gửi lại.
             Vec::new()
         } else if is_admin {
             match crate::sre::zone_resolution::resolve_and_verify_zone_admin(
@@ -632,10 +604,48 @@ impl Authorization for ExtAuthzService {
             }
         }
 
+        // [COMMENT]: Source handoff chỉ được cấp sau full IAM session + CSRF + zone + tenant verification.
+        if let Some(ref source_claims) = claims {
+            if method == "POST" && path_without_query == "/api/v1/auth/domain-sessions/billing" {
+                let source_session = match self
+                    .session_mgr
+                    .get_session(
+                        source_claims.zone_id.as_deref().unwrap_or("global"),
+                        source_claims.tenant_id.as_deref().unwrap_or("platform"),
+                        &source_claims.uid,
+                        &access_key,
+                    )
+                    .await
+                {
+                    Ok(Some(session)) => session,
+                    _ => {
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::unauthenticated("Source IAM session is unavailable"),
+                        )))
+                    }
+                };
+                if let Some(response) = crate::billing::exchange::handle_billing_handoff_issue(
+                    &self.session_mgr,
+                    &self.config,
+                    source_claims,
+                    &access_key,
+                    &source_session,
+                    &req,
+                    method,
+                    path_without_query,
+                )
+                .await
+                {
+                    return response;
+                }
+            }
+        }
+
         // [COMMENT]: Challenge critical chỉ được cấp sau khi session, CSRF, zone và tenant đều đã được xác minh.
-        if claims.is_some()
-            && method == "POST"
-            && path_without_query == "/api/v1/auth/session-proof/challenge"
+        if method == "POST"
+            && ((claims.is_some() && path_without_query == "/api/v1/auth/session-proof/challenge")
+                || (billing_alias.is_some()
+                    && path_without_query == "/api/v1/billing/auth/session-proof/challenge"))
         {
             let challenge = match crate::user::session_proof::issue_critical_challenge(
                 &self.session_mgr,
@@ -661,7 +671,10 @@ impl Authorization for ExtAuthzService {
             builder.add_header("content-type", "application/json", None, false);
             builder.set_body(body);
             let mut response = CheckResponse::new();
-            response.set_status(Status::ok("critical session proof challenge issued"));
+            // [COMMENT]: Local ACR endpoint phải trả non-OK gRPC status kèm denied response để Envoy không forward xuống upstream.
+            response.set_status(Status::unauthenticated(
+                "critical session proof challenge issued",
+            ));
             response.set_http_response(builder);
             return Ok(Response::new(response));
         }
@@ -713,6 +726,43 @@ impl Authorization for ExtAuthzService {
                         Logger::authz_log(&c.uid, method, path, "DENIED", &error);
                         return Ok(Response::new(CheckResponse::with_status(
                             Status::permission_denied("Invalid session proof"),
+                        )));
+                    }
+                }
+            }
+        }
+
+        if let Some(ref alias) = billing_alias {
+            if path_without_query.starts_with("/api/v1/billing/critical/") {
+                let raw_body = req
+                    .attributes
+                    .as_ref()
+                    .and_then(|attributes| attributes.request.as_ref())
+                    .and_then(|request| request.http.as_ref())
+                    .map(|http| {
+                        if http.body.is_empty() {
+                            http.raw_body.clone()
+                        } else {
+                            http.body.as_bytes().to_vec()
+                        }
+                    })
+                    .unwrap_or_default();
+                match crate::user::session_proof::verify_critical_proof(
+                    &self.session_mgr,
+                    &access_key,
+                    &alias.client_proof_public_key,
+                    client_headers,
+                    method,
+                    path_without_query,
+                    &raw_body,
+                )
+                .await
+                {
+                    Ok(challenge_id) => session_proof_challenge_id = Some(challenge_id),
+                    Err(error) => {
+                        Logger::authz_log(&alias.user_id, method, path, "DENIED", &error);
+                        return Ok(Response::new(CheckResponse::with_status(
+                            Status::permission_denied("Invalid billing session proof"),
                         )));
                     }
                 }
@@ -850,9 +900,9 @@ impl Authorization for ExtAuthzService {
 
         // Build OkHttpResponse for Envoy
         let sub = if is_billing {
-            billing_claims
+            billing_alias
                 .as_ref()
-                .map(|c| c.sub.as_str())
+                .map(|alias| alias.username.as_str())
                 .unwrap_or("anonymous")
         } else {
             claims
@@ -882,6 +932,7 @@ impl Authorization for ExtAuthzService {
                         "false".to_string()
                     },
                 });
+                proof_header.append_action = 2;
                 ok.headers.push(proof_header);
 
                 if let Some(ref challenge_id) = session_proof_challenge_id {
@@ -891,20 +942,17 @@ impl Authorization for ExtAuthzService {
                             key: "x-session-proof-challenge-id".to_string(),
                             value: challenge_id.clone(),
                         });
+                    challenge_header.append_action = 2;
                     ok.headers.push(challenge_header);
                 }
 
                 if is_billing {
-                    if let Some(bc) = billing_claims {
+                    if let Some(alias) = billing_alias {
                         let headers_to_set = vec![
-                            (HEADER_X_USER_ID, bc.uid.clone()),
-                            (HEADER_X_USER_NAME, bc.sub.clone()),
-                            (HEADER_X_USER_ROLE_ID, bc.role_id.clone()),
-                            (HEADER_X_USER_LEVEL, bc.lvl.to_string()),
-                            (
-                                HEADER_X_ZONE_ID,
-                                bc.zone_id.clone().unwrap_or_else(|| "global".to_string()),
-                            ),
+                            (HEADER_X_USER_ID, alias.user_id),
+                            (HEADER_X_USER_NAME, alias.username),
+                            (HEADER_X_ZONE_ID, alias.zone_id),
+                            (HEADER_X_TENANT_ID, alias.tenant_id),
                         ];
 
                         for (key, val) in headers_to_set {
@@ -914,6 +962,8 @@ impl Authorization for ExtAuthzService {
                                     key: key.to_string(),
                                     value: val,
                                 });
+                            // [COMMENT]: Identity ACR overwrite header client cũ; duplicate value không được phép tồn tại.
+                            h.append_action = 2;
                             ok.headers.push(h);
                         }
                     }

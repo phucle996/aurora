@@ -381,6 +381,7 @@ pub(super) fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, runtime: Arc
                 runtime
                     .metrics
                     .record_operational_snapshot(&MailOperationalMetricsSnapshot {
+                        observed_at_unix_seconds: aggregate_at_ms / 1_000,
                         state: service_state_value,
                         capacity_percent: pressure.capacity.min(100) as u64,
                         pending_items: total_pending.min(u64::MAX as usize) as u64,

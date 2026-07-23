@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 
 	"controlplane/internal/config"
 	iamEntity "controlplane/internal/iam/domain/entity"
+	iamRepoInterface "controlplane/internal/iam/domain/repo"
 	iamSvcInterface "controlplane/internal/iam/domain/service"
 	iamTaxonomy "controlplane/internal/iam/taxonomy"
 	iamproto "controlplane/internal/iam/transport/rpc/proto"
@@ -15,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -27,6 +32,8 @@ type AuthNatsHandler struct {
 	cfg                   *config.Config
 	authService           iamSvcInterface.AuthService
 	sessionRefreshService iamSvcInterface.SessionRefreshService
+	rbacPlatformRepo      iamRepoInterface.RbacPlatformRepository
+	redis                 *goredis.Client
 	otel                  *observability.OTel
 }
 
@@ -35,12 +42,16 @@ func NewAuthNatsHandler(
 	cfg *config.Config,
 	authService iamSvcInterface.AuthService,
 	sessionRefreshService iamSvcInterface.SessionRefreshService,
+	rbacPlatformRepo iamRepoInterface.RbacPlatformRepository,
+	redisClient *goredis.Client,
 	otel *observability.OTel,
 ) *AuthNatsHandler {
 	return &AuthNatsHandler{
 		cfg:                   cfg,
 		authService:           authService,
 		sessionRefreshService: sessionRefreshService,
+		rbacPlatformRepo:      rbacPlatformRepo,
+		redis:                 redisClient,
 		otel:                  otel,
 	}
 }
@@ -313,6 +324,117 @@ func (h *AuthNatsHandler) Subscribe(nc *nats.Conn) ([]*nats.Subscription, error)
 	}
 	subs = append(subs, subRevokeToken)
 	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: successfully subscribed to iam.auth.revoke_opaque_token on queue group %s", queueGroup))
+
+	// =========================================================================
+	// 4. RESOLVE BILLING AUTHORIZATION CHO COST MANAGER
+	// =========================================================================
+	// [COMMENT]: ACR chỉ xác thực alias. Cost lấy permission binary từ shared L2 hoặc request IAM khi miss.
+	subBillingAuthorization, err := nc.QueueSubscribe("iam.authorization.billing.get", queueGroup, func(msg *nats.Msg) {
+		respondError := func(message string) {
+			if msg.Reply == "" {
+				return
+			}
+			response := nats.NewMsg(msg.Reply)
+			response.Header.Set("Aurora-Error", message)
+			_ = nc.PublishMsg(response)
+		}
+
+		userID, err := uuid.Parse(strings.TrimSpace(string(msg.Data)))
+		if err != nil || h.rbacPlatformRepo == nil || h.redis == nil {
+			respondError("authorization context is invalid")
+			return
+		}
+
+		// [COMMENT]: Queue callback có deadline ngắn để một DB stall không giữ dispatcher NATS vô hạn.
+		ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+		defer cancel()
+
+		dataKey := fmt.Sprintf("{iam:authz:billing:%s}:data", userID)
+		generationKey := fmt.Sprintf("{iam:authz:billing:%s}:generation", userID)
+		dataGenerationKey := fmt.Sprintf("{iam:authz:billing:%s}:data_generation", userID)
+		var responseBinary []byte
+		for attempt := 0; attempt < 2; attempt++ {
+			expectedGeneration, generationErr := h.redis.Get(ctx, generationKey).Result()
+			if errors.Is(generationErr, goredis.Nil) {
+				expectedGeneration = "0"
+			} else if generationErr != nil {
+				respondError("authorization cache is unavailable")
+				return
+			}
+
+			binaryEntry, loadErr := h.rbacPlatformRepo.GetUserRolePermissions(ctx, userID)
+			if loadErr != nil {
+				logger.SysError("NATS.BillingAuthorization", "Failed to load user authorization")
+				respondError("authorization service unavailable")
+				return
+			}
+			var roleEntry iamproto.RoleEntry
+			if proto.Unmarshal(binaryEntry, &roleEntry) != nil {
+				respondError("authorization snapshot is invalid")
+				return
+			}
+
+			// [COMMENT]: Quyền workspace cụ thể không được nâng thành quyền Billing global; chỉ platform nil/wildcard hợp lệ.
+			permissions := make([]string, 0, len(roleEntry.Permissions))
+			seen := make(map[string]struct{}, len(roleEntry.Permissions))
+			for _, raw := range roleEntry.Permissions {
+				parts := strings.Split(raw, ":")
+				permission := ""
+				switch {
+				case len(parts) == 3 && parts[0] == "billing":
+					permission = raw
+				case len(parts) == 5 && parts[2] == "billing" &&
+					(parts[1] == "*" || parts[1] == uuid.Nil.String()):
+					permission = strings.Join(parts[2:], ":")
+				default:
+					continue
+				}
+				if _, exists := seen[permission]; !exists {
+					seen[permission] = struct{}{}
+					permissions = append(permissions, permission)
+				}
+			}
+			sort.Strings(permissions)
+			if len(permissions) == 0 {
+				respondError("billing permission is required")
+				return
+			}
+			responseBinary, err = proto.Marshal(&iamproto.RoleEntry{Permissions: permissions})
+			if err != nil {
+				respondError("authorization snapshot is invalid")
+				return
+			}
+
+			// [COMMENT]: Generation fence loại stale write nếu RBAC đổi trong lúc callback đang query PostgreSQL.
+			written, writeErr := h.redis.Eval(ctx, `
+				local current = redis.call("GET", KEYS[2]) or "0"
+				if current ~= ARGV[2] then return 0 end
+				redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[3])
+				redis.call("SET", KEYS[3], ARGV[2], "EX", ARGV[3])
+				if redis.call("EXISTS", KEYS[2]) == 0 then
+					redis.call("SET", KEYS[2], ARGV[2], "EX", ARGV[4])
+				end
+				return 1
+			`, []string{dataKey, generationKey, dataGenerationKey},
+				responseBinary, expectedGeneration, int64(120), int64(86400)).Int()
+			if writeErr != nil {
+				respondError("authorization cache is unavailable")
+				return
+			}
+			if written == 1 {
+				if msg.Reply != "" {
+					_ = nc.Publish(msg.Reply, responseBinary)
+				}
+				return
+			}
+		}
+		respondError("authorization changed while it was being resolved")
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth_nats_handler: failed to subscribe to iam.authorization.billing.get: %w", err)
+	}
+	subs = append(subs, subBillingAuthorization)
+	logger.SysInfo("nats", fmt.Sprintf("AuthNATSHandler: subscribed to iam.authorization.billing.get on queue group %s", queueGroup))
 
 	return subs, nil
 }

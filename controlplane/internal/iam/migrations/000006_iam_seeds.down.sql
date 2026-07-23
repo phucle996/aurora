@@ -7,7 +7,8 @@ WHERE owner_id IN (
     '00000000-0000-0000-0000-000000000001'::uuid,
     '00000000-0000-0000-0000-000000000002'::uuid,
     '00000000-0000-0000-0000-000000000003'::uuid,
-    '00000000-0000-0000-0000-000000000004'::uuid
+    '00000000-0000-0000-0000-000000000004'::uuid,
+    '00000000-0000-0000-0000-000000000005'::uuid
 );
 
 -- [COMMENT]: Role deletion cascades role_permissions, user_role, and tenant_role before root user is removed.
@@ -16,6 +17,7 @@ WHERE code IN (
     'platform_root',
     'platform_user',
     'platform_admin',
+    'billing_admin',
     'platform_support_operator',
     'tenant_owner',
     'tenant_admin',
@@ -53,7 +55,14 @@ WHERE (module, object, behavior) IN (
         ('email', 'template', 'create'),
         ('email', 'template', 'read'),
         ('email', 'template', 'publish'),
-        ('email', 'template', 'delete')
+        ('email', 'template', 'delete'),
+        ('billing', 'plan', 'read'),
+        ('billing', 'tier', 'read'),
+        ('billing', 'tier', 'publish'),
+        ('billing', 'wallet', 'read'),
+        ('billing', 'ledger', 'read'),
+        ('billing', 'subscription', 'write'),
+        ('billing', 'credit', 'adjust')
 );
 
 DELETE FROM user_profiles
@@ -61,7 +70,8 @@ WHERE user_id IN (
     '00000000-0000-0000-0000-000000000001'::uuid,
     '00000000-0000-0000-0000-000000000002'::uuid,
     '00000000-0000-0000-0000-000000000003'::uuid,
-    '00000000-0000-0000-0000-000000000004'::uuid
+    '00000000-0000-0000-0000-000000000004'::uuid,
+    '00000000-0000-0000-0000-000000000005'::uuid
 );
 
 DELETE FROM users
@@ -69,5 +79,6 @@ WHERE id IN (
     '00000000-0000-0000-0000-000000000001'::uuid,
     '00000000-0000-0000-0000-000000000002'::uuid,
     '00000000-0000-0000-0000-000000000003'::uuid,
-    '00000000-0000-0000-0000-000000000004'::uuid
+    '00000000-0000-0000-0000-000000000004'::uuid,
+    '00000000-0000-0000-0000-000000000005'::uuid
 );

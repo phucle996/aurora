@@ -1,223 +1,188 @@
 // ======================================================================================================
-// 📂 billing/session.rs — Quản lý session trong Redis cho Billing Auditor
+// 📂 billing/session.rs — Opaque Cost Console alias trỏ về IAM session gốc
 // ======================================================================================================
 
 use crate::error::AcrError;
-use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
+use prost::Message;
 use tonic::Status;
 use uuid::Uuid;
 
-// Import protobuf sinh ra từ proto/billing_auth.proto
-#[allow(dead_code)]
-pub mod billing_proto {
-    tonic::include_proto!("billing.rpc");
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BillingAccessSession {
+#[derive(Clone, PartialEq, Message)]
+pub struct BillingSessionAlias {
+    #[prost(string, tag = "1")]
     pub user_id: String,
-    pub employee_code: String,
-    pub role_id: String,
-    pub level: i32,
+    #[prost(string, tag = "2")]
+    pub username: String,
+    #[prost(string, tag = "3")]
+    pub zone_id: String,
+    #[prost(string, tag = "4")]
+    pub tenant_id: String,
+    #[prost(string, tag = "5")]
+    pub source_access_key: String,
+    #[prost(string, tag = "6")]
+    pub source_proof_public_key: String,
+    #[prost(string, tag = "7")]
+    pub client_proof_public_key: String,
+    #[prost(string, tag = "8")]
     pub access_secret_hash: String,
+    #[prost(int64, tag = "9")]
     pub created_at: i64,
 }
 
-pub struct ReleaseBillingSessionResult {
-    pub access_token: String,
-    pub access_key: String,
-    pub access_secret: String,
+pub struct ReleaseBillingAliasResult {
+    pub alias_id: String,
+    pub alias_secret: String,
 }
 
 fn sha256_hash(secret: &str) -> String {
     use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    format!("{:x}", hasher.finalize())
+    format!("{:x}", Sha256::digest(secret.as_bytes()))
 }
 
 impl SessionManager {
-    /// [COMMENT]: Đăng ký session mới cho Billing Auditor vào Redis L2.
-    /// TTL của session được cấu hình qua Config (mặc định 2 tiếng).
-    pub async fn register_billing_session(
+    /// [COMMENT]: Alias và reverse index cùng commit trong Redis Security-State để source revoke không bỏ sót Cost.
+    pub async fn register_billing_alias(
         &self,
-        user_id: &str,
-        employee_code: &str,
-        role_id: &str,
-        level: i32,
-        access_key: &str,
-        access_secret_hash: &str,
+        alias: &BillingSessionAlias,
+        alias_id: &str,
     ) -> Result<(), AcrError> {
-        let mut conn = self.get_connection().await?;
-
-        // 1. Khởi tạo BillingAccessSession struct
-        let session = BillingAccessSession {
-            user_id: user_id.to_string(),
-            employee_code: employee_code.to_string(),
-            role_id: role_id.to_string(),
-            level,
-            access_secret_hash: access_secret_hash.to_string(),
-            created_at: chrono::Utc::now().timestamp(),
-        };
-
-        // 2. Serialize struct thành bytes JSON
-        let bytes = serde_json::to_vec(&session).map_err(|e| {
-            AcrError::Internal(format!("Failed to serialize billing session: {}", e))
+        let mut encoded = Vec::new();
+        alias.encode(&mut encoded).map_err(|error| {
+            AcrError::Internal(format!("Failed to encode billing session alias: {error}"))
         })?;
 
-        let redis_key = format!("billing:session:{}", access_key);
-
-        // 3. Ghi atomic vào Redis với EXPIRE (TTL)
-        let mut pipe = redis::pipe();
-        pipe.atomic();
-        pipe.cmd("SET").arg(&redis_key).arg(bytes);
-        pipe.cmd("EXPIRE")
-            .arg(&redis_key)
-            .arg(self.config.session_ttl_secs);
-
-        pipe.query_async::<_, ()>(&mut conn)
-            .await
-            .map_err(|e| AcrError::RedisError(format!("Failed to save billing session: {}", e)))?;
-
-        Logger::sys_info(
-            "billing.session",
-            &format!(
-                "Successfully registered billing auditor session. key={}, user={}",
-                redis_key, user_id
-            ),
-        );
-
-        Ok(())
-    }
-
-    /// [COMMENT]: Lấy thông tin Billing Auditor Session từ Redis L2.
-    pub async fn get_billing_session(
-        &self,
-        access_key: &str,
-    ) -> Result<Option<BillingAccessSession>, AcrError> {
         let mut conn = self.get_connection().await?;
-        let redis_key = format!("billing:session:{}", access_key);
-
-        let data: Option<Vec<u8>> = redis::cmd("GET")
-            .arg(&redis_key)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| AcrError::RedisError(format!("GET billing session failed: {}", e)))?;
-
-        match data {
-            Some(bytes) => {
-                let session = serde_json::from_slice(bytes.as_slice()).map_err(|e| {
-                    AcrError::Internal(format!("Failed to decode billing session: {}", e))
-                })?;
-                Ok(Some(session))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// [COMMENT]: Thu hồi Billing Auditor Session bằng cách đặt TTL về 5s thay vì xóa ngay lập tức.
-    pub async fn delete_billing_session(&self, access_key: &str) -> Result<(), AcrError> {
-        let mut conn = self.get_connection().await?;
-        let redis_key = format!("billing:session:{}", access_key);
-
-        redis::cmd("EXPIRE")
-            .arg(&redis_key)
-            .arg(5)
+        let alias_key = format!("iam:domain_alias:billing:{alias_id}");
+        let source_index = format!("iam:session_alias_index:{}", alias.source_access_key);
+        redis::pipe()
+            .atomic()
+            .cmd("SET")
+            .arg(&alias_key)
+            .arg(encoded)
+            .cmd("EXPIRE")
+            .arg(&alias_key)
+            .arg(self.config.session_ttl_secs)
+            .cmd("SADD")
+            .arg(&source_index)
+            .arg(&alias_key)
+            .cmd("EXPIRE")
+            .arg(&source_index)
+            .arg(self.config.session_ttl_secs)
             .query_async::<_, ()>(&mut conn)
             .await
-            .map_err(|e| AcrError::RedisError(format!("EXPIRE billing session failed: {}", e)))?;
+            .map_err(|error| {
+                AcrError::RedisError(format!("Failed to register billing session alias: {error}"))
+            })?;
 
+        Logger::sys_info(
+            "billing.session_alias",
+            &format!("Registered Cost alias for user={}", alias.user_id),
+        );
         Ok(())
+    }
+
+    pub async fn get_billing_alias(
+        &self,
+        alias_id: &str,
+    ) -> Result<Option<BillingSessionAlias>, AcrError> {
+        let mut conn = self.get_connection().await?;
+        let data: Option<Vec<u8>> = redis::cmd("GET")
+            .arg(format!("iam:domain_alias:billing:{alias_id}"))
+            .query_async(&mut conn)
+            .await
+            .map_err(|error| {
+                AcrError::RedisError(format!("GET billing session alias failed: {error}"))
+            })?;
+
+        data.map(|bytes| {
+            BillingSessionAlias::decode(bytes.as_slice()).map_err(|error| {
+                AcrError::Internal(format!("Failed to decode billing session alias: {error}"))
+            })
+        })
+        .transpose()
+    }
+
+    /// [COMMENT]: Grace TTL giữ request đang in-flight, nhưng alias bị loại khỏi source index ngay.
+    pub async fn delete_billing_alias(
+        &self,
+        alias_id: &str,
+        source_access_key: &str,
+    ) -> Result<(), AcrError> {
+        let mut conn = self.get_connection().await?;
+        let alias_key = format!("iam:domain_alias:billing:{alias_id}");
+        redis::pipe()
+            .atomic()
+            .cmd("EXPIRE")
+            .arg(&alias_key)
+            .arg(5)
+            .cmd("SREM")
+            .arg(format!("iam:session_alias_index:{source_access_key}"))
+            .arg(&alias_key)
+            .query_async::<_, ()>(&mut conn)
+            .await
+            .map_err(|error| {
+                AcrError::RedisError(format!("Expire billing session alias failed: {error}"))
+            })
+    }
+
+    /// [COMMENT]: Logout/device revoke của IAM session gốc thu hồi mọi domain alias cùng family.
+    pub async fn revoke_session_aliases(&self, source_access_key: &str) -> Result<(), AcrError> {
+        let mut conn = self.get_connection().await?;
+        let source_index = format!("iam:session_alias_index:{source_access_key}");
+        let alias_keys: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(&source_index)
+            .query_async(&mut conn)
+            .await
+            .map_err(|error| {
+                AcrError::RedisError(format!("Read session alias index failed: {error}"))
+            })?;
+
+        let mut pipe = redis::pipe();
+        pipe.atomic();
+        for alias_key in alias_keys {
+            pipe.cmd("EXPIRE").arg(alias_key).arg(5);
+        }
+        pipe.cmd("DEL").arg(source_index);
+        pipe.query_async::<_, ()>(&mut conn).await.map_err(|error| {
+            AcrError::RedisError(format!("Revoke session aliases failed: {error}"))
+        })
     }
 }
 
-// ─── release_billing_session ──────────────────────────────────────────────────
-
-/// [COMMENT]: Cấp phát Trinity Session cô lập cho Billing Auditor — không có Tenant hay Device info.
-pub async fn release_billing_session(
+/// [COMMENT]: Cost chỉ nhận opaque alias; identity và authorization không được copy vào JWT/domain snapshot.
+#[allow(clippy::too_many_arguments)]
+pub async fn release_billing_alias(
     session_mgr: &std::sync::Arc<SessionManager>,
-    token_mgr: &std::sync::Arc<crate::billing::claims::TokenManager>,
-    nats: &Nats,
-    redis_client: &redis::Client,
-    config: &crate::config::Config,
     user_id: &str,
-    employee_code: &str,
-    role_id: &str,
-    level: i32,
+    username: &str,
     zone_id: &str,
-) -> Result<ReleaseBillingSessionResult, Status> {
-    Logger::sys_info(
-        "billing.session.release",
-        &format!(
-            "Releasing new billing auditor session for user_id={}",
-            user_id
-        ),
-    );
-
-    // 1. Sinh Access Key (UUIDv7) và Access Secret (UUIDv4)
-    let access_key = Uuid::now_v7().to_string();
-    let access_secret = Uuid::new_v4().to_string();
-    let ash = sha256_hash(&access_secret);
-
-    let now_unix = chrono::Utc::now().timestamp();
-    let exp_unix = now_unix + config.session_ttl_secs as i64;
-
-    // 2. Chuẩn bị BillingClaims (không có tenant_id)
-    let claims = crate::billing::claims::BillingClaims {
-        sub: employee_code.to_string(),
-        uid: user_id.to_string(),
-        role_id: role_id.to_string(),
-        lvl: level,
-        zone_id: if zone_id.is_empty() {
-            None
-        } else if Uuid::parse_str(zone_id).is_ok() {
-            Some(zone_id.to_string())
-        } else {
-            crate::infra::zone::resolve_code_to_id_and_status(nats, redis_client, zone_id)
-                .await
-                .map(|(id, _)| id)
-        },
-        access_key: access_key.clone(),
-        jti: Uuid::new_v4().to_string(),
-        iss: Some("aurora-billing-acr".to_string()),
-        exp: exp_unix,
-        iat: now_unix,
+    tenant_id: &str,
+    source_access_key: &str,
+    source_proof_public_key: &str,
+    client_proof_public_key: &str,
+) -> Result<ReleaseBillingAliasResult, Status> {
+    let alias_id = Uuid::now_v7().to_string();
+    let alias_secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let alias = BillingSessionAlias {
+        user_id: user_id.to_string(),
+        username: username.to_string(),
+        zone_id: zone_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        source_access_key: source_access_key.to_string(),
+        source_proof_public_key: source_proof_public_key.to_string(),
+        client_proof_public_key: client_proof_public_key.to_string(),
+        access_secret_hash: sha256_hash(&alias_secret),
+        created_at: chrono::Utc::now().timestamp(),
     };
-
-    // 3. Ký Billing JWT qua Vault Transit Engine
-    let access_token = match token_mgr.generate_billing_token(&claims).await {
-        Ok(token) => token,
-        Err(e) => {
-            Logger::sys_error(
-                "billing.session.release",
-                "Failed to sign billing access token via Vault",
-                &e.to_string(),
-            );
-            return Err(Status::internal(format!(
-                "Failed to sign billing access token: {}",
-                e
-            )));
-        }
-    };
-
-    // 4. Đăng ký session vào Redis L2
-    if let Err(e) = session_mgr
-        .register_billing_session(user_id, employee_code, role_id, level, &access_key, &ash)
+    session_mgr
+        .register_billing_alias(&alias, &alias_id)
         .await
-    {
-        Logger::sys_error(
-            "billing.session.release",
-            "Failed to save billing session state to Redis",
-            &e.to_string(),
-        );
-        return Err(Status::internal("Failed to save billing session state"));
-    }
+        .map_err(|error| Status::internal(format!("Failed to save billing alias: {error}")))?;
 
-    Ok(ReleaseBillingSessionResult {
-        access_token,
-        access_key,
-        access_secret,
+    Ok(ReleaseBillingAliasResult {
+        alias_id,
+        alias_secret,
     })
 }

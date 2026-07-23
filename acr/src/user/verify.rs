@@ -10,12 +10,12 @@ use envoy_types::ext_authz::v3::pb::HttpStatusCode;
 use envoy_types::ext_authz::v3::{CheckResponseExt, DeniedHttpResponseBuilder};
 use envoy_types::pb::envoy::service::auth::v3::CheckResponse;
 
-use crate::billing::claims::TokenManager;
 use crate::config::Config;
 use crate::infra::nats::Nats;
 use crate::infra::redis::SessionManager;
 use crate::observability::logger::Logger;
 use crate::pkg::cookie::*;
+use crate::token::TokenManager;
 use crate::user::claims::Claims;
 use crate::user::recovery::try_handle_recovery_session;
 
@@ -52,6 +52,7 @@ pub async fn verify_edge_session(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
     nats: &Arc<Nats>,
+    cache_redis_client: &redis::Client,
     config: &Config,
     cookie_header: &str,
     client_headers: &HashMap<String, String>,
@@ -99,12 +100,11 @@ pub async fn verify_edge_session(
         if let (Some(jwt_str), Some(key_str), Some(_secret_str)) =
             (tc.access_token, tc.access_key, tc.access_secret)
         {
-            let redis_client = session_mgr.redis_client_arc();
             if let Some(recovery_res) = try_handle_recovery_session(
                 session_mgr,
                 token_mgr,
                 nats,
-                redis_client.as_ref(),
+                cache_redis_client,
                 config,
                 cookie_header,
                 jwt_str,
@@ -320,6 +320,7 @@ pub async fn handle_user_session_check(
     session_mgr: &Arc<SessionManager>,
     token_mgr: &Arc<TokenManager>,
     nats: &Arc<Nats>,
+    cache_redis_client: &redis::Client,
     config: &Config,
     client_headers: &HashMap<String, String>,
     method: &str,
@@ -342,6 +343,7 @@ pub async fn handle_user_session_check(
         session_mgr,
         token_mgr,
         nats,
+        cache_redis_client,
         config,
         &cookie_header,
         client_headers,

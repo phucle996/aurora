@@ -239,15 +239,18 @@ services:
       - "9094:9094" # gRPC port
     environment:
       - DATABASE_URL=postgres://billing_admin:billing_secure_password@billing-psql:5432/billing?sslmode=disable
-      - CONTROLPLANE_DATABASE_URL=postgres://postgres:postgres@psql:5432/controlplane?sslmode=disable
       - CLICKHOUSE_URL=http://clickhouse-server:8123
-      - REDIS_URL=redis://controlplane-acr-redis:6379
+      # [COMMENT]: Cost chỉ được đọc cache business và dùng lock; không kết nối Security-State Redis của ACR.
+      - CACHE_REDIS_URL=redis://controlplane-cp-redis:6379
+      - NATS_URL=nats://controlplane-nats:4222
     volumes:
       - ../cost-manager/api:/app/api
     depends_on:
-      psql:
-        condition: service_healthy
       billing-psql:
+        condition: service_healthy
+      cp-redis:
+        condition: service_healthy
+      nats:
         condition: service_healthy
       clickhouse:
         condition: service_started
@@ -738,7 +741,9 @@ services:
     environment:
       TZ: "Asia/Ho_Chi_Minh"
       ACR_GRPC_PORT: "50051"
-      REDIS_URL: "redis://controlplane-acr-redis:6379/0"
+      # [COMMENT]: Hai Redis tách vai trò; Security-State dùng AOF/noeviction, cache catalog có thể rebuild/evict.
+      AUTH_REDIS_URL: "redis://controlplane-acr-redis:6379/0"
+      CACHE_REDIS_URL: "redis://controlplane-cp-redis:6379/0"
       VAULT_ADDR: "http://vault:8200"
       VAULT_TOKEN: "hvs.Qai76d7T5TA69r9kBQ8gkgJF"
       VAULT_TRANSIT_KEY_PATH: "transit/keys/jwt-signer"
@@ -750,9 +755,13 @@ services:
       REFRESH_THRESHOLD_SECS: "900"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://controlplane-otel-collector:4317"
       NATS_ADDR: "nats://nats:4222"
-      APP_PUBLIC_DOMAIN: "aurora.local"
+      # [COMMENT]: ACR cookies luôn host-only; domain handoff chỉ redirect tới origin cố định này.
+      BILLING_CONSOLE_ORIGIN: "https://cost-manager.aurora.local"
+      APP_ALLOWED_ORIGINS: "https://adminui.aurora.local,https://adminui-dev.aurora.local,https://cloud.aurora.local,https://cost-manager.aurora.local"
     depends_on:
       acr-redis:
+        condition: service_healthy
+      cp-redis:
         condition: service_healthy
       vault:
         condition: service_started
