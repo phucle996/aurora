@@ -20,13 +20,17 @@ impl NatsListener {
         }
     }
 
-    // Khởi chạy ngầm hai luồng lắng nghe sự kiện song song
+    // Khởi chạy ngầm các luồng lắng nghe sự kiện độc lập
     pub async fn start_listening(&self) {
         let self_sizes = Self {
             nats_client: self.nats_client.clone(),
             centrifugo_client: self.centrifugo_client.clone(),
         };
         let self_jobs = Self {
+            nats_client: self.nats_client.clone(),
+            centrifugo_client: self.centrifugo_client.clone(),
+        };
+        let self_mail_runtime = Self {
             nats_client: self.nats_client.clone(),
             centrifugo_client: self.centrifugo_client.clone(),
         };
@@ -39,6 +43,11 @@ impl NatsListener {
         // 2. Spawn luồng xử lý thông báo kết quả công việc
         tokio::spawn(async move {
             self_jobs.listen_loop_job_notifications().await;
+        });
+
+        // [COMMENT]: Mail runtime dùng subject riêng để lỗi/reconnect không chặn job/storage.
+        tokio::spawn(async move {
+            self_mail_runtime.listen_loop_mail_runtime().await;
         });
     }
 
@@ -54,7 +63,10 @@ impl NatsListener {
         let max_delay = Duration::from_secs(30);
 
         loop {
-            match self.subscribe_and_dispatch("storage.bucket.sizes.sync.*", "storage").await {
+            match self
+                .subscribe_and_dispatch("storage.bucket.sizes.sync.*", "storage")
+                .await
+            {
                 Ok(_) => {
                     retry_delay = Duration::from_secs(1);
                 }
@@ -83,7 +95,10 @@ impl NatsListener {
         let max_delay = Duration::from_secs(30);
 
         loop {
-            match self.subscribe_and_dispatch("jobs.notifications.*", "job").await {
+            match self
+                .subscribe_and_dispatch("jobs.notifications.*", "job")
+                .await
+            {
                 Ok(_) => {
                     retry_delay = Duration::from_secs(1);
                 }
@@ -100,10 +115,44 @@ impl NatsListener {
         }
     }
 
+    async fn listen_loop_mail_runtime(&self) {
+        Logger::sys_info(
+            "nats_listener.mail_runtime_start",
+            "NATS Listener: starting mail.runtime.notifications.*",
+        );
+        let mut retry_delay = Duration::from_secs(1);
+        let max_delay = Duration::from_secs(30);
+        loop {
+            match self
+                .subscribe_and_dispatch("mail.runtime.notifications.*", "mail_runtime")
+                .await
+            {
+                Ok(()) => retry_delay = Duration::from_secs(1),
+                Err(error) => {
+                    Logger::sys_error(
+                        "nats_listener.mail_runtime_error",
+                        "Mail runtime listener failed; reconnecting",
+                        &error.to_string(),
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = std::cmp::min(retry_delay * 2, max_delay);
+                }
+            }
+        }
+    }
+
     // Đăng ký lắng nghe và phân phối (dispatch) tin nhắn tới Service phù hợp
-    async fn subscribe_and_dispatch(&self, subject: &str, target_service: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn subscribe_and_dispatch(
+        &self,
+        subject: &str,
+        target_service: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // [ignoring loop detection]
-        let mut subscriber = self.nats_client.client().subscribe(subject.to_string()).await?;
+        let mut subscriber = self
+            .nats_client
+            .client()
+            .subscribe(subject.to_string())
+            .await?;
         Logger::sys_info(
             "nats_listener.subscribed",
             &format!("Đã đăng ký thành công NATS subject: {}", subject),
@@ -128,11 +177,17 @@ impl NatsListener {
             // [COMMENT]: Giải mã payload JSON nhận được
             let payload: serde_json::Value = match serde_json::from_slice(&message.payload) {
                 Ok(json) => {
-                    crate::observability::metrics::MetricsManager::record_nats_event(subject_str, "ok");
+                    crate::observability::metrics::MetricsManager::record_nats_event(
+                        subject_str,
+                        "ok",
+                    );
                     json
                 }
                 Err(e) => {
-                    crate::observability::metrics::MetricsManager::record_nats_event(subject_str, "decode_failed");
+                    crate::observability::metrics::MetricsManager::record_nats_event(
+                        subject_str,
+                        "decode_failed",
+                    );
                     Logger::sys_error(
                         "nats_listener.payload_parse_error",
                         &format!("Lỗi giải mã JSON từ subject: {}", subject_str),
@@ -158,6 +213,14 @@ impl NatsListener {
                     }
                     "job" => {
                         crate::service::job::notification::handle_job_notification(
+                            &centrifugo_client,
+                            &user_id,
+                            payload,
+                        )
+                        .await
+                    }
+                    "mail_runtime" => {
+                        crate::service::mail::runtime::handle_consumer_runtime(
                             &centrifugo_client,
                             &user_id,
                             payload,

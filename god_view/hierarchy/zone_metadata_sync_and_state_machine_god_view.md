@@ -156,7 +156,9 @@ Service flag mặc định `true` chỉ khi metadata aggregate đã đọc thàn
 | `AURORA_ZONE_COORDINATION/lease.health.*` | Health monitors | Stable pod owner, fencing, expiry, last owner |
 | `.../lease.gateway.report` | Zone reporter | Một aggregate report mỗi cycle |
 | `.../lease.mail.health.observe` | Mail health observers | Một JMAP/Stalwart probe + OTel/KV observation mỗi cycle |
-| `.../lease.mail.consumer.report` | Mail consumer reporters | Một bounded consumer delta relay mỗi cycle |
+
+Mail consumer runtime không dùng coordination lease hoặc Zone Health KV. Mỗi pod chỉ giữ slot snapshot
+trong memory và tự đẩy bounded delta sang Central Redis khi consumer có watch lease.
 
 Health bucket history là `1`, max age 24 giờ. Gateway bỏ node snapshot cũ hơn 15 giây. Service monitors dùng stable pod ID và same-owner cooldown: sau khi release, pod khác được ưu tiên; cụm một pod vẫn probe lại sau cooldown.
 

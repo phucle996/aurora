@@ -230,21 +230,6 @@ func (h *TenantConsumerHandler) Get(c *gin.Context) {
 		return
 	}
 
-	var runtime any
-	if consumer.RuntimeObserved {
-		// [COMMENT]: Tenant authorization đã được repository xác minh trước khi summary được đọc;
-		// response không expose per-pod instance ID của Zone.
-		runtime = gin.H{
-			"state":            consumer.RuntimeState,
-			"config_version":   consumer.RuntimeConfigVersion,
-			"active_instances": consumer.RuntimeActiveInstances,
-			"consumer_lag":     consumer.RuntimeConsumerLag,
-			"error_code":       consumer.RuntimeErrorCode,
-			"error_message":    consumer.RuntimeErrorMessage,
-			"reported_at":      consumer.RuntimeReportedAt,
-			"next_expiry_at":   consumer.RuntimeNextExpiryAt,
-		}
-	}
 	apires.RespondSuccess(c, gin.H{
 		"id":                 consumer.ID.String(),
 		"workspace_id":       consumer.WorkspaceID.String(),
@@ -265,8 +250,81 @@ func (h *TenantConsumerHandler) Get(c *gin.Context) {
 		"config_sha256":      hex.EncodeToString(consumer.ConfigSHA256),
 		"created_at":         consumer.CreatedAt,
 		"updated_at":         consumer.UpdatedAt,
-		"runtime":            runtime,
 	}, "mail consumer loaded")
+}
+
+func (h *TenantConsumerHandler) WatchRuntime(c *gin.Context) {
+	const op = "mail.tenant.consumer.runtime.watch"
+	ctx, cancel := context.WithTimeout(pkgcontext.WithOperation(c.Request.Context(), op), 5*time.Second)
+	defer cancel()
+
+	actorID, ok := pkgcontext.GetUserID(c, op)
+	if !ok {
+		return
+	}
+	tenantID, ok := pkgcontext.GetTenantID(c, op)
+	if !ok {
+		return
+	}
+	workspaceID, ok := pkgcontext.GetWorkspaceID(c, op)
+	if !ok {
+		return
+	}
+	zoneID, ok := pkgcontext.GetZoneID(c, op)
+	if !ok {
+		return
+	}
+	consumerID, err := uuid.Parse(strings.TrimSpace(c.Param("id")))
+	if err != nil {
+		apires.RespondBadRequest(c, "invalid consumer id")
+		return
+	}
+
+	// [COMMENT]: Tenant membership được kiểm lại ở repository mỗi lần renew; watcher ZSET chỉ
+	// chứa actor đã được authorize và tự hết hạn cùng lease ngắn.
+	runtime, err := h.svc.WatchConsumerRuntime(ctx, &mailEntity.WatchTenantConsumerRuntime{
+		ActorUserID: actorID,
+		TenantID:    tenantID,
+		WorkspaceID: workspaceID,
+		ZoneID:      zoneID,
+		ID:          consumerID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, mailTaxonomy.ErrConsumerNotFound), errors.Is(err, mailTaxonomy.ErrWorkspaceNotFound):
+			apires.RespondNotFound(c, "mail consumer not found")
+		case errors.Is(err, mailTaxonomy.ErrInvalidArgument):
+			apires.RespondBadRequest(c, "invalid request")
+		case errors.Is(err, mailTaxonomy.ErrRuntimeUnavailable):
+			apires.RespondServiceUnavailable(c, "mail runtime watch temporarily unavailable")
+		default:
+			logger.HandlerError(c, op, err)
+			apires.RespondInternalError(c, "internal_error")
+		}
+		return
+	}
+
+	var snapshot any
+	if runtime.RuntimeObserved {
+		snapshot = gin.H{
+			"runtime_epoch":    runtime.RuntimeEpoch,
+			"runtime_revision": runtime.RuntimeRevision,
+			"state":            runtime.RuntimeState,
+			"active_instances": runtime.RuntimeActiveInstances,
+			"consumer_lag":     runtime.RuntimeConsumerLag,
+			"error_code":       runtime.RuntimeErrorCode,
+			"error_message":    runtime.RuntimeErrorMessage,
+			"observed_at":      runtime.RuntimeObservedAt,
+			"expires_at":       runtime.RuntimeExpiresAt,
+		}
+	}
+	apires.RespondSuccess(c, gin.H{
+		"consumer_id":       runtime.ID.String(),
+		"config_version":    runtime.ConfigVersion,
+		"watch_lease_id":    runtime.WatchLeaseID,
+		"watch_ttl_seconds": runtime.WatchTTLSeconds,
+		"runtime":           snapshot,
+	}, "mail consumer runtime watch renewed")
 }
 
 func (h *TenantConsumerHandler) List(c *gin.Context) {

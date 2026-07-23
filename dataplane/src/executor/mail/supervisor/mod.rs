@@ -19,7 +19,8 @@ mod backpressure_tests;
 #[path = "../test/report_contract.rs"]
 mod report_contract_tests;
 
-/// [COMMENT]: Consumer delta đi Central Redis; operational health chỉ ở Zone KV + OTel/Grafana.
+/// [COMMENT]: Customer runtime chỉ đi Central Redis khi có watch lease; Zone KV chỉ giữ
+/// config/coordination và aggregate infra health cho OTel/Grafana.
 pub struct MailWorkloadSupervisor;
 
 impl MailWorkloadSupervisor {
@@ -29,7 +30,7 @@ impl MailWorkloadSupervisor {
         redis_job: Arc<RedisClientManager>,
         runtime: Arc<MailRuntime>,
     ) {
-        health_observer::start(config.clone(), zone_kv.clone(), runtime);
-        consumer_reporter::start(config, zone_kv, redis_job);
+        health_observer::start(config.clone(), zone_kv, runtime.clone());
+        consumer_reporter::start(config, redis_job, runtime);
     }
 }

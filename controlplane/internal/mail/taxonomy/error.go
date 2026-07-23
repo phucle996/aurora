@@ -12,6 +12,7 @@ var (
 	ErrTemplateNotFound    = errors.New("mail: template not found")
 	ErrTemplateInUse       = errors.New("mail: template is used by an active consumer")
 	ErrTemplateSyntax      = errors.New("mail: template syntax error")
+	ErrRuntimeUnavailable  = errors.New("mail: runtime watch unavailable")
 	ErrInternal            = errors.New("mail: internal server error")
 	// [COMMENT]: Fail-close zstd/UTF-8 — không bao giờ fallback raw bytes khi gặp các lỗi này.
 	ErrHTMLDecompressFailed       = errors.New("mail: html template zstd decompression failed")

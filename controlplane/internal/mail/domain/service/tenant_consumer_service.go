@@ -12,4 +12,5 @@ type TenantConsumerService interface {
 	UpdateConsumer(context.Context, *mailEntity.UpdateTenantConsumer) (*mailEntity.UpdateTenantConsumer, error)
 	ChangeConsumerState(context.Context, *mailEntity.ChangeTenantConsumerState) (*mailEntity.ChangeTenantConsumerState, error)
 	DeleteConsumer(context.Context, *mailEntity.DeleteTenantConsumer) error
+	WatchConsumerRuntime(context.Context, *mailEntity.WatchTenantConsumerRuntime) (*mailEntity.WatchTenantConsumerRuntime, error)
 }

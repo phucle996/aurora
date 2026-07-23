@@ -102,8 +102,11 @@ slot kết thúc hoặc đến retry window.
 - Kafka commit highest contiguous terminal offset; Redis dùng PEL/XAUTOCLAIM/XACK; JetStream dùng
   Progress/double-ACK/Term; RabbitMQ dùng ACK/reject và bắt buộc stable AMQP `message_id`.
 - `MAIL_STREAM_DELIVERY_ENABLED` vẫn mặc định `false` cho tới khi bốn suite vượt staging TLS/failure/rebalance E2E gates.
-- Slot health nằm tại `AURORA_ZONE_HEALTH/mail.runtime.{consumer_id}.{slot}` và dùng fencing token để writer cũ không overwrite generation mới.
-- `consumer_reporter` gom customer-safe delta vào `mail:consumer:reports`; `health_observer` luân phiên probe JMAP/Stalwart, ghi fenced `zone.service.mail` và OTel metrics cho Grafana.
+- Slot runtime nằm trong app memory của pod owner. Chỉ khi Central Redis có watch lease thì pod
+  mới đẩy bounded report; không lưu consumer runtime trong Zone NATS KV.
+- Mỗi pod `consumer_reporter` chỉ gom customer-safe delta của consumer có Redis watch lease vào
+  `mail:consumer:reports`; `health_observer` luân phiên probe JMAP/Stalwart, ghi fenced
+  `zone.service.mail`, còn runtime workload đi thẳng OTel/Grafana.
 - `STALWART_REPORTER_BEARER_TOKEN` là read-only management identity riêng; thiếu token chỉ làm inventory unavailable, không tái sử dụng submission credential.
 
 ## 6. Recovery và failure semantics
@@ -126,7 +129,7 @@ slot kết thúc hoặc đến retry window.
 - `src/executor/mail/runtime/dispatcher.rs`: match stream type đúng một lần.
 - `src/executor/mail/runtime/`: common encrypted-envelope/fence/health và bốn broker suites độc lập.
 - `src/executor/mail/processor/stream.rs`: fixed envelope, lazy template render và typed JMAP result.
-- `src/executor/mail/supervisor/consumer_reporter.rs`: bounded logical-slot delta relay.
+- `src/executor/mail/supervisor/consumer_reporter.rs`: watch-aware pod-local logical-slot delta relay.
 - `src/executor/mail/supervisor/health_observer.rs`: rotating JMAP/Stalwart health, Zone KV và low-cardinality OTel metrics.
 - `src/executor/mail/test/`: toàn bộ unit test của mail; source module chỉ giữ test path declaration.
 - `src/job_lifecycle/runner.rs`: execution, result/XACK và RAII cleanup.

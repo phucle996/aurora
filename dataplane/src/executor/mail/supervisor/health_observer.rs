@@ -2,7 +2,6 @@ use super::super::MailRuntime;
 use super::backpressure::MailBackpressureSnapshot;
 use super::metrics::MailOperationalMetricsSnapshot;
 use crate::config::Config;
-use crate::executor::mail::runtime::RuntimeHealthSnapshot;
 use crate::infra::zone_kv::ZoneKvStore;
 use crate::observability::logger::Logger;
 use bytes::Bytes;
@@ -61,6 +60,21 @@ pub(super) fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, runtime: Arc
                 .unwrap_or_default();
             let pending = runtime.metrics.pending_items.load(Ordering::Relaxed);
             let in_flight = runtime.metrics.in_flight_batches.load(Ordering::Relaxed);
+            let local_active_consumer_slots = runtime
+                .runtime_snapshots()
+                .iter()
+                .filter(|snapshot| {
+                    matches!(
+                        snapshot.state.as_str(),
+                        "STARTING" | "RUNNING" | "PAUSED" | "DRAINING" | "DEGRADED"
+                    )
+                })
+                .count()
+                .min(u64::MAX as usize) as u64;
+            // [COMMENT]: Runtime workload đi thẳng OTel từ từng pod; không serialize vào Zone KV.
+            runtime
+                .metrics
+                .record_local_runtime_slots(local_active_consumer_slots);
             let local = LocalMailNodeSnapshot {
                 node_id: node_id.clone(),
                 boot_id: boot_id.to_string(),
@@ -238,37 +252,6 @@ pub(super) fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, runtime: Arc
                 .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
                 .unwrap_or_default();
             let health_keys = zone_kv.health_keys().await.unwrap_or_default();
-            let mut active_consumer_slots = 0_u64;
-            for key in &health_keys {
-                if !key.starts_with("mail.runtime.") {
-                    continue;
-                }
-                let Some(bytes) = zone_kv.health_get(key.clone()).await.ok().flatten() else {
-                    continue;
-                };
-                let Ok(slot) = serde_json::from_slice::<RuntimeHealthSnapshot>(&bytes) else {
-                    continue;
-                };
-                let slot_key_matches = Uuid::parse_str(&slot.consumer_id).is_ok()
-                    && key == &format!("mail.runtime.{}.{}", slot.consumer_id, slot.slot);
-                let slot_is_live = matches!(
-                    slot.state.as_str(),
-                    "STARTING" | "RUNNING" | "PAUSED" | "DRAINING" | "DEGRADED"
-                );
-                if slot_key_matches
-                    && slot_is_live
-                    && slot.runtime_generation > 0
-                    && slot.runtime_generation == slot.fencing_token
-                    && !slot.runtime_node_id.is_empty()
-                    && aggregate_at_ms.saturating_sub(slot.heartbeat_unix_ms)
-                        <= config
-                            .mail_stream_slot_lease_ttl_seconds
-                            .saturating_mul(2_000)
-                {
-                    active_consumer_slots = active_consumer_slots.saturating_add(1);
-                }
-            }
-
             let freshness_ms = config.mail_health_observe_interval_ms.saturating_mul(3);
             let mut node_snapshots = Vec::<LocalMailNodeSnapshot>::new();
             for key in &health_keys {
@@ -386,7 +369,6 @@ pub(super) fn start(config: Arc<Config>, zone_kv: Arc<ZoneKvStore>, runtime: Arc
                         capacity_percent: pressure.capacity.min(100) as u64,
                         pending_items: total_pending.min(u64::MAX as usize) as u64,
                         in_flight_batches: total_in_flight.min(u64::MAX as usize) as u64,
-                        active_consumer_slots,
                         dataplane_nodes_healthy: dataplane_healthy,
                         dataplane_nodes_degraded: dataplane_degraded,
                         dataplane_nodes_down: dataplane_down,

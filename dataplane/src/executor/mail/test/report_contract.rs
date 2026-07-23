@@ -27,6 +27,7 @@ fn consumer_report_batch_contains_only_customer_safe_runtime_state() {
             error_code: String::new(),
             error_message: String::new(),
             report_sequence: 4,
+            runtime_epoch: Uuid::new_v4().to_string(),
         }],
     };
     let decoded = MailConsumerRuntimeReportBatchV1::decode(batch.encode_to_vec().as_slice())

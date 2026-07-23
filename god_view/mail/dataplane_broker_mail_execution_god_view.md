@@ -322,16 +322,14 @@ Không abort JMAP request rồi ACK broker. Không final-commit Kafka sau mất 
 
 ## 12. Health and observability
 
-Mỗi slot ghi snapshot fenced:
+Mỗi slot cập nhật snapshot trong pod-local app memory. State, lag, consumer ID và heartbeat không được
+ghi `AURORA_ZONE_HEALTH/mail.runtime.*`. Reporter của từng pod batch-check
+`mail:runtime:watch-active:{zone_id}:{consumer_id}` trong Central Redis; chỉ consumer có lease mới
+được XADD bounded delta qua `mail:consumer:reports`. Redis gate coalesce heartbeat ổn định tối đa
+10 giây nhưng watch epoch/config/state/generation/lag transition phát ngay.
 
-```text
-AURORA_ZONE_HEALTH/mail.runtime.{consumer_id}.{slot}
-```
-
-Snapshot gồm state, consumer/config version, runtime generation, slot, fencing token, heartbeat và low-cardinality
-error code. Snapshot còn có logical `instance_id=slot:<n>`, physical node/boot identity và monotonic report sequence. Mail consumer reporter lease holder
-chỉ XADD bounded delta batch qua `mail:consumer:reports`; shared Redis gate coalesce heartbeat không đổi còn 60s nhưng phát state
-transition ngay. Nó không gửi recipient, rendered content hay per-mail result. Metric processor chỉ label `zone_id + status + taxonomy code`; không label topic/queue/recipient/template.
+Zone NATS KV chỉ nhận `mail.health.node.*` aggregate không customer label và `zone.service.mail`.
+Metric processor chỉ label `zone_id + status + taxonomy code`; không label topic/queue/recipient/template.
 Config runtime có apply/error/scan/L1 metrics. Broker-specific lag/rebalance/PEL/redelivery dashboards còn là deployment
 gate, không được giả là đã có chỉ vì suite đã compile.
 
@@ -367,7 +365,7 @@ Code giữ `MAIL_STREAM_DELIVERY_ENABLED=false` cho tới khi môi trường sta
 | JO periodic reconcile | `job-orchestrator/src/reverse_provider/mail/reconciler/` |
 | JO Mail result routing | `job-orchestrator/src/reverse_provider/mail/l2_dispatcher.rs` |
 | JO Mail result transaction/hard-delete | `job-orchestrator/src/reverse_provider/mail/service/` |
-| Zonal consumer report relay | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
+| Watch-aware reporter trên từng pod | `dataplane/src/executor/mail/supervisor/consumer_reporter.rs` |
 | Zonal health/KV/OTel observer | `dataplane/src/executor/mail/supervisor/health_observer.rs` |
 | JO consumer report apply/settle | `job-orchestrator/src/reverse_provider/mail/reporter/consumer.rs` |
 | Mail runtime/processor tests | `dataplane/src/executor/mail/test/` |

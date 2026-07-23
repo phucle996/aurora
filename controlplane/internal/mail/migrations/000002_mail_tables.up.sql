@@ -114,23 +114,6 @@ CREATE TABLE IF NOT EXISTS personal_mail_consumer_update_versions (
     )
 );
 
-CREATE TABLE IF NOT EXISTS personal_mail_consumer_runtime_reports (
-    consumer_id UUID NOT NULL REFERENCES personal_mail_consumers(id) ON DELETE CASCADE,
-    event_id UUID NOT NULL,
-    instance_id VARCHAR(255) NOT NULL,
-    config_version BIGINT NOT NULL CHECK (config_version > 0),
-    runtime_state mail_consumer_runtime_state NOT NULL,
-    runtime_generation BIGINT NOT NULL CHECK (runtime_generation > 0),
-    report_sequence BIGINT NOT NULL CHECK (report_sequence > 0),
-    consumer_lag BIGINT NOT NULL DEFAULT 0 CHECK (consumer_lag >= 0),
-    error_code VARCHAR(100) NULL,
-    error_message VARCHAR(1024) NULL,
-    reported_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (consumer_id, instance_id),
-    CONSTRAINT ck_personal_mail_runtime_expiry CHECK (expires_at > reported_at)
-);
-
 -- [COMMENT]: Tenant Consumer giữ actor audit vì mutation diễn ra qua membership dùng chung.
 CREATE TABLE IF NOT EXISTS tenant_mail_consumers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -187,23 +170,6 @@ CREATE TABLE IF NOT EXISTS tenant_mail_consumer_update_versions (
     CONSTRAINT ck_tenant_mail_consumer_update_enabled_envelope CHECK (
         desired_state <> 'enabled' OR octet_length(source_config_envelope) > 0
     )
-);
-
-CREATE TABLE IF NOT EXISTS tenant_mail_consumer_runtime_reports (
-    consumer_id UUID NOT NULL REFERENCES tenant_mail_consumers(id) ON DELETE CASCADE,
-    event_id UUID NOT NULL,
-    instance_id VARCHAR(255) NOT NULL,
-    config_version BIGINT NOT NULL CHECK (config_version > 0),
-    runtime_state mail_consumer_runtime_state NOT NULL,
-    runtime_generation BIGINT NOT NULL CHECK (runtime_generation > 0),
-    report_sequence BIGINT NOT NULL CHECK (report_sequence > 0),
-    consumer_lag BIGINT NOT NULL DEFAULT 0 CHECK (consumer_lag >= 0),
-    error_code VARCHAR(100) NULL,
-    error_message VARCHAR(1024) NULL,
-    reported_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (consumer_id, instance_id),
-    CONSTRAINT ck_tenant_mail_runtime_expiry CHECK (expires_at > reported_at)
 );
 
 CREATE TABLE IF NOT EXISTS mail_outbox_records (

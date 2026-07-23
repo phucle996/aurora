@@ -284,39 +284,47 @@ sequenceDiagram
 - Ở DP, invalidation đánh thức cùng supervisor; timer/reconcile dùng một scheduling loop chung thay vì spawn một ticker cho mỗi consumer.
 - Reconcile interval có jitter và backoff khi Redis lỗi; tick bị trễ được skip, không chạy dồn để gây connection storm.
 
-## 8. Runtime report reverse path
+## 8. On-demand runtime watch reverse path
 
-Phase 9 AS-IS dùng current snapshot, không tạo mail delivery history:
+Runtime là soft state theo nhu cầu Consumer Detail, không tạo mail delivery history hoặc PostgreSQL projection:
 
 ```mermaid
 sequenceDiagram
     participant Slot as DP logical runtime slot
-    participant KV as Zone Health KV
-    participant Relay as Consumer reporter lease holder
+    participant MEM as DP pod memory
+    participant Relay as DP pod reporter
     participant RJ as Redis Job Stream
     participant JO as JO blocking consumer group
+    participant CP as Controlplane
     participant DB as CP PostgreSQL
+    participant RT as Redis runtime snapshot
+    participant NS as NATS/Centrifugo
     participant UI as Consumer Detail
 
-    Slot->>KV: fenced put mail.runtime.consumer.slot
-    Relay->>KV: acquire/renew lease.mail.consumer.report
-    Relay->>KV: scan current runtime snapshots
-    Relay->>RJ: XADD bounded MailConsumerRuntimeReportBatchV1
+    UI->>CP: GET Consumer business detail
+    CP->>DB: authorized business read
+    UI->>CP: POST runtime/watch
+    CP->>DB: ownership/membership check
+    CP->>RJ: renew 30s watch lease
+    Slot->>MEM: update state/lag/heartbeat
+    Relay->>RJ: MGET active watch leases
+    Relay->>RJ: watched only XADD bounded report batch
     JO->>RJ: XAUTOCLAIM then XREADGROUP BLOCK
-    JO->>DB: scope guard + monotonic single-row UPSERT
-    DB-->>JO: commit
+    JO->>DB: scope/config guard only
+    JO->>RT: fenced slot + aggregate snapshot with TTL
+    JO-->>NS: best-effort viewer signal
     JO->>RJ: Lua XACK then XDEL
-    UI->>DB: GET Consumer Detail aggregate
+    UI->>CP: renew watch
+    CP->>RJ: recover same-epoch snapshot
 ```
 
-1. Mỗi health key là một logical slot; `instance_id=slot:<n>`. Pod takeover cùng slot nhận fencing generation cao hơn và cập nhật đúng một read-model row, không để hostname cũ tạo ghost instance.
-2. Zone relay dùng rotating `lease.mail.consumer.report`. Shared Redis gate theo `zone + consumer + logical slot` giới hạn heartbeat không đổi tối đa một report/60s, nhưng state/config/generation/node/error transition được phát ngay. Relay gom tối đa 250 delta/512 KiB và renew fence trước từng batch.
-3. Redis stream `mail:consumer:reports` dùng time-window trimming khoảng một giờ. CP TTL mặc định 180s giữ failover margin. JO chỉ XDEL sau permanent reject hoặc toàn batch đã apply; lỗi DB giữ entry trong PEL để replica khác reclaim.
-4. Không có inbox/history row cho từng heartbeat. Một row `(consumer_id, logical slot)` giữ `event_id` cuối; duplicate/stale no-op bằng `config_version + runtime_generation + report_sequence`. Report version thấp hơn desired có thể nằm trong diagnostic row nhưng không tham gia aggregate hiện hành; version cao hơn desired bị scope/target guard bỏ.
-5. Trong cùng logical slot và config version, `runtime_generation` cao hơn thắng; cùng generation thì `report_sequence` cao hơn thắng. Report từ generation đã bị fence không thể đổi state.
-6. `GET /api/v1/{personal|tenant}/mail/consumers/:id` chỉ aggregate heartbeat chưa hết TTL và đúng desired config version. Response không lộ hostname/pod hay dữ liệu từng email.
-7. CronJob xóa runtime row stale theo batch 200 với `SKIP LOCKED`. Không tạo append-only heartbeat ledger; delivery history vẫn deferred.
-8. NATS Core không nằm trong correctness path. Console lazy-fetch detail và dùng terminal Centrifugo signal để invalidate/merge read model; activity ở header chỉ nằm trong memory, không phải audit và không thay Redis PEL/PostgreSQL guard.
+1. `GET Consumer` không trả runtime. `POST .../runtime/watch` DB-authorize rồi tạo lease 30 giây bind active config + epoch.
+2. Slot state nằm trong app memory của pod owner. Không có `mail.runtime.*` trong Zone NATS KV.
+3. Mọi pod tự report local slots; không có rotating report leader. Consumer không được watch không tạo Central Redis write.
+4. Redis stream giữ bounded batch; lỗi DB/Redis giữ entry trong PEL. NATS notification lỗi không giữ PEL vì snapshot Redis là recovery source.
+5. Redis slot fence là `config_version + runtime_generation + report_sequence`; aggregate commit recheck exact watch lease/epoch.
+6. Runtime keys có TTL, không cần CronJob/cleaner. Watch mới không đọc snapshot epoch cũ dù key chưa expire.
+7. Centrifugo chỉ mang customer-safe aggregate; hostname/pod/broker credential không vượt boundary.
 
 ## 9. Race/failure matrix
 

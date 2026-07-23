@@ -2,6 +2,7 @@ use super::configuration::{
     MailConfigurationRuntime, RuntimeConsumerConfiguration, RuntimeConsumerEntry,
     RuntimeDesiredState,
 };
+use super::context::RuntimeHealthSnapshot;
 use super::context::{RuntimeGenerationFence, StreamRuntimeContext};
 use super::dispatcher::dispatch_stream_runtime;
 use crate::config::Config;
@@ -95,6 +96,10 @@ impl MailConsumerSupervisor {
         if let Some(task) = task {
             let _ = task.await;
         }
+    }
+
+    pub(crate) fn runtime_snapshots(&self) -> Vec<RuntimeHealthSnapshot> {
+        self.context.runtime_snapshots()
     }
 
     async fn run(self: Arc<Self>) {

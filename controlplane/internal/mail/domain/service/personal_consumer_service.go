@@ -12,4 +12,5 @@ type PersonalConsumerService interface {
 	UpdateConsumer(context.Context, *mailEntity.UpdatePersonalConsumer) (*mailEntity.UpdatePersonalConsumer, error)
 	ChangeConsumerState(context.Context, *mailEntity.ChangePersonalConsumerState) (*mailEntity.ChangePersonalConsumerState, error)
 	DeleteConsumer(context.Context, *mailEntity.DeletePersonalConsumer) error
+	WatchConsumerRuntime(context.Context, *mailEntity.WatchPersonalConsumerRuntime) (*mailEntity.WatchPersonalConsumerRuntime, error)
 }

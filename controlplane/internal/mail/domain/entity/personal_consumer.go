@@ -35,37 +35,28 @@ type CreatePersonalConsumer struct {
 }
 
 type GetPersonalConsumer struct {
-	ActorUserID            uuid.UUID
-	ZoneID                 uuid.UUID
-	ID                     uuid.UUID
-	WorkspaceID            uuid.UUID
-	Code                   string
-	Name                   string
-	SourceType             SourceType
-	BrokerResourceID       uuid.UUID
-	SourceConfigEnvelope   []byte
-	Topic                  string
-	ConsumerGroup          string
-	TemplateID             string
-	TemplateVersion        uint64
-	SenderProfileID        string
-	SenderVersion          uint64
-	DesiredState           ConsumerDesiredState
-	Parallelism            uint32
-	ConfigVersion          uint64
-	NextConfigVersion      uint64
-	ConfigSHA256           []byte
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
-	RuntimeObserved        bool
-	RuntimeState           ConsumerRuntimeState
-	RuntimeConfigVersion   uint64
-	RuntimeActiveInstances uint32
-	RuntimeConsumerLag     uint64
-	RuntimeErrorCode       string
-	RuntimeErrorMessage    string
-	RuntimeReportedAt      time.Time
-	RuntimeNextExpiryAt    time.Time
+	ActorUserID          uuid.UUID
+	ZoneID               uuid.UUID
+	ID                   uuid.UUID
+	WorkspaceID          uuid.UUID
+	Code                 string
+	Name                 string
+	SourceType           SourceType
+	BrokerResourceID     uuid.UUID
+	SourceConfigEnvelope []byte
+	Topic                string
+	ConsumerGroup        string
+	TemplateID           string
+	TemplateVersion      uint64
+	SenderProfileID      string
+	SenderVersion        uint64
+	DesiredState         ConsumerDesiredState
+	Parallelism          uint32
+	ConfigVersion        uint64
+	NextConfigVersion    uint64
+	ConfigSHA256         []byte
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type ListPersonalConsumer struct {
@@ -157,4 +148,25 @@ type DeletePersonalConsumer struct {
 	Reason                string
 	OperationID           uuid.UUID
 	UpdatedAt             time.Time
+}
+
+// [COMMENT]: Runtime watch là soft-state lease, không dùng lifecycle outbox và không ghi business DB.
+type WatchPersonalConsumerRuntime struct {
+	ActorUserID            uuid.UUID
+	ZoneID                 uuid.UUID
+	ID                     uuid.UUID
+	WorkspaceID            uuid.UUID
+	ConfigVersion          uint64
+	WatchLeaseID           string
+	WatchTTLSeconds        uint32
+	RuntimeObserved        bool
+	RuntimeEpoch           string
+	RuntimeRevision        uint64
+	RuntimeState           ConsumerRuntimeState
+	RuntimeActiveInstances uint32
+	RuntimeConsumerLag     uint64
+	RuntimeErrorCode       string
+	RuntimeErrorMessage    string
+	RuntimeObservedAt      time.Time
+	RuntimeExpiresAt       time.Time
 }

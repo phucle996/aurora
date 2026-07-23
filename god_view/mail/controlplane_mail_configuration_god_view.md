@@ -147,8 +147,9 @@ stateDiagram-v2
 - `SUCCEEDED` promote candidate vào active row; `FAILED` hard-delete đúng candidate nhưng không lùi counter, vì vậy result cũ không va vào version mới.
 - Delete request chỉ insert outbox với fence lấy từ monotonic `next_config_version`, nên lớn hơn cả active và mọi candidate FAILED có thể từng chạm Zone; không tăng version, không đổi desired state và không xóa business row trước Zone.
 - JO chỉ hard-delete theo `resource_id` sau khi Dataplane trả `SUCCEEDED`; `FAILED` giữ nguyên business row để retry.
-- `personal_mail_consumers` và `tenant_mail_consumers` là hai aggregate vật lý độc lập; candidate,
-  runtime report và projection tombstone cũng tách theo cùng scope để mọi FK đều typed.
+- `personal_mail_consumers` và `tenant_mail_consumers` là hai aggregate vật lý độc lập; candidate
+  và projection tombstone cũng tách theo cùng scope để mọi FK đều typed. Runtime là Redis soft
+  state theo watch lease, không có bảng PostgreSQL.
 - Personal row/candidate không lưu `created_by` hoặc `updated_by`: actor chỉ dùng cho authorization và notification outbox.
   Tenant vẫn lưu actor audit vì nhiều membership có thể mutation cùng resource.
 - Hai bảng Consumer không có `deleted_at` hoặc desired state `DELETED`. Durable projection tombstone nằm ở bảng riêng
@@ -167,16 +168,14 @@ stateDiagram-v2
 | `ENABLED` | `ERROR` | Desired vẫn enabled nhưng runtime lỗi |
 | delete requested | `DRAINING` | Không nhận message mới, đang xử lý outstanding |
 
-CP không được tự đổi reported state sang `RUNNING` ngay sau khi ghi DB.
-Reported state được lưu theo logical `instance_id=slot:<n>`; hostname/pod không đi ra customer API. CP chỉ derive
-aggregate từ heartbeat còn fresh của đúng desired config version. `runtime_generation/report_sequence` chỉ có thứ tự
-trong cùng logical slot; takeover pod dùng fencing generation cao hơn để overwrite row cũ.
+CP không được tự đổi reported state sang `RUNNING` ngay sau khi ghi DB. Business
+`GET /api/v1/{personal|tenant}/mail/consumers/:id` chỉ trả config.
 
-`GET /api/v1/{personal|tenant}/mail/consumers/:id` trả thêm nullable `runtime`. Khi không có heartbeat fresh,
-`runtime=null`; UI không được suy diễn thành `STOPPED`. Khi có report, response chỉ gồm aggregate state,
-config version, active logical slots, lag, sanitized error và timestamps. Nó không phải mail history.
-Nếu desired `ENABLED`, ít nhất một slot báo `RUNNING` nhưng số slot fresh nhỏ hơn `parallelism`, detail derive
-`DEGRADED/MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL` thay vì che partial outage bằng một badge `RUNNING`.
+Consumer Detail gọi `POST /api/v1/{personal|tenant}/mail/consumers/:id/runtime/watch`. Service kiểm tra
+ownership/membership bằng PostgreSQL rồi renew lease Redis 30 giây. Dataplane chỉ đẩy pod-local state
+cho consumer đang được watch; JO aggregate logical `slot:<n>` trong Redis bằng
+`config_version + runtime_generation + report_sequence`. Response watch trả nullable `runtime`; null
+nghĩa là chưa có snapshot cùng watch epoch, không được suy diễn thành `STOPPED`.
 
 ## 4. Template aggregate
 
@@ -275,7 +274,7 @@ DELETE /api/v1/{personal|tenant}/mail/templates/:id
 | Result đến sau terminal FAILED | Mọi FAILED là terminal cho operation ID; create/update/publish cleanup candidate, còn delete giữ aggregate và retry bằng operation ID mới |
 | PROCESSING/FAILED của attempt cũ đến sai thứ tự | `mail_outbox_records.result_attempt` fence theo attempt; `FAILED` và `SUCCEEDED` đều terminal cho operation ID, retry business operation phải dùng event ID mới |
 | JO commit terminal result nhưng NATS notify lỗi | Redis result không ACK; cùng terminal result được redeliver chỉ trả notification metadata, không chạy lại promote/cleanup/delete; `transaction_id` giữ nguyên nên UI overwrite |
-| Runtime report từ pod cũ | Logical slot row + config version + fenced runtime generation + report sequence |
+| Runtime report từ pod cũ | Ephemeral Redis slot + config version + fenced runtime generation + report sequence |
 | CP commit nhưng relay crash | Durable outbox + WAL resume |
 | Workspace/Broker đổi Zone | Authorized context mismatch bị từ chối; reconciler phát config mới/tombstone sang Zone đúng |
 | Workspace placement đổi giữa resolve và commit | Guarded transaction cross-check authoritative workspace; zero row → not found/conflict |
@@ -314,13 +313,14 @@ vừa commit bởi transaction thắng lock dù lock order trông có vẻ đún
 | 6 | Fenced supervisor + stream dispatcher |
 | 7 | Fixed envelope + render/JMAP processor |
 | 8 | Kafka/Redis Stream/JetStream/RabbitMQ suites + native settlement, activation gated |
-| 9 | Runtime reverse report + TTL read model + Consumer Detail — implemented |
+| 9 | On-demand runtime watch + Redis TTL read model + Consumer Detail — implemented |
 | 10 | Delivery history (future, chưa triển khai) |
 
 ## 10. Cloud Console contract
 
-- Console chỉ render hai surface đã có backend thật: `Consumers` và `Templates`. Consumer Detail lazy-fetch
-  runtime aggregate thật; không hiển thị throughput, Dataplane hostname hoặc delivery history bằng dữ liệu giả.
+- Console chỉ render hai surface đã có backend thật: `Consumers` và `Templates`. Consumer Detail renew
+  runtime watch khi đang mở và merge Centrifugo delta cùng epoch; không hiển thị Dataplane hostname
+  hoặc delivery history bằng dữ liệu giả.
 - Browser luôn gọi public path `/api/v1/mail/...`. ACR xác minh session/context rồi rewrite sang
   `/api/v1/personal/mail/...` hoặc `/api/v1/tenant/mail/...`; UI không tự gửi owner, Tenant, Zone header.
 - TanStack Query key bắt buộc chứa Personal/Tenant context và `workspace_id`. Khi đổi context,

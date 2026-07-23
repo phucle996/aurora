@@ -65,7 +65,7 @@ fn active_consumer_slots_metric() -> &'static Gauge<u64> {
     ACTIVE_CONSUMER_SLOTS.get_or_init(|| {
         global::meter("aurora-dataplane")
             .u64_gauge("mail_active_consumer_slots")
-            .with_description("Fresh logical Mail consumer slots observed in Zone KV")
+            .with_description("Pod-local fresh logical Mail consumer slots")
             .init()
     })
 }
@@ -131,7 +131,6 @@ pub(super) struct MailOperationalMetricsSnapshot {
     pub capacity_percent: u64,
     pub pending_items: u64,
     pub in_flight_batches: u64,
-    pub active_consumer_slots: u64,
     pub dataplane_nodes_healthy: u64,
     pub dataplane_nodes_degraded: u64,
     pub dataplane_nodes_down: u64,
@@ -168,8 +167,6 @@ impl MailWorkloadMetrics {
         capacity_metric().record(snapshot.capacity_percent, &[]);
         pending_metric().record(snapshot.pending_items, &[]);
         in_flight_metric().record(snapshot.in_flight_batches, &[]);
-        active_consumer_slots_metric().record(snapshot.active_consumer_slots, &[]);
-
         for (state, count) in [
             ("healthy", snapshot.dataplane_nodes_healthy),
             ("degraded", snapshot.dataplane_nodes_degraded),
@@ -184,6 +181,12 @@ impl MailWorkloadMetrics {
         ] {
             stalwart_nodes_metric().record(count, &[KeyValue::new("state", state)]);
         }
+    }
+
+    pub(super) fn record_local_runtime_slots(&self, active_consumer_slots: u64) {
+        // [COMMENT]: OTel resource attributes identify the pod; no consumer/customer label and no
+        // intermediate NATS KV snapshot are involved.
+        active_consumer_slots_metric().record(active_consumer_slots, &[]);
     }
 
     pub(super) fn record_observation_error(&self, error_code: &str) {

@@ -142,6 +142,8 @@ message MailConsumerRuntimeReportedV1 {
   string error_message = 9;
   // [COMMENT]: Monotonic trong cùng instance+generation; tạo event id mới cho từng heartbeat.
   uint64 report_sequence = 10;
+  // [COMMENT]: UUID epoch của active watch lease; JO reject report thuộc watch window cũ.
+  string runtime_epoch = 11;
 }
 
 // [COMMENT]: Consumer report có cardinality cao nên relay gom bounded delta vào một Redis Stream entry.

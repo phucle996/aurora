@@ -818,8 +818,10 @@ type MailConsumerRuntimeReportedV1 struct {
 	ErrorMessage string `protobuf:"bytes,9,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	// [COMMENT]: Monotonic trong cùng instance+generation; tạo event id mới cho từng heartbeat.
 	ReportSequence uint64 `protobuf:"varint,10,opt,name=report_sequence,json=reportSequence,proto3" json:"report_sequence,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// [COMMENT]: UUID epoch của active watch lease; JO reject report thuộc watch window cũ.
+	RuntimeEpoch  string `protobuf:"bytes,11,opt,name=runtime_epoch,json=runtimeEpoch,proto3" json:"runtime_epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MailConsumerRuntimeReportedV1) Reset() {
@@ -920,6 +922,13 @@ func (x *MailConsumerRuntimeReportedV1) GetReportSequence() uint64 {
 		return x.ReportSequence
 	}
 	return 0
+}
+
+func (x *MailConsumerRuntimeReportedV1) GetRuntimeEpoch() string {
+	if x != nil {
+		return x.RuntimeEpoch
+	}
+	return ""
 }
 
 // [COMMENT]: Consumer report có cardinality cao nên relay gom bounded delta vào một Redis Stream entry.
@@ -1251,7 +1260,7 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"consumerId\x12%\n" +
 	"\x0econfig_version\x18\x03 \x01(\x04R\rconfigVersion\x122\n" +
 	"\x15drain_timeout_seconds\x18\x04 \x01(\rR\x13drainTimeoutSeconds\x12\x16\n" +
-	"\x06reason\x18\x05 \x01(\tR\x06reason\"\xd9\x03\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\"\xfe\x03\n" +
 	"\x1dMailConsumerRuntimeReportedV1\x12@\n" +
 	"\bmetadata\x18\x01 \x01(\v2$.mail.runtime.v1.MailEventMetadataV1R\bmetadata\x12\x1f\n" +
 	"\vconsumer_id\x18\x02 \x01(\fR\n" +
@@ -1266,7 +1275,8 @@ const file_internal_mail_transport_rpc_proto_mail_runtime_proto_rawDesc = "" +
 	"error_code\x18\b \x01(\tR\terrorCode\x12#\n" +
 	"\rerror_message\x18\t \x01(\tR\ferrorMessage\x12'\n" +
 	"\x0freport_sequence\x18\n" +
-	" \x01(\x04R\x0ereportSequence\"l\n" +
+	" \x01(\x04R\x0ereportSequence\x12#\n" +
+	"\rruntime_epoch\x18\v \x01(\tR\fruntimeEpoch\"l\n" +
 	" MailConsumerRuntimeReportBatchV1\x12H\n" +
 	"\areports\x18\x01 \x03(\v2..mail.runtime.v1.MailConsumerRuntimeReportedV1R\areports\"\xde\x02\n" +
 	"\x1eMailTemplateVersionPublishedV1\x12@\n" +

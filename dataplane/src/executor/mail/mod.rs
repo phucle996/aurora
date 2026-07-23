@@ -72,6 +72,10 @@ impl MailRuntime {
         self.jmap.healthcheck().await
     }
 
+    pub(crate) fn runtime_snapshots(&self) -> Vec<runtime::RuntimeHealthSnapshot> {
+        self.consumer_supervisor.runtime_snapshots()
+    }
+
     pub async fn shutdown(&self) {
         // [COMMENT]: Fence broker intake trước, sau đó mới dừng config listener và transport JMAP.
         self.consumer_supervisor.shutdown().await;

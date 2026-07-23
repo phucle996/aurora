@@ -1,4 +1,5 @@
--- [COMMENT]: Phase 1 khai báo trạng thái bền vững; runtime state không được trộn với desired state.
+-- [COMMENT]: PostgreSQL chỉ khai báo business configuration enums. Runtime state là Redis
+-- soft state theo watch lease nên không tạo database type hoặc table.
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -15,15 +16,5 @@ BEGIN
         WHERE n.nspname = current_schema() AND t.typname = 'mail_consumer_desired_state'
     ) THEN
         CREATE TYPE mail_consumer_desired_state AS ENUM ('paused', 'enabled');
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_type t
-        JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE n.nspname = current_schema() AND t.typname = 'mail_consumer_runtime_state'
-    ) THEN
-        CREATE TYPE mail_consumer_runtime_state AS ENUM (
-            'stopped', 'starting', 'running', 'paused', 'draining', 'error', 'degraded'
-        );
     END IF;
 END $$;

@@ -21,9 +21,10 @@ func TestRegisterRoutesUsesRewrittenPersonalAndTenantPrefixes(t *testing.T) {
 	RegisterRoutes(router, module)
 
 	routes := router.Routes()
-	if len(routes) != 26 {
-		t.Fatalf("route count = %d, want 26", len(routes))
+	if len(routes) != 28 {
+		t.Fatalf("route count = %d, want 28", len(routes))
 	}
+	watchRoutes := 0
 	for _, route := range routes {
 		if route.Path == "/api/v1/mail" {
 			t.Fatalf("legacy or malformed route registered: %s %s", route.Method, route.Path)
@@ -32,5 +33,11 @@ func TestRegisterRoutesUsesRewrittenPersonalAndTenantPrefixes(t *testing.T) {
 			!strings.HasPrefix(route.Path, "/api/v1/tenant/mail") {
 			t.Fatalf("route is outside rewritten scope: %s %s", route.Method, route.Path)
 		}
+		if route.Method == "POST" && strings.HasSuffix(route.Path, "/consumers/:id/runtime/watch") {
+			watchRoutes++
+		}
+	}
+	if watchRoutes != 2 {
+		t.Fatalf("runtime watch route count = %d, want 2", watchRoutes)
 	}
 }

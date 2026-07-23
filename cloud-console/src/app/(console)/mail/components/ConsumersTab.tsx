@@ -12,12 +12,26 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { type APIError } from "@/lib/api/fetcher";
-import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, type ConsumerWrite, type MailConsumer, type MailSourceType, updateMailConsumer } from "@/lib/api/mail";
+import { changeMailConsumerState, createMailConsumer, deleteMailConsumer, getMailConsumer, listMailConsumers, watchMailConsumerRuntime, type ConsumerWrite, type MailConsumer, type MailConsumerRuntimeWatch, type MailRuntimeState, type MailSourceType, updateMailConsumer } from "@/lib/api/mail";
 import { useRealtime } from "@/context/RealtimeContext";
 
 type ConsumersTabProps = { enabled: boolean; scopeKey: string; canCreate: boolean; canUpdate: boolean; canDelete: boolean };
 type ConsumerForm = ConsumerWrite & { code: string };
 type MailConsumerJobNotification = { operation?: unknown; resource_id?: string; status?: string };
+type MailConsumerRuntimeNotification = {
+  scope?: unknown;
+  consumer_id?: unknown;
+  config_version?: unknown;
+  runtime_epoch?: unknown;
+  runtime_revision?: unknown;
+  state?: unknown;
+  active_instances?: unknown;
+  consumer_lag?: unknown;
+  error_code?: unknown;
+  error_message?: unknown;
+  observed_at?: unknown;
+  expires_at?: unknown;
+};
 
 const emptyForm: ConsumerForm = {
   code: "", name: "", source_type: "kafka", broker_resource_id: "", topic: "", consumer_group: "",
@@ -57,6 +71,20 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
     queryFn: ({ signal }) => getMailConsumer(detailConsumerID as string, signal),
     enabled: enabled && Boolean(detailConsumerID),
   });
+  const runtimeWatchKey = useMemo(
+    () => ["mail", scopeKey, "consumer-runtime-watch", detailConsumerID] as const,
+    [detailConsumerID, scopeKey],
+  );
+  const runtimeWatch = useQuery({
+    queryKey: runtimeWatchKey,
+    queryFn: ({ signal }) => watchMailConsumerRuntime(detailConsumerID as string, signal),
+    enabled: enabled && Boolean(detailConsumerID),
+    // [COMMENT]: Đây là lease renewal khi Detail còn mở, không phải status polling. Runtime delta
+    // giữa hai lần renew đi qua Centrifugo và rời màn hình sẽ dừng request hoàn toàn.
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
   const visible = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return consumers.data ?? [];
@@ -70,9 +98,63 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
       void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumers"] });
       if (detailConsumerID === payload.resource_id) {
         void queryClient.invalidateQueries({ queryKey: ["mail", scopeKey, "consumer-detail", detailConsumerID] });
+        // [COMMENT]: Promotion có thể đổi active config version; renew ngay để tạo epoch mới
+        // thay vì giữ runtime generation cũ tới interval kế tiếp.
+        void queryClient.invalidateQueries({ queryKey: runtimeWatchKey });
       }
     });
-  }, [detailConsumerID, queryClient, scopeKey, subscribeToEvent]);
+  }, [detailConsumerID, queryClient, runtimeWatchKey, scopeKey, subscribeToEvent]);
+
+  useEffect(() => {
+    return subscribeToEvent("mail.consumer.runtime.changed", (payload: MailConsumerRuntimeNotification) => {
+      if (
+        !detailConsumerID ||
+        payload.consumer_id !== detailConsumerID ||
+        typeof payload.config_version !== "number" ||
+        typeof payload.runtime_epoch !== "string" ||
+        typeof payload.runtime_revision !== "number" ||
+        typeof payload.state !== "string" ||
+        typeof payload.active_instances !== "number" ||
+        typeof payload.consumer_lag !== "number" ||
+        typeof payload.error_code !== "string" ||
+        typeof payload.error_message !== "string" ||
+        typeof payload.observed_at !== "string" ||
+        typeof payload.expires_at !== "string"
+      ) return;
+      const configVersion = payload.config_version;
+      const runtimeEpoch = payload.runtime_epoch;
+      const runtimeRevision = payload.runtime_revision;
+      const runtimeState = payload.state as MailRuntimeState;
+      const activeInstances = payload.active_instances;
+      const consumerLag = payload.consumer_lag;
+      const errorCode = payload.error_code;
+      const errorMessage = payload.error_message;
+      const observedAt = payload.observed_at;
+      const expiresAt = payload.expires_at;
+      queryClient.setQueryData<MailConsumerRuntimeWatch>(runtimeWatchKey, (current) => {
+        if (!current || current.consumer_id !== detailConsumerID) return current;
+        const watchEpoch = current.watch_lease_id.split(":", 2)[1];
+        if (watchEpoch !== runtimeEpoch || current.config_version !== configVersion) return current;
+        // [COMMENT]: Realtime revision chỉ tiến lên trong cùng watch epoch; event reorder không
+        // được rollback badge/lag mới hơn.
+        if (current.runtime && current.runtime.runtime_revision >= runtimeRevision) return current;
+        return {
+          ...current,
+          runtime: {
+            runtime_epoch: runtimeEpoch,
+            runtime_revision: runtimeRevision,
+            state: runtimeState,
+            active_instances: activeInstances,
+            consumer_lag: consumerLag,
+            error_code: errorCode,
+            error_message: errorMessage,
+            observed_at: observedAt,
+            expires_at: expiresAt,
+          },
+        };
+      });
+    });
+  }, [detailConsumerID, queryClient, runtimeWatchKey, subscribeToEvent]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -161,7 +243,13 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
         </div>
       </div>
 
-      <Dialog open={Boolean(detailConsumerID)} onOpenChange={(open) => { if (!open) setDetailConsumerID(null); }}>
+      <Dialog open={Boolean(detailConsumerID)} onOpenChange={(open) => {
+        if (!open && detailConsumerID) {
+          // [COMMENT]: Xóa soft-state cache local khi đóng để lần mở sau không flash snapshot epoch cũ.
+          queryClient.removeQueries({ queryKey: ["mail", scopeKey, "consumer-runtime-watch", detailConsumerID] });
+          setDetailConsumerID(null);
+        }
+      }}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{consumerDetail.data?.name ?? "Consumer detail"}</DialogTitle>
@@ -179,16 +267,18 @@ export function ConsumersTab({ enabled, scopeKey, canCreate, canUpdate, canDelet
                 <div><div className="text-xs text-muted-foreground">Source</div><div className="mt-1">{sourceLabels[consumerDetail.data.source_type].name} · <span className="font-mono">{consumerDetail.data.topic}</span></div></div>
                 <div><div className="text-xs text-muted-foreground">Template</div><div className="mt-1 font-mono">{consumerDetail.data.template_id} · v{consumerDetail.data.template_version}</div></div>
               </div>
-              {consumerDetail.data.runtime ? (
+              {runtimeWatch.data?.runtime ? (
                 <div className="grid gap-3 rounded-lg border p-4 sm:grid-cols-2">
-                  <div><div className="text-xs text-muted-foreground">Reported runtime</div><Badge variant="outline" className="mt-1">{consumerDetail.data.runtime.state}</Badge></div>
-                  <div><div className="text-xs text-muted-foreground">Active logical slots</div><div className="mt-1 font-mono">{consumerDetail.data.runtime.active_instances} / {consumerDetail.data.parallelism}</div></div>
-                  <div><div className="text-xs text-muted-foreground">Reported config</div><div className="mt-1 font-mono">v{consumerDetail.data.runtime.config_version}</div></div>
-                  <div><div className="text-xs text-muted-foreground">Last report</div><div className="mt-1">{new Date(consumerDetail.data.runtime.reported_at).toLocaleString()}</div></div>
-                  {(consumerDetail.data.runtime.error_code || consumerDetail.data.runtime.error_message) && <div className="sm:col-span-2 rounded-md bg-destructive/5 p-3 text-sm text-destructive"><div className="font-mono">{consumerDetail.data.runtime.error_code}</div>{consumerDetail.data.runtime.error_message && <div className="mt-1">{consumerDetail.data.runtime.error_message}</div>}</div>}
+                  <div><div className="text-xs text-muted-foreground">Reported runtime</div><Badge variant="outline" className="mt-1">{runtimeWatch.data.runtime.state}</Badge></div>
+                  <div><div className="text-xs text-muted-foreground">Active logical slots</div><div className="mt-1 font-mono">{runtimeWatch.data.runtime.active_instances} / {consumerDetail.data.parallelism}</div></div>
+                  <div><div className="text-xs text-muted-foreground">Reported config</div><div className="mt-1 font-mono">v{runtimeWatch.data.config_version}</div></div>
+                  <div><div className="text-xs text-muted-foreground">Last report</div><div className="mt-1">{new Date(runtimeWatch.data.runtime.observed_at).toLocaleString()}</div></div>
+                  {(runtimeWatch.data.runtime.error_code || runtimeWatch.data.runtime.error_message) && <div className="sm:col-span-2 rounded-md bg-destructive/5 p-3 text-sm text-destructive"><div className="font-mono">{runtimeWatch.data.runtime.error_code}</div>{runtimeWatch.data.runtime.error_message && <div className="mt-1">{runtimeWatch.data.runtime.error_message}</div>}</div>}
                 </div>
+              ) : runtimeWatch.isError ? (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">Runtime watch is temporarily unavailable. Business configuration remains available.</div>
               ) : (
-                <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">No fresh runtime report exists for the current config version. This is distinct from a confirmed stopped state.</div>
+                <div className="flex items-center gap-2 rounded-lg border border-dashed p-5 text-sm text-muted-foreground">{runtimeWatch.isFetching && <Loader2 className="size-4 animate-spin" />}Waiting for a fresh runtime snapshot. This is distinct from a confirmed stopped state.</div>
               )}
             </div>
           ) : null}

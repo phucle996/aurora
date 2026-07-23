@@ -27,12 +27,6 @@ CREATE INDEX IF NOT EXISTS idx_personal_mail_template_versions_cursor ON persona
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_mail_templates_workspace_code ON tenant_mail_templates(workspace_id,code);
 CREATE INDEX IF NOT EXISTS idx_tenant_mail_template_versions_cursor ON tenant_mail_template_versions(template_id,created_at DESC,version DESC);
 
-CREATE INDEX IF NOT EXISTS idx_personal_mail_runtime_reports_expiry
-ON personal_mail_consumer_runtime_reports (expires_at, consumer_id);
-
-CREATE INDEX IF NOT EXISTS idx_tenant_mail_runtime_reports_expiry
-ON tenant_mail_consumer_runtime_reports (expires_at, consumer_id);
-
 CREATE INDEX IF NOT EXISTS idx_mail_outbox_pending
 ON mail_outbox_records (status, id ASC)
 WHERE status = 'PENDING';

@@ -149,56 +149,6 @@ func (r *personalConsumerRepoPostgres) GetByID(ctx context.Context, query *mailE
 		return nil, fmt.Errorf("mail personal consumer repo: get: %w", err)
 	}
 
-	// [COMMENT]: Detail chỉ aggregate heartbeat còn lease-like TTL và đúng desired config hiện tại;
-	// report version cũ vẫn có thể tồn tại để diagnostics nhưng không được làm UI báo RUNNING sai.
-	var activeInstances int64
-	var consumerLag int64
-	err = r.db.QueryRow(ctx, fmt.Sprintf(`
-		WITH live AS (
-			SELECT runtime_state, consumer_lag, error_code, error_message, reported_at, expires_at
-			FROM %s.personal_mail_consumer_runtime_reports
-			WHERE consumer_id = $1 AND config_version = $2 AND expires_at > now()
-		), ranked AS (
-			SELECT *, row_number() OVER (
-				ORDER BY CASE runtime_state
-					WHEN 'error' THEN 7 WHEN 'degraded' THEN 6 WHEN 'draining' THEN 5
-					WHEN 'starting' THEN 4 WHEN 'running' THEN 3 WHEN 'paused' THEN 2 ELSE 1
-				END DESC, reported_at DESC
-			) AS priority
-			FROM live
-		), aggregate AS (
-			SELECT count(*)::bigint AS active_instances,
-			       LEAST(COALESCE(sum(consumer_lag), 0), 9223372036854775807)::bigint AS consumer_lag
-			FROM live
-		)
-		SELECT r.runtime_state, $2::bigint, a.active_instances, a.consumer_lag,
-		       COALESCE(r.error_code, ''), COALESCE(r.error_message, ''),
-		       r.reported_at, r.expires_at
-		FROM ranked AS r CROSS JOIN aggregate AS a
-		WHERE r.priority = 1
-	`, r.mailSchema), consumer.ID, consumer.ConfigVersion).Scan(
-		&consumer.RuntimeState,
-		&consumer.RuntimeConfigVersion,
-		&activeInstances,
-		&consumerLag,
-		&consumer.RuntimeErrorCode,
-		&consumer.RuntimeErrorMessage,
-		&consumer.RuntimeReportedAt,
-		&consumer.RuntimeNextExpiryAt,
-	)
-	if err == nil {
-		consumer.RuntimeObserved = true
-		consumer.RuntimeActiveInstances = uint32(activeInstances)
-		consumer.RuntimeConsumerLag = uint64(consumerLag)
-		if consumer.DesiredState == mailEntity.ConsumerEnabled && consumer.RuntimeActiveInstances < consumer.Parallelism && consumer.RuntimeState == mailEntity.ConsumerRuntimeRunning {
-			// [COMMENT]: Một slot RUNNING không được che việc desired parallelism chưa đủ coverage.
-			consumer.RuntimeState = mailEntity.ConsumerRuntimeDegraded
-			consumer.RuntimeErrorCode = "MAIL_RUNTIME_SLOT_COVERAGE_PARTIAL"
-		}
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("mail personal consumer repo: get runtime summary: %w", err)
-	}
-
 	return consumer, nil
 }
 

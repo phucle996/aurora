@@ -3,8 +3,11 @@ package mailSvcImpl
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailRepoInterface "controlplane/internal/mail/domain/repo"
@@ -13,6 +16,7 @@ import (
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
 
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 )
@@ -21,12 +25,13 @@ import (
 var personalMailConsumerEventNamespace = uuid.MustParse("43de31a4-0c86-54e9-8384-47b33f541c28")
 
 type personalConsumerServiceImpl struct {
-	repo mailRepoInterface.PersonalConsumerRepository
+	repo     mailRepoInterface.PersonalConsumerRepository
+	redisJob *goredis.Client
 }
 
 // NewPersonalConsumerService khoi tao service quản lý consumer o scope Personal.
-func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepository) mailSvcInterface.PersonalConsumerService {
-	return &personalConsumerServiceImpl{repo: repo}
+func NewPersonalConsumerService(repo mailRepoInterface.PersonalConsumerRepository, redisJob *goredis.Client) mailSvcInterface.PersonalConsumerService {
+	return &personalConsumerServiceImpl{repo: repo, redisJob: redisJob}
 }
 
 // CreateConsumer thuc hien validate va khoi tao consumer moi cung outbox record cho Personal.
@@ -436,4 +441,131 @@ func (s *personalConsumerServiceImpl) DeleteConsumer(ctx context.Context, req *m
 	}
 	req.OperationID = outbox.EventID
 	return nil
+}
+
+func (s *personalConsumerServiceImpl) WatchConsumerRuntime(ctx context.Context, req *mailEntity.WatchPersonalConsumerRuntime) (*mailEntity.WatchPersonalConsumerRuntime, error) {
+	// [COMMENT]: PostgreSQL vẫn là authorization boundary; Redis key không bao giờ được dùng để chứng minh ownership.
+	current, err := s.repo.GetByID(ctx, &mailEntity.GetPersonalConsumer{
+		ActorUserID: req.ActorUserID,
+		ZoneID:      req.ZoneID,
+		ID:          req.ID,
+		WorkspaceID: req.WorkspaceID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if s.redisJob == nil {
+		return nil, fmt.Errorf("mail personal runtime watch: redis job unavailable: %w", mailTaxonomy.ErrRuntimeUnavailable)
+	}
+
+	const watchTTL = 30 * time.Second
+	leaseSeed := uuid.NewString()
+	script := goredis.NewScript(`
+local clock=redis.call('TIME')
+local now=(tonumber(clock[1])*1000)+math.floor(tonumber(clock[2])/1000)
+local prefix=ARGV[1]..':'
+local lease=redis.call('GET',KEYS[1])
+if (not lease) or string.sub(lease,1,string.len(prefix)) ~= prefix then
+  lease=prefix..ARGV[3]
+end
+redis.call('SET',KEYS[1],lease,'PX',ARGV[4])
+redis.call('ZREMRANGEBYSCORE',KEYS[2],'-inf',now)
+redis.call('ZADD',KEYS[2],now+tonumber(ARGV[4]),ARGV[2])
+redis.call('PEXPIRE',KEYS[2],tonumber(ARGV[4])*2)
+redis.call('ZREMRANGEBYSCORE',KEYS[4],'-inf',now)
+redis.call('ZADD',KEYS[4],now+tonumber(ARGV[4]),ARGV[5])
+redis.call('PEXPIRE',KEYS[4],tonumber(ARGV[4])*2)
+local snapshot=redis.call('GET',KEYS[3])
+if not snapshot then snapshot='' end
+return {lease,snapshot}
+`)
+	result, err := script.Run(
+		ctx,
+		s.redisJob,
+		[]string{
+			fmt.Sprintf("mail:runtime:watch-active:%s:%s", req.ZoneID, req.ID),
+			fmt.Sprintf("mail:runtime:watchers:%s:%s", req.ZoneID, req.ID),
+			fmt.Sprintf("mail:runtime:snapshot:personal:%s", req.ID),
+			fmt.Sprintf("mail:runtime:watch-index:%s", req.ZoneID),
+		},
+		current.ConfigVersion,
+		req.ActorUserID.String(),
+		leaseSeed,
+		watchTTL.Milliseconds(),
+		req.ID.String(),
+	).Slice()
+	if err != nil {
+		return nil, fmt.Errorf("mail personal runtime watch: create lease: %w: %v", mailTaxonomy.ErrRuntimeUnavailable, err)
+	}
+	if len(result) != 2 {
+		return nil, fmt.Errorf("mail personal runtime watch: invalid redis reply: %w", mailTaxonomy.ErrRuntimeUnavailable)
+	}
+
+	req.ConfigVersion = current.ConfigVersion
+	req.WatchLeaseID, _ = result[0].(string)
+	if req.WatchLeaseID == "" {
+		return nil, fmt.Errorf("mail personal runtime watch: empty lease: %w", mailTaxonomy.ErrRuntimeUnavailable)
+	}
+	req.WatchTTLSeconds = uint32(watchTTL / time.Second)
+	rawSnapshot, _ := result[1].(string)
+	if strings.TrimSpace(rawSnapshot) == "" {
+		return req, nil
+	}
+	_, watchEpoch, epochOK := strings.Cut(req.WatchLeaseID, ":")
+	var snapshot struct {
+		ConfigVersion   uint64                          `json:"config_version"`
+		RuntimeEpoch    string                          `json:"runtime_epoch"`
+		RuntimeRevision uint64                          `json:"runtime_revision"`
+		State           mailEntity.ConsumerRuntimeState `json:"state"`
+		ActiveInstances uint32                          `json:"active_instances"`
+		ConsumerLag     uint64                          `json:"consumer_lag"`
+		ErrorCode       string                          `json:"error_code"`
+		ErrorMessage    string                          `json:"error_message"`
+		ObservedAt      time.Time                       `json:"observed_at"`
+		ExpiresAt       time.Time                       `json:"expires_at"`
+	}
+	if json.Unmarshal([]byte(rawSnapshot), &snapshot) != nil {
+		return req, nil
+	}
+	validState := snapshot.State == mailEntity.ConsumerRuntimeStopped ||
+		snapshot.State == mailEntity.ConsumerRuntimeStarting ||
+		snapshot.State == mailEntity.ConsumerRuntimeRunning ||
+		snapshot.State == mailEntity.ConsumerRuntimePaused ||
+		snapshot.State == mailEntity.ConsumerRuntimeDraining ||
+		snapshot.State == mailEntity.ConsumerRuntimeError ||
+		snapshot.State == mailEntity.ConsumerRuntimeDegraded
+	validError := len(snapshot.ErrorCode) <= 100 && len(snapshot.ErrorMessage) <= 1024
+	for _, char := range snapshot.ErrorCode {
+		if !((char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_') {
+			validError = false
+			break
+		}
+	}
+	if strings.ContainsFunc(snapshot.ErrorMessage, unicode.IsControl) {
+		validError = false
+	}
+	if snapshot.ConfigVersion != current.ConfigVersion ||
+		!epochOK ||
+		snapshot.RuntimeEpoch != watchEpoch ||
+		snapshot.RuntimeRevision == 0 ||
+		!validState ||
+		!validError ||
+		snapshot.ActiveInstances > current.Parallelism ||
+		snapshot.ObservedAt.IsZero() ||
+		!snapshot.ExpiresAt.After(snapshot.ObservedAt) ||
+		!snapshot.ExpiresAt.After(time.Now().UTC()) {
+		// [COMMENT]: Corrupt/stale runtime là cache miss; business GET/watch vẫn thành công.
+		return req, nil
+	}
+	req.RuntimeObserved = true
+	req.RuntimeEpoch = snapshot.RuntimeEpoch
+	req.RuntimeRevision = snapshot.RuntimeRevision
+	req.RuntimeState = snapshot.State
+	req.RuntimeActiveInstances = snapshot.ActiveInstances
+	req.RuntimeConsumerLag = snapshot.ConsumerLag
+	req.RuntimeErrorCode = snapshot.ErrorCode
+	req.RuntimeErrorMessage = snapshot.ErrorMessage
+	req.RuntimeObservedAt = snapshot.ObservedAt
+	req.RuntimeExpiresAt = snapshot.ExpiresAt
+	return req, nil
 }

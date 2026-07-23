@@ -42,6 +42,7 @@ impl ReverseProvider {
 
         let config_mail_consumer = self.config.clone();
         let redis_client_mail_consumer = self.redis_client.clone();
+        let nats_client_mail_consumer = self.nats_client.clone();
 
         // [COMMENT]: Chạy song song các listener độc lập; mail runtime reverse path dùng blocking
         // Redis consumer group riêng, không chia PEL với generic job result.
@@ -106,6 +107,7 @@ impl ReverseProvider {
                         let run_res = mail::reporter::consumer::run_consumer_report_listener(
                             &config_mail_consumer,
                             &redis_client_mail_consumer,
+                            &nats_client_mail_consumer,
                         ).await;
                         if let Err(error) = run_res {
                             Logger::sys_error(

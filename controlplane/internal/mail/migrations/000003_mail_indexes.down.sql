@@ -4,8 +4,6 @@ DROP INDEX IF EXISTS ix_tenant_mail_template_projection_tombstones_workspace CAS
 DROP INDEX IF EXISTS ix_personal_mail_template_projection_tombstones_workspace CASCADE;
 DROP INDEX IF EXISTS idx_mail_outbox_terminal_cleanup CASCADE;
 DROP INDEX IF EXISTS idx_mail_outbox_pending CASCADE;
-DROP INDEX IF EXISTS idx_tenant_mail_runtime_reports_expiry CASCADE;
-DROP INDEX IF EXISTS idx_personal_mail_runtime_reports_expiry CASCADE;
 DROP INDEX IF EXISTS idx_tenant_mail_template_versions_cursor CASCADE;
 DROP INDEX IF EXISTS ux_tenant_mail_templates_workspace_code CASCADE;
 DROP INDEX IF EXISTS idx_personal_mail_template_versions_cursor CASCADE;

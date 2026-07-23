@@ -5,8 +5,8 @@ use crate::executor::mail::runtime_proto::MailStreamType;
 use crate::infra::zone_kv::{ZoneKvStore, ZoneLease};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -98,6 +98,9 @@ pub struct StreamRuntimeContext {
     // [COMMENT]: Một sequence dùng chung trong pod làm mọi state transition/heartbeat có thứ tự ổn định;
     // runtime_generation vẫn là fence riêng của logical slot.
     report_sequence: AtomicU64,
+    // [COMMENT]: Lag/state/heartbeat là pod-local soft state. Không ghi Zone NATS KV vì
+    // snapshot theo customer chỉ được xuất sang Redis Job khi Controlplane có watch lease.
+    runtime_snapshots: StdRwLock<HashMap<(String, u32), RuntimeHealthSnapshot>>,
     envelope_key: Option<Arc<Zeroizing<[u8; 32]>>>,
 }
 
@@ -151,6 +154,7 @@ impl StreamRuntimeContext {
                     .unwrap_or(1)
                     .max(1),
             ),
+            runtime_snapshots: StdRwLock::new(HashMap::new()),
             envelope_key,
         })
     }
@@ -225,9 +229,8 @@ impl StreamRuntimeContext {
         lease: &ZoneLease,
         error_code: &str,
     ) {
-        // [COMMENT]: Instance của read model là logical slot, không phải hostname. Khi pod mới
-        // takeover cùng slot, fencing generation cao hơn cập nhật đúng một row và không để heartbeat
-        // của pod cũ làm Consumer Detail báo lỗi giả cho tới hết TTL.
+        // [COMMENT]: Instance của runtime snapshot là logical slot, không phải hostname. Snapshot
+        // chỉ sống trong app; Central Redis aggregator sẽ fence generation giữa các pod.
         let runtime_instance_id = format!("slot:{slot}");
         let snapshot = RuntimeHealthSnapshot {
             state: state.to_string(),
@@ -252,13 +255,29 @@ impl StreamRuntimeContext {
             runtime_node_id: self.instance_id.clone(),
             runtime_boot_id: self.runtime_boot_id.to_string(),
         };
-        if let Ok(bytes) = serde_json::to_vec(&snapshot) {
-            let key = format!("mail.runtime.{}.{}", configuration.consumer_id, slot);
-            let _ = self
-                .zone_kv
-                .health_put_fenced(&key, Bytes::from(bytes), lease.fencing_token)
-                .await;
-        }
+        self.runtime_snapshots
+            .write()
+            .expect("mail runtime snapshot lock poisoned")
+            .insert((configuration.consumer_id.clone(), slot), snapshot);
+    }
+
+    pub(crate) fn runtime_snapshots(&self) -> Vec<RuntimeHealthSnapshot> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+            .unwrap_or_default();
+        let freshness_ms =
+            (self.lease_ttl.as_millis().min(u64::MAX as u128) as u64).saturating_mul(2);
+        let mut snapshots = self
+            .runtime_snapshots
+            .write()
+            .expect("mail runtime snapshot lock poisoned");
+        // [COMMENT]: Slot đã mất lease/pod-local task đã dừng tự rời memory; không cần tombstone
+        // hoặc cleanup record trong NATS KV/Redis.
+        snapshots.retain(|_, snapshot| {
+            now_ms.saturating_sub(snapshot.heartbeat_unix_ms) <= freshness_ms
+        });
+        snapshots.values().cloned().collect()
     }
 }
 

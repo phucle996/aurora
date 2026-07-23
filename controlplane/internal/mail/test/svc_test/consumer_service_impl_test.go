@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	mailEntity "controlplane/internal/mail/domain/entity"
 	mailSvcImpl "controlplane/internal/mail/service"
 	mailproto "controlplane/internal/mail/transport/rpc/proto"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
+	goredis "github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -100,7 +105,7 @@ func TestPersonalUpdateKeepsEncryptedSourceWhenAPILeavesItEmpty(t *testing.T) {
 	command := validPersonalConsumerUpdate(current)
 
 	// [COMMENT]: Gọi service thực thi lệnh cập nhật consumer
-	updated, err := mailSvcImpl.NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), command)
+	updated, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).UpdateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("UpdateConsumer() error = %v", err)
 	}
@@ -151,7 +156,7 @@ func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T)
 		command.DesiredState = mailEntity.ConsumerPaused
 		mutate(command)
 		// [COMMENT]: Kiểm tra service trả về lỗi do thay đổi AAD identity mà không có ciphertext mới
-		if _, err := mailSvcImpl.NewPersonalConsumerService(repo).UpdateConsumer(context.Background(), command); err == nil {
+		if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).UpdateConsumer(context.Background(), command); err == nil {
 			t.Fatal("AAD identity changed without a replacement encrypted envelope")
 		}
 	}
@@ -161,7 +166,7 @@ func TestPersonalUpdateRequiresFreshEnvelopeWhenAADIdentityChanges(t *testing.T)
 func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 	repo, command := &personalConsumerRepoCapture{}, validPersonalConsumer()
 	// [COMMENT]: Thực thi khởi tạo consumer qua mail service implementation
-	consumer, err := mailSvcImpl.NewPersonalConsumerService(repo).CreateConsumer(context.Background(), command)
+	consumer, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).CreateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatalf("CreateConsumer() error = %v", err)
 	}
@@ -181,19 +186,106 @@ func TestPersonalCreateUsesOneEntityAndOutbox(t *testing.T) {
 func TestPersonalCreateUsesFreshRuntimeIdentity(t *testing.T) {
 	command := validPersonalConsumer()
 	firstRepo := &personalConsumerRepoCapture{}
-	first, err := mailSvcImpl.NewPersonalConsumerService(firstRepo).CreateConsumer(context.Background(), command)
+	first, err := mailSvcImpl.NewPersonalConsumerService(firstRepo, nil).CreateConsumer(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
 	}
 	retry := *command
 	secondRepo := &personalConsumerRepoCapture{}
-	second, err := mailSvcImpl.NewPersonalConsumerService(secondRepo).CreateConsumer(context.Background(), &retry)
+	second, err := mailSvcImpl.NewPersonalConsumerService(secondRepo, nil).CreateConsumer(context.Background(), &retry)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// [COMMENT]: Khẳng định hai consumer không bị trùng runtime ID
 	if first.ID == second.ID {
 		t.Fatal("recreated consumer reused a tombstoned runtime identity")
+	}
+}
+
+func TestPersonalRuntimeWatchUsesShortLeaseAndRejectsPreviousEpoch(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	defer redisServer.Close()
+	redisClient := goredis.NewClient(&goredis.Options{Addr: redisServer.Addr()})
+	defer redisClient.Close()
+
+	current := &mailEntity.GetPersonalConsumer{
+		ActorUserID:   uuid.New(),
+		WorkspaceID:   uuid.New(),
+		ZoneID:        uuid.New(),
+		ID:            uuid.New(),
+		ConfigVersion: 4,
+		Parallelism:   3,
+	}
+	repo := &personalConsumerRepoCapture{current: current}
+	service := mailSvcImpl.NewPersonalConsumerService(repo, redisClient)
+	request := &mailEntity.WatchPersonalConsumerRuntime{
+		ActorUserID: current.ActorUserID,
+		WorkspaceID: current.WorkspaceID,
+		ZoneID:      current.ZoneID,
+		ID:          current.ID,
+	}
+
+	first, err := service.WatchConsumerRuntime(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first WatchConsumerRuntime() error = %v", err)
+	}
+	if first.WatchTTLSeconds != 30 || first.RuntimeObserved || !strings.HasPrefix(first.WatchLeaseID, "4:") {
+		t.Fatalf("unexpected first watch: %+v", first)
+	}
+	if _, err := redisServer.ZScore(
+		"mail:runtime:watch-index:"+current.ZoneID.String(),
+		current.ID.String(),
+	); err != nil {
+		t.Fatalf("consumer was not added to bounded Zone watch index: %v", err)
+	}
+	_, epoch, ok := strings.Cut(first.WatchLeaseID, ":")
+	if !ok {
+		t.Fatalf("invalid watch lease ID: %q", first.WatchLeaseID)
+	}
+	snapshot, err := json.Marshal(map[string]any{
+		"config_version":   4,
+		"runtime_epoch":    epoch,
+		"runtime_revision": 7,
+		"state":            mailEntity.ConsumerRuntimeRunning,
+		"active_instances": 2,
+		"consumer_lag":     3,
+		"error_code":       "",
+		"error_message":    "",
+		"observed_at":      time.Now().UTC(),
+		"expires_at":       time.Now().UTC().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotKey := "mail:runtime:snapshot:personal:" + current.ID.String()
+	redisServer.Set(snapshotKey, string(snapshot))
+
+	second, err := service.WatchConsumerRuntime(context.Background(), &mailEntity.WatchPersonalConsumerRuntime{
+		ActorUserID: current.ActorUserID,
+		WorkspaceID: current.WorkspaceID,
+		ZoneID:      current.ZoneID,
+		ID:          current.ID,
+	})
+	if err != nil || !second.RuntimeObserved || second.RuntimeRevision != 7 {
+		t.Fatalf("matching epoch snapshot was not returned: result=%+v err=%v", second, err)
+	}
+
+	// [COMMENT]: Lease expiry tạo epoch mới; snapshot cũ dù còn TTL/future expires_at cũng phải là cache miss.
+	redisServer.FastForward(31 * time.Second)
+	third, err := service.WatchConsumerRuntime(context.Background(), &mailEntity.WatchPersonalConsumerRuntime{
+		ActorUserID: current.ActorUserID,
+		WorkspaceID: current.WorkspaceID,
+		ZoneID:      current.ZoneID,
+		ID:          current.ID,
+	})
+	if err != nil {
+		t.Fatalf("third WatchConsumerRuntime() error = %v", err)
+	}
+	if third.RuntimeObserved || third.WatchLeaseID == first.WatchLeaseID {
+		t.Fatalf("previous epoch leaked into new watch: first=%q third=%+v", first.WatchLeaseID, third)
 	}
 }
 
@@ -214,7 +306,7 @@ func TestPersonalDeleteUsesNextAllocatorAsTombstoneFence(t *testing.T) {
 		DrainTimeoutSeconds:   30,
 	}
 	// [COMMENT]: Thực thi yêu cầu xóa consumer qua service
-	if err := mailSvcImpl.NewPersonalConsumerService(repo).DeleteConsumer(context.Background(), command); err != nil {
+	if err := mailSvcImpl.NewPersonalConsumerService(repo, nil).DeleteConsumer(context.Background(), command); err != nil {
 		t.Fatalf("DeleteConsumer() error = %v", err)
 	}
 	var event mailproto.MailConsumerDeleteV1
@@ -246,7 +338,7 @@ func TestPersonalCreateEncodesTheSelectedStreamSuite(t *testing.T) {
 			command.SourceType = test.sourceType
 			repo := &personalConsumerRepoCapture{}
 			// [COMMENT]: Tạo consumer với từng loại Stream Source cụ thể
-			if _, err := mailSvcImpl.NewPersonalConsumerService(repo).CreateConsumer(context.Background(), command); err != nil {
+			if _, err := mailSvcImpl.NewPersonalConsumerService(repo, nil).CreateConsumer(context.Background(), command); err != nil {
 				t.Fatalf("CreateConsumer() error = %v", err)
 			}
 
